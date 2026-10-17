@@ -445,7 +445,7 @@ proptest! {
                 view.apply(changes.next().await.unwrap().unwrap()).unwrap();
                 let selected=view.0[0].files();
                 prop_assert!(selected.len() <= recent as usize);
-                prop_assert!(selected.values().map(|file| file.bytes.len()).sum::<usize>() <= budget);
+                prop_assert!(selected.values().map(|file| file.length as usize).sum::<usize>() <= budget);
                 prop_assert!(selected.keys().all(|key| query.matches(key)));
                 prop_assert!(selected.contains_key(&file.key));
             }
@@ -501,7 +501,7 @@ async fn hidden_archived_results_do_not_fill_the_selected_task_view() -> Result<
     assert!(view.0.iter().all(|fold| {
         fold.files()
             .values()
-            .map(|file| file.bytes.len())
+            .map(|file| file.length as usize)
             .sum::<usize>()
             <= 65_536
     }));

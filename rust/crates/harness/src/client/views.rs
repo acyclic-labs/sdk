@@ -1,350 +1,537 @@
-//! Renderer-independent committed state and streaming tails.
+//! One disposable fold for overview status and selected full-fidelity files.
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod retention;
 
-use super::{content::MessageContent, usage::Usage};
-use crate::{
-    Result,
-    conversation::ConversationMessage,
-    core::{Authority, EventPayload, LifecycleState},
-    model::{ModelDataPart, ModelEvent, ToolResultContent},
-    wire,
-    wire_codec::{decode_event_payload, encode_authority},
+use super::{
+    ClientInterests, FileQueryView, InterestTier, QueryViewLimits, SwarmUpdate, query_error,
 };
-use serde::{Deserialize, Serialize};
+use crate::{
+    Error, Result,
+    task_volume::{Cursor, FileKey, FileValue, HeadFile, Query},
+};
+use acyclic_stream::{StreamPath, StreamWatermarks, wire};
+use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::{cell::RefCell, rc::Rc};
 
-/// One decoded record from a platform follow, addressed to its tracked authority.
-/// These are in-process client inputs, not another wire schema.
-pub enum ViewUpdate {
-    /// A shared file slice or cursor checkpoint from the volume query follow.
-    File(crate::task_volume::Change),
-    /// One provider-neutral model event.
-    Model {
-        /// Conversation owning the event.
-        authority: wire::Authority,
-        /// Admitted turn identity from the model dispatch.
-        turn: crate::OperationId,
-        /// Exact provider-neutral item.
-        event: ModelEvent,
-    },
-    /// One incremental tool output chunk.
-    ToolOutput {
-        /// Conversation owning the invocation.
-        authority: wire::Authority,
-        /// Stable invocation identity.
-        call_id: String,
-        /// Output accepted by the stream.
-        delta: String,
-    },
+/// Bounds depend on selected content and retained latest status, not event history.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+pub struct ClientViewLimits {
+    /// Maximum retained agents, including overview-only rows.
+    pub agents: usize,
+    /// Maximum agents retaining full file views.
+    pub selected: usize,
+    /// Maximum latest-value status keys across the entire swarm.
+    pub overview_values: usize,
+    /// Maximum retained status key, payload and opaque cursor bytes.
+    pub overview_bytes: u64,
+    /// Per-agent file and segment bounds.
+    pub query: QueryViewLimits,
 }
 
-/// One conversation's committed transcript and current model tail.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TranscriptView {
-    /// Immutable content references in conversation order.
-    pub messages: Vec<ConversationMessage>,
-    /// Admitted turn owning the current streaming tail.
-    pub streaming_turn: Option<crate::OperationId>,
-    /// Text received for the current assistant message.
-    pub streaming_text: String,
-    /// Provider-exposed reasoning for the current step.
-    pub reasoning: String,
+/// Exact latest values for one agent; the producer owns their schema.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatusView {
+    after: Option<wire::SessionCursor>,
+    watermarks: StreamWatermarks,
+    values: BTreeMap<Bytes, StatusValue>,
 }
 
-/// A tool invocation, including incremental stdout/stderr supplied by the host.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ToolCallView {
-    /// Registered tool name.
-    pub name: String,
-    /// Model arguments.
-    pub arguments: serde_json::Value,
-    /// Provisional text chunks, replaced by the canonical model projection on commit.
-    pub output: ToolResultContent,
-    /// Canonical call message, when committed.
-    pub call: Option<ConversationMessage>,
-    /// Canonical result message, when committed.
-    pub result: Option<ConversationMessage>,
+#[derive(Clone, Debug, PartialEq)]
+struct StatusValue {
+    after: wire::SessionCursor,
+    value: wire::SessionLatestValue,
 }
 
-impl Default for ToolCallView {
+impl Default for StatusView {
     fn default() -> Self {
         Self {
-            name: String::new(),
-            arguments: serde_json::Value::Null,
-            output: ToolResultContent::Parts { parts: Vec::new() },
-            call: None,
-            result: None,
+            after: None,
+            watermarks: StreamWatermarks {
+                accepted: 0,
+                durable: 0,
+            },
+            values: BTreeMap::new(),
         }
     }
 }
 
-fn tool_call(tool: &mut ToolCallView, name: String, arguments: serde_json::Value) {
-    tool.name = name;
-    tool.arguments = arguments;
+impl StatusView {
+    /// Greatest delivered status cursor; platform I/O owns replay and fencing.
+    pub fn cursor(&self) -> Option<&wire::SessionCursor> {
+        self.after.as_ref()
+    }
+    /// Accepted and confirmed durable status prefixes.
+    pub fn watermarks(&self) -> StreamWatermarks {
+        self.watermarks
+    }
+    /// Latest values in stable key order, with producer-defined payloads.
+    pub fn values(&self) -> impl Iterator<Item = &wire::SessionLatestValue> {
+        self.values.values().map(|v| &v.value)
+    }
 }
 
-/// Task/subagent lifecycle, independent of terminal or web presentation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TaskView {
-    /// Latest committed lifecycle.
-    pub status: LifecycleState,
-    /// Operation that committed the latest lifecycle transition, if known.
-    pub lifecycle_operation_id: Option<String>,
-    /// Optional diagnostic from the lifecycle transition.
-    pub reason: Option<String>,
-    /// Parent task, if this task was forked.
-    pub parent: Option<Authority>,
-}
-
-/// Shared view model for ratatui, browser and WASM consumers.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct ClientViews {
-    /// Disposable file-query folds, keyed by volume and selection identity.
-    /// Recovery observes fresh files rather than persisting a second payload store.
-    pub queries: BTreeMap<([u8; 32], [u8; 32]), super::FileQueryView>,
-    pub(super) goal_sources: BTreeMap<([u8; 32], [u8; 32]), ([u8; 32], [u8; 32])>,
-    /// Authority-keyed transcripts; keys are `kind:id`.
-    pub transcripts: BTreeMap<String, TranscriptView>,
-    /// Authority-keyed tool calls, then provider call identity.
-    pub tools: BTreeMap<String, BTreeMap<String, ToolCallView>>,
-    /// Root and child aggregate lifecycles.
-    pub tasks: BTreeMap<String, TaskView>,
-    /// Provider usage metadata, keyed by conversation. Providers retain their exact units.
-    pub usage: BTreeMap<String, serde_json::Value>,
-    usage_state: BTreeMap<String, Usage>,
+struct AgentViews {
+    status: StatusView,
+    files: BTreeMap<([u8; 32], [u8; 32]), FileQueryView>,
 }
 
-impl Serialize for ClientViews {
+/// Renderer hints contain the actual file delta, never another event schema.
+pub enum SwarmChange {
+    /// Membership, overview, selected content and accounting were retired together.
+    Retired {
+        /// Former member, whose history remains in the volume.
+        agent: StreamPath,
+    },
+    /// A child is known, independently of its first status record.
+    Agent {
+        /// Canonical discovered path.
+        agent: StreamPath,
+    },
+    /// Rendering demand changed.
+    Layout,
+    /// Selected content was installed at one snapshot cut.
+    Snapshot {
+        /// Selected agent.
+        agent: StreamPath,
+        /// Cut from which its full-fidelity follow continues.
+        cursor: Cursor,
+    },
+    /// One exact platform status or file delivery was folded.
+    Data {
+        /// Source agent.
+        agent: StreamPath,
+        /// Whether this is an always-on status delivery.
+        overview: bool,
+        /// Decoded file delta when this is selected content.
+        file: Option<FileValue>,
+        /// Original platform delivery.
+        data: wire::SessionData,
+    },
+    /// Durability advanced without consuming a file record.
+    Watermark {
+        /// Source agent.
+        agent: StreamPath,
+        /// Whether this is the always-on status follow.
+        overview: bool,
+        /// Exact platform watermarks.
+        watermark: wire::SessionWatermark,
+    },
+}
+
+/// Read-only UI-thread handle, available while the subscription awaits I/O.
+/// The callback cannot return a borrow or keep a RefCell guard across an await.
+#[derive(Clone)]
+pub struct ClientViewHandle(Rc<RefCell<ClientViews>>);
+
+impl ClientViewHandle {
+    pub(crate) fn new(views: ClientViews) -> Self {
+        Self(Rc::new(RefCell::new(views)))
+    }
+    /// Reads the current fold synchronously, without copying its files or text.
+    pub fn read<T>(&self, render: impl FnOnce(&ClientViews) -> T) -> Result<T> {
+        let views = self
+            .0
+            .try_borrow()
+            .map_err(|error| Error::Conflict(error.to_string()))?;
+        Ok(render(&views))
+    }
+    pub(crate) fn apply(&self, update: SwarmUpdate) -> Result<SwarmChange> {
+        self.0
+            .try_borrow_mut()
+            .map_err(|error| Error::Conflict(error.to_string()))?
+            .apply(update)
+    }
+}
+
+/// Cache only. Layout, content and status remain authoritative in followed files.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClientViews {
+    pub(super) goal_sources: BTreeMap<([u8; 32], [u8; 32]), ([u8; 32], [u8; 32])>,
+    layout: ClientInterests,
+    query: [u8; 32],
+    agents: BTreeMap<StreamPath, AgentViews>,
+    limits: ClientViewLimits,
+    overview_values: usize,
+    overview_bytes: u64,
+}
+
+impl ClientViews {
+    /// Starts a subscription cache with overview interest for the whole root.
+    pub fn new(root: StreamPath, limits: ClientViewLimits) -> Result<Self> {
+        Ok(Self {
+            goal_sources: BTreeMap::new(),
+            layout: ClientInterests::from_layout(root, [], [], 0)?,
+            query: crate::task_volume::query_id(&Query::Root).map_err(query_error)?,
+            agents: BTreeMap::new(),
+            limits,
+            overview_values: 0,
+            overview_bytes: 0,
+        })
+    }
+
+    /// Current file-derived rendering demand.
+    pub fn layout(&self) -> &ClientInterests {
+        &self.layout
+    }
+    /// Every discovered agent, including children awaiting their first status.
+    pub fn agents(&self) -> impl Iterator<Item = &StreamPath> {
+        self.agents.keys()
+    }
+    /// Latest status for one discovered agent, including agents out of view.
+    pub fn status(&self, agent: &StreamPath) -> Option<&StatusView> {
+        self.agents.get(agent).map(|a| &a.status)
+    }
+    /// Selected content's exact snapshot/follow cut.
+    pub fn cursor(&self, agent: &StreamPath) -> Option<&Cursor> {
+        self.agents
+            .get(agent)?
+            .files
+            .values()
+            .find(|file| file.cursor().query == self.query)
+            .map(FileQueryView::cursor)
+    }
+    /// Borrows one logical file without joining or copying its segments.
+    pub fn file(&self, agent: &StreamPath, key: &FileKey) -> Option<&HeadFile> {
+        self.agents
+            .get(agent)?
+            .files
+            .values()
+            .find_map(|files| files.head(key))
+    }
+    /// Visits only the requested agent's selected content.
+    pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
+        self.agents
+            .get(agent)
+            .into_iter()
+            .flat_map(|a| a.files.values())
+            .flat_map(FileQueryView::heads)
+    }
+
+    /// Cached plan rows for the requested agent, from its followed files.
+    pub fn plans<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a str> {
+        self.agents
+            .get(agent)
+            .into_iter()
+            .flat_map(|a| a.files.values())
+            .flat_map(FileQueryView::plan_rows)
+    }
+    /// Goal projections at the same cuts as the followed files.
+    pub fn goals(&self) -> impl Iterator<Item = super::GoalQueryView<'_>> {
+        self.selections()
+            .filter_map(|(identity, files)| self.goal_selection(identity, files))
+    }
+
+    /// All followed file selections, including ordinary private-file queries.
+    pub fn selections(&self) -> impl Iterator<Item = (&([u8; 32], [u8; 32]), &FileQueryView)> {
+        self.agents
+            .get(self.layout.root())
+            .into_iter()
+            .chain(
+                self.layout
+                    .full_fidelity()
+                    .filter_map(|path| self.agents.get(path)),
+            )
+            .flat_map(|agent| agent.files.iter())
+    }
+    /// Borrows the agent-owned selection at an exact volume/query identity.
+    pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
+        self.selections()
+            .find_map(|(key, files)| (key == identity).then_some(files))
+    }
+    pub(super) fn selection_mut(
+        &mut self,
+        identity: &([u8; 32], [u8; 32]),
+    ) -> Option<&mut FileQueryView> {
+        let agent = std::iter::once(self.layout.root())
+            .chain(self.layout.full_fidelity())
+            .find(|path| {
+                self.agents
+                    .get(*path)
+                    .is_some_and(|agent| agent.files.contains_key(identity))
+            })?
+            .clone();
+        self.agents.get_mut(&agent)?.files.get_mut(identity)
+    }
+    pub(super) fn install_selection(&mut self, files: FileQueryView) {
+        let cursor = files.cursor();
+        self.agents
+            .entry(self.layout.root().clone())
+            .or_default()
+            .files
+            .insert((cursor.volume, cursor.query), files);
+    }
+
+    fn admit_agent(&self, agent: &StreamPath) -> Result<()> {
+        if agent == self.layout.root()
+            || self.layout.tier(agent).is_none()
+            || (!self.agents.contains_key(agent) && self.agents.len() >= self.limits.agents)
+        {
+            return Err(Error::Invalid(
+                "swarm view agent outside its root or bound".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validation precedes mutation. Prefetch promotion preserves every segment
+    /// and cursor; demotion releases only content while retaining overview status.
+    pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
+        match update {
+            SwarmUpdate::Retired { agent } => {
+                if &agent == self.layout.root() || self.layout.tier(&agent).is_none() {
+                    return Err(Error::Invalid("retirement outside swarm".into()));
+                }
+                if let Some(retired) = self.agents.remove(&agent) {
+                    self.overview_values -= retired.status.values.len();
+                    self.overview_bytes -= retired
+                        .status
+                        .values
+                        .values()
+                        .map(|v| {
+                            (v.value.key.len() + v.value.value.len() + v.after.opaque.len()) as u64
+                        })
+                        .sum::<u64>();
+                    // Cross-query bindings belong to the root's standalone
+                    // selections; swarm agents have one Root selection, so
+                    // none can be a File(RequestHead) binding endpoint.
+                }
+                Ok(SwarmChange::Retired { agent })
+            }
+            SwarmUpdate::Agent { agent } => {
+                self.admit_agent(&agent)?;
+                self.agents.entry(agent.clone()).or_default();
+                Ok(SwarmChange::Agent { agent })
+            }
+            SwarmUpdate::Layout(layout) => {
+                if layout.root() != self.layout.root()
+                    || layout.full_fidelity().nth(self.limits.selected).is_some()
+                {
+                    return Err(Error::Invalid(
+                        "swarm view layout outside its root or bound".into(),
+                    ));
+                }
+                for removed in layout.changes(&self.layout)?.unsubscribe() {
+                    if let Some(agent) = self.agents.get_mut(removed) {
+                        agent.files.clear();
+                    }
+                }
+                self.layout = layout;
+                Ok(SwarmChange::Layout)
+            }
+            SwarmUpdate::Snapshot { agent, snapshot } => {
+                self.admit_agent(&agent)?;
+                if snapshot.cursor.query != self.query {
+                    return Err(Error::Invalid(
+                        "selected snapshot is not the full agent query".into(),
+                    ));
+                }
+                if self.layout.tier(&agent) == Some(InterestTier::Overview) {
+                    return Err(Error::Invalid("unselected agent received content".into()));
+                }
+                if self.agents.get(&agent).is_some_and(|a| !a.files.is_empty()) {
+                    return Err(Error::Conflict("content snapshot already installed".into()));
+                }
+                let files = FileQueryView::from_heads(snapshot, self.limits.query)?;
+                let cursor = files.cursor().clone();
+                self.agents
+                    .entry(agent.clone())
+                    .or_default()
+                    .files
+                    .insert((cursor.volume, cursor.query), files);
+                Ok(SwarmChange::Snapshot { agent, cursor })
+            }
+            SwarmUpdate::Data {
+                agent,
+                overview: false,
+                data,
+            } => {
+                let files = self
+                    .agents
+                    .get_mut(&agent)
+                    .and_then(|a| {
+                        a.files
+                            .values_mut()
+                            .find(|files| files.cursor().query == self.query)
+                    })
+                    .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
+                let change = files.session_change(&data)?;
+                Ok(SwarmChange::Data {
+                    agent,
+                    overview: false,
+                    file: change.file,
+                    data,
+                })
+            }
+            SwarmUpdate::Data {
+                agent,
+                overview: true,
+                data,
+            } => {
+                self.status_data(&agent, &data)?;
+                Ok(SwarmChange::Data {
+                    agent,
+                    overview: true,
+                    file: None,
+                    data,
+                })
+            }
+            SwarmUpdate::Watermark {
+                agent,
+                overview: false,
+                watermark,
+            } => {
+                let files = self
+                    .agents
+                    .get_mut(&agent)
+                    .and_then(|a| {
+                        a.files
+                            .values_mut()
+                            .find(|files| files.cursor().query == self.query)
+                    })
+                    .ok_or_else(|| {
+                        Error::Conflict("content watermark arrived before its snapshot".into())
+                    })?;
+                files.session_watermark(watermark)?;
+                Ok(SwarmChange::Watermark {
+                    agent,
+                    overview: false,
+                    watermark,
+                })
+            }
+            SwarmUpdate::Watermark {
+                agent,
+                overview: true,
+                watermark,
+            } => {
+                self.admit_agent(&agent)?;
+                let current = self
+                    .agents
+                    .get(&agent)
+                    .map(|a| a.status.watermarks)
+                    .unwrap_or(StreamWatermarks {
+                        accepted: 0,
+                        durable: 0,
+                    });
+                if watermark.durable > watermark.accepted
+                    || watermark.accepted < current.accepted
+                    || watermark.durable < current.durable
+                {
+                    return Err(Error::Invalid("status watermark regressed".into()));
+                }
+                self.agents
+                    .entry(agent.clone())
+                    .or_default()
+                    .status
+                    .watermarks = StreamWatermarks {
+                    accepted: watermark.accepted,
+                    durable: watermark.durable,
+                };
+                Ok(SwarmChange::Watermark {
+                    agent,
+                    overview: true,
+                    watermark,
+                })
+            }
+        }
+    }
+
+    fn status_data(&mut self, agent: &StreamPath, data: &wire::SessionData) -> Result<()> {
+        self.admit_agent(agent)?;
+        let mut after = data
+            .after
+            .clone()
+            .ok_or_else(|| Error::Invalid("status cursor missing".into()))?;
+        if after.next == 0 || data.durable > data.accepted || after.next > data.accepted {
+            return Err(Error::Invalid("invalid status watermarks".into()));
+        }
+        let mut value = match &data.item {
+            Some(wire::session_data::Item::LatestValue(value)) => value.clone(),
+            _ => return Err(Error::Invalid("status received a non-value frame".into())),
+        };
+        let previous = self.agents.get(agent).map(|a| &a.status);
+        let old = previous.and_then(|s| s.values.get(&value.key));
+        if old.is_some_and(|old| {
+            old.after.next > after.next
+                || (old.after.next == after.next && old.after.opaque != after.opaque)
+        }) {
+            return Err(Error::Conflict("status key cursor regressed".into()));
+        }
+        if old.is_some_and(|old| old.after == after && old.value != value) {
+            return Err(Error::Conflict(
+                "one status cut contains conflicting values".into(),
+            ));
+        }
+        let size = |value: &wire::SessionLatestValue, cursor: &wire::SessionCursor| {
+            (value.key.len() as u64)
+                .checked_add(value.value.len() as u64)
+                .and_then(|size| size.checked_add(cursor.opaque.len() as u64))
+        };
+        let retained =
+            size(&value, &after).ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
+        let bytes = self
+            .overview_bytes
+            .checked_sub(
+                old.and_then(|old| size(&old.value, &old.after))
+                    .unwrap_or(0),
+            )
+            .and_then(|bytes| bytes.checked_add(retained))
+            .ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
+        let count = self
+            .overview_values
+            .checked_add(usize::from(old.is_none()))
+            .ok_or_else(|| Error::Invalid("status count overflow".into()))?;
+        if bytes > self.limits.overview_bytes || count > self.limits.overview_values {
+            return Err(Error::Invalid("status view bound reached".into()));
+        }
+        // A protobuf Bytes slice may pin a much larger transport allocation.
+        // Compact once into one exact buffer, accounting key, body and cursor.
+        let length = usize::try_from(retained)
+            .map_err(|_| Error::Invalid("status bytes overflow".into()))?;
+        let key_end = value.key.len();
+        let value_end = key_end + value.value.len();
+        let mut compact = Vec::with_capacity(length);
+        compact.extend_from_slice(&value.key);
+        compact.extend_from_slice(&value.value);
+        compact.extend_from_slice(&after.opaque);
+        let compact = Bytes::from(compact.into_boxed_slice());
+        value.key = compact.slice(..key_end);
+        value.value = compact.slice(key_end..value_end);
+        after.opaque = compact.slice(value_end..);
+        let status = &mut self.agents.entry(agent.clone()).or_default().status;
+        if status
+            .after
+            .as_ref()
+            .is_none_or(|old| old.next <= after.next)
+        {
+            status.after = Some(after.clone());
+        }
+        status.watermarks.accepted = status.watermarks.accepted.max(data.accepted);
+        status.watermarks.durable = status.watermarks.durable.max(data.durable);
+        let key = value.key.clone();
+        // BTreeMap::insert preserves its existing key. That key may share the
+        // old compact payload, so retire it before publishing the replacement.
+        status.values.remove(&key);
+        status.values.insert(key, StatusValue { after, value });
+        self.overview_bytes = bytes;
+        self.overview_values = count;
+        Ok(())
+    }
+}
+
+impl serde::Serialize for ClientViews {
     fn serialize<S: serde::Serializer>(
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut result = serializer.serialize_struct("ClientViews", 6)?;
+        let mut result = serializer.serialize_struct("ClientViews", 2)?;
         result.serialize_field("goals", &super::goal_view::Goals(self))?;
         result.serialize_field("models", &super::model_view::Models(self))?;
-        result.serialize_field("transcripts", &self.transcripts)?;
-        result.serialize_field("tools", &self.tools)?;
-        result.serialize_field("tasks", &self.tasks)?;
-        result.serialize_field("usage", &self.usage)?;
         result.end()
     }
-}
-
-pub(super) fn authority_key(authority: &wire::Authority) -> String {
-    let kind = wire::AggregateKind::try_from(authority.kind)
-        .map_or("AGGREGATE_KIND_UNSPECIFIED", |kind| kind.as_str_name());
-    format!("{kind}:{}", authority.id)
-}
-
-impl ClientViews {
-    pub(super) fn apply(
-        &mut self,
-        authority: &wire::Authority,
-        operation_id: &str,
-        payload: EventPayload,
-        content: Option<MessageContent>,
-    ) {
-        let key = authority_key(authority);
-        match payload {
-            EventPayload::LifecycleTransitioned { to, reason, .. } => {
-                let view = self.tasks.entry(key).or_insert(TaskView {
-                    status: to,
-                    lifecycle_operation_id: None,
-                    reason: None,
-                    parent: None,
-                });
-                view.status = to;
-                view.lifecycle_operation_id = Some(operation_id.to_owned());
-                view.reason = reason;
-            }
-            EventPayload::ConversationMessageAppended { message } => {
-                let transcript = self.transcripts.entry(key.clone()).or_default();
-                if message.kind == crate::conversation::MessageKind::Assistant
-                    && transcript.streaming_turn.is_some_and(|turn| {
-                        crate::conversation::assistant_message_id(turn) == message.id
-                    })
-                {
-                    transcript.streaming_text.clear();
-                    transcript.reasoning.clear();
-                    transcript.streaming_turn = None;
-                }
-                if let Some(call_id) = &message.tool_call_id {
-                    let tool = self
-                        .tools
-                        .entry(key)
-                        .or_default()
-                        .entry(call_id.clone())
-                        .or_default();
-                    if message.kind == crate::conversation::MessageKind::ToolCall {
-                        if let Some(MessageContent::Call { name, arguments }) = content {
-                            tool_call(tool, name, arguments);
-                        }
-                        tool.call = Some(*message.clone());
-                    } else {
-                        if let Some(MessageContent::Output(output)) = content {
-                            tool.output = output;
-                        }
-                        tool.result = Some(*message.clone());
-                    }
-                }
-                transcript.messages.push(*message);
-            }
-            EventPayload::ForkPublished { seed } => {
-                let child = self
-                    .tasks
-                    .entry(authority_key(&encode_authority(&seed.child)))
-                    .or_insert(TaskView {
-                        status: LifecycleState::Pending,
-                        lifecycle_operation_id: None,
-                        reason: None,
-                        parent: None,
-                    });
-                child.parent = Some(seed.parent);
-            }
-            _ => {}
-        }
-    }
-
-    /// Adds a model stream event to the same state that committed replay updates.
-    pub fn model_event(
-        &mut self,
-        authority: &wire::Authority,
-        turn: crate::OperationId,
-        event: ModelEvent,
-    ) -> Result<()> {
-        if turn.into_bytes() == [0; 16] {
-            return Err(crate::Error::Invalid(
-                "streaming turn identity is nil".into(),
-            ));
-        }
-        let key = authority_key(authority);
-        if matches!(
-            &event,
-            ModelEvent::Content { .. } | ModelEvent::Reasoning { .. }
-        ) {
-            let transcript = self.transcripts.entry(key.clone()).or_default();
-            if transcript.streaming_turn != Some(turn) {
-                let message_id = crate::conversation::assistant_message_id(turn);
-                if transcript.messages.iter().rev().any(|message| {
-                    message.kind == crate::conversation::MessageKind::Assistant
-                        && message.id == message_id
-                }) {
-                    return Ok(());
-                }
-                transcript.streaming_text.clear();
-                transcript.reasoning.clear();
-                transcript.streaming_turn = Some(turn);
-            }
-        }
-        match event {
-            ModelEvent::Content { delta } => self
-                .transcripts
-                .entry(key)
-                .or_default()
-                .streaming_text
-                .push_str(&delta),
-            ModelEvent::Reasoning { delta } => self
-                .transcripts
-                .entry(key)
-                .or_default()
-                .reasoning
-                .push_str(&delta),
-            ModelEvent::ToolCall(crate::model::ToolCall {
-                call_id,
-                name,
-                arguments,
-                ..
-            }) => {
-                let tool = self
-                    .tools
-                    .entry(key)
-                    .or_default()
-                    .entry(call_id)
-                    .or_default();
-                if tool.call.is_none() {
-                    tool_call(tool, name, arguments);
-                }
-            }
-            ModelEvent::ReasoningBlock { .. } => {}
-            ModelEvent::Completed { metadata } => {
-                let message = crate::conversation::assistant_message_id(turn);
-                if self.transcripts.get(&key).is_some_and(|transcript| {
-                    transcript
-                        .messages
-                        .iter()
-                        .rev()
-                        .any(|item| item.id == message)
-                }) {
-                    return Ok(());
-                }
-                let mut usage = self.usage_state.get(&key).cloned().unwrap_or_default();
-                let total = usage.complete(message, metadata)?;
-                self.set_usage(authority, usage, total);
-            }
-        }
-        Ok(())
-    }
-
-    /// Appends output without requiring a renderer to maintain a second tool registry.
-    pub fn tool_output(&mut self, authority: &wire::Authority, call_id: &str, delta: &str) {
-        let tool = self
-            .tools
-            .entry(authority_key(authority))
-            .or_default()
-            .entry(call_id.to_owned())
-            .or_default();
-        if tool.result.is_some() {
-            return;
-        }
-        if let ToolResultContent::Parts { parts } = &mut tool.output {
-            if let Some(ModelDataPart::Text { text }) = parts.last_mut() {
-                text.push_str(delta);
-            } else {
-                parts.push(ModelDataPart::Text {
-                    text: delta.to_owned(),
-                });
-            }
-        }
-    }
-
-    pub(super) fn prepare_usage<'a>(
-        &self,
-        authority: &wire::Authority,
-        messages: impl Iterator<Item = &'a (EventPayload, Option<MessageContent>)>,
-    ) -> Result<Option<(Usage, serde_json::Value)>> {
-        let key = authority_key(authority);
-        let mut next = None;
-        for (payload, content) in messages {
-            if let (
-                EventPayload::ConversationMessageAppended { message },
-                Some(MessageContent::Usage(metadata)),
-            ) = (payload, content)
-            {
-                let usage = next
-                    .get_or_insert_with(|| self.usage_state.get(&key).cloned().unwrap_or_default());
-                usage.commit(message.id, metadata.clone())?;
-            }
-        }
-        next.map(|usage| {
-            let total = usage.total()?;
-            Ok((usage, total))
-        })
-        .transpose()
-    }
-
-    pub(super) fn set_usage(
-        &mut self,
-        authority: &wire::Authority,
-        usage: Usage,
-        total: serde_json::Value,
-    ) {
-        let key = authority_key(authority);
-        self.usage_state.insert(key.clone(), usage);
-        self.usage.insert(key, total);
-    }
-}
-
-pub(super) fn payload(event: &wire::EventEnvelope) -> Result<EventPayload> {
-    decode_event_payload(&event.event_type, &event.canonical_payload_json, &mut None)
-        .map(|(payload, _)| payload)
 }

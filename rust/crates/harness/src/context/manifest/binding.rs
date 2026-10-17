@@ -121,9 +121,9 @@ impl ContextManifest {
             io.allocation_attempt(bytes)?;
         }
         let metadata = BTreeMap::from([(key, reference)]);
-        for source in manifest.sources {
+        for source in &manifest.sources {
             reader
-                .verify(&source, limits.file_bytes, content_io)?
+                .verify(source, limits.file_bytes, content_io)?
                 .await?;
         }
         let context = Context {
@@ -132,6 +132,12 @@ impl ContextManifest {
             current_input_index: None,
         };
         validate_projected_context(&context, limits, io)?;
-        Ok((tools, Arc::new(ManifestStage { context })))
+        Ok((
+            tools,
+            Arc::new(ManifestStage {
+                context,
+                sources: manifest.sources,
+            }),
+        ))
     }
 }

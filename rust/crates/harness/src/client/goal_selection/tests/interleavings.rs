@@ -52,8 +52,7 @@ fn check_interleavings(
     cap: u32,
 ) -> (usize, usize) {
     let (identity, _) = views
-        .queries
-        .iter()
+        .selections()
         .find(|(_, view)| view.query() == &Query::File(FileKey::Goal))
         .unwrap();
     let view = views.goal_view(identity.0, identity.1).unwrap();
@@ -61,8 +60,8 @@ fn check_interleavings(
         matches!(view.goal, GoalFileView::Present { goal } if goal.status == GoalStatus::Blocked);
     let rendered = rows(view.clone());
     let retained = views
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &Query::File(FileKey::RequestHead))
         .unwrap()
         .progress()
@@ -134,7 +133,7 @@ proptest! {
         cap in prop_oneof![Just(2u32), 1u32..=u32::MAX], fraction in any::<u32>(),
     ) {
         futures::executor::block_on(async {
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let _follow = views.select_goal_view(&Source::goal("objective"), &Source::head(0), 4096).await.unwrap();
             let blocked = format!("---\nstatus: blocked\nreason: Maximum goal continuations reached (limit {cap}).\n---\nobjective");
             let mut unrelated = publication(&Source::goal(&blocked), Query::File(FileKey::Goal), 4);
@@ -166,8 +165,8 @@ fn repeated_interleavings(
 ) -> usize {
     use sha2::{Digest as _, Sha256};
     let selected = views
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &Query::File(FileKey::Goal))
         .unwrap();
     let cursor = selected.cursor();
@@ -200,11 +199,14 @@ fn repeated_interleavings(
         // Broken hash matching accepts either blocked publication as the same
         // acknowledgement. These bytes and hashes are identical; their IDs differ.
         let observed = selected.files().get(&FileKey::Goal).unwrap();
-        assert_eq!(Sha256::digest(&observed.bytes), Sha256::digest(repeated));
+        assert_eq!(
+            Sha256::digest(&observed.segments[0]),
+            Sha256::digest(repeated)
+        );
         let mut hash_only = view;
         hash_only.progress = views
-            .queries
-            .values()
+            .selections()
+            .map(|(_, files)| files)
             .find(|view| view.query() == &Query::File(FileKey::RequestHead))
             .unwrap()
             .progress();
@@ -242,7 +244,7 @@ proptest! {
     fn identical_blocked_text_requires_its_own_publication(old in prop_oneof![Just(0u32), 0u32..u32::MAX]) {
         futures::executor::block_on(async {
             let blocked = "---\nstatus: blocked\nreason: waiting\n---\nobjective";
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let _follow = views.select_goal_view(&Source::goal(blocked).published(10), &Source::head(old).acknowledging(10), 4096).await.unwrap();
             let goal = [
                 publication(&Source::goal("objective").published(11), Query::File(FileKey::Goal), 2),

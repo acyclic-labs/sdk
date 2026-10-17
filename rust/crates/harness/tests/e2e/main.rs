@@ -30,6 +30,8 @@ mod swarm;
 mod swarm_case;
 mod swarm_provider;
 mod swarm_publish;
+#[path = "../support/swarm_session.rs"]
+mod swarm_runtime;
 mod swarm_scaling;
 mod swarm_tests;
 mod swarm_views;

@@ -1,6 +1,8 @@
+#[path = "../../harness/tests/support/client_views.rs"]
+mod client_views_fixture;
 use acyclic_harness::{
     AgentId, Result,
-    client::{ClientViews, GoalFileView},
+    client::GoalFileView,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     goal::{GOAL_METADATA_HEADROOM, GoalState, GoalStatus, GoalView},
     resources::ProviderRef,
@@ -73,7 +75,7 @@ pub fn check(data: &[u8]) -> Result<()> {
         durable: 1,
         commit: [2; 32],
     };
-    let mut views = ClientViews::default();
+    let mut views = client_views_fixture::file_views();
     views.query_snapshot(
         query,
         Snapshot {

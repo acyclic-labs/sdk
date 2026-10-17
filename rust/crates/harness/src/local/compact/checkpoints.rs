@@ -341,7 +341,7 @@ impl LocalHarness {
         String::from_utf8(bytes.as_ref().to_vec()).map_err(storage)
     }
 
-    pub(super) async fn publish_checkpoint(
+    pub(in crate::local) async fn publish_checkpoint(
         &self,
         operation: OperationId,
         target: TaskId,

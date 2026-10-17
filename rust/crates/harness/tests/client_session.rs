@@ -19,6 +19,10 @@ use std::sync::{
 mod client_command;
 use client_command::{command, owner};
 
+#[path = "support/client_views.rs"]
+mod view_fixture;
+use view_fixture::file_views;
+
 fn session() -> ClientSession<MemoryClientState> {
     let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
     session
@@ -49,9 +53,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
     let initial = volume.snapshot(&Query::Plans, 2).await.unwrap();
     let identity = (initial.cursor.volume, initial.cursor.query);
     let mut generation = initial.generation;
-    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
-        .await
-        .unwrap();
+    let mut client = file_views();
     let reader = CompositeContentVerifier::new(Vec::new(), None).unwrap();
     let CommandResolution::Select { query } = CommandCatalog::builtins()
         .unwrap()
@@ -79,8 +81,8 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         let cursor = change.cursor.clone();
         let payload = file.bytes.as_ptr();
         assert!(client.query_change(change).unwrap());
-        let view = &client.session().views().queries[&identity];
-        assert_eq!(view.files()[&file.key].bytes.as_ptr(), payload);
+        let view = client.selection(&identity).unwrap();
+        assert_eq!(view.files()[&file.key].segments[0].as_ptr(), payload);
         assert_eq!(
             view.plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
@@ -95,7 +97,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
                 })
                 .unwrap()
         );
-        let before = client.session().views().clone();
+        let before = client.clone();
         for mutation in [
             "gap",
             "epoch",
@@ -130,7 +132,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
                 _ => unreachable!(),
             }
             assert!(client.query_change(invalid).is_err(), "{mutation}");
-            assert_eq!(client.session().views(), &before, "{mutation}");
+            assert_eq!(&client, &before, "{mutation}");
         }
     }
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
@@ -163,16 +165,14 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
             ));
         }
         let change = volume_changes.next().await.unwrap().unwrap();
-        let mut updates =
-            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
-        let before = client.session().views().clone();
-        let result = client.next_update(&mut updates).await;
+        let before = client.clone();
+        let result = client.query_change(change);
         if path == "plans/second.md" {
             assert!(result.unwrap());
-            assert_eq!(client.session().views().queries[&identity].files().len(), 2);
+            assert_eq!(client.selection(&identity).unwrap().files().len(), 2);
         } else {
             assert!(result.is_err());
-            assert_eq!(client.session().views(), &before);
+            assert_eq!(&client, &before);
         }
     }
     assert!(
@@ -197,9 +197,7 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
     let source = storage
         .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
         .unwrap();
-    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
-        .await
-        .unwrap();
+    let mut client = file_views();
     let CommandResolution::Select { query } = CommandCatalog::builtins()
         .unwrap()
         .resolve("/plan", storage.content_reader(), 128)
@@ -212,7 +210,11 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
         .select_file_view(query, &source, 2, 128)
         .await
         .unwrap();
-    let identity = *client.session().views().queries.keys().next().unwrap();
+    let identity = *client
+        .selections()
+        .map(|(identity, _)| identity)
+        .next()
+        .unwrap();
     for text in ["- [ ] Build", "* [~] Build", "1. [x] Build"] {
         storage
             .stage(
@@ -229,11 +231,9 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
             .unwrap()
             .unwrap()
             .unwrap();
-        let mut updates =
-            futures::stream::iter([Ok(acyclic_harness::client::ViewUpdate::File(change))]);
-        assert!(client.next_update(&mut updates).await.unwrap());
+        assert!(client.query_change(change).unwrap());
         assert_eq!(
-            client.session().views().queries[&identity].plan_lines(),
+            client.selection(&identity).unwrap().plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
         );
     }
@@ -301,18 +301,15 @@ fn replay_recovers_projection_and_cursor_and_deduplicates() {
     original
         .receive(frame(delivery(0, LifecycleState::Completed)))
         .unwrap();
-    let views = original.views().clone();
+    let revision = original.replay_revision(&owner());
     let mut recovered = ClientSession::open(original.into_store()).unwrap();
-    assert_eq!(recovered.views(), &Default::default());
+    assert_eq!(recovered.replay_revision(&owner()), 0);
     recovered
         .receive(frame(delivery(0, LifecycleState::Completed)))
         .unwrap();
-    assert_eq!(recovered.views(), &views);
+    assert_eq!(recovered.replay_revision(&owner()), revision);
     assert_eq!(recovered.resume().cursors[0].revision, 1);
-    assert_eq!(
-        recovered.views().tasks["AGGREGATE_KIND_TASK:task"].status,
-        LifecycleState::Completed
-    );
+    assert_eq!(recovered.replay_request().cursors[0].revision, 1);
 }
 
 #[test]
@@ -339,7 +336,7 @@ fn invalid_deliveries_never_advance_or_publish() {
         assert!(session.receive(frame(case)).is_err());
     }
     assert_eq!(session.resume().cursors[0].revision, 0);
-    assert!(session.views().tasks.is_empty());
+    assert_eq!(session.replay_revision(&owner()), 0);
     assert_eq!(session.into_store().load().unwrap().len(), 1);
 }
 
@@ -381,7 +378,7 @@ fn storage_failure_precedes_publication_and_acknowledgement() {
             .receive(frame(delivery(0, LifecycleState::Completed)))
             .is_err()
     );
-    assert!(session.views().tasks.is_empty());
+    assert_eq!(session.replay_revision(&owner()), 0);
     assert_eq!(session.resume().cursors[0].revision, 0);
     fail.store(false, Ordering::Relaxed);
     session
@@ -781,85 +778,6 @@ fn canonical_jsonl_golden_frames() {
     assert!(jsonl::parse_client_frame("{} {}").is_err());
 }
 
-#[test]
-fn streaming_views_share_tool_identity_and_keep_provider_usage() {
-    use acyclic_harness::{client::ClientViews, model::ModelEvent};
-    let mut views = ClientViews::default();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Content {
-                delta: "hel".into(),
-            },
-        )
-        .unwrap();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Content { delta: "lo".into() },
-        )
-        .unwrap();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Reasoning {
-                delta: "thinking".into(),
-            },
-        )
-        .unwrap();
-    views.tool_output(&owner(), "call", "first\n");
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                "call".into(),
-                "bash".into(),
-                serde_json::json!({"command":"pwd"}),
-            )),
-        )
-        .unwrap();
-    views.tool_output(&owner(), "call", "second\n");
-    let usage = serde_json::json!({"input_tokens":12,"output_tokens":2});
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Completed {
-                metadata: usage.clone(),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        views.transcripts["AGGREGATE_KIND_TASK:task"].streaming_text,
-        "hello"
-    );
-    assert_eq!(
-        views.transcripts["AGGREGATE_KIND_TASK:task"].reasoning,
-        "thinking"
-    );
-    assert_eq!(
-        views.tools["AGGREGATE_KIND_TASK:task"]["call"].output,
-        tool_text("first\nsecond\n")
-    );
-    assert_eq!(views.tools["AGGREGATE_KIND_TASK:task"]["call"].name, "bash");
-    assert_eq!(views.usage["AGGREGATE_KIND_TASK:task"], usage);
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Completed { metadata: usage },
-        )
-        .unwrap();
-    assert_eq!(
-        views.usage["AGGREGATE_KIND_TASK:task"],
-        serde_json::json!({"input_tokens":24,"output_tokens":4})
-    );
-}
-
 #[path = "client_session_headless.rs"]
 mod headless;
 
@@ -874,12 +792,6 @@ mod lifecycle;
 
 #[path = "client_session_review.rs"]
 mod review;
-
-fn tool_text(text: &str) -> acyclic_harness::model::ToolResultContent {
-    acyclic_harness::model::ToolResultContent::Parts {
-        parts: vec![acyclic_harness::model::ModelDataPart::Text { text: text.into() }],
-    }
-}
 
 #[path = "support/client_files.rs"]
 #[cfg(feature = "filesystem")]

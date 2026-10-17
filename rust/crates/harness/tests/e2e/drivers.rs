@@ -64,7 +64,10 @@ impl Driver for super::local_case::LocalCase {
 impl Driver for super::swarm_case::SwarmCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        super::swarm::run(case).await
+        // Each renderer cache belongs to one event loop. Keep scenarios parallel
+        // without requiring a UI's Rc handle to cross executor threads.
+        tokio::task::spawn_blocking(move || futures::executor::block_on(super::swarm::run(case)))
+            .await?
     }
 }
 
