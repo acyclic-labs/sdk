@@ -90,24 +90,33 @@ proptest! {
         use acyclic_test_support::differential::observe;
         for count in [n,2*n] {
             for native in [false,true] {
-                let ((output, receipt), trace): (_,Vec<u64>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
+                let ((output, receipt), trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     let measured = crate::test_support::accounted::accounted(native,32*1024*1024,false,|io| {
                         deduplicate_reads(&mut messages,Some(io)).unwrap();
                     }).unwrap();
                     (messages,measured.1)
                 }));
-                let steps:u64 = trace.iter().sum();
+                let steps:u64 = trace.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum();
                 prop_assert_eq!(steps,144*count as u64-28);
                 prop_assert!(receipt.items_examined >= steps);
                 // Independent baseline constructs the expected projection, never
                 // calling the candidate decoder or sharing its retained state.
-                let mut baseline = fixture(count);
-                for message in baseline.iter_mut().skip(2).step_by(2) {
-                    let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Json{value},.. }) = &mut message.content else { unreachable!() };
-                    *value = Value::String("Read completed; instructions already included from AGENTS.md for .".to_owned()+".");
-                }
+                let (baseline, baseline_trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| {
+                    use sha2::Digest;
+                    for exchange in messages[1..].chunks_exact_mut(2) {
+                        let ModelContent::Part(ModelContentPart::ToolCall(call))=&exchange[0].content else { unreachable!() };
+                        let input:crate::tool::files::ReadFileInput=serde_json::from_value(call.arguments.clone()).unwrap();
+                        let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Json{value:Value::String(body)},.. })=&mut exchange[1].content else { unreachable!() };
+                        let hash:[u8;32]=sha2::Sha256::digest(body.as_bytes()).into();
+                        assert_eq!(hash,*input.file.descriptor().sha256());
+                        acyclic_test_support::differential::record(("verify",body.len() as u64));
+                        *body="Read completed; instructions already included from AGENTS.md for ..".into();
+                    }
+                    messages
+                });
+                prop_assert_eq!(trace.iter().filter(|(name,_)|*name!="instruction-step").copied().collect::<Vec<_>>(),baseline_trace);
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
-                let (_, broken): (_,Vec<u64>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
+                let (_, broken): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     // Deliberately restore a whole-history visit before each result.
                     for result in (2..messages.len()).step_by(2) {
                         for part in messages[..result].iter().flat_map(|m|m.content.parts()) {
@@ -117,8 +126,8 @@ proptest! {
                     }
                     deduplicate_reads(&mut messages,None).unwrap();
                 }));
-                prop_assert_eq!(broken.iter().sum::<u64>(), steps + (count*(count+1)) as u64);
-                prop_assert_ne!(broken.iter().sum::<u64>(),144*count as u64-28);
+                prop_assert_eq!(broken.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum::<u64>(), steps + (count*(count+1)) as u64);
+                prop_assert_ne!(broken.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum::<u64>(),144*count as u64-28);
             }
         }
     }
@@ -152,6 +161,7 @@ fn radix_storage_has_one_funded_allocation_with_redundant_storage_control() {
     for extra in [false, true] {
         let measured =
             crate::test_support::accounted::accounted(true, 8 * 1024 * 1024, false, |io| {
+                let initial = io.receipt().allocation_operations;
                 with_history_io(Some(io), |work| {
                     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                     let mut index = super::instruction_index::Index::new(256, &mut quota)?;
@@ -168,9 +178,10 @@ fn radix_storage_has_one_funded_allocation_with_redundant_storage_control() {
                     Ok::<_, Error>(())
                 })
                 .unwrap();
+                io.receipt().allocation_operations - initial
             })
             .unwrap();
-        assert_eq!(measured.1.allocation_operations, 1 + u64::from(extra));
+        assert_eq!(measured.0, 1 + u64::from(extra));
         assert_eq!(
             measured.5,
             acyclic_fs::NativeMaterializationWork::accounting_state_bytes()

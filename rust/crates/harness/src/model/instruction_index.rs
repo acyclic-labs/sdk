@@ -141,7 +141,7 @@ pub(super) fn step(io: Option<&PreparationIo>, items: u64) -> Result<()> {
     #[cfg(all(test, feature = "test-support"))]
     TRACE_STEPS.with(|active| {
         if active.get() {
-            acyclic_test_support::differential::record(items);
+            acyclic_test_support::differential::record(("instruction-step", items));
         }
     });
     Ok(())
