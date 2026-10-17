@@ -190,3 +190,54 @@ proptest::proptest! {
         proptest::prop_assert_eq!(restored, content);
     }
 }
+
+#[path = "../../harness-fuzz/support/workspace_media.rs"]
+mod workspace_media;
+
+proptest::proptest! {
+    // Classification preserves the full UTF-8 body, and codec round-trips preserve
+    // the immutable descriptor. Invalid tails and NUL anywhere remain binary.
+    #[test]
+    fn workspace_media_matches_full_byte_and_unicode_roundtrips(
+        bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..4096),
+        chars in proptest::collection::vec(proptest::prelude::any::<char>(), 0..256),
+    ) {
+        workspace_media::exercise(&bytes);
+        workspace_media::exercise(chars.into_iter().collect::<String>().as_bytes());
+    }
+}
+
+#[test]
+fn media_oracle_checks_text_binary_and_invalid_tail_seeds() {
+    for seed in [
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/utf8-workspace").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/binary-workspace").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/invalid-utf8-tail").as_slice(),
+    ] {
+        workspace_media::exercise(seed);
+    }
+}
+
+#[test]
+fn old_binary_default_fails_and_shrinks_the_same_media_property() {
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestError, TestRunner};
+    let mut runner = TestRunner::new(Config {
+        failure_persistence: None,
+        ..Config::default()
+    });
+    let result = runner.run(&"[a-z]{1,32}", |text| {
+        prop_assert!(workspace_media::matches(
+            text.as_bytes(),
+            "application/octet-stream"
+        ));
+        Ok(())
+    });
+    assert!(matches!(result, Err(TestError::Fail(_, text)) if text == "a"));
+}
+
+#[test]
+fn binary_as_text_mutant_fails_the_same_media_property() {
+    assert!(!workspace_media::matches(b"\0binary", "text/plain"));
+    assert!(!workspace_media::matches(b"bad\xff", "text/plain"));
+}

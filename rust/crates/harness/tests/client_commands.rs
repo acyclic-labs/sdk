@@ -49,6 +49,9 @@ use client_files::Fixture;
 
 #[path = "client_mention_attachments.rs"]
 mod attachments;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_mention_provider.rs"]
+mod mention_provider;
 
 impl Fixture {
     async fn catalog(
