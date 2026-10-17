@@ -4,6 +4,8 @@ use crate::{Error, Result, task_volume::FileValue};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
+mod display;
+
 #[derive(Deserialize)]
 struct Outcome<'a> {
     sequence: u64,
@@ -16,11 +18,6 @@ struct Outcome<'a> {
     completed: bool,
     #[serde(default)]
     output_omitted: bool,
-}
-#[derive(Deserialize)]
-struct Text {
-    #[serde(default)]
-    text: Option<String>,
 }
 
 fn settled(outcome: &Outcome<'_>) -> Result<HeadlessOutcome> {
@@ -70,8 +67,8 @@ pub(super) fn text(file: &FileValue) -> Option<(u64, String)> {
     if settled(&outcome).ok()? != HeadlessOutcome::Completed {
         return None;
     }
-    let text: Text = serde_json::from_str(outcome.ok?.get()).ok()?;
-    Some((outcome.sequence, text.text?))
+    let ok: serde_json::Value = serde_json::from_str(outcome.ok?.get()).ok()?;
+    Some((outcome.sequence, display::display(&ok)?.into_owned()))
 }
 
 /// Disposable incremental fold of the retained session archive.
@@ -120,11 +117,7 @@ impl Projection {
         // changes rebuild with the same single forward pass, never nth(back).
         for record in files.output_since(self.after) {
             let (sequence, value) = record?;
-            if let Some(text) = value
-                .get("ok")
-                .and_then(|value| value.get("text"))
-                .and_then(serde_json::Value::as_str)
-            {
+            if let Some(text) = value.get("ok").and_then(display::display) {
                 self.segments.push(std::sync::Arc::from(text));
             }
             self.after = sequence;

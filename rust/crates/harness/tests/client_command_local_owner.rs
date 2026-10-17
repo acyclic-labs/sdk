@@ -509,7 +509,8 @@ async fn confirmed_delete_keeps_its_target_and_clear_cancels_conversations() -> 
 }
 
 #[tokio::test]
-async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch() -> Result<()> {
+async fn search_and_fetch_use_their_own_registered_executors_without_model_dispatch() -> Result<()>
+{
     use acyclic_harness::tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
     };
@@ -521,11 +522,10 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
             context: Option<acyclic_harness::runtime::ToolContext>,
         ) -> acyclic_stream::BoxProviderFuture<'a, Result<ToolResult>> {
             Box::pin(async move {
-                assert_eq!(invocation.name, "web_search");
                 assert!(context.is_some(), "web command bypassed task executor");
                 context.as_ref().unwrap().task().owned_task_binding(None)?;
                 Ok(ToolResult {
-                    value: invocation.arguments,
+                    value: json!({"tool": invocation.name, "arguments": invocation.arguments}),
                 })
             })
         }
@@ -538,15 +538,15 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
         }
     }
     let schema = json!({"type":"object"});
-    let web = Tool {
+    let web = |name: &str| Tool {
         hook_names: &[],
         definition: ToolDefinition {
-            name: "web_search".into(),
+            name: name.into(),
             revision: "1".into(),
             description: "Registered web executor".into(),
             input_schema: schema.clone(),
             output_schema: schema.clone(),
-            projection_schema: acyclic_harness::tool::json_projection_schema(schema),
+            projection_schema: acyclic_harness::tool::json_projection_schema(schema.clone()),
         },
         executor: Arc::new(Web),
         projection: Arc::new(JsonToolProjection),
@@ -555,17 +555,19 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
     let provider = provider([]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     let local = LocalHarness::open(
-        crate::client_local::config(directory.path(), (model, provider.clone()))?.tool(web),
+        crate::client_local::config(directory.path(), (model, provider.clone()))?
+            .tool(web("web_search"))
+            .tool(web("url_fetch")),
     )
     .await?;
     let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
     assert_eq!(
         send(&local, &mut client, "/search needle").await?,
-        json!({"query":"needle"})
+        json!({"tool":"web_search","arguments":{"query":"needle"}})
     );
     assert_eq!(
         send(&local, &mut client, "/fetch https://example.test/page").await?,
-        json!({"url":"https://example.test/page"})
+        json!({"tool":"url_fetch","arguments":{"url":"https://example.test/page"}})
     );
     assert!(provider.requests().is_empty());
     Ok(())

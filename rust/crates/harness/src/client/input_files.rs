@@ -77,10 +77,13 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 .as_object_mut()
                 .ok_or_else(|| Error::Invalid("layout must be an object".into()))?;
             if object.remove("open_view").is_none() {
-                // TODO(#495): route the remaining empty-input escape ladder to the owner.
-                return Err(Error::Unsupported(
-                    "This action is unavailable in this session".into(),
-                ));
+                // Escape ladder after the prompt widget's own steps: interrupt a
+                // running turn, otherwise only dismiss feedback (cleared below).
+                // TODO(#495): resume a stopped agent and enter message selection.
+                if files.active_task().is_some() {
+                    files.cancel_active().await?;
+                }
+                return Ok(());
             }
             object.remove("view_input");
             object.remove("view_request");

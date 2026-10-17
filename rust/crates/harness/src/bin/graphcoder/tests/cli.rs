@@ -31,13 +31,32 @@ async fn execute(
     operation: OperationId,
     mode: Mode,
 ) -> Vec<u8> {
+    let output = spawn(workspace, catalog, settings, operation, mode, "hello").await;
+    assert!(
+        output.status.success(),
+        "exit {:?}\n{}\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+async fn spawn(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+    mode: Mode,
+    prompt: &str,
+) -> std::process::Output {
     let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
         format!(
             "{}\n",
-            serde_json::to_string(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+            serde_json::to_string(&prepare_local_prompt(operation, prompt).unwrap()).unwrap()
         )
         .into_bytes()
     } else {
@@ -71,9 +90,9 @@ async fn execute(
     } else if jsonl {
         command.args(["--input-format", "jsonl"]);
     } else {
-        command.args(["-p", "hello"]);
+        command.args(["-p", prompt]);
     }
-    let output = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::initialize_native_io_services().unwrap();
         acyclic_native_runtime::ProcessTree::spawn(&mut command)
             .unwrap()
@@ -99,15 +118,7 @@ async fn execute(
             })
     })
     .await
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "exit {:?}\n{}\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output.stdout
+    .unwrap()
 }
 
 async fn scenario(mode: Mode) {
@@ -241,4 +252,148 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+/// Headless `-p` resolves input through the TUI's catalog: plain text is a
+/// prompt, direct tools run, and any other slash input fails without chat.
+#[tokio::test]
+async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
+    headless_input(Mode::Prompt).await;
+}
+
+/// Prepared JSONL requests skip the catalog, so slash input sent that way is
+/// chat; the never-chat check must catch it.
+#[tokio::test]
+#[should_panic(expected = "slash input reached the model")]
+async fn uncataloged_slash_input_is_detected_negative_control() {
+    headless_input(Mode::Jsonl).await;
+}
+
+/// Runs each kind of headless input through `mode`. The checked property, first:
+/// slash input that is not a direct tool fails and never reaches the model.
+async fn headless_input(mode: Mode) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app = Router::new()
+        .route(
+            "/count",
+            post(|| async { Json(json!({"input_tokens":64})) }),
+        )
+        .route(
+            "/responses",
+            post(move |Json(body): Json<Value>| {
+                let requests = requests.clone();
+                async move {
+                    requests.send(body["input"].to_string()).unwrap();
+                    ([("content-type", "text/event-stream")], ANSWER)
+                }
+            }),
+        );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    let catalog = directory.path().join("catalog.json");
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+    }})).unwrap()).unwrap();
+    let run = |prompt: &'static str| {
+        let (workspace, catalog, settings) = (workspace.clone(), catalog.clone(), settings.clone());
+        async move {
+            spawn(
+                &workspace,
+                &catalog,
+                &settings,
+                OperationId::new(),
+                mode,
+                prompt,
+            )
+            .await
+        }
+    };
+    let results = |output: &std::process::Output| -> Vec<Value> {
+        std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .flat_map(|line| {
+                let change: Change = serde_json::from_str(line).unwrap();
+                change.file.into_iter().chain(change.files)
+            })
+            .filter(|file| {
+                matches!(
+                    file.key,
+                    FileKey::Session {
+                        file: TaskFile::ExecutionResult(_),
+                        ..
+                    }
+                )
+            })
+            .map(|file| serde_json::from_slice(&file.bytes).unwrap())
+            .collect()
+    };
+
+    // Unknown commands and renderer-only selections fail with no model call.
+    for (prompt, message) in [
+        (
+            "/definitely-unknown",
+            "Unknown command: /definitely-unknown",
+        ),
+        ("/help", "no headless form"),
+    ] {
+        let output = run(prompt).await;
+        assert!(
+            observed.try_recv().is_err(),
+            "slash input reached the model: {prompt}"
+        );
+        assert!(!output.status.success(), "{prompt}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{prompt}: {stderr}");
+    }
+
+    // Plain text is a prompt.
+    let output = run("plain words LPPROMPT").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body = observed.try_recv().unwrap();
+    assert!(body.contains("plain words LPPROMPT"), "{body}");
+
+    // A direct tool runs without a model turn and reports its output.
+    let output = run("/shell echo LPSHELL").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let shell = results(&output);
+    assert_eq!(shell.len(), 1);
+    assert!(
+        shell[0]["ok"]["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("LPSHELL")
+    );
+
+    assert!(
+        observed.try_recv().is_err(),
+        "the direct tool reached the model"
+    );
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }

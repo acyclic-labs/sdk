@@ -25,6 +25,45 @@ pub async fn disconnect_local(local: Arc<LocalHarness>) -> Result<()> {
     Ok(())
 }
 
+/// Resolve one headless input exactly as the TUI catalog would: plain text is a
+/// prompt, slash input is a command or an error, never chat. Selections,
+/// confirmations and renderer-only requests have no headless form.
+pub async fn local_input(
+    local: &LocalHarness,
+    operation: OperationId,
+    input: &str,
+) -> Result<crate::task_volume::FileValue> {
+    use super::{CommandRequest, CommandResolution};
+    let reader = local.client_reader()?;
+    // TODO(tui-parity): include project prompts once the local owner
+    // publishes its checkout's `.claude/commands` as input files.
+    let catalog = super::CommandCatalog::capture(
+        reader.as_ref(),
+        &[],
+        &[],
+        crate::context::ContextDiscoveryLimits::default(),
+    )
+    .await?;
+    let resolution = catalog
+        .resolve(
+            input,
+            reader.as_ref(),
+            super::local_headless::MAXIMUM_BYTES as u64,
+        )
+        .await?;
+    match &resolution {
+        CommandResolution::Select { .. }
+        | CommandResolution::Confirm { .. }
+        | CommandResolution::Sdk { .. }
+        | CommandResolution::Submit {
+            request: CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+        } => Err(crate::Error::Unsupported(
+            "this command has no headless form; run it in the terminal UI".into(),
+        )),
+        _ => super::local_headless::prepare_local_resolution(operation, &resolution),
+    }
+}
+
 /// Stages an immutable request for the client outbox, without admitting it.
 pub async fn local_prompt(
     _local: &LocalHarness,
