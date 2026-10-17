@@ -156,25 +156,8 @@ impl<T> Future for NativeCompletion<T> {
             return Poll::Ready(result);
         }
         #[cfg(feature = "test-support")]
-        {
-            if this.test_completion.is_none()
-                && crate::testing::Context::current().is_some()
-                && let Some(job) = this.pending.take()
-            {
-                this.test_completion = Some(crate::testing::submit(job, this.pool));
-            }
-            if let Some(waiting) = &mut this.test_completion {
-                match Pin::new(waiting).poll(context) {
-                    Poll::Pending => return Poll::Pending,
-                    Poll::Ready(Ok(Ok(()))) => this.test_completion = None,
-                    Poll::Ready(Ok(Err(error))) => return Poll::Ready(Err(error)),
-                    Poll::Ready(Err(_)) => {
-                        return Poll::Ready(Err(io::Error::other(
-                            "controlled native owner failed",
-                        )));
-                    }
-                }
-            }
+        if let Some(early) = this.poll_test_completion(context) {
+            return early;
         }
         if std::ptr::eq(this.pool, &BLOCKING_WORKERS)
             && inline_blocking_allowed()
@@ -213,15 +196,7 @@ impl<T> Future for NativeCompletion<T> {
             let charge = state.take_charge();
             drop(state);
             drop((waker, charge));
-            drop(this.pending.take());
-            if let Some(waiter) = this.waiter.take()
-                && let Ok(workers) = workers(this.pool, true)
-            {
-                remove_capacity_waiter(workers, Some(waiter));
-            }
-            drop(this.predecessor.take());
-            drop(this.completion.take());
-            std::panic::resume_unwind(payload);
+            this.resume_panic(payload);
         }
         let result = state.poll_result(context.waker());
         // The observer retires the state's charge when it takes the result:
@@ -232,6 +207,46 @@ impl<T> Future for NativeCompletion<T> {
         drop(state);
         drop(charge);
         result
+    }
+}
+
+impl<T> NativeCompletion<T> {
+    /// Releases this owner's queue, fence and capacity custody, then
+    /// rethrows the operation's panic on the observing thread.
+    fn resume_panic(&mut self, payload: Box<dyn std::any::Any + Send>) -> ! {
+        drop(self.pending.take());
+        if let Some(waiter) = self.waiter.take()
+            && let Ok(workers) = workers(self.pool, true)
+        {
+            remove_capacity_waiter(workers, Some(waiter));
+        }
+        drop(self.predecessor.take());
+        drop(self.completion.take());
+        std::panic::resume_unwind(payload);
+    }
+
+    /// Routes a scoped test submission through its controlled owner; `Some`
+    /// is an early return from `poll`.
+    #[cfg(feature = "test-support")]
+    fn poll_test_completion(&mut self, context: &mut Context<'_>) -> Option<Poll<io::Result<T>>> {
+        if self.test_completion.is_none()
+            && let Some(scope) = crate::testing::Context::current()
+            && let Some(job) = self.pending.take()
+        {
+            self.test_completion = Some(crate::testing::submit(&scope, job, self.pool));
+        }
+        let waiting = self.test_completion.as_mut()?;
+        match Pin::new(waiting).poll(context) {
+            Poll::Pending => Some(Poll::Pending),
+            Poll::Ready(Ok(Ok(()))) => {
+                self.test_completion = None;
+                None
+            }
+            Poll::Ready(Ok(Err(error))) => Some(Poll::Ready(Err(error))),
+            Poll::Ready(Err(_)) => Some(Poll::Ready(Err(io::Error::other(
+                "controlled native owner failed",
+            )))),
+        }
     }
 }
 

@@ -38,13 +38,17 @@ proptest! {
     // A definitive unsupported result is probed exactly once per owner, for
     // every supported denial code and any nonempty bounded request sequence.
     #[test]
-    fn unsupported_selection_is_sticky(index in 0usize..4, requests in 1usize..16) {
-        prop_assert_eq!(probe_count(UNSUPPORTED[index], requests, false).unwrap(), 1);
+    fn unsupported_selection_is_sticky(
+        code in proptest::sample::select(UNSUPPORTED.to_vec()),
+        requests in 1usize..16,
+    ) {
+        prop_assert_eq!(probe_count(code, requests, false).unwrap(), 1);
     }
 
     #[test]
-    fn operational_probe_errors_keep_their_exact_cause(index in 0usize..5) {
-        let code = [libc::EIO, libc::EMFILE, libc::ENOMEM, libc::EINVAL, libc::EBADF][index];
+    fn operational_probe_errors_keep_their_exact_cause(
+        code in proptest::sample::select(vec![libc::EIO, libc::EMFILE, libc::ENOMEM, libc::EINVAL, libc::EBADF]),
+    ) {
         let mut owner = Owner::new();
         let error = owner.select_with(|| Err(io::Error::from_raw_os_error(code))).unwrap_err();
         prop_assert_eq!(error.raw_os_error(), Some(code));
@@ -55,7 +59,7 @@ proptest! {
     // The independent expected file is derived only from generated input.
     #[test]
     fn unsupported_ring_uses_real_positional_io(
-        index in 0usize..4,
+        code in proptest::sample::select(UNSUPPORTED.to_vec()),
         offset in 0usize..32,
         bytes in proptest::collection::vec(any::<u8>(), 1..128),
     ) {
@@ -66,7 +70,7 @@ proptest! {
             _allocation: None,
         });
         let mut owner = Owner::new();
-        prop_assert_eq!(owner.select_with(|| Err(io::Error::from_raw_os_error(UNSUPPORTED[index]))).unwrap(), Selected::Positional);
+        prop_assert_eq!(owner.select_with(|| Err(io::Error::from_raw_os_error(code))).unwrap(), Selected::Positional);
         owner.write_batch(&file, vec![OwnedWrite {
             offset: offset as u64, bytes: Bytes::copy_from_slice(&bytes),
         }]).unwrap();
@@ -74,7 +78,7 @@ proptest! {
         expected.extend_from_slice(&bytes);
         prop_assert_eq!(&std::fs::read(directory.path().join("fallback")).unwrap(), &expected);
         let actual = owner.read_batch(&file, &[OwnedRead { offset: 0, length: expected.len() + 8 }]).unwrap();
-        prop_assert_eq!(&actual[0][..], &expected);
+        prop_assert_eq!(actual, vec![Bytes::from(expected)]);
         prop_assert!(matches!(owner.backend, Backend::Positional));
     }
 }

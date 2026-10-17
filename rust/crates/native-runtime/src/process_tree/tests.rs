@@ -84,10 +84,11 @@ fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -
         .find(|entry| entry.data.starts_with(b"PATH="))
         .ok_or(std::io::ErrorKind::NotFound)?;
     let end = path.data.len() - 1;
-    if end <= 5 {
-        return Err(std::io::ErrorKind::InvalidInput.into());
-    }
-    path.data[5..end].fill(b'x');
+    path.data
+        .get_mut(5..end)
+        .filter(|value| !value.is_empty())
+        .ok_or(std::io::ErrorKind::InvalidInput)?
+        .fill(b'x');
     let mut custody = None;
     ProcessTree::spawn_closed_prepared(
         c"/bin/sh",
@@ -716,10 +717,10 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
                 |chunk| {
                     match chunk {
                         crate::ProcessOutput::Stdout(bytes) => {
-                            observed_stdout.extend_from_slice(bytes)
+                            observed_stdout.extend_from_slice(bytes);
                         }
                         crate::ProcessOutput::Stderr(bytes) => {
-                            observed_stderr.extend_from_slice(bytes)
+                            observed_stderr.extend_from_slice(bytes);
                         }
                     }
                     if !acknowledged

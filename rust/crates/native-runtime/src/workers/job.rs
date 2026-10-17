@@ -153,21 +153,34 @@ impl NativeJob {
                 _allocation,
                 health,
                 completion,
-            } => {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
-                drop((_allocation, meter, health));
-                if let Err(panic) = result {
-                    terminal.stage_panic(panic);
-                }
-                if let Some(completion) = completion {
-                    completion.complete();
-                }
-                let waker = terminal.publish();
-                // The observer may take the result before this reference
-                // drops, so the state's charge travels with the observer.
-                crate::sync::release(terminal);
-                waker
-            }
+            } => run_task(
+                operation,
+                terminal,
+                completion,
+                (_allocation, meter, health),
+            ),
         }
     }
+}
+
+/// Runs a host task and drops its charges before publishing its terminal.
+fn run_task(
+    operation: Box<dyn FnOnce() + Send>,
+    terminal: Arc<dyn TaskTerminal>,
+    completion: Option<Arc<OperationFence>>,
+    charges: impl Sized,
+) -> Option<Waker> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
+    drop(charges);
+    if let Err(panic) = result {
+        terminal.stage_panic(panic);
+    }
+    if let Some(completion) = completion {
+        completion.complete();
+    }
+    let waker = terminal.publish();
+    // The observer may take the result before this reference
+    // drops, so the state's charge travels with the observer.
+    crate::sync::release(terminal);
+    waker
 }
