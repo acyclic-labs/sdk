@@ -19,8 +19,10 @@ loom::lazy_static! {
 
 pub(in crate::native_mount) struct Kernel {
     fixture: std::sync::OnceLock<Fixture>,
+    pinned: std::sync::OnceLock<(RawFd, u64)>,
     state: Mutex<State>,
     locks: Mutex<HashMap<(u64, u64), RawFd>>,
+    gate: Mutex<bool>,
     unlocked: Condvar,
     acquired: Condvar,
 }
@@ -30,9 +32,7 @@ struct Fixture {
     early_release: bool,
 }
 struct State {
-    fence_acquired: bool,
     mount: Option<u64>,
-    pinned: HashMap<RawFd, u64>,
     helper_running: bool,
     live_detaches: usize,
     mount_before_exit: usize,
@@ -46,15 +46,15 @@ impl Kernel {
     fn new() -> Self {
         Self {
             fixture: std::sync::OnceLock::new(),
+            pinned: std::sync::OnceLock::new(),
             state: Mutex::new(State {
-                fence_acquired: false,
                 mount: Some(0),
-                pinned: HashMap::new(),
                 helper_running: false,
                 live_detaches: 0,
                 mount_before_exit: 0,
             }),
             locks: Mutex::new(HashMap::new()),
+            gate: Mutex::new(false),
             unlocked: Condvar::new(),
             acquired: Condvar::new(),
         }
@@ -84,9 +84,12 @@ impl Kernel {
     }
 
     pub(in crate::native_mount) fn stat(&self, fd: RawFd, flags: AtFlags) -> io::Result<Statx> {
-        let mut state = self.state.lock().unwrap();
-        let current = state.mount.unwrap_or(2);
-        let mount = *state.pinned.entry(fd).or_insert(current);
+        // The probe descriptor is opened before actors start. Its held mount
+        // identity never follows namespace remounts, exactly like O_PATH.
+        let (pinned_fd, mount) = *self
+            .pinned
+            .get_or_init(|| (fd, self.state.lock().unwrap().mount.unwrap_or(2)));
+        assert_eq!(pinned_fd, fd, "the model has one held probe descriptor");
         if flags.contains(AtFlags::STATX_FORCE_SYNC) && mount == 0 {
             return Err(io::Error::from_raw_os_error(libc::ENOTCONN));
         }
@@ -125,16 +128,16 @@ impl Kernel {
         if path.file_name().is_some_and(|name| {
             name.as_encoded_bytes().len() == super::super::NATIVE_FENCE_NAME_BYTES
         }) {
-            self.state.lock().unwrap().fence_acquired = true;
+            *self.gate.lock().unwrap() = true;
             self.acquired.notify_all();
         }
         Ok(())
     }
 
     pub(super) fn wait_for_recovery_fence(&self) {
-        let mut state = self.state.lock().unwrap();
-        while !state.fence_acquired {
-            state = self.acquired.wait(state).unwrap();
+        let mut ready = self.gate.lock().unwrap();
+        while !*ready {
+            ready = self.acquired.wait(ready).unwrap();
         }
     }
 
