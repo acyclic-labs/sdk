@@ -9,8 +9,62 @@ use futures::TryStreamExt as _;
 
 /// The stream's per-event byte limit used by the fuzz target.
 const MAXIMUM: usize = 1 << 20;
-/// Upper bound on a single call's retained bookkeeping besides its arguments.
-const BOOKKEEPING: usize = 256;
+const PROVIDER_ID: &str = "call";
+const NAME: &str = "echo";
+const RETAINED_LIMIT: &str = "retained model state exceeds aggregate byte or item limit";
+
+fn chat_event(text: &str) -> serde_json::Value {
+    serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+        "index":0,"id":PROVIDER_ID,"function":{"name":NAME,"arguments":text}
+    }]}}]})
+}
+
+fn canonical_id(dispatch: ModelDispatch) -> String {
+    format!(
+        "{}:{:08x}:{:016x}",
+        dispatch.operation_id, dispatch.step, 0u64
+    )
+}
+
+fn binding_bytes() -> usize {
+    // Three map entries and their keys; the provider ID moves from the call
+    // into the binding, so its storage is already counted before finish.
+    ["provider_call", "provider", "id"]
+        .iter()
+        .map(|key| std::mem::size_of::<(String, serde_json::Value)>() + key.len())
+        .sum::<usize>()
+        + "chat".len()
+}
+
+fn retained_bytes(text: &str, dispatch: ModelDispatch) -> usize {
+    // Independent inventory of this one-delta fixture, not Budget::used or
+    // production's charge helpers. Appended buffers start with capacity eight;
+    // the provider ID is installed directly, with exactly its input length.
+    std::mem::size_of::<(u64, stream::Call)>()
+        + PROVIDER_ID.len()
+        + NAME.len().max(8)
+        + if text.is_empty() {
+            0
+        } else {
+            text.len().max(8)
+        }
+        + canonical_id(dispatch).len()
+        + binding_bytes()
+}
+
+fn retained_violation(
+    events: &acyclic_harness::Result<Vec<ModelEvent>>,
+    retained: usize,
+    maximum: usize,
+) -> Option<&'static str> {
+    let rejected =
+        matches!(events, Err(acyclic_harness::Error::Invalid(reason)) if reason == RETAINED_LIMIT);
+    match (retained > maximum, rejected) {
+        (true, false) => Some("missing retained-state rejection"),
+        (false, true) => Some("unexpected retained-state rejection"),
+        _ => None,
+    }
+}
 
 /// Tool-call arguments from raw bytes, through the real Chat stream. A call is
 /// emitted exactly when its arguments are a JSON object that the independent
@@ -19,18 +73,16 @@ const BOOKKEEPING: usize = 256;
 /// An event larger than the stream's limit fails with its typed limit error.
 pub fn assert_tool_arguments(input: &[u8]) {
     check(input, MAXIMUM);
+    // Compact byte seeds must also reach retained-state finalization limits,
+    // rather than requiring a megabyte-sized corpus entry to exercise them.
+    check(input, 1024);
 }
 
 pub(super) fn check(input: &[u8], maximum: usize) {
     let Ok(text) = std::str::from_utf8(input) else {
         return;
     };
-    let calls =
-        serde_json::json!([{"index":0,"id":"call","function":{"name":"echo","arguments":text}}]);
-    let event = format!(
-        "data: {}",
-        serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]})
-    );
+    let event = format!("data: {}", chat_event(text));
     let sse = format!("{event}\n\ndata: [DONE]\n\n");
     let body = Box::pin(futures::stream::iter([Ok(Bytes::from(sse))]));
     let dispatch = ModelDispatch {
@@ -41,10 +93,7 @@ pub(super) fn check(input: &[u8], maximum: usize) {
     let events: Result<Vec<_>, _> = futures::executor::block_on(
         stream::events(Adapter::Chat, body, maximum, dispatch).try_collect(),
     );
-    // Limits are typed rejections, never a rejected portable object. An event
-    // line over the limit fails at framing. Retained state is the argument
-    // text plus the call's bookkeeping (entry, id and name capacities, under
-    // `BOOKKEEPING` bytes), so it can fail only when the text nears the limit.
+    // Framing precedes parsing and finalization's retained-state admission.
     let limited = |reason: &str| matches!(&events, Err(acyclic_harness::Error::Invalid(actual)) if actual == reason);
     if event.len() > maximum {
         assert!(
@@ -53,13 +102,20 @@ pub(super) fn check(input: &[u8], maximum: usize) {
         );
         return;
     }
-    if limited("retained model state exceeds aggregate byte or item limit") {
-        assert!(
-            text.len() + BOOKKEEPING > maximum,
-            "retained state rejected {} argument bytes far below the {maximum} limit",
-            text.len()
-        );
+    let retained = retained_bytes(text, dispatch);
+    if limited(RETAINED_LIMIT) {
+        assert_eq!(retained_violation(&events, retained, maximum), None);
         return;
+    }
+    // Shallow values only, so serde's own recursion limit is never the cause.
+    let literal = crate::projection::arguments::literal(input)
+        .ok()
+        .filter(|value| depth(value) <= 64);
+    if literal
+        .as_ref()
+        .is_some_and(|value| value.is_object() && portable(value))
+    {
+        assert_eq!(retained_violation(&events, retained, maximum), None);
     }
     let emitted = events.ok().and_then(|events| {
         events.into_iter().find_map(|event| match event {
@@ -67,12 +123,14 @@ pub(super) fn check(input: &[u8], maximum: usize) {
             _ => None,
         })
     });
-    // Shallow values only, so serde's own recursion limit is never the cause.
-    let literal = crate::projection::arguments::literal(input)
-        .ok()
-        .filter(|value| depth(value) <= 64);
     match (emitted, literal) {
         (Some(call), literal) => {
+            assert_eq!(call.call_id, canonical_id(dispatch));
+            assert_eq!(call.name, NAME);
+            assert_eq!(
+                call.metadata,
+                serde_json::json!({"provider_call":{"provider":"chat","id":PROVIDER_ID}})
+            );
             assert!(
                 call.arguments.is_object() && portable(&call.arguments),
                 "the stream emitted arguments the recording rule rejects"
@@ -124,9 +182,22 @@ pub(crate) fn portable(value: &serde_json::Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{assert_tool_arguments, check, portable};
+    use super::*;
     use proptest::prelude::*;
     use serde_json::json;
+
+    fn finalize(
+        text: &str,
+        maximum: usize,
+        dispatch: ModelDispatch,
+    ) -> acyclic_harness::Result<Vec<ModelEvent>> {
+        let mut state = stream::State::new(maximum);
+        // These must both succeed: each boundary exercises finalization's
+        // additional identity/binding charge, not earlier parse admission.
+        stream::parse(&mut state, Adapter::Chat, &chat_event(text).to_string()).unwrap();
+        stream::parse(&mut state, Adapter::Chat, "[DONE]").unwrap();
+        stream::finish(state, Adapter::Chat, dispatch)
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
@@ -147,6 +218,58 @@ mod tests {
             let text = if wrapped { format!("[{object}]") } else { object };
             assert_tool_arguments(text.as_bytes());
         }
+
+        #[test]
+        fn finalization_admits_exactly_the_retained_byte_boundary(
+            padding in 1usize..1024, operation in any::<[u8;16]>(), step in any::<u32>(),
+        ) {
+            let dispatch = ModelDispatch {
+                operation_id: OperationId::from_bytes(operation), step, request_digest: [0;32],
+            };
+            let base = json!({"a":"x".repeat(padding)}).to_string();
+            let maximum = retained_bytes(&base, dispatch);
+            for size in [padding - 1, padding, padding + 1] {
+                let text = json!({"a":"x".repeat(size)}).to_string();
+                let required = maximum + size - padding;
+                prop_assert_eq!(retained_bytes(&text, dispatch), required);
+                let events = finalize(&text, maximum, dispatch);
+                prop_assert_eq!(retained_violation(&events, required, maximum), None);
+                prop_assert_eq!(events.is_ok(), size <= padding);
+                check(text.as_bytes(), maximum);
+            }
+        }
+    }
+
+    #[test]
+    fn negative_controls_detect_missing_finalization_charges_and_early_rejection() {
+        let text = json!({"a":"x".repeat(700)}).to_string();
+        let dispatch = ModelDispatch {
+            operation_id: OperationId::from_bytes([1; 16]),
+            step: 0,
+            request_digest: [0; 32],
+        };
+        let required = retained_bytes(&text, dispatch);
+        let rejected = finalize(&text, required - 1, dispatch);
+        assert_eq!(retained_violation(&rejected, required, required - 1), None);
+        // Both omissions reproduce the old oracle's false rejection diagnosis.
+        for omitted in [canonical_id(dispatch).len(), binding_bytes()] {
+            assert_eq!(
+                retained_violation(&rejected, required - omitted, required - 1),
+                Some("unexpected retained-state rejection"),
+            );
+        }
+        // Supplying excess budget through the real finish path simulates
+        // failing to charge finalization; lowering it simulates early denial.
+        let accepted = finalize(&text, required, dispatch);
+        assert_eq!(retained_violation(&accepted, required, required), None);
+        assert_eq!(
+            retained_violation(&accepted, required, required - 1),
+            Some("missing retained-state rejection"),
+        );
+        assert_eq!(
+            retained_violation(&rejected, required, required),
+            Some("unexpected retained-state rejection"),
+        );
     }
 
     // Greptile on #872: a portable object larger than the event limit is a
@@ -154,6 +277,13 @@ mod tests {
     #[test]
     fn arguments_beyond_the_event_limit_expect_the_limit_rejection() {
         let text = format!("{{\"a\":\"{}\"}}", "x".repeat(2 << 20));
+        assert_tool_arguments(text.as_bytes());
+    }
+
+    #[test]
+    fn under_event_limit_arguments_can_exhaust_finalization_storage() {
+        let text = json!({"a":"x".repeat(1_048_268)}).to_string();
+        assert!(format!("data: {}", chat_event(&text)).len() < MAXIMUM);
         assert_tool_arguments(text.as_bytes());
     }
 
@@ -169,10 +299,9 @@ mod tests {
             include_bytes!("../../fuzz/corpus/tool_arguments/duplicate-keys").as_slice(),
             include_bytes!("../../fuzz/corpus/tool_arguments/lone-surrogate").as_slice(),
             include_bytes!("../../fuzz/corpus/tool_arguments/over-event-limit").as_slice(),
+            include_bytes!("../../fuzz/corpus/tool_arguments/retained-finalization").as_slice(),
         ] {
             assert_tool_arguments(bytes);
-            // The same seeds against a small event limit take the limit path.
-            check(bytes, 1024);
         }
     }
 
