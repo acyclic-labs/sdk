@@ -20,7 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(parent) = std::path::Path::new(&output).parent() {
             std::fs::create_dir_all(parent)?;
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
-            std::fs::write(parent.join("timers.ts"), acyclic_actors::timers::typescript())?;
+            std::fs::write(
+                parent.join("timers.ts"),
+                acyclic_actors::timers::typescript(),
+            )?;
             std::fs::write(parent.join("guest.ts"), acyclic_actors::guest::typescript())?;
             <acyclic_actors::client::ErrorMetadata as ts_rs::TS>::export_all(
                 &ts_rs::Config::default().with_out_dir(parent),

@@ -116,6 +116,9 @@ fn negative_control_leaking_retired_bytes_fails_and_shrinks() {
     };
     // Every witness must fund a request, retire it, then have the leaked
     // bytes reject a request the reference admits; leaks need a retirement.
-    assert!(minimal.iter().any(Option::is_none), "witness must retire: {minimal:?}");
+    assert!(
+        minimal.iter().any(Option::is_none),
+        "witness must retire: {minimal:?}"
+    );
     assert!(minimal.len() <= 6, "did not shrink: {minimal:?}");
 }
