@@ -23,13 +23,12 @@ the packaged Rust/WASM bridge in browsers (or as the Node fallback). It accepts
 `ActorsService` descriptor. The semantic TypeScript declarations, canonical
 Protobuf input, Buf wire bindings, and typed facade are regenerated from Rust
 with `bun run generate:client`; there is no separately authored contract or
-hand-maintained operation list in the client. `HttpActorsClient`
-remains a compatibility alias while callers move to the platform-neutral name.
+hand-maintained operation list in the client.
 Actor invocation includes request and response headers.
 
 Native callers connecting to a private endpoint may additionally provide
-`caCertificate` as DER or PEM bytes. The option is carried to the Rust N-API
-TLS connector; browser calls continue to use the browser trust store.
+`caCertificate` as PEM bytes, which replace platform roots. The option is carried to the Rust N-API
+TLS connector; browser and WASM-fallback calls reject this option and use the browser trust store.
 
 `bun run build` rebuilds the WASM bridge before TypeScript declarations. The
 package tarball includes that bridge and the generated Protobuf artifacts; no

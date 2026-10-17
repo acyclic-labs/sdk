@@ -66,7 +66,7 @@ configuration. Pass `--project` explicitly before Acyclic may create project
 configuration. No `init` command or repository marker exists.
 
 Supported target names are `codex`, `claude-code`, `cursor`, `copilot`,
-`opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, and `pydantic-ai`.
+`opencode`, `vscode`, `claude-desktop`, `copilot-cloud`, `pydantic-ai`, and `pi`.
 `acyclic-plugin install --detected` installs detected local targets. Process
 confinement is certified only after that host/platform's escape suite passes;
 native-mount qualification alone does not make that claim. MCP-only and
@@ -123,7 +123,7 @@ clears the local session; sign in again rather than replaying a refresh token.
 
 `acyclic-plugin install pi [--project]` installs the initial Pi diagnostics extension.
 Pi owns its context, compaction and model retries. This source slice exposes
-`/acyclic-doctor`; recursive workspace execution and host qualification remain
+`/acyclic-doctor` and recursive-agent tools; host qualification remains
 pending. `acyclic-plugin uninstall pi` restores the owned settings and retains cached,
 pinned extension assets. Modified settings are preserved and reported for manual
 resolution. The current API target is Pi 1.1.0; see [Pi qualification](pi/README.md).

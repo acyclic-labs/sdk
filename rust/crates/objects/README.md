@@ -39,7 +39,7 @@ use acyclic_objects::GrpcObjects;
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let ca_pem = std::fs::read("trusted-ca.pem")?;
 let client = GrpcObjects::connect(
-    "https://objects.example", "account-token", Some(&ca_pem),
+    "https://objects.example", "account-token", Some(&ca_pem), None,
 ).await?;
 # let _ = client;
 # Ok(())
@@ -47,7 +47,7 @@ let client = GrpcObjects::connect(
 ```
 
 For endpoints requiring mutual TLS, use
-`GrpcObjects::connect_with_identity(endpoint, token, ca, certificate_pem, private_key_pem)`.
+`GrpcObjects::connect(endpoint, token, ca, Some((certificate_pem, private_key_pem)))`.
 The certificate argument is a PEM client chain; the key is its PEM private key.
 Both must be nonempty and at most 64 KiB. This preserves server verification,
 bearer authentication, message bounds and deadlines. The server still owns client
@@ -69,8 +69,7 @@ records logical state changes and exact retry receipts; immutable segments hold
 current bodies and staged multipart parts. Reopen validates live physical bodies,
 repairs only an incomplete final record, and preserves current keys and retry
 outcomes. An uncertain append makes subsequent reads and mutations unavailable
-until the owner closes and reopens the store. A v1 store is rejected without
-conversion or overwrite.
+until the owner closes and reopens the store.
 
 `collect_garbage` fences physical readers and mutations, authenticates every
 retained segment before deletion, and compacts the journal into bounded private
@@ -81,7 +80,7 @@ the old or new complete journal; uncertain replacement requires reopen.
 The v1 provider inlines bodies up to 64 KiB in authenticated journal records,
 groups native writes, and scans current state when constructing deltas. Native
 filesystem roots now compose this provider through the logical v1 adapter.
-Existing v1 roots fail closed; no old-data upgrade path is provided.
+Incompatible roots fail closed; no old-data upgrade path is provided.
 
 ## Current contract
 
