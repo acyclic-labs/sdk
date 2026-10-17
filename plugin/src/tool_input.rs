@@ -357,6 +357,20 @@ pub(crate) fn validate_shell_paths(command: &str, child: &Path) -> Result<(), St
     Ok(())
 }
 
+/// Whether `text` names `root` itself or a path below it. A longer sibling name
+/// that merely starts with `root` (`/work/app-docs` for `/work/app`) is not a
+/// reference to the checkout. Name characters after a match stay denied, so an
+/// ambiguous `/work/app.bak` still fails closed.
+fn mentions_root(text: &str, root: &str) -> bool {
+    if root.is_empty() || root.ends_with(['/', '\\']) {
+        return text.contains(root);
+    }
+    text.match_indices(root).any(|(start, matched)| {
+        !text[start + matched.len()..]
+            .starts_with(|next: char| next.is_alphanumeric() || matches!(next, '_' | '-' | '.'))
+    })
+}
+
 pub(crate) fn reject_original_root_references(
     value: &Value,
     key: Option<&str>,
@@ -365,9 +379,9 @@ pub(crate) fn reject_original_root_references(
     match value {
         Value::String(text) if !matches!(key, Some("workdir" | "cwd")) => {
             let contains = if cfg!(target_os = "windows") {
-                text.to_lowercase().contains(&root.to_lowercase())
+                mentions_root(&text.to_lowercase(), &root.to_lowercase())
             } else {
-                text.contains(root)
+                mentions_root(text, root)
             };
             if contains {
                 return Err(
