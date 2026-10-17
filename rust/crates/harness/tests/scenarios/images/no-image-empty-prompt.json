@@ -1,0 +1,3 @@
+{"prompt":"","input_files":[],"turns":[],"replay":false,"expect":{"text":null,"error":"user input is empty","result":null,
+  "request_count":0,"events":[],"requests":[],"request_files":[],"not_events":[{"kind":"model_started"}],"files":{"image.png":null}}
+  }

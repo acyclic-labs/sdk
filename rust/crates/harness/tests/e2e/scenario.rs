@@ -1,3 +1,5 @@
+use super::input_files::InputFile;
+
 use super::expectations::Expectations;
 use acyclic_harness::test_support::{ScriptedReconciliation, ScriptedTurn};
 use acyclic_harness::{
@@ -13,6 +15,10 @@ use std::{collections::BTreeMap, path::Path};
 pub struct Scenario {
     #[serde(default)]
     pub seed: BTreeMap<String, String>,
+    #[serde(default)]
+    pub input_files: Vec<InputFile>,
+    #[serde(default)]
+    pub after_capture: BTreeMap<String, String>,
     #[serde(default)]
     pub kind: Kind,
     pub prompt: Option<String>,
@@ -80,7 +86,13 @@ impl Scenario {
 
     pub(super) fn from_value(value: Value) -> Result<Self, String> {
         let forbidden = match value.get("kind").and_then(Value::as_str) {
-            Some("summary") => &["prompt", "max_steps", "discovery"][..],
+            Some("summary") => &[
+                "prompt",
+                "max_steps",
+                "discovery",
+                "input_files",
+                "after_capture",
+            ][..],
             _ => &["instruction"][..],
         };
         for key in forbidden {

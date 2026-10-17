@@ -3,6 +3,10 @@ mod composer;
 mod discovery;
 mod drivers;
 mod execution;
+mod file_bytes;
+mod input_files;
+mod input_files_tests;
+
 mod expectations;
 mod limits_tests;
 mod local_admission;
@@ -15,6 +19,8 @@ mod local_tool_files_check;
 mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
+mod matchers_properties;
+mod request_matchers_tests;
 mod notification_history;
 mod notifications;
 mod plan_query;
@@ -44,6 +50,7 @@ mod task_query_tests;
 use acyclic_harness::context::CompactionPolicy;
 use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
+use file_bytes::FileBytes;
 use scenario::Scenario;
 use std::{
     path::Path,
@@ -92,7 +99,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
             "files" => {
                 case.expect
                     .files
-                    .insert("missing.txt".into(), Some("wrong".into()));
+                    .insert("missing.txt".into(), Some(FileBytes::Text("wrong".into())));
             }
             "turns" => case
                 .turns
@@ -183,10 +190,10 @@ async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult
     for files in [
         vec![],
         vec![vec![], vec![]],
-        vec![vec![], vec!["partial-".into()]],
-        vec![vec![], vec!["restored".into()]],
-        vec![vec![], vec!["wrong".into()]],
-        vec![vec!["partial-restored".into()], vec![]],
+        vec![vec![], vec![FileBytes::Text("partial-".into())]],
+        vec![vec![], vec![FileBytes::Text("restored".into())]],
+        vec![vec![], vec![FileBytes::Text("wrong".into())]],
+        vec![vec![FileBytes::Text("partial-restored".into())], vec![]],
     ] {
         let mut case = Scenario::load(&root, &baseline)?;
         case.expect.request_files = Some(files);

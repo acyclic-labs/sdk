@@ -1,0 +1,2 @@
+{"limits":{"file_bytes":69},"turns":[],"replay":false,"expect":{"text":null,"error":"file exceeds harness limits","result":null,
+  "request_count":0,"events":[],"requests":[],"request_files":[],"not_events":[{"kind":"model_started"}]}}

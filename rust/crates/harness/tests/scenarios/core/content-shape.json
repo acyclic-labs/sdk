@@ -1,0 +1,6 @@
+{
+  "prompt":"Check the supplied context.", "turns":["done"],
+  "context":[{"role":"system","content":[{"kind":"text","text":"first"},{"kind":"text","text":"second"}]}],
+  "expect":{"text":"done","request_count":1,"requests":[{"messages":[{"role":"system",
+    "content":[{"kind":"text","text":"first"},{"kind":"text","text":"second"}]}]}]}
+}

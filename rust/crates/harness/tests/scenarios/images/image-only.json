@@ -1,0 +1,3 @@
+{"prompt":"","expect":{"requests":[{"tools":[],"messages":[{"role":"user","content":[{"kind":"file","file":{"path":"image.png",
+  "display_name":"image.png","descriptor":{"media_type":"image/png","byte_length":70}},"policy":{"native":{"intent":{"kind":"image",
+  "detail":"auto"},"maximum_bytes":70,"maximum_work":1}}}]}]}]}}

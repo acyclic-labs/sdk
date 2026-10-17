@@ -1,4 +1,4 @@
-use super::{TestResult, execution, matchers};
+use super::{TestResult, execution, file_bytes::FileBytes, matchers};
 use acyclic_harness::{
     OperationId,
     client::{CommandCatalog, CommandFileRoot, CommandResolution, CommandRoot, CommandScope},
@@ -52,7 +52,7 @@ struct Expectations {
     completions: Option<Vec<String>>,
     mention_files: Option<Vec<String>>,
     #[serde(default)]
-    files: BTreeMap<String, Option<String>>,
+    files: BTreeMap<String, Option<FileBytes>>,
     #[serde(default)]
     file_values: BTreeMap<String, Value>,
 }

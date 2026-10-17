@@ -1,3 +1,4 @@
+use super::file_bytes::FileBytes;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -17,9 +18,9 @@ pub struct Expectations {
     pub requests: Option<Vec<Value>>,
     #[serde(default)]
     pub not_requests: Vec<Value>,
-    pub request_files: Option<Vec<Vec<String>>>,
+    pub request_files: Option<Vec<Vec<FileBytes>>>,
     #[serde(default)]
-    pub files: BTreeMap<String, Option<String>>,
+    pub files: BTreeMap<String, Option<FileBytes>>,
 }
 
 impl Expectations {

@@ -198,7 +198,6 @@ bench = false
 [[bin]]
 name = "e2e_expectations"
 path = "fuzz_targets/e2e_expectations.rs"
-required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -318,6 +317,23 @@ bench = false
 name = "client_swarm_views"
 path = "fuzz_targets/client_swarm_views.rs"
 required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "input_files"
+path = "fuzz_targets/input_files.rs"
+required-features = ["runtime"]
+
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_matcher"
+path = "fuzz_targets/content_matcher.rs"
+
 test = false
 doc = false
 bench = false
