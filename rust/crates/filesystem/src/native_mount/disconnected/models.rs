@@ -27,10 +27,13 @@ fn scenario(
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let peer_kernel = kernel;
     let peer_destination = destination.to_path_buf();
-    let peer = loom::thread::spawn(move || match remount(&peer_destination, &peer_kernel) {
-        Ok(guard) => Some(guard),
-        Err(NativeMountError::DestinationBusy) => None,
-        Err(error) => panic!("{error}"),
+    let peer = loom::thread::spawn(move || {
+        peer_kernel.wait_for_recovery_fence();
+        match remount(&peer_destination, &peer_kernel) {
+            Ok(guard) => Some(guard),
+            Err(NativeMountError::DestinationBusy) => None,
+            Err(error) => panic!("{error}"),
+        }
     });
     match recover(&pinned) {
         Ok(_) | Err(NativeMountError::DestinationBusy) => {}
@@ -40,6 +43,22 @@ fn scenario(
     // returns, without adding a test-only coordination lock.
     drop(peer.join().unwrap());
     let _remounted = remount(destination, &kernel).unwrap();
+    kernel.assert_safe();
+}
+
+fn remount_first(destination: &Path, base: rustix::fs::Statx, helper_stat: rustix::fs::Stat) {
+    let kernel = kernel::Kernel::install(base, helper_stat, false);
+    let pinned = linux::Pinned::open(destination).unwrap().unwrap();
+    let mounted = remount(destination, kernel).unwrap();
+    assert!(matches!(
+        recover(&pinned),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    drop(mounted);
+    // Detection used the old disconnected descriptor. The real fenced recheck
+    // must preserve the new mount once its session releases the fence.
+    assert!(!recover(&pinned).unwrap());
+    kernel.wait_for_retirement();
     kernel.assert_safe();
 }
 
@@ -58,6 +77,11 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
     )
     .unwrap();
     let helper_stat = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
+    // Registry serialization admits exactly two acquisition orders. Check the
+    // remount-first order, then explore all syscall interleavings after the
+    // recovery-first acquisition, including real owner/worker retirement.
+    let contended_destination = destination.clone();
+    loom::model(move || remount_first(&contended_destination, base, helper_stat));
     let positive_destination = destination.clone();
     loom::model(move || scenario(&positive_destination, base, helper_stat, false));
     let error = std::panic::catch_unwind(move || {

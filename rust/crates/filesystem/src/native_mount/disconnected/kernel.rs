@@ -19,6 +19,7 @@ pub(in crate::native_mount) struct Kernel {
     state: Mutex<State>,
     locks: Mutex<HashMap<(u64, u64), RawFd>>,
     unlocked: Condvar,
+    acquired: Condvar,
 }
 struct Fixture {
     base: Statx,
@@ -26,6 +27,7 @@ struct Fixture {
     early_release: bool,
 }
 struct State {
+    fence_acquired: bool,
     mount: Option<u64>,
     pinned: HashMap<RawFd, u64>,
     helper_running: bool,
@@ -42,6 +44,7 @@ impl Kernel {
         Self {
             fixture: std::sync::OnceLock::new(),
             state: Mutex::new(State {
+                fence_acquired: false,
                 mount: Some(0),
                 pinned: HashMap::new(),
                 helper_running: false,
@@ -50,6 +53,7 @@ impl Kernel {
             }),
             locks: Mutex::new(HashMap::new()),
             unlocked: Condvar::new(),
+            acquired: Condvar::new(),
         }
     }
 
@@ -110,7 +114,32 @@ impl Kernel {
             return Err(io::Error::from_raw_os_error(libc::EWOULDBLOCK));
         }
         locks.insert(identity, file.as_raw_fd());
+        drop(locks);
+        // Start the competing opener at the successful fence syscall. Its
+        // opposite acquisition order is checked separately, avoiding schedules
+        // that differ only in unrelated constructor/accounting instructions.
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
+        if path.file_name().is_some_and(|name| {
+            name.as_encoded_bytes().len() == super::super::NATIVE_FENCE_NAME_BYTES
+        }) {
+            self.state.lock().unwrap().fence_acquired = true;
+            self.acquired.notify_all();
+        }
         Ok(())
+    }
+
+    pub(super) fn wait_for_recovery_fence(&self) {
+        let mut state = self.state.lock().unwrap();
+        while !state.fence_acquired {
+            state = self.acquired.wait(state).unwrap();
+        }
+    }
+
+    pub(super) fn wait_for_retirement(&self) {
+        let mut locks = self.locks.lock().unwrap();
+        while !locks.is_empty() {
+            locks = self.unlocked.wait(locks).unwrap();
+        }
     }
 
     pub(in crate::native_mount) fn unlock(&self, file: &File) {
