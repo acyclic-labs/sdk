@@ -11,9 +11,11 @@ mod state;
 
 /// Runtime-independent completion of an owned file or host operation.
 pub struct NativeCompletion<T> {
+    #[cfg(feature = "test-support")]
+    test_completion: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     pub(crate) pool: &'static LazyLock<io::Result<NativeWorkers>>,
     pub(crate) prepared_wake: Option<Arc<BlockingWaitWake>>,
-    pub(crate) state: Option<Arc<Mutex<CompletionState<T>>>>,
+    pub(crate) state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     pub(crate) ready: Option<io::Result<T>>,
     pub(crate) pending: Option<NativeJob>,
     pub(crate) waiter: Option<Arc<CapacityWaiter>>,
@@ -32,7 +34,7 @@ impl NativeCompletion<Vec<Bytes>> {
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
-        let state = Arc::new(Mutex::new(CompletionState::default()));
+        let state = Arc::new(CompletionMutex::new(CompletionState::default()));
         Self::pending(
             NativeJob::Read {
                 file,
@@ -53,10 +55,12 @@ impl NativeCompletion<Vec<Bytes>> {
 impl<T> NativeCompletion<T> {
     pub(crate) fn pending(
         job: NativeJob,
-        state: Arc<Mutex<CompletionState<T>>>,
+        state: Arc<CompletionMutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
         Self {
+            #[cfg(feature = "test-support")]
+            test_completion: None,
             pool,
             prepared_wake: None,
             state: Some(state),
@@ -70,6 +74,8 @@ impl<T> NativeCompletion<T> {
 
     pub(crate) fn ready(result: io::Result<T>) -> Self {
         Self {
+            #[cfg(feature = "test-support")]
+            test_completion: None,
             pool: &NATIVE_WORKERS,
             prepared_wake: None,
             state: None,
@@ -149,6 +155,27 @@ impl<T> Future for NativeCompletion<T> {
             }
             return Poll::Ready(result);
         }
+        #[cfg(feature = "test-support")]
+        {
+            if this.test_completion.is_none()
+                && crate::testing::Context::current().is_some()
+                && let Some(job) = this.pending.take()
+            {
+                this.test_completion = Some(crate::testing::submit(job, this.pool));
+            }
+            if let Some(waiting) = &mut this.test_completion {
+                match Pin::new(waiting).poll(context) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(Ok(()))) => this.test_completion = None,
+                    Poll::Ready(Ok(Err(error))) => return Poll::Ready(Err(error)),
+                    Poll::Ready(Err(_)) => {
+                        return Poll::Ready(Err(io::Error::other(
+                            "controlled native owner failed",
+                        )));
+                    }
+                }
+            }
+        }
         if std::ptr::eq(this.pool, &BLOCKING_WORKERS)
             && inline_blocking_allowed()
             && let Some(job) = this.pending.take()
@@ -201,6 +228,12 @@ impl<T> Future for NativeCompletion<T> {
 
 impl<T> Drop for NativeCompletion<T> {
     fn drop(&mut self) {
+        #[cfg(feature = "test-support")]
+        if self.test_completion.is_some() {
+            // The independently owned completion registered this waker. The
+            // cancelled caller must not clear its physical-terminal wake.
+            return;
+        }
         if self.pending.is_some()
             && let Some(completion) = &self.completion
         {

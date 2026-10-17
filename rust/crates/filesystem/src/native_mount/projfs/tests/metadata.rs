@@ -76,23 +76,31 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;
     let mount = workspace.mount(&first, manual_mount_options()).await?;
-    let projected = first.join("metadata.txt");
-    for _ in 0..3 {
-        assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+    // Nested paths retain the handle-opening validator and its callback guard.
+    std::fs::create_dir(first.join("nested"))?;
+    std::fs::write(first.join("nested/metadata.txt"), b"unchanged contents")?;
+    mount.sync().await?;
+    for relative in ["metadata.txt", "nested/metadata.txt"] {
+        let projected = first.join(relative);
+        for _ in 0..3 {
+            assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
+        }
+        client::run("readonly", &projected, || Ok(()))?;
     }
-    client::run("readonly", &projected, || Ok(()))?;
     mount.sync().await?;
     mount.unmount().await?;
 
     let second = root.path().join("second-mount");
     std::fs::create_dir(&second)?;
     let remount = workspace.mount(&second, manual_mount_options()).await?;
-    assert!(
-        std::fs::metadata(second.join("metadata.txt"))?
-            .permissions()
-            .readonly(),
-        "metadata-only edits must survive synchronization and remount"
-    );
+    for relative in ["metadata.txt", "nested/metadata.txt"] {
+        assert!(
+            std::fs::metadata(second.join(relative))?
+                .permissions()
+                .readonly(),
+            "metadata-only edits must survive synchronization and remount: {relative}"
+        );
+    }
     remount.unmount().await?;
     Ok(())
 }

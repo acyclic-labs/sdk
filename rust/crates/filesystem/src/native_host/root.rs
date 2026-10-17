@@ -79,6 +79,52 @@ impl HostRoot {
             }
         })
     }
+    #[cfg(feature = "native-watch")]
+    pub(crate) fn stat_source<W: SourceDemandReadWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<HostStat, DemandError> {
+        #[cfg(unix)]
+        return self.stat(path, work);
+        #[cfg(windows)]
+        {
+            if path.is_empty() || path == [46] {
+                return self.stat(path, work);
+            }
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                let volume =
+                    u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?;
+                let name = windows_open_name(leaf, work)?;
+                let fallback = |work: &mut W| {
+                    let file = open_windows_named(
+                        parent,
+                        &name,
+                        fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+                        nt::FILE_OPEN,
+                        nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                        work,
+                    )?;
+                    stat_windows_file(&file, volume, work)
+                };
+                // With two reads left, use the held-leaf route without a speculative query.
+                if name.Length == 0 || work.remaining()?.backend_read_operations == 2 {
+                    return fallback(work);
+                }
+                query_windows_stat(
+                    work,
+                    READ,
+                    || {
+                        let metadata = stat_windows_name(parent, &name, volume, true)?;
+                        // A name query need not enforce the synchronous-open right.
+                        Ok(metadata
+                            .filter(|stat| stat.raw.EffectiveAccess & fs::SYNCHRONIZE.0 != 0))
+                    },
+                    fallback,
+                )
+            })
+        }
+    }
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
@@ -202,6 +248,14 @@ impl HostRoot {
         path: &Path,
         work: &mut W,
     ) -> Result<File, DemandError> {
+        if path.as_os_str().is_empty() {
+            return open_unix(
+                self.directory.as_raw_fd(),
+                c".",
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                work,
+            );
+        }
         with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
             open_unix(
                 parent.as_raw_fd(),

@@ -1,0 +1,58 @@
+[package]
+name = "acyclic-native-journal-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "hooks", "mcp-http", "mcp-stdio", "mcp-oauth", "objects", "machines", "grpc", "terminal", "tui", "test-support", "model-checking"] }
+acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory", "local", "native-mount"] }
+acyclic-test-support = { path = "../../test-support" }
+libfuzzer-sys = "0.4"
+serde = "1"
+serde_json = "1"
+
+[[bin]]
+name = "native_intent"
+path = "fuzz_targets/native_intent.rs"
+test = false
+doc = false
+bench = false
+
+# Match the canonical native debug build instead of recompiling dependencies
+# with this standalone workspace's default optimization profile.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.blake3]
+opt-level = 3
+
+[[bin]]
+name = "bounded_json"
+path = "fuzz_targets/bounded_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_journal"
+path = "fuzz_targets/native_journal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_staging_selection"
+path = "fuzz_targets/native_staging_selection.rs"
+test = false
+doc = false
+bench = false

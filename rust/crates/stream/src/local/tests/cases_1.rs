@@ -4,7 +4,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     use tracing_subscriber::layer::SubscriberExt as _;
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    let visibility = provider.inner.visibility.write().await;
+    let publication = provider.inner.publication.write().await;
     let captured = acyclic_grpc_observability::tests::Capture::default();
     let future = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
@@ -40,7 +40,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     assert_eq!(captured.closed("acyclic.stream.read"), 1);
     assert_eq!(captured.closed("origin_parent"), 1);
     assert_eq!(other.closed("foreign_parent"), 0);
-    drop(visibility);
+    drop(publication);
     Ok(())
 }
 

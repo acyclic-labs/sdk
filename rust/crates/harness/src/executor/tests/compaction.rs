@@ -302,7 +302,7 @@ async fn malformed_provider_accounting_rejects_before_projection_or_model_public
 fn accounting_wire_rejects_unknown_negative_and_out_of_range_counts() -> Result<()> {
     let valid = json!({
         "capacity": {"context_tokens": 65_536, "output_tokens": 4_096},
-        "count": {"request_digest": vec![0_u8; 32], "fixed_tokens": 100, "message_tokens": [10]}
+        "count": {"request_digest": vec![0_u8; 32], "input_tokens": 110, "fixed_tokens": 100, "message_tokens": [10]}
     });
     assert!(serde_json::from_value::<ContextAccounting>(valid.clone()).is_ok());
     for path in ["capacity", "count"] {

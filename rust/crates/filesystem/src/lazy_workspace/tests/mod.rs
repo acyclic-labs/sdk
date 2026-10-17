@@ -40,6 +40,8 @@ struct SourceCounts {
     pages: AtomicUsize,
     ranges: AtomicUsize,
     cancel_range: AtomicBool,
+    // Zero keeps the fixture's original scalar; tests can simulate native unlink.
+    link_count: AtomicU64,
 }
 struct CountingSource {
     epoch: AtomicU64,
@@ -82,6 +84,10 @@ impl CountingSource {
         let versions = self.versions.lock().unwrap_or_else(|p| p.into_inner());
         let bytes = versions.get(&source.epoch)?;
         Some(SourceNode {
+            link_count: match self.counts.link_count.load(Ordering::Relaxed) {
+                0 => self.node.link_count,
+                count => Some(count),
+            },
             logical_bytes: Some(bytes.len() as u64),
             version: SourceVersion(*blake3::hash(bytes).as_bytes()),
             ..self.node
@@ -308,6 +314,7 @@ async fn native_source(
     )
 }
 mod exactify;
+mod latest;
 mod lookup;
 mod mount;
 mod recovery;

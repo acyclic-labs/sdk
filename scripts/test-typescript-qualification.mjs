@@ -79,15 +79,16 @@ test("consumer build refuses to overwrite an existing source receipt", () => {
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
-for (const mutation of ["source", "stale-dist"]) {
+for (const mutation of ["source", "baseline", "stale-dist"]) {
   test(`consumer build rejects ${mutation} before emitting a source receipt`, { skip: process.platform === "win32" }, () => {
     const stage = mkdtempSync(join(tmpdir(), "acyclic-build-receipt-boundary-"));
     try {
-      for (const directory of ["scripts", "release", "target", "typescript/packages/demo/src"]) mkdirSync(join(stage, directory), { recursive: true });
+      for (const directory of ["scripts", "release", "target", "typescript/packages/demo/src", "compatibility/native-families"]) mkdirSync(join(stage, directory), { recursive: true });
       cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "target/\ntypescript/packages/*/dist/\n");
       writeFileSync(join(stage, "typescript/packages/demo/src/index.ts"), "export const value = 1;\n");
+      writeFileSync(join(stage, "compatibility/native-families/demo.json"), "{}\n");
       const git = args => {
         const result = spawnSync("git", args, { cwd: stage, encoding: "utf8" });
         assert.equal(result.status, 0, result.stderr);
@@ -106,13 +107,14 @@ for (const mutation of ["source", "stale-dist"]) {
       const fakeBun = join(stage, "target/fake-bun");
       const action = mutation === "source"
         ? "printf '\\nexport const changed = true;\\n' >> typescript/packages/demo/src/index.ts"
+        : mutation === "baseline" ? "printf changed >> compatibility/native-families/demo.json\n" + outputs.map(path => `printf 'TSFILE: %s\\n' '${path}'`).join("\n")
         : outputs.map(path => `printf 'TSFILE: %s\\n' '${path}'`).join("\n");
       writeFileSync(fakeBun, `#!/bin/sh\ncase " $* " in *" --version "*) printf 'Version 7.0.2\\n';; *" -b "*)\n${action}\n;; esac\nexit 0\n`);
       chmodSync(fakeBun, 0o700);
       const receipt = join(stage, "target/BUILD.json");
       const result = spawnSync(process.execPath, [join(stage, "scripts/typescript-qualification.mjs"), "consumer", fakeBun, receipt], { encoding: "utf8" });
       assert.notEqual(result.status, 0);
-      assert.match(result.stderr, mutation === "source" ? /compiler source changed|compiler source is not a clean captured checkout/ : /dist inventory differs from files emitted/);
+      assert.match(result.stderr, mutation !== "stale-dist" ? /compiler source changed|compiler source is not a clean captured checkout/ : /dist inventory differs from files emitted/);
       assert.equal(existsSync(receipt), false);
     } finally { rmSync(stage, { recursive: true, force: true }); }
   });

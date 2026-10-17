@@ -1,3 +1,4 @@
+use super::task_query_case::TaskQueryCase;
 use super::{TestResult, composer::Composer, execution, notifications::Notifications, scenario};
 use serde_json::Value;
 
@@ -32,6 +33,48 @@ impl Driver for Notifications {
     }
 }
 
+impl Driver for super::plans::Plans {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        case.run().await
+    }
+}
+
+impl Driver for super::plan_query::PlanQuery {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        case.run().await
+    }
+}
+
+impl Driver for TaskQueryCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::task_queries::run(case).await
+    }
+}
+
+impl Driver for super::local_case::LocalCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::local_execution::run(case).await
+    }
+}
+
+impl Driver for super::swarm_case::SwarmCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::swarm::run(case).await
+    }
+}
+
+impl Driver for super::provider_case::ProviderCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::providers::run(case).await
+    }
+}
+
 pub(super) async fn run_execution(case: scenario::Scenario) -> TestResult {
     TaskDriver::execute(case).await
 }
@@ -41,11 +84,50 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         .as_object_mut()
         .ok_or("scenario must be an object")?
         .remove("driver");
+    // Keep each selected driver frame out of the shared dispatch frame. Otherwise
+    // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
-        None if driver.is_none() => run_execution(scenario::Scenario::from_value(value)?).await,
-        Some("executor") => run_execution(scenario::Scenario::from_value(value)?).await,
-        Some("composer") => Composer::execute(Composer::parse(value)?).await,
-        Some("notifications") => Notifications::execute(Notifications::parse(value)?).await,
+        None if driver.is_none() => {
+            Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
+        }
+        Some("executor") => Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await,
+        Some("composer") => Box::pin(Composer::execute(Composer::parse(value)?)).await,
+        Some("notifications") => {
+            Box::pin(Notifications::execute(Notifications::parse(value)?)).await
+        }
+        Some("task_query") => {
+            Box::pin(TaskQueryCase::execute(serde_json::from_value(value)?)).await
+        }
+        Some("provider") => {
+            Box::pin(super::provider_case::ProviderCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
+        }
+        Some("local") => {
+            Box::pin(super::local_case::LocalCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
+        }
+        Some("swarm") => {
+            Box::pin(super::swarm_case::SwarmCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
+        }
+        Some("plans") => {
+            Box::pin(super::plans::Plans::execute(super::plans::Plans::parse(
+                value,
+            )?))
+            .await
+        }
+        Some("plan-query") => {
+            Box::pin(super::plan_query::PlanQuery::execute(
+                super::plan_query::PlanQuery::parse(value)?,
+            ))
+            .await
+        }
         _ => Err("unknown scenario driver".into()),
     }
 }

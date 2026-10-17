@@ -36,6 +36,9 @@ pub struct GitCompatState {
     pub stash: Vec<GitTreeRef>,
     /// Durable sequencer transition prepared before filesystem side effects.
     pub pending: Option<GitPendingTransition>,
+    /// Native publication owed after reconciling this exact source generation.
+    /// Cleared only once the publication journal acknowledges the checkout.
+    pub checkout_reconciliation: Option<(OperationId, GitGenerationRef)>,
     /// Active first-parent bisection, if any.
     pub bisect: Option<GitBisectState>,
 }
@@ -66,6 +69,7 @@ impl GitCompatState {
             reflog: Vec::new(),
             stash: Vec::new(),
             pending: None,
+            checkout_reconciliation: None,
             bisect: None,
         }
     }
@@ -146,6 +150,8 @@ pub enum GitPendingMutation {
         source_head: Option<GitCommitId>,
         /// Source branch used in the generated commit message.
         source_branch: String,
+        /// Actual paths requiring text or manual resolution before continuation.
+        conflicts: Option<BTreeMap<String, Option<crate::FileId>>>,
         /// Whether resulting ancestry is rebased rather than merged.
         rebase: bool,
     },

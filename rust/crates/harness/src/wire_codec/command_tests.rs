@@ -99,7 +99,7 @@ fn command_decode_cost(observing: bool) -> Result<()> {
         for _ in 0..32 {
             let mut failure = None;
             let started = std::time::Instant::now();
-            let allocation = allocation_counter::measure(|| {
+            let allocation = acyclic_test_support::measure(|| {
                 for _ in 0..128 {
                     if label == "clone_only" {
                         std::hint::black_box(envelope.clone());

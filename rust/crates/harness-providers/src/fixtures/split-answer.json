@@ -1,0 +1,1 @@
+{"model":{"provider":"fixture","name":"model","revision":"1","options":{}},"messages":[{"role":"user","content":"question"},{"role":"assistant","content":[{"kind":"text","text":"¡"},{"kind":"text","text":"¡"}]},{"role":"user","content":"next"}],"tools":[],"max_output_tokens":64}

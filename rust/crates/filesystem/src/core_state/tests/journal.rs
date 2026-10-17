@@ -1,5 +1,65 @@
 use super::*;
 
+async fn native_write_count(image: Vec<u8>) -> u64 {
+    let directory = tempfile::tempdir().unwrap();
+    let work = crate::NativeMaterializationWork::new(
+        native::finite_budget(),
+        &crate::CancellationToken::new(),
+    )
+    .unwrap();
+    let operation = OperationId::new();
+    let mut journal = materialization_journal(operation);
+    journal.phase = crate::MaterializationPhase::Preparing;
+    journal
+        .plan
+        .edits
+        .push(crate::MaterializationEdit::Install {
+            path: "file".into(),
+            image,
+        });
+    journal.custody = Some(
+        work.claim(
+            crate::materializer::journal_owned_bytes(&journal).unwrap(),
+            0,
+            crate::WorkCounters::UNCHARGED,
+        )
+        .unwrap(),
+    );
+    let store = LocalCoreStateStore::new(directory.path()).materialization(work.clone());
+    work.state.lock().write_probe = Some(crate::demand::WriteProbe {
+        writes: 0,
+        stop_before: None,
+    });
+    let (stored, journal) =
+        MaterializationJournalStore::compare_and_swap(&store, operation, 0, journal)
+            .await
+            .unwrap();
+    assert!(stored);
+    let writes = work.state.lock().write_probe.take().unwrap().writes;
+    assert_eq!(
+        MaterializationJournalStore::load(&store, operation)
+            .await
+            .unwrap(),
+        Some(journal)
+    );
+    writes
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(4))]
+    // The wire value round-trips exactly; JSON token count never becomes an
+    // extra native write or crash boundary. All buffer capacity stays funded.
+    #[test]
+    fn native_journal_writes_are_independent_of_json_token_count(
+        image in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let before = runtime.block_on(native_write_count(Vec::new()));
+        let after = runtime.block_on(native_write_count(image));
+        proptest::prop_assert_eq!(before, after);
+    }
+}
+
 #[tokio::test]
 async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
     let directory = tempfile::tempdir().unwrap();
@@ -178,4 +238,61 @@ async fn accepted_materialization_completion_survives_cancellation_and_restart()
     assert_eq!(recovered.root_identity, root_identity);
     assert_eq!(recovered.work, prefix);
     assert_eq!(std::fs::read(effect).unwrap(), b"aftere");
+}
+
+#[derive(Default)]
+struct CountWrites {
+    writes: usize,
+    bytes: Vec<u8>,
+}
+impl Write for CountWrites {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.writes += 1;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+fn one_record_write(writes: usize) -> proptest::test_runner::TestCaseResult {
+    proptest::prop_assert_eq!(writes, 1, "JSON tokens escaped record buffering");
+    Ok(())
+}
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // A record smaller than the fixed buffer makes one backend write, with
+    // byte-for-byte canonical JSON, independently of its number of tokens.
+    #[test]
+    fn ordinary_record_writes_are_independent_of_json_token_count(
+        value in proptest::collection::vec(proptest::prelude::any::<u64>(), 1..256),
+    ) {
+        let mut buffered = CountWrites::default();
+        write_buffered_json(&mut buffered, &value).unwrap();
+        let expected = serde_json::to_vec(&value).unwrap();
+        proptest::prop_assert!(expected.len() <= 8192);
+        proptest::prop_assert_eq!(&buffered.bytes, &expected);
+        proptest::prop_assert_eq!(serde_json::from_slice::<Vec<u64>>(&buffered.bytes).unwrap(), value.clone());
+        one_record_write(buffered.writes)?;
+        let mut old = CountWrites::default();
+        serde_json::to_writer(&mut old, &value).unwrap();
+        proptest::prop_assert_eq!(old.bytes, expected);
+        proptest::prop_assert!(one_record_write(old.writes).is_err(), "unbuffered control escaped the same write bound");
+    }
+}
+#[test]
+fn ordinary_record_flush_failures_are_reported() {
+    struct Fail;
+    impl Write for Fail {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("record write failed"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    assert!(matches!(
+        write_buffered_json(Fail, &42),
+        Err(LocalCoreStateStoreError::Io(_))
+    ));
 }

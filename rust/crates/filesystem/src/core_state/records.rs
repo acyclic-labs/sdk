@@ -174,7 +174,15 @@ pub(super) fn with_lock<T>(
     paths: &mut RecordPaths,
     action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
 ) -> Result<T, LocalCoreStateStoreError> {
-    let mut lock = acquire_lock(paths, LockMode::Exclusive)?;
+    with_lock_with_retry(paths, action, retry_record_lock)
+}
+
+pub(super) fn with_lock_with_retry<T>(
+    paths: &mut RecordPaths,
+    action: impl FnOnce(&RecordPaths) -> Result<T, LocalCoreStateStoreError>,
+    retry: impl FnMut(Instant) -> bool,
+) -> Result<T, LocalCoreStateStoreError> {
+    let mut lock = acquire_lock_with_retry(paths, LockMode::Exclusive, retry)?;
     let result = action(paths);
     let unlocked = lock.unlock();
     match (result, unlocked) {
@@ -187,21 +195,54 @@ pub(super) fn with_lock<T>(
 pub(super) fn read_locked<T: DeserializeOwned>(
     paths: &mut RecordPaths,
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
-    let mut lock = acquire_lock(paths, LockMode::Shared)?;
+    read_locked_with_retry(paths, retry_record_lock)
+}
+
+pub(super) fn read_locked_with_retry<T: DeserializeOwned>(
+    paths: &mut RecordPaths,
+    mut retry: impl FnMut(Instant) -> bool,
+) -> Result<Option<T>, LocalCoreStateStoreError> {
+    let mut lock = acquire_lock_with_retry(paths, LockMode::Shared, &mut retry)?;
     let current = read_json(&paths.current, None).ok().flatten();
     lock.unlock()?;
     drop(lock);
     match current {
         Some(value) => Ok(Some(value)),
-        None => with_lock(paths, |paths| {
-            read_recoverable(paths).map(|value| value.map(|(value, _)| value))
-        }),
+        None => with_lock_with_retry(
+            paths,
+            |paths| read_recoverable(paths).map(|value| value.map(|(value, _)| value)),
+            retry,
+        ),
     }
 }
 
 pub(super) fn acquire_lock(
     paths: &mut RecordPaths,
     mode: LockMode,
+) -> Result<OwnerLock, LocalCoreStateStoreError> {
+    acquire_lock_with_retry(paths, mode, retry_record_lock)
+}
+
+pub(super) fn retry_record_lock(deadline: Instant) -> bool {
+    retry_record_lock_at(deadline, Instant::now(), std::thread::sleep)
+}
+
+pub(super) fn retry_record_lock_at(
+    deadline: Instant,
+    now: Instant,
+    wait: impl FnOnce(Duration),
+) -> bool {
+    if now >= deadline {
+        return false;
+    }
+    wait(RECORD_LOCK_RETRY);
+    true
+}
+
+fn acquire_lock_with_retry(
+    paths: &mut RecordPaths,
+    mode: LockMode,
+    mut retry: impl FnMut(Instant) -> bool,
 ) -> Result<OwnerLock, LocalCoreStateStoreError> {
     let work = paths
         .allocation
@@ -242,7 +283,7 @@ pub(super) fn acquire_lock(
         match locked {
             Ok(()) => break,
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
-                if Instant::now() >= deadline {
+                if !retry(deadline) {
                     if let Some(mut allocation) = paths.allocation.take() {
                         drop((
                             std::mem::take(&mut paths.current),
@@ -259,7 +300,6 @@ pub(super) fn acquire_lock(
                     }
                     return Err(LocalCoreStateStoreError::LockTimeout(paths.lock.clone()));
                 }
-                std::thread::sleep(RECORD_LOCK_RETRY);
             }
             Err(error) => return Err(error.into()),
         }
@@ -334,6 +374,18 @@ pub(super) fn read_json<T: DeserializeOwned>(
         .map_err(LocalCoreStateStoreError::Json)
 }
 
+// Ordinary records also need token coalescing. Flush the buffer before the
+// caller's file durability barrier; encoding or flush failures cannot publish.
+pub(super) fn write_buffered_json(
+    writer: impl Write,
+    value: &impl Serialize,
+) -> Result<(), LocalCoreStateStoreError> {
+    let mut writer = std::io::BufWriter::with_capacity(8192, writer);
+    serde_json::to_writer(&mut writer, value)?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub(super) fn write_journaled<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
@@ -361,9 +413,20 @@ pub(super) fn write_journaled<T: Serialize>(
     let mut temporary = MaterializationWriter {
         file,
         work,
-        encoded: true,
+        encoded: false,
     };
-    serde_json::to_writer(&mut temporary, value)?;
+    if let Some(work) = work {
+        // Encode once on the original ledger. Writing each serde token as a
+        // separate syscall creates thousands of needless interruption points.
+        let mut encoded = LogBuffer {
+            bytes: Vec::new(),
+            allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
+        };
+        serde_json::to_writer(&mut encoded, value)?;
+        temporary.write_all(&encoded.bytes)?;
+    } else {
+        write_buffered_json(&mut temporary, value)?;
+    }
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
         None => temporary.file.sync_all()?,

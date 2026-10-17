@@ -1,3 +1,6 @@
+#[cfg(windows)]
+use std::process::Command;
+
 #[test]
 fn registry_frontier_cli_requires_paired_authority_inputs() {
     let base: Vec<String> = [
@@ -19,16 +22,20 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     .map(str::to_owned)
     .collect();
     // Older manifests can still be decoded; new generation must capture closure.
-    assert!(parse_generate(base.clone())
-        .unwrap_err()
-        .to_string()
-        .contains("requires a complete registry corpus"));
+    assert!(
+        parse_generate(base.clone())
+            .unwrap_err()
+            .to_string()
+            .contains("requires a complete registry corpus")
+    );
     let mut missing = base.clone();
     missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(parse_generate(missing)
-        .unwrap_err()
-        .to_string()
-        .contains("requires both"));
+    assert!(
+        parse_generate(missing)
+            .unwrap_err()
+            .to_string()
+            .contains("requires both")
+    );
     let mut complete = base;
     complete.extend([
         "--registry-frontier-repository".into(),
@@ -45,14 +52,19 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "source_attestation_tests.rs"]
+mod source_attestation;
+
 #[test]
 fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);
     let error = validate_release_package_versions("0.1.0", &versions)
         .expect_err("a stale docs version must not be released");
-    assert!(error
-        .to_string()
-        .contains("does not match SDK package version"));
+    assert!(
+        error
+            .to_string()
+            .contains("does not match SDK package version")
+    );
     validate_release_package_versions("0.2.0", &versions)
         .expect("matching SDK and docs versions should be accepted");
 }
@@ -84,6 +96,14 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     let output = root.join("output");
     write(&output, "sdk-docs-data.v1.json", b"docs");
     write(&output, ".profile-build/debug/cache.bin", b"cache-v1");
+    write(&output, ".sdk-docs-versions.v1.lock", b"coordination");
+    write(&output, "assets/.sdk-docs-versions.v1.lock", b"published");
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(output.join(".sdk-docs-versions.v1.lock"))
+        .unwrap();
+    lock.lock().unwrap();
     write(
         &output,
         "assets/.profile-build/qualified-example.txt",
@@ -91,6 +111,11 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     );
     let before = artifact_hashes(&output).expect("artifact inventory should build");
     assert!(before.contains_key("sdk-docs-data.v1.json"));
+    assert!(!before.contains_key(".sdk-docs-versions.v1.lock"));
+    assert_eq!(
+        before["assets/.sdk-docs-versions.v1.lock"],
+        sha256_bytes(b"published")
+    );
     assert!(!before
         .keys()
         .any(|path| path.starts_with(".profile-build/")));
@@ -106,7 +131,23 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         before, after,
         "internal cache mutation must not alter artifacts"
     );
+    drop(lock);
     let _ = fs::remove_dir_all(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn mutable_catalog_files_are_excluded_only_at_the_output_root(
+        parents in proptest::collection::vec("[a-z]{1,8}", 0..6),
+    ) {
+        let output = Path::new("output");
+        let mut directory = output.to_owned();
+        for parent in &parents { directory.push(parent); }
+        for name in [".sdk-docs-versions.v1.lock", "sdk-docs-versions.v1.json"] {
+            proptest::prop_assert_eq!(is_immutable_artifact(output, &directory.join(name)), !parents.is_empty());
+        }
+        proptest::prop_assert!(is_immutable_artifact(output, &directory.join("published.json")));
+    }
 }
 
 #[test]
@@ -124,7 +165,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"{\"suite\":true}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v1".as_slice(),
         ),
         (
@@ -157,7 +198,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
         "proto/demo.proto",
         "rust/crates/stream/proto/stream/v2/stream.proto",
         "rust/crates/stream/conformance/stream.json",
-        "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+        "compatibility/descriptors/stream-v1.bin",
         "plugin/bin/install.js",
         "plugin/scripts/package.mjs",
         "plugin/package.json",
@@ -185,7 +226,7 @@ fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
             b"syntax = \"proto3\"; message Changed {}".as_slice(),
         ),
         (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "compatibility/descriptors/stream-v1.bin",
             b"descriptor-v2".as_slice(),
         ),
         (
@@ -351,6 +392,26 @@ fn ambiguous_external_rustdoc_span_is_rejected() {
 }
 
 #[test]
+fn missing_owned_generated_source_is_restored_across_root_spellings() {
+    let root = test_root("restore-generated-span");
+    let bytes = b"pub struct Restored;\n";
+    write(&root, "target/one/wire.rs", bytes);
+    // Keep this ordinary spelling. materialize_generated_sources canonicalizes
+    // its root to a verbatim path on Windows before checking ownership.
+    let missing = root.join("target/producer/wire.rs");
+    let receipt = root.join("receipt.json");
+    fs::write(&receipt, serde_json::to_vec(&serde_json::json!({
+        "span": { "filename": missing.to_string_lossy() }
+    })).unwrap()).unwrap();
+    let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(fs::read(&missing).unwrap(), bytes);
+    assert_eq!(sources[0].physical_path, missing.canonicalize().unwrap());
+    assert_eq!(sources[0].sha256, sha256_file(&missing).unwrap());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
     let root = test_root("restoration-boundary");
     for path in [
@@ -406,9 +467,11 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
     fs::remove_file(&foreign).unwrap();
     fs::write(root.join(relative), b"changed capture").unwrap();
     let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("captured Rustdoc source digest changed"));
+    assert!(
+        error
+            .to_string()
+            .contains("captured Rustdoc source digest changed")
+    );
     assert!(!foreign.exists());
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(output);
@@ -524,4 +587,88 @@ fn restoration_rejects_junction_ancestors_before_writing() {
     fs::remove_dir(junction).unwrap();
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(external);
+}
+
+#[test]
+fn file_hashes_keep_existing_artifact_and_tool_identities() {
+    use proptest::prelude::*;
+    let root = test_root("sha256-equivalence");
+    let path = root.join("input.bin");
+    // The full branch retains every original byte vector with fewer shrink trees.
+    let full = (
+        proptest::collection::vec(any::<u128>(), 0..4096),
+        proptest::collection::vec(any::<u8>(), 0..16),
+    )
+        .prop_map(|(words, tail)| {
+            words
+                .into_iter()
+                .flat_map(u128::to_le_bytes)
+                .chain(tail)
+                .collect::<Vec<_>>()
+        });
+    let bytes = prop_oneof![
+        15 => proptest::collection::vec(any::<u8>(), 0..512),
+        1 => full,
+    ];
+    let check = |bytes: &[u8]| {
+        fs::write(&path, bytes).unwrap();
+        prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
+        prop_assert_eq!(sha256_bytes(bytes), format!("sha256:{:x}", Sha256::digest(bytes)));
+        Ok(())
+    };
+    proptest::test_runner::TestRunner::default()
+        .run(&bytes, |bytes| check(&bytes))
+        .unwrap();
+    for length in [
+        0, 1, 55, 56, 63, 64, 65, 127, 128, 129, 511, 512, 513, 65535, 65536, 65537,
+    ] {
+        let bytes = (0..length)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        check(&bytes).unwrap();
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn regular_sources_ignore_root_alias_spelling() {
+    use proptest::prelude::*;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let source = root.join("src/lib.rs");
+    fs::write(&source, b"pub struct Regular;\n").unwrap();
+    let physical = source.canonicalize().unwrap();
+    let receipt = root.join("receipt.json");
+    fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({"span":{"filename":physical}})).unwrap(),
+    )
+    .unwrap();
+    sdk_docs::with_rustdoc_cache(|| {
+        proptest::test_runner::TestRunner::default()
+            .run(
+                &(any::<bool>(), prop::collection::vec(any::<bool>(), 0..8)),
+                |(canonical, aliases)| {
+                    let mut alias = if canonical {
+                        root.canonicalize().unwrap()
+                    } else {
+                        root.to_owned()
+                    };
+                    for dot in aliases {
+                        alias.push(if dot { "." } else { "src/.." });
+                    }
+                    prop_assert!(materialize_generated_sources(
+                        &alias,
+                        std::slice::from_ref(&receipt)
+                    )
+                    .unwrap()
+                    .is_empty());
+                    Ok(())
+                },
+            )
+            .unwrap();
+    });
+    // The old raw-prefix comparison misclassifies this in-root source on every host.
+    assert!(!physical.starts_with(root.join("src/..")));
 }

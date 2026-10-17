@@ -24,7 +24,7 @@ test("canonical accounting rejects lossy UTF-16 requests, values and keys", () =
     };
     const count: ModelTokenCountWire = {
       request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
-      fixed_tokens: 100, message_tokens: [new TextEncoder().encode(replacement).byteLength + 10],
+      input_tokens: BigInt(110 + new TextEncoder().encode(replacement).byteLength), fixed_tokens: 100, message_tokens: [new TextEncoder().encode(replacement).byteLength + 10],
     };
     expect(contracts.validateModelTokenCount(request, count, DEFAULT_LIMITS)).toBeGreaterThan(100n);
     expect(() => contracts.validateModelTokenCount({ ...request,
@@ -73,12 +73,13 @@ test("generated provider accounting binds canonical requests, dimensions and por
   // This consumer's declared token units are UTF-8 bytes plus fixed framing.
   const count: ModelTokenCountWire = {
     request_digest: Array.from(contracts.digestCanonicalJson(request)) as ModelTokenCountWire["request_digest"],
+    input_tokens: 116n,
     fixed_tokens: 100,
     message_tokens: [new TextEncoder().encode("é🦀").byteLength + 10],
   };
   expect(contracts.validateModelTokenCount(request, count, DEFAULT_LIMITS)).toBe(116n);
   expect(contracts.validateModelTokenCount(request,
-    { ...count, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, DEFAULT_LIMITS))
+    { ...count, input_tokens: 8_589_934_590n, fixed_tokens: 0xffff_ffff, message_tokens: [0xffff_ffff] }, DEFAULT_LIMITS))
     .toBe(8_589_934_590n);
   expect(() => contracts.validateModelTokenCount(
     { ...request, messages: [{ role: "user", content: "changed" }] }, count, DEFAULT_LIMITS)).toThrow();
@@ -104,7 +105,7 @@ test("generated provider accounting binds canonical requests, dimensions and por
 test("Rust execution checkpoint wire preserves ref-only observations and rejects malformed admission", () => {
   const file = {
     volume: { provider: { namespace: "test", family: "memory", version: "1" },
-      id: "private", class: "agent_private", owner: { kind: "agent", id: "07070707-0707-0707-0707-070707070707" } },
+      id: "private", class: "agent_private", owner: { kind: "agent", id: contracts.validateIdentity("agent", "07070707-0707-0707-0707-070707070707") } },
     path: "context.json", version: "1",
     descriptor: contracts.fileDescriptor(new TextEncoder().encode("null"), "application/json"),
     display_name: "context.json",

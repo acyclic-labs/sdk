@@ -29,6 +29,10 @@ mod accounting;
 
 #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 mod scope_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod write_probe;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use write_probe::WriteProbe;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod admissions;

@@ -5,6 +5,8 @@ use std::sync::{Arc, Weak};
 
 /// Accounting for one bounded source operation.
 pub struct DemandWork {
+    #[cfg(test)]
+    pub(crate) write_probe: Option<super::WriteProbe>,
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
     initial_budget: WorkBudget,
@@ -23,6 +25,8 @@ impl DemandWork {
         #[cfg(test)]
         crate::initialize_test_native_io();
         Self {
+            #[cfg(test)]
+            write_probe: None,
             work: WorkCounters::UNCHARGED,
             budget,
             initial_budget: budget,
@@ -167,6 +171,8 @@ impl DemandWork {
         self.charge_reconciled(delta)
     }
     pub(super) fn charge_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         self.check()?;
         self.admission(delta, 0, |state| {
@@ -174,6 +180,8 @@ impl DemandWork {
         })
     }
     pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        #[cfg(test)]
+        self.probe_write(delta);
         let delta = self.item_charge(delta);
         let resource = self
             .resource()

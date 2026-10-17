@@ -2,7 +2,7 @@ use crate::{CompletionMenu, Editor};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     widgets::{Block, Borders, Clear, Widget},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -27,18 +27,30 @@ impl<'a> CompletionPopup<'a> {
         Self {
             menu,
             editor,
-            style: Style::default(),
-            selected_style: Style::default().add_modifier(Modifier::REVERSED),
+            style: crate::config::default_style(crate::config::ThemeRole::Popup),
+            selected_style: crate::config::default_style(crate::config::ThemeRole::PopupSelected),
         }
+    }
+
+    /// Apply followed semantic roles without allocating per frame.
+    pub fn theme(mut self, theme: &crate::config::ThemeStyles) -> Self {
+        self.style = theme.style(crate::config::ThemeRole::Popup);
+        self.selected_style = theme.style(crate::config::ThemeRole::PopupSelected);
+        self
     }
 
     /// Prefer the area above the prompt, falling back below when it has more room.
     pub fn area(&self, prompt: Rect, screen: Rect) -> Rect {
         let width = screen
             .width
-            .min(60)
+            .min(self.editor.settings().completion_max_width as u16)
             .min(screen.right().saturating_sub(screen.x));
-        let wanted = self.menu.items().len().saturating_add(2).min(12) as u16;
+        let wanted = self
+            .menu
+            .items()
+            .len()
+            .saturating_add(2)
+            .min(self.editor.settings().completion_max_height) as u16;
         let top = prompt.y.clamp(screen.y, screen.bottom());
         let bottom = prompt.bottom().clamp(screen.y, screen.bottom());
         let above = top - screen.y;
@@ -62,7 +74,14 @@ impl<'a> CompletionPopup<'a> {
 
 impl Widget for CompletionPopup<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        let area = Rect::new(area.x, area.y, area.width.min(60), area.height.min(12));
+        let area = Rect::new(
+            area.x,
+            area.y,
+            area.width
+                .min(self.editor.settings().completion_max_width as u16),
+            area.height
+                .min(self.editor.settings().completion_max_height as u16),
+        );
         if area.width < 3 || area.height < 3 || !self.menu.active(self.editor) {
             return;
         }
@@ -112,7 +131,14 @@ impl Widget for CompletionPopup<'_> {
 // Borrow only a cell-bounded prefix. A Unicode grapheme can contain arbitrarily
 // many zero-width scalars: cap inspection at 64 UTF-8 bytes per available cell,
 // replacing a possibly incomplete final cluster rather than rendering half of it.
-fn render_part(text: &str, x: &mut u16, right: u16, y: u16, style: Style, buffer: &mut Buffer) {
+pub(crate) fn render_part(
+    text: &str,
+    x: &mut u16,
+    right: u16,
+    y: u16,
+    style: Style,
+    buffer: &mut Buffer,
+) {
     if *x >= right {
         return;
     }

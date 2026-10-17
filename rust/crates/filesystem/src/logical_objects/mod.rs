@@ -15,6 +15,7 @@ pub struct LogicalObjectStore<P> {
     provider: Arc<P>,
     bucket: wire::BucketRef,
     maximum_object_bytes: u64,
+    decoded: Arc<crate::cache::CachedObjectStore<()>>,
 }
 
 impl<P> LogicalObjectStore<P> {
@@ -24,6 +25,7 @@ impl<P> LogicalObjectStore<P> {
             provider,
             bucket,
             maximum_object_bytes: 5 * 1024 * 1024 * 1024,
+            decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
         }
     }
 
@@ -33,6 +35,10 @@ impl<P> LogicalObjectStore<P> {
             return Err(ObjectStoreError::Rejected(
                 "invalid object size limit".to_owned(),
             ));
+        }
+        if self.maximum_object_bytes != maximum {
+            // A decoded hit must not bypass a newly narrowed backend byte limit.
+            self.decoded = Arc::new(crate::cache::CachedObjectStore::with_default_options(()));
         }
         self.maximum_object_bytes = maximum;
         Ok(self)
@@ -79,6 +85,21 @@ macro_rules! operate {
     }};
 }
 impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
+    fn decoded_cache_get(
+        &self,
+        key: crate::async_storage::DecodedCacheKey,
+    ) -> Result<Option<crate::async_storage::DecodedCacheValue>, ObjectStoreError> {
+        self.decoded.decoded_get(key)
+    }
+
+    fn decoded_cache_admit(
+        &self,
+        key: crate::async_storage::DecodedCacheKey,
+        value: crate::async_storage::DecodedCacheValue,
+    ) -> Result<crate::async_storage::DecodedCacheAdmission, ObjectStoreError> {
+        self.decoded.decoded_admit(key, value)
+    }
+
     async fn put(
         &self,
         id: ObjectId,
@@ -108,7 +129,30 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         writes: &[ObjectWrite],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        operate!(context, work, self.publish_batch(writes, &mut work).await)
+        operate!(
+            context,
+            work,
+            self.publish_batch::<false, _, _>(writes, write::raw_parts, &mut work)
+                .await
+        )
+    }
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::storage::HashedObject],
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        // Preserve the default method's native boundary; native blob batches
+        // use put_many and its original request custody.
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.is_native() {
+            return Err(ObjectStoreError::NativeUnavailable);
+        }
+        operate!(
+            context,
+            work,
+            self.publish_batch::<true, _, _>(objects, write::hashed_parts, &mut work)
+                .await
+        )
     }
     async fn flush_before_publish(
         &self,
@@ -211,3 +255,6 @@ mod requests;
 use requests::*;
 mod read;
 mod write;
+
+#[cfg(all(test, feature = "memory"))]
+mod tests;

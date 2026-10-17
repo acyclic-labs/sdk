@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"content","delta":"```rust\n"},{"type":"event","kind":"content","delta":
+  "fn main() {}\n"},{"type":"event","kind":"completed","metadata":null}]],"expect":{"text":"```rust\nfn main() {}\n",
+  "model_events":[{"kind":"content","delta":"```rust\n"},{"kind":"content","delta":"fn main() {}\n"}
+  ,{"kind":"completed","metadata":null}]}}

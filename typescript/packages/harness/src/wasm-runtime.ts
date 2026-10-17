@@ -35,7 +35,7 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
   "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;
 
-const CLIENT_VIEW_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
+const CLIENT_VIEW_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "querySnapshot", "queryChange", "bindGoalSources", "views", "free"] as const;
 
 /** Reject a stale binding before runtime code can call a missing validator. */
 export function assertHarnessWasmExports(value: unknown): void {
@@ -54,7 +54,9 @@ export function assertHarnessWasmExports(value: unknown): void {
     typeof exports.WasmReducer === "function"
       ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype[name] === "function"
       : typeof exports[`wasmreducer_${name}`] === "function");
-  if (!contentStore || !clientViews || !reducer || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  const providers = typeof exports.WasmProviderRegistry === "function"
+    || typeof exports.wasmproviderregistry_new === "function";
+  if (!contentStore || !clientViews || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

@@ -159,11 +159,16 @@ impl ModelProvider for Deterministic {
         })
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        self.context_capacity(&request.request().model)?;
-        request
-            .serialized_token_upper_bound(None)
-            .map(|(count, _)| count)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            self.context_capacity(&request.request().model)?;
+            request
+                .serialized_token_upper_bound(None)
+                .map(|(count, _)| count)
+        })
     }
 
     fn generate<'a>(

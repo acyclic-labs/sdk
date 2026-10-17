@@ -370,37 +370,49 @@ pub fn resolve_merge_plan(
                 conflict.key.clone(),
             ));
         }
-        let path = conflict.path.as_deref().unwrap_or("");
-        let driver = registry
-            .select(path)
-            .ok_or_else(|| MergePlanResolutionError::MissingDriver(conflict.key.clone()))?;
-        let key = ResolutionKey::new(
-            plan.base,
-            plan.ours,
-            plan.theirs,
-            &conflict.key,
-            driver.fingerprint(),
-        );
-        let resolution = match cache.get(key) {
-            Some(cached) => cached.resolution,
-            None if replanning && driver.mode() == MergeDriverMode::Effectful => {
-                return Err(MergePlanResolutionError::StaleEffectful);
-            }
-            None => {
-                let resolution = driver.resolve(conflict)?;
-                cache.insert(
-                    key,
-                    CachedMergeResolution {
-                        mode: driver.mode(),
-                        resolution: resolution.clone(),
-                    },
-                );
-                resolution
-            }
-        };
+        let resolution = resolve_merge_conflict(&plan, conflict, registry, cache, replanning)?;
         resolutions.insert(conflict.key.clone(), resolution);
     }
     Ok(UnpublishedMergeCandidate { plan, resolutions })
+}
+
+/// Resolves one immutable conflict using the same driver selection and cache as a plan.
+pub fn resolve_merge_conflict(
+    plan: &MergePlan,
+    conflict: &ConflictView,
+    registry: &MergeDriverRegistry,
+    cache: &mut impl MergeResolutionCache,
+    replanning: bool,
+) -> Result<MergeResolution, MergePlanResolutionError> {
+    let path = conflict.path.as_deref().unwrap_or("");
+    let driver = registry
+        .select(path)
+        .ok_or_else(|| MergePlanResolutionError::MissingDriver(conflict.key.clone()))?;
+    let key = ResolutionKey::new(
+        plan.base,
+        plan.ours,
+        plan.theirs,
+        &conflict.key,
+        driver.fingerprint(),
+    );
+    let resolution = match cache.get(key) {
+        Some(cached) => cached.resolution,
+        None if replanning && driver.mode() == MergeDriverMode::Effectful => {
+            return Err(MergePlanResolutionError::StaleEffectful);
+        }
+        None => {
+            let resolution = driver.resolve(conflict)?;
+            cache.insert(
+                key,
+                CachedMergeResolution {
+                    mode: driver.mode(),
+                    resolution: resolution.clone(),
+                },
+            );
+            resolution
+        }
+    };
+    Ok(resolution)
 }
 
 /// Merge-driver failure.

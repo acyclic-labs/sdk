@@ -23,3 +23,16 @@ jobs:
           persist-credentials: false
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
+  aarch64:
+    # Integer widths in libc differ by architecture (for example nlink_t is u32 on
+    # aarch64 Linux and u64 on x86_64). Type-check the native host crates on an arm
+    # runner so a width-dependent compile break cannot reach main again.
+    name: SDK aarch64 Linux check
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Type-check native host crates for aarch64 Linux
+        run: cargo check --locked -p acyclic-fs --lib --features s3-http

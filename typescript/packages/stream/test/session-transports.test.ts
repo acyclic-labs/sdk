@@ -1,87 +1,58 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createSecureServer } from "node:http2";
-import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
-import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
-import { StreamSessionService, SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
-import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { SessionFrameSchema, SessionFollowSchema, SessionDelivery } from "../generated/proto/stream/v1/session_pb.js";
 import { GrpcStreamProvider, createStreamGrpcClient } from "../src/grpc.js";
 import { HttpStreamProvider } from "../src/http.js";
 import { SessionNode } from "./session-node.js";
+import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 import type { SessionTransport } from "../src/session.js";
 
-let directory: string;
+let identity: ReturnType<typeof tlsIdentity>;
 let key: string;
 let cert: string;
-beforeAll(() => {
-  directory = mkdtempSync(join(tmpdir(), "stream-session-tls-"));
-  const keyFile = join(directory, "key.pem");
-  const certFile = join(directory, "cert.pem");
-  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost", "-keyout", keyFile, "-out", certFile], { stdio: "ignore" });
-  key = readFileSync(keyFile, "utf8"); cert = readFileSync(certFile, "utf8");
-});
-afterAll(() => { if (directory) rmSync(directory, { recursive: true, force: true }); });
-
-async function grpcFixture() {
-  const node = new SessionNode();
-  const counts = { connections: 0, sessions: 0, legacyFollows: 0 };
-  const server = createSecureServer({ key, cert }, connectNodeAdapter({ routes(router) {
-    router.service(StreamService, {
-      tail(_request, context) {
-        const echo = context.requestHeader.get("x-follow-options") ?? "";
-        context.responseHeader.set("x-follow-options", echo);
-        context.responseTrailer.set("x-follow-options", echo);
-        return { tail: 0n };
-      },
-      async *follow() { counts.legacyFollows += 1; throw new Error("legacy Follow RPC is forbidden"); },
-    });
-    router.service(StreamSessionService, { async *session(input, context) {
-      expect(context.requestHeader.get("authorization")).toBe("Bearer fixture");
-      counts.sessions += 1;
-      const transport = await node.connect(undefined, context.signal);
-      const abort = (): void => transport.close();
-      context.signal.addEventListener("abort", abort, { once: true });
-      const pump = async (): Promise<void> => { try { for await (const value of input) await transport.send(value); } finally { transport.close(); } };
-      void pump().catch(() => transport.close());
-      try { yield* transport.incoming; }
-      finally { context.signal.removeEventListener("abort", abort); transport.close(); }
-    } });
-  } }));
-  server.on("connection", socket => socket.setNoDelay(true));
-  server.on("session", () => { counts.connections += 1; });
-  const close = ownFixtureServer(server);
-  await new Promise<void>(resolve => server.listen(0, "localhost", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("missing HTTP/2 address");
-  return { node, counts, close, options: { endpoint: `https://localhost:${address.port}`, token: "fixture", caCertificate: cert } };
-}
+beforeAll(() => { identity = tlsIdentity(); ({ key, cert } = identity); });
+afterAll(() => identity?.dispose());
 
 test("public gRPC follows and unaries share one physical HTTP/2 session", async () => {
-  const { node, counts, close, options } = await grpcFixture();
+  const { node, counts, close, options } = await grpcFixture({ key, cert });
   try {
     const provider = new GrpcStreamProvider(options);
     expect(await provider.tail("unary")).toBe(0n);
+    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
+    const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
+    const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    node.publishLatest("status", 3n);
+    node.publishLatest("status", 9n, true);
+    expect((await firstStatus).value?.after?.next).toBe(3n);
+    const status = (await latest.next()).value!;
+    expect(status.after?.next).toBe(9n);
+    expect(status.accepted).toBe(11n);
+    expect(status.durable).toBe(8n);
+    expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
+    expect((await discovered).value?.path).toBe("agent/0");
+    for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
+    const later = children.next(); node.append("agent/later");
+    expect((await later).value?.path).toBe("agent/later");
     expect(counts.connections).toBe(1);
     expect(counts.sessions).toBe(1);
     expect(counts.legacyFollows).toBe(0);
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
+    await children.return?.();
+    await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await close(); }
 });
 
 test("raw gRPC follow deadlines remove only their logical channel", async () => {
-  const { node, counts, close, options } = await grpcFixture();
+  const { node, counts, close, options } = await grpcFixture({ key, cert });
   const controller = new AbortController();
   try {
     const client = createStreamGrpcClient(options);
@@ -150,14 +121,32 @@ test("public browser follows use one authenticated binary WebSocket without fetc
       fetcher: async () => { fetches += 1; throw new Error("follow issued an HTTP poll"); },
       webSocketFactory: (url, protocols) => { sockets += 1; return new WebSocket(url, { protocols, tls: { ca: cert } }); },
     });
+    const latest = provider.followData(create(SessionFollowSchema, { path: "status", delivery: SessionDelivery.LATEST }), { from: 0n })[Symbol.asyncIterator]();
+    const firstStatus = latest.next();
     const follows = Array.from({ length: 64 }, (_, id) => provider.follow(`agent/${id}`, { from: 0n })[Symbol.asyncIterator]());
+    const children = provider.children({ parent: "agent", limit: 1 })[Symbol.asyncIterator]();
+    const discovered = children.next();
     const pending = Promise.all(follows.map(follow => follow.next()));
-    await Promise.race([node.until(() => node.active === follows.length), pending.then(() => {})]);
+    await Promise.race([node.until(() => node.active === follows.length + 2), pending.then(() => {})]);
     for (let id = 0; id < follows.length; id += 1) node.append(`agent/${id}`);
     expect((await pending).every(result => result.value?.sequence === 0n)).toBe(true);
+    node.publishLatest("status", 3n);
+    node.publishLatest("status", 9n, true);
+    expect((await firstStatus).value?.after?.next).toBe(3n);
+    const status = (await latest.next()).value!;
+    expect(status.after?.next).toBe(9n);
+    expect(status.accepted).toBe(11n);
+    expect(status.durable).toBe(8n);
+    expect(status.item.case === "latestValue" && status.item.value.attention).toBe(true);
+    expect((await discovered).value?.path).toBe("agent/0");
+    for (let id = 1; id < follows.length; id++) expect((await children.next()).value?.path).toBe(`agent/${id}`);
+    const later = children.next(); node.append("agent/later");
+    expect((await later).value?.path).toBe("agent/later");
     expect(connections).toBe(1); expect(sockets).toBe(1); expect(fetches).toBe(0);
     expect(node.actorChannels).toBe(0);
     await Promise.all(follows.map(follow => follow.return?.()));
+    await children.return?.();
+    await latest.return?.();
     await node.until(() => node.active === 0);
   } finally { await server.stop(true); }
 });

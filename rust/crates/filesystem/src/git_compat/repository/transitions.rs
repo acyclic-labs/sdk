@@ -1,6 +1,40 @@
 use super::*;
 
 impl<S: GitCompatStore> GitCompatRepository<S> {
+    /// Retains the exact conflicted paths in the existing pending join record.
+    pub async fn record_merge_conflicts(
+        &self,
+        operation: OperationId,
+        paths: &BTreeMap<String, Option<crate::FileId>>,
+    ) -> Result<(), GitCompatError<S::Error>> {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+            let mut state = self.load().await?;
+            let pending = state.pending.as_mut().ok_or(GitCompatError::InvalidState)?;
+            if pending.id.operation_id() != operation
+                || !matches!(pending.action, GitFilesystemAction::Join { .. })
+            {
+                return Err(GitCompatError::InvalidState);
+            }
+            let GitPendingMutation::Join { conflicts, .. } = &mut pending.mutation else {
+                return Err(GitCompatError::InvalidState);
+            };
+            if let Some(existing) = conflicts.as_ref() {
+                return if existing == paths {
+                    Ok(())
+                } else {
+                    Err(GitCompatError::InvalidState)
+                };
+            }
+            *conflicts = Some(paths.clone());
+            if self.publish(state).await? {
+                return Ok(());
+            }
+        }
+        Err(GitCompatError::Contended)
+    }
+}
+
+impl<S: GitCompatStore> GitCompatRepository<S> {
     /// Returns the durable transition awaiting completion or rollback.
     pub async fn pending_transition(
         &self,

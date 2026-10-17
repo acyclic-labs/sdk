@@ -350,6 +350,8 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
     }
 
     async fn observe_admission(&self, task_id: TaskId) -> Result<TaskAdmissionRecord> {
+        #[cfg(feature = "test-support")]
+        crate::test_support::admission_work::observed();
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
         self.admission(operation_id, &mut None).await
     }
@@ -501,53 +503,5 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
 
     async fn inbox(&self, task_id: TaskId, after: u64, limit: usize) -> Result<Vec<InboxItem>> {
         self.inbox_page(task_id, after, limit, None).await
-    }
-
-    async fn wait_until(
-        &self,
-        task_id: TaskId,
-        operation_id: OperationId,
-        deadline_unix_ms: u64,
-    ) -> Result<()> {
-        if deadline_unix_ms == 0 {
-            return Err(Error::Invalid("timer deadline is invalid".into()));
-        }
-        let admission = self
-            .admission(OperationId::from_bytes(task_id.into_bytes()), &mut None)
-            .await?;
-        if !admission.grants.contains(capability::TIMER_WAIT) {
-            return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
-        }
-        let event = TimerEvent {
-            task_id,
-            operation_id,
-            deadline_unix_ms,
-        };
-        let bytes = crate::contract::canonical_json_bytes(&event)?;
-        let stream = self.timer_stream(task_id)?;
-        loop {
-            let (tail, found) = self
-                .timer_state(task_id, operation_id, deadline_unix_ms, &mut None)
-                .await?;
-            if found {
-                break;
-            }
-            if self
-                .publish_control_at(&stream, "timers", task_id, operation_id, &bytes, Some(tail))
-                .await?
-            {
-                break;
-            }
-        }
-        loop {
-            let now = self.clock.now_unix_millis();
-            if now >= deadline_unix_ms {
-                return Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(
-                deadline_unix_ms.saturating_sub(now).min(60_000),
-            ))
-            .await;
-        }
     }
 }

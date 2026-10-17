@@ -125,21 +125,26 @@ if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1 && command
   package_target_argument="$(wslpath -w "$package_target")"
 fi
 version="$("$cargo_bin" metadata --no-deps --format-version 1 --manifest-path "$source_manifest" | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => console.log(JSON.parse(input).packages.find(item => item.name === "acyclic-inference").version))')"
-"$cargo_bin" package --locked --no-verify -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument"
+"$cargo_bin" package --locked --no-verify -p acyclic-proto-build -p acyclic-inference --manifest-path "$source_manifest" --target-dir "$package_target_argument"
 crate="$package_target/package/acyclic-inference-${version}.crate"
 
 tar -xf "$crate" -C "$test_root"
+proto_build_crate="$package_target/package/acyclic-proto-build-${version}.crate"
+tar -xf "$proto_build_crate" -C "$test_root"
+mkdir -p "$test_root/.cargo"
+proto_build_path="$(bash "$root/scripts/native-tool-path.sh" "$test_root/acyclic-proto-build-$version")"
+printf '[patch.crates-io]\nacyclic-proto-build = { path = "%s" }\n' "$proto_build_path" >"$test_root/.cargo/config.toml"
 test_manifest="$test_root/acyclic-inference-${version}/Cargo.toml"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
   test_manifest="$(wslpath -w "$test_manifest")"
 fi
-"$cargo_bin" test --manifest-path "$test_manifest"
+(cd "$test_root" && "$cargo_bin" test --manifest-path "$test_manifest")
 
 if [[ "$#" -eq 1 ]]; then
   output="$1"
   mkdir -p "$output"
-  install -m 0644 "$crate" "$typescript_archive" "$output/"
-  (cd "$output" && sha256sum "$(basename "$crate")" acyclic-inference.tgz > SHA256SUMS)
+  install -m 0644 "$crate" "$proto_build_crate" "$typescript_archive" "$output/"
+  (cd "$output" && sha256sum "$(basename "$crate")" "$(basename "$proto_build_crate")" acyclic-inference.tgz > SHA256SUMS)
   printf '%s\n' "$source_sha" >"$output/SOURCE_COMMIT"
 elif [[ "$#" -ne 0 ]]; then
   echo "usage: check-inference-package.sh [OUTPUT]" >&2

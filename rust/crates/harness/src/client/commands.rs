@@ -13,9 +13,43 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 mod parse;
 use parse::{expand, has_frontmatter, validate_name};
+mod presentation;
+pub use presentation::*;
+mod control;
+#[cfg(not(target_arch = "wasm32"))]
+mod driver;
+mod scheduling;
+#[cfg(not(target_arch = "wasm32"))]
+pub use driver::run_command_client;
+pub use scheduling::{command_loop_finished, schedule_command_effect};
+mod diff;
+mod files;
+pub use diff::render_command_diff;
+mod view;
+pub use view::render_command_record;
+mod view_files;
+pub use view_files::CommandViewFiles;
+#[cfg(all(test, acyclic_loom))]
+mod model;
+pub use control::CommandControl;
+mod name_index;
+mod session;
+mod sources;
+pub use sources::CommandSources;
+mod syntax;
+pub use files::*;
+pub use session::CommandSession;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::consume_local_command;
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
+
+/// Bootstrap bytes for commands.json in the config volume. The client installs
+/// this file once, then loads its live-query revisions through `from_file`.
+pub const DEFAULT_COMMANDS_JSON: &[u8] = include_bytes!("commands.json");
 
 /// A declared home or checkout boundary; no host paths or implicit grants.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -47,6 +81,8 @@ pub enum CommandArguments {
     Word,
     /// Optional free text, including newlines.
     Text,
+    /// Nonempty free text, for a direct tool invocation.
+    RequiredText,
 }
 
 /// Built-in command implementation selected by catalog data.
@@ -59,7 +95,7 @@ pub enum BuiltinCommand {
     Model,
     /// Query captured workspace changes.
     Diff,
-    /// Query the task's plan.md.
+    /// Query Markdown files in the private plans/ directory.
     Plan,
     /// Query the private GOAL.md.
     Goal,
@@ -71,6 +107,31 @@ pub enum BuiltinCommand {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandAction {
+    /// Native SDK qualification operation, selected from the installed catalog.
+    Sdk {
+        /// Existing SDK operation name, independent of its slash spelling.
+        command: String,
+    },
+    /// A fixed client operation; destructive operations require confirmation.
+    Request {
+        /// Operation routed to its client owner, without a model turn.
+        request: CommandRequest,
+        /// Ask for confirmation before admitting this operation.
+        #[serde(default)]
+        confirmation: bool,
+    },
+    /// A renderer selection or toggle.
+    Select {
+        /// Selection handled by the renderer.
+        query: CommandQuery,
+    },
+    /// Direct tool dispatch, never prompt expansion.
+    Tool {
+        /// Owner-selected tool implementation.
+        tool: CommandTool,
+    },
+    /// Resolve a configured name, otherwise open the theme picker.
+    Theme,
     /// A typed built-in request or view selection.
     Builtin {
         /// Implementation identifier.
@@ -82,6 +143,15 @@ pub enum CommandAction {
         source: PinnedContextPath,
         /// Determines override precedence.
         scope: CommandScope,
+    },
+    /// Template captured from a followed command/skill definition file.
+    Template {
+        /// Relative input-file identity for provenance and replacement.
+        file: crate::task_volume::FileKey,
+        /// Exact file digest at the catalog's publication cut.
+        digest: [u8; 32],
+        /// Pinned template text; subsequent file edits publish a new catalog.
+        body: String,
     },
     /// Selected skill using the ordinary context loader.
     Skill {
@@ -96,6 +166,9 @@ pub enum CommandAction {
 pub struct CommandSpec {
     /// Slash-free name; subdirectories use `:` namespaces.
     pub name: String,
+    /// Slash-free alternative names, reserved alongside the canonical name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// Help and completion text.
     pub description: String,
     /// Accepted argument shape.
@@ -106,8 +179,37 @@ pub struct CommandSpec {
 
 /// Typed client requests emitted by built-in commands.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRequest {
+    /// Exit the client.
+    Quit,
+    /// Create a new root conversation.
+    New,
+    /// Delete the selected agent, after confirmation.
+    Delete,
+    /// Toggle paused state for the selected subtree.
+    TogglePause,
+    /// Pause the declared task set.
+    Pause {
+        /// Subtree or all conversation trees.
+        scope: CommandTaskScope,
+    },
+    /// Resume the declared task set.
+    Resume {
+        /// Subtree or all conversation trees.
+        scope: CommandTaskScope,
+    },
+    /// Cycle the selected agent's mode.
+    CycleMode,
+    /// Clear conversations, after confirmation.
+    ClearAll,
+    /// Export diagnostics.
+    Export,
+    /// Select an exact configured theme name.
+    Theme {
+        /// Canonical name from the caller's theme data.
+        name: String,
+    },
     /// Compact with optional summary guidance.
     Compact {
         /// User-supplied summary guidance.
@@ -120,15 +222,69 @@ pub enum CommandRequest {
     },
 }
 
+/// Task control commands distinguish the current subtree from every tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandTaskScope {
+    /// The selected task and its descendants.
+    Subtree,
+    /// All conversation trees.
+    All,
+}
+
+/// Direct tools receive structured arguments without a model turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandTool {
+    /// Execute a shell command through the bash tool owner.
+    Bash,
+    /// Fork/spawn an agent through the task owner.
+    Spawn,
+    /// Search the web through the configured search owner.
+    WebSearch,
+    /// Fetch a URL through the configured fetch owner.
+    UrlFetch,
+}
+
+impl CommandTool {
+    fn input(self, arguments: &str) -> serde_json::Value {
+        let key = match self {
+            Self::Bash => "command",
+            Self::Spawn => "task",
+            Self::WebSearch => "query",
+            Self::UrlFetch => "url",
+        };
+        serde_json::json!({key: arguments})
+    }
+}
+
 /// View selected without submitting model text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandQuery {
+    /// Catalog-generated shortcuts/help overlay.
+    Shortcuts,
+    /// Toggle reasoning visibility.
+    Reasoning,
+    /// Toggle tool detail visibility.
+    Details,
+    /// Toggle the agent tree.
+    Tree,
+    /// Toggle the embedded terminal.
+    Terminal,
+    /// Search the transcript.
+    Find,
+    /// Select the next task needing attention.
+    Attention,
+    /// Open the theme picker.
+    Theme,
+    /// Open the feedback overlay.
+    Feedback,
     /// Current model and available models.
     Model,
     /// Captured workspace changes against each volume's base.
     Diff,
-    /// Task plan.md.
+    /// Markdown files in the private plans/ directory.
     Plan,
     /// Private GOAL.md.
     Goal,
@@ -138,8 +294,27 @@ pub enum CommandQuery {
 
 /// Complete composer classification; renderers do not parse slash syntax.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandResolution {
+    /// An installed SDK operation, consumed from an ordinary request file.
+    Sdk {
+        /// Exact SDK operation from the catalog.
+        command: String,
+        /// Unmodified argument text, normally a pinned request-file location.
+        arguments: String,
+    },
+    /// A destructive client operation awaiting explicit confirmation.
+    Confirm {
+        /// Operation to admit only after confirmation.
+        request: CommandRequest,
+    },
+    /// A direct structured tool call, bypassing the model.
+    Tool {
+        /// Tool routed to its configured owner.
+        tool: CommandTool,
+        /// Exact arguments, with no prompt/template interpretation.
+        input: serde_json::Value,
+    },
     /// Ordinary text or a resolved prompt template.
     Prompt {
         /// Text ready for mention resolution and submission.
@@ -165,6 +340,9 @@ pub enum CommandResolution {
 #[derive(Clone, Debug, Serialize)]
 pub struct CommandCatalog {
     commands: BTreeMap<String, CommandSpec>,
+    #[serde(skip)]
+    names: name_index::NameIndex,
+    themes: Vec<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -175,18 +353,10 @@ struct PromptMetadata {
 }
 
 impl CommandCatalog {
-    /// Parses the schema-owned built-in catalog.
+    /// Bootstrap contents for the user's catalog file; live clients load that file.
     pub fn builtins() -> Result<Self> {
-        let specs: Vec<CommandSpec> = serde_json::from_str(include_str!("commands.json"))
-            .map_err(|error| Error::Invalid(format!("invalid command catalog: {error}")))?;
-        let mut commands = BTreeMap::new();
-        for spec in specs {
-            validate_name(&spec.name)?;
-            if commands.insert(spec.name.clone(), spec).is_some() {
-                return Err(Error::Conflict("duplicate builtin command".into()));
-            }
-        }
-        Ok(Self { commands })
+        let bytes = DEFAULT_COMMANDS_JSON;
+        Self::from_bytes(bytes, bytes.len() as u64)
     }
 
     /// Discovers optional `.claude/commands` and `.codex/prompts` recursively.
@@ -198,13 +368,27 @@ impl CommandCatalog {
         skill_roots: &[ContextRoot],
         limits: ContextDiscoveryLimits,
     ) -> Result<Self> {
+        Self::builtins()?
+            .with_sources(reader, roots, skill_roots, limits)
+            .await
+    }
+
+    /// Fold declared prompt/skill source snapshots into a catalog loaded from
+    /// the config volume. A new file-query cut produces a new immutable catalog.
+    pub async fn with_sources(
+        self,
+        reader: &dyn ContentResidencyVerifier,
+        roots: &[CommandRoot],
+        skill_roots: &[ContextRoot],
+        limits: ContextDiscoveryLimits,
+    ) -> Result<Self> {
         limits.validate()?;
         if roots.len().saturating_add(skill_roots.len()) > limits.directories as usize {
             return Err(Error::Invalid(
                 "catalog declarations exceed directory bound".into(),
             ));
         }
-        let mut catalog = Self::builtins()?;
+        let mut catalog = self;
         let mut work = DiscoveryWork {
             entries: 0,
             directories: 0,
@@ -247,15 +431,34 @@ impl CommandCatalog {
                             if entry.kind != PrivateDirectoryEntryKind::File {
                                 return Err(Error::Invalid("command entry is not a file".into()));
                             }
-                            let name = format!("{namespace}{stem}");
+                            let name = format!("{namespace}{stem}").to_ascii_lowercase();
                             validate_name(&name)?;
                             if !names.insert(name.clone()) {
                                 return Err(Error::Conflict(format!("duplicate command: {name}")));
                             }
-                            if catalog.commands.get(&name).is_some_and(|spec| {
-                                matches!(spec.action, CommandAction::Builtin { .. })
-                            }) {
-                                return Err(Error::Conflict(format!("reserved command: {name}")));
+                            if let Some(existing) = catalog.lookup(&name) {
+                                if existing.name != name {
+                                    return Err(Error::Conflict(format!(
+                                        "reserved command alias: {name}"
+                                    )));
+                                }
+                                if let CommandAction::Prompt {
+                                    scope: previous, ..
+                                } = &existing.action
+                                {
+                                    if *previous > scope {
+                                        continue;
+                                    }
+                                    if *previous == scope {
+                                        return Err(Error::Conflict(format!(
+                                            "duplicate command: {name}"
+                                        )));
+                                    }
+                                } else {
+                                    return Err(Error::Conflict(format!(
+                                        "reserved command: {name}"
+                                    )));
+                                }
                             }
                             source.validate(&mut None)?;
                             let prefix = reader
@@ -288,10 +491,12 @@ impl CommandCatalog {
                             if description.trim().is_empty() || description.contains('\0') {
                                 return Err(Error::Invalid("invalid command description".into()));
                             }
+                            let _ = catalog.names.insert(&name, &name);
                             catalog.commands.insert(
                                 name.clone(),
                                 CommandSpec {
                                     name,
+                                    aliases: Vec::new(),
                                     description,
                                     arguments: CommandArguments::Text,
                                     action: CommandAction::Prompt { source, scope },
@@ -303,16 +508,19 @@ impl CommandCatalog {
             }
         }
         for skill in discover_skills(reader, skill_roots, "SKILL.md", &mut work).await? {
-            let name = skill.name.clone();
+            let name = skill.name.to_ascii_lowercase();
             let spec = CommandSpec {
                 name: name.clone(),
+                aliases: Vec::new(),
                 description: skill.description.clone(),
                 arguments: CommandArguments::Text,
                 action: CommandAction::Skill { skill },
             };
-            if catalog.commands.insert(name.clone(), spec).is_some() {
+            if catalog.lookup(&name).is_some() {
                 return Err(Error::Conflict(format!("skill/command collision: {name}")));
             }
+            let _ = catalog.names.insert(&name, &name);
+            catalog.commands.insert(name, spec);
         }
         Ok(catalog)
     }
@@ -322,12 +530,55 @@ impl CommandCatalog {
         self.commands.values()
     }
 
-    /// Prefix completion in stable lexical order, accepting an optional slash.
+    /// Prefix matches names or aliases, with direct tools first, then lexical order.
     pub fn complete<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a CommandSpec> {
-        let prefix = prefix.strip_prefix('/').unwrap_or(prefix);
+        let prefix = prefix
+            .strip_prefix('/')
+            .unwrap_or(prefix)
+            .to_ascii_lowercase();
+        let matches = move |spec: &&CommandSpec| {
+            spec.name.starts_with(&prefix)
+                || spec.aliases.iter().any(|alias| alias.starts_with(&prefix))
+        };
         self.commands
             .values()
-            .filter(move |spec| spec.name.starts_with(prefix))
+            .filter(|spec| matches!(spec.action, CommandAction::Tool { .. }))
+            .filter(matches.clone())
+            .chain(
+                self.commands
+                    .values()
+                    .filter(|spec| !matches!(spec.action, CommandAction::Tool { .. }))
+                    .filter(matches),
+            )
+    }
+
+    fn lookup(&self, name: &str) -> Option<&CommandSpec> {
+        self.names
+            .get(name)
+            .and_then(|canonical| self.commands.get(canonical))
+    }
+
+    /// Install the owning renderer's theme data once; no duplicated preset table.
+    pub fn with_themes(mut self, themes: impl IntoIterator<Item = String>) -> Result<Self> {
+        self.set_themes(themes)?;
+        Ok(self)
+    }
+
+    fn set_themes(&mut self, themes: impl IntoIterator<Item = String>) -> Result<()> {
+        let mut names = BTreeSet::new();
+        let mut validated = Vec::new();
+        for theme in themes {
+            if theme.trim() != theme
+                || theme.is_empty()
+                || theme.chars().any(char::is_control)
+                || !names.insert(theme.to_lowercase())
+            {
+                return Err(Error::Invalid("invalid or duplicate theme name".into()));
+            }
+            validated.push(theme);
+        }
+        self.themes = validated;
+        Ok(())
     }
 
     /// Resolves syntax, validates arguments and loads only the selected pinned body.
@@ -337,7 +588,7 @@ impl CommandCatalog {
         reader: &dyn ContentResidencyVerifier,
         maximum_bytes: u64,
     ) -> Result<CommandResolution> {
-        let Some((name, arguments)) = parse::split(input, maximum_bytes)? else {
+        let Some((name, arguments)) = syntax::split(input, maximum_bytes)? else {
             return Ok(CommandResolution::Prompt {
                 text: input.into(),
                 source: None,
@@ -345,9 +596,8 @@ impl CommandCatalog {
             });
         };
         let spec = self
-            .commands
-            .get(name)
-            .ok_or_else(|| Error::NotFound(format!("unknown command: /{name}")))?;
+            .lookup(name)
+            .ok_or_else(|| Error::NotFound(format!("Unknown command: /{name}")))?;
         match spec.arguments {
             CommandArguments::None if !arguments.is_empty() => {
                 return Err(Error::Invalid(format!("/{name} accepts no arguments")));
@@ -359,10 +609,56 @@ impl CommandCatalog {
             {
                 return Err(Error::Invalid(format!("/{name} accepts one identifier")));
             }
+            CommandArguments::RequiredText if arguments.is_empty() || arguments.contains('\0') => {
+                return Err(Error::Invalid(format!("/{name} requires nonempty text")));
+            }
             _ => {}
         }
         match &spec.action {
+            CommandAction::Sdk { command } => Ok(CommandResolution::Sdk {
+                command: command.clone(),
+                arguments: arguments.into(),
+            }),
+            CommandAction::Request {
+                request,
+                confirmation,
+            } => Ok(if *confirmation {
+                CommandResolution::Confirm {
+                    request: request.clone(),
+                }
+            } else {
+                CommandResolution::Submit {
+                    request: request.clone(),
+                }
+            }),
+            CommandAction::Select { query } => Ok(CommandResolution::Select { query: *query }),
+            CommandAction::Tool { tool } => Ok(CommandResolution::Tool {
+                tool: *tool,
+                input: tool.input(arguments),
+            }),
+            CommandAction::Theme => {
+                let normalized = arguments.to_lowercase();
+                Ok(
+                    match self
+                        .themes
+                        .iter()
+                        .find(|theme| theme.to_lowercase() == normalized)
+                    {
+                        Some(name) => CommandResolution::Submit {
+                            request: CommandRequest::Theme { name: name.clone() },
+                        },
+                        None => CommandResolution::Select {
+                            query: CommandQuery::Theme,
+                        },
+                    },
+                )
+            }
             CommandAction::Builtin { command } => Ok(resolve_builtin(*command, arguments)),
+            CommandAction::Template { body, .. } => Ok(CommandResolution::Prompt {
+                text: expand(body, arguments, maximum_bytes)?,
+                source: None,
+                mentions: Vec::new(),
+            }),
             CommandAction::Prompt { source, .. } => {
                 let (_, bytes) = source.read(reader, maximum_bytes).await?;
                 let body = if has_frontmatter(&bytes) {

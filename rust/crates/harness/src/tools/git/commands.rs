@@ -57,10 +57,10 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
 
 /// Reads a patch file from the managed workspace.
 pub(crate) async fn git_apply_patch(
-    workspace: &LocalLazyWorkspace,
+    workspace: View<'_>,
     root: &Path,
     argv: &[String],
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<acyclic_stream::OwnedBytes>, Error> {
     if argv.first().is_none_or(|command| command != "apply") {
         return Ok(None);
     }
@@ -77,44 +77,31 @@ pub(crate) async fn git_apply_patch(
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
     workspace
-        .read(
-            &patch_path,
-            16 * 1024 * 1024,
-            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-        )
+        .read(&patch_path, 16 * 1024 * 1024)
         .await
-        .map(|chunk| Some(chunk.bytes.to_vec()))
-        .map_err(display)
+        .map(Some)
 }
 
 /// Captures the lazy or exact tree required by the command.
 pub(crate) async fn git_workspace_tree(
-    workspace: &LocalLazyWorkspace,
+    workspace: View<'_>,
     argv: &[String],
     permit: Option<PublicationPermit>,
 ) -> Result<GitTreeRef, Error> {
-    if !git_requires_exact_workspace(argv) {
-        return workspace
-            .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
-            .await
-            .map(GitTreeRef::Lazy)
-            .map_err(display);
-    }
-    let exact = workspace
-        .exactify(
-            "/",
+    workspace
+        .tree(
+            git_requires_exact_workspace(argv),
             permit.unwrap_or(PublicationPermit::Unrestricted),
-            &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
         )
         .await
-        .map_err(display)?;
-    Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
 /// Loads ignore and merge policies from the workspace.
 pub(crate) async fn git_policy(
-    workspace: &LocalLazyWorkspace,
+    workspace: View<'_>,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), Error> {
-    let policy = crate::filesystem::WorkspacePolicy::load(workspace).await?;
-    Ok((policy.ignore, policy.merge_drivers))
+    Ok((
+        crate::filesystem::workspace_policy::ignore_for(workspace).await?,
+        crate::filesystem::workspace_policy::merge_drivers_for(workspace).await?,
+    ))
 }

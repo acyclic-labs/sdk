@@ -2,17 +2,12 @@
 //! the tonic service glue under the `grpc` feature.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("cargo:rustc-check-cfg=cfg(acyclic_harness_loom)");
-    println!("cargo:rustc-check-cfg=cfg(acyclic_loom)");
-    println!("cargo:rustc-check-cfg=cfg(loom)");
+    println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // This checked mirror is generated from the repository's canonical schema.
-    // Keeping the build input inside the crate makes crates.io archives
-    // independently buildable instead of depending on the monorepo layout.
+    // Crate-owned protocol sources make the published archive independently buildable.
     let proto = "proto/harness/v2/harness.proto";
     let include = "proto";
-    println!("cargo:rerun-if-changed={proto}");
-    println!("cargo:rerun-if-changed={include}/protocol/v1/protocol.proto");
+    println!("cargo:rerun-if-changed=proto");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");

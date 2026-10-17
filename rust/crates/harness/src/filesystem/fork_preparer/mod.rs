@@ -27,6 +27,7 @@ mod authorization;
 mod capture;
 mod created_access;
 mod journal;
+pub(in crate::filesystem) use journal::journal_absent;
 mod preparation;
 mod references;
 pub(crate) use allocations::AllocationClaim;

@@ -31,7 +31,8 @@ export async function ensureStreamWasm(): Promise<void> {
 }
 
 // Stream handle constructors need the packaged WASM synchronously in Node/Bun.
-if (!initializeStreamWasmSync()) await ensureStreamWasm();
+if (initializeStreamWasmSync()) wasmReady = Promise.resolve();
+else await ensureStreamWasm();
 
 function initializeStreamWasmSync(): boolean {
   const runtime = globalThis as typeof globalThis & {

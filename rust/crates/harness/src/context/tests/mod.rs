@@ -30,10 +30,12 @@ fn native_retention_policy() -> FileProjectionPolicy {
 
 fn native_call_context(file: &FileRef, results: usize, native_in_result: bool) -> Result<Context> {
     let mut calls: Vec<_> = (0..results)
-        .map(|index| ModelContentPart::ToolCall {
-            call_id: format!("native-{index}"),
-            name: "native.tool".into(),
-            arguments: Value::Null,
+        .map(|index| {
+            ModelContentPart::ToolCall(crate::model::ToolCall::new(
+                format!("native-{index}"),
+                "native.tool".into(),
+                Value::Null,
+            ))
         })
         .collect();
     if !native_in_result {
@@ -299,5 +301,7 @@ fn durable(
     )
 }
 mod compaction;
+#[cfg(not(target_arch = "wasm32"))]
+mod reasoning_compaction;
 mod durable;
 mod pipeline;

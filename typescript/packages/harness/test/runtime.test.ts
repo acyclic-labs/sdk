@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { Harness, AgentHarness, ExecutionScope, NativeContracts, defineRuntimeSchema, TaskDefinition, defineTool, type OperationId, type TaskId, type HarnessRuntimeState, policyIdentity, type AgentId, type FileRef, composeContentBindings, DEFAULT_LIMITS, type VolumeRef, TaskContext, type HarnessRuntimeSpawner, type ModelToolDefinition, type Outcome, type BatchId, type ComponentIdentity, type HarnessExecutionProvider, type EffectiveScope, HarnessBuilder, type GroupId, Task } from "../src/index.js";
 import { contracts, parseNumber, jsonProjection, mailboxFile, testModel, parseNull, approvalPolicyIdentity, numberTool, scopedPolicyIdentity, denyPolicyIdentity, numberSchema, parseString } from "./support/runtime-fixture.js";
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 
 test("fork capture binding requires parent publication authority", async () => {
 const snapshot = { parent: { kind: "conversation" as const, id: "parent" }, revision: 1n };
@@ -223,7 +223,7 @@ test("admits exact grants but rejects unauthenticated extension requirements", a
 test("requires capability grants and a complete durable binding for task dependencies", async () => {
   const modelTask = await TaskDefinition.live("model-task", "1", () => 1, { requirements: ["model"] });
   const provider = {
-    ...syntheticAccounting(contracts), async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   };
   await expect(Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
@@ -273,7 +273,7 @@ test("pins tool revisions independently and selects the model-visible revision e
   expect(await ambiguous.call(ambiguous.tool("versioned-tool@2"), null)).toBe(2);
   let visible: readonly ModelToolDefinition[] = [];
   const selected = await builder.selectModelTool("versioned-tool", "2").model(testModel, {
-    ...syntheticAccounting(contracts), async *generate(request) { visible = request.tools; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) { visible = request.tools; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   expect(selected.tool("versioned-tool").definition).toMatchObject({ name: second.name, revision: second.revision });
@@ -739,12 +739,12 @@ test("reused provider call IDs have distinct internal tool operations", async ()
   });
   let step = 0;
   const runtime = await Harness.builder(contracts).tool(tool).grant("tool:call:again").model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() {
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () {
       if (step++ < 2) {
         yield { kind: "tool_call" as const, callId: "provider-call", name: "again", arguments: step };
       } else yield { kind: "content" as const, delta: "done" };
       yield { kind: "completed" as const, metadata: {} };
-    },
+    }),
     async reconcile() { return undefined; },
   }).build();
   expect((await runtime.run("again")).text).toBe("done");

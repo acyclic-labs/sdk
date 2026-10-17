@@ -1,7 +1,7 @@
 import { test, expect } from "bun:test";
 import { type TaskId, type HarnessRuntimeSpawner, type HarnessRuntimeState, policyIdentity, Task, type TaskMessage, defineTool, type EffectId, Harness, type ModelMessage, descriptorFor, type UserContentPart, ExecutionScope, type ConversationMessageId, TaskDefinition, jsonToolProjection } from "../src/index.js";
 import { mailboxFile, durableDigest, parseNumber, jsonProjection, contracts, testModel, imagePolicy, parseNull } from "./support/runtime-fixture.js";
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 
 test("executes model tool calls with durable task ownership and typed receipts", async () => {
   let modelStep = 0; let sender: TaskId | undefined; let toolOperationId: string | undefined;
@@ -20,12 +20,13 @@ test("executes model tool calls with durable task ownership and typed receipts",
     return effect.state === "succeeded" ? input * 4 : 0;
   });
   const runtime = await Harness.builder(contracts).state(host).spawner(host).tool(tool).grant("tool:call:double").model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } }),
     async reconcile() { return undefined; },
   }).build();
   const output = await runtime.run("go");
   expect(output.text).toBe("done");
-  expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
+  if (toolOperationId === undefined) throw new Error("tool was not invoked");
+  expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, operationId: toolOperationId, metadata: null, callId: "call", name: "double", arguments: 3, value: 12, projection: { kind: "json", value: 12 } }, { kind: "model-completed", metadata: { tokens: 1 } }]);
   expect(sender).toBe(output.taskId);
   expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
@@ -38,7 +39,7 @@ test("typed run input carries attachment refs into the model context", async () 
     path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
   };
   const runtime = await Harness.builder(contracts).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.run({ prompt: "describe", content: [{ kind: "file", file, policy: imagePolicy }] });
@@ -52,7 +53,7 @@ test("content-only turns dispatch exactly the content admitted by Rust validatio
     path: "images/chart.png", version: "generation", descriptor: await descriptorFor(new Uint8Array([1, 2]), "image/png"), display_name: "chart.png",
   };
   const runtime = await Harness.builder(contracts).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.run({ prompt: "", content: [{ kind: "file", file, policy: imagePolicy }] });
@@ -75,7 +76,7 @@ test("direct input is snapshotted before validation and model dispatch", async (
     },
   };
   const runtime = await Harness.builder(contracts).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.run(input);
@@ -87,9 +88,9 @@ test("model provider callbacks are captured once per binding and retain their re
   type Provider = import("../src/model.js").ModelProvider;
   type StatefulProvider = Provider & { dispatches: number };
   const accounting = syntheticAccounting(contracts);
-  const reads = { contextCapacity: 0, countTokens: 0, generate: 0, reconcile: 0 };
+  const reads = { contextCapacity: 0, prepare: 0, reconcile: 0 };
   const called: string[] = [];
-  let admitted: Parameters<Provider["generate"]>[0] | undefined;
+  let admitted: Parameters<Provider["prepare"]>[0] | undefined;
   const provider: StatefulProvider = {
     dispatches: 0,
     contextCapacity(this: StatefulProvider, model) {
@@ -97,16 +98,15 @@ test("model provider callbacks are captured once per binding and retain their re
       called.push("capacity");
       return accounting.contextCapacity(model);
     },
-    countTokens(this: StatefulProvider, request) {
+    async prepare(this: StatefulProvider, request) {
       expect(this).toBe(provider);
-      called.push("count");
-      return accounting.countTokens(request);
-    },
-    async *generate(this: StatefulProvider, request) {
-      expect(this).toBe(provider);
-      this.dispatches++;
+      const owner = this;
       admitted = request;
-      yield { kind: "completed" as const, metadata: {} };
+      return {
+        [Symbol.dispose]() {},
+        countTokens() { called.push("count"); return accounting.countTokens(request); },
+        async *generate() { owner.dispatches++; yield {kind: "completed" as const, metadata: {}}; },
+      };
     },
     async reconcile(this: StatefulProvider) {
       expect(this).toBe(provider);
@@ -114,8 +114,7 @@ test("model provider callbacks are captured once per binding and retain their re
       return undefined;
     },
   };
-  const callbacks = { contextCapacity: provider.contextCapacity, countTokens: provider.countTokens,
-    generate: provider.generate, reconcile: provider.reconcile };
+  const callbacks = { contextCapacity: provider.contextCapacity, prepare: provider.prepare, reconcile: provider.reconcile };
   const names = Object.keys(callbacks) as (keyof typeof callbacks)[];
   for (const name of names) Object.defineProperty(provider, name, {
     configurable: true, get() { reads[name]++; return callbacks[name]; },
@@ -123,7 +122,7 @@ test("model provider callbacks are captured once per binding and retain their re
   const runtime = await Harness.builder(contracts).model(testModel, provider).build();
   const scope = new ExecutionScope().model({ ...testModel, revision: "scoped" }, provider);
   const scoped = await runtime.scoped(scope);
-  expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
+  expect(reads).toEqual({ contextCapacity: 2, prepare: 2, reconcile: 2 });
   for (const name of names) Object.defineProperty(provider, name, {
     configurable: true, value() { throw new Error("replacement must require a new binding"); },
   });
@@ -133,20 +132,20 @@ test("model provider callbacks are captured once per binding and retain their re
   const binding = scope.modelBinding;
   if (!binding || !admitted) throw new Error("expected an admitted scoped request");
   expect(binding.provider.contextCapacity(binding.identity)).toEqual(accounting.contextCapacity(binding.identity));
-  const count = binding.provider.countTokens(admitted);
-  expect(count).toEqual(accounting.countTokens(admitted));
+  const count = await (await binding.provider.prepare(admitted)).countTokens();
+  expect(count).toEqual(await accounting.countTokens(admitted));
   await binding.provider.reconcile({ operationId: "binding-probe", step: 0,
     requestDigest: count.requestDigest, observed: [] });
   expect(called).toEqual(["capacity", "count", "reconcile"]);
-  expect(reads).toEqual({ contextCapacity: 2, countTokens: 2, generate: 2, reconcile: 2 });
+  expect(reads).toEqual({ contextCapacity: 2, prepare: 2, reconcile: 2 });
 });
 
 test("model provider callbacks must all be present before binding", () => {
-  for (const name of ["contextCapacity", "countTokens", "generate", "reconcile"]) {
+  for (const name of ["contextCapacity", "prepare", "reconcile"]) {
     let dispatches = 0;
-    const provider = { ...syntheticAccounting(contracts), async *generate() {
+    const provider = { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () {
       dispatches++; yield { kind: "completed" as const, metadata: {} };
-    }, async reconcile() { return undefined; } };
+    }), async reconcile() { return undefined; } };
     Object.defineProperty(provider, name, { value: undefined });
     expect(() => Harness.builder(contracts).model(testModel, provider)).toThrow();
     expect(() => new ExecutionScope().model(testModel, provider)).toThrow();
@@ -154,11 +153,33 @@ test("model provider callbacks must all be present before binding", () => {
   }
 });
 
+test("request preparations are disposed on completion and stream failure", async () => {
+  for (const fail of [false, true]) {
+    let disposed = 0;
+    const prepare = scriptedPreparation(contracts, async function* () {
+      expect(disposed).toBe(0);
+      if (fail) throw new Error("scripted stream failure");
+      yield {kind:"completed" as const,metadata:{}};
+    });
+    const runtime = await Harness.builder(contracts).model(testModel, {
+      ...syntheticAccounting(contracts),
+      async prepare(request) {
+        const prepared = await prepare(request);
+        return {...prepared, [Symbol.dispose]() { disposed++; }};
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    if (fail) await expect(runtime.run("test")).rejects.toThrow();
+    else await runtime.run("test");
+    expect(disposed).toBe(1);
+  }
+});
+
 test("model identity and options are pinned at binding, including scoped overrides", async () => {
   const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
   const seen: unknown[] = [];
   const budgets: (number | undefined)[] = [];
-  const provider = { ...syntheticAccounting(contracts), async *generate(request: { model: unknown; maxOutputTokens?: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
+  const provider = { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request: { model: unknown; maxOutputTokens?: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; } };
   const runtime = await Harness.builder(contracts).model(rootIdentity, provider).modelOutputTokens(8_192).build();
   rootIdentity.options.mode = "mutated";
@@ -180,7 +201,7 @@ test("model identity and options are pinned at binding, including scoped overrid
 test("selected context preserves canonical roles without a synthetic user duplicate", async () => {
   let observed: readonly ModelMessage[] = [];
   const runtime = await Harness.builder(contracts).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* (request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await runtime.runSelectedContext({
@@ -212,7 +233,7 @@ test("selected context preserves canonical roles without a synthetic user duplic
 test("builder limits bound selected history and direct input before model dispatch", async () => {
   let dispatched = 0;
   const runtime = await Harness.builder(contracts).limits({ context_messages: 1, render_bytes: 8 }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: null }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { dispatched++; yield { kind: "completed" as const, metadata: null }; }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("nine bytes")).rejects.toThrow();
@@ -228,9 +249,9 @@ test("builder limits bound selected history and direct input before model dispat
 test("stream event limits stop an unbounded provider before further dispatch", async () => {
   let produced = 0;
   const runtime = await Harness.builder(contracts).limits({ model_events_per_step: 2 }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() {
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () {
       while (true) { produced++; yield { kind: "content" as const, delta: "." }; }
-    },
+    }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("bounded")).rejects.toThrow();
@@ -247,10 +268,10 @@ test("model loop consumes the detached event returned by Rust admission", async 
     },
   };
   const runtime = await Harness.builder(contracts).limits({ file_bytes: 2 }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() {
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () {
       yield event;
       yield { kind: "completed" as const, metadata: {} };
-    },
+    }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("x")).resolves.toMatchObject({ text: "ok" });
@@ -262,7 +283,7 @@ test("custom context builders cannot bypass model-content bounds", async () => {
   const runtime = await Harness.builder(contracts).limits({ render_bytes: 8 }).context({
     async build() { return [{ role: "user" as const, content: "too much context" }]; },
   }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { dispatched++; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("short")).rejects.toThrow();
@@ -276,7 +297,7 @@ test("custom context builders use the native closed model-message contract", asy
       return [{ role: "developer" as never, content: "safe" }];
     },
   }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { dispatched++; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("safe")).rejects.toThrow();
@@ -290,7 +311,7 @@ test("model context tool values are admitted by Rust canonical JSON before dispa
       kind: "tool_call" as const, callId: "call", name: "tool", arguments: { unsafe: Number.POSITIVE_INFINITY },
     } }, { role: "user" as const, content: "safe" }]; },
   }).model(testModel, {
-    ...syntheticAccounting(contracts), async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+    ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () { dispatched++; yield { kind: "completed" as const, metadata: {} }; }),
     async reconcile() { return undefined; },
   }).build();
   await expect(runtime.run("safe")).rejects.toThrow();
@@ -325,12 +346,12 @@ const builder = Harness.builder(contracts).tool(definition).grant("tool:call:pro
 projector.project = () => { throw new Error("replacement must not execute"); };
 const runtime = await builder.model(testModel, {
   ...syntheticAccounting(contracts),
-  async *generate(request) {
+  prepare: scriptedPreparation(contracts, async function* (request) {
     if (steps++ === 0) yield { kind: "tool_call" as const, callId: "projected", name: "projected", arguments: 3 };
     else expect(request.messages.at(-1)?.content).toEqual({ kind: "tool_result", callId: "projected",
       name: "projected", content: { kind: "json", value: "selected:3:6" } });
     yield { kind: "completed" as const, metadata: {} };
-  }, async reconcile() { return undefined; },
+  }), async reconcile() { return undefined; },
 }).build();
 expect(runtime.tool(definition).definition.projectionSchema).toEqual(stringProjection.schema);
 const result = await runtime.run("go");
@@ -348,11 +369,11 @@ const definition = await defineTool<null, number>({ name: "invalid-projection", 
 }, () => 1);
 let calls = 0;
 const runtime = await Harness.builder(contracts).tool(definition).grant("tool:call:invalid-projection")
-  .model(testModel, { ...syntheticAccounting(contracts), async *generate() {
+  .model(testModel, { ...syntheticAccounting(contracts), prepare: scriptedPreparation(contracts, async function* () {
     calls++;
     yield { kind: "tool_call" as const, callId: "invalid", name: "invalid-projection", arguments: null };
     yield { kind: "completed" as const, metadata: {} };
-  }, async reconcile() { return undefined; } }).build();
+  }), async reconcile() { return undefined; } }).build();
 await expect(runtime.run("go")).rejects.toThrow();
 expect(calls).toBe(1);
 });

@@ -95,7 +95,7 @@ fn allocation_error(
     }
 }
 
-pub(super) fn reserve_vec<T>(
+pub(crate) fn reserve_vec<T>(
     work: &mut NativeCustody,
     value: &mut Vec<T>,
     length: usize,
@@ -119,7 +119,7 @@ pub(super) fn reserve_vec<T>(
     capacity(work, requested, value.capacity() * slots, old)
 }
 
-pub(super) fn reserve_string(
+pub(crate) fn reserve_string(
     work: &mut NativeCustody,
     value: &mut String,
     length: usize,
@@ -136,7 +136,7 @@ pub(super) fn reserve_string(
     capacity(work, length, value.capacity(), old)
 }
 
-pub(super) fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
+pub(crate) fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         custody.work().charge(acyclic_fs::WorkCounters {

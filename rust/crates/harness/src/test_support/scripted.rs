@@ -228,11 +228,16 @@ impl ModelProvider for ScriptedModelProvider {
         })
     }
 
-    fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        let counter = self.token_counter.as_ref().ok_or_else(|| {
-            Error::Unsupported("selected model token counting is unavailable".into())
-        })?;
-        counter(request)
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<ModelTokenCount>> {
+        Box::pin(async move {
+            let counter = self.token_counter.as_ref().ok_or_else(|| {
+                Error::Unsupported("selected model token counting is unavailable".into())
+            })?;
+            counter(request)
+        })
     }
 
     fn generate<'a>(
@@ -247,21 +252,7 @@ impl ModelProvider for ScriptedModelProvider {
             observer(dispatch);
         }
         match turn {
-            Ok(ScriptedTurn::Text(delta)) => Box::pin(futures::stream::iter([
-                Ok(ModelEvent::Content { delta }),
-                Ok(ModelEvent::Completed {
-                    metadata: serde_json::Value::Null,
-                }),
-            ])),
-            Ok(ScriptedTurn::Events(events)) => {
-                Box::pin(futures::stream::iter(events).then(|event| async move {
-                    match event {
-                        ScriptedEvent::Event(event) => Ok(event),
-                        ScriptedEvent::Error { error } => Err(Error::Storage(error)),
-                        ScriptedEvent::Pending {} => std::future::pending().await,
-                    }
-                }))
-            }
+            Ok(turn) => turn.stream(),
             Err(error) => Box::pin(futures::stream::iter([Err(error)])),
         }
     }
@@ -312,3 +303,25 @@ fn serialized_tokens(request: &PreparedModelRequest) -> Result<ModelTokenCount> 
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+impl ScriptedTurn {
+    pub(crate) fn stream(self) -> BoxProviderStream<'static, Result<ModelEvent>> {
+        match self {
+            Self::Text(delta) => Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content { delta }),
+                Ok(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ])),
+            Self::Events(events) => {
+                Box::pin(futures::stream::iter(events).then(|event| async move {
+                    match event {
+                        ScriptedEvent::Event(event) => Ok(event),
+                        ScriptedEvent::Error { error } => Err(Error::Storage(error)),
+                        ScriptedEvent::Pending {} => std::future::pending().await,
+                    }
+                }))
+            }
+        }
+    }
+}

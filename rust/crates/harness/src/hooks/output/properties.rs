@@ -45,7 +45,7 @@ proptest! {
             },
         })).unwrap();
         let mut decoded = None;
-        let decoding = allocation_counter::measure(|| {
+        let decoding = acyclic_test_support::measure(|| {
             decoded = Some(serde_json::from_str::<Value>(&second).unwrap());
         });
         let decoded = decoded.unwrap();
@@ -54,7 +54,7 @@ proptest! {
             let mut output = HookOutput::default();
             output.observe(HookEvent::PreToolUse, Some(0), &first, b"").unwrap();
             let mut result = None;
-            let merging = allocation_counter::measure(|| {
+            let merging = acyclic_test_support::measure(|| {
                 result = Some(output.observe(HookEvent::PreToolUse, Some(0), second.as_bytes(), b""));
                 if extra_copy {
                     // Negative control: restore the unnecessary reason-sized copy.

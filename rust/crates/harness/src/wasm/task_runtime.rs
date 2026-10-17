@@ -1,9 +1,8 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
 
-use super::{WasmReducer, from_js, js_error, key_bytes};
+use super::{WasmReducer, from_js, js_error, js_json_value, key_bytes};
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
-    context::ContextPipeline,
     conversation::{ContentGrant, FileRef, Limits, VolumeOperation, VolumeRef},
     core::Scope,
     distributed::{SchedulerPayloadStore, WorkLease, WorkPull, Worker},
@@ -333,7 +332,7 @@ impl WasmTaskRuntime {
         )]
         capacity: Option<Function>,
         #[wasm_bindgen(
-            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount) | undefined"
+            unchecked_param_type = "((request: Uint8Array, request_digest: number[]) => ModelTokenCount | Promise<ModelTokenCount>) | undefined"
         )]
         count_tokens: Option<Function>,
         #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,
@@ -421,7 +420,7 @@ impl WasmTaskRuntime {
         let admission = self
             .runtime
             .harness()
-            .admit(operation, &definition, from_js::<Value>(input)?, parent)
+            .admit(operation, &definition, js_json_value(&input)?, parent)
             .await
             .map_err(js_error)?;
         let admission = match admission {
@@ -663,13 +662,9 @@ impl WasmTaskRuntime {
     > {
         let commands = self.runtime.commands();
         match &self.model {
-            Some((model, provider, compaction)) => commands.with_model(
-                model,
-                provider.clone(),
-                &ContextPipeline::new([]),
-                compaction,
-                None,
-            ),
+            Some((model, provider, compaction)) => {
+                commands.with_model(model, provider.clone(), compaction, None)
+            }
             None => Ok(commands),
         }
     }

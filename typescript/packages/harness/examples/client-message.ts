@@ -1,6 +1,6 @@
 /** A public reducer-backed message projection; no queue/admission implementation. */
 import { Harness, DEFAULT_LIMITS, type ConversationMessage } from "@acyclic-labs/harness";
-import { ClientViews, type ClientDomain, type ClientFact, type OperationOutcome } from "@acyclic-labs/harness/client";
+import { ClientViews, type ClientDomain, type ClientFact, type OperationOutcome } from "@acyclic-labs/harness";
 
 function immutable<Value>(value: Value): Value {
   if (value !== null && typeof value === "object") {

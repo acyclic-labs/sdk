@@ -157,6 +157,25 @@ pub(super) async fn prepare_case(
         u64::MAX,
         &mut None,
     )?;
+    let manifest = acyclic_harness::context::ContextManifest::new(
+        Default::default(),
+        Vec::new(),
+        &acyclic_harness::tools::defaults()?,
+    )?;
+    let context_manifest = files
+        .put_content(
+            &project,
+            &project_writer,
+            ".qualification-inputs/manifest.json",
+            &manifest.encode(config.limits)?,
+            "application/json",
+            "context-manifest.json",
+            PAYLOAD_BYTES,
+            &IdempotencyKey::new("planned-manifest")?,
+            None,
+            None,
+        )
+        .await?;
     let mut planned_commands = BTreeMap::new();
     let mut artifact_grants = owner
         .scope
@@ -164,6 +183,7 @@ pub(super) async fn prepare_case(
         .iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
+    artifact_grants.push(context_manifest.read_capability(&mut None)?);
     for label in [
         "bootstrap",
         "root",
@@ -175,7 +195,8 @@ pub(super) async fn prepare_case(
         let input: ModelTaskCommand = fixture(
             "model_input",
             json!({
-                "input": format!("real isolated {label} qualification task")
+                "input": format!("real isolated {label} qualification task"),
+                "context_manifest": context_manifest
             }),
         )?;
         let bytes = serde_json::to_vec(&input).map_err(invalid)?;

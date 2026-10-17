@@ -47,8 +47,60 @@ mod diff;
 pub use diff::*;
 mod notifications;
 pub use notifications::*;
+mod task_list;
+pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
+mod file_query;
+pub use file_query::{FileQueryView, GoalFileView};
+mod model_identity;
+mod model_view;
+pub use model_view::{ModelFileView, ModelQueryView};
+mod goal_view;
+mod goal_selection;
+pub use goal_view::{GoalProgress, GoalQueryView};
+#[cfg(feature = "tui")]
+mod goal_panel;
+#[cfg(feature = "tui")]
+pub use goal_panel::GoalPanel;
+#[cfg(feature = "tui")]
+mod plan_panel;
+#[cfg(feature = "tui")]
+pub use plan_panel::PlanPanel;
+mod interests;
+pub use interests::{ClientInterests, InterestChanges, InterestTier};
+mod interest_files;
+pub use interest_files::InterestDocument;
+mod swarm;
+pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
+mod file_views;
+pub use file_views::QueryViewLimits;
+mod query;
+pub use query::ClientQuery;
+mod file_submit;
+pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use file_submit::validate_request_key;
+mod file_error;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod retry;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod waiting_calls;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use retry::submission_retry;
+pub use file_error::FileClientError;
+mod offline;
+pub use offline::validate_offline_request;
+mod query_subscription;
+pub(crate) use file_views::FileViews;
+pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod query_verification {
+    pub use super::file_views::FileViews;
+}
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmClientViews;
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;
 /// Persisted data specialized to a domain; never authoritative evidence.
@@ -87,3 +139,7 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
+#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+pub(crate) mod mailbox;
+#[cfg(acyclic_harness_loom)]
+pub use mailbox::verify_mailbox;

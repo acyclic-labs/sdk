@@ -56,7 +56,10 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
         let ((request, _), custody) = read_request(&self.bucket, id, maximum, work)?;
         let remaining = work.remaining()?;
-        let native = work.standalone_parts().is_none();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work.native_work().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
         let maximum = maximum
             .min(self.maximum_object_bytes)
             .min(remaining.object_bytes_read);
@@ -187,7 +190,10 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         let total = incoming.iter().try_fold(0u64, |total, request| {
             total.checked_add(request.1).ok_or(WorkError::Overflow)
         })?;
-        let native = work.standalone_parts().is_none();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = work.native_work().is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
         let mut quota = total.min(remaining.object_bytes_read);
         if !native {
             quota = quota.min(remaining.peak_allocation_bytes);

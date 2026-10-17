@@ -529,8 +529,8 @@ where
                     .map_err(MaterializeError::from)?,
             );
             for relative in relatives {
-                let mut path = generation_namespace_from_host(
-                    Path::new(relative),
+                let mut path = super::selection::generation_namespace_from_selection(
+                    relative,
                     reader.volume_config(),
                     &mut receipt,
                 )?;

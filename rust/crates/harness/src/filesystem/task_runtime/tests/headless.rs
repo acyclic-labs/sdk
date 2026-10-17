@@ -417,12 +417,12 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             output_tokens: 8_192,
         })
         .with_token_counter(|request| {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.request_digest(),
-                fixed_tokens: u32::try_from(request.bytes().len())
+            Ok(crate::context::ModelTokenCount::from_upper_bounds(
+                request.request_digest(),
+                u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture request size".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+                vec![0; request.request().messages.len()],
+            ))
         }),
     );
     let turn = OperationId::from_bytes([130; 16]);
@@ -434,6 +434,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?
@@ -465,6 +466,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
                 Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
                 provider.clone(),
                 ContextPipeline::default(),
+                fixture.tools.clone(),
                 None
             )
             .await
@@ -941,6 +943,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
             Model::new("fixture".into(), "headless".into(), "1".into(), json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
+            fixture.tools.clone(),
             None,
         )
         .await?

@@ -3,6 +3,12 @@ use super::*;
 #[test]
 fn cancelled_real_open_retains_ownership_until_journal_open_stops()
 -> Result<(), Box<dyn std::error::Error>> {
+    if crate::test_trace::isolate(&format!(
+        "{}::cancelled_real_open_retains_ownership_until_journal_open_stops",
+        module_path!()
+    ))? {
+        return Ok(());
+    }
     use tracing::instrument::WithSubscriber as _;
     use tracing_subscriber::layer::SubscriberExt as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
@@ -66,6 +72,15 @@ fn cancelled_real_open_retains_ownership_until_journal_open_stops()
             ownership_retained,
             "caller cancellation must not release ownership from active Journal::open"
         );
+        // Dropping the journal gate precedes the detached task's completion
+        // fields. Wait for that task's span, not merely its blocking worker.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while captured.closed("acyclic.stream.open") == 0 {
+                captured.1.notified().await;
+            }
+        })
+        .await?;
+        assert_eq!(captured.closed("acyclic.stream.open"), 1);
         let fields = captured.fields("acyclic.stream.open");
         assert_eq!(
             fields.get("outcome").ok_or("missing span field")?,
@@ -898,7 +913,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
 }
 
 #[tokio::test]
-async fn follow_out_of_range_is_terminal() -> Result<(), Box<dyn std::error::Error>> {
+async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let path = StreamPath::new("follow/range")?;
@@ -910,8 +925,9 @@ async fn follow_out_of_range_is_terminal() -> Result<(), Box<dyn std::error::Err
             idempotency_key: None,
         })
         .await?;
-    let mut records = provider.follow(path, 2).await?;
-    assert_eq!(records.next().await, Some(Err(StreamError::OutOfRange)));
-    assert!(records.next().await.is_none());
+    assert!(matches!(
+        provider.follow(path, 2).await,
+        Err(StreamError::OutOfRange)
+    ));
     Ok(())
 }

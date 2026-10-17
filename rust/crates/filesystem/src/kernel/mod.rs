@@ -10,6 +10,10 @@ mod blob;
 mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
+#[doc(hidden)]
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod encoder_fuzz;
+
 mod export;
 mod extent;
 mod extent_clone;
@@ -256,3 +260,7 @@ pub use types::{
 pub(crate) use volume::encode_config;
 pub(crate) use volume::{CONFIG_ENCODED_BYTES, decode_config, encode_volume_created};
 pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volume_authority_id};
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod decoder_fuzz;

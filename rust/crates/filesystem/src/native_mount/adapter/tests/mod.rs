@@ -92,6 +92,7 @@ fn mount_source(
 }
 
 include!("runtime.rs");
+mod leases;
 include!("namespace.rs");
 include!("lifecycle.rs");
 include!("platform.rs");

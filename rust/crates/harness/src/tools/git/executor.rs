@@ -1,16 +1,21 @@
 use super::*;
 
-impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
+impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
     type Error = Error;
 
     async fn validate(&self) -> Result<(), Self::Error> {
+        (self.before_effect)().await?;
         let Some(lease) = &self.lease else {
             return Ok(());
         };
         let snapshot = OperationWindowCoordinator::new(self.fs.operation_window_store())
             .snapshot(lease.workspace_id)
             .await
-            .map_err(display)?;
+            .map_err(Error::from)?;
         let active = match snapshot.phase {
             acyclic_fs::OperationWindowPhase::Active { leases, .. } => {
                 leases.get(&lease.lease_id).is_some_and(|active| {
@@ -26,6 +31,46 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
         } else {
             Err(Self::error("Git compatibility command lease expired"))
         }
+    }
+
+    async fn validate_merge_resolution(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+        tree: GitTreeRef,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        self.validate().await?;
+        let GitFilesystemAction::Join { tracked_paths, .. } = action else {
+            return Err(Error::Invalid("merge continuation requires a join".into()));
+        };
+        let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
+            .pending_transition()
+            .await
+            .map_err(super::errors::compat_error)?
+            .filter(|pending| pending.id.operation_id() == operation)
+            .ok_or_else(|| Self::error("Git merge transition changed"))?;
+        let acyclic_fs::GitPendingMutation::Join {
+            conflicts: Some(paths),
+            ..
+        } = &pending.mutation
+        else {
+            return Err(Self::error(
+                "Git merge has unresolved entries; conflicts have not been inspected",
+            ));
+        };
+        let current = self.generation(tree).await?;
+        let Some(tracked_paths) =
+            acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
+        else {
+            return Err(Self::error(
+                "Git merge still contains unresolved conflict markers",
+            ));
+        };
+        self.validate().await?;
+        Ok(GitFilesystemResult::Applied {
+            tree: Some(tree),
+            tracked_paths: Some(tracked_paths),
+        })
     }
 
     async fn execute(
@@ -59,7 +104,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?
+                        .map_err(Error::from)?
                         .id()
                         != workspace_generation.id()
                 {
@@ -89,11 +134,11 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                     }
                 }
-                .map_err(display)?;
+                .map_err(Error::from)?;
                 let proof = captured
                     .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Captured {
                     tree: GitTreeRef::exact(
                         captured.generation.workspace_id(),
@@ -121,18 +166,16 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                 .await
                                 .map(|receipt| receipt.value)
                                 .map_err(|failure| failure.error)
-                                .map_err(display)?
+                                .map_err(Error::from)?
                                 .id()
                                 == source.generation
                     }
                     GitTreeRef::Lazy(source) => {
                         self.lazy_current
-                            .snapshot(
-                                &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                            )
+                            .tree(false, self.permit)
                             .await
-                            .map_err(display)?
-                            == *source
+                            .map_err(Error::from)?
+                            == GitTreeRef::Lazy(*source)
                     }
                 };
                 if !source_matches {
@@ -155,18 +198,13 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?
+                    .map_err(Error::from)?
                     .id();
                 let workspace = self
                     .lazy_current
-                    .fork(
-                        &destination,
-                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
+                    .fork(&destination, operation_id, self.permit)
                     .await
-                    .map_err(display)?
-                    .0;
+                    .map_err(Error::from)?;
                 WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         self.lazy_current.workspace(),
@@ -174,7 +212,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         fork_generation,
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let workspace_id = workspace.workspace().id();
                 if *switch {
                     *self
@@ -189,18 +227,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 let workspace = self.workspace(*workspace_id).await?;
                 let lazy_workspace = self
                     .lazy_current
-                    .open_related(
-                        workspace.clone(),
-                        &mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()),
-                    )
+                    .related(workspace)
                     .await
-                    .map_err(display)?;
-                let tree = GitTreeRef::Lazy(
-                    lazy_workspace
-                        .snapshot(&mut WorkBudget::UNBOUNDED.accounting(&CancellationToken::new()))
-                        .await
-                        .map_err(display)?,
-                );
+                    .map_err(Error::from)?;
+                let tree = lazy_workspace.view().tree(false, self.permit).await?;
                 *self
                     .switched
                     .lock()
@@ -227,7 +257,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                     json!({
                         "from": hex::encode(from.id().digest().as_bytes()),
                         "to": hex::encode(to.id().digest().as_bytes()),
@@ -268,7 +298,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let generation = match self
                     .current
                     .restore_generation(
@@ -278,7 +308,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         self.permit,
                     )
                     .await
-                    .map_err(display)?
+                    .map_err(Error::from)?
                 {
                     WorkspaceRestore::Restored(generation)
                     | WorkspaceRestore::AlreadyRestored(generation)
@@ -307,91 +337,8 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 tracked_paths,
                 ..
             } => {
-                let source = self.workspace(*source_workspace).await?;
-                let mut builder = source.join_into(&self.current);
-                if *rebase {
-                    builder = builder.history(acyclic_fs::JoinHistory::Rebase);
-                }
-                let plan = builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                self.join(operation_id, *source_workspace, *rebase, tracked_paths)
                     .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| display(failure.error))?;
-                let options = ApplyOptions {
-                    if_target: plan.target_head(),
-                    idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                };
-                let initial = plan
-                    .apply(options, BTreeMap::new(), self.permit)
-                    .await
-                    .map_err(display)?;
-                let mut projected_conflicts = None;
-                let outcome = if let JoinOutcome::Conflicted {
-                    conflicts,
-                    truncated,
-                } = initial
-                {
-                    let typed = plan
-                        .describe_conflicts(conflicts, truncated)
-                        .await
-                        .map_err(display)?;
-                    let typed_json = serde_json::to_string(&typed).map_err(display)?;
-                    let candidate = {
-                        let mut cache = self.merge_cache.lock().await;
-                        resolve_merge_plan(typed, &self.merge_drivers, &mut *cache, false).map_err(
-                            |error| {
-                                Self::error(format!(
-                                    "Git join has unresolved typed conflicts: {typed_json}; {error}"
-                                ))
-                            },
-                        )?
-                    };
-                    let has_markers = candidate.resolutions.values().any(|resolution| {
-                        matches!(resolution, acyclic_fs::MergeResolution::Text(text)
-                                if acyclic_fs::text_merge::has_conflict_markers(text))
-                    });
-                    let outcome = plan
-                        .apply_candidate(options, &candidate, self.permit)
-                        .await
-                        .map_err(display)?;
-                    if has_markers {
-                        projected_conflicts = Some(typed_json);
-                    }
-                    outcome
-                } else {
-                    initial
-                };
-                let generation = match outcome {
-                    JoinOutcome::Applied(application)
-                    | JoinOutcome::AlreadyApplied(application) => application.generation,
-                    JoinOutcome::NoChanges(generation) => generation,
-                    JoinOutcome::StaleTarget(_) => {
-                        return Err(Self::error("Git join raced with another workspace writer"));
-                    }
-                    JoinOutcome::Conflicted {
-                        conflicts,
-                        truncated,
-                    } => {
-                        return Err(Self::error(format!(
-                            "Git join has {} conflict(s); truncated={truncated}",
-                            conflicts.len()
-                        )));
-                    }
-                    JoinOutcome::Fenced => return Err(Self::error("Git join was fenced")),
-                    JoinOutcome::IdempotencyConflict => {
-                        return Err(Self::error("Git join retry identity was reused"));
-                    }
-                };
-                if let Some(conflicts) = projected_conflicts {
-                    return Err(Self::error(format!(
-                        "Git join projected unresolved text conflicts into the workspace: {conflicts}. Edit them, then run `acyclic git merge --continue`, or run `acyclic git merge --abort`"
-                    )));
-                }
-                let resulting_tracked = existing_tracked_paths(&generation, tracked_paths).await?;
-                Ok(GitFilesystemResult::Applied {
-                    tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-                    tracked_paths: Some(resulting_tracked),
-                })
             }
             GitFilesystemAction::ApplyCommit {
                 base,
@@ -417,7 +364,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let outcome = self
                     .current
                     .apply_paths_from(
@@ -429,7 +376,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         self.permit,
                     )
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let generation = match outcome {
                     WorkspacePathApply::Applied(generation)
                     | WorkspacePathApply::AlreadyApplied(generation)
@@ -446,7 +393,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                                     }))
                                     .collect::<Vec<_>>()
                             }))
-                            .map_err(display)?,
+                            .map_err(json_error)?,
                         ));
                     }
                     WorkspacePathApply::Stale(_) => {
@@ -473,7 +420,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 let generation = self.generation(*tree).await?;
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "archive".to_owned(),
                     value: json!({
@@ -498,10 +445,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     100_000,
                 )
                 .await
-                .map_err(display)?;
+                .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "grep".to_owned(),
-                    value: serde_json::to_value(result).map_err(display)?,
+                    value: serde_json::to_value(result).map_err(json_error)?,
                 })
             }
             GitFilesystemAction::Blame { path, commits } => {
@@ -512,10 +459,10 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 }
                 let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 Ok(GitFilesystemResult::Data {
                     kind: "blame".to_owned(),
-                    value: serde_json::to_value(lines).map_err(display)?,
+                    value: serde_json::to_value(lines).map_err(json_error)?,
                 })
             }
             GitFilesystemAction::Clean {
@@ -531,7 +478,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                 }
                 let entries = walk_git_tree(&generation, None, 100_000)
                     .await
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 let candidates: Vec<_> = entries
                     .into_iter()
                     .filter(|entry| {
@@ -557,7 +504,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     .await
                     .map(|receipt| receipt.value)
                     .map_err(|failure| failure.error)
-                    .map_err(display)?;
+                    .map_err(Error::from)?;
                 for path in &candidates {
                     transaction
                         .remove(
@@ -568,7 +515,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?;
+                        .map_err(Error::from)?;
                 }
                 committed(
                     transaction
@@ -589,7 +536,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?,
+                        .map_err(Error::from)?,
                 )
             }
             GitFilesystemAction::ApplyPatch { patch } => committed(
@@ -600,7 +547,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                     self.permit,
                 )
                 .await
-                .map_err(display)?,
+                .map_err(Error::from)?,
             ),
             GitFilesystemAction::CheckIgnore { paths, tree } => {
                 let generation = self.generation(*tree).await?;
@@ -614,7 +561,7 @@ impl GitFilesystemExecutor for WorkspaceGitExecutor<'_> {
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)
-                        .map_err(display)?
+                        .map_err(Error::from)?
                         .id()
                         != generation.id()
                 {

@@ -300,17 +300,32 @@ impl ModelContentPart {
                 file: file.clone_in_quota(quota)?,
                 policy: policy.copy_fields(quota)?,
             },
-            Self::ToolCall {
+            Self::Reasoning { block } => Self::Reasoning {
+                block: crate::core::copy(block, quota, |value: &ReasoningBlock, _| {
+                    value.payload_bytes()
+                })?,
+            },
+            Self::ToolCall(crate::model::ToolCall {
                 call_id,
                 name,
                 arguments,
-            } => Self::ToolCall {
-                call_id: copy_text(call_id, quota)?,
-                name: copy_text(name, quota)?,
-                arguments: crate::core::copy(arguments, quota, |value: &serde_json::Value, _| {
-                    crate::executor::json::json_value_logical_owned_bytes(value)
-                })?,
-            },
+                metadata,
+            }) => Self::ToolCall(
+                crate::model::ToolCall::new(
+                    copy_text(call_id, quota)?,
+                    copy_text(name, quota)?,
+                    crate::core::copy(arguments, quota, |value: &serde_json::Value, _| {
+                        crate::executor::json::json_value_logical_owned_bytes(value)
+                    })?,
+                )
+                .with_metadata(crate::core::copy(
+                    metadata,
+                    quota,
+                    |value: &serde_json::Value, _| {
+                        crate::executor::json::json_value_logical_owned_bytes(value)
+                    },
+                )?),
+            ),
             Self::ToolResult {
                 call_id,
                 name,

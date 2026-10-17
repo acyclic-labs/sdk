@@ -51,14 +51,8 @@ impl ModelContentPart {
             Self::File { file, policy } => {
                 add(file.logical_owned_bytes()?, policy.payload_bytes()?)
             }
-            Self::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } => add(
-                add(call_id.capacity() as u64, name.capacity() as u64)?,
-                crate::executor::json::json_value_logical_owned_bytes(arguments)?,
-            ),
+            Self::Reasoning { block } => block.payload_bytes(),
+            Self::ToolCall(call) => call.payload_bytes(),
             Self::ToolResult {
                 call_id,
                 name,

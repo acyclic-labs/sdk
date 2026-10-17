@@ -1,5 +1,6 @@
+use crate::sync::{Mutex as QueueMutex, mpsc};
 use crate::*;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use admission::poll_submission_with;
 pub(crate) use admission::{
     AdmissionState, CapacityWaiter, allocate_capacity_waiter, notify_capacity_released,
@@ -12,7 +13,22 @@ mod job;
 
 pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
-    pub(crate) admission: Arc<Mutex<AdmissionState>>,
+    pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
+}
+
+// Receive lock -> channel lock. Both are released before queue admission, and
+// every completion/callback runs after all three locks are released.
+pub(crate) fn receive_job(
+    receiver: &QueueMutex<mpsc::Receiver<NativeJob>>,
+    admission: &QueueMutex<AdmissionState>,
+) -> Option<NativeJob> {
+    let job = receiver
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .recv()
+        .ok()?;
+    notify_capacity_released(admission);
+    Some(job)
 }
 
 pub(crate) static NATIVE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
@@ -54,25 +70,15 @@ pub(crate) fn start_workers(
     let worker_count =
         worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
-    let receiver = Arc::new(Mutex::new(receiver));
-    let admission = Arc::new(Mutex::new(AdmissionState::new()));
+    let receiver = Arc::new(QueueMutex::new(receiver));
+    let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
     for worker_index in 0..worker_count {
         let receiver = Arc::clone(&receiver);
         let admission = Arc::clone(&admission);
         std::thread::Builder::new()
             .name(format!("{name}-{worker_index}"))
             .spawn(move || {
-                loop {
-                    let job = {
-                        let receiver = receiver
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        receiver.recv()
-                    };
-                    let Ok(job) = job else {
-                        break;
-                    };
-                    notify_capacity_released(&admission);
+                while let Some(job) = receive_job(&receiver, &admission) {
                     let waker = job.run();
                     if let Some(waker) = waker {
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

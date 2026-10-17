@@ -1,0 +1,1 @@
+C{"adapter":"responses","authentication":"api_key","base_url":"https://api.openai.com/v1","models":{"configured":{"capacity":{"context_tokens":4096,"output_tokens":512},"features":{"tools":true,"images":true}}},"max_event_bytes":4096}

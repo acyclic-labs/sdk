@@ -110,6 +110,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         content: &'a ModelContent,
         io: Option<&'a PreparationIo>,
         context: Option<&'a crate::runtime::TaskContext>,
+        _summary_files: &'a [&'a FileRef],
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         if io.is_some() || (content.native_configurations().next().is_some() && context.is_none()) {
             return Err(stock_boundary(
@@ -133,7 +134,17 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         })
     }
 
-    /// Verifies the selection against the committed conversation and original work.
+    /// Queries the private provenance file for this exact immutable summary.
+    fn authenticate_summary<'a>(
+        &'a self,
+        _file: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(false) })
+    }
+
+    /// Authenticates selected files and their projection against the committed
+    /// conversation under the original authority and work.
     fn verify_selected_context<'a>(
         &'a self,
         _operation: OperationId,

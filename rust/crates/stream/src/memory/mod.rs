@@ -38,6 +38,12 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
+/// Models checked cursor preparation and publication interests against recovery.
+pub mod browser_follow_model;
+#[cfg(all(acyclic_loom, feature = "local"))]
+/// Models the actual indexed child discovery and its local visibility adapter.
+pub mod discovery_model;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
@@ -51,6 +57,7 @@ include!("provider.rs");
 include!("follow.rs");
 
 include!("state.rs");
+include!("children.rs");
 
 include!("retained.rs");
 

@@ -6,11 +6,23 @@ mod files;
 use files::Entry;
 use unicode_segmentation::UnicodeSegmentation;
 
+fn prefix(value: &str, query: &str) -> bool {
+    value
+        .get(..query.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(query))
+}
+
+fn theme_prefix(value: &str, query: &str) -> bool {
+    value.to_lowercase().starts_with(&query.to_lowercase())
+}
+
 /// Completion namespace derived from command and workspace files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionKind {
     /// Leading slash command or alias.
     Command,
+    /// Theme name following /theme, from commands/themes.json.
+    Theme,
     /// A whitespace-delimited file mention, including quoted paths.
     Mention,
 }
@@ -46,10 +58,15 @@ pub struct Completion {
 
 /// Identify the token under the cursor without triggering on emails or \@.
 pub fn completion_request(editor: &Editor) -> Option<CompletionRequest> {
-    request_from(editor, 0, &mut 0)
+    request_from(editor, 0, &mut 0, None)
 }
 
-fn request_from(editor: &Editor, from: usize, work: &mut usize) -> Option<CompletionRequest> {
+fn request_from(
+    editor: &Editor,
+    from: usize,
+    work: &mut usize,
+    themes: Option<&BTreeMap<String, usize>>,
+) -> Option<CompletionRequest> {
     if !editor.selection().is_empty() {
         return None;
     }
@@ -72,6 +89,22 @@ fn request_from(editor: &Editor, from: usize, work: &mut usize) -> Option<Comple
                 query: text[1..cursor].to_owned(),
                 cursor,
             });
+        } else if themes.map_or_else(
+            || text[1..end].eq_ignore_ascii_case("theme"),
+            |names| names.contains_key(&text[1..end].to_ascii_lowercase()),
+        ) {
+            let start = end + text[end..].len() - text[end..].trim_start_matches([' ', '\t']).len();
+            let line_end = end
+                + scan_until(&text[end..], |c| matches!(c, '\n' | '\r'), work)
+                    .unwrap_or(text.len() - end);
+            if cursor >= start && cursor <= line_end {
+                found = Some(CompletionRequest {
+                    kind: CompletionKind::Theme,
+                    range: start..line_end,
+                    query: text[start..cursor].to_owned(),
+                    cursor,
+                });
+            }
         }
     }
     if found.is_none() {
@@ -166,6 +199,7 @@ pub struct CompletionMenu {
     request: Option<CompletionRequest>,
     items: BTreeMap<(bool, usize, u64, usize), Rc<Completion>>,
     files: BTreeMap<String, (u64, Vec<Entry>)>,
+    theme_commands: BTreeMap<String, usize>,
     next_file: u64,
     version: Option<(Rc<()>, usize, usize)>,
     /// Cumulative bytes examined while locating tokens and candidates scored.
@@ -260,10 +294,19 @@ impl CompletionMenu {
                     && editor.cursor() >= request.range.start
                     && range.start >= request.range.start
                     && range.end <= request.range.end)
-                    .then_some(request.range.start)
+                    .then_some(if request.kind == CompletionKind::Theme {
+                        0
+                    } else {
+                        request.range.start
+                    })
             })
             .unwrap_or(0);
-        let request = request_from(editor, from, &mut self.work.prompt_bytes);
+        let request = request_from(
+            editor,
+            from,
+            &mut self.work.prompt_bytes,
+            Some(&self.theme_commands),
+        );
         self.version = Some(version);
         if request != self.dismissed {
             self.dismissed = None;
@@ -326,13 +369,14 @@ impl CompletionMenu {
             .unwrap_or(&item.value);
         if value.is_empty()
             || value.chars().any(char::is_control)
-            || value.contains('"')
+            || value.contains('"') && request.kind != CompletionKind::Theme
             || request.kind == CompletionKind::Command && value.chars().any(char::is_whitespace)
         {
             return;
         }
         let score = match request.kind {
-            CompletionKind::Command => item.value.starts_with(&request.query).then_some(0),
+            CompletionKind::Command => prefix(&item.value, &request.query).then_some(0),
+            CompletionKind::Theme => theme_prefix(&item.value, &request.query).then_some(0),
             CompletionKind::Mention => fuzzy_score(&request.query, &item.value),
         };
         if let Some(score) = score {
@@ -371,7 +415,7 @@ impl CompletionMenu {
 
     /// Close the popup until the current token changes.
     pub fn dismiss(&mut self, editor: &Editor) {
-        self.dismissed = completion_request(editor);
+        self.dismissed = request_from(editor, 0, &mut 0, Some(&self.theme_commands));
         self.version = Some(editor.completion_version());
         self.request = None;
         self.items.clear();
@@ -392,14 +436,18 @@ impl CompletionMenu {
         };
         let value = match request.kind {
             CompletionKind::Command => item.value.strip_prefix('/').unwrap_or(&item.value),
-            CompletionKind::Mention => item.value.as_str(),
+            CompletionKind::Mention | CompletionKind::Theme => item.value.as_str(),
         };
-        if value.is_empty() || value.chars().any(char::is_control) || value.contains('"') {
+        if value.is_empty()
+            || value.chars().any(char::is_control)
+            || value.contains('"') && request.kind != CompletionKind::Theme
+        {
             return false;
         }
         let mut replacement = match request.kind {
             CompletionKind::Command if value.chars().any(char::is_whitespace) => return false,
             CompletionKind::Command => format!("/{value}"),
+            CompletionKind::Theme => value.to_owned(),
             CompletionKind::Mention if value.chars().any(char::is_whitespace) => {
                 format!("@\"{value}\"")
             }
