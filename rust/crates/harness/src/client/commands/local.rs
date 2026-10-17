@@ -59,68 +59,75 @@ pub async fn run_local_command<P: acyclic_stream::StreamProvider + ?Sized>(
         .consume_with_recovery::<true, _, _, _, _>(
             request,
             |operation, target, resolution| {
-                let future: acyclic_stream::BoxProviderFuture<'_, Result<serde_json::Value>> =
-                    Box::pin(async move {
-                        let target =
-                            target.filter(|task| task.to_string() != local.client_owner().id);
-                        let mut result = local
-                            .dispatch_configured_command(operation, target, resolution, &settings)
-                            .await?;
-                        if result.get("admission_operation").is_some() {
-                            let task = result
-                                .get("task")
-                                .and_then(serde_json::Value::as_str)
-                                .ok_or_else(|| {
-                                    Error::Invalid("command admission has no task".into())
-                                })?;
-                            let output = local.resume(crate::TaskId::parse(task)?).await?;
-                            let output = serde_json::to_value(output)
-                                .map_err(|error| Error::Invalid(error.to_string()))?;
-                            result
-                                .as_object_mut()
-                                .ok_or_else(|| {
-                                    Error::Invalid("command result must be an object".into())
-                                })?
-                                .extend(
-                                    output
-                                        .as_object()
-                                        .ok_or_else(|| {
-                                            Error::Invalid("turn output must be an object".into())
-                                        })?
-                                        .clone(),
-                                );
-                        }
-                        Ok(result)
-                    });
-                future
+                Box::pin(execute(local, operation, target, resolution, &settings))
             },
-            |operation, _, resolution| async move {
-                if !matches!(
-                    resolution,
-                    CommandResolution::Prompt { .. }
-                        | CommandResolution::Tool {
-                            tool: CommandTool::Spawn,
-                            ..
+            |operation, target, resolution| {
+                let settings = &settings;
+                async move {
+                    if !matches!(
+                        &resolution,
+                        CommandResolution::Prompt { .. }
+                            | CommandResolution::Tool {
+                                tool: CommandTool::Spawn,
+                                ..
+                            }
+                            | CommandResolution::Submit {
+                                request: CommandRequest::Replace { .. }
+                            }
+                    ) {
+                        return Err(Error::Indeterminate(operation));
+                    }
+                    let task = crate::runtime::task_id_for_admission(operation);
+                    match local.resume(task).await {
+                        // No turn or admission was saved after the claim. Replay
+                        // only these idempotent admissions from their request.
+                        Err(Error::NotFound(_)) => {
+                            Box::pin(execute(local, operation, target, resolution, settings)).await
                         }
-                        | CommandResolution::Submit {
-                            request: CommandRequest::Replace { .. }
+                        output => {
+                            let mut value = serde_json::to_value(output?)
+                                .map_err(|error| Error::Invalid(error.to_string()))?;
+                            value["task"] = serde_json::json!(task);
+                            value["selected_task"] = serde_json::json!(task);
+                            value["admission_operation"] = serde_json::json!(operation);
+                            Ok(value)
                         }
-                ) {
-                    return Err(Error::Indeterminate(operation));
+                    }
                 }
-                let task = crate::runtime::task_id_for_admission(operation);
-                // Resume the existing fenced stock task. Never repeat dispatch or
-                // create another admission after recovering an execution claim.
-                let output = local.resume(task).await?;
-                let mut value = serde_json::to_value(output)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                value["task"] = serde_json::json!(task);
-                value["selected_task"] = serde_json::json!(task);
-                value["admission_operation"] = serde_json::json!(operation);
-                Ok(value)
             },
         )
         .await
+}
+
+async fn execute(
+    local: &LocalHarness,
+    operation: OperationId,
+    target: Option<crate::TaskId>,
+    resolution: CommandResolution,
+    settings: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let target = target.filter(|task| task.to_string() != local.client_owner().id);
+    let mut result = local
+        .dispatch_configured_command(operation, target, resolution, settings)
+        .await?;
+    if result.get("admission_operation").is_some() {
+        let task = result
+            .get("task")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Invalid("command admission has no task".into()))?;
+        let output = serde_json::to_value(local.resume(crate::TaskId::parse(task)?).await?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        result
+            .as_object_mut()
+            .ok_or_else(|| Error::Invalid("command result must be an object".into()))?
+            .extend(
+                output
+                    .as_object()
+                    .ok_or_else(|| Error::Invalid("turn output must be an object".into()))?
+                    .clone(),
+            );
+    }
+    Ok(result)
 }
 
 /// Follows ordinary command files and drives their durable local owner.
@@ -165,6 +172,9 @@ pub(crate) async fn run_local_command_files(
                 continue;
             }
             return Err(error);
+        }
+        if only_session {
+            return Ok(());
         }
     }
 }

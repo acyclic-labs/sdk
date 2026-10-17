@@ -88,7 +88,7 @@ impl TaskFileClient {
         if self.selected != Some(task) {
             let replacement =
                 Self::observe_task(files, owner, task, self.bounds.0, self.bounds.1).await?;
-            self.session.replace_task_views(replacement.session);
+            self.session.replace_task_views(replacement.session, owner);
             self.changes = replacement.changes;
             self.selected = Some(task);
             self.commands_dirty = true;

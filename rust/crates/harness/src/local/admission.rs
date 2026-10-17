@@ -483,18 +483,16 @@ impl LocalHarness {
 
     /// Releases this host's native mounts while preserving every durable task,
     /// including unfinished admission. Consuming the host excludes live borrows;
-    /// callers must first drop their execution future and client observations.
+    /// callers must first join active execution and drop client observations.
     pub async fn disconnect(self) -> Result<()> {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
             for (_, mount) in workspace.mounts.mounts() {
-                if let Some(native) = mount
-                    .view
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.native.as_ref())
-                {
-                    native.unmount().await?;
+                if let Some(source) = &mount.view.source {
+                    let native = source.native().await;
+                    if let Some(native) = native.as_ref() {
+                        native.unmount().await?;
+                    }
                 }
             }
         }

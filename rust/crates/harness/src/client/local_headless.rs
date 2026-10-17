@@ -128,9 +128,20 @@ impl LocalFileClient {
         })
     }
 
-    /// Releases this client and its exclusively owned host on success or error.
-    /// Disconnect retains unfinished admission for the next runtime to recover.
-    pub async fn finish(self, outcome: Result<HeadlessOutcome>) -> Result<HeadlessOutcome> {
+    /// Drain admitted execution before retiring its native mounts, including on
+    /// malformed input or a failed output sink. Dropping an awaiting future
+    /// cannot join a native capture worker.
+    pub async fn finish(mut self, outcome: Result<HeadlessOutcome>) -> Result<HeadlessOutcome> {
+        let requested = self.submitted
+            || self
+                .query
+                .file(&key(self.operation, TaskFile::Request)?)
+                .is_some();
+        if requested && !self.host_done && self.outcome()?.is_none() {
+            // The one-request headless owner returns after saving its outcome.
+            // Keep polling it until native work and publication have settled.
+            let _ = self.host.as_mut().await;
+        }
         let Self {
             local, host, query, ..
         } = self;
@@ -213,28 +224,6 @@ impl LocalFileClient {
             return Err(Error::Unauthorized("headless operation differs".into()));
         }
         self.initial(output)?;
-        // JSONL explicitly supplies input: accept its first frame or EOF before
-        // reporting a restored outcome. A scheduled stdin reader is not proof
-        // that the input is empty, even when its first poll is pending.
-        if input_open {
-            match input.next().await {
-                Some(line) => {
-                    self.submit(&parse_local_request(&line?, operation)?)
-                        .await?
-                }
-                None => {
-                    input_open = false;
-                    if !self.submitted
-                        && self
-                            .query
-                            .file(&key(operation, TaskFile::Request)?)
-                            .is_none()
-                    {
-                        return Err(Error::NotFound("operation was not submitted".into()));
-                    }
-                }
-            }
-        }
         loop {
             let settled = self.outcome()?;
             if settled.is_none()

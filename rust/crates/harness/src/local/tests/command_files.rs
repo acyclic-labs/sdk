@@ -171,21 +171,13 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     let make = || LocalHarnessConfig::new(directory.path(), (model().unwrap(), scripted([])));
     let harness = LocalHarness::open(make()).await?;
     let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
-    assert!(retained.mounts().any(|(_, mount)| {
-        mount
-            .view
-            .source
-            .as_ref()
-            .is_some_and(|source| source.native.is_some())
-    }));
+    crate::local::workspace::volumes::project(&retained).await?;
     drop(harness);
-    let failure = match LocalHarness::open(make()).await {
-        Err(error) => error,
-        Ok(reopened) => {
-            reopened.close().await?;
-            panic!("negative control lost its retained native owner");
-        }
-    };
+    let reopened = LocalHarness::open(make()).await?;
+    let failure =
+        crate::local::workspace::volumes::project(&reopened.workspace.as_ref().unwrap().mounts)
+            .await
+            .expect_err("negative control lost its retained native owner");
     assert!(
         failure
             .to_string()
@@ -193,14 +185,16 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
         "{failure:?}"
     );
     for (_, mount) in retained.mounts() {
-        if let Some(native) = mount
-            .view
-            .source
-            .as_ref()
-            .and_then(|source| source.native.as_ref())
-        {
-            native.unmount().await?;
+        if let Some(source) = &mount.view.source {
+            let native = source.native().await;
+            if let Some(native) = native.as_ref() {
+                native.unmount().await?;
+            }
         }
     }
+    reopened.close().await?;
     Ok(())
 }
+
+#[path = "command_files/claim_gap.rs"]
+mod claim_gap;

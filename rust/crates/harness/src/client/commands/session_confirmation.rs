@@ -52,7 +52,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             match saved {
                 Some(saved) if saved.bytes.as_ref() == bytes => {}
                 Some(_) => return Err(Error::Conflict("confirmation request changed".into())),
-                None => self.publish_rebased::<true, true>(key, bytes, true).await?,
+                // A layout withdrawal must invalidate this checked cut. Never
+                // rebase a destructive confirmation past a conflicting write.
+                None => self.publish(key, bytes, true).await?,
             }
         }
         let mut layout = self
@@ -70,3 +72,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(operation)
     }
 }
+
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "session_confirmation/tests.rs"]
+mod tests;
