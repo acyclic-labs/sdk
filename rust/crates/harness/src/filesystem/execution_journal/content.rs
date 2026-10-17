@@ -23,6 +23,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) async fn staged_ref_with_io(
         &self,
         operation: OperationId,

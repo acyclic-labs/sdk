@@ -1,4 +1,6 @@
-use crate::sync::{Condvar as RawCondvar, Mutex as RawMutex, MutexGuard as RawMutexGuard};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use crate::sync::Condvar as RawCondvar;
+use crate::sync::{Mutex as RawMutex, MutexGuard as RawMutexGuard};
 #[cfg(acyclic_fs_loom)]
 use loom::thread_local;
 use std::cell::RefCell;
@@ -7,6 +9,7 @@ use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
 #[cfg(not(acyclic_fs_loom))]
 use std::thread_local;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
@@ -65,7 +68,7 @@ impl Drop for Held {
 pub(crate) struct TrackedGuard<G> {
     // Unlock before removing the thread's held-rank record.
     inner: G,
-    held: Held,
+    _held: Held,
 }
 
 impl<G: Deref> Deref for TrackedGuard<G> {
@@ -89,7 +92,7 @@ fn acquire<G>(rank: u16, acquire: impl FnOnce() -> LockResult<G>) -> LockResult<
     let site = Location::caller();
     let wrap = |inner| TrackedGuard {
         inner,
-        held: Held(rank, site).enter(),
+        _held: Held(rank, site).enter(),
     };
     match acquire() {
         Ok(inner) => Ok(wrap(inner)),
@@ -103,8 +106,10 @@ pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexG
 }
 
 #[derive(Debug, Default)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl<T, const RANK: u16> Mutex<T, RANK> {
     #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new(value: T) -> Self {
@@ -122,8 +127,10 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 }
 
 #[derive(Default)]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) struct Condvar(RawCondvar);
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 impl Condvar {
     #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new() -> Self {
@@ -190,6 +197,7 @@ impl Condvar {
 }
 
 #[cfg(not(test))]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 type WaitTimeoutResult = crate::sync::WaitTimeoutResult;
 
 #[cfg(test)]
@@ -210,6 +218,7 @@ impl WaitTimeoutResult {
     }
 }
 
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn predicate<T: ?Sized>(value: &mut T, condition: &mut impl FnMut(&mut T) -> bool) -> bool {
     #[cfg(all(test, acyclic_fs_loom))]
     if model::fault() == model::Fault::UntrackedPredicate {
@@ -222,6 +231,7 @@ fn predicate<T: ?Sized>(value: &mut T, condition: &mut impl FnMut(&mut T) -> boo
 }
 
 #[track_caller]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn while_locked<G: DerefMut>(
     mut guard: TrackedGuard<G>,
     mut condition: impl FnMut(&mut G::Target) -> bool,
@@ -253,6 +263,7 @@ fn while_timed<G: DerefMut>(
 }
 
 #[track_caller]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn wait_plain<G>(
     guard: TrackedGuard<G>,
     operation: impl FnOnce(G) -> LockResult<G>,
@@ -267,11 +278,12 @@ fn wait_plain<G>(
 }
 
 #[track_caller]
+#[cfg(any(test, not(target_arch = "wasm32")))]
 fn wait<G, R>(
     guard: TrackedGuard<G>,
     wait: impl FnOnce(G) -> LockResult<(G, R)>,
 ) -> LockResult<(TrackedGuard<G>, R)> {
-    let TrackedGuard { inner, held } = guard;
+    let TrackedGuard { inner, _held: held } = guard;
     let rank = held.0;
     let site = held.1;
     drop(held);
@@ -287,7 +299,7 @@ fn wait<G, R>(
         };
         #[cfg(not(all(test, acyclic_fs_loom)))]
         let held = held.enter();
-        (TrackedGuard { inner, held }, timeout)
+        (TrackedGuard { inner, _held: held }, timeout)
     };
     match wait(inner) {
         Ok(result) => Ok(wrap(result)),

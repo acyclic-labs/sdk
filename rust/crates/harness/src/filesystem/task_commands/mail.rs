@@ -117,18 +117,18 @@ where
         &self,
         task: TaskId,
         after: u64,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<Vec<crate::scheduler::InboxItem>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
+        if let Some(_native_io) = _native_io
+            && let Some(work) = _native_io.original_native_work()
         {
             let (items, custody) = self
                 .runtime
                 .task_host()
                 .inbox_with_native_work(task, after, 1, work)
                 .await?;
-            io.absorb_native_custody(custody)?;
+            _native_io.absorb_native_custody(custody)?;
             return Ok(items);
         }
         self.runtime.task_host().inbox(task, after, 1).await

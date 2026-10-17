@@ -468,7 +468,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await?;
                     }
-                    io.receive(
+                    break 'commit io.receive(
                         transaction
                             .commit(
                                 None,
@@ -489,7 +489,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 },
                             )
                             .await,
-                    )?
+                    )?;
                 };
                 Ok(commit)
             })?

@@ -7,6 +7,8 @@ use crate::{
         ModelRole, PreparedModelRequest,
     },
 };
+#[cfg(not(target_arch = "wasm32"))]
+use futures::StreamExt as _;
 use serde_json::json;
 
 fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {

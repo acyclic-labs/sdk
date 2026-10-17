@@ -9,9 +9,9 @@ use crate::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },
 };
-use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, WorkBudget, WorkCounters,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::WorkCounters;
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, WorkBudget};
 use std::sync::Arc;
 
 mod verify;

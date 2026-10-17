@@ -317,11 +317,11 @@ fn allocation_digest(
 
 fn check_cancellation(
     cancellation: &CancellationToken,
-    io: Option<&super::PreparationIo>,
+    _native_io: Option<&super::PreparationIo>,
 ) -> Result<()> {
     cancellation.check().map_err(|error| {
         #[cfg(not(target_arch = "wasm32"))]
-        if io
+        if _native_io
             .and_then(super::PreparationIo::original_native_work)
             .is_some()
         {

@@ -13,6 +13,7 @@ pub(super) fn lease_fence(
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn clone_command(
     command: &WorkflowCommand,
     io: Option<&PreparationIo>,
@@ -86,19 +87,21 @@ where
     pub(in crate::filesystem) async fn admission_observed(
         &self,
         task: TaskId,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<TaskAdmissionRecord> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker observation requires original native work",
-            })?;
+        if let Some(_native_io) = _native_io {
+            let work = _native_io
+                .original_native_work()
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "worker observation requires original native work",
+                })?;
             let (admission, custody) = self
                 .host
                 .observe_admission_with_native_work(task, work)?
                 .await?;
-            io.absorb_native_custody(custody)?;
+            _native_io.absorb_native_custody(custody)?;
             return Ok(admission);
         }
         self.host.observe_admission(task).await
@@ -107,16 +110,18 @@ where
     pub(in crate::filesystem) async fn outcome_observed(
         &self,
         task: TaskId,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<Option<Outcome<Value>>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker outcome requires original native work",
-            })?;
+        if let Some(_native_io) = _native_io {
+            let work = _native_io
+                .original_native_work()
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "worker outcome requires original native work",
+                })?;
             let (outcome, custody) = self.host.outcome_with_native_work(task, work)?.await?;
-            io.absorb_native_custody(custody)?;
+            _native_io.absorb_native_custody(custody)?;
             return Ok(outcome);
         }
         self.host.outcome(task).await
@@ -127,14 +132,16 @@ where
         task: TaskId,
         fence: &LeaseFence,
         settlement: bool,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker owner requires original native work",
-            })?;
+        if let Some(_native_io) = _native_io {
+            let work = _native_io
+                .original_native_work()
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "worker owner requires original native work",
+                })?;
             let owner = self
                 .host
                 .journal_owner(

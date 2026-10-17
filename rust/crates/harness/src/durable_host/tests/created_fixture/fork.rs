@@ -5,6 +5,7 @@ use crate::resources::StreamRef;
 use crate::store::StreamAggregate;
 
 impl CreationFixture {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn create_filesystem_child(&self) -> Result<PreparedFilesystemChild> {
         self.create_filesystem_child_with_grants(&[]).await
     }

@@ -101,24 +101,27 @@ impl Drop for DecodeReservation<'_> {
         if self.bytes == 0 {
             return;
         }
-        if let PreparationIo::Owned {
-            budget,
-            work,
-            cancellation,
-        } = self.io
-        {
-            let mut state = work
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let (spent, allocations) = &mut *state;
-            if let Ok(ledger) = allocations
-                && KernelAccounting::borrowed_standalone(ledger, spent, *budget, cancellation)
-                    .release_owned(&mut KernelOwnedAllocation::Standalone, self.bytes)
-                    .is_err()
-            {
-                // A poisoned ledger cannot admit further work; the next call returns the fault.
-                *allocations = Err(acyclic_fs::WorkError::Overflow);
+        match self.io {
+            PreparationIo::Owned {
+                budget,
+                work,
+                cancellation,
+            } => {
+                let mut state = work
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (spent, allocations) = &mut *state;
+                if let Ok(ledger) = allocations
+                    && KernelAccounting::borrowed_standalone(ledger, spent, *budget, cancellation)
+                        .release_owned(&mut KernelOwnedAllocation::Standalone, self.bytes)
+                        .is_err()
+                {
+                    // A poisoned ledger cannot admit further work; the next call returns the fault.
+                    *allocations = Err(acyclic_fs::WorkError::Overflow);
+                }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            PreparationIo::Native { .. } => {}
         }
     }
 }
@@ -173,7 +176,7 @@ pub(super) fn finish_decode<'a, T>(
 }
 
 pub(super) fn finish_encoding<T>(
-    diagnostics: DecodeReservation<'_>,
+    _diagnostics: DecodeReservation<'_>,
     result: Result<T>,
 ) -> Result<T> {
     match result {
@@ -183,7 +186,7 @@ pub(super) fn finish_encoding<T>(
             source,
             custody: None,
         }) => {
-            let (source, custody) = native_decoded((source, diagnostics))?;
+            let (source, custody) = native_decoded((source, _diagnostics))?;
             Err(Error::NativeJson {
                 code,
                 source,

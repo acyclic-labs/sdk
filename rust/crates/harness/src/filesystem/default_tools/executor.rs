@@ -70,10 +70,10 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     .authorize_tool(&self.definition, invocation, work)
                     .await?;
             }
-            context
+            break 'approval context
                 .task()
                 .authorize_tool(&self.definition, invocation)
-                .await?
+                .await?;
         };
         if let Some(operation) = approval {
             return Err(Error::Indeterminate(operation));

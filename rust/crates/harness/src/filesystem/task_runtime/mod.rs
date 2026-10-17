@@ -5,6 +5,9 @@ use super::{
     FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal,
 };
 use crate::runtime::TaskStateProvider;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::{InteractionRouter, OwnedTaskMailbox};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::store::HistoryIo;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
@@ -18,8 +21,8 @@ use crate::{
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
-        AgentHarness, ContentBindings, InteractionRouter, OwnedTaskMailbox, ResumableTaskSession,
-        RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        AgentHarness, ContentBindings, ResumableTaskSession, RuntimeScope, TaskAdmissionRecord,
+        TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},

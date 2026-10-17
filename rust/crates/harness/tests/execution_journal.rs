@@ -38,8 +38,7 @@ use acyclic_harness::{
         ToolResult,
     },
 };
-use acyclic_stream::MemoryStream;
-use futures::future::BoxFuture;
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -176,7 +175,7 @@ impl ToolExecutor for CountingNoopTool {
         &'a self,
         _: ToolInvocation,
         _context: Option<acyclic_harness::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         self.executions.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
@@ -185,7 +184,7 @@ impl ToolExecutor for CountingNoopTool {
         &'a self,
         _: ToolInvocation,
         _context: Option<acyclic_harness::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         self.reconciliations.fetch_add(1, Ordering::SeqCst);
         Box::pin(async { Ok(None) })
     }
@@ -432,14 +431,14 @@ impl ToolExecutor for NoopTool {
         &'a self,
         _: ToolInvocation,
         _context: Option<acyclic_harness::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<ToolResult>> {
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async { Ok(ToolResult { value: Value::Null }) })
     }
     fn reconcile<'a>(
         &'a self,
         _: ToolInvocation,
         _context: Option<acyclic_harness::runtime::ToolContext>,
-    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Ok(None) })
     }
 }

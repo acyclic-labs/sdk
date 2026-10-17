@@ -45,6 +45,7 @@ pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;
 use fork_preparer::bounded_io as fork_preparer_io;
 pub use fork_preparer::bounded_io::PreparationIo;
@@ -62,6 +63,7 @@ mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use workflow_journal::WorkflowReleaseWitness;
 mod memory;
 pub use memory::MemoryHarnessStorage;
@@ -155,7 +157,8 @@ pub use host::{FilesystemHost, filesystem_key, workspace_ref};
 mod content_verifier;
 pub use content_verifier::FilesystemContentVerifier;
 mod file_query;
-use content_verifier::*;
+#[cfg(not(target_arch = "wasm32"))]
+use content_verifier::require_file_read;
 pub use file_query::FilesystemFileQuery;
 mod fork_verifier;
 pub use fork_verifier::FilesystemForkVerifier;

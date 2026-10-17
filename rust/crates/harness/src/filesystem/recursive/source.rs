@@ -270,6 +270,7 @@ where
             .map(|io| io.guard_owned(io.owned_bytes()? - before))
             .transpose()?;
         cursor.through_revision = parent.0.revision();
+        #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let prepared = crate::fork::prepare_summary_fork_context_with_io(
             &parent.0,

@@ -1,6 +1,7 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry() -> Result<()> {
     use acyclic_fs::{NativeMaterializationWork, NativeTreeMaterializationError, WorkError};

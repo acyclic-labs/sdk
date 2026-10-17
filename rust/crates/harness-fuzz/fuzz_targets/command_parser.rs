@@ -14,6 +14,8 @@ use std::collections::BTreeMap;
 mod frontmatter;
 #[path = "../../harness/src/client/commands/parse.rs"]
 mod parse;
+#[path = "../../harness/src/client/commands/syntax.rs"]
+mod syntax;
 
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
@@ -24,10 +26,10 @@ fuzz_target!(|bytes: &[u8]| {
     let template = parts.next().unwrap_or(command);
     let arguments = parts.next().unwrap_or(command);
     if let Ok(input) = std::str::from_utf8(command) {
-        if let Ok(Some((name, arguments))) = parse::split(input, 4096) {
+        if let Ok(Some((name, arguments))) = syntax::split(input, 4096) {
             let canonical = format!("/{name} {arguments}");
             assert_eq!(
-                parse::split(&canonical, 8192).unwrap(),
+                syntax::split(&canonical, 8192).unwrap(),
                 Some((name, arguments))
             );
             let _ = parse::validate_name(name);

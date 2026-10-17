@@ -42,6 +42,7 @@ impl StockExecution<'_> {
             ModelPurpose::Response => "model",
             ModelPurpose::Summary => "summary",
         };
+        #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
@@ -372,6 +373,7 @@ impl StockExecution<'_> {
         Ok(event)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn record_model_phase(&self, admission: &ModelEventAdmission, started: bool) {
         crate::obs::obs_record!(
             "phase" = match (admission.completed, started) {

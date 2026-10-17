@@ -26,7 +26,7 @@ where
                 io.absorb_native_custody(custody)?;
                 break 'child child;
             }
-            allocation.admission.clone()
+            break 'child allocation.admission.clone();
         };
         #[cfg(not(target_arch = "wasm32"))]
         let reference_io = io

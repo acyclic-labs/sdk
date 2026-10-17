@@ -237,6 +237,8 @@ mod preparation;
 mod readonly;
 mod received_mail;
 #[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod release;
 #[cfg(feature = "filesystem")]
 mod source_graph;

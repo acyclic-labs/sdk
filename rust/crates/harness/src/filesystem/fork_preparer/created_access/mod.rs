@@ -12,7 +12,9 @@ use crate::{
     resources::GenerationRef,
     runtime::ContentBindings,
 };
-use acyclic_fs::{CancellationToken, WorkCounters};
+use acyclic_fs::CancellationToken;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::WorkCounters;
 mod authentication;
 mod provenance;
 mod provider;

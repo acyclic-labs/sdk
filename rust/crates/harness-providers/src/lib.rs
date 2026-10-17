@@ -19,7 +19,7 @@ mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 mod call_ids;
-#[cfg(any(target_arch = "wasm32", loom))]
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
 mod cancellation;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;

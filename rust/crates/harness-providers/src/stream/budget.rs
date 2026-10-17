@@ -31,7 +31,7 @@ impl<'work> Budget<'work> {
         }
         Ok(self.used.bytes)
     }
-    #[cfg(test)]
+    #[cfg(all(test, not(target_arch = "wasm32")))]
     pub fn used(&self) -> (usize, usize) {
         (self.used.bytes, self.used.items)
     }

@@ -30,6 +30,7 @@ impl Default for ThresholdCompaction {
 impl ThresholdCompaction {
     /// Splits usable input capacity after fixed request overhead between recent
     /// context and space for mandatory content and a replacement summary.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
         let mut policy = Self::default();

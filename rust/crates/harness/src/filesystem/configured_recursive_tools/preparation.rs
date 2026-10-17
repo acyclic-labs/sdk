@@ -14,7 +14,7 @@ where
         context: &Arc<TaskContext>,
         token: &TaskResourcePreparation,
         cancellation: &CancellationToken,
-        reconciliation_only: bool,
+        _native_reconciliation_only: bool,
         io: Option<&PreparationIo>,
     ) -> Result<RetainedSourceBinding<A, O>> {
         native_io(io)?;
@@ -45,12 +45,12 @@ where
             reader.owned_task_binding(Some(&crate::executor::PreparationIo::from_native_work(
                 work,
             )?))?;
-            if !reconciliation_only {
+            if !_native_reconciliation_only {
                 reader.require_original_native_dispatch(work)?;
             }
             token
                 .verify(
-                    reconciliation_only,
+                    _native_reconciliation_only,
                     Some(&PreparationIo::from_native_work(work)?),
                 )?
                 .await?;
@@ -140,7 +140,7 @@ where
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             token
                 .verify(
-                    reconciliation_only,
+                    _native_reconciliation_only,
                     Some(&PreparationIo::from_native_work(work)?),
                 )?
                 .await?;

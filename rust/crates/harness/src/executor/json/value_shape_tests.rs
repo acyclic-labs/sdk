@@ -1,5 +1,6 @@
+#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+
 use super::*;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn fixed_input_failures_keep_their_kind_independent_of_the_wire_code() {
     for code in [

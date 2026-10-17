@@ -21,8 +21,7 @@ use acyclic_harness::{
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
-use acyclic_stream::MemoryStream;
-use futures::future::BoxFuture;
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -45,7 +44,7 @@ impl ForkCaptureProvider for LostCaptureReply {
         &'a self,
         request: &'a ForkRequest,
         _selection: &'a ForkSelection,
-    ) -> BoxFuture<'a, Result<Capture>> {
+    ) -> BoxProviderFuture<'a, Result<Capture>> {
         self.capture_calls.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move { Err(Error::Indeterminate(request.operation_id)) })
     }
@@ -54,7 +53,7 @@ impl ForkCaptureProvider for LostCaptureReply {
         &'a self,
         _request: &'a ForkRequest,
         selection: &'a ForkSelection,
-    ) -> BoxFuture<'a, Result<Option<Capture>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<Capture>>> {
         self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
         let ready = self.observation_ready.load(Ordering::SeqCst);
         Box::pin(async move {

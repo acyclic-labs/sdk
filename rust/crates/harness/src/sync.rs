@@ -6,7 +6,9 @@ pub(crate) use tokio::sync::Mutex;
 
 #[path = "sync/primitives.rs"]
 mod primitives;
-pub(crate) use primitives::{Arc, Mutex as SyncMutex, atomic};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+pub(crate) use primitives::atomic;
+pub(crate) use primitives::{Arc, Mutex as SyncMutex};
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]
