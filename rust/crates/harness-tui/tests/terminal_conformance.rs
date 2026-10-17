@@ -230,18 +230,19 @@ fn rejected_pastes_drain_and_preserve_the_suffix() -> io::Result<()> {
     Ok(())
 }
 
-fn split_check(indices: Vec<usize>, cuts: Vec<bool>, broken: bool) -> Result<(), TestCaseError> {
+fn split_check(indices: &[usize], cuts: &[bool], broken: bool) -> Result<(), TestCaseError> {
     let mut bytes = Vec::new();
     for index in indices {
-        let (_, body) = table::KITTY[index % table::KITTY.len()];
-        bytes.extend_from_slice(modified(body, 6, Some(1)).as_bytes());
+        if let Some((_, body)) = table::KITTY.get(index % table::KITTY.len()) {
+            bytes.extend_from_slice(modified(body, 6, Some(1)).as_bytes());
+        }
     }
     let expected = decoded(&bytes)?;
     let mut decoder = Decoder::default();
     let mut start = 0;
     for end in 1..=bytes.len() {
         if cuts.get(end - 1).copied().unwrap_or(false) || end == bytes.len() {
-            decoder.feed(&bytes[start..end])?;
+            decoder.feed(bytes.get(start..end).unwrap_or_default())?;
             if broken {
                 decoder.finish_input()?;
             }
@@ -272,7 +273,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn arbitrary_partitions_preserve_valid_streams(indices in prop::collection::vec(any::<usize>(), 1..20), cuts in prop::collection::vec(any::<bool>(), 0..512)) {
-        split_check(indices, cuts, false)?;
+        split_check(&indices, &cuts, false)?;
     }
     #[test]
     fn rejection_never_poisons_later_valid_input(extra in 0usize..1024) {
@@ -291,7 +292,7 @@ fn negative_controls_detect_chunk_finalization_and_poisoned_recovery() {
     assert!(
         TestRunner::new(config())
             .run(&split_witness, |(indices, cuts)| split_check(
-                indices, cuts, true
+                &indices, &cuts, true
             ))
             .is_err()
     );

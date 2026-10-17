@@ -111,7 +111,7 @@ proptest! {
             prop_assert!(area.right() <= outer.right() && area.bottom() <= outer.bottom());
         }
         for (i, a) in primary.iter().enumerate() {
-            for b in &primary[i + 1..] {
+            for b in primary.iter().skip(i + 1) {
                 prop_assert!(a.intersection(*b).is_empty());
             }
         }

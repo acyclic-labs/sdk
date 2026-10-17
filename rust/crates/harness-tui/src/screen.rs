@@ -1,4 +1,4 @@
-use crate::{CompletionPopup, PromptBox, PromptInput, Viewport};
+use crate::{CompletionPopup, PromptBox, PromptInput, Viewport, widget::cells};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -109,11 +109,12 @@ impl Screen<'_> {
             prompt_height,
         );
         remaining.height -= prompt_height;
-        let notice_height = self
-            .notifications
-            .len()
-            .min(2)
-            .min(usize::from(remaining.height)) as u16;
+        let notice_height = cells(
+            self.notifications
+                .len()
+                .min(2)
+                .min(usize::from(remaining.height)),
+        );
         let notifications = Rect::new(
             area.x,
             remaining.bottom() - notice_height,
@@ -186,7 +187,7 @@ impl Screen<'_> {
         }
         let label = Rect::new(
             area.x,
-            area.y + (row - scroll) as u16,
+            area.y + cells(row - scroll),
             area.width.min(crate::Thinking::WIDTH),
             1,
         );
@@ -200,7 +201,7 @@ impl Screen<'_> {
         )
     }
 
-    /// Compose shared widgets without cloning TaskFileViews or their transcript.
+    /// Compose shared widgets without cloning `TaskFileViews` or their transcript.
     /// Scroll and open panels are supplied from the user's followed layout file.
     pub fn render(
         &self,
@@ -223,19 +224,17 @@ impl Screen<'_> {
             for (row, index) in (transcript_scroll..end).enumerate() {
                 #[cfg(test)]
                 ROW_WORK.with(|work| work.set(work.get() + 1));
-                let line = if index < self.reasoning.len() {
-                    Some(&self.reasoning[index])
-                } else if index < self.reasoning.len() + self.transcript.len() {
-                    Some(&self.transcript[index - self.reasoning.len()])
-                } else {
-                    thinking.as_ref()
-                };
+                let line = self
+                    .reasoning
+                    .get(index)
+                    .or_else(|| self.transcript.get(index - self.reasoning.len()))
+                    .or(thinking.as_ref());
                 if let Some(line) = line {
                     frame.render_widget(
                         line,
                         Rect::new(
                             areas.transcript.x,
-                            areas.transcript.y + row as u16,
+                            areas.transcript.y + cells(row),
                             areas.transcript.width,
                             1,
                         ),
@@ -269,7 +268,7 @@ impl Screen<'_> {
             .filter(|(_, lines)| !lines.is_empty())
             .enumerate()
         {
-            let height = side.height / (count - index) as u16;
+            let height = side.height / cells(count - index);
             let panel = take_top(&mut side, height);
             let block = Block::default().borders(Borders::ALL).title(title);
             rows(frame, lines, block.inner(panel), 0);
@@ -295,7 +294,7 @@ fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: usize) {
         .take(usize::from(area.height))
         .enumerate()
     {
-        frame.render_widget(line, Rect::new(area.x, area.y + row as u16, area.width, 1));
+        frame.render_widget(line, Rect::new(area.x, area.y + cells(row), area.width, 1));
     }
 }
 

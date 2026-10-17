@@ -22,7 +22,7 @@ impl WrappedLines {
         self.rows
             .truncate(self.starts.get(changed).copied().unwrap_or(self.rows.len()));
         self.starts.truncate(changed);
-        for line in &source[changed..] {
+        for line in source.get(changed..).unwrap_or_default() {
             self.starts.push(self.rows.len());
             self.rows.extend(wrap(line, width));
         }
@@ -60,13 +60,15 @@ fn wrap(line: &Line<'_>, width: u16) -> Vec<Line<'static>> {
         // both before hard newlines and at the end. A transcript has no cursor.
         .filter(|(index, row)| {
             !row.cells.is_empty()
-                || index.checked_sub(1).is_none_or(|previous| {
-                    let previous = &layout.rows[previous];
-                    previous.end != row.start
-                        || previous.cells.last().is_none_or(|cell| {
-                            cell.column + cell.width != usize::from(width).max(1)
-                        })
-                })
+                || index
+                    .checked_sub(1)
+                    .and_then(|previous| layout.rows.get(previous))
+                    .is_none_or(|previous| {
+                        previous.end != row.start
+                            || previous.cells.last().is_none_or(|cell| {
+                                cell.column + cell.width != usize::from(width).max(1)
+                            })
+                    })
         })
         .map(|(_, row)| {
             let mut spans: Vec<Span<'static>> = Vec::new();

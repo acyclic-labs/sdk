@@ -38,7 +38,7 @@ impl Widget for ConfigDiagnostics<'_> {
                     text,
                     &mut x,
                     area.right(),
-                    area.y + row as u16,
+                    area.y + crate::widget::cells(row),
                     style,
                     buffer,
                 );

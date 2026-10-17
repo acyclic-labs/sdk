@@ -19,7 +19,7 @@ use serde_json::json;
 mod sequences;
 
 fn apply(view: &ConfigView, input: &mut PromptInput) {
-    view.apply(input, &Capabilities::default()).unwrap();
+    assert_eq!(view.apply(input, &Capabilities::default()), Ok(()));
 }
 
 #[test]
@@ -253,9 +253,9 @@ proptest! {
         sequences::exercise(ConfigFile::Theme, json!({"text":{"foreground":color,"bold":bold}}).to_string().as_bytes());
     }
     #[test]
-    fn keymap_parser_roundtrip(index in 0..ACTIONS.len(), f in 1u8..25) {
+    fn keymap_parser_roundtrip(action in prop::sample::select(ACTIONS), f in 1u8..25) {
         let chord = format!("Ctrl+F{f}");
-        sequences::exercise(ConfigFile::Keymap, json!({"bindings":{chord:ACTIONS[index].chord}}).to_string().as_bytes());
+        sequences::exercise(ConfigFile::Keymap, json!({"bindings":{chord:action.chord}}).to_string().as_bytes());
     }
 }
 
@@ -326,10 +326,12 @@ fn preferences_drive_tab_height_paste_and_image_behavior() {
     input.editor.set_text("", 2);
     input.editor.paste("abcdef", 3);
     assert!(
-        input.editor.layout(80).rows[0]
-            .cells
-            .iter()
-            .any(|c| c.symbol.contains("Pasted"))
+        input
+            .editor
+            .layout(80)
+            .rows
+            .first()
+            .is_some_and(|row| row.cells.iter().any(|c| c.symbol.contains("Pasted")))
     );
     let settings = *input.editor.settings();
     assert_eq!(settings.scrollback(&[1, 2, 3, 4]), &[3, 4]);
@@ -357,50 +359,57 @@ fn duplicate_keys_and_uncommitted_changes_are_not_silent() {
         r#"{"bindings":{"F1":"undo","F1":"redo"}}"#,
     )
     .unwrap_err();
-    assert_eq!(errors[0].kind, DiagnosticKind::Conflict);
+    assert_eq!(
+        errors.first().map(|error| error.kind),
+        Some(DiagnosticKind::Conflict)
+    );
     let view = ConfigView::default();
     let bytes = view
         .edit(Scope::User, ConfigFile::Settings, &json!({"wrap":false}))
         .unwrap();
     assert!(view.settings().unwrap().wrap);
-    let mut followed = view.clone();
+    let mut followed = view;
     followed.set_bytes(Scope::User, ConfigFile::Settings, &bytes);
     assert!(!followed.settings().unwrap().wrap);
 }
 
 // Independent fixed terminal palette, separate from production's palette builder.
+const SIXTEEN: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [128, 0, 0],
+    [0, 128, 0],
+    [128, 128, 0],
+    [0, 0, 128],
+    [128, 0, 128],
+    [0, 128, 128],
+    [192, 192, 192],
+    [128, 128, 128],
+    [255, 0, 0],
+    [0, 255, 0],
+    [255, 255, 0],
+    [0, 0, 255],
+    [255, 0, 255],
+    [0, 255, 255],
+    [255, 255, 255],
+];
+const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
 fn palette_oracle(index: usize) -> [u8; 3] {
-    let levels = [0, 95, 135, 175, 215, 255];
-    if index < 16 {
-        [
-            [0, 0, 0],
-            [128, 0, 0],
-            [0, 128, 0],
-            [128, 128, 0],
-            [0, 0, 128],
-            [128, 0, 128],
-            [0, 128, 128],
-            [192, 192, 192],
-            [128, 128, 128],
-            [255, 0, 0],
-            [0, 255, 0],
-            [255, 255, 0],
-            [0, 0, 255],
-            [255, 0, 255],
-            [0, 255, 255],
-            [255, 255, 255],
-        ][index]
+    let level = |digit: usize| LEVELS.get(digit % 6).copied().unwrap_or_default();
+    if let Some(color) = SIXTEEN.get(index) {
+        *color
     } else if index < 232 {
         let n = index - 16;
-        [levels[n / 36], levels[n / 6 % 6], levels[n % 6]]
+        [level(n / 36), level(n / 6), level(n)]
     } else {
-        [(8 + (index - 232) * 10) as u8; 3]
+        [u8::try_from(8 + (index - 232) * 10).unwrap_or(u8::MAX); 3]
     }
 }
 fn assert_nearest(rgb: [u8; 3], index: usize, count: usize) {
     let error = |color: [u8; 3]| -> i64 {
-        (0..3)
-            .map(|i| (i64::from(rgb[i]) - i64::from(color[i])).pow(2))
+        rgb.iter()
+            .zip(color)
+            .map(|(&want, got)| (i64::from(want) - i64::from(got)).pow(2))
             .sum()
     };
     assert!(
@@ -488,7 +497,7 @@ fn no_wrap_clips_collapsed_paste_marker_by_visible_graphemes() {
                 PromptWidget::new(&input.editor),
                 frame.area(),
                 &mut viewport,
-            )
+            );
         })
         .unwrap();
     let text: String = terminal
@@ -564,10 +573,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
     fn saved_keymap_loads_and_live_file_projection_agree(
-        action in 0usize..ACTIONS.len(), disabled in any::<bool>(), key in 1u8..25,
+        action in prop::sample::select(ACTIONS), disabled in any::<bool>(), key in 1u8..25,
     ) {
         let chord = format!("F{key}");
-        let target = if disabled { serde_json::Value::Null } else { ACTIONS[action].chord.into() };
+        let target = if disabled { serde_json::Value::Null } else { action.chord.into() };
         let text = json!({"bindings":{chord.clone():target}}).to_string();
         let map = acyclic_harness_tui::InputKeymap::parse(&text).unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -582,7 +591,9 @@ proptest! {
         let mut input = PromptInput::default();
         apply(&view, &mut input);
         prop_assert_eq!(input.keymap.resolve(&chord).map(|b| b.action), map.resolve(&chord).map(|b| b.action));
-        prop_assert_eq!(parse(ConfigFile::Keymap, Scope::User, &saved).unwrap()["bindings"][&chord].clone(), target);
+        let bindings = parse(ConfigFile::Keymap, Scope::User, &saved).unwrap();
+        let saved_target = bindings.get("bindings").and_then(|bindings| bindings.get(&chord));
+        prop_assert_eq!(saved_target.cloned().unwrap_or_default(), target);
     }
 }
 
@@ -602,10 +613,13 @@ fn source_reuses_parsed_file(broken: bool) {
     view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
     let work = acyclic_test_support::measure(|| {
         for _ in 0..64 {
-            let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
-            assert_eq!(source["wrap"], false);
+            let source = view.source(Scope::User, ConfigFile::Settings);
+            assert_eq!(
+                source.and_then(|source| source.get("wrap")),
+                Some(&serde_json::Value::Bool(false))
+            );
             if broken {
-                std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
+                std::hint::black_box(view.effective(ConfigFile::Settings).ok());
             }
         }
     });

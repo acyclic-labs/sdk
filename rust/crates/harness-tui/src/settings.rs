@@ -70,6 +70,8 @@ impl Default for UiSettings {
 impl UiSettings {
     /// Visible transcript tail. The durable transcript remains in its volume.
     pub fn scrollback<'a, T>(&self, lines: &'a [T]) -> &'a [T] {
-        &lines[lines.len().saturating_sub(self.scrollback_lines)..]
+        lines
+            .get(lines.len().saturating_sub(self.scrollback_lines)..)
+            .unwrap_or_default()
     }
 }
