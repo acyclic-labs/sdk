@@ -283,3 +283,49 @@ fn missing_input_binding_is_detected_negative_control() {
 fn missing_background_search_binding_negative_control() {
     futures::executor::block_on(scenario::<true, false>("strasse"));
 }
+
+#[tokio::test]
+async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("stable-find").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut files = CommandSession::open(volume, uuid::Uuid::from_bytes([71; 16]), 65_536, 128)
+        .await
+        .unwrap();
+    files.write_state(CommandFileRoot::Session,"layout.json",&serde_json::json!({"open_view":"find","view_input":"find","search_query":"needle","search_index":0,"history_after":3000})).await.unwrap();
+    let mut input = PromptInput::default();
+    PromptFiles::default().refresh(&files, &mut input).unwrap();
+    let mut renderer = ClientRenderer::default();
+    renderer.transcript = (0..6000)
+        .map(|row| Line::raw(format!("row {row} needle")))
+        .collect();
+    paint_frame(&mut renderer, &files, &input, 80);
+    assert!(renderer.search.pending());
+    let expected = renderer
+        .search
+        .selected_row(&renderer.wrapped_transcript, 0)
+        + 1;
+    for effect in input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 1, 78) {
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
+            .await
+            .unwrap();
+    }
+    for _ in 0..8 {
+        paint_frame(&mut renderer, &files, &input, 80);
+        assert_eq!(
+            renderer
+                .search
+                .selected_row(&renderer.wrapped_transcript, 1),
+            expected,
+            "Enter must preserve its selected match across rebuilt viewports"
+        );
+        renderer.search_progress().await;
+        assert!(renderer.search.pending());
+    }
+    assert!(files.take_request().is_none());
+}

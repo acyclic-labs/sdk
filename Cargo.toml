@@ -40,7 +40,7 @@ members = [
   "rust/crates/manifest",
   "plugin",
 ]
-exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2", "rust/vendor/ratatui-core-0.1.2"]
+exclude = ["rust/vendor/tonic-web-wasm-client-0.9.2"]
 resolver = "2"
 
 [workspace.package]
@@ -215,7 +215,3 @@ inherits = "release"
 opt-level = "z"
 lto = "fat"
 codegen-units = 1
-
-[patch.crates-io]
-# Preserve cell symbol capacity across the terminal double-buffer reset.
-ratatui-core = { path = "rust/vendor/ratatui-core-0.1.2" }

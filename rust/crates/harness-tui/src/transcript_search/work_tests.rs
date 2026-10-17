@@ -262,3 +262,56 @@ proptest! {
         slice_model::<false>(2*size,budget,index);
     }
 }
+
+fn stable_selection_model<const IDENTITY: bool>(size: usize, initial: usize, delta: i64) {
+    let projection = projection(&"a\n".repeat(size));
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "a", 0, Style::default());
+    search.prepare(&projection, initial, 10);
+    search.advance(&projection, 31);
+    search.update(&projection, "a", delta, Style::default());
+    let selected = search.selected.clone().expect("viewport match");
+    for _ in 0..12 {
+        let first = search.selected_row(&projection, delta);
+        search.prepare(&projection, first, 10);
+        if !IDENTITY {
+            // The old implementation reapplied the index to the rebuilt local list.
+            search.selected = search
+                .active()
+                .get(delta.rem_euclid(search.active().len() as i64) as usize)
+                .cloned();
+        }
+        search.advance(&projection, 31);
+        assert_eq!(
+            search.selected,
+            Some(selected.clone()),
+            "background frames must preserve match identity"
+        );
+        assert!(search.pending());
+    }
+    finish(&mut search, &projection);
+    assert_eq!(
+        search.selected,
+        Some(selected),
+        "count completion must preserve match identity"
+    );
+}
+
+#[test]
+fn enter_mid_count_preserves_identity_across_background_frames() {
+    stable_selection_model::<true>(8192, 40, 1);
+}
+
+#[test]
+#[should_panic(expected = "background frames must preserve match identity")]
+fn local_index_selection_drift_negative_control() {
+    stable_selection_model::<false>(8192, 40, 1);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn stable_match_identity_property(size in 4096usize..12000, first in 1usize..40, delta in 1i64..10) {
+        stable_selection_model::<true>(size,first,delta);
+    }
+}

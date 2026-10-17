@@ -634,7 +634,7 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "search_tests.rs"]
 mod search_tests;
 

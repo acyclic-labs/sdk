@@ -38,7 +38,8 @@ pub struct TranscriptSearch {
     nearest: Option<Range<usize>>,
     probe: Option<Range<usize>>,
     index: i64,
-    base: i64,
+    selected: Option<Range<usize>>,
+    selected_rank: Option<usize>,
     style: Style,
 }
 
@@ -66,12 +67,20 @@ impl TranscriptSearch {
     /// A key only changes the needle and cancels the previous background fold.
     pub fn update(&mut self, projection: &WrappedLines, query: &str, index: i64, style: Style) {
         self.project(projection);
-        self.index = index;
         self.style = style;
         charge(query.len(), false);
         if query.chars().default_case_fold().eq(self.needle.chars()) {
+            if index != self.index {
+                let rank = self.position(index).checked_sub(1);
+                if let Some(selected) = rank.and_then(|rank| self.active().get(rank)).cloned() {
+                    self.selected = Some(selected);
+                    self.selected_rank = self.complete.then_some(rank).flatten();
+                }
+                self.index = index;
+            }
             return;
         }
+        self.index = index;
         std::mem::swap(&mut self.needle, &mut self.previous_needle);
         self.needle.clear();
         self.needle.extend(query.chars().default_case_fold());
@@ -101,7 +110,8 @@ impl TranscriptSearch {
         self.matches.clear();
         self.local.clear();
         self.cursor = 0;
-        self.base = 0;
+        self.selected = None;
+        self.selected_rank = None;
         self.refine = refine;
         self.complete = self.needle.is_empty();
         self.generation = self.generation.wrapping_add(1);
@@ -150,6 +160,7 @@ impl TranscriptSearch {
                 range.end..projection.index.text.len()
             });
         }
+        self.select_initial();
         // A short transcript already fits the frame budget: its count is final.
         if range.start == 0 && range.end == projection.index.text.len() {
             self.advance(projection, projection.index.text.len().max(1));
@@ -161,11 +172,6 @@ impl TranscriptSearch {
         if self.complete {
             return false;
         }
-        let selected = self
-            .position(self.index)
-            .checked_sub(1)
-            .and_then(|index| self.active().get(index))
-            .cloned();
         let budget = budget.max(self.needle.len()).max(1);
         if self.local.is_empty() && self.nearest.is_none() {
             if let Some(probe) = &mut self.probe {
@@ -241,17 +247,27 @@ impl TranscriptSearch {
             self.complete = end == projection.index.text.len();
         }
         if self.complete {
-            if let Some(selected) = selected {
-                if let Ok(position) = self.matches.binary_search_by(|range| {
-                    charge(1, true);
-                    range
-                        .start
-                        .cmp(&selected.start)
-                        .then(range.end.cmp(&selected.end))
-                }) {
-                    self.base = position as i64 - self.index.rem_euclid(self.matches.len() as i64);
-                }
+            self.selected_rank = self.selected.as_ref().and_then(|selected| {
+                self.matches
+                    .binary_search_by(|range| {
+                        charge(1, true);
+                        range
+                            .start
+                            .cmp(&selected.start)
+                            .then(range.end.cmp(&selected.end))
+                    })
+                    .ok()
+            });
+            if self.selected_rank.is_none() && !self.matches.is_empty() {
+                self.selected_rank =
+                    Some(self.index.rem_euclid(self.matches.len() as i64) as usize);
             }
+            self.selected = self
+                .selected_rank
+                .and_then(|rank| self.matches.get(rank))
+                .cloned();
+        } else {
+            self.select_initial();
         }
         self.pending()
     }
@@ -273,11 +289,7 @@ impl TranscriptSearch {
 
     /// Borrow cached display text and overlay ranges directly in the buffer.
     pub fn row<'a>(&'a self, projection: &'a WrappedLines, row: usize) -> impl Widget + 'a {
-        let matches = self.active();
-        let selected = self
-            .position(self.index)
-            .checked_sub(1)
-            .and_then(|index| matches.get(index));
+        let selected = self.selected.as_ref();
         let range = &projection.ranges()[row];
         let matches = &self.local;
         let first = matches.partition_point(|matched| matched.end <= range.start);
@@ -296,25 +308,57 @@ impl TranscriptSearch {
         self.active().len()
     }
 
+    fn select_initial(&mut self) {
+        if self.selected.is_none() && !self.active().is_empty() {
+            let rank = self.index.rem_euclid(self.active().len() as i64) as usize;
+            self.selected = self.active().get(rank).cloned();
+        }
+    }
+
     /// One-based selected occurrence, or zero while no match is known.
     pub fn position(&self, index: i64) -> usize {
         let count = self.count();
         if count == 0 {
-            0
-        } else {
-            (index.rem_euclid(count as i64) + self.base).rem_euclid(count as i64) as usize + 1
+            return 0;
         }
+        let rank = if self.complete {
+            self.selected_rank
+        } else {
+            self.selected.as_ref().and_then(|selected| {
+                self.active()
+                    .binary_search_by(|range| {
+                        charge(1, false);
+                        range
+                            .start
+                            .cmp(&selected.start)
+                            .then(range.end.cmp(&selected.end))
+                    })
+                    .ok()
+            })
+        };
+        let offset = if self.selected.is_some() {
+            index.saturating_sub(self.index)
+        } else {
+            index
+        };
+        (rank.unwrap_or(0) as i64 + offset.rem_euclid(count as i64)).rem_euclid(count as i64)
+            as usize
+            + 1
     }
 
-    /// Indexed source-row lookup for the selected occurrence.
+    /// Project the stable source-byte match identity to its current row.
     pub fn selected_row(&self, projection: &WrappedLines, index: i64) -> usize {
-        self.position(index).checked_sub(1).map_or(0, |index| {
-            projection
-                .source_rows
-                .get(self.active()[index].start)
-                .copied()
-                .unwrap_or(0)
-        })
+        let selected = if index == self.index {
+            self.selected.as_ref()
+        } else {
+            self.position(index)
+                .checked_sub(1)
+                .and_then(|rank| self.active().get(rank))
+        };
+        selected
+            .and_then(|range| projection.source_rows.get(range.start))
+            .copied()
+            .unwrap_or(0)
     }
 }
 
