@@ -64,6 +64,9 @@ async fn check_instructions(
     let mut rendered = String::new();
     let reader = harness.context_reader()?;
     for message in &requests[index].messages {
+        if let crate::model::ModelContent::Text(text) = &message.content {
+            rendered.push_str(text);
+        }
         if let crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
             file,
             policy: crate::model::FileProjectionPolicy::ProjectInstructions(source),
