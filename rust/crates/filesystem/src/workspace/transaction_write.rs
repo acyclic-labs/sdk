@@ -550,47 +550,69 @@ fn classify_batch_paths(
     kinds: &mut [Option<FileKind>],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), WorkspaceError> {
-    for (index, path) in paths.iter().enumerate() {
-        let kind = kinds.get_mut(index).ok_or(FsError::InvalidDiff)?;
-        if index < directory_count {
-            match *kind {
-                Some(FileKind::Directory) => continue,
-                Some(_) => return Err(WorkspaceError::NotDirectory),
-                None => {}
-            }
-            if batch_contains(&paths[..index], path, accounting)? {
-                *kind = Some(FileKind::Directory);
-            }
-        } else {
-            if kind.is_some_and(|kind| kind != FileKind::Regular)
-                || batch_contains(&paths[..directory_count], path, accounting)?
-            {
-                return Err(WorkspaceError::NotRegularFile);
-            }
-            if kind.is_some() || batch_contains(&paths[directory_count..index], path, accounting)? {
-                *kind = Some(FileKind::Regular);
-            }
-        }
+    if paths.len() != kinds.len() || directory_count > paths.len() {
+        return Err(FsError::InvalidDiff.into());
     }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn batch_contains(
-    paths: &[NamespacePath],
-    target: &NamespacePath,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<bool, WorkspaceError> {
-    for path in paths {
+    // Preserve directory-error precedence before processing file duplicates.
+    for (index, kind) in kinds.iter().enumerate() {
         accounting.charge(crate::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;
-        if path == target {
-            return Ok(true);
+        if kind.is_some_and(|kind| {
+            kind != if index < directory_count {
+                FileKind::Directory
+            } else {
+                FileKind::Regular
+            }
+        }) {
+            return Err(if index < directory_count {
+                WorkspaceError::NotDirectory
+            } else {
+                WorkspaceError::NotRegularFile
+            });
         }
     }
-    Ok(false)
+
+    let mut ordered = crate::kernel::Owned::allocate(paths.len(), accounting)?;
+    let classified = (|| -> Result<(), WorkspaceError> {
+        for (ordinal, key) in paths.iter().enumerate() {
+            accounting.charge(crate::WorkCounters {
+                bytes_copied: std::mem::size_of::<crate::kernel::IndexedKey<'_, NamespacePath>>()
+                    as u64,
+                ..Default::default()
+            })?;
+            ordered
+                .value
+                .push(crate::kernel::IndexedKey { ordinal, key });
+        }
+        crate::kernel::sort_indexed(&mut ordered.value, accounting)?;
+        for adjacent in ordered.value.windows(2) {
+            let [previous, current] = adjacent else {
+                return Err(FsError::InvalidDiff.into());
+            };
+            accounting.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+            if previous.key != current.key {
+                continue;
+            }
+            let kind = kinds.get_mut(current.ordinal).ok_or(FsError::InvalidDiff)?;
+            *kind = Some(if current.ordinal < directory_count {
+                FileKind::Directory
+            } else if previous.ordinal < directory_count {
+                return Err(WorkspaceError::NotRegularFile);
+            } else {
+                FileKind::Regular
+            });
+        }
+        Ok(())
+    })();
+    let retired = ordered.retire(accounting);
+    classified?;
+    retired?;
+    Ok(())
 }
 
 #[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
@@ -598,8 +620,12 @@ fn batch_contains(
 mod batch_properties;
 
 #[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
-#[path = "transaction_batch_original.rs"]
-mod batch_original;
-#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_differential.rs"]
 mod batch_differential;
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_original.rs"]
+mod batch_original;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_index_properties.rs"]
+mod batch_index_properties;

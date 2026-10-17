@@ -46,9 +46,9 @@ pub(crate) enum Error {
     Work(#[from] WorkError),
 }
 
-struct IndexedKey<'a, K> {
-    ordinal: usize,
-    key: &'a K,
+pub(crate) struct IndexedKey<'a, K> {
+    pub(crate) ordinal: usize,
+    pub(crate) key: &'a K,
 }
 
 struct Request<K> {
@@ -431,7 +431,7 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 }
 
-fn sort_indexed<K: Ord>(
+pub(crate) fn sort_indexed<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
