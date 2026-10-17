@@ -56,6 +56,7 @@ pub(crate) enum NativeResourceCredit {
     WriteOperations,
     DurabilityOperations,
     ReadBytes,
+    #[cfg(any(test, feature = "distributed"))]
     AuthorityReadBytes,
     WriteBytes,
     AllocationOperations,
@@ -69,6 +70,7 @@ impl NativeResourceCredit {
             Self::WriteOperations => &mut work.backend_write_operations,
             Self::DurabilityOperations => &mut work.durability_operations,
             Self::ReadBytes => &mut work.source_bytes_read,
+            #[cfg(any(test, feature = "distributed"))]
             Self::AuthorityReadBytes => &mut work.authority_bytes_read,
             Self::WriteBytes => &mut work.output_bytes,
             Self::AllocationOperations => &mut work.allocation_operations,

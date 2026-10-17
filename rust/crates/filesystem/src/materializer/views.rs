@@ -76,6 +76,7 @@ impl NativeMaterializationWork {
         }));
         Ok(())
     }
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn authority_read_allocation(
         &self,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
@@ -89,6 +90,7 @@ impl NativeMaterializationWork {
             bytes: 0,
         })
     }
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn authority_read_meter_for(
         &self,
         original: &Self,
@@ -110,6 +112,7 @@ impl NativeMaterializationWork {
             && same_capture)
             .then(|| self.runtime_meter())
     }
+    #[cfg(any(test, feature = "distributed"))]
     pub(crate) fn authority_read_original(&self) -> Option<&Self> {
         self.invocation.as_ref().and_then(|view| {
             matches!(view.read_credit, NativeResourceCredit::AuthorityReadBytes)

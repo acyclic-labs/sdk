@@ -98,8 +98,22 @@ pub(crate) use identity::*;
 mod windows_metadata;
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) use windows_metadata::*;
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    test,
+    feature = "local",
+    feature = "native-watch"
+))]
 mod sparse;
 mod tree;
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    test,
+    feature = "local",
+    feature = "native-watch"
+))]
 pub(crate) use sparse::*;
 #[cfg(any(windows, test, feature = "native-watch"))]
 mod ranges;

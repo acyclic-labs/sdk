@@ -2,11 +2,13 @@ use super::*;
 
 pub(crate) enum NativeOpenOptions {
     Read,
+    #[cfg(any(test, feature = "local", feature = "native-mount"))]
     ReadWrite,
     #[cfg(any(test, feature = "native-mount"))]
     CreateNew,
     #[cfg(feature = "local")]
     ReadWriteCreateNew,
+    #[cfg(any(test, feature = "local", feature = "native-mount"))]
     ReadWriteCreate,
 }
 
@@ -130,7 +132,10 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     #[cfg(windows)]
     return with_wide_path(name, work, |name, work| {
         let disposition = match options {
-            NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+            NativeOpenOptions::Read => nt::FILE_OPEN,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
+            NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
             #[cfg(any(test, feature = "local", feature = "native-mount"))]
             _ => nt::FILE_CREATE,
@@ -160,11 +165,13 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     unix_name(name.as_os_str(), work, |name, work| {
         let mode = match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
             #[cfg(any(test, feature = "native-mount"))]
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
             #[cfg(feature = "local")]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             NativeOpenOptions::ReadWriteCreate => libc::O_RDWR | libc::O_CREAT,
         };
         let file = open_unix(

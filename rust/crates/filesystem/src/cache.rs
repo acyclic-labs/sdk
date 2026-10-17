@@ -381,6 +381,7 @@ impl<S> CachedObjectStore<S> {
         }
     }
 
+    #[cfg(feature = "distributed")]
     pub(crate) fn with_default_options(inner: S) -> Self {
         Self::with_options(inner, ObjectCacheOptions::default())
     }
