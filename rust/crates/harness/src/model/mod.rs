@@ -2,7 +2,10 @@
 
 mod call_id;
 mod content;
+mod instructions;
 mod inventory;
+pub use instructions::InstructionSource;
+pub(crate) use instructions::{instruction_reservation, project_instruction};
 mod media;
 mod prefix;
 mod preparation;

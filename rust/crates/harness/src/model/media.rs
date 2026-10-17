@@ -9,6 +9,8 @@ pub enum FileProjectionPolicy {
     Reference,
     /// Verified bounded text.
     BoundedFull,
+    /// Verified project instructions, framed with their canonical source scope.
+    ProjectInstructions,
     /// Explicit bounded native media intent.
     Native(Box<NativeMediaPolicy>),
 }
@@ -28,6 +30,10 @@ impl FileProjectionPolicy {
             && file.descriptor().byte_length() > limits.render_bytes
         {
             return Err(invalid(work, "model file exceeds render limit"));
+        }
+        if matches!(self, Self::ProjectInstructions) {
+            let mut remaining = limits.render_bytes;
+            InstructionSource::new(file).reserve(&mut remaining, None)?;
         }
         Ok(())
     }

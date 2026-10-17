@@ -155,6 +155,11 @@ impl DiscoveredContext {
             }
             self.validate(work)
         })?;
+        crate::model::instruction_reservation(
+            &self.instructions,
+            limits.render_bytes.saturating_sub(skill_bytes),
+            io,
+        )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
@@ -167,13 +172,9 @@ impl DiscoveredContext {
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(Error::from)?;
             for file in &self.instructions {
-                messages.0.push(ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Part(ModelContentPart::File {
-                        file: crate::model::clone_file(file, Some(io))?,
-                        policy: FileProjectionPolicy::BoundedFull,
-                    }),
-                });
+                messages
+                    .0
+                    .push(crate::model::project_instruction(file, Some(io))?);
             }
             if !self.skills.is_empty() {
                 let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
@@ -191,14 +192,8 @@ impl DiscoveredContext {
         let mut messages: Vec<_> = self
             .instructions
             .iter()
-            .map(|file| ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Part(ModelContentPart::File {
-                    file: file.clone(),
-                    policy: FileProjectionPolicy::BoundedFull,
-                }),
-            })
-            .collect();
+            .map(|file| crate::model::project_instruction(file, io))
+            .collect::<Result<Vec<_>>>()?;
         if !self.skills.is_empty() {
             messages.push(ModelMessage {
                 role: ModelRole::System,
