@@ -162,7 +162,10 @@ fn order(messages: &mut [Message<'_>]) {
     super::gemini_results::order(messages);
 }
 fn tool_result(item: &Item<'_>) -> bool {
-    matches!(item, Item::Json(value) if sequence::tool_result(value))
+    match item {
+        Item::Json(value) | Item::Parts { fields: value, .. } => sequence::tool_result(value),
+        _ => false,
+    }
 }
 fn role(message: &Message<'_>) -> &'static str {
     match message {
@@ -175,7 +178,9 @@ fn response_item(message: &Message<'_>) -> ResponseItem {
         // Native replay admits only the Responses reasoning shape.
         Message::Item(Item::Native(_)) => ResponseItem::Reasoning,
         Message::Item(Item::Call(_)) => ResponseItem::Output,
-        Message::Item(Item::Json(item)) => ResponseItem::of(item),
+        Message::Item(Item::Json(item) | Item::Parts { fields: item, .. }) => {
+            ResponseItem::of(item)
+        }
         _ => ResponseItem::Other,
     }
 }

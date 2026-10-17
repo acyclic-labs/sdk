@@ -15,6 +15,22 @@ pub enum Authentication {
     Optional,
 }
 
+/// Declared image support and finite bounds for one exact model.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageInput {
+    /// Maximum raw bytes in one image.
+    pub maximum_bytes: u64,
+    /// Maximum combined raw image bytes in one request.
+    pub maximum_total_bytes: u64,
+    /// Maximum image occurrences, including prior turns and tool results.
+    pub maximum_images: u32,
+    /// Maximum width or height accepted before provider preprocessing.
+    pub maximum_dimension: u32,
+    /// Model-specific upper bound for one image's input tokens.
+    pub maximum_tokens: u32,
+}
+
 /// Endpoint configuration independent of immutable model identity.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +60,9 @@ pub struct ProviderSpec {
     /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
+    /// Exact image input limits; omitted models receive a fallback note.
+    #[serde(default)]
+    pub images: BTreeMap<String, ImageInput>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
 }

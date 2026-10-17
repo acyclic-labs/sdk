@@ -43,8 +43,17 @@ impl LocalHarness {
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
-            CommandResolution::Prompt { text, .. } => {
-                self.queue_prompt(operation, target, &text, settings).await
+            resolution @ CommandResolution::Prompt { .. } => {
+                let input = resolution.into_model_input()?;
+                let prompt = match &input {
+                    ModelContent::Text(text) => text.as_str(),
+                    ModelContent::Parts(parts) => match parts.first() {
+                        Some(crate::model::ModelContentPart::Text { text }) => text.as_str(),
+                        _ => return Err(Error::Invalid("prompt lost its text".into())),
+                    },
+                };
+                self.retain_prompt_input(operation, &input).await?;
+                self.queue_prompt(operation, target, prompt, settings).await
             }
             CommandResolution::Submit {
                 request: CommandRequest::Replace { message, text },

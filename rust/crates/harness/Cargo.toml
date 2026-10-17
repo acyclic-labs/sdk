@@ -190,7 +190,7 @@ test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-r
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
+terminal = ["dep:arboard", "dep:imagesize","dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
@@ -258,6 +258,9 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+arboard = { version = "3.6.1", optional = true }
+imagesize = { version = "0.15.0", optional = true }
+
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }
 getrandom = { workspace = true, optional = true }

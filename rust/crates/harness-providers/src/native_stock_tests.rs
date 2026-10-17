@@ -380,3 +380,6 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     );
     Ok(())
 }
+
+#[path = "image_stock_tests.rs"]
+mod image_cases;

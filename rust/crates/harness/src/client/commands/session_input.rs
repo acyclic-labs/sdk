@@ -80,10 +80,28 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(operation);
             }
             let cut = self.generation;
-            let resolution = self
+            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+            let attachments = self.state(CommandFileRoot::Session, "attachments.json")?;
+            let mut resolution = self
                 .catalog
                 .resolve(input, reader, self.maximum_bytes)
                 .await?;
+            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+            if let CommandResolution::Prompt { text, mentions, .. } = &mut resolution {
+                for file in crate::client::host_images::draft_images(self)? {
+                    reader
+                        .verify(&file, crate::client::host_images::MAX_IMAGE, None)?
+                        .await?;
+                    text.push('\n');
+                    let start = text.len();
+                    text.push_str(&format!("@\"{}\"", file.path()));
+                    mentions.push(crate::client::FileMention {
+                        start,
+                        end: text.len(),
+                        file,
+                    });
+                }
+            }
             self.load_task_settings().await?;
             if self.generation != cut {
                 if RETRY {
@@ -93,13 +111,28 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "command query advanced during resolution; retry from the new cut".into(),
                 ));
             }
-            return if RETRY {
+            let prompt = matches!(resolution, CommandResolution::Prompt { .. });
+            let published = if RETRY {
                 self.publish_input_resolution_at::<true>(resolution, operation)
                     .await
             } else {
                 self.publish_resolution_with_retry::<false>(resolution, operation)
                     .await
-            };
+            }?;
+            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+            if prompt
+                && attachments.is_some()
+                && self.state(CommandFileRoot::Session, "attachments.json")? == attachments
+            {
+                self.write_unchanged_state(
+                    CommandFileRoot::Session,
+                    "attachments.json",
+                    &serde_json::json!([]),
+                )
+                .await?;
+            }
+            let _ = prompt;
+            return Ok(published);
         }
         Err(Error::Conflict(
             "command resolution remained busy; retry the input".into(),

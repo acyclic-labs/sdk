@@ -60,6 +60,10 @@ impl PromptFiles {
         files: &CommandSession<P>,
         input: &mut PromptInput,
     ) -> Result<()> {
+        #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
+        {
+            input.images = super::host_images::draft_images(files)?.len();
+        }
         let draft = files.state_file(CommandFileRoot::Session, "draft.json")?;
         let entries = files.state_file(CommandFileRoot::Config, "history.json")?;
         let bindings = files.state_file(CommandFileRoot::Config, "keymap.json")?;

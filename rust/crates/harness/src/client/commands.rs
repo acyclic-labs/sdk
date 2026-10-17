@@ -391,8 +391,19 @@ impl CommandResolution {
             if selected.peek() == Some(&index) {
                 selected.next();
                 parts.push(ModelContentPart::File {
+                    policy: if mention.file.descriptor().media_type().starts_with("image/") {
+                        FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+                            intent: crate::model::NativeMediaIntent::Image {
+                                detail: crate::model::ImageDetail::Auto,
+                            },
+                            maximum_bytes: mention.file.descriptor().byte_length(),
+                            maximum_work: 16_384,
+                            configuration: None,
+                        }))
+                    } else {
+                        FileProjectionPolicy::BoundedFull
+                    },
                     file: mention.file,
-                    policy: FileProjectionPolicy::BoundedFull,
                 });
             }
         }

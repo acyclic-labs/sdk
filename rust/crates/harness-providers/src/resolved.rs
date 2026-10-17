@@ -24,6 +24,15 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// Binds the caller-authorized filesystem reader; canonical requests retain file references.
+    pub fn with_content_reader(
+        mut self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+    ) -> Self {
+        self.files.reader = Some(reader);
+        self
+    }
+
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model

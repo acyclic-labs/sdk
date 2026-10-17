@@ -120,6 +120,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
     registry.register(
         "recorded".into(),
         ProviderSpec {
+            images: BTreeMap::new(),
             adapter,
             authentication: Authentication::Optional,
             base_url: "https://recorded.invalid/v1".into(),

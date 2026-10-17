@@ -1,5 +1,6 @@
 use crate::{
-    Adapter, Authentication, ModelFeatures, ProviderSpec, TokenCountField, TokenCounterSpec,
+    Adapter, Authentication, ImageInput, ModelFeatures, ProviderSpec, TokenCountField,
+    TokenCounterSpec,
 };
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
@@ -127,7 +128,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
     ENDPOINTS
         .iter()
         .map(|&(id, adapter, authentication, base_url)| {
-            let models = MODELS
+            let models: BTreeMap<String, crate::ModelSpec> = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)
                 .map(|&(_, name, context_tokens, output_tokens, features)| {
@@ -149,6 +150,22 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     adapter,
                     authentication,
                     base_url: base_url.into(),
+                    images: models
+                        .iter()
+                        .filter(|(_, model)| model.features.images)
+                        .map(|(name, _)| {
+                            (
+                                name.clone(),
+                                ImageInput {
+                                    maximum_bytes: 4 * 1024 * 1024,
+                                    maximum_total_bytes: 8 * 1024 * 1024,
+                                    maximum_images: 16,
+                                    maximum_dimension: 4096,
+                                    maximum_tokens: 16_384,
+                                },
+                            )
+                        })
+                        .collect(),
                     headers: BTreeMap::new(),
                     models,
                     token_counter: COUNTERS.iter().find(|(provider, ..)| *provider == id).map(

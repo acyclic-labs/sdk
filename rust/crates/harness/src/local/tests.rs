@@ -25,6 +25,8 @@ mod goals;
 mod hook_configuration;
 #[cfg(all(feature = "native-execution", unix))]
 mod hook_lifecycle;
+#[cfg(all(feature = "tui", feature = "terminal"))]
+mod image_input;
 use std::{
     path::Path,
     sync::{Arc, Mutex},

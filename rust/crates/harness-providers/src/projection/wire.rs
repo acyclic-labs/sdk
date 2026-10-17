@@ -3,12 +3,43 @@ use serde::{Serialize, ser::SerializeMap};
 use serde_json::{Map, Value, value::RawValue};
 
 /// Native payloads borrow transcript bytes until HTTP serialization completes.
-#[derive(Serialize)]
-#[serde(untagged)]
 pub(super) enum Item<'a> {
     Json(Value),
+    Image(super::image::Image<'a>),
+    Parts {
+        fields: Value,
+        key: &'static str,
+        parts: Vec<Item<'a>>,
+    },
     Native(&'a RawValue),
     Call(Call<'a>),
+}
+
+impl Item<'_> {
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Json(value) => value["text"].as_str(),
+            _ => None,
+        }
+    }
+}
+impl Serialize for Item<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Json(value) => value.serialize(serializer),
+            Self::Native(value) => value.serialize(serializer),
+            Self::Call(value) => value.serialize(serializer),
+            Self::Image(value) => value.serialize(serializer),
+            Self::Parts { fields, key, parts } => {
+                let mut map = serializer.serialize_map(None)?;
+                for (name, value) in fields.as_object().expect("projected object") {
+                    map.serialize_entry(name, value)?;
+                }
+                map.serialize_entry(key, parts)?;
+                map.end()
+            }
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -48,6 +79,53 @@ impl Serialize for Body<'_> {
 }
 
 impl Body<'_> {
+    /// Size the wire buffer without encoding image bytes or constructing a JSON graph.
+    pub(crate) fn capacity(&self) -> acyclic_harness::Result<usize> {
+        use super::encoded_len;
+        fn item(value: &Item<'_>) -> acyclic_harness::Result<usize> {
+            match value {
+                Item::Image(image) => {
+                    let empty = super::image::Image {
+                        adapter: image.adapter,
+                        mime: image.mime,
+                        policy: image.policy,
+                        bytes: &[],
+                    };
+                    encoded_len(&empty)?
+                        .checked_add(image.bytes.len().div_ceil(3) * 4)
+                        .ok_or_else(|| crate::invalid("image size overflow"))
+                }
+                Item::Parts { fields, key, parts } => {
+                    let mut bytes = encoded_len(fields)? + encoded_len(key)? + 4;
+                    for part in parts {
+                        bytes = bytes
+                            .checked_add(item(part)? + 1)
+                            .ok_or_else(|| crate::invalid("image size overflow"))?;
+                    }
+                    Ok(bytes)
+                }
+                _ => encoded_len(value),
+            }
+        }
+        let mut bytes = encoded_len(&self.fields)? + encoded_len(self.messages_field)? + 4;
+        for message in &self.messages {
+            let size = match message {
+                Message::Item(value) => item(value)?,
+                Message::Chat(value) => encoded_len(value)?,
+                Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } => {
+                    let mut size = 64;
+                    for part in content {
+                        size += item(part)? + 1;
+                    }
+                    size
+                }
+            };
+            bytes = bytes
+                .checked_add(size + 1)
+                .ok_or_else(|| crate::invalid("image size overflow"))?;
+        }
+        Ok(bytes)
+    }
     pub(crate) fn serialize_fields<S: serde::Serializer>(
         &self,
         serializer: S,

@@ -338,7 +338,7 @@ impl LocalHarness {
         let model = crate::filesystem::ModelTaskCommand {
             summary_source: None,
             context_manifest: manifest,
-            input: ModelContent::Text(prompt.into()),
+            input: self.prompt_input(operation, prompt).await?,
             selected_context: None,
             max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,

@@ -39,6 +39,7 @@ async fn encode(
         nodes,
         key.map_or(0, |key| key.len() as u64) + account.map_or(0, |account| account.len() as u64),
     )?;
+    crate::images::admit(provider, request.request(), work, &mut allocation)?;
     let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
     let origin = provider.reasoning_origin(key, account);
     let body = diagnostic(
@@ -208,7 +209,11 @@ pub(crate) fn generate<'a>(
                 work,
             )
             .await?;
-            let input_bytes = body.len();
+            let input_bytes = if crate::images::has_images(request.request()) {
+                0
+            } else {
+                body.len()
+            };
             work.remaining()?;
             let response = send(
                 provider,

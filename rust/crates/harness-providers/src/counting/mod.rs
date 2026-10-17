@@ -53,10 +53,25 @@ pub(crate) async fn count(
                 )
             })
             .transpose()?;
-        let result = provider
-            .codex_count
-            .count(request)
-            .and_then(|tokens| projection::plan(provider, request, tokens));
+        let result = provider.codex_count.count(request).and_then(|tokens| {
+            let extra = request
+                .request()
+                .messages
+                .iter()
+                .try_fold(0u64, |total, message| {
+                    total
+                        .checked_add(u64::from(crate::images::tokens(provider, message)?))
+                        .and_then(|n| n.checked_add(crate::images::text_bytes(message).ok()?))
+                        .ok_or_else(|| crate::invalid("file token count overflows"))
+                })?;
+            projection::plan(
+                provider,
+                request,
+                tokens
+                    .checked_add(extra)
+                    .ok_or_else(|| crate::invalid("file token count overflows"))?,
+            )
+        });
         let mut custody = custody;
         let result = match custody.as_mut() {
             Some(hold) => crate::native::diagnostic(result, hold),
@@ -107,6 +122,10 @@ pub(crate) async fn count(
         })
         .transpose()?;
     #[cfg(not(target_arch = "wasm32"))]
+    if let (Some(work), Some(hold)) = (work, admission.as_mut()) {
+        crate::images::admit(provider, request.request(), work, hold)?;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     let content_io = work
         .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
         .transpose()?;
@@ -117,11 +136,21 @@ pub(crate) async fn count(
             crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let generation =
-            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
+        let images = crate::images::load(provider, request.request(), content_io.as_ref()).await?;
+        let generation = projection::body_with_images(
+            provider,
+            request.request(),
+            &names,
+            &origin,
+            images.iter().map(|image| image.0.as_ref()),
+            &mut files,
+        )?;
         let body = wire::body(&generation, &provider.model.name, spec.adapter);
-        let bytes =
-            serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
+        let mut bytes = Vec::with_capacity(
+            generation.capacity()? + projection::encoded_len(&provider.model.name)? + 256,
+        );
+        serde_json::to_writer(&mut bytes, &body)
+            .map_err(|_| crate::invalid("token count encoding failed"))?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;

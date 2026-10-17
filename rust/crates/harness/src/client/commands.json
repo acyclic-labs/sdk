@@ -1,4 +1,5 @@
 [
+  {"name":"attach","description":"Attach a host image file to the draft","arguments":"required_text","action":{"kind":"sdk","command":"attach"}},
   {"name":"compact","description":"Summarize the current context","arguments":"text","action":{"kind":"builtin","command":"compact"}},
   {"name":"model","description":"Select or inspect the model","arguments":"word","action":{"kind":"builtin","command":"model"}},
   {"name":"diff","description":"Cycle the captured workspace diff view","arguments":"none","action":{"kind":"builtin","command":"diff"},"aliases":["view"]},

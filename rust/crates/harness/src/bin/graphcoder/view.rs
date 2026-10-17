@@ -24,6 +24,7 @@ pub async fn run(
     )
     .await?;
     let reader = local.client_reader()?;
+    let publisher = local.client_publisher()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut tty = Tty::open()?;
     // Synchronized output follows the probed modes in the session journal.
@@ -98,12 +99,15 @@ pub async fn run(
             now,
         );
         for effect in effects {
-            client::file_tui_input(
+            client::host_tui_input(
                 &mut commands,
                 reader.as_ref(),
+                publisher.as_ref(),
+                &mut input,
                 effect,
                 usize::from(areas.transcript.height),
                 maximum_scroll,
+                now,
             )
             .await?;
         }

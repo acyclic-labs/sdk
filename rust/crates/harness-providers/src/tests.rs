@@ -37,6 +37,9 @@ mod gemini_replay_tests;
 #[path = "gemini_tests.rs"]
 mod gemini_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "image_tests.rs"]
+mod image_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "input/projection_tests.rs"]
 mod input_projection_tests;
 #[cfg(not(target_arch = "wasm32"))]
@@ -283,6 +286,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             base_url: "http://127.0.0.1:1234/v1".into(),
             headers: BTreeMap::new(),
             models: BTreeMap::new(),
+            images: BTreeMap::new(),
             token_counter: Some(crate::TokenCounterSpec {
                 path: "count_tokens".into(),
                 adapter,
@@ -479,6 +483,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             framing_tokens: 0,
         }),
         max_event_bytes: 4096,
+        images: BTreeMap::new(),
     };
     for base in [
         "http://example.test",

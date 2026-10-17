@@ -82,6 +82,14 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
             }
             Ok(())
         }
+        FileProjectionPolicy::Native(policy)
+            if matches!(
+                policy.intent,
+                acyclic_harness::model::NativeMediaIntent::Image { .. }
+            ) =>
+        {
+            Ok(())
+        }
         FileProjectionPolicy::Native(_) => Err(Error::Unsupported(
             "native model media is unsupported by this adapter".into(),
         )),

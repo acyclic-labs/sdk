@@ -120,11 +120,10 @@ pub(super) fn append(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let mut append = |file: FileRef| -> Result<()> {
-        let policy = match file.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                native_image(maximum_work, io)?
-            }
-            _ => FileProjectionPolicy::Reference,
+        let policy = if file.descriptor().media_type().starts_with("image/") {
+            native_image(maximum_work, io)?
+        } else {
+            FileProjectionPolicy::Reference
         };
         parts.push(ModelContentPart::File { file, policy });
         Ok(())

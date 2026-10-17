@@ -36,7 +36,7 @@ pub(crate) fn generate_encoded<'a>(
     names: crate::tool_names::Names<'a>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     Box::pin(async_stream::try_stream! {
-        let input_bytes = body.len();
+        let input_bytes = if crate::images::has_images(request.request()) { 0 } else { body.len() };
         #[cfg(not(target_arch = "wasm32"))]
         let mut auth = auth;
         #[cfg(not(target_arch = "wasm32"))]
@@ -121,8 +121,19 @@ pub(crate) async fn encode(
     origin: &acyclic_harness::model::ReasoningOrigin,
 ) -> Result<Vec<u8>> {
     let mut files = crate::files::resolve(&provider.files, request.request(), io).await?;
-    let body = projection::body_named(provider, request.request(), names, origin, &mut files)?;
-    serde_json::to_vec(&body).map_err(|_| invalid("model request encoding failed"))
+    let images = crate::images::load(provider, request.request(), io).await?;
+    let body = projection::body_with_images(
+        provider,
+        request.request(),
+        names,
+        origin,
+        images.iter().map(|image| image.0.as_ref()),
+        &mut files,
+    )?;
+    let mut bytes = Vec::with_capacity(body.capacity()?);
+    serde_json::to_writer(&mut bytes, &body)
+        .map_err(|_| invalid("model request encoding failed"))?;
+    Ok(bytes)
 }
 
 pub(crate) fn request_headers(
