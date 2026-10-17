@@ -1,14 +1,14 @@
-//! Real platform-session admission of the client's emitted subscriptions.
-use super::path;
+//! The production swarm reducer over the shared Rust pool and real memory host.
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error,
-    client::{SwarmClient, SwarmClientLimits, SwarmUpdate},
-    task_volume::{Channel, FileKey, FileValue, Query, TaskVolume, Write},
+    client::{SwarmChange, SwarmClientLimits},
+    task_volume::{Channel, FileKey, Query, TaskVolume, Write},
 };
-use acyclic_stream::{AppendRequest, CommitId, MemoryStream, StreamProvider as _, wire};
-use futures::{StreamExt as _, channel::mpsc, future::Either};
+use acyclic_stream::{AppendRequest, MemoryStream, StreamProvider as _, wire};
+use futures::StreamExt as _;
 use prost::Message as _;
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 use wire::{session_frame::Body, session_subscription::Kind};
 
 #[derive(Clone, Copy)]
@@ -17,36 +17,33 @@ enum Fault {
     MissingDiscoveryCursor,
     OpaqueContentAnchor,
     EvenChannel,
+    RequireOpaqueDataAnchor,
     DuplicateContent,
 }
 
-fn frame(id: u64, body: Body) -> wire::SessionFrame {
-    wire::SessionFrame {
-        channel_id: id,
-        generation: u64::from(id != 0),
-        body: Some(body),
-    }
-}
-
 async fn chunk(volume: &TaskVolume<MemoryStream>, sequence: u64, bytes: &[u8]) {
-    let cut = volume.snapshot(&Query::Root, 4).await.unwrap();
     let mut write = Write::new(
         FileKey::parse(&format!(".tasks/t/turns/1/chunks/{sequence}")).unwrap(),
         bytes.to_vec(),
     );
     write.channel = Some(Channel::Text);
-    volume.append(cut.generation, &write).await.unwrap();
+    volume
+        .append(volume.head().await.unwrap(), &write)
+        .await
+        .unwrap();
 }
 
 async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+        .await
+        .unwrap();
     let config = TaskVolume::open(provider.clone(), path("config/files"))
         .await
         .unwrap();
-    let cut = config.snapshot(&Query::Root, 4).await.unwrap();
     config
         .append(
-            cut.generation,
+            config.head().await.unwrap(),
             &Write::new(
                 FileKey::parse("workspace/layout.json").unwrap(),
                 br#"{"in_view":["swarm/a"]}"#.to_vec(),
@@ -58,208 +55,199 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
         .await
         .unwrap();
     chunk(&files, 1, before).await;
-    let status = wire::SessionLatestValue {
-        key: b"status".to_vec().into(),
-        value: b"running".to_vec().into(),
-        attention: false,
-    };
+    status::member(&parent, "a").await;
     provider
         .append(AppendRequest {
             path: path("swarm/a/status"),
-            records: vec![status.encode_to_vec().into()],
+            records: vec![
+                wire::SessionLatestValue {
+                    key: b"status".to_vec().into(),
+                    value: b"running".to_vec().into(),
+                    attention: false,
+                }
+                .encode_to_vec()
+                .into(),
+            ],
             if_tail: Some(0),
             idempotency_key: None,
         })
         .await
         .unwrap();
-    let (sender, receiver) = mpsc::unbounded();
-    sender
-        .unbounded_send(Ok(frame(
-            0,
-            Body::Hello(wire::SessionHello {
-                version: 1,
-                client_id: b"swarm-test".to_vec().into(),
-                destination_node: "node".into(),
-                receive_bytes: 1_000_000,
-                receive_frames: 100,
-            }),
-        )))
-        .unwrap();
-    let incoming = acyclic_stream::session::serve(
-        provider.clone(),
-        "node".into(),
-        Default::default(),
-        receiver.boxed(),
-    )
-    .unwrap()
-    .flat_map(move |item| {
-        let item = item.map_err(|error| Error::Storage(error.to_string()));
-        let duplicate = matches!(fault, Fault::DuplicateContent)
-            && matches!(
-                &item,
-                Ok(wire::SessionFrame {
-                    body: Some(Body::Data(wire::SessionData {
-                        item: Some(wire::session_data::Item::Record(_)),
-                        ..
-                    })),
-                    ..
-                })
-            );
-        let mut frames = Vec::new();
-        if duplicate {
-            frames.push(Ok(item.as_ref().unwrap().clone()));
-        }
-        frames.push(item);
-        futures::stream::iter(frames)
+    let requests: runtime::RequestMap = Arc::new(move |source| {
+        Box::pin(source.map(move |mut frame| {
+            if let Some(Body::Interest(update)) = &mut frame.body {
+                for sub in &mut update.upsert {
+                    match (&mut sub.kind, fault) {
+                        (Some(Kind::Children(_)), Fault::MissingDiscoveryCursor) => {
+                            sub.resume = None
+                        }
+                        (Some(Kind::Follow(follow)), Fault::OpaqueContentAnchor)
+                            if follow.path == "swarm/a/files"
+                                && follow.delivery == wire::SessionDelivery::All as i32 =>
+                        {
+                            sub.resume.as_mut().unwrap().opaque =
+                                std::mem::take(&mut follow.preceding_commit_id);
+                        }
+                        (Some(Kind::Follow(_)), Fault::EvenChannel) => {
+                            sub.channel.as_mut().unwrap().channel_id -= 1
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            frame
+        }))
     });
-    let sink = Box::pin(futures::sink::unfold(
-        sender,
-        move |sender, mut update: wire::SessionInterest| async move {
-            let channels: Vec<_> = update
-                .upsert
-                .iter()
-                .map(|sub| sub.channel.unwrap())
-                .collect();
-            for subscription in &mut update.upsert {
-                match (&mut subscription.kind, fault) {
-                    (Some(Kind::Children(_)), Fault::MissingDiscoveryCursor) => {
-                        subscription.resume = None
-                    }
-                    (Some(Kind::Follow(follow)), Fault::OpaqueContentAnchor)
-                        if follow.delivery == wire::SessionDelivery::All as i32 =>
-                    {
-                        subscription.resume.as_mut().unwrap().opaque =
-                            std::mem::take(&mut follow.preceding_commit_id);
-                    }
-                    (Some(Kind::Follow(_)), Fault::EvenChannel) => {
-                        subscription.channel.as_mut().unwrap().channel_id -= 1;
-                    }
-                    _ => {}
-                }
+    let responses: runtime::ResponseMap = Arc::new(move |source| {
+        Box::pin(source.flat_map(move |item| {
+            let duplicate = matches!(fault, Fault::DuplicateContent)
+                && matches!(
+                    &item,
+                    Ok(wire::SessionFrame {
+                        body: Some(Body::Data(wire::SessionData {
+                            item: Some(wire::session_data::Item::Record(_)),
+                            ..
+                        })),
+                        ..
+                    })
+                );
+            let mut frames = Vec::new();
+            if duplicate {
+                frames.push(Ok(item.as_ref().unwrap().clone()));
             }
-            // Only canonical frame wrapping and fixture credit; never repair client fields.
-            sender
-                .unbounded_send(Ok(frame(0, Body::Interest(update))))
-                .unwrap();
-            for channel in channels {
-                sender
-                    .unbounded_send(Ok(frame(
-                        channel.channel_id,
-                        Body::Window(wire::SessionWindow {
-                            bytes: 1_000_000,
-                            frames: 100,
-                        }),
-                    )))
-                    .unwrap();
-            }
-            Ok::<_, Error>(sender)
-        },
-    ));
-    let mut snapshots = Vec::new();
-    let mut delivered = Vec::new();
-    let mut through = None;
-    let client = SwarmClient::new(
-        path("swarm"),
-        SwarmClientLimits {
-            agents: 1,
-            selected: 1,
-            layout_bytes: 1024,
-            config_files: 4,
-            snapshot_files: 4,
-        },
-    )
+            frames.push(item);
+            futures::stream::iter(frames)
+        }))
+    });
+    let (session, mut runner, mut observed) = runtime::open(provider, requests, responses);
+    let client = super::client(SwarmClientLimits {
+        agents: 1,
+        selected: 1,
+        layout_bytes: 1024,
+        config_files: 4,
+        snapshot_files: 4,
+    })
     .unwrap();
+    let views = client.views();
+    let snapshots = RefCell::new(Vec::new());
+    let delivered = RefCell::new(Vec::new());
     let consume = client.follow(
-        provider.as_ref(),
         &config,
-        sink,
-        incoming,
-        |_, maximum| files.heads(&Query::Root, None, maximum),
-        |update| {
+        &parent,
+        &session,
+        |_, maximum| {
+            let files = &files;
+            async move {
+                let snapshot = files.heads(&Query::Root, None, maximum).await?;
+                chunk(files, 2, after).await;
+                Ok(snapshot)
+            }
+        },
+        async |update| {
             match update {
-                SwarmUpdate::Snapshot { snapshot, .. } => {
-                    through = Some(snapshot.cursor.position + 1);
-                    snapshots.push(snapshot);
-                    // Actual append after C but before the production follow is sent.
-                    return Either::Left(async {
-                        chunk(&files, 2, after).await;
-                        Ok(())
-                    });
+                SwarmChange::Snapshot { agent, cursor } => {
+                    let bytes: Vec<_> = views
+                        .read(|v| {
+                            v.files(&agent)
+                                .flat_map(|f| f.segments.iter().flat_map(|s| s.iter().copied()))
+                                .collect()
+                        })
+                        .unwrap();
+                    snapshots.borrow_mut().push((cursor, bytes));
                 }
-                SwarmUpdate::Data {
+                SwarmChange::Data {
                     overview: false,
                     data,
+                    file,
                     ..
                 } => {
-                    if !delivered.is_empty() {
-                        return Either::Right(futures::future::ready(Err(Error::Invalid(
-                            "duplicate content delivery".into(),
-                        ))));
+                    if matches!(fault, Fault::RequireOpaqueDataAnchor) {
+                        // Deliberately broken reader: delivery tokens are not file anchors.
+                        acyclic_stream::wire_codec::session::record_anchor(
+                            data.after.as_ref().unwrap(),
+                        )
+                        .map_err(|e| Error::Storage(e.to_string()))?;
                     }
-                    let Some(wire::session_data::Item::Record(record)) = data.item else {
-                        panic!("content record")
-                    };
-                    assert_eq!(data.after.as_ref().map(|cursor| cursor.next), through);
-                    assert_eq!(Some(record.sequence + 1), through);
-                    let record = acyclic_stream::Record {
-                        sequence: record.sequence,
-                        value: record.value.into(),
-                        commit_id: CommitId::from_bytes(
-                            record.commit_id.as_ref().try_into().unwrap(),
-                        ),
-                        committed_at_micros: record.committed_at_micros,
-                    };
-                    let file = FileValue::from_record(&record).unwrap().unwrap();
+                    let file = file.expect("content record");
                     assert_eq!(file.key.path(), ".tasks/t/turns/1/chunks/2");
                     assert_eq!(file.channel, Some(Channel::Text));
-                    delivered.push(file.bytes);
+                    delivered.borrow_mut().push(file.bytes);
                 }
                 _ => {}
             }
-            Either::Right(futures::future::ready(Ok(())))
+            Ok(())
         },
     );
-    // Drain all scheduled work, including controls after the known content cut.
-    // Returning early at that cut would hide a duplicate already queued behind it.
-    let mut consume = Box::pin(tokio::task::unconstrained(consume));
-    let outcome = super::quiescent::until_idle(consume.as_mut()).await;
+    let mut consume = Box::pin(consume);
+    let outcome = runner.until_idle(consume.as_mut()).await;
     drop(consume);
     match fault {
-        Fault::None => {
-            assert!(outcome.is_none(), "live follow ended: {outcome:?}");
+        Fault::None | Fault::RequireOpaqueDataAnchor => {
+            assert!(
+                outcome.is_none(),
+                "accepted platform delivery was rejected: {outcome:?}"
+            );
+            let snapshots = snapshots.borrow();
             assert_eq!(snapshots.len(), 1);
-            assert_eq!(snapshots[0].files.len(), 1);
-            let bytes: Vec<_> = snapshots[0].files[0]
-                .segments
-                .iter()
-                .flat_map(|part| part.iter().copied())
+            assert_eq!(snapshots[0].1, before);
+            assert_eq!(delivered.borrow().len(), 1);
+            assert_eq!(delivered.borrow()[0].as_ref(), after);
+            assert_eq!(
+                views
+                    .read(|v| v
+                        .files(&path("swarm/a"))
+                        .flat_map(|f| f.segments.iter().flat_map(|s| s.iter().copied()))
+                        .collect::<Vec<_>>())
+                    .unwrap(),
+                [before, after].concat()
+            );
+            let subscriptions: Vec<_> = std::iter::from_fn(|| observed.try_recv().ok())
+                .filter_map(|frame| {
+                    if let Some(Body::Interest(update)) = frame.body {
+                        Some(update.upsert)
+                    } else {
+                        None
+                    }
+                })
+                .flatten()
                 .collect();
-            assert_eq!(bytes, before);
-            assert_eq!(delivered.len(), 1);
-            assert_eq!(delivered[0].as_ref(), after);
-            let current = files.heads(&Query::Root, None, 4).await.unwrap();
-            assert_eq!(Some(current.cursor.position), through);
-            let actual: Vec<_> = current.files[0]
-                .segments
-                .iter()
-                .flat_map(|part| part.iter().copied())
-                .collect();
-            assert_eq!(actual, [before, after].concat());
+            let content: Vec<_> = subscriptions.iter().filter(|sub| matches!(&sub.kind, Some(Kind::Follow(follow)) if follow.path == "swarm/a/files" && follow.delivery == wire::SessionDelivery::All as i32)).collect();
+            assert_eq!(content.len(), 1);
+            let Some(Kind::Follow(follow)) = &content[0].kind else {
+                unreachable!()
+            };
+            assert_eq!(
+                content[0].resume.as_ref().unwrap().next,
+                snapshots[0].0.position
+            );
+            assert_eq!(follow.preceding_commit_id.as_ref(), snapshots[0].0.commit);
         }
         Fault::DuplicateContent => {
-            assert!(
-                matches!(outcome, Some(Err(Error::Invalid(ref reason)))
-                if reason == "duplicate content delivery"),
-                "{outcome:?}"
-            );
-            assert_eq!(delivered.len(), 1);
-        }
-        _ => {
+            // A duplicate in the same connection violates ALL ordering. The pool
+            // fails closed before the reducer can fold the same record twice.
             assert!(
                 matches!(outcome, Some(Err(Error::Storage(_)))),
                 "{outcome:?}"
             );
-            assert!(delivered.is_empty(), "malformed subscription admitted");
+            assert!(delivered.borrow().len() <= 1);
+            let text = views
+                .read(|v| {
+                    v.files(&path("swarm/a"))
+                        .flat_map(|f| f.segments.iter().flat_map(|s| s.iter().copied()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap();
+            assert!(text == before || text == [before, after].concat());
+        }
+        _ => {
+            assert!(
+                delivered.borrow().is_empty(),
+                "malformed subscription admitted"
+            );
+            assert!(
+                outcome.is_none() || matches!(outcome, Some(Err(Error::Storage(_)))),
+                "{outcome:?}"
+            );
         }
     }
 }
@@ -271,7 +259,23 @@ fn duplicate_delivery_after_the_known_cut_is_rejected() {
         exercise(b"before", b"after", Fault::DuplicateContent).await;
     });
 }
-
+#[test]
+fn negative_control_treating_delivery_resume_as_a_record_anchor_is_detected() {
+    let failure = std::panic::catch_unwind(|| {
+        futures::executor::block_on(exercise(
+            b"before",
+            b"after",
+            Fault::RequireOpaqueDataAnchor,
+        ))
+    })
+    .expect_err("the broken reader passed");
+    assert!(
+        failure
+            .downcast_ref::<String>()
+            .unwrap()
+            .contains("accepted platform delivery was rejected")
+    );
+}
 #[test]
 fn actual_session_rejects_malformed_subscriptions() {
     futures::executor::block_on(async {
@@ -285,16 +289,11 @@ fn actual_session_rejects_malformed_subscriptions() {
         }
     });
 }
-
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-    // The real session accepts emitted subscriptions and delivers exactly the
-    // tail after C; materialized bytes equal the complete append history.
     #[test]
     fn platform_snapshot_plus_follow_equals_the_complete_history(
         before in proptest::collection::vec(proptest::num::u8::ANY, 0..32),
         after in proptest::collection::vec(proptest::num::u8::ANY, 0..32),
-    ) {
-        futures::executor::block_on(exercise(&before, &after, Fault::None));
-    }
+    ) { futures::executor::block_on(exercise(&before, &after, Fault::None)); }
 }

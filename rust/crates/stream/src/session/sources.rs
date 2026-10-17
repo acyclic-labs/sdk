@@ -323,7 +323,7 @@ impl Channel {
         }
     }
 }
-impl<P: StreamProvider> Session<P> {
+impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn refresh_source(&mut self, id: u64) {
         let mode = self.channels.get(&id).and_then(Channel::source_mode);
         if let Some(channel) = self.channels.get_mut(&id) {

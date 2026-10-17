@@ -13,12 +13,15 @@ use serde::{Deserialize, Serialize};
 /// Both files share a schema and are folded through the same live query.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct InterestDocument {
     /// Agents currently rendered.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub in_view: Vec<StreamPath>,
     /// Agents followed ahead of viewport movement.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(type = "string[]"))]
     pub prefetch: Vec<StreamPath>,
 }
 

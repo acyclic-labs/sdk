@@ -1,18 +1,18 @@
 import { expect, test } from "bun:test";
-import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
+import { HypothesisClient, type ClientDomain, type ClientObservation, type HypothesisLimits } from "../src/hypotheses.js";
 import { SnapshotStore } from "../src/client-snapshot.js";
 
 type Value = Readonly<{ ref: string }>;
 const value = Object.freeze({ ref: "content-addressed-body" });
-const limits: ClientViewLimits = { records: 16, branches: 16, edges: 16, bytes: 1_000_000, work: 256, retention: 10n, visible: 16 };
+const limits: HypothesisLimits = { records: 16, branches: 16, edges: 16, bytes: 1_000_000, work: 256, retention: 10n, visible: 16 };
 const domain: ClientDomain<Value, null, ClientObservation<Value>> = {
   identity: "1", validate: () => ({ bytes: 256, work: 1 }), observe: evidence => evidence,
   corresponds: (left, right) => ({ matches: left.ref === right.ref, work: 1 }),
 };
-await ClientViews.initialize();
+await HypothesisClient.initialize();
 
 test("cold reconciliation measures discarded speculation; warm snapshots and demand residency plateau", () => {
-  const client = new ClientViews(domain, "5", 0n, limits);
+  const client = new HypothesisClient(domain, "5", 0n, limits);
   let loaded = 0;
   const timing = (read: () => unknown): number => {
     const start = performance.now();
@@ -20,7 +20,7 @@ test("cold reconciliation measures discarded speculation; warm snapshots and dem
     return performance.now() - start;
   };
   try {
-    const equivalent = new ClientViews(domain, "6", 0n, limits);
+    const equivalent = new HypothesisClient(domain, "6", 0n, limits);
     const coldStart = performance.now();
     client.observe("0", { fact: { key: "0", basis: "0", value, bytes: 256 }, operation: null, work: 1 });
     const predicted = Object.freeze({ ref: "discarded-prediction" });

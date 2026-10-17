@@ -1,3 +1,4 @@
+//! Ordinary filesystem queries and shared client projections at accepted cuts.
 use acyclic_fs::{
     AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET,
 };
@@ -69,7 +70,7 @@ async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_mat
     view.apply(next(&mut changes).await)?;
     assert_eq!(
         view.files()[&acyclic_harness::task_volume::FileKey::parse("plans/release notes.md")?]
-            .bytes
+            .segments[0]
             .as_ref(),
         b"- [x] Done"
     );
@@ -132,7 +133,20 @@ fn empty_stem_publications_preserve_live_and_snapshot_plan_views()
                 .ok_or("latest snapshot missing")?;
             assert_eq!(view.cursor(), &latest.cursor);
             assert_eq!(latest.files, expected);
-            assert_eq!(view.files().values().cloned().collect::<Vec<_>>(), expected);
+            let actual = view
+                .files()
+                .values()
+                .map(|file| {
+                    assert_eq!(file.segments.len(), 1);
+                    acyclic_harness::task_volume::FileValue {
+                        key: file.key.clone(),
+                        channel: file.channel,
+                        publication: file.publication,
+                        bytes: file.segments[0].clone(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
             Ok(())
         });
         result.map_err(|error| TestCaseError::fail(error.to_string()))
@@ -438,8 +452,8 @@ async fn editing_one_of_a_hundred_files_reads_only_its_content()
         view.apply(change)?;
         for key in view.files().keys().skip(changed) {
             assert_eq!(
-                view.files()[key].bytes.as_ptr(),
-                before.files()[key].bytes.as_ptr()
+                view.files()[key].segments[0].as_ptr(),
+                before.files()[key].segments[0].as_ptr()
             );
         }
     }
@@ -506,7 +520,7 @@ async fn ordinary_file_query_folds_atomic_replacements_removals_and_duplicate_re
     let pointer = change.files[0].bytes.as_ptr();
     let key = change.files[0].key.clone();
     assert!(view.apply(change)?);
-    assert_eq!(view.files()[&key].bytes.as_ptr(), pointer);
+    assert_eq!(view.files()[&key].segments[0].as_ptr(), pointer);
     fixture
         .write(&[
             ("plans/a.md", None),

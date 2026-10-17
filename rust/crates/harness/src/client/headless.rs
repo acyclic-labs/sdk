@@ -1,7 +1,7 @@
 //! Headless policy and stdin dispatch belong to the harness, not its CLI wrappers.
 
-use super::{ClientStateStore, HarnessClient, jsonl, views::authority_key};
-use crate::{Error, Result, core::LifecycleState, wire};
+use super::{ClientStateStore, HarnessClient, jsonl};
+use crate::{Error, Result, wire};
 use acyclic_stream::BoxProviderStream;
 use futures::{FutureExt, Stream, StreamExt};
 use std::io::Write;
@@ -285,14 +285,11 @@ fn settlement<S: ClientStateStore>(
             if let Some(outcome) = completion(current) {
                 return Ok(Some(outcome));
             }
-            let task = target
+            if target
                 .owner
                 .as_ref()
-                .and_then(|owner| client.session().views().tasks.get(&authority_key(owner)));
-            if task.is_some_and(|task| {
-                task.status == LifecycleState::Waiting
-                    && task.lifecycle_operation_id.as_deref() == Some(target.operation_id.as_str())
-            }) {
+                .is_some_and(|owner| client.session().waiting(owner, &target.operation_id))
+            {
                 return Ok(Some(HeadlessOutcome::Blocked));
             }
             if updates_ended {
@@ -408,7 +405,10 @@ fn replay_position<S: ClientStateStore>(
             "operation replay boundary identity mismatch".into(),
         ));
     }
-    Ok((client.session().view_revision(authority), through.revision))
+    Ok((
+        client.session().replay_revision(authority),
+        through.revision,
+    ))
 }
 
 async fn dispatch<S: ClientStateStore>(

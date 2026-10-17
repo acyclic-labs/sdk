@@ -17,8 +17,10 @@ fn case(agents: usize, attention_every: usize) -> TestResult<SwarmCase> {
 }
 
 fn measured(case: SwarmCase, fault: Fault) -> TestResult<Work> {
+    let agents = case.agents as u64;
     let report = futures::executor::block_on(swarm::run_with_fault(case, fault, true))?;
     let mut work = Work::new();
+    work.insert("agents", agents);
     for key in [
         "allocations",
         "allocated_bytes",
@@ -55,8 +57,15 @@ fn linear_counts(small: &Work, doubled: &Work) -> TestResult {
             return Err("paced delivery conflated or duplicated a provider record".into());
         }
     }
-    if doubled["attention"] != 2 * small["attention"]
-        || doubled["discovered_children"] != 2 * small["discovered_children"]
+    // The parent membership volume is one persistent root child, independent
+    // of agent count. Assert that exact overhead before comparing swarm work.
+    for work in [small, doubled] {
+        if work["discovered_children"] != work["agents"] + 1 {
+            return Err("discovery must visit every agent and exactly one parent volume".into());
+        }
+    }
+    if doubled["agents"] != 2 * small["agents"]
+        || doubled["attention"] != 2 * small["attention"]
         || doubled["full_records"] != small["full_records"]
         || doubled["fold_items"] != small["fold_items"]
     {
