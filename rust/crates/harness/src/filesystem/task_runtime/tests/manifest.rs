@@ -18,6 +18,7 @@ fn model() -> Result<Model> {
 
 fn command(context_manifest: FileRef) -> ModelTaskCommand {
     ModelTaskCommand {
+        summary_source: None,
         context_manifest,
         input: ModelContent::Text("use pinned context".into()),
         selected_context: None,

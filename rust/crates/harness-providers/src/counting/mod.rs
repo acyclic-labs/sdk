@@ -88,7 +88,15 @@ pub(crate) async fn count(
     #[cfg(not(target_arch = "wasm32"))]
     let mut admission = work
         .map(|work| {
-            let (bytes, nodes) = crate::native::shape(request.bytes());
+            let (mut bytes, nodes) = crate::native::shape(request.bytes());
+            for message in &request.request().messages {
+                bytes = bytes
+                    .checked_add(crate::files::extra_bytes(
+                        &message.content,
+                        provider.files.maximum_bytes,
+                    )? as u64)
+                    .ok_or_else(|| boundary(Some(work), "model file size overflow"))?;
+            }
             crate::native::reserve(
                 work,
                 bytes,
@@ -98,18 +106,28 @@ pub(crate) async fn count(
             )
         })
         .transpose()?;
-    let prepared = (|| {
+    #[cfg(not(target_arch = "wasm32"))]
+    let content_io = work
+        .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
+        .transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let content_io = None;
+    let prepared = async {
+        let mut files =
+            crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
         let names = crate::tool_names::Names::new(request.request());
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let generation = projection::body_named(provider, request.request(), &names, &origin)?;
-        let body = wire::body(generation, &provider.model.name, spec.adapter);
+        let generation =
+            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
+        let body = wire::body(&generation, &provider.model.name, spec.adapter);
         let bytes =
             serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;
-        Ok((url, headers, bytes, plan))
-    })();
+        Ok::<_, Error>((url, headers, bytes, plan))
+    }
+    .await;
     #[cfg(not(target_arch = "wasm32"))]
     let prepared = match admission.as_mut() {
         Some(hold) => crate::native::diagnostic(prepared, hold),
@@ -120,7 +138,7 @@ pub(crate) async fn count(
     let count_custody;
     #[cfg(target_arch = "wasm32")]
     let count_custody = None;
-    let (url, headers, bytes, mut count) = prepared?;
+    let (url, headers, bytes, count) = prepared?;
     drop(auth);
     #[cfg(not(target_arch = "wasm32"))]
     drop(auth_custody);
@@ -156,6 +174,16 @@ pub(crate) async fn count(
         _custody: admission,
     });
     let exchange = HttpRequest { url, headers, body };
+    send_count(provider, exchange, count, count_custody, work).await
+}
+
+pub(crate) async fn send_count(
+    provider: &ResolvedModel,
+    exchange: HttpRequest,
+    mut count: ModelTokenCount,
+    count_custody: NativeCustody,
+    work: NativeWork<'_>,
+) -> Result<(ModelTokenCount, NativeCustody)> {
     #[cfg(not(target_arch = "wasm32"))]
     let mut response = match work {
         Some(work) => {
@@ -176,6 +204,11 @@ pub(crate) async fn count(
         }
         return Err(crate::http_error(response.status));
     }
+    let spec = provider
+        .config
+        .token_counter
+        .as_ref()
+        .ok_or_else(|| crate::invalid("missing token counter"))?;
     let maximum = provider.config.max_event_bytes;
     #[cfg(not(target_arch = "wasm32"))]
     let mut response_custody = work

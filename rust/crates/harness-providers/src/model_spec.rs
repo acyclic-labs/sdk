@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 /// Features explicitly advertised by a model's catalog entry.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ModelFeatures {
     /// Accepts tool declarations, calls and results.
     pub tools: bool,
@@ -20,6 +21,7 @@ impl ModelFeatures {
 /// One model's exact configured capacity and declared input capabilities.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ModelSpec {
     /// Complete context and generated-output limits.
     pub capacity: ModelContextCapacity,

@@ -1,6 +1,6 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
 
-use super::{WasmReducer, from_js, js_error, key_bytes};
+use super::{WasmReducer, from_js, js_error, js_json_value, key_bytes};
 use crate::{
     Admission, Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, FileRef, Limits, VolumeOperation, VolumeRef},
@@ -420,7 +420,7 @@ impl WasmTaskRuntime {
         let admission = self
             .runtime
             .harness()
-            .admit(operation, &definition, from_js::<Value>(input)?, parent)
+            .admit(operation, &definition, js_json_value(&input)?, parent)
             .await
             .map_err(js_error)?;
         let admission = match admission {

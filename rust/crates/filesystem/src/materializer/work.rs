@@ -41,9 +41,16 @@ impl NativeMaterializationWork {
             })
     }
 
-    /// Bytes retained by the original shared ledger.
+    /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
-        std::mem::size_of::<crate::demand::NativeDemandReadMeter>() as u64
+        const {
+            match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<
+                crate::demand::NativeDemandReadMeter,
+            >()) {
+                Ok(bytes) => bytes as u64,
+                Err(_) => panic!("original ledger Arc layout overflow"),
+            }
+        }
     }
     /// Admits the original ledger before sharing it.
     pub fn new(

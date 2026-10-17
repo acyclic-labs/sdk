@@ -47,6 +47,14 @@ mod frontmatter;
 mod client_files;
 use client_files::Fixture;
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "test-support"
+))]
+#[path = "support/client_local.rs"]
+mod client_local;
+
 impl Fixture {
     async fn catalog(
         &self,

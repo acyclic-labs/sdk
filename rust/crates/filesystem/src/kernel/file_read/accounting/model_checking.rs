@@ -1,19 +1,7 @@
 use super::*;
+use crate::kernel::allocation::effects::{OMIT_REFUND, OMIT_RESERVATION};
 use crate::sync::atomic::{AtomicUsize, Ordering};
-use std::cell::Cell;
 use std::sync::Arc;
-
-loom::thread_local! {
-    static OMIT_RESERVATION: Cell<bool> = Cell::new(false);
-    static OMIT_REFUND: Cell<bool> = Cell::new(false);
-}
-pub(super) fn broken_reservation() -> bool {
-    OMIT_RESERVATION.with(Cell::get)
-}
-
-pub(super) fn broken_refund() -> bool {
-    OMIT_REFUND.with(Cell::get)
-}
 
 fn copy_once<const BROKEN: bool>(
     work: &crate::NativeMaterializationWork,
@@ -30,9 +18,12 @@ fn copy_once<const BROKEN: bool>(
         pending: WorkCounters::UNCHARGED,
     };
     if observed
-        .observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(
-            8,
-        ))
+        .observe(super::super::super::codec::ReadAllocationStep::CheckCopy(8))
+        .and_then(|()| {
+            observed.observe(super::super::super::codec::ReadAllocationStep::BeforeCopy(
+                8,
+            ))
+        })
         .is_ok()
     {
         let mut output = [0; 8];

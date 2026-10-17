@@ -87,12 +87,15 @@ impl WasmProjectionResolver {
     }
 }
 
-/// Runs the canonical Rust conversation projection over bytes captured by the owner.
+/// Runs canonical projection with asynchronous, owner-authenticated file reads.
 #[wasm_bindgen(js_name = selectModelContext)]
 pub async fn select_model_context_wasm(
     conversation: JsValue,
     selection: JsValue,
-    files: JsValue,
+    #[wasm_bindgen(
+        unchecked_param_type = "(file: WasmFileRefWire, maximumBytes: number) => Promise<Uint8Array>"
+    )]
+    reader: js_sys::Function,
     maximum_messages: u32,
     maximum_attachments: u32,
     maximum_render_bytes: f64,
@@ -100,7 +103,7 @@ pub async fn select_model_context_wasm(
 ) -> Result<JsValue, JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    let resolver = WasmProjectionResolver::from_js(files)?;
+    let resolver = BrowserContentReader(reader);
     let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
     let selected = select_model_context(
         &conversation,

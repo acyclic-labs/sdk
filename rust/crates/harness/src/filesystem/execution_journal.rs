@@ -39,6 +39,8 @@ mod content;
 mod interactions;
 mod observations;
 mod replay;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod replay_capacity_tests;
 mod router;
 mod selected;
 mod summary;

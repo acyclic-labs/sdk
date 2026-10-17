@@ -21,7 +21,7 @@ fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Resul
         eprintln!("dropping accepted native callback");
         let _ = submit_file_io(
             FileCompletion::new(
-                Arc::new(Mutex::new(CompletionState::<()>::default())),
+                Arc::new(CompletionMutex::new(CompletionState::<()>::default())),
                 None,
                 None,
                 None,

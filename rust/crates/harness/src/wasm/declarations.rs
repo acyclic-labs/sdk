@@ -2,6 +2,28 @@ use super::*;
 
 #[wasm_bindgen(typescript_custom_section)]
 pub(super) const ADMISSION_WIRE_TYPES: &'static str = r#"
+export type PublicModel = Readonly<Omit<Model, 'options'> & {options: unknown}>;
+type PublicEvent<Event> =
+    Event extends Readonly<{kind: 'tool_call'}> ? Readonly<Omit<Event, 'call_id' | 'arguments'> & {callId: string; arguments: unknown}>
+    : Event extends Readonly<{kind: 'completed'}> ? Readonly<Omit<Event, 'metadata'> & {metadata: unknown}>
+    : Readonly<Event>;
+export type PublicModelEvent = PublicEvent<ModelEvent>;
+export type PublicModelCapacity = Readonly<{
+    contextTokens: ModelContextCapacity['context_tokens'];
+    outputTokens: ModelContextCapacity['output_tokens'];
+}>;
+export type PublicModelTokenCount = Readonly<{
+    requestDigest: Uint8Array;
+    inputTokens: ModelTokenCount['input_tokens'];
+    fixedTokens: ModelTokenCount['fixed_tokens'];
+    messageTokens: readonly ModelTokenCount['message_tokens'][number][];
+}>;
+export type PublicModelGeneration = Readonly<{operationId: ModelDispatch['operation_id']; step: ModelDispatch['step']}>;
+export interface PublicProviderRequest {
+    readonly model: PublicModel;
+    readonly serializedInput: Uint8Array;
+    readonly signal?: AbortSignal;
+}
 export type WasmLimitsInput = WasmNativeLimitsWire;
 export type WasmTaskRunLimitsInput = WasmTaskRunLimitsWire;
 export interface WasmWorkflowAdmissionWire {
@@ -43,9 +65,11 @@ export interface WasmProjectVolumeOwnerWire {
     readonly kind: "project";
     readonly id: string;
 }
+declare const harnessIdentity: unique symbol;
+export type WasmId<Name extends string> = string & { readonly [harnessIdentity]: Name };
 export interface WasmAgentVolumeOwnerWire {
     readonly kind: "agent";
-    readonly id: string;
+    readonly id: WasmId<"AgentId">;
 }
 export interface WasmSessionVolumeOwnerWire {
     readonly kind: "session";
@@ -55,19 +79,21 @@ export type WasmVolumeOwnerWire =
     | WasmProjectVolumeOwnerWire
     | WasmAgentVolumeOwnerWire
     | WasmSessionVolumeOwnerWire;
-export interface WasmVolumeRefWire {
-    readonly provider: WasmProviderRefWire;
+interface WasmVolumeBaseWire<Family extends string> {
+    readonly provider: WasmProviderRefWire & Readonly<{family: Family}>;
     readonly id: string;
-    readonly class: "project" | "agent_private" | "session_shared";
-    readonly owner: WasmVolumeOwnerWire;
 }
+export type WasmVolumeRefWire<Class extends "project" | "agent_private" | "session_shared" = "project" | "agent_private" | "session_shared", Family extends string = string> =
+    Class extends "project" ? WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmProjectVolumeOwnerWire}>
+    : Class extends "agent_private" ? WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmAgentVolumeOwnerWire}>
+    : WasmVolumeBaseWire<Family> & Readonly<{class: Class; owner: WasmSessionVolumeOwnerWire}>;
 export interface WasmFileDescriptorWire {
     readonly sha256: readonly number[];
     readonly byte_length: number;
     readonly media_type: string;
 }
-export interface WasmFileRefWire {
-    readonly volume: WasmVolumeRefWire;
+export interface WasmFileRefWire<Class extends "project" | "agent_private" | "session_shared" = "project" | "agent_private" | "session_shared", Family extends string = string> {
+    readonly volume: WasmVolumeRefWire<Class, Family>;
     readonly path: string;
     readonly version: string;
     readonly descriptor: WasmFileDescriptorWire;

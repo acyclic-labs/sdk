@@ -19,11 +19,16 @@ mod usage_snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codex::CodexLogin;
 mod call_ids;
+#[cfg(any(target_arch = "wasm32", loom))]
+mod cancellation;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod codex_dispatch_tests;
 mod counting;
 mod credentials;
 mod dispatch;
+mod files;
+#[cfg(test)]
+mod fixtures;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
@@ -31,6 +36,8 @@ mod input;
 pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+#[cfg(any(all(target_arch = "wasm32", feature = "browser"), all(test, not(loom))))]
+mod prepared;
 mod projection;
 mod protocol;
 mod reasoning;
@@ -42,6 +49,8 @@ mod stream;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 mod tool_names;
+#[cfg(all(target_arch = "wasm32", feature = "browser"))]
+mod wasm;
 
 pub use adapter::Adapter;
 pub use alloy::ResolvedAlloy;
@@ -81,5 +90,9 @@ fn http_error(status: u16) -> Error {
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {
-    serde_json::from_slice(bytes).map_err(|error| invalid(error.to_string()))
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let value = acyclic_harness::deserialize_json_value(&mut decoder)
+        .map_err(|error| invalid(error.to_string()))?;
+    decoder.end().map_err(|error| invalid(error.to_string()))?;
+    Ok(value)
 }

@@ -244,6 +244,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         None,
     )?;
     let command = ModelTaskCommand {
+        summary_source: None,
         context_manifest: ContextManifest::default()
             .publish(
                 payloads.as_ref(),

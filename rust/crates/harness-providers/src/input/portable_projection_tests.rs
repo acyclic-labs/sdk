@@ -38,6 +38,7 @@ fn whitespace_wire(early: bool) -> (Value, Vec<u8>) {
             &request,
             &crate::tool_names::Names::new(&request),
             &provider.reasoning_origin(provider.key.as_deref(), None),
+            &mut crate::files::FileText::default(),
         )
         .unwrap(),
     )

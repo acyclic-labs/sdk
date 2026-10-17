@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 /// Immutable alloy configuration loaded from ordinary settings/catalog files.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct AlloySpec {
     /// Ordered provider/model identities. Order is part of the policy.
     pub models: Vec<String>,
@@ -16,6 +17,7 @@ pub struct AlloySpec {
 /// Selection policy serialized as a string or an externally tagged object.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum AlloySelection {
     /// Always select the first declared model.
     First,

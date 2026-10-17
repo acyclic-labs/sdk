@@ -6,7 +6,11 @@ impl Journal {
         Ok(tail.inline_bytes >= MINIMUM_MAINTENANCE_INLINE_BYTES
             && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
     }
-    pub(in crate::v1::memory) fn validate_bodies(&self, state: &State) -> Result<(), Error> {
+    pub(in crate::v1::memory) fn validate_bodies(
+        &self,
+        state: &State,
+        pending: Option<&PendingObject>,
+    ) -> Result<(), Error> {
         let bodies = state
             .buckets
             .values()
@@ -20,7 +24,11 @@ impl Journal {
                     .map(|(_, body)| body),
             );
         if bodies
-            .into_iter()
+            .chain(
+                pending
+                    .and_then(|change| change.value.as_ref())
+                    .map(|value| &value.body),
+            )
             .any(|body| body.len() as u64 > self.limits.maximum_object_bytes)
         {
             return Err(QuotaExceeded.into());
@@ -38,6 +46,8 @@ impl Journal {
         &self,
         before: &State,
         next: &mut State,
+        mut pending: Option<&mut PendingObject>,
+        receipt: Option<&(SharedInfo<String>, Receipt)>,
         meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> Result<(), NativeObjectsError> {
         obs::scoped(
@@ -51,9 +61,12 @@ impl Journal {
                     return Err(Error::from(QuotaExceeded).into());
                 }
                 let mut inline_data = Vec::new();
-                for (name, _) in &next.buckets.clone() {
-                    let bucket = next.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
+                for (name, bucket) in &next.buckets.clone() {
                     let keys = changed_keys(before.buckets.get(name), bucket, &mut publication)?;
+                    if keys.is_empty() {
+                        continue;
+                    }
+                    let bucket = next.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
                     for key in keys {
                         let object = bucket
                             .objects
@@ -76,9 +89,49 @@ impl Journal {
                         *body = self.prepare_inline(body, &mut inline_data, &mut publication)?;
                     }
                 }
+                if let Some(value) = pending
+                    .as_deref_mut()
+                    .and_then(|change| change.value.as_mut())
+                {
+                    if value.body.len() as u64 > self.limits.maximum_object_bytes {
+                        return Err(Error::from(QuotaExceeded).into());
+                    }
+                    value.body =
+                        self.prepare_inline(&value.body, &mut inline_data, &mut publication)?;
+                }
                 let mut delta = difference(before, next, tail.operations + 1, &mut publication)?;
+                if let Some(change) = pending.as_deref() {
+                    let value = change.value.as_ref();
+                    let record = ObjectChange {
+                        bucket: publication.text(&change.bucket)?,
+                        key: publication.text(&change.key)?,
+                        info: value
+                            .map(|value| publication.info(&value.info))
+                            .transpose()?,
+                        bodies: value
+                            .map(|value| bodies(&value.body, &mut publication))
+                            .transpose()?
+                            .unwrap_or_default(),
+                    };
+                    publication.push(&mut delta.objects, record)?;
+                }
+                if let Some((key, receipt)) = receipt {
+                    let change = ReceiptChange {
+                        key: publication.text(key.as_str())?,
+                        digest: publication.bytes(&receipt.digest)?,
+                        response: publication.bytes(receipt.response.as_ref())?,
+                        kind: receipt.kind,
+                    };
+                    publication.push(&mut delta.receipts, change)?;
+                }
                 delta.inline_data = inline_data;
-                inline::place(&mut delta, next, tail.bytes, &mut publication)?;
+                inline::place(
+                    &mut delta,
+                    next,
+                    pending.as_deref_mut(),
+                    tail.bytes,
+                    &mut publication,
+                )?;
                 let record = publication.encode(&delta)?;
                 let end = tail
                     .bytes

@@ -24,10 +24,10 @@ mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
-#[cfg(any(windows, test))]
-mod sparse_scan;
 #[cfg(windows)]
 mod sparse;
+#[cfg(any(windows, test))]
+mod sparse_scan;
 #[cfg(windows)]
 use sparse::*;
 mod paths;
@@ -64,6 +64,8 @@ mod reuse_properties;
 mod root_capture_regression;
 #[cfg(all(test, unix))]
 mod unix_name_tests;
+#[cfg(all(test, windows, feature = "memory"))]
+mod windows_dense_tests;
 #[cfg(all(test, windows))]
 mod windows_name_tests;
 #[cfg(all(test, windows))]

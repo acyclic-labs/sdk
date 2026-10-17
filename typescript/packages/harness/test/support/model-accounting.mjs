@@ -4,7 +4,7 @@ import { DEFAULT_LIMITS } from "../../dist/index.js";
  * as token units, with 512 units of framing per request and message. Rust owns
  * the complete nested media inventory, including immutable native options. */
 /** @param {import("../../src/native-contracts.js").NativeContracts} contracts
- * @returns {Pick<import("../../src/model.js").ModelProvider, "contextCapacity" | "countTokens">} */
+ * @returns {{contextCapacity: import("../../src/model.js").ModelProvider["contextCapacity"], countTokens(request: import("../../src/model.js").ModelRequest & {serializedInput: Uint8Array}): Promise<import("../../src/model.js").ModelTokenCount>}} */
 export function syntheticAccounting(contracts) {
   return {
     contextCapacity() { return { contextTokens: 1_048_576, outputTokens: 16_384 }; },
@@ -23,4 +23,15 @@ export function syntheticAccounting(contracts) {
       };
     },
   };
+}
+
+/** @param {import("../../src/native-contracts.js").NativeContracts} contracts
+ * @param {(request: import("../../src/model.js").ModelRequest & {serializedInput: Uint8Array}, dispatch: import("../../src/model.js").ModelGeneration) => AsyncIterable<import("../../src/model.js").ModelEvent>} generate
+ * @returns {import("../../src/model.js").ModelProvider["prepare"]} */
+export function scriptedPreparation(contracts, generate) {
+  return async request => ({
+    [Symbol.dispose]() {},
+    countTokens: () => syntheticAccounting(contracts).countTokens(request),
+    generate: dispatch => generate(request, dispatch),
+  });
 }

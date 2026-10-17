@@ -8,6 +8,7 @@ pub struct ReasoningBlock {
     /// Meaning of the retained content, independent of its wire representation.
     pub kind: ReasoningKind,
     /// Readable content verified by the origin adapter, when available.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub text: Option<String>,
     /// Provider family, model and credential ownership of the native payload.
     pub origin: ReasoningOrigin,
@@ -27,6 +28,7 @@ pub struct ReasoningOrigin {
     /// Exact selected model that produced this block.
     pub model: String,
     /// Nonsecret scope digest; None means ownership is unknown.
+    #[cfg_attr(feature = "wasm", tsify(type = "number[] | null"))]
     pub credential_scope: Option<[u8; 32]>,
 }
 

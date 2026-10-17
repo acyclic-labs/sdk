@@ -50,6 +50,7 @@ mod records;
 mod request;
 mod response;
 mod summary;
+mod summary_file;
 pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
@@ -426,6 +427,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    summary_source: Option<Box<FileRef>>,
     max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,

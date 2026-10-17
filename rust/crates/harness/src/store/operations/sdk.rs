@@ -1,5 +1,5 @@
 use super::*;
-use futures::TryStreamExt as _;
+use futures::{Stream as _, TryStreamExt as _};
 
 pub(crate) fn stream_error_with_work(
     source: StreamError,
@@ -99,6 +99,14 @@ pub(super) fn original_sdk_metadata_output<T>(
 }
 
 impl ObservedRecords {
+    pub(crate) fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Ordinary(records) => records.size_hint(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(records) => records.value().size_hint(),
+        }
+    }
+
     pub(crate) async fn next(
         &mut self,
         work: &mut Option<&mut dyn HistoryIo>,

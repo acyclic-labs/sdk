@@ -66,6 +66,7 @@ pub(crate) fn initialize_test_native_io() {
 }
 
 pub mod access;
+mod arc_layout;
 mod sync;
 
 pub mod accounting;
