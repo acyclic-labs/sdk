@@ -76,7 +76,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
             .unwrap();
         assert!(result.1.bytes_hashed >= body.len() as u64);
         if native {
-            assert_eq!(result.5, 0, "original custody leaked");
+            assert_eq!(result.5, acyclic_fs::NativeMaterializationWork::accounting_state_bytes(), "original custody leaked");
         }
     }
 }
