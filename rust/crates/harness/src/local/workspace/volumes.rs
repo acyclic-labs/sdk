@@ -13,32 +13,8 @@ pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
         .parent()
         .ok_or_else(|| Error::Invalid("scratch mount has no parent".into()))?;
     create_mount_directory(root, parent)?;
-    let destination = root.join(relative);
-    match scratch_status(&destination) {
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {
-            // A killed FUSE owner leaves a disconnected namespace. Reuse the
-            // platform's exclusive recovery fence before inspecting the source.
-            acyclic_fs::detach_native_mount_destination_after_crash(&destination)?;
-            Ok(())
-        }
-        Err(error) => Err(storage(error)),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn scratch_status(destination: &Path) -> std::io::Result<()> {
-    // FUSE attributes can outlive their provider in the kernel cache. Force a
-    // provider request so a disconnected mount cannot appear healthy.
-    rustix::fs::statx(
-        rustix::fs::CWD,
-        destination,
-        rustix::fs::AtFlags::STATX_FORCE_SYNC,
-        rustix::fs::StatxFlags::TYPE,
-    )
-    .map(|_| ())
-    .map_err(Into::into)
+    acyclic_fs::recover_disconnected_native_mount_destination(&root.join(relative))?;
+    Ok(())
 }
 
 pub(in crate::local) fn require_available(

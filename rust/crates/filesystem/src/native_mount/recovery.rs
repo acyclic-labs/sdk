@@ -250,6 +250,29 @@ impl NativeMountRecoveryOwner {
         self.finish(false, work)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn detach_pinned(
+        &mut self,
+        file: File,
+        parent: Arc<std::os::fd::OwnedFd>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let control = &mut state
+                .as_mut()
+                .ok_or(NativeMountError::ControlPending)?
+                .control;
+            control.pinned = Some(file);
+            control.pinned_parent = Some(parent);
+        }
+        self.finish(false, work)
+    }
+
     fn finish(
         &mut self,
         remove_destination: bool,

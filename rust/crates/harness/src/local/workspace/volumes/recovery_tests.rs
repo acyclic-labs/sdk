@@ -3,7 +3,7 @@ use std::io::{BufRead, Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::process::{Child, Command, Stdio};
 
-type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER_ROOT: &str = "ACYCLIC_SCRATCH_RECOVERY_TEST_ROOT";
 const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mount_owner";
 
@@ -83,17 +83,7 @@ fn require_recovered(root: &Path, recover: impl FnOnce(&Path) -> Result<()>) -> 
     Ok(())
 }
 
-#[test]
-fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> TestResult {
-    let root = tempfile::tempdir()?;
-    let root = root.path().canonicalize()?;
-    let destination = root.join(SCRATCH_PATH);
-    std::fs::create_dir_all(&destination)?;
-    std::fs::write(destination.join("authored"), b"keep me")?;
-    let original = std::fs::metadata(&destination)?;
-    require_recovered(&root, recover_after_crash)?;
-    assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
-
+fn start_owner(root: &Path) -> TestResult<Owner> {
     let mut owner = Owner(
         Command::new(std::env::current_exe()?)
             .args(["--exact", OWNER_TEST, "--nocapture"])
@@ -102,7 +92,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?,
-        root.clone(),
+        root.to_path_buf(),
     );
     let mut output = std::io::BufReader::new(owner.0.stdout.take().unwrap());
     loop {
@@ -116,12 +106,38 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             break;
         }
     }
+    Ok(owner)
+}
+
+#[test]
+fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let root = root.path().canonicalize()?;
+    let destination = root.join(SCRATCH_PATH);
+    std::fs::create_dir_all(&destination)?;
+    std::fs::write(destination.join("authored"), b"keep me")?;
+    let alias = tempfile::tempdir()?;
+    std::fs::create_dir(alias.path().join(".volumes"))?;
+    std::os::unix::fs::symlink(&destination, alias.path().join(SCRATCH_PATH))?;
+    let reject_alias = || {
+        let error = recover_after_crash(alias.path()).expect_err("scratch alias was accepted");
+        assert!(matches!(error, Error::NativeView { cause, .. }
+            if matches!(*cause, acyclic_fs::MountLifecycleError::Native(
+                acyclic_fs::NativeMountError::InvalidDestination))));
+    };
+    reject_alias();
+    let original = std::fs::metadata(&destination)?;
+    require_recovered(&root, recover_after_crash)?;
+    assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
+
+    let mut owner = start_owner(&root)?;
     let live = std::fs::metadata(&destination)?;
     assert_ne!(
         live.dev(),
         original.dev(),
         "fixture must be a real FUSE mount"
     );
+    reject_alias();
     recover_after_crash(&root)?;
     assert_eq!(std::fs::metadata(&destination)?.dev(), live.dev());
     assert!(matches!(
@@ -130,6 +146,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     ));
     owner.0.kill()?;
     owner.0.wait()?;
+    reject_alias();
 
     // Negative control: cached attributes misclassify the dead provider as live.
     assert!(std::fs::metadata(&destination).is_ok());
@@ -144,7 +161,9 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         .is_err()
     );
     assert_eq!(
-        scratch_status(&destination).unwrap_err().kind(),
+        std::fs::read(destination.join("authored"))
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::NotConnected
     );
 
@@ -161,11 +180,20 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         "recovery bypassed the fence"
     );
     assert_eq!(
-        scratch_status(&destination).unwrap_err().kind(),
+        std::fs::read(destination.join("authored"))
+            .unwrap_err()
+            .kind(),
         std::io::ErrorKind::NotConnected
     );
     drop(fence);
     require_recovered(&root, recover_after_crash)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
+    let _remounted = start_owner(&root)?;
+    reject_alias();
+    assert!(matches!(
+        acyclic_fs::NativeMountRecoveryOwner::acquire(&destination),
+        Err(acyclic_fs::NativeMountError::DestinationBusy)
+    ));
+    assert_ne!(std::fs::metadata(&destination)?.dev(), original.dev());
     Ok(())
 }
