@@ -355,6 +355,7 @@ async fn open(fixture: &Fixture, private: &VolumeRef) -> Result<Runtime> {
         fixture.stream.clone(),
         fixture.filesystem.clone(),
         &fixture.volume,
+        Some(private),
         &fixture.issuer.verifier(&mut None)?,
         &fixture.signed,
         &fixture.scope,
@@ -375,8 +376,7 @@ async fn open(fixture: &Fixture, private: &VolumeRef) -> Result<Runtime> {
         &ResumableToolRegistry::default(),
         None,
     )
-    .await?
-    .with_private_volume(private, None)
+    .await
 }
 
 async fn append_selection(

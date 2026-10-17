@@ -7,6 +7,10 @@ where
     O: AsyncObjectStore + 'static,
 {
     /// Opens the configured runtime using the optional original preparation observer.
+    ///
+    /// `private` is the signed agent's private volume for root compaction
+    /// summaries. Every caller chooses it here; `None` suits runtimes whose
+    /// tasks publish only into created private content.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit provider, policy, clock and authority boundaries"
@@ -15,6 +19,7 @@ where
         stream: Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef,
+        private: Option<&VolumeRef>,
         verifier: &AuthorityVerifier,
         signed: &Scope,
         scope: &RuntimeScope,
@@ -135,6 +140,7 @@ where
                     host,
                     filesystem,
                     volume,
+                    private,
                     verifier,
                     signed,
                     tools.0,
@@ -222,6 +228,7 @@ where
                 host,
                 filesystem,
                 volume,
+                private,
                 verifier,
                 signed,
                 tools,
@@ -260,6 +267,7 @@ where
         host: Arc<CoordinatorTaskHost<P>>,
         filesystem: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
+        private: Option<&VolumeRef>,
         verifier: AuthorityVerifier,
         signed: Scope,
         tools: ToolRegistry,
@@ -309,7 +317,7 @@ where
         let _native_configuration_custody = io
             .map(|io| io.take_native_custody(io.owned_bytes()?))
             .transpose()?;
-        Ok(Self {
+        let runtime = Self {
             stream,
             host,
             harness,
@@ -325,6 +333,10 @@ where
             task_files: None,
             #[cfg(not(target_arch = "wasm32"))]
             _native_configuration_custody,
-        })
+        };
+        match private {
+            Some(private) => runtime.bind_private_volume(private, io),
+            None => Ok(runtime),
+        }
     }
 }

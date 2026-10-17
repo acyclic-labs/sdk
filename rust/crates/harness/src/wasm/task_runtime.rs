@@ -275,6 +275,9 @@ impl WasmTaskRuntime {
             stream,
             filesystem.clone(),
             &options.volume,
+            // Browser stock execution has no native task context, so its
+            // summaries stay in the journal.
+            None,
             &verifier,
             &scope,
             &root,

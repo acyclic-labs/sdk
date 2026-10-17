@@ -364,6 +364,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             stream.clone(),
             filesystem.clone(),
             &volume,
+            None,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             &scope,

@@ -523,6 +523,7 @@ async fn output_runtime(
         harness.runtime.task_host().workflow_stream(),
         harness.filesystem().clone(),
         harness.journal_volume(),
+        Some(harness.scratch()),
         &harness.verifier,
         &harness.signed,
         &acyclic_harness::runtime::RuntimeScope::new(grants, limits)?,
@@ -551,9 +552,9 @@ async fn root_output_requires_task_grants_and_exclusive_configuration() -> Resul
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let project = volume(directory.path()).await?;
     let harness = LocalHarness::open(volume_config(directory.path(), project, text())?).await?;
-    let denied = output_runtime(&harness, acyclic_harness::Capabilities::default()).await?;
+    // Summaries publish to the private volume, so a runtime cannot open without it.
     assert!(matches!(
-        denied.with_output_volume(harness.scratch(), None),
+        output_runtime(&harness, acyclic_harness::Capabilities::default()).await,
         Err(Error::Unauthorized(_))
     ));
     let grants = acyclic_harness::Capabilities::new([
@@ -564,6 +565,11 @@ async fn root_output_requires_task_grants_and_exclusive_configuration() -> Resul
             .scratch()
             .capability(VolumeOperation::Write, &mut None)?,
     ]);
+    let denied = output_runtime(&harness, grants.clone()).await?;
+    assert!(matches!(
+        denied.with_output_volume(harness.journal_volume(), None),
+        Err(Error::Unauthorized(_))
+    ));
     let configured = output_runtime(&harness, grants)
         .await?
         .with_output_volume(harness.scratch(), None)?;
