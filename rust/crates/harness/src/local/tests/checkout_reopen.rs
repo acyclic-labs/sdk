@@ -432,3 +432,51 @@ async fn git_recovers_expired_and_interrupted_operation_windows_after_reopen() -
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()> {
+    let parent = tempfile::tempdir().map_err(super::super::storage)?;
+    let users = tempfile::tempdir().map_err(super::super::storage)?;
+    let workspace = parent.path().join("checkout");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    let config = |state: &std::path::Path| {
+        super::checkout_config(&workspace, (model()?, text()))
+            .map(|config| config.state_directory(state))
+    };
+    let state =
+        || super::super::owner::state_directory_in(users.path(), &config(users.path())?.project);
+    let first = state()?;
+    assert_eq!(state()?, first, "an unchanged checkout keeps its state");
+    let harness = LocalHarness::open(config(&first)?).await?;
+    assert_eq!(harness.run("first clone").await?.text, "done");
+    harness.close().await?;
+    // Delete and re-clone until the filesystem recycles the directory's
+    // device and object id, as an ordinary re-clone can.
+    let object = super::super::owner::object_identity(&workspace)?;
+    let mut recycled = false;
+    for _ in 0..4096 {
+        std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
+        std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+        if super::super::owner::object_identity(&workspace)? == object {
+            recycled = true;
+            break;
+        }
+    }
+    // Linux recycles inode numbers promptly; elsewhere the new clone simply
+    // has a new object id, which the key covers too.
+    #[cfg(target_os = "linux")]
+    assert!(recycled, "the directory's object id was never recycled");
+    let _ = recycled;
+    // Negative control: the previous clone's state refuses the new clone even
+    // when its object id is the same.
+    let Err(Error::Unauthorized(message)) = LocalHarness::open(config(&first)?).await else {
+        panic!("the previous clone's state accepted a new checkout");
+    };
+    assert!(message.contains("different workspace"), "{message}");
+    let second = state()?;
+    assert_ne!(second, first);
+    let harness = LocalHarness::open(config(&second)?).await?;
+    assert_eq!(harness.run("second clone").await?.text, "done");
+    harness.close().await?;
+    Ok(())
+}

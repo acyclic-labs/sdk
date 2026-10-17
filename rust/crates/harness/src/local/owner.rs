@@ -6,13 +6,22 @@ use std::{
 };
 
 pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
+    let root = dirs::data_local_dir()
+        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
+    state_directory_in(&root, project)
+}
+
+/// Per-user state is keyed by the checkout's path and its directory incarnation:
+/// a checkout deleted and cloned again at the same path is a new workspace and
+/// starts with new state instead of being refused the old one.
+pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {
         LocalProject::Workspace(path) => (path, None),
         LocalProject::Volume { directory, volume } => (directory, Some(volume)),
     };
     let canonical = fs::canonicalize(path).map_err(storage)?;
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.state/v1\0");
+    hash.update(b"acyclic.local.state/v2\0");
     hash.update(if volume.is_some() {
         b"volume\0"
     } else {
@@ -21,11 +30,14 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
     hash.update(path_bytes);
-    if let Some(volume) = volume {
-        hash.update(volume.storage_name(&mut None)?.as_bytes());
+    match volume {
+        Some(volume) => {
+            hash.update(volume.storage_name(&mut None)?.as_bytes());
+        }
+        None => {
+            hash.update(&incarnation(&canonical)?);
+        }
     }
-    let root = dirs::data_local_dir()
-        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
     let directory = root
         .join("acyclic/harness")
         .join(hash.finalize().to_hex().as_str());
@@ -35,6 +47,44 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
         ));
     }
     Ok(directory)
+}
+
+/// The directory's device and object id. A filesystem may hand the same pair
+/// to a directory created after this one is deleted.
+pub(super) fn object_identity(workspace: &Path) -> Result<[u8; 16]> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    Ok(work.root_identity(workspace)?.to_bytes())
+}
+
+/// The checkout directory's incarnation: its object identity bound to its
+/// creation time, which a directory created later at a recycled object id
+/// cannot repeat. A filesystem without a birth time contributes the object
+/// identity alone.
+fn incarnation(workspace: &Path) -> Result<[u8; 16]> {
+    let born = fs::metadata(workspace)
+        .and_then(|metadata| metadata.created())
+        .ok()
+        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok());
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.workspace-incarnation/v1\0");
+    hash.update(&object_identity(workspace)?);
+    match born {
+        Some(born) => {
+            hash.update(&[1]);
+            hash.update(&born.as_nanos().to_le_bytes());
+        }
+        None => {
+            hash.update(&[0]);
+        }
+    }
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(identity)
 }
 
 pub(super) fn directory(path: &Path) -> Result<PathBuf> {
@@ -65,15 +115,11 @@ impl Owner {
         let path = directory.join("owner.json");
         let workspace_identity = workspace
             .as_ref()
-            .map(|workspace| {
-                let cancellation = acyclic_fs::CancellationToken::new();
-                let work = acyclic_fs::NativeMaterializationWork::new(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                Ok::<_, Error>(work.root_identity(workspace)?.to_bytes())
-            })
+            .map(|workspace| object_identity(workspace))
+            .transpose()?;
+        let workspace_incarnation = workspace
+            .as_ref()
+            .map(|workspace| incarnation(workspace))
             .transpose()?;
         let owner = match Self::load(&path) {
             Ok(owner) => owner,
@@ -102,6 +148,7 @@ impl Owner {
                     project,
                     workspace: workspace.clone(),
                     workspace_identity,
+                    workspace_incarnation,
                 };
                 key.fill(0);
                 if owner.publish(directory, &path)? {
@@ -120,6 +167,7 @@ impl Owner {
             || owner.project.provider().family() != "filesystem"
             || owner.workspace != workspace
             || owner.workspace_identity != workspace_identity
+            || owner.workspace_incarnation != workspace_incarnation
             || matches!(selection, LocalProject::Volume { volume, .. } if volume != &owner.project)
         {
             return Err(Error::Unauthorized(
