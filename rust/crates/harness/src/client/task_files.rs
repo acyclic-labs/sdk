@@ -13,6 +13,7 @@ pub struct TaskFileClient {
     views: ClientViews,
     changes: ChangeStream,
     commands: Option<ChangeStream>,
+    command_selection: Option<([u8; 32], [u8; 32])>,
     task_selection: ([u8; 32], [u8; 32]),
     selected: Option<crate::TaskId>,
     bounds: (usize, usize),
@@ -62,6 +63,7 @@ impl TaskFileClient {
             views,
             changes: observed.changes,
             commands: None,
+            command_selection: None,
             task_selection,
             selected: None,
             bounds: (maximum_files, maximum_bytes),
@@ -131,8 +133,15 @@ impl TaskFileClient {
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
+        let identity = (snapshot.cursor.volume, snapshot.cursor.query);
         let (count, bytes) = files.view_bounds();
         self.views.query_snapshot(query, snapshot, count, bytes)?;
+        if let Some(previous) = self.command_selection {
+            if previous != identity {
+                self.views.remove_selection(&previous);
+            }
+        }
+        self.command_selection = Some(identity);
         self.commands = Some(observed.changes);
         Ok(())
     }

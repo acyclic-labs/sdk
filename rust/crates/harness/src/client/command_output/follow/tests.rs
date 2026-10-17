@@ -4,7 +4,13 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use proptest::prelude::*;
 use std::sync::Arc;
 
-fn check(operations: &[(u8, u8, String)], broken: bool) {
+fn check(
+    operations: &[(u8, u8, String)],
+    recent: usize,
+    maximum_files: usize,
+    maximum_bytes: usize,
+    broken: bool,
+) {
     let snapshot = futures::executor::block_on(async {
         TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -21,9 +27,9 @@ fn check(operations: &[(u8, u8, String)], broken: bool) {
         files: BTreeMap::new(),
         order: BTreeSet::new(),
         bytes: 0,
-        maximum_files: 4,
-        maximum_bytes: 2048,
-        recent: 2,
+        maximum_files,
+        maximum_bytes,
+        recent,
     };
     let mut expected: BTreeMap<FileKey, FileValue> = BTreeMap::new();
     let mut delivered = BTreeMap::new();
@@ -56,7 +62,8 @@ fn check(operations: &[(u8, u8, String)], broken: bool) {
                 .collect();
             outcomes.sort();
             let bytes: usize = expected.values().map(|file| file.bytes.len()).sum();
-            if outcomes.len() <= 2 && expected.len() <= 4 && bytes <= 2048 {
+            if outcomes.len() <= recent && expected.len() <= maximum_files && bytes <= maximum_bytes
+            {
                 break;
             }
             expected.remove(&outcomes[0].1);
@@ -76,7 +83,10 @@ fn check(operations: &[(u8, u8, String)], broken: bool) {
             actual.apply::<true>(&mut change).unwrap()
         }
         for key in change.removed {
-            delivered.remove(&key);
+            assert!(
+                delivered.remove(&key).is_some(),
+                "retire only published display files"
+            );
         }
         for file in change.file.into_iter().chain(change.files) {
             delivered.insert(file.key.clone(), file);
@@ -103,14 +113,18 @@ proptest! {
     #[test]
     fn command_display_retention_matches_immutable_files(operations in prop::collection::vec(
         (0u8..8,0u8..3,"[a-z]{0,1900}"),0..24)) {
-        check(&operations, false);
+        for (recent, files, bytes) in [(2,4,16_384),(8,2,16_384),(8,16,2048)] {
+            check(&operations, recent, files, bytes, false);
+        }
     }
 }
 #[test]
 fn retaining_finished_inbox_history_negative_control() {
     let rows = (0..3)
-        .map(|id| (id, 0, "answer".into()))
+        .map(|id| (id, 0, "answer".repeat(200)))
         .collect::<Vec<_>>();
-    check(&rows, false);
-    assert!(std::panic::catch_unwind(|| check(&rows, true)).is_err());
+    for (recent, files, bytes) in [(2, 4, 16_384), (8, 2, 16_384), (8, 16, 2048)] {
+        check(&rows, recent, files, bytes, false);
+        assert!(std::panic::catch_unwind(|| check(&rows, recent, files, bytes, true)).is_err());
+    }
 }

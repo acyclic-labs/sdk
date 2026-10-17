@@ -380,3 +380,45 @@ fn retained_task_selection_negative_control() {
         .is_err()
     );
 }
+
+
+async fn replace_ui_sessions(sessions: &[u8], retain: bool) {
+    let volume=Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("sessions").unwrap()).await.unwrap());
+    let owner=wire::Authority { kind:wire::AggregateKind::Task as i32,id:"root".into() };
+    let mut client=TaskFileClient::observe(volume.as_ref(),&owner,128,65_536).await.unwrap();
+    let mut previous=None;
+    for number in sessions {
+        let number=u128::from(*number);
+        let commands=crate::client::CommandSession::open(volume.clone(),uuid::Uuid::from_u128(number),65_536,128).await.unwrap();
+        let old=if let Some(identity)=previous {
+            let query=client.views().selection(&identity).unwrap().query().clone();
+            Some((identity,query.clone(),volume.snapshot(&query,128).await.unwrap()))
+        } else { None };
+        client.follow_commands(&commands).await.unwrap();
+        if let Some((identity,query,snapshot))=old {
+            if Some(identity)!=client.command_selection {
+                if retain { client.views.query_snapshot(query,snapshot,128,65_536).unwrap(); }
+                assert!(client.views().selection(&identity).is_none());
+            }
+        }
+        let selection=client.views().selections().filter(|(_,files)|matches!(files.query(),Query::CommandSession { .. })).collect::<Vec<_>>();
+        assert_eq!(selection.len(),1);
+        assert_eq!(selection[0].1.query(), &Query::CommandSession {session:Component::new(uuid::Uuid::from_u128(number).to_string()).unwrap(),recent:32});
+        assert!(client.views().selection(&client.task_selection).is_some());
+        previous=Some(*selection[0].0);
+    }
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    // Rebinding replaces the whole command selection while the task follow
+    // remains intact; reopening the same session never creates a second slot.
+    #[test]
+    fn replacing_the_ui_session_retires_its_previous_projection(sessions in prop::collection::vec(1u8..5,1..7)) {
+        futures::executor::block_on(replace_ui_sessions(&sessions,false));
+    }
+}
+#[test]
+fn retained_ui_session_projection_negative_control() {
+    futures::executor::block_on(replace_ui_sessions(&[1,2,1],false));
+    assert!(std::panic::catch_unwind(||futures::executor::block_on(replace_ui_sessions(&[1,2,1],true))).is_err());
+}

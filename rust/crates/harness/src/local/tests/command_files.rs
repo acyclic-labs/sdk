@@ -72,6 +72,7 @@ async fn roundtrip(prompt: String) -> Result<()> {
     let text: Vec<_> = projected
         .views()
         .selections()
+        .filter(|(_, selection)| matches!(selection.query(), Query::CommandSession { .. }))
         .flat_map(|(_, selection)| {
             selection.outputs(
                 &crate::client::OutputOwner::Session(
