@@ -190,6 +190,8 @@ pub(super) async fn run(
     owner_store
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
+    let stored_manifest = read(&owner_store, &manifest, MAXIMUM).await?;
+    check("the serialized manifest", stored_manifest.as_ref(), &manifest_bytes)?;
     if load_manifest(owner_store.as_ref(), &manifest, 1, None)
         .await?
         .0
@@ -228,7 +230,14 @@ pub(super) async fn run(
             "name": file.display_name(),
             "descriptor": file.descriptor(),
         },
-        "manifest": manifest.descriptor(),
+        // Serialized references contain the backend's bucket identity and
+        // object version. Their bytes were checked above within each provider;
+        // compare the referenced content across providers instead.
+        "manifest": {
+            "media_type": "application/vnd.acyclic.harness.attachments+json",
+            "items": [{"path": file.path(), "name": file.display_name(),
+                "descriptor": file.descriptor(), "label": null}],
+        },
         "refused": {
             "reader stage": "unauthorized: Objects writer is not bound to the original owner",
             "over allowance": "invalid request: content exceeds selected byte allowance",
