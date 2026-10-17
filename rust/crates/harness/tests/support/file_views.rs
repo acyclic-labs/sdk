@@ -7,6 +7,8 @@ use super::harness::{
 
 pub use harness::test_support::empty_client_views as empty;
 pub fn put(views: &mut ClientViews, key: FileKey, bytes: Vec<u8>, channel: Option<Channel>) {
+    let mut file = FileValue::new(key, bytes);
+    file.channel = channel;
     let mut cursor = views.selections().next().unwrap().1.cursor().clone();
     cursor.position += 1;
     cursor.accepted = cursor.position;
@@ -14,13 +16,7 @@ pub fn put(views: &mut ClientViews, key: FileKey, bytes: Vec<u8>, channel: Optio
     views
         .query_change(Change {
             cursor,
-            file: Some(FileValue {
-                requester: None,
-                key,
-                bytes: bytes.into(),
-                channel,
-                publication: None,
-            }),
+            file: Some(file),
             files: vec![],
             removed: vec![],
         })
