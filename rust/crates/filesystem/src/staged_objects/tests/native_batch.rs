@@ -154,10 +154,17 @@ fn run(
 }
 
 fn exact_batch_work(actual: WorkCounters, batch: WorkCounters, count: usize) -> bool {
+    // Independent journals have real timestamps. Their protobuf varint widths
+    // change frame length: each extra byte is hashed once, encoded twice
+    // (inline placement and final encoding), and copied once into the frame.
+    // Pin the work beyond those physical output bytes, without clock coupling.
     actual.durability_operations == batch.durability_operations
         && actual.backend_write_operations == batch.backend_write_operations
         && actual.object_bytes_written == batch.object_bytes_written
-        && actual.bytes_hashed == batch.bytes_hashed
+        && actual.bytes_hashed + batch.output_bytes == batch.bytes_hashed + actual.output_bytes
+        && actual.bytes_encoded + 2 * batch.output_bytes
+            == batch.bytes_encoded + 2 * actual.output_bytes
+        && actual.bytes_copied + batch.output_bytes == batch.bytes_copied + actual.output_bytes
         && actual.allocation_operations == batch.allocation_operations + 4
         && actual.items_examined == batch.items_examined + 3 * count as u64
 }
