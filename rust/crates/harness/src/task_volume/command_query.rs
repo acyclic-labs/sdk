@@ -1,5 +1,5 @@
-use super::{Component, Error, FileKey, FileValue, Index, Query, Result, TaskFile};
-use std::collections::BTreeMap;
+use super::{Component, Error, FileIndex, FileKey, FileValue, Index, Query, Result, TaskFile};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn identity(id: &Component) -> Option<(Option<uuid::Uuid>, crate::OperationId)> {
     let text = id.as_str();
@@ -36,7 +36,7 @@ pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<
     })
 }
 
-pub(crate) fn is_result(key: &FileKey) -> bool {
+fn is_result(key: &FileKey) -> bool {
     matches!(
         key,
         FileKey::Session {
@@ -59,7 +59,12 @@ pub(super) fn owner(key: &FileKey) -> Option<Component> {
         } => identity(id)
             .and_then(|(session, _)| session)
             .map(|session| {
-                Component::new(session.to_string()).expect("UUID is a namespace component")
+                Component::new(
+                    session
+                        .hyphenated()
+                        .encode_lower(&mut uuid::Uuid::encode_buffer()),
+                )
+                .expect("UUID is a namespace component")
             }),
         _ => None,
     }
@@ -73,7 +78,12 @@ pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
                 TaskFile::Request(id) | TaskFile::ExecutionClaim(id) | TaskFile::ExecutionResult(id),
             ..
         } => identity(id).is_some_and(|(owner, _)| {
-            owner.is_none_or(|owner| owner.to_string() == session.as_str())
+            owner.is_none_or(|owner| {
+                *owner
+                    .hyphenated()
+                    .encode_lower(&mut uuid::Uuid::encode_buffer())
+                    == *session.as_str()
+            })
         }),
         FileKey::Ui { directory, .. } => {
             directory.as_str() == "config"
@@ -85,6 +95,63 @@ pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
             "commands/catalog.json" | "commands/themes.json"
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+type Executions = Vec<((Option<Component>, u64), FileKey)>;
+/// Completed executions in publication order and the unfinished inbox, per owner.
+#[derive(Default)]
+pub(super) struct Commands {
+    executions: BTreeMap<(Option<Component>, u64), FileKey>,
+    pending: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
+}
+/// A command file about to replace any stored version of its key.
+pub(super) enum Command {
+    Result(Option<Component>, FileKey),
+    Pending(Option<Component>, FileKey),
+}
+impl Commands {
+    /// Classifies before the index insert; a pending request checks its result once.
+    pub(super) fn prepare(&self, files: &FileIndex, key: &FileKey) -> Option<Command> {
+        if is_result(key) {
+            Some(Command::Result(owner(key), key.clone()))
+        } else {
+            let result = related(key, TaskFile::ExecutionResult)?;
+            (!files.contains_key(&result)).then(|| Command::Pending(owner(key), key.clone()))
+        }
+    }
+    /// A first result completes its request and claim; replacements change nothing.
+    pub(super) fn record(&mut self, command: Option<Command>, position: u64, replaced: bool) {
+        match command {
+            Some(Command::Result(owner, key)) if !replaced => {
+                if let Some(pending) = self.pending.get_mut(&owner) {
+                    for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
+                        if let Some(related) = related(&key, make) {
+                            pending.remove(&related);
+                        }
+                    }
+                    if pending.is_empty() {
+                        self.pending.remove(&owner);
+                    }
+                }
+                self.executions.insert((owner, position), key);
+            }
+            Some(Command::Pending(owner, key)) => {
+                self.pending.entry(owner).or_default().insert(key);
+            }
+            _ => {}
+        }
+    }
+    #[cfg(test)]
+    pub(super) fn parts(&self) -> (Executions, Vec<(Option<Component>, Vec<FileKey>)>) {
+        let pending = self.pending.iter();
+        (
+            self.executions.clone().into_iter().collect(),
+            pending
+                .map(|(owner, keys)| (owner.clone(), keys.iter().cloned().collect()))
+                .collect(),
+        )
     }
 }
 
@@ -116,23 +183,24 @@ pub(super) fn snapshot(
     for path in ["commands/catalog.json", "commands/themes.json"] {
         insert(&FileKey::parse(path)?)?;
     }
-    for key in index
-        .pending_commands
+    let commands = &index.commands;
+    for key in commands
+        .pending
         .get(&None)
         .into_iter()
-        .chain(index.pending_commands.get(&Some(session.clone())))
+        .chain(commands.pending.get(&Some(session.clone())))
         .flat_map(|keys| keys.iter())
         .inspect(|_| super::item_examined())
     {
         insert(key)?;
     }
-    let mut tasks = index
+    let mut tasks = commands
         .executions
         .range((None, 0)..=(None, u64::MAX))
         .rev()
         .inspect(|_| super::item_examined())
         .peekable();
-    let mut own = index
+    let mut own = commands
         .executions
         .range((Some(session.clone()), 0)..=(Some(session.clone()), u64::MAX))
         .rev()
