@@ -15,6 +15,7 @@ mod old {
 
     pub(super) struct Stored {
         pub(super) file: FileValue,
+        pub(super) position: u64,
     }
     #[derive(Default)]
     pub(super) struct Index {
@@ -112,7 +113,9 @@ mod old {
                     .insert(file.key.clone());
             }
         }
-        index.files.insert(file.key.clone(), Stored { file });
+        index
+            .files
+            .insert(file.key.clone(), Stored { file, position });
     }
     pub(super) fn commands(
         index: &Index,
@@ -624,10 +627,12 @@ fn derived_index_paired_measurement() {
     let mut new_index = Index::default();
     let mut old_index = old::Index::default();
     let [old, new] = [true, false].map(|old| {
-        let inputs: Vec<_> = files.iter().map(copied).collect();
+        // The input buffer outlives the measurement, so retained bytes only
+        // net allocations made inside it.
+        let mut inputs: Vec<_> = files.iter().map(copied).collect();
         let started = std::time::Instant::now();
         let allocation = measure(|| {
-            for (position, file) in inputs.into_iter().enumerate() {
+            for (position, file) in inputs.drain(..).enumerate() {
                 if old {
                     old::apply(&mut old_index, file, position as u64 + 1);
                 } else {
@@ -692,4 +697,25 @@ fn status_replacement_allocations_are_independent_of_retained_files() {
     let old = [counts(64, true), counts(128, true)];
     assert_eq!(new, [[0, 0]; 2]);
     assert_eq!(old, [[0, 0]; 2], "independent baseline");
+}
+
+/// The baseline stores exactly main's historical value layout, so its
+/// retained bytes cannot drift below the production index it is paired with.
+#[test]
+fn baseline_index_values_keep_the_historical_layout() {
+    let file = FileValue::new(FileKey::parse("commands/catalog.json").unwrap(), Vec::new());
+    let stored = old::Stored {
+        file: file.clone(),
+        position: 7,
+    };
+    let old::Stored { file: _, position } = &stored;
+    assert_eq!(*position, 7);
+    assert_eq!(
+        std::mem::size_of::<old::Stored>(),
+        std::mem::size_of::<super::StoredFile>()
+    );
+    assert_eq!(
+        std::mem::align_of::<old::Stored>(),
+        std::mem::align_of::<super::StoredFile>()
+    );
 }
