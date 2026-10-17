@@ -153,16 +153,16 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
 #[test]
 fn concurrent_headers_reserve_zero_one_or_both_allowances() {
     for maximum in [0, 10, 20] {
-        race::<false, true>(maximum, false, true, false);
+        race::<false, true>(maximum, false, false, false);
     }
-    race::<false, true>(10, false, false, false);
-    race::<false, true>(10, false, true, true);
+    race::<false, true>(10, false, true, false);
+    race::<false, true>(10, false, false, true);
 }
 
 #[test]
 fn concurrent_blob_pages_reserve_the_page_write_charge() {
     for maximum in [0, 1, 2] {
-        race::<false, true>(maximum, true, true, false);
+        race::<false, true>(maximum, true, false, false);
     }
 }
 
@@ -177,10 +177,10 @@ fn rejected(panic: Box<dyn std::any::Any + Send>, expected: &str) {
 #[test]
 fn check_only_admission_and_deleting_the_bound_assertion_are_detected() {
     for (maximum, pages) in [(10, false), (1, true)] {
-        let panic = std::panic::catch_unwind(|| race::<true, true>(maximum, pages, true, false))
+        let panic = std::panic::catch_unwind(|| race::<true, true>(maximum, pages, false, false))
             .expect_err("the old check-only admission must violate its allowance");
         rejected(panic, "concurrent encoders must not exceed admitted work");
-        race::<true, false>(maximum, pages, true, false);
+        race::<true, false>(maximum, pages, false, false);
     }
 }
 
