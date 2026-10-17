@@ -151,3 +151,8 @@ type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
+
+#[cfg(all(acyclic_harness_loom, not(target_arch = "wasm32")))]
+mod journal_model;
+#[cfg(all(acyclic_harness_loom, not(target_arch = "wasm32")))]
+pub use journal_model::verify_journal;

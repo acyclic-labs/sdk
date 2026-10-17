@@ -421,7 +421,10 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     ))
 }
 
-#[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
+#[cfg(any(
+    all(test, not(acyclic_harness_loom)),
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
 where
     F: FnMut(TaskId) -> Fut,

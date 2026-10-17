@@ -83,6 +83,7 @@ pub(crate) fn traced<'a, T: 'a>(
 
 // The unmetered caller supplies the one required trait-erasure box. Keep the
 // existing boxed path above intact for admitted future layouts and charges.
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
 #[inline(always)]
 pub(crate) fn traced_future<'a, T: 'a>(
     span: OperationSpan,

@@ -1,5 +1,6 @@
 use super::*;
 
+/// Explores mailbox ownership and wakeups, with an optional omitted-wake control.
 pub fn verify_mailbox(omit_wake: bool) {
     loom::model(move || {
         use crate::sync::atomic::{AtomicUsize, Ordering};

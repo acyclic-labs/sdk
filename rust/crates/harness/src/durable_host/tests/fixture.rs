@@ -13,7 +13,7 @@ pub(crate) struct Fixture<
     O = MemoryObjectBackend,
 > {
     pub(crate) stream: Arc<P>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) backend: Fs<A, O>,
     pub(crate) files: Arc<FilesystemHost<A, O>>,
     pub(crate) issuer: AuthorityIssuer,
@@ -283,7 +283,7 @@ where
         }
         Ok(Self {
             stream,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
             backend,
             files,
             issuer,

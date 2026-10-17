@@ -9,8 +9,10 @@ pub(crate) fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> impl Future<Output = OwnedM
     mutex.lock_owned()
 }
 
+#[cfg(all(acyclic_harness_loom, feature = "native-execution"))]
+pub(crate) use modeled::OwnedMutexGuard;
 #[cfg(acyclic_harness_loom)]
-pub(crate) use modeled::{Arc, Mutex, OwnedMutexGuard, lock_owned};
+pub(crate) use modeled::{Arc, Mutex, lock_owned};
 
 #[cfg(acyclic_harness_loom)]
 mod modeled {
