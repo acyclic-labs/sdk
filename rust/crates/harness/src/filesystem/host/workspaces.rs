@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        crate::test_support::differential::record("read", maximum_bytes);
+        acyclic_test_support::differential::record(("read", maximum_bytes));
         let owned;
         let io = if let Some(io) = io {
             io
@@ -127,7 +127,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &GenerationRef,
     ) -> Result<()> {
         #[cfg(all(test, not(target_arch = "wasm32")))]
-        crate::test_support::differential::record("retain", 0);
+        acyclic_test_support::differential::record(("retain", 0u64));
         let workspace = self.open(workspace, None).await?;
         let generation = self.generation(&workspace, reference, None).await?;
         let identity = format!(
