@@ -59,6 +59,8 @@ mod mentions;
 pub use mentions::*;
 mod diff;
 pub use diff::*;
+mod notification_view;
+pub use notification_view::{NotificationFileView, NotificationQueryView};
 mod notifications;
 pub use notifications::*;
 mod task_list;

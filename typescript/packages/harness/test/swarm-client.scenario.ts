@@ -28,6 +28,8 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
       task: "01010101-0101-0101-0101-010101010101", state: "Running", settled: false, inputs: 1,
     })), null);
   }
+  await a.write(await a.head(), { Task: { task: "task", file: { Notification: "settled" } } },
+    encode.encode('{"task":"task","sequence":9007199254740993,"event":"needs_approval","detail":"approval requested"}'), null);
   await put(a, 1n, "before"); await put(b, 1n, "other");
   await status("swarm/a", false); await status("swarm/b", false);
   await layout("layout", { prefetch: ["swarm/a"] });
@@ -60,6 +62,9 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   try {
     await wait("snapshot:swarm/a");
     check(segments("swarm/a")?.join("") === "before", "snapshot bytes missing");
+    const notice = views.notifications()[0];
+    check(notice?.notification.kind === "present" && notice.notification.notification.sequence === turn,
+      "notifications lost the followed file or its full-width identity");
     await status("swarm/b", true); await wait("attention");
     check(views.agents().join(",") === "swarm/a,swarm/b", "overview discovery incomplete");
     if (recover) await recover();

@@ -1,3 +1,0 @@
-{"records":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"Ready"}],"expect":{"applied":[true],
- "presented":1,"output":"\u001b]9;Task failed: task-1: Ready\u0007","view":{"latest":{"task-1":{"task":"task-1",
- "sequence":1,"event":"task_failed","detail":"Ready"}}}},"maximum_text_bytes":11}
