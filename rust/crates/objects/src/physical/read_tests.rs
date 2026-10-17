@@ -277,28 +277,30 @@ fn fixture(sizes: &[usize], journal: usize) -> Fixture {
                 .collect()
         })
         .collect();
-    let entries: Vec<([u8; 32], acyclic_stream::OwnedBytes)> = payloads
-        .iter()
-        .map(|payload| {
-            (
-                *blake3::hash(payload).as_bytes(),
-                acyclic_stream::OwnedBytes::copy_from_slice(payload),
-            )
-        })
-        .collect();
-    let (id, offsets) = persist_segment(
-        directory.path(),
-        &entries,
-        LocalDurability::FullFlush,
-        &mut Publication::new(None),
-    )
-    .unwrap();
+    // Read fixtures need complete segment bytes, not durable publication.
+    // Keep arbitrary generated sizes without a flush per property case.
+    let mut bytes = SEGMENT_MAGIC.to_vec();
+    bytes.extend_from_slice(&(sizes.len() as u32).to_le_bytes());
+    let mut offsets = Vec::new();
+    let mut offset = (SEGMENT_HEADER_BYTES + sizes.len() * SEGMENT_RECORD_BYTES) as u64;
+    for payload in &payloads {
+        offsets.push(offset);
+        offset += payload.len() as u64;
+        bytes.extend_from_slice(blake3::hash(payload).as_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    }
+    for payload in &payloads {
+        bytes.extend_from_slice(payload);
+    }
+    let id = *blake3::hash(&bytes).as_bytes();
+    fs::write(segment_path(directory.path(), &id), bytes).unwrap();
     let mut bodies: Vec<_> = payloads
         .into_iter()
-        .zip(entries)
         .zip(offsets)
-        .map(|((payload, (digest, _)), offset)| {
-            (payload, digest, LocalBodyLocation::Segment { id, offset })
+        .map(|(payload, offset)| {
+            let digest = *blake3::hash(&payload).as_bytes();
+            let location = LocalBodyLocation::Segment { id, offset };
+            (payload, digest, location)
         })
         .collect();
     let inline: Vec<u8> = (0..journal)
@@ -321,6 +323,31 @@ fn segment_path_of(fixture: &Fixture) -> PathBuf {
     match fixture.bodies.first().map(|(_, _, location)| location) {
         Some(LocalBodyLocation::Segment { id, .. }) => segment_path(fixture.directory.path(), id),
         _ => unreachable!("the fixture's first body is a segment"),
+    }
+}
+
+#[test]
+fn read_fixture_matches_durably_published_segment() {
+    let fixture = fixture(&[0, 79, 40_001], 0);
+    let directory = tempfile::tempdir().unwrap();
+    fs::create_dir_all(directory.path().join("segments")).unwrap();
+    let entries: Vec<_> = fixture.bodies[..3]
+        .iter()
+        .map(|(payload, digest, _)| (*digest, payload.as_slice()))
+        .collect();
+    let (id, offsets) = persist_segment(
+        directory.path(),
+        &entries,
+        LocalDurability::FullFlush,
+        &mut Publication::new(None),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(segment_path(directory.path(), &id)).unwrap(),
+        fs::read(segment_path_of(&fixture)).unwrap()
+    );
+    for ((_, _, location), offset) in fixture.bodies.iter().zip(offsets) {
+        assert_eq!(*location, LocalBodyLocation::Segment { id, offset });
     }
 }
 

@@ -54,71 +54,40 @@ pub(crate) async fn read_blob_range_with_accounting<S: AsyncObjectStore>(
 ) -> Result<BlobRead, FsError> {
     let mut machine = BlobRangeMachine::new(root, range, limits, accounting)?;
     machine.publish_output = publish_output;
-    while !machine.pending.is_empty() {
-        if machine
-            .read_chunk_batch(store, accounting, cancellation)
-            .await?
-        {
-            continue;
-        }
-        let pending = machine.prepare(accounting)?;
-        let (object, maximum) = pending.request(limits);
-        if let PendingBlobRead::Page {
-            expected_first,
-            expected_end,
-            height,
-            ..
-        } = pending
-        {
-            let key = DecodedCacheKey::new::<BlobPage>(object, limits);
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                original.remaining()?;
-            }
-            let cached = store.decoded_cache_get(key);
-            if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
-                let page = cached
-                    .value
-                    .downcast_ref::<BlobPage>()
-                    .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
-                machine.accept_decoded_page(
-                    page,
-                    expected_first,
-                    expected_end,
-                    height,
-                    accounting,
-                )?;
-
-                drop(cached);
-                continue;
-            }
-            let (read, retained) =
-                read_object_with_accounting(store, object, maximum, accounting, cancellation)
-                    .await?;
-            let decoded =
-                ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, accounting)?);
-            let (cached, allocated) =
-                crate::kernel::file_read::cache_decoded_read(store, key, decoded, accounting)?;
-            let page = cached
-                .value
-                .downcast_ref::<BlobPage>()
-                .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
-            machine.accept_decoded_page(page, expected_first, expected_end, height, accounting)?;
-
-            drop(cached);
-            crate::kernel::file_read::release_standalone_read_bytes(allocated, accounting)?;
-            drop(read);
-            crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
-        } else if let PendingBlobRead::Chunk(chunk) = pending {
-            let (read, retained) =
-                read_object_with_accounting(store, object, maximum, accounting, cancellation)
-                    .await?;
-            machine.accept_chunk(&read, chunk, accounting)?;
-            drop(read);
-            crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
-        }
-    }
+    machine
+        .drive(store, limits, accounting, cancellation)
+        .await?;
     machine.finish(accounting)
+}
+
+/// Appends one authenticated blob range to `output`, whose spare capacity
+/// already holds it, copying each chunk's bytes exactly once. Output bytes
+/// are the caller's to publish and charge.
+pub(crate) async fn append_blob_range_with_accounting<S: AsyncObjectStore>(
+    store: &S,
+    root: ObjectId,
+    range: ByteRange,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+    output: &mut Vec<u8>,
+) -> Result<(), FsError> {
+    let mut machine = BlobRangeMachine::with_output(
+        root,
+        range,
+        limits,
+        accounting,
+        ReadOwned {
+            value: std::mem::take(output),
+            custody: KernelOwnedAllocation::Standalone,
+        },
+    )?;
+    machine.publish_output = false;
+    machine
+        .drive(store, limits, accounting, cancellation)
+        .await?;
+    *output = machine.finish_appended(accounting)?;
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +119,8 @@ struct BlobRangeMachine {
     pending_capacity: LogicalVecCapacity,
     visited: Option<crate::kernel::persistent_point::Owned<VisitedObjectSet>>,
     output: Vec<u8>,
+    /// Bytes `output` held before this range; the range is appended after them.
+    base: usize,
     successor: Option<(u64, ResidencyHint)>,
     publish_output: bool,
     // Every physical payload is dropped before the corresponding native guard.
@@ -164,15 +135,37 @@ impl BlobRangeMachine {
         limits: DecodeLimits,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, FsError> {
+        let (maximum_pending, maximum_visited) = Self::validate(root, range, limits, accounting)?;
+        let allocation = usize::try_from(range.length).map_err(|_| BlobReadError::InvalidRange)?;
+        let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+        let output = allocate_read_buffer(allocation, accounting)?;
+        Self::start(
+            root,
+            range,
+            limits,
+            maximum_pending,
+            visited,
+            output,
+            accounting,
+        )
+    }
+
+    /// Checks the root, range and limits; returns the pending and visited bounds.
+    fn validate(
+        root: ObjectId,
+        range: ByteRange,
+        limits: DecodeLimits,
+        accounting: &KernelAccounting<'_>,
+    ) -> Result<(usize, usize), FsError> {
         accounting.check()?;
         if root.kind != ObjectKind::Blob {
             return Err(BlobReadError::WrongRootKind.into());
         }
-        let range_end = range
+        range
             .offset
             .checked_add(range.length)
             .ok_or(BlobReadError::InvalidRange)?;
-        let allocation = usize::try_from(range.length).map_err(|_| BlobReadError::InvalidRange)?;
+        usize::try_from(range.length).map_err(|_| BlobReadError::InvalidRange)?;
         if !limits.page_limits_valid(1) {
             return Err(BlobReadError::InvalidLimits.into());
         }
@@ -184,8 +177,47 @@ impl BlobRangeMachine {
                     .map_err(|_| BlobReadError::InvalidLimits)?,
             )
             .ok_or(BlobReadError::InvalidLimits)?;
+        Ok((maximum_pending, maximum_visited))
+    }
+
+    /// A machine appending to `output`, which already has spare capacity for the range.
+    fn with_output(
+        root: ObjectId,
+        range: ByteRange,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        output: ReadOwned<Vec<u8>>,
+    ) -> Result<Self, FsError> {
+        let (maximum_pending, maximum_visited) = Self::validate(root, range, limits, accounting)?;
+        let length = usize::try_from(range.length).map_err(|_| BlobReadError::InvalidRange)?;
+        if output.value.capacity() - output.value.len() < length {
+            return Err(BlobReadError::InvalidRange.into());
+        }
         let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
-        let output = allocate_read_buffer(allocation, accounting)?;
+        Self::start(
+            root,
+            range,
+            limits,
+            maximum_pending,
+            visited,
+            output,
+            accounting,
+        )
+    }
+
+    fn start(
+        root: ObjectId,
+        range: ByteRange,
+        limits: DecodeLimits,
+        maximum_pending: usize,
+        visited: crate::kernel::persistent_point::Owned<VisitedObjectSet>,
+        output: ReadOwned<Vec<u8>>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        let range_end = range
+            .offset
+            .checked_add(range.length)
+            .ok_or(BlobReadError::InvalidRange)?;
         let mut machine = Self {
             range,
             range_end,
@@ -194,6 +226,7 @@ impl BlobRangeMachine {
             pending: Vec::new(),
             pending_capacity: LogicalVecCapacity::default(),
             visited: Some(visited),
+            base: output.value.len(),
             output: output.value,
             successor: None,
             pending_custody: KernelOwnedAllocation::Standalone,
@@ -210,6 +243,88 @@ impl BlobRangeMachine {
             accounting,
         )?;
         Ok(machine)
+    }
+
+    async fn drive<S: AsyncObjectStore>(
+        &mut self,
+        store: &S,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), FsError> {
+        let machine = self;
+        while !machine.pending.is_empty() {
+            if machine
+                .read_chunk_batch(store, accounting, cancellation)
+                .await?
+            {
+                continue;
+            }
+            let pending = machine.prepare(accounting)?;
+            let (object, maximum) = pending.request(limits);
+            if let PendingBlobRead::Page {
+                expected_first,
+                expected_end,
+                height,
+                ..
+            } = pending
+            {
+                let key = DecodedCacheKey::new::<BlobPage>(object, limits);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    original.remaining()?;
+                }
+                let cached = store.decoded_cache_get(key);
+                if let Some(cached) = cached.map_err(crate::kernel::file_read::read_store_error)? {
+                    let page = cached
+                        .value
+                        .downcast_ref::<BlobPage>()
+                        .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
+                    machine.accept_decoded_page(
+                        page,
+                        expected_first,
+                        expected_end,
+                        height,
+                        accounting,
+                    )?;
+
+                    drop(cached);
+                    continue;
+                }
+                let (read, retained) =
+                    read_object_with_accounting(store, object, maximum, accounting, cancellation)
+                        .await?;
+                let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(
+                    &read, limits, accounting,
+                )?);
+                let (cached, allocated) =
+                    crate::kernel::file_read::cache_decoded_read(store, key, decoded, accounting)?;
+                let page = cached
+                    .value
+                    .downcast_ref::<BlobPage>()
+                    .ok_or_else(|| FsError::BlobRead(ObjectStoreError::Corrupt.into()))?;
+                machine.accept_decoded_page(
+                    page,
+                    expected_first,
+                    expected_end,
+                    height,
+                    accounting,
+                )?;
+
+                drop(cached);
+                crate::kernel::file_read::release_standalone_read_bytes(allocated, accounting)?;
+                drop(read);
+                crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
+            } else if let PendingBlobRead::Chunk(chunk) = pending {
+                let (read, retained) =
+                    read_object_with_accounting(store, object, maximum, accounting, cancellation)
+                        .await?;
+                machine.accept_chunk(&read, chunk, accounting)?;
+                drop(read);
+                crate::kernel::file_read::release_standalone_read_bytes(retained, accounting)?;
+            }
+        }
+        Ok(())
     }
 
     fn push(
@@ -345,14 +460,16 @@ impl BlobRangeMachine {
         let end = usize::try_from(self.range_end.min(chunk.end_offset) - chunk.first_offset)
             .map_err(|_| BlobReadError::InvalidRange)?;
         let region = bytes.get(start..end).ok_or(BlobReadError::InvalidRange)?;
-        if self
-            .output
-            .len()
+        if (self.output.len() - self.base)
             .checked_add(region.len())
             .map(usize_to_u64)
             .is_none_or(|length| length > self.range.length)
         {
             return Err(BlobReadError::IncompleteCoverage.into());
+        }
+        // Admitted capacity covers the range, so the copy never reallocates.
+        if self.output.capacity() - self.output.len() < region.len() {
+            return Err(BlobReadError::InvalidRange.into());
         }
         let copied = WorkCounters {
             bytes_copied: usize_to_u64(region.len()),
@@ -365,6 +482,12 @@ impl BlobRangeMachine {
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(copied)?;
+        #[cfg(test)]
+        crate::kernel::file_read::read_work::record(
+            "chunk",
+            self.output.len() - self.base,
+            region.len(),
+        );
         self.output.extend_from_slice(region);
         accounting.record_completed(copied)
     }
@@ -397,7 +520,7 @@ impl BlobRangeMachine {
         let prepared = (|| -> Result<(), FsError> {
             reserve_decoded_items(&mut chunks, count, &mut |step| observed.observe(step))?;
             reserve_decoded_items(&mut requests, count, &mut |step| observed.observe(step))?;
-            let copied = usize_to_u64(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>());
+            let copied = usize_to_u64(copied_per_chunk());
             for pending in self.pending.iter().rev().take(count) {
                 let PendingBlobRead::Chunk(chunk) = pending else {
                     return Err(FsError::from(BlobReadError::TraversalState));
@@ -423,6 +546,8 @@ impl BlobRangeMachine {
             observed.release_failed()?;
             return Err(read_decode_error(error));
         }
+        #[cfg(test)]
+        crate::kernel::file_read::read_work::record("batch", count, count * copied_per_chunk());
         let (custody, scratch_bytes) = observed.into_parts();
         let batch = ReadOwned {
             value: (chunks, requests, scratch_bytes),
@@ -467,8 +592,26 @@ impl BlobRangeMachine {
         applied
     }
 
+    /// Returns the appended output after retiring the traversal state.
+    fn finish_appended(
+        mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Vec<u8>, FsError> {
+        if usize_to_u64(self.output.len() - self.base) != self.range.length {
+            return Err(BlobReadError::IncompleteCoverage.into());
+        }
+        let output = std::mem::take(&mut self.output);
+        let pending_bytes = self.pending_capacity.logical_bytes();
+        drop(self.pending);
+        release_read_allocation(pending_bytes, self.pending_custody, accounting)?;
+        if let Some(visited) = self.visited {
+            visited.retire(accounting)?;
+        }
+        Ok(output)
+    }
+
     fn finish(mut self, accounting: &mut KernelAccounting<'_>) -> Result<BlobRead, FsError> {
-        if usize_to_u64(self.output.len()) != self.range.length {
+        if usize_to_u64(self.output.len() - self.base) != self.range.length {
             return Err(BlobReadError::IncompleteCoverage.into());
         }
         let logical_owned_bytes = usize_to_u64(self.output.capacity());
@@ -490,4 +633,9 @@ impl BlobRangeMachine {
             next_residency: self.successor.map(|(_, hint)| hint),
         })
     }
+}
+
+/// Chunk-reference bytes a batched chunk read copies into its request.
+fn copied_per_chunk() -> usize {
+    size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>()
 }

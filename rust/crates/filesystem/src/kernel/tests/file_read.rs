@@ -12,6 +12,8 @@ use std::io::Cursor;
 
 #[path = "file_read/accounting.rs"]
 mod accounting;
+#[path = "file_read/spans.rs"]
+mod spans;
 
 fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
