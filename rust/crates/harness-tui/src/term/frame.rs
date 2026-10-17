@@ -139,6 +139,16 @@ impl<D: Present> FrameOutput<D> {
 struct FrameBackend<D: Present> {
     output: FrameOutput<D>,
     size: Size,
+    shown: Shown,
+}
+
+/// The cursor the device shows after the last presented frame. A command that
+/// restates it is not encoded, so a frame identical to the screen encodes no
+/// bytes and reaches no device. `None` is unknown: the command is encoded.
+#[derive(Default)]
+struct Shown {
+    visible: Option<bool>,
+    position: Option<Position>,
 }
 
 impl<D: Present> FrameBackend<D> {
@@ -151,29 +161,49 @@ impl<D: Present> FrameBackend<D> {
 impl<D: Present> Backend for FrameBackend<D> {
     type Error = io::Error;
     fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
+        // An empty diff would encode only an attribute reset, which the
+        // previous drawn frame already ended with.
+        let mut content = content.peekable();
+        if content.peek().is_none() {
+            return Ok(());
+        }
+        self.shown.position = None;
         self.crossterm().draw(content)
     }
     fn append_lines(&mut self, lines: u16) -> io::Result<()> {
+        self.shown.position = None;
         self.crossterm().append_lines(lines)
     }
     fn hide_cursor(&mut self) -> io::Result<()> {
         self.output.cursor_hidden = true;
+        if self.shown.visible.replace(false) == Some(false) {
+            return Ok(());
+        }
         self.crossterm().hide_cursor()
     }
     fn show_cursor(&mut self) -> io::Result<()> {
         self.output.cursor_hidden = false;
+        if self.shown.visible.replace(true) == Some(true) {
+            return Ok(());
+        }
         self.crossterm().show_cursor()
     }
     fn get_cursor_position(&mut self) -> io::Result<Position> {
         self.crossterm().get_cursor_position()
     }
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        let position = position.into();
+        if self.shown.position.replace(position) == Some(position) {
+            return Ok(());
+        }
         self.crossterm().set_cursor_position(position)
     }
     fn clear(&mut self) -> io::Result<()> {
+        self.shown.position = None;
         self.crossterm().clear()
     }
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.shown.position = None;
         self.crossterm().clear_region(clear_type)
     }
     fn size(&self) -> io::Result<Size> {
@@ -201,8 +231,8 @@ impl<D: Present> Drop for FrameBackend<D> {
 
 /// The only full-screen presentation path: each draw reaches the device as
 /// one presented frame, wrapped in synchronized output (DECSET 2026) by the
-/// device when the probed terminal supports it. A frame with an unchanged
-/// buffer and cursor still commits only its cursor placement.
+/// device when the probed terminal supports it. A draw identical to the screen
+/// (unchanged buffer and cursor) reaches no device at all.
 pub struct FrameTerminal<D: Present> {
     terminal: Terminal<FrameBackend<D>>,
 }
@@ -218,6 +248,7 @@ impl<D: Present> FrameTerminal<D> {
                     cursor_hidden: false,
                 },
                 size,
+                shown: Shown::default(),
             })?,
         })
     }
@@ -227,7 +258,12 @@ impl<D: Present> FrameTerminal<D> {
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
         self.terminal.backend_mut().size = size;
         let drawn = self.terminal.draw(render).map(drop);
-        let committed = self.terminal.backend_mut().output.commit();
+        let backend = self.terminal.backend_mut();
+        let committed = backend.output.commit();
+        if drawn.is_err() || committed.is_err() {
+            // The device may hold any part of the frame.
+            backend.shown = Shown::default();
+        }
         drawn.and(committed)
     }
 }

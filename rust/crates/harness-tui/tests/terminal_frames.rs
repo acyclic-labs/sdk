@@ -1,5 +1,6 @@
-//! Frame output: one device write per frame, byte-identical to the previous
-//! per-command writes, optionally wrapped in synchronized output (DECSET 2026).
+//! Frame output: one device write per frame, showing exactly what the previous
+//! per-command writes showed, optionally wrapped in synchronized output
+//! (DECSET 2026); a frame identical to the screen writes nothing.
 #![cfg(feature = "tui")]
 
 use std::cell::RefCell;
@@ -19,7 +20,7 @@ use acyclic_harness_tui::term::{
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line as Row, Point};
-use alacritty_terminal::term::{Config, Term};
+use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 
@@ -125,7 +126,7 @@ impl Dimensions for Grid {
 struct Events;
 impl EventListener for Events {}
 
-fn screen(bytes: &[u8]) -> (String, (usize, usize)) {
+fn screen(bytes: &[u8]) -> (String, (usize, usize), bool) {
     let mut term = Term::new(Config::default(), &Grid, Events);
     let mut parser: Processor = Processor::new();
     parser.advance(&mut term, bytes);
@@ -139,7 +140,8 @@ fn screen(bytes: &[u8]) -> (String, (usize, usize)) {
         text.push('\n');
     }
     let cursor = term.grid().cursor.point;
-    (text, (cursor.line.0 as usize, cursor.column.0))
+    let shown = term.mode().contains(TermMode::SHOW_CURSOR);
+    (text, (cursor.line.0 as usize, cursor.column.0), shown)
 }
 
 fn scenes() -> impl Strategy<Value = Vec<Scene>> {
@@ -152,31 +154,101 @@ fn scenes() -> impl Strategy<Value = Vec<Scene>> {
     )
 }
 
+/// Exact property of a repeated scene: the screen already shows it, so the
+/// frame reaches no device.
+fn assert_repeats_write_nothing(frames: &[Vec<Vec<u8>>]) {
+    for (index, writes) in frames.iter().enumerate().skip(1).step_by(2) {
+        assert!(
+            writes.is_empty(),
+            "repeated frame {index} restated the screen in {} writes",
+            writes.len()
+        );
+    }
+}
+
+/// Every scene drawn twice in a row.
+fn doubled(scenes: &[Scene]) -> Vec<Scene> {
+    scenes
+        .iter()
+        .flat_map(|scene| [scene.clone(), scene.clone()])
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
-    // Property: each frame reaches the device in at most one write whose bytes
-    // equal the old per-command writes, wrapped in 2026 only when supported,
-    // and the emulated screen and cursor are identical.
+    // Property: each frame reaches the device in at most one write, wrapped in
+    // 2026 only when supported; a repeated scene writes nothing; and after
+    // every frame the emulated screen, cursor and cursor visibility equal the
+    // per-command path's, which restates the cursor on every draw.
     #[test]
-    fn frames_are_one_write_with_identical_bytes(scenes in scenes()) {
+    fn frames_are_one_write_and_repeats_none(scenes in scenes()) {
+        let scenes = doubled(&scenes);
         let old = per_command(&scenes);
         let plain = per_frame(&scenes, false);
         let synchronized = per_frame(&scenes, true);
         assert_one_write_per_frame(&plain);
         assert_one_write_per_frame(&synchronized);
+        assert_repeats_write_nothing(&plain);
+        assert_repeats_write_nothing(&synchronized);
+        let (mut old_screen, mut new_screen) = (Vec::new(), Vec::new());
         for ((old, plain), synchronized) in old.iter().zip(&plain).zip(&synchronized) {
-            let old = old.concat();
-            prop_assert_eq!(&plain.concat(), &old);
-            let wrapped = if old.is_empty() {
+            let plain = plain.concat();
+            let wrapped = if plain.is_empty() {
                 Vec::new()
             } else {
-                [b"\x1b[?2026h".as_slice(), &old, b"\x1b[?2026l"].concat()
+                [b"[?2026h".as_slice(), &plain, b"[?2026l"].concat()
             };
             prop_assert_eq!(&synchronized.concat(), &wrapped);
+            old_screen.extend(old.concat());
+            new_screen.extend(plain);
+            prop_assert_eq!(screen(&new_screen), screen(&old_screen));
         }
-        let old: Vec<u8> = old.concat().concat();
-        prop_assert_eq!(screen(&synchronized.concat().concat()), screen(&old));
     }
+}
+
+#[test]
+#[should_panic(expected = "restated the screen")]
+fn negative_control_per_command_repeats_restate_the_cursor() {
+    let scenes = doubled(&[(vec!["hello".into()], Some((2, 0)))]);
+    assert_repeats_write_nothing(&per_command(&scenes));
+}
+
+/// Device writes and bytes of each frame after the first, exactly.
+fn costs(scenes: &[Scene]) -> Vec<(usize, Vec<u8>)> {
+    per_frame(scenes, false)
+        .into_iter()
+        .skip(1)
+        .map(|writes| (writes.len(), writes.concat()))
+        .collect()
+}
+
+#[test]
+fn only_what_changed_reaches_the_device() {
+    let rows = vec!["hello".to_string(), "world".to_string()];
+    let base: Scene = (rows.clone(), Some((2, 1)));
+    let moved: Scene = (rows.clone(), Some((3, 1)));
+    let hidden: Scene = (rows.clone(), None);
+    let edited: Scene = (vec!["hellO".into(), "world".into()], Some((2, 1)));
+    for n in [8, 16] {
+        // N identical frames: no write and no byte, at N and 2N.
+        let costs = costs(&vec![base.clone(); n + 1]);
+        assert_eq!(costs, vec![(0, Vec::new()); n]);
+    }
+    // A cursor move is the move alone; hiding is the hide alone.
+    assert_eq!(
+        costs(&[base.clone(), moved, hidden.clone(), hidden]),
+        vec![
+            (1, b"[2;4H".to_vec()),
+            (1, b"[?25l".to_vec()),
+            (0, Vec::new())
+        ]
+    );
+    // One changed cell, then the cursor placed back where it was.
+    let (writes, bytes) = costs(&[base, edited]).remove(0);
+    assert_eq!(writes, 1);
+    assert!(bytes.starts_with(b"[1;5HO"), "{bytes:?}");
+    assert!(bytes.ends_with(b"[2;3H"), "{bytes:?}");
+    assert!(!bytes.windows(6).any(|window| window == b"[?25h"));
 }
 
 #[test]
@@ -214,6 +286,22 @@ fn steady_frames_allocate_exactly_as_the_per_command_path() {
                 .unwrap();
         });
         assert_eq!(new.count_total, old.count_total, "frame {n}");
+    }
+    // Repeated frames do the same render work and skip one allocation each,
+    // at N and 2N: crossterm formats the elided attribute reset into a String.
+    for repeats in [4, 8] {
+        let old = acyclic_test_support::measure(|| {
+            for _ in 0..repeats {
+                old.draw(|frame| paint(frame, &scene(3))).unwrap();
+            }
+        });
+        let new = acyclic_test_support::measure(|| {
+            for _ in 0..repeats {
+                new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(3)))
+                    .unwrap();
+            }
+        });
+        assert_eq!(new.count_total + repeats, old.count_total, "{repeats} repeats");
     }
 }
 
