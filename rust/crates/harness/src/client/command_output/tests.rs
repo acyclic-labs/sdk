@@ -142,3 +142,13 @@ proptest! {
         text in "[a-z日é€🙂\\n*# ]{1,40}", cuts in prop::collection::vec(any::<bool>(), 0..200)
     ) { check_partition(&text, &cuts, ""); check_partition(&text, &cuts, "retained archive"); }
 }
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+#[test]
+fn archive_row_loses_provisional_glyph_when_utf8_completes() {
+    let seed = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../harness-fuzz/corpus/ui_prompt/utf8-archive-row-repair"
+    ));
+    check_partition(seed, &[false, true, false], "retained archive");
+}

@@ -19,6 +19,7 @@ struct StreamText {
     // Pending suffix repair: replace the last three displayed bytes, then append.
     provisional: bool,
     provisional_newline: bool,
+    provisional_row: Option<usize>,
     #[cfg(test)]
     work: usize,
 }
@@ -29,10 +30,10 @@ impl StreamText {
         // Replacing these at most three bytes never replays stable Markdown.
         let provisional = pending != 0;
         let text = &text[..text.len().saturating_sub(pending)];
-        let previous_provisional = self.provisional;
         if text.len() < self.fed {
             *self = Self::default();
         }
+        let previous_row = self.provisional_row.take();
         self.provisional = provisional;
         self.provisional_newline = text.ends_with('\n');
         let delta = text.get(self.fed..).unwrap_or_default();
@@ -42,13 +43,16 @@ impl StreamText {
             self.work += delta.len();
         }
         let changed = self.markdown.push(delta);
-        if previous_provisional || provisional {
+        // The provisional glyph may be on an earlier row than the completed
+        // Markdown leaf (for example an archive followed by whitespace).
+        let changed = previous_row.map_or(changed, |row| changed.min(row));
+        if provisional {
             changed.min(self.markdown.lines().len().saturating_sub(1))
         } else {
             changed
         }
     }
-    fn rows(&self, changed: usize) -> Vec<Line<'static>> {
+    fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
         let mut rows: Vec<_> = self
             .markdown
             .lines()
@@ -60,6 +64,7 @@ impl StreamText {
             if rows.is_empty() || self.provisional_newline {
                 rows.push(Line::default());
             }
+            self.provisional_row = Some(changed + rows.len() - 1);
             let last = rows.last_mut().expect("provisional row");
             let style = last
                 .spans
@@ -530,3 +535,6 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
     rows.extend(markdown(&bounded).into_iter().take(20));
     rows
 }
+
+#[cfg(test)]
+mod tests;
