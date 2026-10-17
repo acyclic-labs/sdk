@@ -20,11 +20,12 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "c
 [features]
 default = ["runtime"]
 runtime = ["dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+filesystem-access = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem"]
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http", "objects"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -172,6 +173,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "filesystem_access"
+path = "fuzz_targets/filesystem_access.rs"
+required-features = ["filesystem-access"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "child_control"
 path = "fuzz_targets/child_control.rs"
 required-features = ["runtime"]
@@ -270,6 +279,14 @@ bench = false
 [[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "scheduler_intents"
+path = "fuzz_targets/scheduler_intents.rs"
 required-features = ["runtime"]
 test = false
 doc = false

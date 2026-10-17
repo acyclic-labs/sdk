@@ -47,6 +47,22 @@ where
         let mut attributes = Vec::new();
         let mut payload_bytes = 0_usize;
         for (name, value) in read {
+            // Volume policy is authority metadata, never a host xattr/stream.
+            // In particular, Linux's security.* namespace requires privilege.
+            if name.as_bytes() == crate::access::POLICY_METADATA_KEY {
+                let retained = name.retained_bytes()
+                    + if reader.validate_native_work(receipt.custody.work()).is_ok() {
+                        0
+                    } else {
+                        value.len()
+                    };
+                drop((name, value));
+                receipt
+                    .custody
+                    .release(retained as u64)
+                    .map_err(MaterializeError::from)?;
+                continue;
+            }
             if name.class() != crate::kernel::AttributeClass::PosixXattr {
                 return Err(MaterializeError::UnsupportedMetadata("named_attributes").into());
             }

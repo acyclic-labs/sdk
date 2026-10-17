@@ -187,6 +187,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 &IdempotencyKey::new("message")?,
                 None,
                 None,
+                None,
             )
             .await?;
         let attachment_file = host
@@ -199,6 +200,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 "image.png",
                 1_024,
                 &IdempotencyKey::new("attachment")?,
+                None,
                 None,
                 None,
             )
@@ -360,6 +362,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 "merge.txt",
                 1_024,
                 &IdempotencyKey::new("merge-notice")?,
+                None,
                 None,
                 None,
             )

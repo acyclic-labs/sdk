@@ -302,10 +302,10 @@ pub(super) fn inspect_envelope<'a>(
     Ok((payload, buffers, key))
 }
 
-pub(super) fn decode(
+pub(super) fn decode_envelope(
     record: &acyclic_stream::Record,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(u64, String, [u8; 32], u64, SchedulerEvent)> {
+) -> Result<(wire::SchedulerEventEnvelope, [u8; 32], u64)> {
     let bytes = record.value.as_ref();
     let diagnostic = if work.is_some() {
         crate::executor::json::audited_serde_diagnostic_bytes(bytes.len() as u64, 335)?
@@ -317,7 +317,7 @@ pub(super) fn decode(
         let (payload, buffers, _) = inspect_envelope(bytes, false, quota.work())?;
         quota.replace(quota.retained() + payload * 2 + buffers * 8)?;
     }
-    let mut envelope = wire::SchedulerEventEnvelope::decode(bytes).map_err(|_| {
+    let envelope = wire::SchedulerEventEnvelope::decode(bytes).map_err(|_| {
         guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
@@ -363,6 +363,17 @@ pub(super) fn decode(
             "scheduler event digest mismatch",
         ));
     }
+    quota.transfer();
+    Ok((envelope, digest, fields))
+}
+
+pub(super) fn decode(
+    record: &acyclic_stream::Record,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(u64, String, [u8; 32], u64, SchedulerEvent)> {
+    let mut quota = CodecQuota::new(work, 0)?;
+    let (mut envelope, digest, fields) = decode_envelope(record, quota.work())?;
+    quota.adopt(fields)?;
     let (event, retained) = decode_json(
         &envelope.canonical_event_json,
         crate::executor::json::JsonValueSchema::SchedulerEvent,

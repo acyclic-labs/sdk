@@ -38,10 +38,13 @@ fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error
         let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
         private_checkout(&volume, &cancellation).await
     })?;
-    let source = Arc::new(CheckoutMountSource::new(
-        Arc::new(SharedCheckout::new(checkout)),
-        config,
-    )?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?,
+            vec![],
+            None,
+        )?,
+    );
     assert!(matches!(
         mount_native_over_existing(request, source),
         Err(NativeMountError::WritableUnavailable(_))

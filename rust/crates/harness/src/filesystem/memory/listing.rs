@@ -150,19 +150,81 @@ impl LocalListFilesTool {
         };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
-            Some(original) if original.admission_digest == digest => Self::native_result_copy(
-                &original.result,
-                self.maximum_bytes
-                    .min(context.effective_scope().limits().render_bytes),
-                work,
-            )
-            .map(Some),
+            Some(original) if original.admission_digest == digest => self
+                .native_recheck(&original.result, context, invocation, work)
+                .await
+                .map(Some),
             Some(_) => Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Conflict,
                 reason: "list_files operation identity changed",
             }),
             None => Ok(None),
         }
+    }
+
+    async fn native_query(
+        &self,
+        context: &crate::runtime::ToolContext,
+        invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+        pinned: Option<&GenerationRef>,
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
+        let maximum_bytes = self
+            .maximum_bytes
+            .min(context.effective_scope().limits().render_bytes);
+        let _input_custody;
+        let (input, custody): (ListFilesInput, _) =
+            crate::tool::decode(&invocation.arguments, Some(work))?;
+        _input_custody = custody;
+        if input.maximum_entries == 0
+            || (input.after.is_some() && input.expected_generation.is_none())
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "list_files requires a bounded, generation-pinned page",
+            });
+        }
+        let _page_custody;
+        let ((generation, page), custody) = self
+            .verifier
+            .list_private_directory_with_native_work(
+                context,
+                &self.volume,
+                "",
+                &input.path,
+                pinned.or(input.expected_generation.as_ref()),
+                input.after.as_deref(),
+                input.maximum_entries,
+                work,
+            )?
+            .await?;
+        _page_custody = custody;
+        let wire = list_files_page_wire(&generation, &page)?;
+        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
+        let output = (
+            ToolResult { value },
+            custody.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "native list result has no allocation custody",
+            })?,
+        );
+        Ok(output)
+    }
+
+    async fn native_recheck(
+        &self,
+        original: &ToolResult,
+        context: &crate::runtime::ToolContext,
+        invocation: &ToolInvocation,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let generation = cached_generation(original, Some(&io))?;
+        let current = self
+            .native_query(context, invocation, work, Some(&generation.0))
+            .await?;
+        require_same_page(original, &current.0, Some(&io))?;
+        Ok(current)
     }
 
     async fn native_execute(
@@ -186,7 +248,8 @@ impl LocalListFilesTool {
         let mut observed = self.observed.lock().await;
         if let Some(original) = observed.get(&invocation.operation_id) {
             return if original.admission_digest == digest {
-                Self::native_result_copy(&original.result, maximum_bytes, work)
+                self.native_recheck(&original.result, context, invocation, work)
+                    .await
             } else {
                 Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
@@ -194,42 +257,7 @@ impl LocalListFilesTool {
                 })
             };
         }
-        let _input_custody;
-        let (input, custody): (ListFilesInput, _) =
-            crate::tool::decode(&invocation.arguments, Some(work))?;
-        _input_custody = custody;
-        if input.maximum_entries == 0
-            || (input.after.is_some() && input.expected_generation.is_none())
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "list_files requires a bounded, generation-pinned page",
-            });
-        }
-        let _page_custody;
-        let ((generation, page), custody) = self
-            .verifier
-            .list_private_directory_with_native_work(
-                context.task(),
-                &self.volume,
-                "",
-                &input.path,
-                input.expected_generation.as_ref(),
-                input.after.as_deref(),
-                input.maximum_entries,
-                work,
-            )?
-            .await?;
-        _page_custody = custody;
-        let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
-        let output = (
-            ToolResult { value },
-            custody.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native list result has no allocation custody",
-            })?,
-        );
+        let output = self.native_query(context, invocation, work, None).await?;
         let mut cached = Self::native_result_copy(&output.0, maximum_bytes, work)?;
         let slot_bytes = (std::mem::size_of::<(OperationId, ListFilesObservation)>()
             - std::mem::size_of::<Value>()) as u64;
@@ -259,16 +287,127 @@ impl LocalListFilesTool {
     }
 }
 
+fn cached_generation<'io>(
+    result: &ToolResult,
+    io: Option<&'io crate::filesystem::PreparationIo>,
+) -> Result<(
+    GenerationRef,
+    Option<crate::filesystem::DecodeReservation<'io>>,
+)> {
+    let value = result.value.get("generation").ok_or_else(|| {
+        crate::executor::stock_boundary(
+            io,
+            crate::wire::ErrorCode::Storage,
+            "cached directory has no generation",
+        )
+    })?;
+    match io {
+        Some(io) => io
+            .value_decode_preparation(value, crate::wire::ErrorCode::Storage)
+            .map(|(value, hold)| (value, Some(hold))),
+        None => GenerationRef::deserialize(value)
+            .map(|value| (value, None))
+            .map_err(|error| Error::Storage(error.to_string())),
+    }
+}
+
+fn require_same_page(
+    original: &ToolResult,
+    current: &ToolResult,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<()> {
+    if original == current {
+        return Ok(());
+    }
+    Err(crate::executor::stock_boundary(
+        io,
+        crate::wire::ErrorCode::Unauthorized,
+        "cached directory metadata is no longer authorized",
+    ))
+}
+
+impl LocalListFilesTool {
+    async fn query(
+        &self,
+        invocation: &ToolInvocation,
+        context: Option<&crate::runtime::ToolContext>,
+        pinned: Option<&GenerationRef>,
+    ) -> Result<ToolResult> {
+        if let Some(context) = context {
+            for key in ["path", "after"] {
+                if invocation
+                    .arguments
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| path.len() > context.effective_scope().limits().path_bytes)
+                {
+                    return Err(Error::Unauthorized(
+                        "list_files path exceeds its effective scope".into(),
+                    ));
+                }
+            }
+        }
+        let input: ListFilesInput = serde_json::from_value(invocation.arguments.clone())
+            .map_err(|error| Error::Invalid(format!("list_files input is invalid: {error}")))?;
+        if input.maximum_entries == 0
+            || (input.after.is_some() && input.expected_generation.is_none())
+        {
+            return Err(Error::Invalid(
+                "list_files requires a bounded, generation-pinned page".into(),
+            ));
+        }
+        let after = input
+            .after
+            .map(|name| {
+                LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
+                    .map_err(|error| Error::Invalid(error.to_string()))
+            })
+            .transpose()?;
+        let (generation, page) = self
+            .verifier
+            .list_private_directory(
+                &self.volume,
+                "",
+                &input.path,
+                pinned.or(input.expected_generation.as_ref()),
+                after.as_ref(),
+                input.maximum_entries,
+                context.map(|context| context.effective_scope().grants()),
+            )
+            .await?;
+        let wire = list_files_page_wire(&generation, &page)?;
+        let maximum_bytes = context.map_or(self.maximum_bytes, |context| {
+            self.maximum_bytes
+                .min(context.effective_scope().limits().render_bytes)
+        });
+        let (value, _) = crate::tool::value(&wire, maximum_bytes, None)?;
+        Ok(ToolResult { value })
+    }
+
+    async fn recheck(
+        &self,
+        original: &ToolResult,
+        invocation: &ToolInvocation,
+        context: Option<&crate::runtime::ToolContext>,
+    ) -> Result<ToolResult> {
+        let generation = cached_generation(original, None)?;
+        let current = self.query(invocation, context, Some(&generation.0)).await?;
+        require_same_page(original, &current, None)?;
+        Ok(current)
+    }
+}
+
 fn require_volume_grant(
     scope: Option<&RuntimeScope>,
     volume: &VolumeRef,
-    operation: VolumeOperation,
+    path: &str,
 ) -> Result<()> {
     let scope =
         scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
-    let capability = volume.capability(operation, &mut None)?;
-    if !scope.grants().contains(&capability) {
-        return Err(Error::Unauthorized(format!("scope lacks {capability}")));
+    if !crate::core::directory_read_granted_with_work(scope.grants(), volume, path, &mut None)? {
+        return Err(Error::Unauthorized(
+            "scope lacks a directory read grant".into(),
+        ));
     }
     Ok(())
 }
@@ -282,7 +421,7 @@ impl ToolExecutor for LocalListFilesTool {
         work: crate::NativeWork<'_>,
     ) -> crate::Result<()> {
         let _ = (scope, context, invocation, work);
-        let scope = context.map(|context| context.task().scope()).or(scope);
+        let scope = context.map(|context| context.effective_scope()).or(scope);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let context = context.ok_or(crate::Error::NativeBoundary {
@@ -314,10 +453,15 @@ impl ToolExecutor for LocalListFilesTool {
                     }
                 }
                 let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-                if !io.contains_capability(
+                if !crate::core::directory_read_granted_with_work(
                     context.effective_scope().grants(),
                     &self.volume,
-                    acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+                    invocation
+                        .arguments
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    &mut Some(&mut io.history_io()),
                 )? {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,
@@ -328,7 +472,15 @@ impl ToolExecutor for LocalListFilesTool {
             };
         }
 
-        require_volume_grant(scope, &self.volume, VolumeOperation::Read)
+        require_volume_grant(
+            scope,
+            &self.volume,
+            invocation
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        )
     }
 
     fn execute<'a>(
@@ -342,51 +494,15 @@ impl ToolExecutor for LocalListFilesTool {
                 crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
-                    Ok(original.result.clone())
+                    self.recheck(&original.result, &invocation, _context.as_ref())
+                        .await
                 } else {
                     Err(Error::Conflict(
                         "list_files operation identity changed".into(),
                     ))
                 };
             }
-            let input: ListFilesInput = serde_json::from_value(invocation.arguments.clone())
-                .map_err(|error| Error::Invalid(format!("list_files input is invalid: {error}")))?;
-            if input.maximum_entries == 0
-                || (input.after.is_some() && input.expected_generation.is_none())
-            {
-                return Err(Error::Invalid(
-                    "list_files requires a bounded, generation-pinned page".into(),
-                ));
-            }
-            let after = input
-                .after
-                .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
-                        .map_err(|error| Error::Invalid(error.to_string()))
-                })
-                .transpose()?;
-            let (generation, page) = self
-                .verifier
-                .list_private_directory(
-                    &self.volume,
-                    "",
-                    &input.path,
-                    input.expected_generation.as_ref(),
-                    after.as_ref(),
-                    input.maximum_entries,
-                )
-                .await?;
-            let wire = list_files_page_wire(&generation, &page)?;
-            let value =
-                serde_json::to_value(wire).map_err(|error| Error::Invalid(error.to_string()))?;
-            if serde_json::to_vec(&value)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                .len() as u64
-                > self.maximum_bytes
-            {
-                return Err(Error::Invalid("directory page exceeds render limit".into()));
-            }
-            let result = ToolResult { value };
+            let result = self.query(&invocation, _context.as_ref(), None).await?;
             observed.insert(
                 invocation.operation_id,
                 ListFilesObservation {
@@ -410,9 +526,10 @@ impl ToolExecutor for LocalListFilesTool {
             let admission_digest =
                 crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             match observed.get(&invocation.operation_id) {
-                Some(original) if original.admission_digest == admission_digest => {
-                    Ok(Some(original.result.clone()))
-                }
+                Some(original) if original.admission_digest == admission_digest => self
+                    .recheck(&original.result, &invocation, _context.as_ref())
+                    .await
+                    .map(Some),
                 Some(_) => Err(Error::Conflict(
                     "list_files operation identity changed".into(),
                 )),

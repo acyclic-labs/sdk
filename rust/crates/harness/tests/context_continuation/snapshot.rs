@@ -31,6 +31,7 @@ impl ContentResidencyVerifier for SnapshotReader {
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {

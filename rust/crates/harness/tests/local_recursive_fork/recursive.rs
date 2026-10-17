@@ -98,6 +98,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             &IdempotencyKey::new("root-message")?,
             None,
             None,
+            None,
         )
         .await?;
     let root_attachment = host
@@ -110,6 +111,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             "root.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
+            None,
             None,
             None,
         )
@@ -463,6 +465,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &IdempotencyKey::new("later-parent-scratch")?,
                     None,
                     None,
+                    None,
                 )
                 .await?;
             assert_ne!(Some(&changed), approved_model_files.get(1));
@@ -520,6 +523,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &IdempotencyKey::new(format!("child-message-{level}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         let child_attachment = host
@@ -532,6 +536,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &format!("child-{level}.bin"),
                 1_024,
                 &IdempotencyKey::new(format!("child-attachment-{level}"))?,
+                None,
                 None,
                 None,
             )
@@ -677,6 +682,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     "final-merge.txt",
                     1_024,
                     &IdempotencyKey::new("final-merge-notice")?,
+                    None,
                     None,
                     None,
                 )

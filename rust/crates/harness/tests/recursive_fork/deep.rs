@@ -718,6 +718,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &IdempotencyKey::new(format!("message-{level}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         let attachment_bytes = format!("evidence at depth {level}");
@@ -731,6 +732,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("attachment-{level}"))?,
+                None,
                 None,
                 None,
             )
@@ -769,6 +771,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     "manifest.json",
                     1_024,
                     &IdempotencyKey::new(format!("manifest-{level}"))?,
+                    None,
                     None,
                     None,
                 )
@@ -856,6 +859,7 @@ pub(super) async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             "final.png",
             1_024,
             &IdempotencyKey::new("deep-final-image")?,
+            None,
             None,
             None,
         )

@@ -76,14 +76,19 @@ where
             }
             // Only the original harness upload receipt authenticates this
             // provenance. A file at the same mutable Head path is insufficient.
-            let Some((provenance, bytes)) = self
+            let Some((provenance, Some(bytes))) = self
                 .host
                 .content_for_operation_record_io(
-                    &self.volume,
-                    &retry,
-                    Some(&path),
-                    self.maximum_payload_bytes,
-                    Some(InternalContentClass::Execution),
+                    super::super::PublicationLookup {
+                        volume: &self.volume,
+                        key: &retry,
+                        expected_path: Some(&path),
+                        maximum_bytes: self.maximum_payload_bytes,
+                        internal_class: Some(InternalContentClass::Execution),
+                        read_content: true,
+                        scope: &self.scope,
+                        ceiling: None,
+                    },
                     io,
                 )
                 .await?

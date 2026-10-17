@@ -199,6 +199,15 @@ impl LocalHarness {
                 VolumeOwner::Agent(owner.agent),
                 &mut None,
             )?;
+            let issuer = AuthorityIssuer::new(
+                "acyclic.local",
+                owner.key,
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: owner.task.to_string(),
+                },
+            );
+            let verifier = issuer.verifier(&mut None)?;
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
@@ -223,6 +232,7 @@ impl LocalHarness {
                         false,
                         native_mounts,
                         store,
+                        Some((&issuer, owner.agent)),
                     )
                     .await?,
                 ),
@@ -235,6 +245,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                         native_mounts,
                         store,
+                        Some((&issuer, owner.agent)),
                     )
                     .await?,
                 ),
@@ -268,15 +279,6 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?,
             );
-            let issuer = AuthorityIssuer::new(
-                "acyclic.local",
-                owner.key,
-                Authority {
-                    kind: AggregateKind::Task,
-                    id: owner.task.to_string(),
-                },
-            );
-            let verifier = issuer.verifier(&mut None)?;
             let (runtime, signed, task_files) = runtime::open(runtime::Configuration {
                 files: files.clone(),
                 #[cfg(feature = "native-execution")]

@@ -95,7 +95,38 @@ pub(crate) fn content_error(
     }
 }
 
+/// Reject caller ceilings on adapters bound only to their owner's authority.
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), test))]
+pub(crate) fn require_owner_reader(ceiling: Option<&crate::Capabilities>) -> Result<()> {
+    if ceiling.is_some() {
+        Err(Error::Unsupported(
+            "browser content reader cannot enforce a caller ceiling".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod owner_reader_tests {
+    use super::*;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+        // No ceiling contents, including an empty deny-all ceiling, may be
+        // silently discarded by an owner-only browser reader.
+        #[test]
+        fn every_caller_ceiling_is_rejected(labels in proptest::collection::vec("[a-z:/]{0,32}", 0..8)) {
+            let ceiling = crate::Capabilities::new(labels);
+            proptest::prop_assert!(matches!(require_owner_reader(Some(&ceiling)), Err(Error::Unsupported(_))));
+            proptest::prop_assert!(require_owner_reader(None).is_ok());
+        }
+    }
+}
+
 /// Authenticated, bounded immutable-content operations.
+/// Filesystem readers intersect caller ceilings with their verified binding;
+/// a caller ceiling supplies no authority of its own.
 pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     /// Capability availability; conveys no read authority.
     fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
@@ -114,6 +145,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         &'a self,
         _reference: &'a FileRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -128,6 +160,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         &'a self,
         _reference: &'a FileRef,
         _range: acyclic_fs::ByteRange,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -145,7 +178,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         BoundedContentFuture::new(io, || async move {
-            verified_content_bytes(self, reference, maximum_bytes, io).await?;
+            verified_content_bytes(self, reference, maximum_bytes, None, io).await?;
             Ok(())
         })
     }
@@ -172,6 +205,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _path: &'a str,
         _generation: &'a GenerationRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         Err(content_error(
@@ -194,6 +228,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _expected_generation: Option<&'a GenerationRef>,
         _after: Option<&'a str>,
         _maximum_entries: u32,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         Err(content_error(
@@ -211,6 +246,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _path: &'a str,
         _expected_generation: Option<&'a GenerationRef>,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
     ) -> Result<
         BoundedContentFuture<
@@ -234,6 +270,8 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
 }
 
 /// Owner-bound, bounded publication on the caller's existing ledger.
+/// A supplied caller ceiling only restricts the authenticated writer. Filesystem
+/// providers intersect it with persisted policy through their shared decision.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Resolves the exact destination before the caller checks write authority.
     /// Paths remain relative to the selected volume in returned file references.
@@ -266,6 +304,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _bytes: &'a [u8],
         _media_type: &'a str,
         _display_name: &'a str,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -282,6 +321,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _bytes: &'a [u8],
         _media_type: &'a str,
         _display_name: &'a str,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -295,6 +335,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -309,6 +350,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         _operation_id: OperationId,
         _source: &'a FileRef,
         _bytes: &'a [u8],
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         Err(content_error(
@@ -392,6 +434,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(feature = "filesystem")]
@@ -399,12 +442,13 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             return self.bound_reader(reference.volume(), Some(io))?.read(
                 reference,
                 maximum_bytes,
+                ceiling,
                 Some(io),
             );
         }
         reference.validate(&mut None)?;
         if let Some(reader) = self.volumes.get(reference.volume()) {
-            return reader.read(reference, maximum_bytes, io);
+            return reader.read(reference, maximum_bytes, ceiling, io);
         }
         let mount = self
             .mount
@@ -413,7 +457,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         BoundedContentFuture::new(io, || async move {
             let (grant, reader) = mount.mount(reference).await?;
             grant.require_file_read(reference, None)?;
-            let bytes = reader.read(reference, maximum_bytes, io)?.await?;
+            let bytes = reader.read(reference, maximum_bytes, ceiling, io)?.await?;
             Ok(bytes)
         })
     }
@@ -421,12 +465,13 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         &'a self,
         reference: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() || self.volumes.contains_key(reference.volume()) {
             return self
                 .bound_reader(reference.volume(), io)?
-                .read_range(reference, range, io);
+                .read_range(reference, range, ceiling, io);
         }
         reference.validate(&mut None)?;
         let mount = self
@@ -436,7 +481,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         BoundedContentFuture::new(io, || async move {
             let (grant, reader) = mount.mount(reference).await?;
             grant.require_file_read(reference, None)?;
-            reader.read_range(reference, range, io)?.await
+            reader.read_range(reference, range, ceiling, io)?.await
         })
     }
 
@@ -447,6 +492,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.bound_reader(volume, io)?.read_private_prefix(
@@ -455,6 +501,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             path,
             generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }
@@ -466,6 +513,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         expected_generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         self.bound_reader(volume, io)?.list_private_directory(
@@ -475,6 +523,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             expected_generation,
             after,
             maximum_entries,
+            ceiling,
             io,
         )
     }
@@ -485,6 +534,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'io ContentIo>,
     ) -> Result<
         BoundedContentFuture<
@@ -505,6 +555,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
             path,
             expected_generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }

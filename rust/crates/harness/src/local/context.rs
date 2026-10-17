@@ -58,7 +58,12 @@ impl LocalHarness {
         publisher: &dyn ContentPublisher,
     ) -> Result<Option<FileRef>> {
         let (reference, _) = publisher
-            .observe_staged_once(manifest_operation(operation), self.limits.file_bytes, None)?
+            .observe_staged_once(
+                manifest_operation(operation),
+                self.limits.file_bytes,
+                None,
+                None,
+            )?
             .await?;
         if let Some(reference) = &reference {
             self.limits.validate_file(reference, &mut None)?;
@@ -129,6 +134,7 @@ impl LocalHarness {
                 "application/json",
                 "context-manifest.json",
                 None,
+                None,
             )?
             .await?
             .0)
@@ -170,7 +176,15 @@ impl LocalHarness {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
             match reader
-                .read_private_path(&self.project, "", name, Some(&generation), maximum, None)?
+                .read_private_path(
+                    &self.project,
+                    "",
+                    name,
+                    Some(&generation),
+                    maximum,
+                    None,
+                    None,
+                )?
                 .await
             {
                 Ok((file, bytes, _)) => {

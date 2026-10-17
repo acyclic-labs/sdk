@@ -19,7 +19,7 @@ proptest! {
                 for (index, body) in bodies.into_iter().enumerate() {
                     let file = payloads.stage(
                         crate::OperationId::new(), &format!("config/{group}/{index}.json"),
-                        body.as_bytes(), "application/json", "configuration.json", None,
+                        body.as_bytes(), "application/json", "configuration.json", None, None,
                     )?.await?.0;
                     sources.push(file);
                 }

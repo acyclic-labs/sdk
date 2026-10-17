@@ -286,6 +286,7 @@ impl TaskSpawner for SplitState {
 }
 
 mod admission;
+mod content_range;
 mod groups;
 mod native;
 mod tasks;

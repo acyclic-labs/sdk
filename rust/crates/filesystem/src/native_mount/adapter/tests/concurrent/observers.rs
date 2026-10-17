@@ -34,6 +34,7 @@ fn observer_can_write_the_file_that_triggered_it() -> Result<(), Box<dyn std::er
                             offset: 4,
                             bytes: OwnedBytes::from_static(b"tail"),
                         },
+                        false,
                         &work,
                         self.source.cancellation(),
                         None,

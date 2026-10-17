@@ -44,6 +44,7 @@ pub(super) async fn publish_sources(fixture: &Fixture) -> Result<FileRef> {
             },
             path.rsplit('/').next().unwrap(),
             None,
+            None,
         )?
         .await?;
         if path.ends_with(".json") {
@@ -129,7 +130,7 @@ async fn pending_command(
     assert_eq!(transition.commands.len(), 1);
     let command = transition.commands.remove(0);
     let bytes = reader(fixture)?
-        .read(&command.payload, 65_536, None)?
+        .read(&command.payload, 65_536, None, None)?
         .await?;
     Ok((command, serde_json::from_slice(&bytes).unwrap()))
 }
@@ -193,8 +194,13 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
         match &message.content {
             ModelContent::Part(crate::model::ModelContentPart::File { file, .. }) => {
                 texts.push(
-                    String::from_utf8(reader(&fixture)?.read(file, 65_536, None)?.await?.to_vec())
-                        .unwrap(),
+                    String::from_utf8(
+                        reader(&fixture)?
+                            .read(file, 65_536, None, None)?
+                            .await?
+                            .to_vec(),
+                    )
+                    .unwrap(),
                 );
             }
             ModelContent::Text(text) => texts.push(text.clone()),
@@ -210,13 +216,13 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
     let session = runtime.open_task(task, fence.clone()).await?;
     let transition = session.latest_transition(None).await?.0.unwrap();
     let bytes = reader(&fixture)?
-        .read(&transition.commands[0].payload, 65_536, None)?
+        .read(&transition.commands[0].payload, 65_536, None, None)?
         .await?;
     let retained: ModelTaskCommand = serde_json::from_slice(&bytes).unwrap();
     let manifest_file = retained.context_manifest;
     assert_eq!(manifest_file.path(), "context/manifest.json");
     let bytes = reader(&fixture)?
-        .read(&manifest_file, 65_536, None)?
+        .read(&manifest_file, 65_536, None, None)?
         .await?;
     manifest_file.descriptor().verify(&bytes, &mut None)?;
     let manifest = ContextManifest::decode(&bytes, Limits::default())?;
@@ -228,7 +234,7 @@ async fn recover_after_source_changes(delete: bool) -> Result<()> {
             .1;
         assert_eq!(
             reader(&fixture)?
-                .read(&source, 65_536, None)?
+                .read(&source, 65_536, None, None)?
                 .await?
                 .as_ref(),
             expected.as_bytes()

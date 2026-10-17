@@ -208,12 +208,13 @@ impl EffectRegistry {
                 )?;
             } else {
                 let bytes = resolver
-                    .read(result, result.descriptor().byte_length(), None)?
+                    .read(result, result.descriptor().byte_length(), None, None)?
                     .await?;
                 let schema_bytes = resolver
                     .read(
                         &effect.result_schema,
                         effect.result_schema.descriptor().byte_length(),
+                        None,
                         None,
                     )?
                     .await?;

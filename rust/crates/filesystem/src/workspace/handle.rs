@@ -5,6 +5,7 @@ pub struct Workspace<A, O> {
     pub(crate) name: WorkspaceName,
     pub(crate) id: WorkspaceId,
     pub(crate) volume: Volume<A, O>,
+    pub(crate) access: Option<(Arc<crate::access::PathTrie>, u16)>,
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     pub(crate) source: Option<crate::Source<A, O>>,
 }
@@ -15,6 +16,7 @@ impl<A, O> Clone for Workspace<A, O> {
             name: self.name.clone(),
             id: self.id,
             volume: self.volume.clone(),
+            access: self.access.clone(),
             #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
             source: self.source.clone(),
         }

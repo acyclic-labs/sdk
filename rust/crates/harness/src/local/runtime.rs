@@ -161,6 +161,7 @@ pub(super) async fn open(
                     workspace,
                     config.project,
                     config.clock,
+                    &signed,
                     Arc::clone(&projection_files),
                 )
                 .await?,
@@ -170,7 +171,6 @@ pub(super) async fn open(
                 config.files,
                 config.project,
                 config.verifier,
-                &signed,
                 config.limits.file_bytes,
             );
             runtime

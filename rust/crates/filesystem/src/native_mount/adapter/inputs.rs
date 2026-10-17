@@ -100,6 +100,20 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         .map_err(engine_error)
     }
 
+    fn mutation_attribute_name(
+        &mut self,
+        bytes: &[u8],
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+    ) -> Result<AttributeName, MountSourceError> {
+        // Policy records are changed through the policy owner, never through
+        // native xattr operations (including handles opened before revocation).
+        if bytes == crate::access::POLICY_METADATA_KEY {
+            return Err(MountSourceError::AccessDenied);
+        }
+        self.attribute_name(bytes, profile, limits)
+    }
+
     pub(super) fn admit(&mut self, delta: crate::WorkCounters) -> Result<(), MountSourceError> {
         if let Some(work) = self.carrier.original_native_work() {
             self.pending = Some(

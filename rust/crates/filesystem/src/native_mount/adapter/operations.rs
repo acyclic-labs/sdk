@@ -3,6 +3,23 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    #[cfg(any(windows, test))]
+    fn projection_policy_lease(
+        &self,
+        writable: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        self.projection_lease(writable, work)
+    }
+
+    fn authorize_with_meter(
+        &self,
+        requests: &[(crate::access::Action, &MountPath)],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.require_paths(requests, work)
+    }
+
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         Some(super::NativeMountSourceLineage {
             lazy_owner: None,
@@ -106,25 +123,26 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_handle(path, work)
+        self.open_handle(path, None, work)
             .map(|(file, _)| (file.file, file.bytes))
     }
 
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
+        access: MountOpenAccess,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
-        self.open_handle(path, work)
+        self.open_handle(path, Some(access), work)
     }
 
     fn open_created_with_meter(
         &self,
-        _path: &MountPath,
+        path: &MountPath,
         created: &MountLookup,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.created_handle(created, work)
+        self.created_handle(path, created, work, Ok)
     }
 
     fn detach_file_with_meter(
@@ -132,7 +150,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.detached_handle(path, work)
+        self.detached_handle(path, work, Ok)
     }
 
     fn reported_unchanged_since_with_meter(
@@ -211,7 +229,7 @@ where
     }
 
     fn supports_posix_named_attributes(&self) -> bool {
-        self.profile == FilesystemProfile::Posix
+        self.config.profile == FilesystemProfile::Posix
     }
 
     fn flush_publishes(&self) -> bool {
@@ -370,22 +388,28 @@ where
     }
 
     fn open_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.open_handle(path, work)).map(|(file, _)| file.file)
+        boundary(&self.cancellation, |work| {
+            self.open_handle(path, None, work)
+        })
+        .map(|(file, _)| file.file)
     }
 
     fn open_created(
         &self,
-        _path: &MountPath,
+        path: &MountPath,
         created: &MountLookup,
     ) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         boundary(&self.cancellation, |work| {
-            self.created_handle(created, work)
+            self.created_handle(path, created, work, Ok)
         })
         .map(|(file, _)| file)
     }
 
     fn detach_file(&self, path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
-        boundary(&self.cancellation, |work| self.detached_handle(path, work)).map(|(file, _)| file)
+        boundary(&self.cancellation, |work| {
+            self.detached_handle(path, work, Ok)
+        })
+        .map(|(file, _)| file)
     }
 
     fn read_link(
@@ -674,27 +698,6 @@ where
                 work,
             )
         })
-    }
-
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), MountSourceError> {
-        self.change_content(
-            destination_file_id,
-            ContentChange::CloneFrom {
-                source: source_file_id,
-                source_offset,
-                offset: destination_offset,
-                length,
-            },
-            work,
-        )
     }
 
     fn remove(

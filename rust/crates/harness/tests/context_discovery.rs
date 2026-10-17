@@ -34,10 +34,11 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         &'a self,
         reference: &'a acyclic_harness::conversation::FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
-        self.inner.read(reference, maximum_bytes, io)
+        self.inner.read(reference, maximum_bytes, ceiling, io)
     }
 
     fn read_private_path<'a, 'io>(
@@ -47,6 +48,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'io acyclic_harness::conversation::ContentIo>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -68,6 +70,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
             path,
             expected_generation,
             maximum_bytes,
+            ceiling,
             io,
         )
     }
@@ -253,6 +256,7 @@ impl Fixture {
                 "source.md",
                 1_000_000,
                 &IdempotencyKey::new(key)?,
+                None,
                 None,
                 None,
             )
@@ -800,6 +804,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
                 &source.path,
                 &source.generation,
                 256,
+                None,
                 None,
             )?
             .await

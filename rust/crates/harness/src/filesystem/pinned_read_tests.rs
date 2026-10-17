@@ -52,6 +52,7 @@ async fn fixture(bytes: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &IdempotencyKey::new("payload")?,
             None,
             None,
+            None,
         )
         .await?;
     Ok((host, file))

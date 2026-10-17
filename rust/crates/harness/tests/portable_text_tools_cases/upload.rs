@@ -87,6 +87,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 64,
                 &key,
                 None,
+                None,
                 Some(&io),
             )
             .await
@@ -106,6 +107,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("later-content")?,
             None,
+            None,
             Some(&io),
         )
         .await?;
@@ -119,7 +121,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
         &cancellation,
     )?;
     let recovered = host
-        .content_for_operation(&volume, &write, &key, "result.json", 64, Some(&io))
+        .content_for_operation(&volume, &write, &key, "result.json", 64, None, Some(&io))
         .await?;
 
     let original =
@@ -150,6 +152,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             "original.json",
             64,
             &key,
+            None,
             None,
             Some(&io)
         )
@@ -197,6 +200,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
                 64,
                 &key,
                 None,
+                None,
                 Some(&io)
             )
             .await
@@ -214,12 +218,13 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &IdempotencyKey::new("never-uploaded")?,
             "result.json",
             64,
+            None,
             Some(&io),
         )
         .await?;
     assert_eq!(missing, None);
     assert!(
-        host.content_for_operation(&volume, &write, &key, "changed.json", 64, Some(&io))
+        host.content_for_operation(&volume, &write, &key, "changed.json", 64, None, Some(&io))
             .await
             .is_err()
     );
@@ -249,6 +254,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("cancelled-content")?,
             None,
+            None,
             Some(&io)
         )
         .await
@@ -269,6 +275,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             64,
             &IdempotencyKey::new("denied-content")?,
             None,
+            None,
             Some(&io)
         )
         .await
@@ -286,6 +293,7 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
             &IdempotencyKey::new("denied-content")?,
             "denied",
             64,
+            None,
             Some(&io)
         )
         .await?,

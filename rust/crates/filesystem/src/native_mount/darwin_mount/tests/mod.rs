@@ -79,7 +79,13 @@ fn checkout_context(
     publication: MountPublication,
 ) -> Result<(Arc<MemorySource>, DarwinMountContext, Work), Box<dyn std::error::Error>> {
     let (shared, config) = checkout(publication)?;
-    let source = Arc::new(MemorySource::new(shared, config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(shared, config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -103,7 +109,13 @@ fn test_context(
 #[test]
 fn close_publishes_only_what_its_handle_wrote() -> TestResult {
     let (shared, config) = checkout(MountPublication::CloseAndSync)?;
-    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(Arc::clone(&shared), config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -116,12 +128,22 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
+    let created = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        context.completed.load(Ordering::Acquire),
+        &work,
+    )?;
     let before = epoch();
     context.flush_on_close(created, &work)?;
     assert_ne!(epoch(), before);
 
-    let reader = context.open(&path, 0, &work)?;
+    let reader = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     let before = epoch();
     context.flush_on_close(reader, &work)?;
     context.sync(&work)?;
@@ -157,7 +179,13 @@ fn close_publishes_only_what_its_handle_wrote() -> TestResult {
 #[test]
 fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
     let (shared, config) = checkout(MountPublication::Manual)?;
-    let source = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
+    let source = Arc::new(
+        crate::native_mount::adapter::tests::access::bind_test_access(
+            MemorySource::new(Arc::clone(&shared), config)?,
+            vec![],
+            None,
+        )?,
+    );
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -170,14 +198,24 @@ fn manual_close_and_fsync_publish_nothing_until_sync() -> TestResult {
         || source.create_file(&path, FileMetadata::default(), None, &work),
         &work,
     )?;
-    let created = context.open(&path, context.completed.load(Ordering::Acquire), &work)?;
+    let created = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        context.completed.load(Ordering::Acquire),
+        &work,
+    )?;
     context.mutate_file(
         &path,
         created,
         |file| file.write_range(0, Bytes::from_static(b"deferred")),
         &work,
     )?;
-    let reader = context.open(&path, 0, &work)?;
+    let reader = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     let before = epoch();
     context.flush_on_close(reader, &work)?;
     context.flush_on_close(created, &work)?;
@@ -370,7 +408,12 @@ fn handles_keep_the_node_they_opened() -> TestResult {
     let path = MountPath::root().child(b"deferred".to_vec());
     let created = source.create_file(&path, FileMetadata::default(), None, &work)?;
     source.write_range(&path, 0, Bytes::from_static(b"kept"))?;
-    let closed_unused = context.open(&path, 0, &work)?;
+    let closed_unused = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     assert_eq!(
         context
             .lookup_handle(&path, closed_unused, &work)?
@@ -379,7 +422,12 @@ fn handles_keep_the_node_they_opened() -> TestResult {
         created.node.file_id
     );
 
-    let read = context.open(&path, 0, &work)?;
+    let read = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     let bytes = context
         .file_target(&path, read, &work)?
         .0
@@ -387,12 +435,17 @@ fn handles_keep_the_node_they_opened() -> TestResult {
         .read_up_to(0, 16)?;
     assert_eq!(bytes.as_ref(), b"kept");
 
-    let stale = context.open(&path, 0, &work)?;
+    let stale = context.open(
+        &path,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     source.remove(&path, Some(created.node.file_id), &work)?;
     source.create_file(&path, FileMetadata::default(), None, &work)?;
     assert_eq!(
         context
-            .file_target(&path, stale, &work)
+            .lookup_handle(&path, stale, &work)
             .err()
             .as_ref()
             .map(callback_errno),
@@ -411,7 +464,12 @@ fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
     let original = source.create_file(&replaced, FileMetadata::default(), None, &work)?;
     source.write_range(&replaced, 0, Bytes::from_static(b"original"))?;
     source.create_file(&replacement, FileMetadata::default(), None, &work)?;
-    let handle = context.open(&replaced, 0, &work)?;
+    let handle = context.open(
+        &replaced,
+        crate::native_mount::MountOpenAccess::ReadWrite,
+        0,
+        &work,
+    )?;
     let rename_over = |from: &CStr| {
         // SAFETY: both names are NUL-terminated and `context` outlives the call.
         unsafe {
@@ -809,5 +867,8 @@ fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestRe
 
 mod callbacks;
 
+mod disclosure;
 mod folded;
 mod lifecycle;
+
+mod access;

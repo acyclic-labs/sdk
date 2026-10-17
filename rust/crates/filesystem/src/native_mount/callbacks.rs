@@ -1,5 +1,22 @@
 use super::*;
 
+/// Verified policy owner that can authorize a newly exactified data selection.
+pub trait NativeAccessOwner: Send + Sync {
+    /// Refresh policy for this owner's existing immutable data selection.
+    fn check<'a>(
+        &'a self,
+        work: &'a NativeMaterializationWork,
+    ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError>;
+
+    /// Bind another generation with the same verified identity and ceiling,
+    /// retaining the permissions and selection of previously issued views.
+    fn select<'a>(
+        &'a self,
+        generation: crate::GenerationId,
+        work: &'a NativeMaterializationWork,
+    ) -> Result<NativeMountCallbackFuture<'a, MountOptions>, NativeMountError>;
+}
+
 /// Authentic source-owner authorization checked before a native SDK callback.
 pub trait NativeMountCallbackGuard: Send + Sync {
     /// Admits the real verification future on the callback's original context.
@@ -15,18 +32,18 @@ pub trait NativeMountCallbackGuard: Send + Sync {
 }
 
 /// One directly erased authorization future and its original funded custody.
-pub struct NativeMountCallbackFuture<'a> {
+pub struct NativeMountCallbackFuture<'a, T = ()> {
     pub(super) future: std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a>,
+        Box<dyn std::future::Future<Output = Result<T, NativeMountError>> + Send + 'a>,
     >,
     pub(super) _custody: crate::NativeAllocation,
 }
 
-impl<'a> NativeMountCallbackFuture<'a> {
+impl<'a, T: 'a> NativeMountCallbackFuture<'a, T> {
     /// Admits the concrete boxed future before invoking its builder.
     pub fn new<F, B>(work: &NativeMaterializationWork, build: B) -> Result<Self, NativeMountError>
     where
-        F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
+        F: std::future::Future<Output = Result<T, NativeMountError>> + Send + 'a,
         B: FnOnce() -> F,
     {
         let future_bytes = std::mem::size_of::<F>();
@@ -49,15 +66,15 @@ impl<'a> NativeMountCallbackFuture<'a> {
     ) -> Result<Self, NativeMountError>
     where
         E: std::error::Error + Send + Sync + 'static,
-        F: std::future::Future<Output = Result<(), E>> + Send + 'a,
+        F: std::future::Future<Output = Result<T, E>> + Send + 'a,
         B: FnOnce() -> F + Send + 'a,
     {
         let failure = callback_failure_slot::<E>(work)?;
         Self::new(work, move || async move {
             match build().await {
-                Ok(()) => {
+                Ok(value) => {
                     drop(failure);
-                    Ok(())
+                    Ok(value)
                 }
                 Err(error) => Err(callback_failure(failure, error)),
             }
@@ -69,13 +86,13 @@ impl<'a> NativeMountCallbackFuture<'a> {
         build: B,
     ) -> Result<Self, NativeMountError>
     where
-        F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
+        F: std::future::Future<Output = Result<T, NativeMountError>> + Send + 'a,
         B: FnOnce() -> F + Send + 'a,
     {
         let failure = callback_failure_slot::<NativeMountError>(work)?;
         Self::new(work, move || async move {
             match build().await {
-                Ok(()) => Ok(()),
+                Ok(value) => Ok(value),
                 Err(error @ NativeMountError::CallbackDenied { .. }) => Err(error),
                 Err(error) => Err(callback_failure(failure, error)),
             }
@@ -83,8 +100,8 @@ impl<'a> NativeMountCallbackFuture<'a> {
     }
 }
 
-impl std::future::Future for NativeMountCallbackFuture<'_> {
-    type Output = Result<(), NativeMountError>;
+impl<T> std::future::Future for NativeMountCallbackFuture<'_, T> {
+    type Output = Result<T, NativeMountError>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,

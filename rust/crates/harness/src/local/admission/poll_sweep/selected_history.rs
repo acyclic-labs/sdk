@@ -73,6 +73,7 @@ pub(super) async fn initialize(harness: &Harness) -> Result<SelectedModelContext
                 "text/plain",
                 "history.txt",
                 None,
+                None,
             )?
             .await?
             .0;
@@ -188,6 +189,7 @@ pub(super) async fn run(
                 &bytes,
                 "application/json",
                 "model input",
+                None,
                 None,
             )?
             .await?

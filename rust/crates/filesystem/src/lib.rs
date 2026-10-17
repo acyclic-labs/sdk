@@ -194,6 +194,7 @@ pub use facade::{
     LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation,
     NamedAttributeWriteMode, PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry,
     ResolvedDirectoryPage, ResolvedFile, ResolvedFileRangeReadRequest, StagedContent, Volume,
+    VolumeInitialization,
 };
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use facade::{

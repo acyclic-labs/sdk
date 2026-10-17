@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc};
 
 mod fixtures;
+mod intent_projection;
 use fixtures::{
     LostSessionAck, TestContentVerifier, declaration_scope, declare, grant, open, owner_issuer,
     publish, spec, start, state_ref, worker,

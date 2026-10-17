@@ -10,125 +10,38 @@ where
     /// Exactifies only the selected subtree and prepares its authenticated view.
     pub async fn prepare_native_working_set(
         &self,
-        subdirectory: &str,
+        mount: MountOptions,
         options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         permit: PublicationPermit,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let original = NativeMaterializationWork::new(capture_budget, cancellation)
-            .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
+        mount.require_access_view()?;
+        if mount.publication != MountPublication::Manual {
+            return Err(MountLifecycleError::NativePolicy(
+                "prepared native working sets require manual publication",
+            ));
+        }
+        let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
         if !options.destination.is_absolute() {
             return Err(MountLifecycleError::NativePolicy(
                 "native working-set root must be absolute",
             ));
         }
+        if let Some(guard) = &mount.callback_guard {
+            guard.check(work)?.await?;
+        }
+        let generation = self.workspace().head(work, cancellation).await?.id();
+        let mut selection =
+            AdmittedSelection::admit(&mount, self.workspace(), generation, work).await?;
         options::in_native_heap(work, || async move {
-            let exact = self
-                .exactify(
-                    subdirectory,
-                    permit,
-                    &mut KernelAccounting::native(work, work.cancellation()),
-                )
-                .await?;
-            let mut mount = (
-                MountOptions::read_write().publication(MountPublication::Manual),
-                work.claim(0, 0, crate::WorkCounters::default())?,
-            );
-            if subdirectory != "/" {
-                let (text, mut custody) = work.display(&subdirectory)?;
-                mount.0 = mount.0.subdirectory(text);
-                mount.1.absorb(&mut custody)?;
-            }
-            mount.0 = mount.0.native_context(work, None, None);
+            let exact = selection.exactify(self, permit, work).await?;
             exact
-                .prepare_native_working_set(&mount.0, options, capture_budget, cancellation)
+                .prepare_working_set(selection, options, capture_budget, cancellation, None, work)
                 .await
         })
         .await
-    }
-
-    pub(super) async fn prepare_authored_mount_source(
-        &self,
-        options: &MountOptions,
-        work: &NativeMaterializationWork,
-    ) -> Result<
-        (
-            Arc<CheckoutMountSource<A, O>>,
-            VolumeId,
-            (String, crate::kernel::allocation::KernelOwnedAllocation),
-        ),
-        MountLifecycleError,
-    > {
-        if options
-            .native_original
-            .as_ref()
-            .is_some_and(|binding| !work.shares_allocation_context(binding))
-        {
-            return Err(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
-        }
-        let cancellation = work.cancellation();
-        let config = self.workspace().volume_config();
-        let mut accounting =
-            crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let root = crate::workspace::customer_path_with_accounting(
-            &options.subdirectory,
-            config,
-            &mut accounting,
-            cancellation,
-        )?;
-        let root_text = root
-            .0
-            .unicode_text_with_accounting(&mut accounting, cancellation)
-            .map_err(WorkspaceError::from)?;
-        let selected = self.lookup(&root_text.0, &mut accounting).await?;
-        let selected_custody = selected.1;
-        let selected = selected.0;
-        if selected.stat().kind != SourceNodeKind::Directory {
-            return Err(WorkspaceError::NotDirectory.into());
-        }
-        if let LazyLookup::Source { node, .. } = &selected {
-            let expected_source = self.source_file_id(&node.file_identity, &mut accounting)?;
-            work.charge(crate::WorkCounters {
-                bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len()
-                    + 16
-                    + root_text.0.len()
-                    + node.version.0.len()) as u64,
-                ..crate::WorkCounters::default()
-            })?;
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(b"acyclic-fs-lazy-mount-root-v1\0");
-            hasher.update(&self.workspace().id().into_bytes());
-            hasher.update(root_text.0.as_bytes());
-            hasher.update(&node.version.0);
-            let mut key = [0; 16];
-            key.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            self.promote_exact(
-                &root_text.0,
-                expected_source,
-                0,
-                IdempotencyKey::from_bytes(key),
-                &mut accounting,
-            )
-            .await?;
-        }
-        drop(selected);
-        drop(selected_custody);
-        let mode = if options.writable {
-            CheckoutMode::tracking_transaction()
-        } else {
-            CheckoutMode::read_only_pinned()
-        };
-        let checkout = self
-            .workspace()
-            .checkout(GenerationSelector::Head, mode, work, cancellation)
-            .await?;
-        let source = options::checkout_source(checkout, root, options, work)?;
-        Ok((source, self.workspace().id().volume_id(), root_text))
     }
 
     /// Mounts the actual sparse source without scanning unresolved descendants.
@@ -153,8 +66,15 @@ where
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
-        let (authored, volume_id, root_text) =
-            self.prepare_authored_mount_source(&options, work).await?;
+        let (authored, volume_id, root_text) = AdmittedRoot::admit(
+            &options,
+            self.workspace(),
+            self.workspace().head(work, work.cancellation()).await?.id(),
+            work,
+        )
+        .await?
+        .lazy_source(self, work)
+        .await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => {

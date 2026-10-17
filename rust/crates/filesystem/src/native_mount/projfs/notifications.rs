@@ -4,6 +4,13 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     let Some((data, runtime)) = runtime(callback_data) else {
         return HR_UNEXPECTED;
     };
+    let work = match runtime.native_work(false) {
+        Ok(work) => work,
+        Err(error) => return native_hresult(&error),
+    };
+    let Some(path) = path_from(data.FilePathName) else {
+        return HR_INVALID_DATA;
+    };
     let basis = {
         let creating = runtime
             .creating_name
@@ -23,34 +30,19 @@ pub(super) unsafe fn query_name(callback_data: *const PRJ_CALLBACK_DATA) -> HRES
     };
     // Release the slot before calling the source: a concurrent creator may
     // need its write lock to return, and source calls can cause more callbacks.
-    let admitted = if let Some((file_id, basis)) = basis {
-        let work = match runtime.native_work(false) {
-            Ok(work) => work,
-            Err(error) => return native_hresult(&error),
-        };
-        match creating_name_is_current(runtime.source.as_ref(), file_id, basis, &work) {
+    if let Some((file_id, basis)) = basis {
+        match creating_name_is_current(runtime.source.as_ref(), &path, file_id, basis, &work) {
             Ok(true) => return HR_OK,
-            Ok(false) => Some(work),
+            Ok(false) => {}
             Err(error) => return source_hresult(&error),
         }
-    } else {
-        None
-    };
-    let Some(path) = path_from(data.FilePathName) else {
-        return HR_INVALID_DATA;
-    };
-    let work = match admitted {
-        Some(work) => work,
-        None => match runtime.native_work(false) {
-            Ok(work) => work,
-            Err(error) => return native_hresult(&error),
-        },
-    };
+    }
     lookup_name(runtime.source.as_ref(), &path, &work)
 }
 
 fn creating_name_is_current(
     source: &dyn MountFilesystem,
+    path: &MountPath,
     file_id: FileId,
     basis: ReadBasis,
     work: &crate::NativeMaterializationWork,
@@ -68,10 +60,14 @@ fn creating_name_is_current(
         Err(MountSourceError::Stale) => return Ok(false),
         Err(error) => return Err(error),
     };
-    Ok(source.view_is_stable_with_meter(work)?
+    let current = source.view_is_stable_with_meter(work)?
         && source.binding_epoch_with_meter(work)? == Some(basis.binding)
         && source.reports_changes_to(file_id)
-        && source.view_stamp_with_meter(work)? == Some(basis.stamp))
+        && source.view_stamp_with_meter(work)? == Some(basis.stamp);
+    if current {
+        source.authorize_with_meter(&[(crate::access::Action::List, path)], work)?;
+    }
+    Ok(current)
 }
 
 fn lookup_name(
@@ -161,7 +157,7 @@ pub(super) unsafe fn notification(
     {
         return HR_OK;
     }
-    let work = match runtime.native_work(true) {
+    let work = match runtime.native_work(notification != PRJ_NOTIFICATION_FILE_OPENED) {
         Ok(work) => work,
         Err(error) => {
             let status = native_hresult(&error);
@@ -172,6 +168,14 @@ pub(super) unsafe fn notification(
             return status;
         }
     };
+    if notification == PRJ_NOTIFICATION_FILE_OPENED {
+        if let Err(error) = authorize_open(runtime.source.as_ref(), &path, is_directory, &work) {
+            return source_hresult(&error);
+        }
+        if !runtime.writable {
+            return HR_OK;
+        }
+    }
     if !runtime.writable {
         return HR_NOT_SUPPORTED;
     }
@@ -193,10 +197,25 @@ pub(super) unsafe fn notification(
     if notification == PRJ_NOTIFICATION_PRE_RENAME && invalid_rename {
         return HR_NOT_SAME_DEVICE;
     }
-    if notification == PRJ_NOTIFICATION_PRE_RENAME
-        || notification == PRJ_NOTIFICATION_PRE_SET_HARDLINK
-    {
-        return HR_OK;
+    if matches!(
+        notification,
+        PRJ_NOTIFICATION_PRE_RENAME
+            | PRJ_NOTIFICATION_PRE_SET_HARDLINK
+            | PRJ_NOTIFICATION_PRE_DELETE
+    ) {
+        let destination = (!destination_is_external)
+            .then(|| path_from(destination_filename))
+            .flatten();
+        return match authorize_pre_operation(
+            runtime.source.as_ref(),
+            (!source_is_external).then_some(&path),
+            destination.as_ref(),
+            notification,
+            &work,
+        ) {
+            Ok(()) => HR_OK,
+            Err(error) => source_hresult(&error),
+        };
     }
     if notification == PRJ_NOTIFICATION_NEW_FILE_CREATED {
         if is_directory {
@@ -576,5 +595,53 @@ pub(super) fn callbacks() -> PRJ_CALLBACKS {
             operation_parameters: *mut PRJ_NOTIFICATION_PARAMETERS
         ))),
         CancelCommandCallback: Some(cancel),
+    }
+}
+
+pub(super) fn open_notifications(writable: bool) -> PRJ_NOTIFY_TYPES {
+    if writable {
+        FILE_NOTIFICATIONS
+    } else {
+        PRJ_NOTIFY_FILE_OPENED
+    }
+}
+
+pub(super) fn authorize_open(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    directory: bool,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    use crate::access::Action;
+    if directory {
+        source.authorize_with_meter(&[(Action::List, path)], work)
+    } else {
+        source.authorize_with_meter(&[(Action::List, path), (Action::Read, path)], work)
+    }
+}
+
+pub(super) fn authorize_pre_operation(
+    source: &dyn MountFilesystem,
+    path: Option<&MountPath>,
+    destination: Option<&MountPath>,
+    notification: PRJ_NOTIFICATION,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), MountSourceError> {
+    use crate::native_mount::actions::Mutation;
+    let mutation = match (notification, path, destination) {
+        (PRJ_NOTIFICATION_PRE_DELETE, Some(_), _) => Mutation::Delete,
+        (PRJ_NOTIFICATION_PRE_RENAME, None, Some(_)) => Mutation::Create,
+        (PRJ_NOTIFICATION_PRE_RENAME, Some(_), _) => Mutation::Rename,
+        (PRJ_NOTIFICATION_PRE_SET_HARDLINK, Some(_), Some(_)) => Mutation::HardLink,
+        _ => return Err(MountSourceError::AccessDenied),
+    };
+    let actions = mutation.actions();
+    match (path, destination) {
+        (Some(path), Some(destination)) => {
+            source.authorize_with_meter(&[(actions.0, path), (actions.1, destination)], work)
+        }
+        (Some(path), None) => source.authorize_with_meter(&[(actions.0, path)], work),
+        (None, Some(destination)) => source.authorize_with_meter(&[(actions.1, destination)], work),
+        _ => Err(MountSourceError::AccessDenied),
     }
 }

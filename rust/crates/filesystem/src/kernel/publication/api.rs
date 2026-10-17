@@ -108,6 +108,7 @@ where
     };
     let result = publish_generation_async_inner(
         objects,
+        authority,
         request,
         intent,
         closure_limits,
@@ -253,6 +254,7 @@ where
     };
     let mut output = publish_generation_async_inner(
         objects,
+        authority,
         request,
         intent,
         closure_limits,

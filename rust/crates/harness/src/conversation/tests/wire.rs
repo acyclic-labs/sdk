@@ -93,6 +93,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
             &'a self,
             reference: &'a FileRef,
             maximum_bytes: u64,
+            _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a ContentIo>,
         ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
             BoundedContentFuture::new(io, || async move {

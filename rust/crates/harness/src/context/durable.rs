@@ -134,6 +134,7 @@ impl DurableContextProvider {
                 "application/json",
                 "context.json",
                 None,
+                None,
             )?
             .await?;
         self.limits.validate_file(&content, &mut None)?;
@@ -332,6 +333,7 @@ impl DurableContextProvider {
             .read(
                 &revision.context,
                 revision.context.descriptor().byte_length(),
+                None,
                 io,
             )?
             .await?;

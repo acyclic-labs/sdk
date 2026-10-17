@@ -20,6 +20,7 @@ impl ContentResidencyVerifier for Resolver {
         &'a self,
         _: &'a FileRef,
         _: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -56,6 +57,7 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
             &'a self,
             _: &'a FileRef,
             _: u64,
+            _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
         {
@@ -394,6 +396,7 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
             &'a self,
             _: &'a FileRef,
             _: u64,
+            _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
         {

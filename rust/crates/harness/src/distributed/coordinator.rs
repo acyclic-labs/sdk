@@ -1,5 +1,12 @@
 use super::*;
 
+fn intent_fingerprint(key: &str, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+    if let Some(io) = work.as_deref_mut() {
+        io.hashed_bytes(key.len() as u64)?;
+    }
+    Ok(*blake3::hash(key.as_bytes()).as_bytes())
+}
+
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     pub(crate) client: std::sync::Arc<P>,
@@ -10,6 +17,7 @@ pub struct DistributedCoordinator<P> {
     pub(super) scheduler: Scheduler,
     pub(super) revision: u64,
     pub(super) last_committed_at_ms: u64,
+    intents: super::intent_cache::IntentCache,
     pub(super) content_verifier: Arc<dyn ContentResidencyVerifier>,
     pub(super) payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
@@ -29,6 +37,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             scheduler: Scheduler::new(),
             revision: 0,
             last_committed_at_ms: 0,
+            intents: super::intent_cache::IntentCache::default(),
             content_verifier,
             payload_store,
         };
@@ -84,7 +93,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if let Some(work) = quota.work().as_deref_mut() {
             work.check_cancellation()?;
         }
-        let (revision, key, _, committed_at_ms, event) = decode(&record, quota.work())?;
+        let (revision, key, digest, committed_at_ms, event) = decode(&record, quota.work())?;
         let event_bytes = if quota.work().is_some() {
             event.logical_owned_bytes()? + key.capacity() as u64
         } else {
@@ -95,12 +104,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.verify_content(&spec.state, quota.work()).await?;
         }
         self.verify_published_result(&event, quota.work()).await?;
-        if let Some((_, existing, ..)) =
-            read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
+        let fingerprint = intent_fingerprint(&key, quota.work())?;
+        if self
+            .verified_intent(&key, &fingerprint, quota.work())
+            .await?
+            .is_some()
         {
-            if quota.work().is_some() {
-                quota.adopt(existing.logical_owned_bytes()?)?;
-            }
             return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Conflict,
@@ -118,6 +127,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             ));
         }
         self.scheduler.apply(&event, quota.work())?;
+        self.intents.record(revision, fingerprint, digest);
         self.revision = revision;
         self.last_committed_at_ms = committed_at_ms;
         drop((key, event, record));
@@ -128,20 +138,45 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     async fn intent_matches(
         &self,
         key: &str,
-        event: &SchedulerEvent,
         digest: &[u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<bool>> {
         let mut custody = CodecQuota::new(work, 0)?;
-        let Some(intent) =
-            read_intent(&self.client, key, Some(self.revision), custody.work()).await?
+        let fingerprint = intent_fingerprint(key, custody.work())?;
+        let Some(intent) = self
+            .verified_intent(key, &fingerprint, custody.work())
+            .await?
         else {
             return Ok(None);
         };
-        if custody.work().is_some() {
-            custody.adopt(intent.1.logical_owned_bytes()?)?;
+        Ok(Some(&intent == digest))
+    }
+
+    async fn verified_intent(
+        &self,
+        key: &str,
+        fingerprint: &[u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<[u8; 32]>> {
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: self.intents.len() as u64,
+            })?;
         }
-        Ok(Some(&intent.0 == digest && &intent.1 == event))
+        match self.intents.get(fingerprint, self.revision) {
+            Some(known) => Ok(known),
+            None => {
+                read_intent(
+                    &self.client,
+                    key,
+                    Some(self.revision),
+                    replayed_intent_digest,
+                    work,
+                )
+                .await
+            }
+        }
     }
 
     pub(super) async fn verify_content(
@@ -339,10 +374,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     work.hashed_bytes(canonical.len() as u64)?;
                 }
                 let digest = *blake3::hash(&canonical).as_bytes();
-                if let Some(matches) = self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                {
+                if let Some(matches) = self.intent_matches(key, &digest, custody.work()).await? {
                     return if matches {
                         self.validate_command_wait(&event, waiting_command, true, custody.work())?;
                         self.validate_replay(&event, custody.work()).map(|()| false)
@@ -475,11 +507,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     Err(error) => return Err(error),
                 };
                 self.refresh(custody.work()).await?;
-                if self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                    != Some(true)
-                {
+                if self.intent_matches(key, &digest, custody.work()).await? != Some(true) {
                     return applied.and_then(|_| {
                         Err(guarded_boundary(
                             custody.work(),

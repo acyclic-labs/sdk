@@ -255,6 +255,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "text/plain",
             "source.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -733,6 +734,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     "text/plain",
                     "destination.txt",
                     None,
+                    None,
                 )?
                 .await?
                 .0;
@@ -744,6 +746,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     b"later user edit",
                     "text/plain",
                     "source.txt",
+                    None,
                     None,
                 )?
                 .await?

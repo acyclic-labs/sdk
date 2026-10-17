@@ -113,8 +113,10 @@ impl NativeFs {
 
     #[napi]
     pub async fn create_workspace(&self, name: String) -> Result<NativeWorkspace> {
-        sdk_value!(unbounded_future!(self.inner, create_workspace(name)))
+        acyclic_harness::filesystem::local_owner_workspace(&self.inner, &name)
+            .await
             .map(|inner| NativeWorkspace { inner })
+            .map_err(napi_error)
     }
 
     #[napi(js_name = attachDirectory)]

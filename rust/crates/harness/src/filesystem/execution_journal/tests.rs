@@ -276,6 +276,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
             "text/plain",
             "message.txt",
             None,
+            None,
         )?
         .await?
         .0;

@@ -7,6 +7,7 @@ macro_rules! mutation_callbacks {
             absent_since: Option<ViewStamp>,
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
+            self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
             let created = self
@@ -22,6 +23,7 @@ macro_rules! mutation_callbacks {
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
+            self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
             let created = self.authored.create_directory(path, metadata, work)?;
@@ -36,6 +38,7 @@ macro_rules! mutation_callbacks {
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
+            self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
             let created = self
@@ -53,6 +56,7 @@ macro_rules! mutation_callbacks {
             metadata: FileMetadata,
             work: &crate::NativeMaterializationWork,
         ) -> Result<MountLookup, MountSourceError> {
+            self.require_path(path, crate::access::Action::Create, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_parents_locked(path, work)?;
             let created = self
@@ -69,6 +73,7 @@ macro_rules! mutation_callbacks {
             logical_bytes: Option<u64>,
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(path, crate::access::Action::Write, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             if let Some(file) = self.detached_for_path(path, work)? {
                 return file.set_attributes(metadata, logical_bytes, work);
@@ -86,6 +91,7 @@ macro_rules! mutation_callbacks {
             mode: MountAttributeWriteMode,
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(path, crate::access::Action::Write, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             if let Some(file) = self.detached_for_path(path, work)? {
                 return file.write_attribute(name, value, mode, work);
@@ -100,6 +106,7 @@ macro_rules! mutation_callbacks {
             name: &[u8],
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(path, crate::access::Action::Write, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             if let Some(file) = self.detached_for_path(path, work)? {
                 return file.remove_attribute(name, work);
@@ -141,6 +148,8 @@ macro_rules! mutation_callbacks {
             length: u64,
         ) -> Result<(), MountSourceError> {
             adapter::boundary(self.authored.cancellation(), |work| {
+                self.require_path(source, crate::access::Action::Read, work)?;
+                self.require_path(destination, crate::access::Action::Write, work)?;
                 let _mutation = self.mutation_lease(None, Some(work))?;
                 if self.detached_for_path(source, work)?.is_some()
                     || self.detached_for_path(destination, work)?.is_some()
@@ -162,35 +171,13 @@ macro_rules! mutation_callbacks {
             })
         }
 
-        fn clone_range_by_id(
-            &self,
-            source_file_id: FileId,
-            source_offset: u64,
-            destination_file_id: FileId,
-            destination_offset: u64,
-            length: u64,
-            work: &crate::NativeMaterializationWork,
-        ) -> Result<(), MountSourceError> {
-            work.admit(crate::WorkCounters::UNCHARGED)
-                .map_err(MountSourceError::NativeWork)?;
-            let _ = (
-                source_file_id,
-                source_offset,
-                destination_file_id,
-                destination_offset,
-                length,
-            );
-            Err(MountSourceError::Unsupported(
-                "clone-by-identity requires path-backed promotion in a lazy mount".into(),
-            ))
-        }
-
         fn remove(
             &self,
             path: &MountPath,
             expected: Option<FileId>,
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(path, crate::access::Action::Delete, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             let (text, _allocation) = self.path(path, work)?;
             let removed_id = if let Some(authored) = self.authored.lookup(path)? {
@@ -254,6 +241,8 @@ macro_rules! mutation_callbacks {
             replace: bool,
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(source, crate::access::Action::Rename, work)?;
+            self.require_path(destination, crate::access::Action::Rename, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             let (source_text, _source_allocation) = self.path(source, work)?;
             let (destination_text, _destination_allocation) = self.path(destination, work)?;
@@ -359,6 +348,8 @@ macro_rules! mutation_callbacks {
             destination: &MountPath,
             work: &crate::NativeMaterializationWork,
         ) -> Result<(), MountSourceError> {
+            self.require_path(source, crate::access::Action::Admin, work)?;
+            self.require_path(destination, crate::access::Action::Admin, work)?;
             let _mutation = self.mutation_lease(None, Some(work))?;
             self.promote_locked(source, Some(work))?;
             self.promote_parents_locked(destination, work)?;

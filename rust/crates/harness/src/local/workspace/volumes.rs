@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
+use acyclic_fs::{CancellationToken, MountPublication, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
@@ -65,8 +65,11 @@ pub(super) async fn attach(
     store: &acyclic_fs::LocalCoreStateStore,
     root: &Path,
     mounts: &mut Mounts,
+    authority: (&AuthorityIssuer, AgentId),
 ) -> Result<()> {
     let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
             continue;
@@ -87,12 +90,22 @@ pub(super) async fn attach(
         if let Some(parent) = Path::new(relative).parent() {
             create_mount_directory(root, parent)?;
         }
+        let options = crate::filesystem::owner_mount_options(
+            &source,
+            authority.0,
+            Some(authority.1),
+            !mount.mode.read_only(),
+            &work,
+        )
+        .await?
+        .publication(MountPublication::Manual);
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
+            options,
             native: StateArc::new(AsyncMutex::new(None)),
         }));
     }
@@ -119,7 +132,7 @@ pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
             // binding's root, never below another owner-only FUSE mount.
             let root = projection_root(&source.destination, relative)?;
             source
-                .project(root, relative, mount.mode.read_only())
+                .project(root, relative)
                 .await?;
         }
     }

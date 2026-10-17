@@ -38,6 +38,7 @@ impl ContentResidencyVerifier for ReaderSpy {
         &'a self,
         file: &'a FileRef,
         range: acyclic_fs::ByteRange,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
@@ -60,9 +61,9 @@ impl ContentResidencyVerifier for ReaderSpy {
                     file.display_name().into(),
                     &mut None,
                 )?;
-                return self.inner.read_range(&corrupt, range, io)?.await;
+                return self.inner.read_range(&corrupt, range, ceiling, io)?.await;
             }
-            self.inner.read_range(file, range, io)?.await
+            self.inner.read_range(file, range, ceiling, io)?.await
         })
     }
 
@@ -70,12 +71,13 @@ impl ContentResidencyVerifier for ReaderSpy {
         &'a self,
         file: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
     ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
     {
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             self.reads.fetch_add(1, Ordering::SeqCst);
-            let bytes = self.inner.read(file, maximum_bytes, io)?.await?;
+            let bytes = self.inner.read(file, maximum_bytes, ceiling, io)?.await?;
             if self.corrupt.load(Ordering::SeqCst) {
                 let mut corrupted = bytes.as_ref().to_vec();
                 if let Some(first) = corrupted.first_mut() {
@@ -145,6 +147,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             "text/plain",
             "source.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -155,6 +158,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             b"later workspace content",
             "text/plain",
             "source.txt",
+            None,
             None,
         )?
         .await?

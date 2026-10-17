@@ -234,6 +234,7 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
         S3Error::ForeignGeneration | S3Error::ForeignTransaction => {
             s3s::s3_error!(AccessDenied)
         }
+        S3Error::Workspace(crate::WorkspaceError::AccessDenied) => s3s::s3_error!(AccessDenied),
         S3Error::InvalidObject | S3Error::Workspace(_) => s3s::s3_error!(InternalError),
     }
 }

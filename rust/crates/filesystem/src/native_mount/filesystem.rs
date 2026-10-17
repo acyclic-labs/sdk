@@ -1,7 +1,37 @@
 use super::*;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::native_mount) fn can_disclose(
+    source: &dyn MountFilesystem,
+    path: &MountPath,
+    work: &NativeMaterializationWork,
+) -> Result<bool, MountSourceError> {
+    match source.authorize_with_meter(&[(crate::access::Action::List, path)], work) {
+        Ok(()) => Ok(true),
+        Err(MountSourceError::AccessDenied) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 /// Synchronous callback surface implemented by an embedded checkout adapter.
 pub trait MountFilesystem: Send + Sync + 'static {
+    /// Retain policy publication exclusion for a physical projection. Sources
+    /// without an authenticated policy owner cannot start ProjFS.
+    fn projection_policy_lease(
+        &self,
+        _writable: bool,
+        _work: &NativeMaterializationWork,
+    ) -> Result<Box<dyn Send + Sync>, NativeMountError> {
+        Err(MountSourceError::AccessDenied.into())
+    }
+
+    /// Authorize every requested operation against one current policy/capability view.
+    fn authorize_with_meter(
+        &self,
+        requests: &[(crate::access::Action, &MountPath)],
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
+
     /// Returns the sealed original native accounting and lifetime context.
     fn native_original_work(&self) -> Result<Option<NativeMaterializationWork>, MountSourceError> {
         Ok(None)
@@ -130,6 +160,7 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn open_file_with_lookup_with_meter(
         &self,
         path: &MountPath,
+        access: super::MountOpenAccess,
         work: &NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
     /// Opens the actual identity just created, without resolving a replacement.
@@ -206,16 +237,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         &self,
         path: &MountPath,
         name: &[u8],
-        work: &NativeMaterializationWork,
-    ) -> Result<(), MountSourceError>;
-    /// Clones the actual immutable range between authenticated file identities.
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Creates the actual same-volume hard-link binding.

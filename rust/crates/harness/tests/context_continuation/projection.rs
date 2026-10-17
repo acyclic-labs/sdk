@@ -373,7 +373,7 @@ pub(super) async fn checkpoint_envelope_binds_real_published_context_and_admitte
         )
         .await?;
     let reader = StoredContent(storage.clone());
-    let bytes = reader.read(&pinned, 65_536, None)?.await?;
+    let bytes = reader.read(&pinned, 65_536, None, None)?.await?;
     pinned.descriptor().verify(&bytes, &mut None)?;
     let reopened: acyclic_harness::context::CanonicalContextCheckpoint =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;

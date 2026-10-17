@@ -108,6 +108,7 @@ required-features = ["filesystem", "test-support"]
 [[test]]
 name = "filesystem_access"
 path = "tests/filesystem_access.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "client_history"

@@ -493,7 +493,14 @@ impl PiSession {
                 maximum,
                 Some(&io),
             )?;
-            let bytes = reader.read(&reference.0, maximum, Some(&io))?.await?;
+            let bytes = reader
+                .read(
+                    &reference.0,
+                    maximum,
+                    Some(authority.signed.capabilities()),
+                    Some(&io),
+                )?
+                .await?;
             Ok(Some(pi_root_provider::guarded_pi_decode(
                 bytes.as_ref(),
                 maximum,

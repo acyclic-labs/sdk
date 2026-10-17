@@ -128,6 +128,7 @@ impl LocalHarness {
                         "text/plain",
                         "message.md",
                         None,
+                        None,
                     )?
                     .await?;
                 self.runtime

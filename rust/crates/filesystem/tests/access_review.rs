@@ -3,6 +3,114 @@ use acyclic_fs::kernel::{LogicalName, NameEncoding};
 use acyclic_fs::model::{CaseSensitivity, FilesystemProfile, UnicodePolicy};
 
 #[test]
+fn a_later_head_revokes_head_only_reads_without_a_policy_edit() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let policy = super::policy(vec![rule("read", Effect::Allow, &[Action::Read], "**")]);
+    let cap = capability();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let selected = Resource {
+        head: 1,
+        ..resource(&caller.lineage, "", 1)
+    };
+    let old = PathTrie::compile(&policy, &caller, selected, context, &cap)?;
+    let view = AccessView::new(old);
+    let initial = view.current()?;
+    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    let advanced = Resource {
+        head: 2,
+        ..selected
+    };
+    view.publish(PathTrie::compile(
+        &policy, &caller, advanced, context, &cap,
+    )?)?;
+    let expected = decide(
+        &policy,
+        &caller,
+        Action::Read,
+        Resource {
+            path: "key",
+            ..advanced
+        },
+        context,
+        &cap,
+    );
+    assert!(!expected.allowed);
+    assert_eq!(view.current()?.decide(Action::Read, "key", 100), expected);
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy, &caller, selected, context, &cap
+        )?)
+        .is_err()
+    );
+    assert_eq!(view.current()?.head_position(), 2);
+    assert!(initial.decide(Action::Read, "key", 100).allowed);
+    Ok(())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn publication_never_rewinds_either_policy_or_volume_head(
+        publications in prop::collection::vec((any::<u64>(), any::<u64>()), 1..8),
+    ) {
+        let caller = principal();
+        let mut policy = super::policy(vec![rule("read", Effect::Allow, &Action::ALL, "**")]);
+        let cap = capability();
+        let context = Context { now: 100, approvals: 0 };
+        let mut res = Resource { head: 1, ..resource(&caller.lineage, "", 1) };
+        let view = AccessView::new(PathTrie::compile(&policy, &caller, res, context, &cap)?);
+        let (mut revision, mut head) = (1, 1);
+        for (next_revision, next_head) in publications {
+            policy.version = next_revision.max(1);
+            res.head = next_head.max(1);
+            let expected = policy.version >= revision && res.head >= head;
+            prop_assert_eq!(view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?).is_ok(), expected);
+            if expected { revision = policy.version; head = res.head; }
+            let current = view.current()?;
+            prop_assert_eq!(current.policy_version(), revision);
+            prop_assert_eq!(current.head_position(), head);
+        }
+    }
+}
+
+#[test]
+fn read_does_not_authorize_name_or_metadata_disclosure() -> Result<(), InvalidPolicy> {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    for policy_denies in [false, true] {
+        let mut rules = vec![rule("allow", Effect::Allow, &Action::ALL, "**")];
+        let cap = if policy_denies {
+            rules.push(rule("hidden", Effect::Deny, &[Action::List], "secrets/**"));
+            capability()
+        } else {
+            capability().attenuate(
+                vec![Grant {
+                    actions: [Action::Read].into_iter().collect(),
+                    resource: pattern("**"),
+                }],
+                None,
+            )
+        };
+        let policy = super::policy(rules);
+        let res = resource(&caller.lineage, "secrets/key", 10);
+        let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
+        let path = trie.prepare(res.path)?;
+        assert!(path.decide(Action::Read, 100).allowed);
+        assert!(!path.decide(Action::List, 100).allowed);
+        assert!(!path.mount_mode(100).visible());
+        assert!(!trie.mount_mode(res.path, 100).visible());
+        assert!(path.mount_mode(100).allows(Action::Read));
+    }
+    Ok(())
+}
+
+#[test]
 fn full_case_folding_preserves_glob_literal_matches() -> Result<(), InvalidPolicy> {
     let caller = principal();
     let cap = capability();
@@ -103,6 +211,87 @@ proptest! {
             prop_assert_eq!(trie.prepare(&candidate)?.decide(Action::Read, 100), reference);
         }
     }
+}
+
+#[test]
+fn published_policy_refreshes_new_opens_and_preserves_pinned_handles()
+-> Result<(), Box<dyn std::error::Error>> {
+    let caller = principal();
+    let context = Context {
+        now: 100,
+        approvals: 0,
+    };
+    let mut cap = capability();
+    cap.expires_at = Some(200);
+    let res = resource(&caller.lineage, "", 10);
+    let mut policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
+    let view = AccessView::new(PathTrie::compile(&policy, &caller, res, context, &cap)?);
+    let name = LogicalName::new(NameEncoding::Utf8, b"public".to_vec(), 255)?;
+    let path = acyclic_fs::kernel::NamespacePath::new(vec![name], res.config.limits)?;
+    let opened = view.current()?.pin(&path)?;
+    assert!(opened.decide(Action::Read, 100).allowed);
+    policy.version = 2;
+    policy
+        .layers
+        .push(vec![rule("revoked", Effect::Deny, &Action::ALL, "public")]);
+    view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?)?;
+    let reopened = view.current()?.pin(&path)?;
+    assert!(!reopened.decide(Action::Read, 100).allowed);
+    assert_eq!(reopened.decide(Action::Read, 100).rule_id, Some("revoked"));
+    assert!(opened.decide(Action::Read, 199).allowed);
+    assert!(!opened.decide(Action::Read, 200).allowed);
+    assert!(!opened.mount_mode(200).visible());
+    policy.version = 1;
+    policy.layers.pop();
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, res, context, &cap)?)
+            .is_err()
+    );
+    policy.version = 2;
+    let mut other_volume = res;
+    other_volume.volume = "different-volume";
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy,
+            &caller,
+            other_volume,
+            context,
+            &cap
+        )?)
+        .is_err()
+    );
+    let mut other_subject = caller.clone();
+    other_subject.id = "different-principal".into();
+    assert!(
+        view.publish(PathTrie::compile(
+            &policy,
+            &other_subject,
+            res,
+            context,
+            &cap
+        )?)
+        .is_err()
+    );
+    let mut wider = cap.clone();
+    wider.expires_at = Some(300);
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, res, context, &wider)?)
+            .is_err()
+    );
+    let mut other = res;
+    other.config.case_sensitivity = CaseSensitivity::ProfileFolded;
+    assert!(
+        view.publish(PathTrie::compile(&policy, &caller, other, context, &cap)?)
+            .is_err()
+    );
+    assert!(
+        !view
+            .current()?
+            .pin(&path)?
+            .decide(Action::Read, 100)
+            .allowed
+    );
+    Ok(())
 }
 
 fn native_exact_grant(
@@ -491,4 +680,53 @@ fn full_case_fold_question_preserves_native_scalar_aliases()
     })?;
     assert!(trie.decide(Action::Read, "fileab.txt", 100).allowed);
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn policy_fence_and_native_custody_preserve_pinned_views(origin in any::<[u8; 32]>()) {
+      // Exhaust every fence/history combination for each shrinking storage identity.
+      for mask in 0u8..16 {
+        let mut next = origin;
+        next[0] ^= u8::from(mask & 1 != 0);
+        let generation_changed = mask & 2 != 0;
+        let restricted = mask & 4 != 0;
+        let history = mask & 8 != 0;
+        let caller = principal();
+        let mut policy = super::policy(vec![rule("read", Effect::Allow, &[Action::Read], "**")]);
+        if history { policy.layers[0][0].actions.insert(Action::ReadHistory); }
+        if restricted { policy.layers[0][0].resource.generations = Generations::Head; }
+        let mut cap = capability();
+        for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
+        let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([byte; 32]));
+        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId {
+            kind: acyclic_fs::ObjectKind::TreePage, digest: acyclic_fs::Digest::from_bytes(byte),
+        });
+        let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)
+            .map(|view| view.with_policy_revision(generation(1), revision(origin)));
+        let first = compile()?;
+        prop_assert_eq!(first.matches_policy_revision(generation(if generation_changed { 2 } else { 1 }), revision(next)),
+            origin == next && (!(restricted || !history) || !generation_changed));
+        let cancel = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancel)
+            .map_err(|(cause, _)| proptest::test_runner::TestCaseError::fail(cause.to_string()))?;
+        let baseline = work.live_allocation_bytes();
+        prop_assert_eq!(baseline, acyclic_fs::NativeMaterializationWork::accounting_state_bytes());
+        let bytes = first.logical_owned_bytes();
+        let custody = work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let view = AccessView::new_native(first, custody)?;
+        let pinned = view.current()?;
+        let before = work.live_allocation_bytes();
+        let next = compile()?;
+        view.publish_native(next, work.claim(bytes, 1, acyclic_fs::WorkCounters::UNCHARGED)?)?;
+        prop_assert!(work.live_allocation_bytes() > before);
+        drop(view);
+        prop_assert!(work.live_allocation_bytes() >= baseline + bytes);
+        prop_assert!(pinned.decide(Action::Read, "file", 100).allowed);
+        drop(pinned);
+        prop_assert_eq!(work.live_allocation_bytes(), baseline);
+      }
+    }
 }

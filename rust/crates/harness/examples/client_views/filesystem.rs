@@ -84,6 +84,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             &IdempotencyKey::new("source")?,
             None,
             None,
+            None,
         )
         .await?;
     let workspace = workspace_ref(provider.clone(), &volume.storage_name(&mut None)?)?;
@@ -186,6 +187,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
             "test.txt",
             64,
             &IdempotencyKey::new("user")?,
+            None,
             None,
             None,
         )

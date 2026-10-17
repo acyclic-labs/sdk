@@ -190,6 +190,7 @@ impl LocalHarness {
                     generation.as_ref(),
                     after.as_ref(),
                     self.limits.context_messages.min(64) as u32,
+                    None,
                 )
                 .await
             {
@@ -437,6 +438,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "command input",
+                None,
                 None,
             )?
             .await?

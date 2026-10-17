@@ -28,9 +28,11 @@ macro_rules! callback_span {
     };
 }
 
+mod actions;
 mod adapter;
 #[cfg(windows)]
 mod cached_binding;
+mod observation;
 pub use adapter::{
     CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
     SharedCheckoutState, initialize_native_mount_services,
@@ -155,6 +157,8 @@ fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
 #[cfg(target_os = "linux")]
 fn errno(error: &MountSourceError) -> i32 {
     match error.semantic_error() {
+        MountSourceError::AccessDenied => libc::EACCES,
+        MountSourceError::ReadOnly => libc::EROFS,
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::NotDirectory => libc::ENOTDIR,

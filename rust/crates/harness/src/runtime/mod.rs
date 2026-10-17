@@ -1,6 +1,7 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
 use crate::contract::capability;
+use crate::core::contains_content_grant_with_work;
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,

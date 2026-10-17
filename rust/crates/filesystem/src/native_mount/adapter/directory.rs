@@ -17,8 +17,18 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
+            let view = self.access_snapshot(work).await?;
+            let access = view
+                .prepare_namespace(&path)
+                .map_err(|_| MountSourceError::AccessDenied)?;
+            let now = access::access_time()?;
+            if !access.decide(crate::access::Action::List, now).allowed {
+                return Err(MountSourceError::AccessDenied);
+            }
             let cursor = cursor
-                .map(|bytes| native_name(bytes, self.profile, self.limits, &mut inputs))
+                .map(|bytes| {
+                    native_name(bytes, self.config.profile, self.config.limits, &mut inputs)
+                })
                 .transpose()?;
             let observation = self
                 .checkout
@@ -33,6 +43,7 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
                 cancellation,
             )?;
+            self.require_snapshot(&view, &mut checkout, work).await?;
             let folded = if self.folds_names() {
                 self.require_unique_folded_path(&mut checkout, &path, true, work, cancellation)
                     .await?
@@ -53,6 +64,14 @@ where
             let mut entries = inputs.vec(page.entries.len())?;
             for entry in &page.entries {
                 inputs.items(1)?;
+                let visible = access
+                    .child_name(&entry.name)
+                    .map_err(|_| MountSourceError::AccessDenied)?
+                    .mount_mode(now)
+                    .visible();
+                if !visible {
+                    continue;
+                }
                 if let Some(keys) = &folded
                     && crate::facade::ambiguous_folded_name(
                         &keys.value,

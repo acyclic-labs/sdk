@@ -107,6 +107,7 @@ impl ContentResidencyVerifier for MigrationContentStore {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {
@@ -141,6 +142,7 @@ impl ContentResidencyVerifier for TestContent {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if io.is_some() {

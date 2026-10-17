@@ -104,7 +104,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.attribute_name(name, self.profile, self.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.profile, self.limits)?;
         let mut state = await_lock(
             self.state.lock(),
             inputs.carrier,
@@ -155,6 +155,15 @@ where
         change: ContentChange<std::convert::Infallible>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        self.change_content_at(change, false, work)
+    }
+
+    fn change_content_at(
+        &self,
+        change: ContentChange<std::convert::Infallible>,
+        append_only: bool,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut state = await_lock(
                 self.state.lock(),
@@ -163,6 +172,11 @@ where
                 Some(&self.cancellation),
             )
             .await?;
+            if append_only
+                && !matches!(&change, ContentChange::Write { offset, .. } if *offset == state.file.logical_bytes())
+            {
+                return Err(MountSourceError::AccessDenied);
+            }
             state.change_content(change, &self.ledger, work).await
         })
     }
@@ -173,6 +187,27 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn clone_source(
+        &self,
+        _checkout: &(dyn std::any::Any + Send + Sync),
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<FileId, MountSourceError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        Err(MountSourceError::NativeUnsupported)
+    }
+
+    fn clone_range_from(
+        &self,
+        _source: &dyn MountOpenFile,
+        _source_offset: u64,
+        _offset: u64,
+        _length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        Err(MountSourceError::NativeUnsupported)
+    }
+
     fn lookup_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -275,6 +310,22 @@ where
                 offset,
                 bytes: bytes.bytes,
             },
+            work,
+        )
+    }
+
+    fn append_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.change_content_at(
+            ContentChange::Write {
+                offset,
+                bytes: bytes.bytes,
+            },
+            true,
             work,
         )
     }
@@ -406,6 +457,19 @@ where
         })
     }
 
+    fn append_range(&self, offset: u64, bytes: Bytes) -> Result<(), MountSourceError> {
+        boundary(&self.cancellation, |work| {
+            self.change_content_at(
+                ContentChange::Write {
+                    offset,
+                    bytes: bytes.into(),
+                },
+                true,
+                work,
+            )
+        })
+    }
+
     fn resize(&self, logical_bytes: u64) -> Result<(), MountSourceError> {
         boundary(&self.cancellation, |work| {
             self.resize_with_meter(logical_bytes, work)
@@ -439,6 +503,7 @@ where
                 Some(&self.cancellation),
             )
             .await?;
+            require_attribute_root(metadata, state.metadata)?;
             state
                 .file
                 .set_attributes(metadata, logical_bytes, work, cancellation)

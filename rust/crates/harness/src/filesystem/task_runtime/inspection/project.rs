@@ -1,6 +1,6 @@
 use super::*;
 use crate::conversation::{
-    FileDescriptor, Limits, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
+    FileDescriptor, Limits, PrivateDirectoryEntry, PrivateDirectoryEntryKind, VolumeOperation,
 };
 use crate::durable_host::TaskJournalOwner;
 use crate::filesystem::fork_preparer::bounded_io;
@@ -17,6 +17,7 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     owner: Arc<TaskJournalOwner<P>>,
     handle: ProjectSourceReadHandle,
     generation: Generation<A, O>,
+    workspace: acyclic_fs::Workspace<A, O>,
     limits: Limits,
     pub(super) io: PreparationIo,
     pub(super) serial: tokio::sync::Mutex<()>,
@@ -53,6 +54,10 @@ where
             .generation(&workspace, &authorization.generation, Some(&io))
             .await?;
         Self::verify_owner(&owner, &io).await?;
+        let view =
+            Self::require_unrestricted(&workspace, &handle, &owner, generation.id(), &io).await?;
+        Self::finish_verification(&workspace, &owner, &view.0, &io).await?;
+        drop(view);
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
         Ok(Box::new(Self {
@@ -60,6 +65,7 @@ where
             owner,
             handle,
             generation,
+            workspace,
             limits,
             io,
             serial: tokio::sync::Mutex::new(()),
@@ -113,6 +119,14 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
+        let view = Self::require_unrestricted(
+            &self.workspace,
+            &self.handle,
+            &self.owner,
+            self.generation.id(),
+            &self.io,
+        )
+        .await?;
         let io = PreparationIo::from_native_work(work)?;
         self.host.require_private_directory(
             &self.handle.authorization().project,
@@ -154,6 +168,7 @@ where
         self.owner
             .verify_project_source_read(&self.handle, Some(work))
             .await?;
+        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await?;
         original.remaining()?;
         self.io
             .cancellation()
@@ -161,6 +176,66 @@ where
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         work.remaining()?;
         Ok(())
+    }
+
+    async fn require_unrestricted<'a>(
+        workspace: &acyclic_fs::Workspace<A, O>,
+        handle: &ProjectSourceReadHandle,
+        owner: &TaskJournalOwner<P>,
+        generation: acyclic_fs::GenerationId,
+        io: &'a PreparationIo,
+    ) -> Result<crate::filesystem::access::CompiledAccess<'a>> {
+        use crate::filesystem::access;
+        use acyclic_fs::access::Action;
+        access::require_directory_ceiling(
+            Some(&owner.admission().grants),
+            &handle.authorization().project,
+            "",
+            Some(io),
+        )?;
+        let scope = handle.grant().policy_scope();
+        let label = crate::core::filesystem_scope_label(
+            scope.capabilities(),
+            &mut Some(&mut io.history_io()),
+        )?;
+        let view = access::access_view(
+            workspace,
+            scope,
+            Some(generation),
+            access::capability_payload(label, VolumeOperation::Read, io)?,
+            Some(&owner.admission().grants),
+            io,
+        )
+        .await?;
+        access::require_unrestricted(
+            &view.0,
+            &[Action::List, Action::Read],
+            "selected-project queries",
+        )?;
+        Ok(view)
+    }
+
+    async fn finish_verification(
+        workspace: &acyclic_fs::Workspace<A, O>,
+        owner: &TaskJournalOwner<P>,
+        view: &acyclic_fs::access::PathTrie,
+        io: &PreparationIo,
+    ) -> Result<()> {
+        Self::verify_owner(owner, io).await?;
+        crate::filesystem::access::require_current(workspace, view, io).await
+    }
+
+    async fn verify(&self) -> Result<()> {
+        Self::verify_owner(&self.owner, &self.io).await?;
+        let view = Self::require_unrestricted(
+            &self.workspace,
+            &self.handle,
+            &self.owner,
+            self.generation.id(),
+            &self.io,
+        )
+        .await?;
+        Self::finish_verification(&self.workspace, &self.owner, &view.0, &self.io).await
     }
 
     async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
@@ -255,18 +330,18 @@ where
     }
 
     async fn file_bytes(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let result = self
             .host
             .read_pinned_io(file, self.limits.file_bytes, Some(&self.io))
             .await;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         result
     }
 
     pub(super) async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let _serial = self.serial.lock().await;
         self.file_bytes(file).await
     }
@@ -274,7 +349,7 @@ where
     pub(super) async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
         self.file(before)?;
         self.file(after)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let _serial = self.serial.lock().await;
         let _before_hold;
         let before_bytes = self.file_bytes(before).await?;
@@ -297,13 +372,13 @@ where
                 "native selection requires its actual lazy snapshot reader".into(),
             ));
         }
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let _serial = self.serial.lock().await;
         self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let result = self
             .generation
             .read(
@@ -314,14 +389,14 @@ where
             )
             .await;
         let bytes = self.io.receive(result);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let bytes = bytes?;
         self.io
             .retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
         let metadata_path =
             crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let metadata = self
             .generation
             .read(
@@ -332,7 +407,7 @@ where
             )
             .await;
         let metadata = self.io.receive(metadata);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
@@ -404,7 +479,7 @@ where
                 "selected directory page must be finite and positive".into(),
             ));
         }
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let _serial = self.serial.lock().await;
         let after = after
             .map(|name| {
@@ -426,7 +501,7 @@ where
         let engine_maximum = maximum
             .checked_add(u32::from(path.is_empty()))
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let result = self
             .generation
             .list_directory(
@@ -438,7 +513,7 @@ where
             )
             .await;
         let page = self.io.receive(result).map(|(page, _)| page);
-        Self::verify_owner(&self.owner, &self.io).await?;
+        self.verify().await?;
         let page = page?;
         let slots = (page.entries.len() as u64)
             .checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
@@ -488,3 +563,6 @@ where
 }
 
 use crate::executor::stock_string_copy;
+
+#[cfg(test)]
+mod policy_tests;

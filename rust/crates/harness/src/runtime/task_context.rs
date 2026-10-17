@@ -440,73 +440,17 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
-    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
-        || contains_content_grant_with_work(
-            grants,
-            file.volume(),
-            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
-            work,
-        )?
-        || contains_content_grant_with_work(
-            grants,
-            &(file.volume(), ""),
-            acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            work,
-        )?
-    {
+    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)? {
         return Ok(true);
     }
-    for prefix in file
-        .path()
-        .match_indices('/')
-        .filter_map(|(slash, _)| file.path().get(..slash))
-    {
-        if !crate::conversation::is_internal_path(prefix)
-            && contains_content_grant_with_work(
-                grants,
-                &(file.volume(), prefix),
-                acyclic_fs::access::DIRECTORY_READ_PREFIX,
-                work,
-            )?
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
-    grants: &Capabilities,
-    value: &T,
-    prefix: &str,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<bool> {
-    if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
-    }
-    if !grants
-        .0
-        .range::<str, _>((
-            std::ops::Bound::Included(prefix),
-            std::ops::Bound::Unbounded,
-        ))
-        .next()
-        .is_some_and(|grant| grant.starts_with(prefix))
-    {
-        return Ok(false);
-    }
-    let digest = crate::executor::json::canonical_json_digest(
-        value,
-        acyclic_stream::MAX_RECORD_BYTES as u64,
+    crate::core::directory_read_granted_with_work(
+        grants,
+        file.volume(),
+        file.path()
+            .rsplit_once('/')
+            .map_or("", |(parent, _)| parent),
         work,
-    )?;
-    if let Some(io) = work.as_deref_mut() {
-        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-        io.copy_bytes((prefix.len() + 64) as u64)?;
-    }
-    Ok(crate::conversation::contains_content_label(
-        grants, prefix, digest,
-    ))
+    )
 }
 
 #[cfg(any(

@@ -269,13 +269,17 @@ fn authored_guard_context(
         original: original.clone(),
         writable: AtomicBool::new(writable),
     });
-    let source = MemorySource::new_at_meter(
-        shared,
-        config,
-        crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-        original.claim(0, 0, WorkCounters::UNCHARGED)?,
-        &original,
-        Some(&original),
+    let source = crate::native_mount::adapter::tests::access::bind_test_access(
+        MemorySource::new_at_meter(
+            shared,
+            config,
+            crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
+            original.claim(0, 0, WorkCounters::UNCHARGED)?,
+            &original,
+            Some(&original),
+        )?,
+        vec![],
+        None,
     )?
     .with_native_callback_guard(guard.clone());
     let source = source.into_arc_meter(&original)?;

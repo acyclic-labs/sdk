@@ -176,6 +176,7 @@ impl ContextManifest {
                 "application/json",
                 "context-manifest.json",
                 None,
+                None,
             )?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;

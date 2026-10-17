@@ -43,6 +43,7 @@ impl LocalHarness {
                 &key,
                 Some(&self.files.file_generation(&goal.source, None)?),
                 None,
+                None,
             )
             .await?;
         Ok((

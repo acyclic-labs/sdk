@@ -120,6 +120,7 @@ pub(in crate::filesystem) fn content_identity_path_io(
 
 pub(crate) fn map_error(error: WorkspaceError) -> Error {
     match error {
+        WorkspaceError::AccessDenied => Error::Unauthorized(error.to_string()),
         WorkspaceError::NotFound
         | WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
             acyclic_fs::AuthorityStoreError::Missing,

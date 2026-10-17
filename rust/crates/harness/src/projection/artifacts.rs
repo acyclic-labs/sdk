@@ -172,7 +172,7 @@ pub(crate) async fn read_value<'a>(
     }
     #[cfg(feature = "filesystem")]
     let _bytes_hold;
-    let bytes = resolver.read(file, maximum, io)?.await?;
+    let bytes = resolver.read(file, maximum, None, io)?.await?;
     #[cfg(feature = "filesystem")]
     {
         _bytes_hold = match io {

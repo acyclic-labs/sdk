@@ -91,8 +91,18 @@ impl CheckoutTools {
                     )
                     .await
                     .map_err(storage)?;
-                let mounts = self.workspace.created_mounts(project, context).await?;
-                let mut tools = self.mount_task_view(view, owner, Some(mounts)).await?;
+                let (mounts, signed) = self.workspace.created_mounts(project, context).await?;
+                access::require_mount_access(
+                    view.workspace(),
+                    &mounts,
+                    &signed,
+                    context.effective_scope().grants(),
+                    "child checkout",
+                )
+                .await?;
+                let mut tools = self
+                    .mount_task_view(view, owner, Some(mounts), &signed)
+                    .await?;
                 tools.read_grant = project.capability(VolumeOperation::Read, &mut None)?;
                 tools.write_grant = project.capability(VolumeOperation::Write, &mut None)?;
                 tools.task_files = Arc::new(

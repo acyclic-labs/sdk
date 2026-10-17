@@ -6,7 +6,7 @@ use crate::filesystem::{
 };
 use crate::runtime::TaskDefinition;
 use acyclic_fs::{
-    CancellationToken, LazyWorkspace, MemoryLazyWorkspaceStore, MountOptions, MountPublication,
+    CancellationToken, LazyWorkspace, MemoryLazyWorkspaceStore, MountPublication,
     NativeMaterializationWork, PublicationPermit,
 };
 use std::{
@@ -73,6 +73,7 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
             "input.txt",
             128,
             &IdempotencyKey::new("lazy-native-input")?,
+            None,
             None,
             None,
         )
@@ -176,10 +177,32 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
         NativePreparationRoot::witness(root.path(), preparation.path(), &work)?.await?;
     let callback = context.volume_callback(&owner, &project, true, &work)?;
     std::fs::create_dir(root.path().join("project"))?;
+    let head = workspace.head(&work, &cancellation).await?;
+    let (head_ref, _head_custody) = crate::resources::GenerationRef::new(
+        project.provider(),
+        head.id().digest().as_bytes(),
+        None,
+        Some(&work),
+    )?;
+    let binding = BorrowedNativeVolumeBinding {
+        host: &fixture.filesystem,
+        volume: &project,
+        generation: &head_ref,
+        namespace: &NativeVolumeNamespace::MaterializedDirectory,
+        mounted: None,
+        path: "project",
+        writable: true,
+        verifier: &verifier,
+        scope: &fixture.signed,
+        publication: PublicationPermit::Unrestricted,
+    };
+    let options = binding
+        .mount_options(&workspace, head.id(), &context, &work)
+        .await?;
     let mount = Arc::new(
         lazy.mount(
             root.path().join("project"),
-            MountOptions::read_write()
+            options
                 .publication(MountPublication::Manual)
                 .native_context(&work, Some(callback), Some(&work)),
         )

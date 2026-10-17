@@ -56,6 +56,7 @@ impl DiscoveryWork {
                     cursor.as_deref(),
                     remaining.min(128),
                     None,
+                    None,
                 )?
                 .await?;
             page.validate()?;

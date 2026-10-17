@@ -3,6 +3,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         &self,
         file: F,
         change: ContentChange<F>,
+        append_only: bool,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
@@ -47,6 +48,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                 .record;
             if current.is_none_or(|record| record.file_id != file_id) {
                 return Err(MountSourceError::Stale);
+            }
+        }
+        if append_only {
+            let record = candidate
+                .checkout
+                .read_file_record_by_id(file_id, work, cancellation)
+                .await?;
+            if !matches!(&change, ContentChange::Write { offset, .. } if *offset == mount_node(record).logical_bytes)
+            {
+                return Err(MountSourceError::AccessDenied);
             }
         }
         candidate

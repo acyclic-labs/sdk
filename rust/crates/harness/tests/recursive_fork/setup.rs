@@ -132,6 +132,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             &IdempotencyKey::new("root-message")?,
             None,
             None,
+            None,
         )
         .await?;
     let root_attachment = host
@@ -144,6 +145,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("root-attachment")?,
+            None,
             None,
             None,
         )
@@ -163,6 +165,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             "manifest.json",
             1_024,
             &IdempotencyKey::new("root-manifest")?,
+            None,
             None,
             None,
         )
@@ -215,6 +218,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             &IdempotencyKey::new("root-project-reference")?,
             None,
             None,
+            None,
         )
         .await?;
     project_head = host.resolve(&project_head.workspace, None).await?;
@@ -245,6 +249,7 @@ pub(super) async fn setup() -> Result<RecursiveState> {
             "shared.txt",
             1_024,
             &IdempotencyKey::new("root-shared-reference")?,
+            None,
             None,
             None,
         )

@@ -192,6 +192,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             &IdempotencyKey::new("scheduler-initial")?,
             None,
             None,
+            None,
         )
         .await?;
     let verifier = FilesystemContentVerifier::new(
@@ -263,6 +264,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         if slot == "a" {
@@ -330,6 +332,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     &IdempotencyKey::new("invalid-type-upload")?,
                     None,
                     None,
+                    None,
                 )
                 .await?;
             assert!(
@@ -385,6 +388,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "forged-join.json",
             1_024,
             &IdempotencyKey::new("forged-join-upload")?,
+            None,
             None,
             None,
         )
@@ -515,6 +519,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 &IdempotencyKey::new(format!("child-upload-{slot}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         coordinator
@@ -624,6 +629,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             "child.json",
             1_024,
             &IdempotencyKey::new("reduce-child-upload")?,
+            None,
             None,
             None,
         )

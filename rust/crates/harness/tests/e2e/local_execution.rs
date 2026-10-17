@@ -29,7 +29,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
     let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
-    let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
+    let source = reader.file_query(&volume, BOUNDARY_BUDGET).await?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
     let base = host.resolve(&workspace, None).await?.generation;

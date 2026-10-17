@@ -193,6 +193,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &IdempotencyKey::new("root-skill")?,
         None,
         None,
+        None,
     )
     .await?;
     let builtin_writer = ContentGrant::verify(
@@ -213,6 +214,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             "help.txt",
             1024,
             &IdempotencyKey::new("builtin")?,
+            None,
             None,
             None,
         )
@@ -312,6 +314,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &IdempotencyKey::new("edit-skill")?,
         None,
         None,
+        None,
     )
     .await?;
     assert_eq!(
@@ -365,6 +368,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         "late.txt",
         1024,
         &IdempotencyKey::new("late-skill")?,
+        None,
         None,
         None,
     )

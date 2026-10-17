@@ -92,6 +92,7 @@ impl ContentResidencyVerifier for YieldingContent {
         &'a self,
         _: &'a FileRef,
         _: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, OwnedBytes>> {
         BoundedContentFuture::new(io, || async {

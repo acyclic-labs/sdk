@@ -76,7 +76,7 @@ fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
             let invalidator = loom::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 1)));
+                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 2)));
                     let notifier = RefusesFirst {
                         first_gate: Some((attempted, released)),
                         ..Default::default()
@@ -103,6 +103,9 @@ fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
                 core.wait_for_invalidation(core.state().unwrap(), None, &work),
                 Err(NativeMountError::Lifecycle(_))
             ));
+            // The refusal and waiter wake have both completed. Park the worker
+            // before stop; unrelated teardown interleavings add no wake coverage.
+            asleep.recv().unwrap();
             {
                 let state = core.state().unwrap();
                 assert!(state.invalidation.denied);

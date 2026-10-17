@@ -88,7 +88,9 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
             .and_then(|(file, retained)| Ok((file, publication_io.take_native_custody(retained)?)))
     }?;
     let before = original.live_allocation_bytes();
-    let bytes = reader.read(&staged.0, 65_536, Some(&content_io))?.await?;
+    let bytes = reader
+        .read(&staged.0, 65_536, None, Some(&content_io))?
+        .await?;
     assert_eq!(bytes.as_ref(), b"same issued context");
     assert!(bytes.matches_meter(&original.runtime_meter()));
     let held = original.live_allocation_bytes() - before;
@@ -138,7 +140,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         crate::runtime::content_residency_verifier(Arc::clone(&root), root_owner, Some(&io))?;
     assert!(matches!(
         root_reader
-            .read(&staged.0, 65_536, Some(&content_io))?
+            .read(&staged.0, 65_536, None, Some(&content_io))?
             .await,
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
@@ -147,7 +149,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     ));
 
     let blocker = exhaust_memory(&original)?;
-    let denied = reader.read(&staged.0, 65_536, Some(&content_io));
+    let denied = reader.read(&staged.0, 65_536, None, Some(&content_io));
     assert!(matches!(
         denied,
         Err(Error::NativeWork {
@@ -163,7 +165,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     drop(blocker);
     cancellation.cancel();
     assert!(matches!(
-        reader.read(&staged.0, 65_536, Some(&content_io)),
+        reader.read(&staged.0, 65_536, None, Some(&content_io)),
         Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
             ..

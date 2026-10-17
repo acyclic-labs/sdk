@@ -70,6 +70,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             "text/plain",
             "source.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -156,6 +157,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             "text/plain",
             "source.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -238,6 +240,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             b"later user edit",
             "text/plain",
             "second.txt",
+            None,
             None,
         )?
         .await?

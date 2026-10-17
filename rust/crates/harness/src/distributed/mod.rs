@@ -29,6 +29,7 @@ mod commit;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod completion;
 mod coordinator;
+mod intent_cache;
 mod journal;
 mod observe;
 mod origins;
@@ -40,6 +41,8 @@ mod serializer;
 mod session;
 #[cfg(test)]
 mod tests;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod verification;
 
 #[cfg(feature = "filesystem")]
 pub(crate) use authority::JournalWrite;
@@ -61,7 +64,10 @@ pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
 use commit::append_if_execution_idle;
-use journal::{coordinator_stream, next_record, read_intent, read_records};
+use journal::{
+    coordinator_stream, event_intent, next_record, read_intent, read_records,
+    replayed_intent_digest,
+};
 use serializer::{
     decode, decode_json, encode, formatted_text, inspect_envelope, stream_key, stream_path,
     validate_idempotency_key,

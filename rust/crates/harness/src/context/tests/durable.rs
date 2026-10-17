@@ -179,6 +179,7 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
             "application/json",
             "context.json",
             None,
+            None,
         )?
         .await?;
     let record = serde_json::json!({

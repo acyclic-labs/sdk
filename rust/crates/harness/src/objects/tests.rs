@@ -70,6 +70,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "text/plain",
             "one.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -81,6 +82,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await?
@@ -89,7 +91,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     );
     assert_eq!(
         owner_store
-            .read(&file, file.descriptor().byte_length(), None)?
+            .read(&file, file.descriptor().byte_length(), None, None)?
             .await?
             .as_slice(),
         b"owner bytes"
@@ -101,6 +103,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             b"owner bytes",
             "text/plain",
             "one.txt",
+            None,
             None,
         )?
         .await?
@@ -114,6 +117,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -181,6 +185,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "application/vnd.acyclic.harness.attachments+json",
             "one.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -214,7 +219,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     .await?;
     assert_eq!(
         attached
-            .read(&file, file.descriptor().byte_length(), None)?
+            .read(&file, file.descriptor().byte_length(), None, None)?
             .await?
             .as_slice(),
         b"owner bytes"
@@ -228,6 +233,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                     offset: 1,
                     length: 3
                 },
+                None,
                 None
             )?
             .await?
@@ -242,6 +248,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"denied",
                 "text/plain",
                 "denied.txt",
+                None,
                 None
             )?
             .await
@@ -255,6 +262,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "changed.txt",
+                None,
                 None
             )?
             .await
@@ -268,6 +276,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"other bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -281,6 +290,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 b"owner bytes",
                 "text/plain",
                 "one.txt",
+                None,
                 None
             )?
             .await
@@ -343,7 +353,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     )?;
     assert!(
         owner_store
-            .read(&wrong, wrong.descriptor().byte_length(), None)?
+            .read(&wrong, wrong.descriptor().byte_length(), None, None)?
             .await
             .is_err()
     );
@@ -355,20 +365,26 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             "text/plain",
             "one.txt",
             None,
+            None,
         )?
         .await?
         .0;
     assert_ne!(replacement.version(), file.version());
     assert_eq!(
         owner_store
-            .read(&file, file.descriptor().byte_length(), None)?
+            .read(&file, file.descriptor().byte_length(), None, None)?
             .await?
             .as_slice(),
         b"owner bytes"
     );
     assert_eq!(
         owner_store
-            .read(&replacement, replacement.descriptor().byte_length(), None)?
+            .read(
+                &replacement,
+                replacement.descriptor().byte_length(),
+                None,
+                None
+            )?
             .await?
             .as_slice(),
         b"replacement bytes"
@@ -401,7 +417,12 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     );
     assert!(
         owner_store
-            .read(&replacement, replacement.descriptor().byte_length(), None)?
+            .read(
+                &replacement,
+                replacement.descriptor().byte_length(),
+                None,
+                None
+            )?
             .await
             .is_err()
     );
@@ -509,6 +530,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
             "text/plain",
             "a.txt",
             None,
+            None,
         )?
         .await?
         .0;
@@ -519,6 +541,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
             b"bucket b",
             "text/plain",
             "b.txt",
+            None,
             None,
         )?
         .await?
@@ -558,7 +581,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     grant_a.require_file_read(&file_a, None)?;
     assert_eq!(
         reader_a
-            .read(&file_a, file_a.descriptor().byte_length(), None)?
+            .read(&file_a, file_a.descriptor().byte_length(), None, None)?
             .await?
             .as_slice(),
         b"bucket a"
@@ -567,7 +590,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     grant_b.require_file_read(&file_b, None)?;
     assert_eq!(
         reader_b
-            .read(&file_b, file_b.descriptor().byte_length(), None)?
+            .read(&file_b, file_b.descriptor().byte_length(), None, None)?
             .await?
             .as_slice(),
         b"bucket b"

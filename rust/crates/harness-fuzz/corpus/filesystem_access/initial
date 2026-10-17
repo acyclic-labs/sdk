@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "version": 1,
+  "layers": [[{
+    "id": "signed-capability-ceiling",
+    "effect": "allow",
+    "principal": {"attributes": {}},
+    "actions": ["list", "read", "create", "write", "append", "delete", "rename", "fork", "merge-into", "read-history", "lock", "admin"],
+    "resource": {"lineage_root": null, "volume": null, "generations": "all", "path": "**"},
+    "conditions": {}
+  }]]
+}

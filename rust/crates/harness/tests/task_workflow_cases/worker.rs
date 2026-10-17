@@ -1115,7 +1115,8 @@ pub(super) async fn worker_restart_with_options(
             let Some(acyclic_harness::Outcome::Succeeded(result)) = &retained.outcome else {
                 return Err(Error::Invalid("missing result".into()));
             };
-            assert_eq!(reader.read(result, 65_536, None)?.await?.as_ref(), b"7");
+            let bytes = reader.read(result, 65_536, None, None)?.await?;
+            assert_eq!(bytes.as_ref(), b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             assert_completed_dispatches(command, &model, &tool);
         } else {

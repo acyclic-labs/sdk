@@ -53,6 +53,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             &IdempotencyKey::new("chart-upload")?,
             None,
             None,
+            None,
         )
         .await?;
     let foreign_issuer = AuthorityIssuer::new(
@@ -101,6 +102,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             "secret.txt",
             4_096,
             &IdempotencyKey::new("foreign-upload")?,
+            None,
             None,
             None,
         )

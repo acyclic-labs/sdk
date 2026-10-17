@@ -207,6 +207,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             &IdempotencyKey::new("parent-message")?,
             None,
             None,
+            None,
         )
         .await?;
     let attachment = host
@@ -219,6 +220,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("parent-attachment")?,
+            None,
             None,
             None,
         )
@@ -238,6 +240,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "manifest.json",
             1_024,
             &IdempotencyKey::new("parent-manifest")?,
+            None,
             None,
             None,
         )

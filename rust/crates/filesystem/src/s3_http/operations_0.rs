@@ -52,6 +52,9 @@ where
         if names.len() > self.limits.maximum_list_entries_examined as usize {
             return Err(s3s::s3_error!(SlowDown));
         }
+        for name in &names {
+            self.scoped_principal(&request, name, false).await?;
+        }
         names.sort_unstable();
         if names.windows(2).any(|pair| pair.first() == pair.last()) {
             return Err(s3s::s3_error!(InternalError));

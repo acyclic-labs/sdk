@@ -355,6 +355,7 @@ impl LocalHarness {
                 "application/json",
                 "model input",
                 None,
+                None,
             )?
             .await?
             .0;
@@ -390,7 +391,7 @@ impl LocalHarness {
     ) -> Result<Option<(WorkflowCommand, WorkflowCommand)>> {
         let publisher = self.input_publisher()?;
         let (payload, _) = publisher
-            .observe_staged_once(operation, self.limits.file_bytes, None)?
+            .observe_staged_once(operation, self.limits.file_bytes, None, None)?
             .await?;
         let Some(payload) = payload else {
             return Ok(None);
@@ -420,7 +421,7 @@ impl LocalHarness {
         // Older admissions retained one identical payload per turn. Keep their
         // exact reference on retry; new commands share one immutable journal file.
         let (retained, _) = publisher
-            .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
+            .observe_staged_once(receive_operation, self.limits.file_bytes, None, None)?
             .await?;
         let payload = match retained {
             Some(payload) => {
@@ -453,6 +454,7 @@ impl LocalHarness {
                         b"{\"after\":0}",
                         "application/json",
                         "mailbox receive",
+                        None,
                         None,
                     )?
                     .await?
@@ -631,4 +633,34 @@ pub(super) fn receive_operation(operation: OperationId) -> OperationId {
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
+}
+
+// One content-addressed default file per effective catalog, shared by every
+// prompt opened with that catalog. Admission retains its exact immutable ref.
+#[cfg(test)]
+pub(super) async fn default_manifest(
+    publisher: &FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>,
+    tools: &ToolRegistry,
+    limits: Limits,
+    mounts: Option<&str>,
+) -> Result<crate::conversation::FileRef> {
+    let mut manifest = crate::context::ContextManifest::new(Default::default(), Vec::new(), tools)?;
+    if let Some(mounts) = mounts {
+        manifest.conventions.push(mounts.to_owned());
+    }
+    let bytes = manifest.encode(limits)?;
+    let digest = blake3::hash(&bytes);
+    let operation = OperationId::from_bytes(digest.as_bytes()[..16].try_into().unwrap());
+    Ok(publisher
+        .stage_once(
+            operation,
+            &format!("inputs/context/{digest}.json"),
+            &bytes,
+            "application/json",
+            "context-manifest.json",
+            None,
+            None,
+        )?
+        .await?
+        .0)
 }

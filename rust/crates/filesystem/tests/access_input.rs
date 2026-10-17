@@ -17,6 +17,15 @@ pub struct Input {
 }
 
 pub fn check(bytes: &[u8]) {
+    check_decisions::<false>(bytes);
+}
+
+#[cfg(test)]
+pub fn check_with_corrupted_decision(bytes: &[u8]) {
+    check_decisions::<true>(bytes);
+}
+
+fn check_decisions<const CORRUPT_DECISION: bool>(bytes: &[u8]) {
     // Scope labels are also accepted directly, including malformed JSON chains.
     if let Ok(label) = std::str::from_utf8(bytes)
         && let Ok(Some(capability)) = Capability::from_scope_label(label)
@@ -72,6 +81,7 @@ pub fn check(bytes: &[u8]) {
     ) else {
         return; // Invalid input and policies exceeding compilation budgets fail closed.
     };
+    let trie = std::sync::Arc::new(trie);
     let prepared = trie.prepare(&input.path);
     for action in Action::ALL {
         let expected = decide(
@@ -82,6 +92,15 @@ pub fn check(bytes: &[u8]) {
             context,
             &input.capability,
         );
+        #[cfg(test)]
+        let expected = if CORRUPT_DECISION {
+            Decision {
+                allowed: !expected.allowed,
+                ..expected
+            }
+        } else {
+            expected
+        };
         assert_eq!(trie.decide(action, &input.path, input.now), expected);
         if let Ok(path) = prepared {
             assert_eq!(path.decide(action, input.now), expected);
@@ -124,10 +143,31 @@ pub fn check(bytes: &[u8]) {
                         .as_ref()
                         .is_some_and(|text| trie.prepare(text).is_ok())
             );
+            let namespace = acyclic_fs::kernel::NamespacePath::new(vec![name], config.limits)
+                .expect("one validated native component");
+            let namespace_access = trie.prepare_namespace(&namespace);
+            let pinned = trie.pin(&namespace);
+            assert_eq!(namespace_access.is_ok(), native.is_ok());
+            assert_eq!(pinned.is_ok(), native.is_ok());
             if let (Ok(native), Some(path)) = (native, decoded) {
                 for action in Action::ALL {
+                    let expected = native.decide(action, input.now);
                     assert_eq!(
-                        native.decide(action, input.now),
+                        namespace_access
+                            .as_ref()
+                            .expect("same native namespace")
+                            .decide(action, input.now),
+                        expected
+                    );
+                    assert_eq!(
+                        pinned
+                            .as_ref()
+                            .expect("same pinned namespace")
+                            .decide(action, input.now),
+                        expected
+                    );
+                    assert_eq!(
+                        expected,
                         decide(
                             &input.policy,
                             &input.principal,

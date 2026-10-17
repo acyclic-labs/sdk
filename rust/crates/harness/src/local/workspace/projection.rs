@@ -41,18 +41,12 @@ impl MountedVolume {
         lock_owned(StateArc::clone(&self.native)).await
     }
 
-    pub(super) async fn project(&self, root: &Path, relative: &str, read_only: bool) -> Result<()> {
+    pub(super) async fn project(&self, root: &Path, relative: &str) -> Result<()> {
         initialize(&self.native, async || {
             volumes::prepare_mount_directory(root, Path::new(relative))?;
-            let options = if read_only {
-                acyclic_fs::MountOptions::read_only()
-            } else {
-                acyclic_fs::MountOptions::read_write()
-                    .publication(acyclic_fs::MountPublication::Manual)
-            };
             self.workspace
                 .workspace()
-                .mount(&self.destination, options)
+                .mount(&self.destination, self.options.clone())
                 .await
                 .map(Native)
                 .map_err(Error::from)

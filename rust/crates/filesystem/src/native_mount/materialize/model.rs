@@ -23,7 +23,6 @@ pub(crate) enum MaterializeMode {
 }
 
 pub(super) fn host_metadata(metadata: FileMetadata) -> (FileMetadata, Option<crate::ObjectId>) {
-    #[cfg(unix)]
     let mut metadata = metadata;
     #[cfg(unix)]
     {
@@ -36,7 +35,6 @@ pub(super) fn host_metadata(metadata: FileMetadata) -> (FileMetadata, Option<cra
             metadata.posix_flags = crate::kernel::MetadataField::Unavailable;
         }
     }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let named_attributes = match metadata.named_attributes {
         crate::kernel::MetadataField::Value(root) => {
             metadata.named_attributes = crate::kernel::MetadataField::Unavailable;
@@ -44,8 +42,6 @@ pub(super) fn host_metadata(metadata: FileMetadata) -> (FileMetadata, Option<cra
         }
         _ => None,
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    let named_attributes = None;
     (metadata, named_attributes)
 }
 

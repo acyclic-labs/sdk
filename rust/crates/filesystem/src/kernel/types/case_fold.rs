@@ -22,6 +22,10 @@ impl Writeable for FoldedComponents<'_> {
     }
 }
 
+pub(crate) fn write_key(text: &str, sink: &mut impl std::fmt::Write) -> std::fmt::Result {
+    FoldedComponents(text).write_to(sink)
+}
+
 pub(super) fn key(text: &str) -> Cow<'_, str> {
     writeable::to_string_or_borrow(&FoldedComponents(text), text.as_bytes())
 }

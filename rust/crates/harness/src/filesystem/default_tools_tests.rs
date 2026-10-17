@@ -203,6 +203,7 @@ async fn merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes() -> Resu
             &IdempotencyKey::new("merge-notice")?,
             None,
             None,
+            None,
         )
         .await?;
     let controller = fixture.controller()?;

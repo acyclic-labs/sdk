@@ -219,6 +219,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &IdempotencyKey::new("stage-first")?,
             None,
             None,
+            None,
         )
         .await?;
     let second = host
@@ -233,6 +234,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &IdempotencyKey::new("stage-second")?,
             None,
             None,
+            None,
         )
         .await?;
     assert_eq!(
@@ -245,6 +247,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "first.txt",
             16,
             &IdempotencyKey::new("stage-first")?,
+            None,
             None,
             None
         )
@@ -270,6 +273,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 display_name,
                 16,
                 &IdempotencyKey::new("stage-first")?,
+                None,
                 None,
                 None
             )
@@ -373,7 +377,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
     let delegated_reader =
         FilesystemContentVerifier::new(host.clone(), &verifier, &delegated_scope, 16, None)?;
     let (listed_generation, page) = delegated_reader
-        .list_private_directory(&volume, "messages", "messages", None, None, 10)
+        .list_private_directory(&volume, "messages", "messages", None, None, 10, None)
         .await?;
     assert_eq!(page.entries.len(), 1);
     let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
@@ -385,6 +389,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             Some(&listed_generation),
             None,
             10,
+            None,
             None,
         )?
         .await?;
@@ -404,6 +409,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             Some(&listed_generation),
             16,
             None,
+            None,
         )?
         .await?;
     assert_eq!(portable_ref, second);
@@ -415,6 +421,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "messages/first.txt",
             Some(&listed_generation),
             u64::MAX,
+            None,
             None,
         )?
         .await
@@ -432,6 +439,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &IdempotencyKey::new("stage-later")?,
         None,
         None,
+        None,
     )
     .await?;
     let (old_generation, old_page) = delegated_reader
@@ -442,12 +450,13 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             Some(&listed_generation),
             None,
             10,
+            None,
         )
         .await?;
     assert_eq!(old_generation, listed_generation);
     assert_eq!(old_page.entries, page.entries);
     let (_, current_page) = delegated_reader
-        .list_private_directory(&volume, "messages", "messages", None, None, 10)
+        .list_private_directory(&volume, "messages", "messages", None, None, 10, None)
         .await?;
     assert_eq!(current_page.entries.len(), 2);
     let (old_ref, old_bytes) = delegated_reader
@@ -458,6 +467,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             Some(&listed_generation),
             u64::MAX,
             None,
+            None,
         )?
         .await
         .map(|(file, bytes, _)| (file, bytes))?;
@@ -465,7 +475,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
     assert_eq!(old_bytes.as_ref(), b"two");
     assert!(
         delegated_reader
-            .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
+            .list_private_directory(&volume, "messages", "elsewhere", None, None, 10, None)
             .await
             .is_err()
     );
@@ -477,7 +487,15 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &mut None,
     )?;
     let (discovered, bytes) = host
-        .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)
+        .read_private_path(
+            &volume,
+            &delegated,
+            "messages/first.txt",
+            None,
+            16,
+            None,
+            None,
+        )
         .await?;
     assert_eq!(bytes.as_ref(), b"two");
     assert_ne!(discovered.version(), second.version());
@@ -493,6 +511,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "forged.json",
             16,
             &IdempotencyKey::new("internal-write")?,
+            None,
             None,
             None
         )
@@ -511,6 +530,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             &IdempotencyKey::new("stage-empty")?,
             None,
             None,
+            None,
         )
         .await?;
     assert!(matches!(
@@ -521,6 +541,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
                 "messages/empty.txt",
                 Some(&listed_generation),
                 u64::MAX,
+                None,
                 None
             )?
             .await
@@ -551,6 +572,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
             "escape",
             16,
             &IdempotencyKey::new("invalid-path")?,
+            None,
             None,
             None
         )
@@ -643,6 +665,7 @@ async fn conversation_stream_admission_requires_resident_files() -> Result<()> {
             "input.txt",
             32,
             &IdempotencyKey::new("input-upload")?,
+            None,
             None,
             None,
         )

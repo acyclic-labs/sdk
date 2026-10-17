@@ -27,6 +27,7 @@ impl Hooks {
                 Self::MEDIA_TYPE,
                 "hooks.json",
                 None,
+                None,
             )?
             .await?
             .0)

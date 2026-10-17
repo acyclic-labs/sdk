@@ -1,5 +1,90 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "../tests/facade/observed_generation.rs"]
+mod tests;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) struct ObservedGeneration {
+    state: GenerationObservation,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum GenerationObservation {
+    Unknown,
+    Head {
+        generation: GenerationId,
+        position: Sequence,
+        last_operation: Option<OperationId>,
+    },
+    Committed(LastCommit),
+}
+
+const _: () = assert!(size_of::<ObservedGeneration>() == size_of::<Option<LastCommit>>());
+
+impl ObservedGeneration {
+    pub(super) const UNKNOWN: Self = Self {
+        state: GenerationObservation::Unknown,
+    };
+
+    pub(super) fn head(generation: GenerationId, position: Sequence) -> Self {
+        Self {
+            state: GenerationObservation::Head {
+                generation,
+                position,
+                last_operation: None,
+            },
+        }
+    }
+
+    pub(super) fn refresh(&mut self, generation: GenerationId, position: Sequence) {
+        if self.position(generation) == Some(position) {
+            return;
+        }
+        self.state = GenerationObservation::Head {
+            generation,
+            position,
+            last_operation: self.operation(),
+        };
+    }
+
+    pub(super) fn committed(commit: LastCommit) -> Self {
+        Self {
+            state: GenerationObservation::Committed(commit),
+        }
+    }
+
+    pub(super) fn commit(self) -> Option<LastCommit> {
+        match self.state {
+            GenerationObservation::Committed(commit) => Some(commit),
+            _ => None,
+        }
+    }
+
+    pub(super) fn operation(self) -> Option<OperationId> {
+        match self.state {
+            GenerationObservation::Unknown => None,
+            GenerationObservation::Head { last_operation, .. } => last_operation,
+            GenerationObservation::Committed(commit) => Some(commit.operation_id),
+        }
+    }
+
+    pub(super) fn position(self, generation: GenerationId) -> Option<Sequence> {
+        let (observed, position) = match self.state {
+            GenerationObservation::Unknown => return None,
+            GenerationObservation::Head {
+                generation,
+                position,
+                ..
+            } => (generation, position),
+            GenerationObservation::Committed(commit) => {
+                (commit.generation_id, commit.head.sequence)
+            }
+        };
+        (observed == generation).then_some(position)
+    }
+}
+
 /// Immutable generation-fenced checkout admitted by the embedded facade.
 pub struct Checkout<A, O> {
     pub(super) volume: Volume<A, O>,
@@ -8,9 +93,9 @@ pub struct Checkout<A, O> {
     /// The base generation and the working tree, which a running collection
     pub(super) root: crate::collection::CheckoutRoots,
     pub(super) authority_head: Option<Head>,
+    pub(super) observed_generation: ObservedGeneration,
     pub(super) authored_operation_id: Option<OperationId>,
     pub(super) live_operation_id: Option<OperationId>,
-    pub(super) last_commit: Option<LastCommit>,
     pub(super) publication_closure: Option<PublicationClosure<A, O>>,
     pub(super) prepared_merge_parent: Option<ObjectId>,
     pub(super) dependencies: DependencyLedger,
@@ -159,9 +244,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 base_root,
                 root,
                 authority_head,
+                observed_generation: match (selector, authority_head) {
+                    (GenerationSelector::Head, Some(head)) => ObservedGeneration::head(
+                        GenerationId::new(generation_root.digest),
+                        head.sequence,
+                    ),
+                    _ => ObservedGeneration::UNKNOWN,
+                },
                 authored_operation_id: None,
                 live_operation_id: None,
-                last_commit: None,
                 publication_closure: None,
                 prepared_merge_parent: None,
                 dependencies,
@@ -175,6 +266,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 }
 
 impl<A, O> Checkout<A, O> {
+    pub(crate) fn volume_handle(&self) -> Volume<A, O> {
+        self.volume.clone()
+    }
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {
@@ -266,6 +360,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.reset_root(root, &mut accounting, cancellation).await?;
             }
             self.authority_head = Some(head);
+            self.observed_generation
+                .refresh(self.generation_id(), head.sequence);
             Ok(self.generation_id())
         }
         .await;

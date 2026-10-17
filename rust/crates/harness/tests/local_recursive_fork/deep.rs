@@ -88,6 +88,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             &IdempotencyKey::new("deep-message-0")?,
             None,
             None,
+            None,
         )
         .await?;
     let mut previous_attachment = host
@@ -100,6 +101,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             "evidence.bin",
             1_024,
             &IdempotencyKey::new("deep-attachment-0")?,
+            None,
             None,
             None,
         )
@@ -372,6 +374,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 &IdempotencyKey::new(format!("deep-message-{level}"))?,
                 None,
                 None,
+                None,
             )
             .await?;
         let child_attachment = host
@@ -384,6 +387,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 "evidence.bin",
                 1_024,
                 &IdempotencyKey::new(format!("deep-attachment-{level}"))?,
+                None,
                 None,
                 None,
             )

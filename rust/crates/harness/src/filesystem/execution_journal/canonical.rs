@@ -403,7 +403,7 @@ where
                 )
             })?;
             let bytes = verifier
-                .read(&summary.output, self.maximum_payload_bytes, io)?
+                .read(&summary.output, self.maximum_payload_bytes, None, io)?
                 .await?;
             if let Some(io) = io {
                 io.check_cancellation()?;

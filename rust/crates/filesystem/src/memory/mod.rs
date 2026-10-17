@@ -11,11 +11,12 @@ use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
     ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
+use crate::sync::Mutex;
 use crate::{AuthorityWork, FsError, WorkError};
 use acyclic_stream::OwnedBytes;
 use std::collections::HashMap;
 use std::mem::size_of;
-use std::sync::{Mutex, RwLock};
+use std::sync::RwLock;
 
 mod authority;
 mod objects;

@@ -123,6 +123,7 @@ where
             &IdempotencyKey::new(format!("scratch-{level}"))?,
             None,
             None,
+            None,
         )
         .await?;
     let mut capabilities = local_scope

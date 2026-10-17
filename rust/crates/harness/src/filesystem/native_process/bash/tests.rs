@@ -154,33 +154,44 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
         // Property: every non-NUL native value survives launch byte-for-byte,
         // while host tools remain reachable and mount hints override the host.
-        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32)).run(
-            &prop::collection::vec(1u8..=255, 0..32),
-            |value| {
-        let result = std::process::Command::new(&executable)
-        .args([
-            "filesystem::native_process::bash::tests::host_home_and_path_survive_mount_environment_overrides",
-            "--exact",
-            "--nocapture",
-        ])
-        .env(CHILD, "1")
-        .env("PATH", &bin)
-        .env("HOME", &home)
-        .env("ACYCLIC_VOLUME_DATA", "stale mount")
-        .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
-        .env("ACYCLIC_TEST_NATIVE_BYTES", std::ffi::OsString::from_vec(value))
-        .env(std::ffi::OsString::from_vec(b"ACYCLIC_TEST_UNRELATED_\xff".to_vec()), "native key")
-        .env_remove("BASH_ENV")
-        .output()
-        .map_err(|error| TestCaseError::fail(error.to_string()))?;
-        prop_assert!(
-            result.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        Ok(())
-        }).map_err(|error| Error::Invalid(error.to_string()))?;
+        proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
+            .run(&prop::collection::vec(1u8..=255, 0..32), |value| {
+                let result = std::process::Command::new(&executable)
+                    .args([
+                        concat!(
+                            module_path!(),
+                            "::host_home_and_path_survive_mount_environment_overrides"
+                        )
+                        .strip_prefix(concat!(env!("CARGO_CRATE_NAME"), "::"))
+                        .expect("test module belongs to its crate"),
+                        "--exact",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, "1")
+                    .env("PATH", &bin)
+                    .env("HOME", &home)
+                    .env("ACYCLIC_VOLUME_DATA", "stale mount")
+                    .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+                    .env(
+                        "ACYCLIC_TEST_NATIVE_BYTES",
+                        std::ffi::OsString::from_vec(value),
+                    )
+                    .env(
+                        std::ffi::OsString::from_vec(b"ACYCLIC_TEST_UNRELATED_\xff".to_vec()),
+                        "native key",
+                    )
+                    .env_remove("BASH_ENV")
+                    .output()
+                    .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                prop_assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                Ok(())
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         return Ok(());
     }
     std::fs::create_dir_all(temp.path().join(".volumes/data"))

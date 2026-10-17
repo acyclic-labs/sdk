@@ -16,6 +16,7 @@ async fn capture(harness: &LocalHarness) -> Result<()> {
         Arc::clone(workspace),
         harness.project(),
         Arc::new(acyclic_stream::SystemUnixMillisClock),
+        &harness.signed,
         Arc::clone(harness.task_files()),
     ))
     .await?;
@@ -250,6 +251,7 @@ async fn sweep(text: &str) -> Result<()> {
             Arc::clone(checkout),
             harness.project(),
             Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
             Arc::clone(harness.task_files()),
         ))
         .await?;

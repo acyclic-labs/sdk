@@ -210,6 +210,7 @@ impl LocalHarness {
                             checkpoint_operation,
                             narrowed.limits().file_bytes,
                             None,
+                            None,
                         )?
                         .await?;
                     let (checkpoint, cut) = if let Some(checkpoint) = checkpoint {
@@ -229,6 +230,7 @@ impl LocalHarness {
                                 &bytes,
                                 "application/json",
                                 "source.json",
+                                None,
                                 None,
                             )?
                             .await?;
@@ -377,6 +379,7 @@ impl LocalHarness {
                             &bytes,
                             "application/json",
                             "fork.json",
+                            None,
                             None,
                         )?
                         .await?;

@@ -28,12 +28,6 @@ impl Filesystem for FuseProjection {
 
     fn init(&mut self, _: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         let result = self.core.request(|work| {
-            let source = self.core.source.as_ref();
-            let skips_opendir = config
-                .capabilities()
-                .contains(InitFlags::FUSE_NO_OPENDIR_SUPPORT)
-                && ProjectionState::directory_open_flags(source, work)?
-                    .contains(FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE);
             // Every file open is answered, never skipped
             // (`FUSE_NO_OPEN_SUPPORT`): an open pins the version its handle
             // reads and drops any other size the kernel holds. A kernel
@@ -44,10 +38,10 @@ impl Filesystem for FuseProjection {
             config
                 .add_capabilities(REQUESTED_CAPABILITIES & config.capabilities())
                 .map_err(NativeMountError::FuseUnsupportedCapabilities)?;
-            Ok(skips_opendir)
+            work.admit(crate::WorkCounters::UNCHARGED)?;
+            Ok(())
         });
-        self.skips_opendir = self
-            .core
+        self.core
             .finish(result)
             .map_err(std::io::Error::from_raw_os_error)?;
         Ok(())
@@ -448,12 +442,7 @@ impl Filesystem for FuseProjection {
             reply,
             span,
             work,
-            {
-                if self.skips_opendir {
-                    return Err(libc::ENOSYS.into());
-                }
-                ProjectionState::directory_open_flags(self.core.source.as_ref(), work)
-            },
+            self.open_directory(inode.0, work),
             |flags| reply.opened(FuseFileHandle(0), flags)
         );
     }

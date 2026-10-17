@@ -63,7 +63,7 @@ impl LocalHarness {
         id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
         let source_operation = OperationId::from_bytes(id);
         let (retained, _) = publisher
-            .observe_staged_once(source_operation, self.limits.file_bytes, None)?
+            .observe_staged_once(source_operation, self.limits.file_bytes, None, None)?
             .await?;
         let (source, captured) = match retained {
             Some(file) => {
@@ -90,6 +90,7 @@ impl LocalHarness {
                         &bytes,
                         "application/json",
                         "summary source",
+                        None,
                         None,
                     )?
                     .await?
@@ -155,6 +156,7 @@ impl LocalHarness {
                 &bytes,
                 "application/json",
                 "summary command",
+                None,
                 None,
             )?
             .await?

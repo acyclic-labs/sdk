@@ -2,6 +2,7 @@ use super::*;
 mod unindexed;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    #[cfg(test)]
     pub(in crate::filesystem) async fn read_pinned_range(
         &self,
         reference: &FileRef,
@@ -33,6 +34,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let opened = self.open(&workspace, Some(io)).await?;
         let generation = self.file_generation(reference, Some(io))?;
         let selected = self.generation(&opened, &generation, Some(io)).await?;
+        Self::read_selected_range(&opened, &selected, reference, range, io).await
+    }
+
+    pub(in crate::filesystem) async fn read_selected_range(
+        opened: &Workspace<A, O>,
+        selected: &acyclic_fs::Generation<A, O>,
+        reference: &FileRef,
+        range: acyclic_fs::ByteRange,
+        io: &PreparationIo,
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let metadata_path = content_metadata_path_io(reference.path(), true, Some(io))?;
         const MAXIMUM_METADATA: u64 = 6
             * (crate::conversation::MAX_PATH_BYTES as u64
@@ -42,7 +53,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
         let metadata =
-            match read_generation(&selected, &metadata_path, MAXIMUM_METADATA, Some(io)).await {
+            match read_generation(selected, &metadata_path, MAXIMUM_METADATA, Some(io)).await {
                 Ok(metadata) => Some(metadata),
                 Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -107,7 +118,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             original
         } else {
-            unindexed::authenticate(&selected, reference, &path, io).await?;
+            unindexed::authenticate(selected, reference, &path, io).await?;
             selected.clone()
         };
         let chunk = io.sdk(

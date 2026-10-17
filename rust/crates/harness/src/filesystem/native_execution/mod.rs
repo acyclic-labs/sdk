@@ -19,6 +19,12 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+mod access;
+#[cfg(feature = "filesystem-local")]
+mod local_owner;
+pub use access::{NativeAccessAuthority, authenticated_mount_options, owner_mount_options};
+#[cfg(feature = "filesystem-local")]
+pub use local_owner::{local_owner_mount_options, local_owner_workspace};
 mod allocation;
 mod completion;
 pub(super) mod journal;

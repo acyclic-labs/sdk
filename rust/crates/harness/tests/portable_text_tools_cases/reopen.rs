@@ -83,6 +83,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 &IdempotencyKey::new("source")?,
                 None,
                 None,
+                None,
             )
             .await?;
         let edited = host
@@ -98,6 +99,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 "file.txt",
                 64,
                 &IdempotencyKey::new("user")?,
+                None,
                 None,
                 None,
             )
@@ -127,6 +129,7 @@ async fn exact_edit_reopens_persistent_receipt_without_overwriting_user_changes(
                 maximum_bytes,
                 &key,
                 Some(&head),
+                None,
                 None
             )
             .await,

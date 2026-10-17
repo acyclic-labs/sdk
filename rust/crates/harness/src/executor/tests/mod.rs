@@ -660,6 +660,7 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
         &'a self,
         file: &'a FileRef,
         _maximum_bytes: u64,
+        _ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(

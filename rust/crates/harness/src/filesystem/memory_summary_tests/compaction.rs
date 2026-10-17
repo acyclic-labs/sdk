@@ -79,6 +79,7 @@ async fn staging_growth(storages: &[MemoryHarnessStorage]) -> Result<()> {
                     b"small input",
                     "text/plain",
                     "input.txt",
+                    None,
                     Some(&io),
                 )?
                 .await?;

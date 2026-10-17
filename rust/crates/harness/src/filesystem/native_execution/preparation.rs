@@ -366,17 +366,6 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     binding.writable,
                     &volume_work,
                 )?;
-                let mount = if binding.writable {
-                    acyclic_fs::MountOptions::read_write()
-                        .publication(acyclic_fs::MountPublication::Manual)
-                } else {
-                    acyclic_fs::MountOptions::read_only()
-                };
-                let mount = mount.native_context(
-                    &volume_work,
-                    Some(Arc::clone(&callback)),
-                    Some(&volume_work),
-                );
                 let view = if let Some(mount) = binding.mounted {
                     mounted::verify_snapshot(mount.as_ref(), binding.namespace, &volume_work)
                         .await?;
@@ -390,10 +379,24 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         _work_scope: mount.enter(&volume_work)?,
                     }
                 } else {
+                    let generation = generation.ok_or_else(invalid)?;
+                    let mount = binding
+                        .mount_options(
+                            &generation.workspace(),
+                            generation.id(),
+                            guards.get(index).ok_or_else(invalid)?,
+                            &volume_work,
+                        )
+                        .await?
+                        .publication(acyclic_fs::MountPublication::Manual)
+                        .native_context(
+                            &volume_work,
+                            Some(Arc::clone(&callback)),
+                            Some(&volume_work),
+                        );
                     let identity = materializer.backend().mapping_root_identity(binding.path)?;
                     VolumeView::Directory(super::super::default_tools::recursive_box(
                         generation
-                            .ok_or_else(invalid)?
                             .attach_native_working_set(
                                 &mount,
                                 &acyclic_fs::MaterializeOptions::native(

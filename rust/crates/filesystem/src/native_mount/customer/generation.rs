@@ -6,6 +6,12 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Materializes this exact generation and binds its native capture owner.
+    /// Cached mount options are reauthorized before any import or host copy.
+    /// Raw preparation requires a selection that only the admission module mints:
+    ///
+    /// ```compile_fail
+    /// use acyclic_fs::native_mount::customer::selection::AdmittedSelection;
+    /// ```
     pub async fn prepare_native_working_set(
         &self,
         mount: &MountOptions,
@@ -13,7 +19,10 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        self.prepare_working_set(mount, options, budget, cancellation, None)
+        let work = mount.work(budget, cancellation)?;
+        let selection =
+            AdmittedSelection::admit(mount, &self.workspace(), self.id(), &work).await?;
+        self.prepare_working_set(selection, options, budget, cancellation, None, &work)
             .await
     }
 
@@ -26,20 +35,30 @@ where
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        self.prepare_working_set(mount, options, budget, cancellation, Some(expected))
-            .await
+        let work = mount.work(budget, cancellation)?;
+        let selection =
+            AdmittedSelection::admit(mount, &self.workspace(), self.id(), &work).await?;
+        self.prepare_working_set(
+            selection,
+            options,
+            budget,
+            cancellation,
+            Some(expected),
+            &work,
+        )
+        .await
     }
 
     pub(super) async fn prepare_working_set(
         &self,
-        mount: &MountOptions,
+        selection: AdmittedSelection<'_>,
         options: &crate::MaterializeOptions,
         capture_budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
+        work: &NativeMaterializationWork,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let original = mount.work(capture_budget, cancellation)?;
-        let work = &original;
+        let mount = selection.options();
         if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
@@ -62,14 +81,14 @@ where
                 cancellation,
             )
             .await?;
-            let (root, root_custody) = prepare_root(
-                &mut checkout,
-                mount,
-                options,
-                expected_root_identity.is_none(),
-                &mut crate::kernel::KernelAccounting::native(work, cancellation),
-            )
-            .await?;
+            let (root, root_custody) = selection
+                .prepare_root(
+                    &mut checkout,
+                    options,
+                    expected_root_identity.is_none(),
+                    &mut crate::kernel::KernelAccounting::native(work, cancellation),
+                )
+                .await?;
             let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
             let source_root = work.path(&options.destination, None)?;
             let mut custody = source_root.1;
@@ -90,7 +109,7 @@ where
                 work,
             )?;
             let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
-            let source = options::checkout_source(checkout, (root, root_custody), mount, work)?;
+            let source = selection.checkout_source(checkout, (root, root_custody), work)?;
             if expected_root_identity.is_some() {
                 validate_recovered_capture(
                     &source,
@@ -192,66 +211,4 @@ where
         ));
     }
     Ok(())
-}
-
-async fn prepare_root<A, O>(
-    checkout: &mut crate::Checkout<A, O>,
-    mount: &MountOptions,
-    options: &crate::MaterializeOptions,
-    materialize: bool,
-    accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<
-    (
-        crate::kernel::NamespacePath,
-        crate::kernel::KernelOwnedAllocation,
-    ),
-    MountLifecycleError,
->
-where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
-{
-    let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = &*accounting
-    else {
-        return Err(MountSourceError::OriginalSnapshotUnavailable.into());
-    };
-    let (work, cancellation) = (*work, *cancellation);
-    let config = checkout.volume_config();
-    let root = crate::workspace::customer_path_with_accounting(
-        &mount.subdirectory,
-        config,
-        accounting,
-        cancellation,
-    )?;
-    let root_custody = root.1;
-    let root = root.0;
-    if checkout
-        .lookup_no_follow(&root, work, cancellation)
-        .await
-        .map_err(WorkspaceError::from)?
-        .record
-        .is_none_or(|record| record.kind != FileKind::Directory)
-    {
-        return Err(WorkspaceError::NotDirectory.into());
-    }
-    if materialize {
-        let candidate = checkout
-            .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::native(work, cancellation),
-                cancellation,
-            )
-            .map_err(WorkspaceError::from)?;
-        let reader = candidate
-            .into_pinned_reader_with_native_work(work, cancellation)
-            .map_err(WorkspaceError::from)?;
-        super::super::materialize_reader_paths(
-            &reader,
-            std::slice::from_ref(&root),
-            options,
-            super::super::MaterializeMode::ReconstructibleView,
-            work,
-        )
-        .await?;
-    }
-    Ok((root, root_custody))
 }

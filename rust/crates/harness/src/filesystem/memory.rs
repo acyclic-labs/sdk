@@ -317,11 +317,11 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     }
 
     /// Queries the same private files written by the ordinary tools.
-    pub fn file_query(
+    pub async fn file_query(
         &self,
         budget: acyclic_fs::WorkBudget,
     ) -> Result<super::FilesystemFileQuery<MemoryStream, MemoryObjectBackend>> {
-        self.content_verifier.file_query(&self.volume, budget)
+        self.content_verifier.file_query(&self.volume, budget).await
     }
 
     /// Runs the shared canonical loop with this memory-backed journal.
@@ -372,23 +372,23 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     ) -> Result<FileRef> {
         let (file, _hold) = self
             .publisher
-            .stage(operation_id, path, bytes, media_type, display_name, None)?
+            .stage(
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                None,
+                None,
+            )?
             .await?;
         Ok(file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        if let Ok(bytes) = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .read(file)
-        {
-            return Ok(bytes.into());
-        }
         self.content_verifier
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 
@@ -408,6 +408,7 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
                 expected_generation,
                 after,
                 maximum_entries,
+                None,
             )
             .await
     }
@@ -431,7 +432,7 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
         file: &FileRef,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.delegated_reader(scope)?
-            .read(file, self.maximum_file_bytes, None)?
+            .read(file, self.maximum_file_bytes, None, None)?
             .await
     }
 
@@ -464,6 +465,7 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
                 expected_generation,
                 after,
                 maximum_entries,
+                None,
             )
             .await
     }
@@ -484,6 +486,7 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
                 path,
                 expected_generation,
                 u64::MAX,
+                None,
                 None,
             )?
             .await

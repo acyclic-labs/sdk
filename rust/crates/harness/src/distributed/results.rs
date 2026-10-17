@@ -63,6 +63,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             &self.client,
             idempotency_key.as_str(),
             Some(self.revision),
+            event_intent,
             &mut None,
         )
         .await?
@@ -194,7 +195,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             None => (
                 self.content_verifier
-                    .read(reference, reference.descriptor().byte_length(), None)?
+                    .read(reference, reference.descriptor().byte_length(), None, None)?
                     .await?,
                 0,
             ),

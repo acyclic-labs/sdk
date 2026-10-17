@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-fs-fuzz"
 version = "0.0.0"
 publish = false
@@ -7,9 +8,12 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[features]
+fuzz-targets = ["dep:libfuzzer-sys"]
+
 [dependencies]
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
-libfuzzer-sys = "0.4"
+libfuzzer-sys = { version = "0.4", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tempfile = "3.27.0"
@@ -26,6 +30,7 @@ path = "tests/model.rs"
 
 [[bin]]
 name = "access"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/access.rs"
 test = false
 doc = false
@@ -40,6 +45,7 @@ bench = false
 
 [[bin]]
 name = "git_markers"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/git_markers.rs"
 test = false
 doc = false
@@ -47,6 +53,7 @@ bench = false
 
 [[bin]]
 name = "git_pending"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/git_pending.rs"
 test = false
 doc = false
@@ -54,6 +61,7 @@ bench = false
 
 [[bin]]
 name = "paths"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/paths.rs"
 test = false
 doc = false
@@ -61,6 +69,7 @@ bench = false
 
 [[bin]]
 name = "decoder_work"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/decoder_work.rs"
 test = false
 doc = false
@@ -71,6 +80,7 @@ workspace = true
 
 [[bin]]
 name = "encoder_work"
+required-features = ["fuzz-targets"]
 path = "fuzz_targets/encoder_work.rs"
 test = false
 doc = false

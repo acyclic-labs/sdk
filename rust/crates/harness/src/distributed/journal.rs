@@ -109,12 +109,13 @@ pub(super) fn coordinator_stream<P: StreamProvider>(
     Ok(stream)
 }
 
-pub(super) async fn read_intent<P: StreamProvider>(
+pub(super) async fn read_intent<P: StreamProvider, T>(
     client: &std::sync::Arc<P>,
     key: &str,
     maximum_revision: Option<u64>,
+    project: fn(&acyclic_stream::Record, &mut CodecQuota<'_, '_>) -> Result<T>,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Option<([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)>> {
+) -> Result<Option<T>> {
     validate_idempotency_key(key, work)?;
     if maximum_revision == Some(0) {
         return Ok(None);
@@ -156,20 +157,7 @@ pub(super) async fn read_intent<P: StreamProvider>(
         {
             let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
             if inspect_envelope(&record.value, false, quota.work())?.2 == Some(key) {
-                let (revision, source_key, digest, _, event) = decode(&record, quota.work())?;
-                let owned = if quota.work().is_some() {
-                    event.logical_owned_bytes()?
-                } else {
-                    0
-                };
-                let key_bytes = if quota.work().is_some() {
-                    source_key.capacity() as u64
-                } else {
-                    0
-                };
-                quota.adopt(owned + key_bytes)?;
-                drop(source_key);
-                quota.relinquish(key_bytes)?;
+                let projected = project(&record, &mut quota)?;
                 if intent.is_some() {
                     return Err(guarded_boundary(
                         quota.work(),
@@ -177,7 +165,7 @@ pub(super) async fn read_intent<P: StreamProvider>(
                         "coordinator history repeats an idempotency key",
                     ));
                 }
-                intent = Some((digest, event, revision, record.commit_id));
+                intent = Some(projected);
             }
             drop(record);
             if quota.work().is_some() {
@@ -196,4 +184,40 @@ pub(super) async fn read_intent<P: StreamProvider>(
     quota.relinquish(path_bytes)?;
     quota.transfer();
     Ok(intent)
+}
+
+// The full event is needed for declarations, leases and workflow observations.
+pub(super) fn event_intent(
+    record: &acyclic_stream::Record,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)> {
+    let (revision, key, digest, _, event) = decode(record, quota.work())?;
+    let owned = if quota.work().is_some() {
+        event.logical_owned_bytes()?
+    } else {
+        0
+    };
+    let key_bytes = if quota.work().is_some() {
+        key.capacity() as u64
+    } else {
+        0
+    };
+    quota.adopt(owned + key_bytes)?;
+    drop(key);
+    quota.relinquish(key_bytes)?;
+    Ok((digest, event, revision, record.commit_id))
+}
+
+// Only the coordinator uses this projection, against a prefix it has already
+// fully decoded and applied. Revalidate framing and the content digest without
+// decoding that same SchedulerEvent JSON again. The stream prefix is immutable.
+pub(super) fn replayed_intent_digest(
+    record: &acyclic_stream::Record,
+    quota: &mut CodecQuota<'_, '_>,
+) -> Result<[u8; 32]> {
+    let mut frame = CodecQuota::new(quota.work(), 0)?;
+    let (envelope, digest, fields) = super::serializer::decode_envelope(record, frame.work())?;
+    frame.adopt(fields)?;
+    drop(envelope);
+    Ok(digest)
 }

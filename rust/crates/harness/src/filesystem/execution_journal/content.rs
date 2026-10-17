@@ -53,11 +53,16 @@ where
         let (file, bytes) = self
             .host
             .content_for_operation_record_io(
-                &self.volume,
-                &key,
-                Some(&path),
-                self.maximum_payload_bytes,
-                Some(InternalContentClass::Execution),
+                super::super::PublicationLookup {
+                    volume: &self.volume,
+                    key: &key,
+                    expected_path: Some(&path),
+                    maximum_bytes: self.maximum_payload_bytes,
+                    internal_class: Some(InternalContentClass::Execution),
+                    read_content: true,
+                    scope: &self.scope,
+                    ceiling: None,
+                },
                 io,
             )
             .await?
@@ -68,9 +73,11 @@ where
                     "original staged payload was not published",
                 )
             })?;
-        let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        drop(bytes);
-        drop(hold);
+        if let Some(bytes) = bytes {
+            let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            drop(bytes);
+            drop(hold);
+        }
         Ok(file)
     }
 

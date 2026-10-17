@@ -197,9 +197,10 @@ impl ContentResidencyVerifier for Tampered {
         &'a self,
         reference: &'a FileRef,
         maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        let read = self.inner.read(reference, maximum_bytes, io)?;
+        let read = self.inner.read(reference, maximum_bytes, ceiling, io)?;
         BoundedContentFuture::new(io, || async move {
             let bytes = read.await?;
             if reference != &self.target {
@@ -245,7 +246,7 @@ async fn check_round_trip(input: &Input, case: &Case, fault: Fault) -> TestCaseR
             bytes.extend_from_slice(
                 &case
                     .reader
-                    .read(file, 262_144, None)
+                    .read(file, 262_144, None, None)
                     .unwrap()
                     .await
                     .unwrap(),

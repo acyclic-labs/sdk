@@ -49,7 +49,7 @@ async fn capture(restore_faulty_route: bool) -> Result<Vec<Vec<u8>>> {
     let reader = harness.context_reader()?;
     let mut bodies = Vec::new();
     for file in &captured.discovery.instructions {
-        bodies.push(reader.read(file, 1024, None)?.await?.to_vec());
+        bodies.push(reader.read(file, 1024, None, None)?.await?.to_vec());
     }
     Ok(bodies)
 }
@@ -63,7 +63,10 @@ async fn volume_generation_is_pinned_across_an_update_between_instruction_reads(
     {
         let broken = capture(true).await?;
         assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);
-        assert_ne!(broken, expected, "detector missed the former checkout route");
+        assert_ne!(
+            broken, expected,
+            "detector missed the former checkout route"
+        );
     }
     Ok(())
 }

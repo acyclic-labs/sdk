@@ -100,7 +100,7 @@ fn native_name(
 }
 
 impl<A, O> CheckoutMountSource<A, O> {
-    fn namespace_inputs(
+    pub(in crate::native_mount) fn namespace_inputs(
         &self,
         path: &MountPath,
         inputs: &mut InputBuffers<'_, '_>,
@@ -117,7 +117,8 @@ impl<A, O> CheckoutMountSource<A, O> {
                     return None;
                 }
                 let component = components.next()?;
-                match native_name_layout(component, self.profile, self.limits, inputs) {
+                match native_name_layout(component, self.config.profile, self.config.limits, inputs)
+                {
                     Ok((_, length)) => Some(length),
                     Err(failure) => {
                         error = Some(failure);
@@ -125,7 +126,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     }
                 }
             }));
-        let checked = NamespacePath::validate_component_lengths(lengths, self.limits);
+        let checked = NamespacePath::validate_component_lengths(lengths, self.config.limits);
         if let Some(error) = error {
             return Err(error);
         }
@@ -140,15 +141,20 @@ impl<A, O> CheckoutMountSource<A, O> {
             names.push(copy_name(
                 name.encoding(),
                 name.as_bytes(),
-                self.limits,
+                self.config.limits,
                 inputs,
             )?);
         }
         for component in path.components() {
-            names.push(native_name(component, self.profile, self.limits, inputs)?);
+            names.push(native_name(
+                component,
+                self.config.profile,
+                self.config.limits,
+                inputs,
+            )?);
         }
         inputs.items(names.len())?;
-        NamespacePath::new(names, self.limits).map_err(MountSourceError::NamespacePath)
+        NamespacePath::new(names, self.config.limits).map_err(MountSourceError::NamespacePath)
     }
 
     fn capture_inputs(

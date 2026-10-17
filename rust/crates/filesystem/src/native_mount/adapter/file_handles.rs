@@ -5,17 +5,35 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    pub(super) fn created_handle(
+    pub(in crate::native_mount) fn created_handle(
         &self,
+        path: &MountPath,
         created: &MountLookup,
         work: &crate::NativeMaterializationWork,
+        wrap: impl FnOnce(
+            (Arc<dyn MountOpenFile>, u64),
+        ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         if created.node.kind != MountNodeKind::Regular {
             return Err(MountSourceError::Invalid(
                 "only regular files can own native handles".into(),
             ));
         }
-        self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))
+        let permissions = self.permissions_for_path(path, work)?;
+        access::require(
+            &permissions,
+            crate::access::Action::Create,
+            access::access_time()?,
+        )?;
+        authorize_file(
+            wrap(
+                self.attached_file(created.node.file_id, &mut NativeDemandCarrier::Native(work))?,
+            )?,
+            permissions,
+            created.node.file_id,
+            true,
+            work,
+        )
     }
 
     pub(super) fn seek_extent(
@@ -29,6 +47,9 @@ where
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
+            let permissions = self
+                .require_access(&path, crate::access::Action::Read, work)
+                .await?;
             let observation = self
                 .checkout
                 .observe(
@@ -42,6 +63,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                .await?;
             let file_id = checkout
                 .lookup_no_follow(&path, work, work.cancellation())
                 .await?
@@ -70,21 +93,33 @@ where
     pub(super) fn open_handle(
         &self,
         path: &MountPath,
+        access: Option<MountOpenAccess>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
+            let mut inputs = InputBuffers::new(&mut carrier)?;
+            let namespace = self.namespace_inputs(path, &mut inputs)?;
+            let permissions = self.pin_access(&namespace, work).await?;
+            access::require_open(&permissions, access)?;
+
             let observation = self
                 .checkout
                 .observe(
                     ViewGate::callback_owner()?,
-                    &mut carrier,
+                    inputs.carrier,
                     work.cancellation(),
                     Some(&self.cancellation),
                 )
                 .await?;
+            let mut observer = observation.observer(
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+                work.cancellation(),
+            )?;
+            self.require_snapshot(permissions.policy_view(), &mut observer, work)
+                .await?;
             let lookup = self
-                .lookup_in(&observation, path, &mut carrier)
+                .read_lookup(&mut observer, &namespace, &mut inputs, work.cancellation())
                 .await?
                 .ok_or(MountSourceError::NotFound)?;
             if lookup.node.kind != MountNodeKind::Regular {
@@ -92,12 +127,13 @@ where
                     "only regular files can own native handles".into(),
                 ));
             }
-            let (file, bytes) = self.attached_file(lookup.node.file_id, &mut carrier)?;
+            let raw = self.attached_file(lookup.node.file_id, inputs.carrier)?;
+            let (file, bytes) = authorize_file(raw, permissions, lookup.node.file_id, false, work)?;
             Ok((crate::native_mount::MountOpenClaim { file, bytes }, lookup))
         })
     }
 
-    pub(super) fn attached_file(
+    pub(in crate::native_mount) fn attached_file(
         &self,
         file_id: FileId,
         carrier: &mut NativeDemandCarrier<'_>,
@@ -118,8 +154,8 @@ where
             file_id,
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
-            profile: self.profile,
-            limits: self.limits,
+            profile: self.config.profile,
+            limits: self.config.limits,
             _native_allocation: allocation,
             native_callback_guard: self.native_callback_guard.clone(),
         });
@@ -130,15 +166,20 @@ where
         Ok((attached, 0))
     }
 
-    pub(super) fn detached_handle(
+    pub(in crate::native_mount) fn detached_handle(
         &self,
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
+        wrap: impl FnOnce(
+            (Arc<dyn MountOpenFile>, u64),
+        ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut inputs = InputBuffers::new(&mut carrier)?;
             let path = self.namespace_inputs(path, &mut inputs)?;
+            let permissions = self.pin_access(&path, work).await?;
+            access::require_open(&permissions, None)?;
             let observation = self
                 .checkout
                 .observe(
@@ -152,6 +193,8 @@ where
                 &mut crate::kernel::allocation::KernelAccounting::native(work, work.cancellation()),
                 work.cancellation(),
             )?;
+            self.require_snapshot(permissions.policy_view(), &mut checkout, work)
+                .await?;
             let lookup = checkout
                 .lookup_no_follow_with_metadata(&path, work, work.cancellation())
                 .await?
@@ -163,7 +206,13 @@ where
             }
             let file: Arc<dyn MountOpenFile> =
                 self.detached_from_checkout(&checkout, lookup.record, lookup.metadata, work)?;
-            Ok((file, 0))
+            authorize_file(
+                wrap((file, 0))?,
+                permissions,
+                lookup.record.file_id,
+                false,
+                work,
+            )
         })
     }
 }

@@ -154,26 +154,31 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     if let Some(task) = preparation {
         task.verify(false, io)?.await?;
     }
-    if let Some(io) = io {
-        let mut guard = preparation.map(Arc::as_ref);
-        io.sdk(
-            host.filesystem
-                .create_workspace_with_operation::<_, _, Error>(
-                    name,
-                    acyclic_fs::VolumeConfig::portable(lifecycle),
-                    acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
-                    io,
-                    io.cancellation(),
-                    guard.as_mut(),
-                )
-                .await,
-        )?;
+    let unmeasured;
+    let operation_io = if let Some(io) = io {
+        io
     } else {
+        unmeasured = PreparationIo::for_unmeasured(&CancellationToken::new())?;
+        &unmeasured
+    };
+    let mut guard = preparation.map(Arc::as_ref);
+    operation_io.sdk(
         host.filesystem
-            .create_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map_err(|failure| map_error(failure.error))?;
-    }
+            .create_workspace_with_operation::<_, _, Error>(
+                name,
+                acyclic_fs::VolumeInitialization {
+                    config: acyclic_fs::VolumeConfig::portable(lifecycle),
+                    access_policy: Some(crate::filesystem::access::INITIAL_POLICY),
+                },
+                acyclic_fs::OperationId::from_bytes(
+                    operation_key(key, Some(operation_io))?.into_bytes(),
+                ),
+                operation_io,
+                operation_io.cancellation(),
+                guard.as_mut(),
+            )
+            .await,
+    )?;
     if let Some(task) =
         preparation.filter(|_| io.is_none_or(|io| io.original_native_work().is_none()))
     {

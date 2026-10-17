@@ -53,6 +53,7 @@ impl SkillMetadata {
                 &source.path,
                 Some(&source.generation),
                 maximum_bytes,
+                None,
                 content_io,
             )?
             .await?;
@@ -205,6 +206,7 @@ pub(crate) async fn discover_skills(
                     &source.path,
                     &generation,
                     u64::from(work.limits.header_bytes),
+                    None,
                     None,
                 )?
                 .await?;

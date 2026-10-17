@@ -11,8 +11,14 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 ) -> Result<Option<OperationSpec>> {
     authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
     let mut custody = CodecQuota::new(work, 0)?;
-    let Some((_, event, ..)) =
-        read_intent(client, declaration_key.as_str(), None, custody.work()).await?
+    let Some((_, event, ..)) = read_intent(
+        client,
+        declaration_key.as_str(),
+        None,
+        event_intent,
+        custody.work(),
+    )
+    .await?
     else {
         return Ok(None);
     };

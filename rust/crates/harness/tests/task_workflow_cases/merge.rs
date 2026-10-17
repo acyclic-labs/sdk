@@ -134,6 +134,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             &IdempotencyKey::new("base")?,
             None,
             None,
+            None,
         )
         .await?;
         let controller = ParentProjectController::new(
@@ -387,6 +388,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
                 "concurrent.txt",
                 128,
                 &IdempotencyKey::new("concurrent")?,
+                None,
                 None,
                 None,
             )

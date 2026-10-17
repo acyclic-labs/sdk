@@ -2,6 +2,25 @@ use super::*;
 #[path = "access_input.rs"]
 mod input;
 
+#[test]
+fn shared_access_oracle_detects_a_corrupted_decision() -> Result<(), Box<dyn std::error::Error>> {
+    let value = input::Input {
+        policy: policy(vec![rule("all", Effect::Allow, &Action::ALL, "**")]),
+        capability: capability(),
+        principal: principal(),
+        path: "public/file".into(),
+        profile: 0,
+        folded: false,
+        now: 100,
+        native_name: None,
+    };
+    let bytes = serde_json::to_vec(&value)?;
+    input::check(&bytes);
+    std::panic::catch_unwind(|| input::check_with_corrupted_decision(&bytes))
+        .expect_err("the shared oracle must detect a corrupted decision");
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 

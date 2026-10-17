@@ -30,9 +30,21 @@ pub struct PathTrie {
     states: Vec<State>,
     rules: Vec<String>,
     version: u64,
+    head: u64,
     valid_from: u64,
     valid_until: Option<u64>,
     config: crate::VolumeConfig,
+    volume: String,
+    subject: (super::PrincipalKind, String),
+    capability_binding: [u8; 32],
+    policy_revision: Option<(
+        crate::GenerationId,
+        crate::kernel::MetadataField<crate::ObjectId>,
+    )>,
+    data_generation: Option<crate::GenerationId>,
+    generation_sensitive: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) native_custody: Option<crate::NativeAllocation>,
 }
 
 /// A path bound to its immutable compiled view. Its private state cannot be
@@ -45,6 +57,35 @@ pub struct PreparedPath<'a> {
     depth: usize,
 }
 
+/// Immutable permission state retained by an open native handle.
+#[derive(Clone)]
+pub struct PinnedPath {
+    view: std::sync::Arc<PathTrie>,
+    state: usize,
+}
+
+impl PinnedPath {
+    pub(crate) fn volume(&self) -> &str {
+        self.view.volume()
+    }
+
+    pub(crate) fn policy_view(&self) -> &PathTrie {
+        &self.view
+    }
+
+    /// Check the pinned policy, including its original expiry, without allocation.
+    #[must_use]
+    pub fn decide(&self, action: Action, now: u64) -> Decision<'_> {
+        self.view.decision(self.state, action, now)
+    }
+
+    pub(super) fn action_mask(&self, now: u64) -> u16 {
+        self.view
+            .state_at(self.state, now)
+            .map_or(0, |state| state.actions)
+    }
+}
+
 impl<'a> PreparedPath<'a> {
     /// Prepare a child during namespace lookup. Only this new name is scanned;
     /// previously prepared ancestors are never scanned again.
@@ -52,17 +93,17 @@ impl<'a> PreparedPath<'a> {
         if name.is_empty() || name.contains('/') {
             return Err(InvalidPolicy("expected one path component"));
         }
-        let key = super::names::key(name, self.trie.config)?;
-        self.advance(
-            super::names::encoded_len(name, self.trie.config),
-            key.chars().map(Ok),
-        )
+        super::names::validate(name, self.trie.config)?;
+        self.advance(super::names::encoded_len(name, self.trie.config), |sink| {
+            super::names::write_key(name, self.trie.config, sink)
+                .map_err(|_| InvalidPolicy("invalid compiled path"))
+        })
     }
 
     fn advance(
         self,
         length: usize,
-        chars: impl Iterator<Item = Result<char, InvalidPolicy>>,
+        emit: impl FnOnce(&mut PathWriter<'_>) -> Result<(), InvalidPolicy>,
     ) -> Result<Self, InvalidPolicy> {
         let bytes = length
             .checked_add(1)
@@ -78,11 +119,13 @@ impl<'a> PreparedPath<'a> {
         if self.depth != 0 {
             state = self.trie.step(state, '/')?;
         }
-        for ch in chars {
-            state = self.trie.step(state, ch?)?;
-        }
-        Ok(Self {
+        let mut sink = PathWriter {
+            trie: self.trie,
             state,
+        };
+        emit(&mut sink)?;
+        Ok(Self {
+            state: sink.state,
             bytes,
             depth,
             ..self
@@ -109,12 +152,14 @@ impl<'a> PreparedPath<'a> {
             NameEncoding::WindowsUtf16Le => {
                 let units = crate::kernel::types::utf16le_units(name.as_bytes())
                     .ok_or(InvalidPolicy("invalid UTF-16 access name"))?;
-                self.advance(
-                    name.as_bytes().len(),
-                    char::decode_utf16(units).map(|ch| {
-                        ch.map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))
-                    }),
-                )
+                self.advance(name.as_bytes().len(), |sink| {
+                    for ch in char::decode_utf16(units) {
+                        let ch = ch
+                            .map_err(|_| InvalidPolicy("non-Unicode access path is unsupported"))?;
+                        sink.state = sink.trie.step(sink.state, ch)?;
+                    }
+                    Ok(())
+                })
             }
         }
     }
@@ -129,6 +174,23 @@ impl<'a> PreparedPath<'a> {
         self.trie
             .state_at(self.state, now)
             .map_or(0, |state| state.actions)
+    }
+}
+
+struct PathWriter<'a> {
+    trie: &'a PathTrie,
+    state: usize,
+}
+
+impl std::fmt::Write for PathWriter<'_> {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        for ch in text.chars() {
+            self.state = self
+                .trie
+                .step(self.state, ch)
+                .map_err(|_| std::fmt::Error)?;
+        }
+        Ok(())
     }
 }
 
@@ -179,6 +241,126 @@ impl Alphabet {
 }
 
 impl PathTrie {
+    /// Bind the immutable storage revision authenticated by the policy owner.
+    #[must_use]
+    pub fn with_policy_revision(
+        mut self,
+        generation: crate::GenerationId,
+        revision: crate::kernel::MetadataField<crate::ObjectId>,
+    ) -> Self {
+        self.policy_revision = Some((generation, revision));
+        self
+    }
+
+    /// Bind an explicitly selected immutable data generation. Its authorization
+    /// uses current policy, whose storage fence remains independent.
+    #[must_use]
+    pub fn with_data_generation(mut self, generation: crate::GenerationId) -> Self {
+        self.data_generation = Some(generation);
+        self
+    }
+
+    /// Explicit immutable selection, absent for a tracking view.
+    #[must_use]
+    pub const fn data_generation(&self) -> Option<crate::GenerationId> {
+        self.data_generation
+    }
+
+    /// Whether this view still represents the authenticated persisted policy.
+    pub fn matches_policy_revision(
+        &self,
+        generation: crate::GenerationId,
+        revision: crate::kernel::MetadataField<crate::ObjectId>,
+    ) -> bool {
+        self.policy_revision.is_some_and(|(original, policy)| {
+            policy == revision && (!self.generation_sensitive || original == generation)
+        })
+    }
+
+    /// Heap bytes retained by the compiled view, excluding its inline header.
+    #[must_use]
+    pub fn logical_owned_bytes(&self) -> u64 {
+        (self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
+            + size_of::<[u16; 4352]>()
+            + self.states.capacity() * size_of::<State>()
+            + self
+                .states
+                .iter()
+                .map(|state| state.transitions.capacity() * size_of::<usize>())
+                .sum::<usize>()
+            + self.rules.capacity() * size_of::<String>()
+            + self.rules.iter().map(String::capacity).sum::<usize>()
+            + self.volume.capacity()
+            + self.subject.1.capacity()) as u64
+    }
+
+    /// Authoritative name semantics pinned by this view.
+    #[must_use]
+    pub const fn config(&self) -> crate::VolumeConfig {
+        self.config
+    }
+
+    /// Authenticated volume identity pinned by compilation.
+    #[must_use]
+    pub fn volume(&self) -> &str {
+        &self.volume
+    }
+
+    /// Authenticated principal identity pinned by compilation.
+    #[must_use]
+    pub fn subject(&self) -> (super::PrincipalKind, &str) {
+        (self.subject.0, &self.subject.1)
+    }
+
+    /// Whether two views belong to the same authenticated volume, principal,
+    /// capability and native name semantics. Policy revisions may differ.
+    #[must_use]
+    pub fn same_binding(&self, other: &Self) -> bool {
+        self.same_authority(other) && self.data_generation == other.data_generation
+    }
+
+    pub(crate) fn same_authority(&self, other: &Self) -> bool {
+        self.config == other.config
+            && self.volume == other.volume
+            && self.subject == other.subject
+            && self.capability_binding == other.capability_binding
+    }
+
+    /// Policy revision used for every decision in this view.
+    #[must_use]
+    pub const fn policy_version(&self) -> u64 {
+        self.version
+    }
+
+    /// Latest authenticated volume position used to compile this view.
+    #[must_use]
+    pub const fn head_position(&self) -> u64 {
+        self.head
+    }
+
+    /// Prepare exact encoded names instead of a potentially lossy path projection.
+    pub fn prepare_namespace(
+        &self,
+        path: &crate::kernel::NamespacePath,
+    ) -> Result<PreparedPath<'_>, InvalidPolicy> {
+        let mut prepared = self.prepare("")?;
+        for name in path.components() {
+            prepared = prepared.child_name(name)?;
+        }
+        Ok(prepared)
+    }
+
+    /// Pin the current compiled state for an opened file's lifetime.
+    pub fn pin(
+        self: &std::sync::Arc<Self>,
+        path: &crate::kernel::NamespacePath,
+    ) -> Result<PinnedPath, InvalidPolicy> {
+        Ok(PinnedPath {
+            state: self.prepare_namespace(path)?.state,
+            view: std::sync::Arc::clone(self),
+        })
+    }
+
     /// Compile the same decision reducer used by `decide` into terminal states.
     /// `resource.path` is ignored; every other input is pinned for this view.
     /// Rejects policies whose glob automaton exceeds bounded state, storage or
@@ -190,89 +372,203 @@ impl PathTrie {
         context: Context,
         capability: &Capability,
     ) -> Result<Self, InvalidPolicy> {
-        policy.validate()?;
-        capability.validate()?;
-        if resource.config.validate().is_err() || resource.generation > resource.head {
-            return Err(InvalidPolicy("generation exceeds head"));
-        }
-        let mut nfa = Nfa::default();
-        let mut starts = Vec::new();
-        let mut rules = BTreeMap::new();
-        let mut grants = BTreeMap::new();
-        let mut text_left = MAXIMUM_TEXT_BYTES;
-        let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
-        for rule in policy.layers.iter().flatten() {
-            if let Some(expiry) = rule
-                .conditions
-                .expires_at
-                .filter(|expiry| *expiry > context.now)
-            {
-                valid_until = Some(valid_until.map_or(expiry, |old| old.min(expiry)));
+        let mut work = MAXIMUM_WORK;
+        Self::compile_with_work(
+            policy,
+            principal,
+            resource,
+            context,
+            capability,
+            &mut work,
+            |_| Ok(()),
+        )
+    }
+
+    /// Compile with caller work and preallocation admission. The two storage
+    /// reservations cover NFA preparation and additional DFA storage. They must
+    /// remain funded until the returned trie is dropped. Failed work is charged
+    /// through `remaining_work`; the global compilation limits still apply.
+    pub fn compile_with_work(
+        policy: &Policy,
+        principal: &Principal,
+        resource: Resource<'_>,
+        context: Context,
+        capability: &Capability,
+        remaining_work: &mut usize,
+        mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
+    ) -> Result<Self, InvalidPolicy> {
+        let mut available = (*remaining_work).min(MAXIMUM_WORK);
+        let before = available;
+        let result = (|| {
+            let (bytes, validation_work) = super::compilation::preparation(
+                policy,
+                capability,
+                super::names::folds_unicode(resource.config),
+            )?;
+            spend(&mut available, validation_work)?;
+            let bindings = resource
+                .volume
+                .len()
+                .checked_add(principal.id.len())
+                .and_then(|bytes| bytes.checked_mul(2))
+                .and_then(|bindings| bindings.checked_add(bytes))
+                .ok_or(InvalidPolicy("glob compilation storage overflow"))?;
+            reserve(bindings)?;
+            policy.validate()?;
+            capability.validate()?;
+            if resource.config.validate().is_err() || resource.generation > resource.head {
+                return Err(InvalidPolicy("generation exceeds head"));
             }
-            if super::decision::rule_matches(rule, principal, resource, context) {
-                spend(&mut text_left, rule.resource.path.len())?;
-                let key = super::names::fold(&rule.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
-                starts.push(start);
-                rules.insert(rule.id.as_str(), end);
+            let mut nfa = Nfa::default();
+            let mut starts = Vec::new();
+            let mut rules = BTreeMap::new();
+            let mut grants = BTreeMap::new();
+            let mut text_left = MAXIMUM_TEXT_BYTES;
+            spend(&mut text_left, resource.volume.len())?;
+            spend(&mut text_left, principal.id.len())?;
+            let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
+            for rule in policy.layers.iter().flatten() {
+                if let Some(expiry) = rule
+                    .conditions
+                    .expires_at
+                    .filter(|expiry| *expiry > context.now)
+                {
+                    valid_until = Some(valid_until.map_or(expiry, |old| old.min(expiry)));
+                }
+                if super::decision::rule_matches(rule, principal, resource, context) {
+                    spend(&mut text_left, rule.resource.path.len())?;
+                    let key = super::names::fold(&rule.resource.path, resource.config);
+                    let (start, end) =
+                        nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                    starts.push(start);
+                    rules.insert(rule.id.as_str(), end);
+                }
             }
-        }
-        for grant in capability.layers.iter().flatten() {
-            if grant.resource.matches_view(resource) {
-                spend(&mut text_left, grant.resource.path.len())?;
-                let key = super::names::fold(&grant.resource.path, resource.config);
-                let (start, end) =
-                    nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
-                starts.push(start);
-                grants.insert(std::ptr::from_ref(grant), end);
+            for grant in capability.layers.iter().flatten() {
+                if grant.resource.matches_view(resource) {
+                    spend(&mut text_left, grant.resource.path.len())?;
+                    let key = super::names::fold(&grant.resource.path, resource.config);
+                    let (start, end) =
+                        nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
+                    starts.push(start);
+                    grants.insert(std::ptr::from_ref(grant), end);
+                }
             }
-        }
-        let (symbols, other) = alphabet(&nfa)?;
-        let rule_ids: Vec<_> = rules
-            .keys()
-            .map(|id| {
-                text_left = text_left
-                    .checked_sub(id.len())
-                    .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
-                Ok((*id).to_owned())
+            let (symbols, other) = alphabet(&nfa)?;
+            let rule_ids: Vec<_> = rules
+                .keys()
+                .map(|id| {
+                    text_left = text_left
+                        .checked_sub(id.len())
+                        .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
+                    Ok((*id).to_owned())
+                })
+                .collect::<Result<_, InvalidPolicy>>()?;
+            let rules = rules
+                .into_iter()
+                .enumerate()
+                .map(|(index, (id, end))| (id, (end, index)))
+                .collect();
+            reserve(super::compilation::determinization(
+                nfa.nodes.len(),
+                symbols.len(),
+                std::mem::size_of::<State>(),
+            )?)?;
+            let uniform = policy
+                .layers
+                .iter()
+                .flatten()
+                .all(|rule| rule.resource.path == "**")
+                && capability
+                    .layers
+                    .iter()
+                    .flatten()
+                    .all(|grant| grant.resource.path == "**");
+            let states = if uniform {
+                // Every active pattern accepts every canonical path, including
+                // root. One terminal state replaces subset construction.
+                spend(&mut available, nfa.nodes.len())?;
+                spend(
+                    &mut available,
+                    (policy.layers.len()
+                        + capability.layers.len()
+                        + policy.layers.iter().map(Vec::len).sum::<usize>()
+                        + capability.layers.iter().map(Vec::len).sum::<usize>())
+                        * 24,
+                )?;
+                let subset: Vec<_> = (0..nfa.nodes.len()).collect();
+                vec![terminal(
+                    vec![0; symbols.len() + 1],
+                    outcomes(
+                        policy,
+                        capability,
+                        context,
+                        resource.generation != resource.head,
+                        &rules,
+                        &grants,
+                        &subset,
+                    ),
+                )]
+            } else {
+                determinize(
+                    &nfa,
+                    starts,
+                    &symbols,
+                    other,
+                    |subset| {
+                        outcomes(
+                            policy,
+                            capability,
+                            context,
+                            resource.generation != resource.head,
+                            &rules,
+                            &grants,
+                            subset,
+                        )
+                    },
+                    policy.layers.len()
+                        + capability.layers.len()
+                        + policy.layers.iter().map(Vec::len).sum::<usize>()
+                        + capability.layers.iter().map(Vec::len).sum::<usize>(),
+                    &mut available,
+                )?
+            };
+            // Moving head turns a pinned current read/list into history, even
+            // when every selector says All. Preserve the same ReadHistory gate.
+            let history_sensitive = states.iter().any(|state| {
+                state.actions & ((1 << Action::Read as u16) | (1 << Action::List as u16)) != 0
+                    && state.actions & (1 << Action::ReadHistory as u16) == 0
+            });
+            Ok(Self {
+                alphabet: Alphabet::new(&symbols)?,
+                states,
+                rules: rule_ids,
+                version: policy.version,
+                head: resource.head,
+                valid_from: context.now,
+                valid_until,
+                config: resource.config,
+                volume: resource.volume.to_owned(),
+                subject: (principal.kind, principal.id.clone()),
+                capability_binding: super::capability::binding(capability)?,
+                policy_revision: None,
+                data_generation: None,
+                generation_sensitive: history_sensitive
+                    || policy.layers.iter().flatten().any(|rule| {
+                        rule.resource.generations != super::Generations::All
+                            || rule.conditions.generations.is_some()
+                    })
+                    || capability
+                        .layers
+                        .iter()
+                        .flatten()
+                        .any(|grant| grant.resource.generations != super::Generations::All),
+                #[cfg(not(target_arch = "wasm32"))]
+                native_custody: None,
             })
-            .collect::<Result<_, InvalidPolicy>>()?;
-        let rules = rules
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, end))| (id, (end, index)))
-            .collect();
-        let states = determinize(
-            &nfa,
-            starts,
-            &symbols,
-            other,
-            |subset| {
-                outcomes(
-                    policy,
-                    capability,
-                    context,
-                    resource.generation != resource.head,
-                    &rules,
-                    &grants,
-                    subset,
-                )
-            },
-            policy.layers.len()
-                + capability.layers.len()
-                + policy.layers.iter().map(Vec::len).sum::<usize>()
-                + capability.layers.iter().map(Vec::len).sum::<usize>(),
-        )?;
-        Ok(Self {
-            alphabet: Alphabet::new(&symbols)?,
-            states,
-            rules: rule_ids,
-            version: policy.version,
-            valid_from: context.now,
-            valid_until,
-            config: resource.config,
-        })
+        })();
+        *remaining_work -= before - available;
+        result
     }
 
     /// Earliest time at which the caller must rebuild this immutable view.
@@ -288,9 +584,27 @@ impl PathTrie {
         self.valid_until
     }
 
-    /// Prepare an entire path. This scans its bytes and may allocate a folded
-    /// name. Native lookups should retain handles and use `PreparedPath::child`
-    /// to prepare only new components; hot checks use `PreparedPath::decide`.
+    /// Conservative proof for an adapter that cannot enforce individual paths.
+    /// Every reachable automaton state must permit every requested action.
+    /// This uses the compiled decisions, including capability intersections.
+    #[must_use]
+    pub fn allows_every_path(&self, actions: &[Action], now: u64) -> bool {
+        self.states.iter().enumerate().all(|(state, _)| {
+            actions
+                .iter()
+                .all(|action| self.decision(state, *action, now).allowed)
+        })
+    }
+
+    /// Whether moving between generations can change this view's decisions.
+    #[must_use]
+    pub const fn generation_sensitive(&self) -> bool {
+        self.generation_sensitive
+    }
+
+    /// Prepare an entire path, streaming native name keys without temporary strings.
+    /// Native lookups can retain parents and use `PreparedPath::child` to scan
+    /// only new components; hot checks use `PreparedPath::decide`.
     pub fn prepare(&self, path: &str) -> Result<PreparedPath<'_>, InvalidPolicy> {
         let mut prepared = PreparedPath {
             trie: self,
@@ -417,9 +731,9 @@ fn determinize(
     other: char,
     decide: impl Fn(&[usize]) -> [Outcome; 12],
     rules: usize,
+    work: &mut usize,
 ) -> Result<Vec<State>, InvalidPolicy> {
-    let mut work = MAXIMUM_WORK;
-    nfa.close(&mut starts, &mut work)?;
+    nfa.close(&mut starts, work)?;
     let mut members = MAXIMUM_STATE_MEMBERS;
     spend(&mut members, starts.len())?;
     let mut transitions_left = MAXIMUM_TRANSITIONS;
@@ -428,7 +742,7 @@ fn determinize(
     let mut states = Vec::new();
     while states.len() < subsets.len() {
         spend(
-            &mut work,
+            work,
             rules
                 .checked_mul(24)
                 .ok_or(InvalidPolicy("glob compilation exceeds work limit"))?,
@@ -441,7 +755,7 @@ fn determinize(
         spend(&mut transitions_left, alphabet.len() + 1)?;
         let mut transitions = Vec::with_capacity(alphabet.len() + 1);
         for ch in alphabet.iter().copied().chain(std::iter::once(other)) {
-            let next = nfa.step(&subset, ch, &mut work)?;
+            let next = nfa.step(&subset, ch, work)?;
             let id = if let Some(id) = ids.get(&next) {
                 *id
             } else {
@@ -456,21 +770,25 @@ fn determinize(
             };
             transitions.push(id);
         }
-        states.push(State {
-            transitions,
-            actions: decisions
-                .iter()
-                .enumerate()
-                .fold(0, |mask, (bit, outcome)| {
-                    mask | if outcome.denial.is_none() {
-                        1 << bit
-                    } else {
-                        0
-                    }
-                }),
-            decisions,
-        });
+        states.push(terminal(transitions, decisions));
     }
 
     Ok(states)
+}
+
+fn terminal(transitions: Vec<usize>, decisions: [Outcome; 12]) -> State {
+    State {
+        transitions,
+        actions: decisions
+            .iter()
+            .enumerate()
+            .fold(0, |mask, (bit, outcome)| {
+                mask | if outcome.denial.is_none() {
+                    1 << bit
+                } else {
+                    0
+                }
+            }),
+        decisions,
+    }
 }

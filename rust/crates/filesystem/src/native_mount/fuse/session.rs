@@ -204,7 +204,6 @@ impl FuseSession {
             work.charge(WriteOperations.delta(2))?;
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
-                skips_opendir: false,
             };
             let FuseSessionState { mount, device, .. } = &mut *started;
             mount.open_into(

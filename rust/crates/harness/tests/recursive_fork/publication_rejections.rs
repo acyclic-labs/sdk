@@ -192,6 +192,7 @@ pub(super) async fn publication_rejections(
         &IdempotencyKey::new("rogue-scratch")?,
         None,
         None,
+        None,
     )
     .await?;
     let mut rogue_seed = seed.clone();

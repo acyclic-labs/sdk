@@ -171,46 +171,42 @@ impl ProjectionState {
         Ok(())
     }
 
-    pub(super) fn invalidate_prefix(
-        &mut self,
-        prefix: &MountPath,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        let mut affected = fuse_vec(0, work)?;
-        for (inode, entry) in &self.by_inode {
-            for binding in entry.bindings.iter() {
-                work.charge(Items.delta(1))?;
-                if has_prefix(&binding.path, prefix) {
-                    let path = fuse_clone_path(&binding.path, work)?;
-                    fuse_reserve(&mut affected, 1, work)?;
-                    affected.push((*inode, path));
-                }
-            }
-        }
-        for (inode, path) in affected.drain(..) {
-            self.remove_binding(inode, &path, work)?;
-        }
-        Ok(())
-    }
-
     #[allow(
         clippy::mutable_key_type,
         reason = "FuseOwned hashes and compares only its immutable path, never its accounting owner."
     )]
-    pub(super) fn rename_prefix(
-        &mut self,
+    pub(super) fn prepare_rename_prefix(
+        &self,
         source: &MountPath,
         destination: &MountPath,
         spelled: &MountPath,
         parent_inode: u64,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    ) -> Result<impl FnOnce(&mut Self) + use<>, NativeMountError> {
         let mut replacements = fuse_vec(0, work)?;
         let mut paths = HashMap::new();
+        let mut copied = 0u64;
         for (inode, entry) in &self.by_inode {
-            for (index, binding) in entry.bindings.iter().enumerate() {
+            let mut retained = entry.bindings.len();
+            // Descending indices keep all prepared replacements valid when
+            // destination bindings are removed at installation.
+            for (index, binding) in entry.bindings.iter().enumerate().rev() {
                 work.charge(Items.delta(1))?;
                 let rebased = fuse_replace_prefix(&binding.path, source, destination, work)?;
+                if rebased.is_none()
+                    && source != destination
+                    && has_prefix(&binding.path, destination)
+                {
+                    copied = copied
+                        .checked_add(
+                            ((retained - index - 1) * std::mem::size_of::<Binding>()) as u64,
+                        )
+                        .ok_or(crate::WorkError::Overflow)?;
+                    retained -= 1;
+                    fuse_reserve(&mut replacements, 1, work)?;
+                    replacements.push((*inode, index, None));
+                    continue;
+                }
                 let mut key = fuse_clone_path(rebased.as_deref().unwrap_or(&binding.path), work)?;
                 key.claim(
                     std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64,
@@ -231,26 +227,48 @@ impl ProjectionState {
                     } else {
                         None
                     };
-                    replacements.push((*inode, index, path, native));
+                    replacements.push((*inode, index, Some((path, native))));
                 }
             }
         }
-        // Prepare every path before changing aliases.
-        self.streams
-            .rename_prefix(source, spelled, parent_inode, &self.by_inode, work)?;
-        for (inode, index, path, native) in replacements.drain(..) {
-            let binding = self
-                .by_inode
-                .get_mut(&inode)
-                .ok_or(libc::EIO)?
-                .bindings
-                .get_mut(index)
-                .ok_or(libc::EIO)?;
-            binding.path = path;
-            binding.spelled = native;
-        }
-        self.inode_by_path = paths;
-        Ok(())
+        let streams = self.streams.prepare_rename_prefix(
+            source,
+            spelled,
+            parent_inode,
+            &self.by_inode,
+            work,
+        )?;
+        work.charge(Copy.delta(copied))?;
+        Ok(move |state: &mut Self| {
+            streams(&mut state.streams);
+            for (inode, index, replacement) in replacements.drain(..) {
+                let Some(entry) = state.by_inode.get_mut(&inode) else {
+                    continue;
+                };
+                match replacement {
+                    Some((path, native)) => {
+                        let binding = &mut entry.bindings[index];
+                        binding.path = path;
+                        binding.spelled = native;
+                    }
+                    None => {
+                        entry.bindings.remove(index);
+                    }
+                }
+                if entry.bindings.is_empty()
+                    && entry.lookup_references == 0
+                    && entry.open_handles == 0
+                {
+                    if let Some(entry) = state.by_inode.remove(&inode) {
+                        state.forget_file(entry.lookup.node.file_id, inode);
+                    }
+                }
+            }
+            // FORGET may retire an unreferenced inode while the host mutation
+            // runs; never reintroduce its precomputed path index entries.
+            paths.retain(|_, inode| state.by_inode.contains_key(inode));
+            state.inode_by_path = paths;
+        })
     }
 }
 

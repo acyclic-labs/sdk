@@ -15,10 +15,11 @@ pub enum NamedAttributeWriteMode {
     Replace,
 }
 
-async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
+    maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<OwnedSourceChunk>, FsError> {
@@ -49,7 +50,7 @@ async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let Some((value, length)) = value else {
             return Ok(None);
         };
-        if length > volume.config.limits.maximum_read_bytes {
+        if length > maximum_bytes.min(volume.config.limits.maximum_read_bytes) {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
         let read = read_blob_range_with_accounting(
@@ -113,7 +114,7 @@ async fn list_attributes<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     mut metadata: FileMetadata,
     name: &AttributeName,
@@ -126,6 +127,11 @@ async fn change_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let root = match metadata.named_attributes {
         MetadataField::Value(root) => root,
         MetadataField::Unavailable if value.is_none() => return Err(FsError::NotFound),
+        MetadataField::Unavailable
+            if matches!(value, Some((_, NamedAttributeWriteMode::Replace))) =>
+        {
+            return Err(FsError::CreationRejected);
+        }
         MetadataField::Unavailable => {
             let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| {
                 encode_attribute_page(
@@ -337,7 +343,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let metadata = self
                 .read_metadata_with_accounting(file, &mut accounting, cancellation)
                 .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)
@@ -460,7 +474,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 cancellation,
             )
             .await?;
-            read_attribute(&self.volume, metadata, name, &mut accounting, cancellation).await
+            read_attribute(
+                &self.volume,
+                metadata,
+                name,
+                self.volume.config.limits.maximum_read_bytes,
+                &mut accounting,
+                cancellation,
+            )
+            .await
         }
         .await;
         budget.finish(result, &accounting)

@@ -195,7 +195,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         if let Some(source) = source {
-            self.authorize_file_read(source, scope, io)?;
+            self.authorize_file_read(source, scope, scope.grants(), io)?;
         }
         publication_destination(
             self.content_binding(source.map(FileRef::volume)),
@@ -254,7 +254,7 @@ impl TaskContext {
         self.scope.verify_created_write(volume, io).await?;
         let output = match publication {
             ContentPublication::Replacement(source) => {
-                self.authorize_file_read(source, scope, io)?;
+                self.authorize_file_read(source, scope, scope.grants(), io)?;
                 if source.volume() != volume || source.path() != relative.as_ref() {
                     return Err(content_error(
                         io,
@@ -266,16 +266,34 @@ impl TaskContext {
                     .reader
                     .verify(source, source.descriptor().byte_length(), io)?
                     .await?;
-                writer.stage_at(operation_id, source, bytes, io)?.await?
+                writer
+                    .stage_at(operation_id, source, bytes, Some(scope.grants()), io)?
+                    .await?
             }
             ContentPublication::OperationBound => {
                 writer
-                    .stage_once(operation_id, path, bytes, media_type, display_name, io)?
+                    .stage_once(
+                        operation_id,
+                        path,
+                        bytes,
+                        media_type,
+                        display_name,
+                        Some(scope.grants()),
+                        io,
+                    )?
                     .await?
             }
             ContentPublication::PathBound => {
                 writer
-                    .stage(operation_id, path, bytes, media_type, display_name, io)?
+                    .stage(
+                        operation_id,
+                        path,
+                        bytes,
+                        media_type,
+                        display_name,
+                        Some(scope.grants()),
+                        io,
+                    )?
                     .await?
             }
         };
@@ -381,12 +399,7 @@ fn authorize_volume_write(
     io: Option<&ContentIo>,
 ) -> Result<()> {
     if !crate::executor::with_history_io(io, |work| {
-        contains_content_grant_with_work(
-            &scope.grants,
-            volume,
-            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
-            work,
-        )
+        crate::core::volume_write_granted_with_work(&scope.grants, volume, work)
     })? {
         return Err(content_error(
             io,

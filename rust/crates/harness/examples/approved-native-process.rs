@@ -196,6 +196,7 @@ where
             &IdempotencyKey::new("example-source")?,
             None,
             None,
+            None,
         )
         .await?;
     let work = capture::work()?;
@@ -358,6 +359,7 @@ where
             "application/json",
             "request.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -368,6 +370,7 @@ where
             b"{\"type\":\"object\"}",
             "application/schema+json",
             "schema.json",
+            None,
             None,
         )?
         .await?
@@ -669,7 +672,7 @@ async fn verify_stored_result(
         return Err(format!("unobserved native result: {status:?}").into());
     };
     let output: NativeProcessResult =
-        serde_json::from_slice(&content.read(result, 1_000_000, None)?.await?)?;
+        serde_json::from_slice(&content.read(result, 1_000_000, None, None)?.await?)?;
     if request.mcp_stdio.is_some() {
         mcp_peer::verify_result(request, &output, lost_response)?;
     } else if !output.success

@@ -34,8 +34,10 @@ impl crate::conversation::ContentResidencyVerifier for WasmPrefixReader {
         &'a self,
         file: &'a FileRef,
         _maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             ContentGrant::verify_read(&self.verifier, &self.scope, file)?;
             self.files.bytes(file).map(acyclic_stream::OwnedBytes::from)
@@ -404,8 +406,10 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
         &'a self,
         file: &'a FileRef,
         _maximum_bytes: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> crate::Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
             self.bytes(file).map(acyclic_stream::OwnedBytes::from)
         })

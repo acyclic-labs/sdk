@@ -20,6 +20,8 @@ pub(super) fn callback_errno(error: &NativeMountError) -> i32 {
 
 fn source_errno(error: &MountSourceError) -> i32 {
     match error.semantic_error() {
+        MountSourceError::AccessDenied => libc::EACCES,
+        MountSourceError::ReadOnly => libc::EROFS,
         MountSourceError::NotFound => libc::ENOENT,
         MountSourceError::AlreadyExists => libc::EEXIST,
         MountSourceError::NotDirectory => libc::ENOTDIR,

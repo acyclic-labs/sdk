@@ -279,6 +279,7 @@ impl Fixture {
                 &IdempotencyKey::new(key)?,
                 None,
                 None,
+                None,
             )
             .await?;
         Ok(())
@@ -286,7 +287,7 @@ impl Fixture {
     async fn source(&self, path: &str) -> Result<PinnedContextPath> {
         let page = self
             .reader
-            .list_private_directory(&self.root.volume, "", "", None, None, 128, None)?
+            .list_private_directory(&self.root.volume, "", "", None, None, 128, None, None)?
             .await?;
         Ok(PinnedContextPath {
             root: self.root.clone(),
@@ -310,6 +311,7 @@ impl ContentResidencyVerifier for Reader<'_> {
         path: &'a str,
         generation: Option<&'a acyclic_harness::resources::GenerationRef>,
         maximum_bytes: u64,
+        ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'io acyclic_harness::conversation::ContentIo>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<
@@ -328,9 +330,15 @@ impl ContentResidencyVerifier for Reader<'_> {
         if let Some(limits) = self.expected_limits {
             assert_eq!(limits.get(index), Some(&maximum_bytes));
         }
-        let read =
-            self.inner
-                .read_private_path(volume, prefix, path, generation, maximum_bytes, io)?;
+        let read = self.inner.read_private_path(
+            volume,
+            prefix,
+            path,
+            generation,
+            maximum_bytes,
+            ceiling,
+            io,
+        )?;
         if index == 0 {
             if let Some(pause) = self.pause_first {
                 return acyclic_harness::conversation::BoundedContentFuture::new(

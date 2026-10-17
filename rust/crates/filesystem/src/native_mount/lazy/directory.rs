@@ -14,6 +14,17 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
+        let view = self.authored.access_snapshot_with_meter(work)?;
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
+        let namespace = self.authored.namespace_inputs(path, &mut inputs)?;
+        let access = view
+            .prepare_namespace(&namespace)
+            .map_err(|_| MountSourceError::AccessDenied)?;
+        let now = adapter::access::access_time()?;
+        if !access.decide(crate::access::Action::List, now).allowed {
+            return Err(MountSourceError::AccessDenied);
+        }
         let (text, _allocation) = self.path(path, work)?;
         let owner = ViewGate::callback_owner()?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
@@ -79,7 +90,7 @@ where
                     .await
                     .map_err(lazy_error)?;
                 let (entries, mut output_allocation) = self
-                    .directory_entries(path, &page, &mut checkout, &state, carrier, owner)
+                    .directory_entries(path, &page, &mut checkout, &state, carrier, access)
                     .await?;
                 if !self
                     .authored
@@ -120,8 +131,10 @@ where
         checkout: &mut crate::Checkout<A, O>,
         state: &crate::LazyWorkspaceState,
         carrier: &mut adapter::NativeDemandCarrier<'_>,
-        owner: super::super::view_gate::CallbackOwner,
+        access: crate::access::PreparedPath<'_>,
     ) -> Result<(Vec<MountDirectoryEntry>, crate::NativeAllocation), MountSourceError> {
+        let owner = ViewGate::callback_owner()?;
+        let now = adapter::access::access_time()?;
         let work = carrier
             .original_native_work()
             .ok_or(MountSourceError::NativeUnsupported)?;
@@ -133,6 +146,14 @@ where
         for entry in &page.entries {
             work.charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(MountSourceError::NativeWork)?;
+            if !access
+                .child_name(&entry.name)
+                .map_err(|_| MountSourceError::AccessDenied)?
+                .decide(crate::access::Action::List, now)
+                .allowed
+            {
+                continue;
+            }
             let (name, allocation) = adapter::native_mount_name(&entry.name, carrier)?;
             if let Some(mut allocation) = allocation {
                 output_allocation

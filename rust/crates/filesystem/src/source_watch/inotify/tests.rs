@@ -42,6 +42,61 @@ fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
         .map_err(crate::native_host::ordinary_error)
 }
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+
+    // Property: a retained watch charges registration and cleanup to its birth
+    // ledger for either kind of subsequent reader; cancellation still wins.
+    #[test]
+    fn retained_watch_registration_keeps_its_original_ledger(
+        components in proptest::collection::vec("[a-z]{1,8}", 1..5),
+        native_reader in proptest::bool::ANY,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let relative: PathBuf = components.iter().collect();
+        std::fs::create_dir_all(root.path().join(&relative)).unwrap();
+        std::fs::create_dir(root.path().join("cancelled")).unwrap();
+        let host = crate::native_host::HostRoot::open(
+            root.path(), &mut crate::native_host::ordinary_work(),
+        ).unwrap();
+        let mut original = crate::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED, &CancellationToken::new(),
+        ).unwrap();
+        let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut original).unwrap());
+        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut original).unwrap();
+        let retained = watch.platform_owned_bytes();
+        let cancellation = CancellationToken::new();
+        let mut incoming = if native_reader {
+            crate::source_watch::CallbackWork::Original(
+                crate::NativeMaterializationWork::new(
+                    WorkBudget::UNBOUNDED, &cancellation,
+                ).unwrap(),
+            )
+        } else {
+            crate::source_watch::CallbackWork::Ordinary(
+                DemandWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+        };
+        let incoming_before = incoming.with_original_leaf(|work| work.receipt());
+        let registered = watch.admit_with_work(&relative, &mut incoming);
+        let cancelled = {
+            cancellation.cancel();
+            watch.admit_with_work(Path::new("cancelled"), &mut incoming)
+        };
+        let incoming_after = incoming.with_original_leaf(|work| work.receipt());
+        let retained_after = watch.platform_owned_bytes();
+        let denied_path_absent = !watch.shared.watches.lock().unwrap().iter()
+            .any(|(path, _)| path == Path::new("cancelled"));
+        // Complete real native cleanup before any property assertion can unwind.
+        watch.stop_accepted_cleanup().unwrap();
+        proptest::prop_assert!(matches!(registered, Ok(true)), "{registered:?}");
+        proptest::prop_assert!(retained_after > retained);
+        proptest::prop_assert_eq!(incoming_after, incoming_before);
+        proptest::prop_assert!(matches!(cancelled, Err(DemandError::Cancelled)));
+        proptest::prop_assert!(denied_path_absent);
+    }
+}
+
 #[test]
 fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dyn std::error::Error>>
 {

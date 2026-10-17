@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     ) -> Result<Option<folded_cache::Shared<FoldedKeys>>, MountSourceError> {
         let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let mut parent = crate::kernel::Owned::new(
-            NamespacePath::new(Vec::new(), self.limits).map_err(engine_error)?,
+            NamespacePath::new(Vec::new(), self.config.limits).map_err(engine_error)?,
             accounting.claim_owned(0, 0)?,
             0,
         );
@@ -67,7 +67,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 }
                 let (value, allocation) = parent
                     .value
-                    .child_with_accounting(name, self.limits, &mut accounting, cancellation)
+                    .child_with_accounting(name, self.config.limits, &mut accounting, cancellation)
                     .map_err(engine_error)?;
                 let bytes = value.retained_bytes();
                 let next = crate::kernel::Owned::new(value, allocation, bytes);

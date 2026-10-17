@@ -228,6 +228,7 @@ where
                     "text/plain",
                     "media-summary",
                     None,
+                    None,
                 )?
                 .await?
                 .0;
@@ -241,6 +242,7 @@ where
             &ModelPrefix::select(&exported, None)?.canonical_bytes(None)?,
             ModelPrefix::MEDIA_TYPE,
             "media-prefix",
+            None,
             None,
         )?
         .await?

@@ -61,6 +61,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             "application/json",
             "options.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -167,6 +168,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
                     body,
                     "application/x-harness-native-fixture",
                     "native.bin",
+                    None,
                     None,
                 )?
                 .await?
@@ -653,6 +655,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             "application/json",
             "options.json",
             None,
+            None,
         )?
         .await?
         .0;
@@ -784,6 +787,7 @@ pub(super) async fn exercise_live_native_boundary() -> Result<()> {
             malformed_bytes,
             "application/json",
             "malformed-options.json",
+            None,
             None,
         )?
         .await?

@@ -300,6 +300,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 },
                 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
                 source: None,
+                access: None,
             })
         }
         .await;

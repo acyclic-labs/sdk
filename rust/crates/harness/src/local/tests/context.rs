@@ -23,6 +23,7 @@ async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<(
         "text/markdown",
         name,
         None,
+        None,
     )?
     .await?;
     Ok(())
@@ -35,7 +36,7 @@ pub(super) async fn manifest(
     let file = harness.retained_context_manifest(operation).await?;
     let bytes = harness
         .context_reader()?
-        .read(&file, harness.limits.file_bytes, None)?
+        .read(&file, harness.limits.file_bytes, None, None)?
         .await?;
     let manifest = ContextManifest::decode(&bytes, harness.limits)?;
     Ok((file, manifest))
@@ -74,7 +75,9 @@ async fn check_instructions(
                 policy,
             }) => {
                 assert_eq!(policy, &crate::model::FileProjectionPolicy::BoundedFull);
-                let bytes = reader.read(file, harness.limits.file_bytes, None)?.await?;
+                let bytes = reader
+                    .read(file, harness.limits.file_bytes, None, None)?
+                    .await?;
                 rendered.push_str(std::str::from_utf8(&bytes).map_err(super::super::storage)?);
             }
             other => panic!("unexpected system content: {other:?}"),
@@ -122,7 +125,7 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
     assert!(
         harness
             .input_publisher()?
-            .observe_staged_once(operation, harness.limits.file_bytes, None)?
+            .observe_staged_once(operation, harness.limits.file_bytes, None, None)?
             .await?
             .0
             .is_none()
@@ -287,6 +290,7 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
             &deleted.discovery.instructions[0],
             reopened.limits.file_bytes,
             None,
+            None,
         )?
         .await?;
     assert_eq!(bytes.as_ref(), b"same instance latest agents");
@@ -333,7 +337,7 @@ async fn invalid_instructions_reject_before_input_publication_or_model_dispatch(
         assert!(
             harness
                 .input_publisher()?
-                .observe_staged_once(operation, harness.limits.file_bytes, None)?
+                .observe_staged_once(operation, harness.limits.file_bytes, None, None)?
                 .await?
                 .0
                 .is_none()

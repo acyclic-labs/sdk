@@ -1,0 +1,1 @@
+{"layers":[[{"actions":["list","read","create","write","append","delete","rename","fork","merge-into","read-history","lock","admin"],"resource":{"lineage_root":null,"volume":null,"generations":"all","path":"**"}}]],"expires_at":null}

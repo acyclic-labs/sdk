@@ -87,6 +87,7 @@ impl LocalHarness {
                     true,
                     false,
                     acyclic_fs::LocalCoreStateStore::new(directory.join("workspace")),
+                    None,
                 )
                 .await?,
             ))
@@ -109,6 +110,7 @@ impl LocalHarness {
                     Arc::clone(workspace),
                     volume,
                     config.clock,
+                    signed,
                     Arc::clone(&task_files),
                 )
                 .await?,

@@ -26,6 +26,10 @@ mod copying;
 mod effects;
 mod extension_types;
 mod filesystem_access;
+pub(crate) use filesystem_access::{
+    contains_content_grant_with_work, directory_read_granted_with_work, filesystem_scope_label,
+    volume_write_granted_with_work,
+};
 mod ownership;
 mod records;
 mod reducer;

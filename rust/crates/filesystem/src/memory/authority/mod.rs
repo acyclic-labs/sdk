@@ -89,6 +89,8 @@ enum CreatePlan {
 /// Deterministic single-process authority store.
 pub struct MemoryAuthorityStore {
     maximum_payload_bytes: u64,
+    // Lock order: authority map -> allocation ledger (native accounting only).
+    // Never await, enter an object store, or call an owner guard while held.
     authorities: Mutex<HashMap<AuthorityId, AuthorityState>>,
 }
 

@@ -339,17 +339,7 @@ impl ControlPlane {
                     .value;
                 let source = Arc::clone(&physical.source);
                 let source_reference = source.reference();
-                let workspace = self
-                    .fs
-                    .create_workspace_with_config(
-                        &workspace_name,
-                        VolumeConfig::native(Lifecycle::Durable),
-                        WorkBudget::UNBOUNDED,
-                        &CancellationToken::new(),
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| display(failure.error))?;
+                let workspace = super::access::root_workspace(&self.fs, &workspace_name).await?;
                 let workspace = LazyWorkspace::bind(
                     workspace,
                     Arc::clone(&source),
@@ -433,17 +423,7 @@ impl ControlPlane {
         // can repeat all three, binding the root afresh if its attach was lost.
         let (store, durability) = self.store.defer_durability();
 
-        let workspace = self
-            .fs
-            .create_workspace_with_config(
-                &workspace_name,
-                VolumeConfig::native(Lifecycle::Durable),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| display(failure.error))?;
+        let workspace = super::access::root_workspace(&self.fs, &workspace_name).await?;
         let workspace = LazyWorkspace::bind(
             workspace,
             Arc::clone(&source),

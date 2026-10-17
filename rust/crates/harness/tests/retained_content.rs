@@ -90,6 +90,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &IdempotencyKey::new("admitted-content")?,
             None,
             None,
+            None,
         )
         .await?;
     let orphan = host
@@ -102,6 +103,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("unpublished-content")?,
+            None,
             None,
             None,
         )
@@ -143,7 +145,15 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &mut None,
     )?;
     let (listed_generation, page) = host
-        .list_private_directory(&volume, &attached_directory, "messages", None, None, 10)
+        .list_private_directory(
+            &volume,
+            &attached_directory,
+            "messages",
+            None,
+            None,
+            10,
+            None,
+        )
         .await?;
     assert_eq!(page.entries.len(), 1);
     assert_eq!(
@@ -153,6 +163,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "messages/current.txt",
             Some(&listed_generation),
             64,
+            None,
             None,
         )
         .await?
@@ -182,6 +193,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &IdempotencyKey::new("advanced-head")?,
         None,
         None,
+        None,
     )
     .await?;
     let retried = host
@@ -194,6 +206,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
             None,
             None,
         )
@@ -209,6 +222,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             "current.txt",
             64,
             &IdempotencyKey::new("admitted-content")?,
+            None,
             None,
             None
         )
@@ -259,6 +273,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             Some(&listed_generation),
             None,
             10,
+            None,
         )
         .await?;
     assert_eq!(relisted_generation, listed_generation);
@@ -271,6 +286,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 "messages/current.txt",
                 Some(&listed_generation),
                 64,
+                None,
                 None,
             )
             .await?
@@ -286,6 +302,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 "messages/current.txt",
                 None,
                 64,
+                None,
                 None,
             )
             .await?

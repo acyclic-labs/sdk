@@ -77,6 +77,7 @@ impl ContentResidencyVerifier for Reader {
         &'a self,
         _file: &'a FileRef,
         _maximum: u64,
+        _ceiling: Option<&'a acyclic_harness::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         BoundedContentFuture::new(io, || async move {

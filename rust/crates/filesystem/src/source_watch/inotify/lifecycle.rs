@@ -307,7 +307,15 @@ impl NativeSourceWatch {
         directory: &Path,
         work: &mut W,
     ) -> Result<bool, DemandError> {
-        self.shared.admit_with_work(directory, work)
+        work.check()?;
+        // Registration buffers and cleanup credits outlive the read which
+        // discovers this directory. Keep them on the watch's birth ledger.
+        match self.shared.ownership.original_work() {
+            Some(original) => self
+                .shared
+                .admit_with_work(directory, &mut original.clone()),
+            None => self.shared.admit_with_work(directory, work),
+        }
     }
 
     pub(crate) fn unadmit_with_work<W: SourceDemandReadWork>(

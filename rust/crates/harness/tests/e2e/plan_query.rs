@@ -102,7 +102,9 @@ impl PlanQuery {
                 "GOAL.md",
             )
             .await?;
-        let volume = storage.file_query(acyclic_fs::performance::BOUNDARY_BUDGET)?;
+        let volume = storage
+            .file_query(acyclic_fs::performance::BOUNDARY_BUDGET)
+            .await?;
         let turns: Vec<_> = self.writes.iter().enumerate().flat_map(|(index, revision)| [
             ScriptedTurn::Events(vec![
                 ScriptedEvent::Event(ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(

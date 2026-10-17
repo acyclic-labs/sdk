@@ -114,7 +114,7 @@ printf '{"hookSpecificOutput":{"additionalContext":"%s"}}' "$1"
     );
     let reader = harness.context_reader()?;
     let (_, bytes, _) = reader
-        .read_private_path(harness.project(), "", "hook-runs", None, 4096, None)?
+        .read_private_path(harness.project(), "", "hook-runs", None, 4096, None, None)?
         .await?;
     assert_eq!(bytes.as_ref(), b"pinned-start-A\npinned-start-B\n");
     assert_eq!(
@@ -175,6 +175,7 @@ async fn queued_admissions_reconstruct_hook_authority_from_their_original_model_
             &bytes,
             "application/json",
             "queued model",
+            None,
             None,
         )?
         .await?

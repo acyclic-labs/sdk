@@ -122,6 +122,11 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     /// Mounts the complete workspace or one exact subtree as a native directory.
+    /// Root lookup is owned by private admission, never an unchecked path:
+    ///
+    /// ```compile_fail
+    /// use acyclic_fs::native_mount::customer::selection::root::AdmittedRoot;
+    /// ```
     pub async fn mount(
         &self,
         destination: impl AsRef<Path>,
@@ -143,28 +148,13 @@ where
         } else {
             CheckoutMode::read_only_pinned()
         };
-        let mut checkout = self
-            .checkout(GenerationSelector::Head, mode, &work, cancellation)
+        let checkout = self
+            .checkout(options.data_selector()?, mode, &work, cancellation)
             .await?;
-        let config = checkout.volume_config();
-        let root = crate::workspace::customer_path_with_accounting(
-            &options.subdirectory,
-            config,
-            &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
-            cancellation,
-        )?;
-        let root_custody = root.1;
-        let root = root.0;
-        let selected = checkout
-            .lookup_no_follow(&root, &work, cancellation)
-            .await
-            .map_err(WorkspaceError::from)?
-            .record
-            .ok_or(WorkspaceError::NotFound)?;
-        if selected.kind != FileKind::Directory {
-            return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
-        }
-        let source = options::checkout_source(checkout, (root, root_custody), &options, &work)?;
+        let source = AdmittedRoot::admit(&options, self, checkout.generation_id(), &work)
+            .await?
+            .checkout_source(checkout, &work)
+            .await?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

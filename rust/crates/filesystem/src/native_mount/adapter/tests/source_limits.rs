@@ -110,11 +110,17 @@ fn native_source_io_control(
     Ok(CheckoutMountSource::new_at_meter(
         Arc::clone(&borrowed.checkout),
         VolumeConfig::portable(Lifecycle::Ephemeral),
-        NamespacePath::new(Vec::new(), borrowed.limits)?,
+        NamespacePath::new(Vec::new(), borrowed.config.limits)?,
         original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
         original,
         Some(original),
     )?
+    .with_access_view(Arc::clone(
+        borrowed
+            .access_view
+            .as_ref()
+            .ok_or("missing fixture access")?,
+    ))?
     .into_arc_meter(original)?)
 }
 

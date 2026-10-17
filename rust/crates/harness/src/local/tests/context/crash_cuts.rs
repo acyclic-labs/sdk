@@ -33,9 +33,11 @@ impl ContentPublisher for Interrupted<'_> {
         &'a self,
         operation: OperationId,
         maximum: u64,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
-        self.publisher.observe_staged_once(operation, maximum, io)
+        self.publisher
+            .observe_staged_once(operation, maximum, ceiling, io)
     }
 
     fn stage_once<'a>(
@@ -45,6 +47,7 @@ impl ContentPublisher for Interrupted<'_> {
         bytes: &'a [u8],
         media: &'a str,
         display: &'a str,
+        ceiling: Option<&'a crate::Capabilities>,
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
         BoundedContentFuture::new(io, || async move {
@@ -55,7 +58,7 @@ impl ContentPublisher for Interrupted<'_> {
             }
             let file = self
                 .publisher
-                .stage_once(operation, path, bytes, media, display, io)?
+                .stage_once(operation, path, bytes, media, display, ceiling, io)?
                 .await?;
             if selected {
                 // The real provider has committed the bytes and retry receipt;
@@ -158,7 +161,7 @@ async fn sweep_case(checkout: bool, cut: usize, after: bool, publications: usize
     for file in &manifest.discovery.instructions {
         contents.push(
             reader
-                .read(file, reopened.limits.file_bytes, None)?
+                .read(file, reopened.limits.file_bytes, None, None)?
                 .await?
                 .as_ref()
                 .to_vec(),

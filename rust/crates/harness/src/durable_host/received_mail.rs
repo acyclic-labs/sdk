@@ -328,7 +328,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         drop(encoded);
         let bytes = self
             .reader
-            .read(&reference, reference.descriptor().byte_length(), io)?
+            .read(&reference, reference.descriptor().byte_length(), None, io)?
             .await?;
         let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         reference.descriptor().verify(&bytes, &mut work)?;
@@ -420,7 +420,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             None => {
                 reader
-                    .read(payload, payload.descriptor().byte_length(), None)?
+                    .read(payload, payload.descriptor().byte_length(), None, None)?
                     .await?
             }
         };

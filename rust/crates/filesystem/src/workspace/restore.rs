@@ -170,7 +170,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Ok(TransactionCommit::Conflict { actual: current });
         }
         let mut transaction = self
-            .begin_pinned_transaction(&current, idempotency_key, original, cancellation)
+            .begin_transaction_at(&current, idempotency_key, original, cancellation)
             .await
             .map_err(E::from)?;
         let mut accounting = KernelAccounting::native(original, cancellation);

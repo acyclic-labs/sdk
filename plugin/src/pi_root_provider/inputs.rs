@@ -232,6 +232,7 @@ pub(super) async fn observe_pi_input_at(
             &coordinates.key.0,
             &coordinates.path.0,
             maximum(owner),
+            None,
             Some(&io),
         )
         .await?
@@ -268,6 +269,7 @@ pub(super) fn publish_pi_input_with_native_coordinates<'a, T: Serialize + Sync>(
                 &coordinates.display_name.0,
                 maximum(owner),
                 &coordinates.key.0,
+                None,
                 None,
                 Some(&io),
             )

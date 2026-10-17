@@ -417,6 +417,7 @@ where
                     "application/octet-stream",
                     "replacement",
                     None,
+                    None,
                 )?
                 .await?
                 .0;
@@ -427,6 +428,7 @@ where
                     br#"{"mode":"strict","scale":4}"#,
                     "application/json",
                     "replacement options",
+                    None,
                     None,
                 )?
                 .await?

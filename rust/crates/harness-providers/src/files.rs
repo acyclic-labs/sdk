@@ -128,7 +128,7 @@ pub(crate) async fn resolve(
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
             let (bytes, hold) =
-                verified_content_bytes(reader.as_ref(), file, files.maximum_bytes, io).await?;
+                verified_content_bytes(reader.as_ref(), file, files.maximum_bytes, None, io).await?;
             let bytes = bytes
                 .try_into_ordinary_vec()
                 .unwrap_or_else(|bytes| bytes.as_slice().to_vec());

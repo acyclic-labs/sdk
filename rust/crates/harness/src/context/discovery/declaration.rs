@@ -323,6 +323,7 @@ impl PinnedContextPath {
                 Some(&self.generation),
                 maximum_bytes,
                 None,
+                None,
             )?
             .await?;
         if file.volume() != &self.root.volume

@@ -16,6 +16,7 @@ macro_rules! unused_content_methods {
 
 impl MountFilesystem for NoContent {
     unused_content_methods! {
+        authorize_with_meter(requests: &[(crate::access::Action, &MountPath)], work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         lookup_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<Option<MountLookup>, MountSourceError>;
         lookup_pinned_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError>;
         observe_view_with_meter(observer: std::sync::Weak<dyn ViewObserver>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
@@ -32,7 +33,7 @@ impl MountFilesystem for NoContent {
         set_attributes(path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         flush(work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         open_file_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-        open_file_with_lookup_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
+        open_file_with_lookup_with_meter(path: &MountPath, access: crate::native_mount::MountOpenAccess, work: &NativeMaterializationWork) -> Result<(crate::native_mount::MountOpenClaim, MountLookup), MountSourceError>;
         open_created_with_meter(path: &MountPath, created: &MountLookup, work: &NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         detach_file_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
         create_file(path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
@@ -43,7 +44,6 @@ impl MountFilesystem for NoContent {
         list_attributes_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32, work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
         write_attribute(path: &MountPath, name: &[u8], value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         remove_attribute(path: &MountPath, name: &[u8], work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
-        clone_range_by_id(source_file_id: FileId, source_offset: u64, destination_file_id: FileId, destination_offset: u64, length: u64, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         hard_link(source: &MountPath, destination: &MountPath, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
         folded_path_with_meter(path: &MountPath, work: &NativeMaterializationWork) -> Result<Option<(MountPath, u64)>, MountSourceError>;
         view_is_stable_with_meter(work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;

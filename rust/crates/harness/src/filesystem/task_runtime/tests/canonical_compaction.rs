@@ -135,6 +135,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
                 "text/plain",
                 "history.txt",
                 None,
+                None,
             )?
             .await?
             .0;

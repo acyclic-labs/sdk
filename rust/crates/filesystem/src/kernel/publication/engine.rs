@@ -5,8 +5,9 @@ use super::*;
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
+pub(super) async fn publish_generation_async_inner<O, A, E, F, Fut, G, Dispatch, R>(
     objects: &O,
+    authority: &A,
     request: PublishGenerationRequest,
     intent: PublicationIntent,
     closure_limits: ClosureLimits,
@@ -20,6 +21,7 @@ pub(super) async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>
 ) -> Result<(PublicationReceipt, ProofGuard), E>
 where
     O: crate::AsyncObjectStore,
+    A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
     F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
     Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
@@ -159,6 +161,23 @@ where
             },
             output.1,
         ));
+    }
+    // The lease spans validation and the authority CAS. It excludes new physical
+    // projections; existing projections admit only candidates preserving policy.
+    let (_projection_fence, projected) =
+        crate::access::projection::publication(request.volume_id).map_err(E::from)?;
+    if projected {
+        projection::check(
+            objects,
+            authority,
+            request,
+            &output.0.root,
+            closure_limits.decode,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map_err(E::from)?;
     }
     let scope = if cache.is_some() && objects.collection().is_none() {
         crate::PublicationScope::Everything

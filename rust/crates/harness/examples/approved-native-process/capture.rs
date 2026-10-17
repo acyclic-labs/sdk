@@ -45,7 +45,7 @@ impl Output {
         let stderr = self.stderr.load(Ordering::Relaxed);
         if let Some(EffectStatus::Succeeded { result }) = status {
             let retained: NativeProcessResult =
-                serde_json::from_slice(&content.read(result, 1_000_000, None)?.await?)?;
+                serde_json::from_slice(&content.read(result, 1_000_000, None, None)?.await?)?;
             if (stdout, stderr) != (retained.stdout.len(), retained.stderr.len()) {
                 return Err("streamed and retained native output differ".into());
             }

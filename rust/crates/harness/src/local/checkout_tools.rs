@@ -8,6 +8,7 @@ use crate::{
 use acyclic_fs::{NativeWatch, PublicationPermit};
 use acyclic_stream::BoxProviderFuture;
 
+pub(super) mod access;
 mod bash;
 mod capture;
 mod children;
@@ -24,6 +25,7 @@ mod tests;
 
 pub(super) struct CheckoutTools {
     workspace: Arc<LocalWorkspace>,
+    signed: Scope,
     read_grant: String,
     write_grant: String,
     capture_options: acyclic_fs::CaptureOptions,
@@ -81,6 +83,7 @@ impl CheckoutTools {
         workspace: Arc<LocalWorkspace>,
         project: &VolumeRef,
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+        signed: &Scope,
         task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     ) -> Result<Self> {
         if workspace
@@ -114,6 +117,7 @@ impl CheckoutTools {
             }
         }
         Ok(Self {
+            signed: signed.clone(),
             read_grant: project.capability(VolumeOperation::Read, &mut None)?,
             write_grant: project.capability(VolumeOperation::Write, &mut None)?,
             capture_options,
@@ -196,6 +200,24 @@ impl ToolExecutor for CheckoutTools {
                 let selected = self.child_checkout(original, project).await?;
                 return selected.execute(invocation, context).await;
             }
+            if !self.selected {
+                let context = context
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("tool context missing".into()))?;
+                serialized(&self.state, async |state| {
+                    let view = state
+                        .active
+                        .as_ref()
+                        .unwrap_or_else(|| self.workspace.view());
+                    self.require_command_access(
+                        view.workspace(),
+                        context.effective_scope().grants(),
+                        invocation.name == "fs",
+                    )
+                    .await
+                })
+                .await?;
+            }
             if !self.selected
                 && let Some(selected) = self
                     .select(
@@ -256,6 +278,12 @@ impl ToolExecutor for CheckoutTools {
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.workspace.view());
+                self.require_command_access(
+                    view.workspace(),
+                    context.effective_scope().grants(),
+                    invocation.name == "fs",
+                )
+                .await?;
                 if reconciliation::recover(&workspace, view, &|| async {
                     owner.verify_owner(None)?.await
                 })

@@ -31,7 +31,7 @@ impl ContextManifest {
         #[cfg(not(feature = "filesystem"))]
         let content_io = None;
         let bytes = reader
-            .read(&reference, limits.render_bytes, content_io)?
+            .read(&reference, limits.render_bytes, None, content_io)?
             .await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
         #[cfg(feature = "filesystem")]

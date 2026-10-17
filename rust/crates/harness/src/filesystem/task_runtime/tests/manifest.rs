@@ -127,7 +127,7 @@ async fn retained_command(
     assert_eq!(transition.commands.len(), 1);
     let command = transition.commands.remove(0);
     let bytes = reader(fixture)?
-        .read(&command.payload, 65_536, None)?
+        .read(&command.payload, 65_536, None, None)?
         .await?;
     let payload =
         serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -422,7 +422,10 @@ async fn native_request_uses_manifest_and_original_ledger() -> Result<()> {
         .zip(["ORIGINAL AGENTS", "ORIGINAL CLAUDE"])
     {
         assert_eq!(
-            reader(&fixture)?.read(file, 65_536, None)?.await?.as_ref(),
+            reader(&fixture)?
+                .read(file, 65_536, None, None)?
+                .await?
+                .as_ref(),
             expected.as_bytes()
         );
     }

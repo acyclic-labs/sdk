@@ -139,6 +139,7 @@ impl Fixture {
                 &IdempotencyKey::new(format!("fixture-replacement-{name}")).unwrap(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap()

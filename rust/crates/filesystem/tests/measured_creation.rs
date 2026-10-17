@@ -273,7 +273,10 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let created = fs
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "measured-recovery",
-            VolumeConfig::portable(Lifecycle::Ephemeral),
+            acyclic_fs::VolumeInitialization {
+                config: VolumeConfig::portable(Lifecycle::Ephemeral),
+                access_policy: None,
+            },
             operation,
             budget,
             &CancellationToken::new(),
@@ -539,7 +542,10 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source.clone(),
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization {
+                config: config,
+                access_policy: None,
+            },
             operation,
             &mut accounting,
         )
@@ -630,7 +636,10 @@ mod source_bound_lost_ack {
             "stream-lost-ack",
             source,
             store.clone(),
-            config,
+            acyclic_fs::VolumeInitialization {
+                config: config,
+                access_policy: None,
+            },
             operation,
             &mut accounting,
         )
@@ -675,7 +684,10 @@ mod source_bound_lost_ack {
             let failure = reopened
                 .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     "stream-lost-ack",
-                    requested_config,
+                    acyclic_fs::VolumeInitialization {
+                        config: requested_config,
+                        access_policy: None,
+                    },
                     requested_operation,
                     budget,
                     &cancellation,

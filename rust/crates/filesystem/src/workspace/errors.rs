@@ -23,6 +23,9 @@ pub enum WorkspaceNameError {
 /// Customer workspace operation failure.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum WorkspaceError {
+    /// Policy is absent, restrictive, stale, or requires unavailable claims.
+    #[error("filesystem policy denies this adapter")]
+    AccessDenied,
     /// Friendly name was invalid.
     #[error(transparent)]
     Name(#[from] WorkspaceNameError),
@@ -248,7 +251,7 @@ pub(crate) fn workspace_bounded_error(
     bounded!(crate::kernel::RebaseError<crate::kernel::AuthenticatedProbeError>; [Probe]; [Cancelled]);
     bounded!(crate::kernel::CheckpointError; [Storage]; []);
     bounded!(crate::kernel::ClosureError; [Storage]; []);
-    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority]; []);
+    bounded!(crate::kernel::PublicationError; [Closure, Objects, Authority, ProjectionValidation]; []);
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     bounded!(crate::DemandError; []; [Cancelled]);
     #[cfg(feature = "native-mount")]

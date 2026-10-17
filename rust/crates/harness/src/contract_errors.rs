@@ -60,6 +60,9 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// A raw filesystem adapter cannot enforce this effective access view.
+    #[error("filesystem access configuration unsupported on {0}")]
+    FilesystemAccessConfiguration(&'static str),
     /// The invocation's cancellation token fired before the operation finished.
     #[error("operation cancelled")]
     Cancelled,
@@ -400,9 +403,10 @@ impl Error {
             },
             Self::NotFound(_) => ErrorCode::NotFound,
             Self::Conflict(_) => ErrorCode::Conflict,
-            Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
-                ErrorCode::Unsupported
-            }
+            Self::Unsupported(_)
+            | Self::GoalBlocked(_)
+            | Self::FilesystemAccessConfiguration(_)
+            | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::Cancelled => ErrorCode::Cancelled,
@@ -430,6 +434,18 @@ impl Error {
             | Self::NativeStream { code, .. }
             | Self::NativeSchema { code, .. }
             | Self::NativeReservation { code, .. } => *code,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWorkspace { source, .. }
+                if matches!(
+                    source.as_ref(),
+                    acyclic_fs::WorkspaceError::NotFound
+                        | acyclic_fs::WorkspaceError::Filesystem(acyclic_fs::FsError::Authority(
+                            acyclic_fs::AuthorityStoreError::Missing,
+                        ))
+                ) =>
+            {
+                ErrorCode::NotFound
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeConstruction { .. }
             | Self::NativeSupervisor { .. }
@@ -482,6 +498,7 @@ impl Error {
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::FilesystemAccessConfiguration(_)
                 | Self::Cancelled
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)

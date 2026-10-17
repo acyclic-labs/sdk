@@ -22,6 +22,11 @@ pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,
 };
 
+/// Fuzzes scheduler framing and checks event/digest projection round trips.
+pub fn check_scheduler_intent_frame(data: &[u8]) -> crate::Result<()> {
+    crate::distributed::verification::check(data)
+}
+
 /// Local test composition with temporary settings, independent of HOME and CODEX_HOME.
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub fn local_harness_config(

@@ -55,7 +55,7 @@ async fn scenario(
     }
     let page = fixture
         .reader
-        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None)?
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None, None)?
         .await?;
     let resolved = CommandCatalog::builtins()?
         .resolve_input(
