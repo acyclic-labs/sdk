@@ -55,12 +55,12 @@ fn encoded(page: &FileTablePage) -> Vec<u8> {
     .unwrap_or_else(fail)
 }
 
-fn measured(bencher: Bencher, name: &str, count: u8, operation: impl Fn() + Sync) {
+fn measured(bencher: Bencher, name: &str, count: u8, operation: impl FnOnce(Bencher)) {
     let markers = std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some();
     if markers {
         eprintln!("ACYCLIC_DECODED_PAGE_BOUNDARY name={name} count={count} begin=true");
     }
-    bencher.bench(operation);
+    operation(bencher);
     if markers {
         eprintln!("ACYCLIC_DECODED_PAGE_BOUNDARY name={name} count={count} begin=false");
     }
@@ -112,31 +112,33 @@ fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!("decoded_page_{name} count={count} work={:?}", receipt.work);
     }
-    if cold {
-        bencher
-            .with_inputs(|| {
-                store
-                    .clone()
-                    .with_object_limit(maximum)
-                    .unwrap_or_else(fail)
-            })
-            .bench_refs(|store| std::hint::black_box(operation(store)));
-    } else {
-        measured(bencher, name, count, || {
-            std::hint::black_box(operation(&store));
-        });
-    }
+    measured(bencher, name, count, |bencher| {
+        if cold {
+            bencher
+                .with_inputs(|| {
+                    store
+                        .clone()
+                        .with_object_limit(maximum)
+                        .unwrap_or_else(fail)
+                })
+                .bench_refs(|store| std::hint::black_box(operation(store)));
+        } else {
+            bencher.bench(|| std::hint::black_box(operation(&store)));
+        }
+    });
 }
 
 #[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
 fn decode(bencher: Bencher, count: u8) {
     let bytes = encoded(&page(count));
-    measured(bencher, "decode", count, || {
-        std::hint::black_box(
-            decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
-                Ok::<_, CanonicalDecodeError>(())
-            })
-            .unwrap_or_else(fail),
-        );
+    measured(bencher, "decode", count, |bencher| {
+        bencher.bench(|| {
+            std::hint::black_box(
+                decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+                    Ok::<_, CanonicalDecodeError>(())
+                })
+                .unwrap_or_else(fail),
+            );
+        });
     });
 }
