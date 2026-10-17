@@ -35,6 +35,13 @@ pub struct OperationSpan {
     dispatch: Dispatch,
 }
 
+#[inline]
+fn with_dispatch<T>(dispatch: &Dispatch, work: impl FnOnce() -> T) -> T {
+    #[cfg(test)]
+    tests::DISPATCH_INSTALLS.with(|count| count.set(count.get() + 1));
+    tracing::dispatcher::with_default(dispatch, work)
+}
+
 impl OperationSpan {
     /// Captures the operation and its creating dispatcher.
     pub fn new(span: Span) -> Self {
@@ -92,7 +99,7 @@ impl OperationSpan {
         {
             return work();
         }
-        tracing::dispatcher::with_default(&self.dispatch, || self.context.in_scope(work))
+        with_dispatch(&self.dispatch, || self.context.in_scope(work))
     }
     /// Retains a producer's context through polling and destruction.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
@@ -131,7 +138,7 @@ impl Clone for OperationSpan {
         if self.span.is_none() && self.context.is_none() {
             clone()
         } else {
-            tracing::dispatcher::with_default(&self.dispatch, clone)
+            with_dispatch(&self.dispatch, clone)
         }
     }
 }
@@ -146,7 +153,7 @@ impl Drop for OperationSpan {
         if self.span.is_none() && self.context.is_none() {
             return;
         }
-        tracing::dispatcher::with_default(&self.dispatch, || {
+        with_dispatch(&self.dispatch, || {
             self.span = Span::none();
             self.context = Span::none();
         });
