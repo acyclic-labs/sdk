@@ -1,5 +1,12 @@
 use super::*;
 
+fn check_case(name: &str, scenario: impl Fn() + Send + Sync + 'static) {
+    let mut model = loom::model::Builder::new();
+    // Each independent scenario needs its own saved schedule on replay.
+    model.checkpoint_file = model.checkpoint_file.map(|path| path.with_extension(name));
+    model.check(scenario);
+}
+
 fn remount(
     destination: &Path,
     kernel: &kernel::Kernel,
@@ -81,11 +88,17 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
     // remount-first order, then explore all syscall interleavings after the
     // recovery-first acquisition, including real owner/worker retirement.
     let contended_destination = destination.clone();
-    loom::model(move || remount_first(&contended_destination, base, helper_stat));
+    check_case("remount-first", move || {
+        remount_first(&contended_destination, base, helper_stat)
+    });
     let positive_destination = destination.clone();
-    loom::model(move || scenario(&positive_destination, base, helper_stat, false));
+    check_case("recovery-first", move || {
+        scenario(&positive_destination, base, helper_stat, false)
+    });
     let error = std::panic::catch_unwind(move || {
-        loom::model(move || scenario(&destination, base, helper_stat, true))
+        check_case("early-release", move || {
+            scenario(&destination, base, helper_stat, true)
+        })
     })
     .expect_err("early release of the real fence was accepted");
     let message = error
