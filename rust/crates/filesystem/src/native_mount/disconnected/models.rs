@@ -39,12 +39,12 @@ fn scenario(
     helper_stat: rustix::fs::Stat,
     broken: bool,
 ) {
-    let kernel = kernel::Kernel::install(base, helper_stat, broken);
+    let kernel = kernel::Kernel::install(base, helper_stat, broken, true);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let peer_kernel = kernel.clone();
     let peer_destination = destination.to_path_buf();
     let peer = loom::thread::spawn(move || {
-        peer_kernel.wait_for_recovery_fence();
+        peer_kernel.wait_for_helper();
         match remount(&peer_destination, &peer_kernel) {
             Ok(guard) => Some(guard),
             Err(NativeMountError::DestinationBusy) => None,
@@ -68,7 +68,7 @@ fn remount_first(
     helper_stat: rustix::fs::Stat,
     retained: bool,
 ) {
-    let kernel = kernel::Kernel::install(base, helper_stat, false);
+    let kernel = kernel::Kernel::install(base, helper_stat, false, false);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let mounted = remount(destination, &kernel).unwrap();
     if retained {
@@ -103,8 +103,8 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
     .unwrap();
     let helper_stat = rustix::fs::stat(std::env::current_exe().unwrap()).unwrap();
     // Registry serialization admits exactly two acquisition orders. Check the
-    // remount-first order, then explore all syscall interleavings after the
-    // recovery-first acquisition, including real owner/worker retirement.
+    // remount-first order, then check custody from the actual fence acquisition
+    // through exit and explore competing admission over the helper interval.
     // These independent rejection/recheck invocations each have one real
     // retirement worker; their unrelated worker tails need no cross-product.
     for retained in [true, false] {
@@ -135,7 +135,8 @@ fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
         .unwrap_or("");
     assert!(
         message.contains("helper detached a live remount after early fence release")
-            || message.contains("remount acquired the fence before helper exit"),
+            || message.contains("remount acquired the fence before helper exit")
+            || message.contains("recovery fence released before helper exit"),
         "{message}"
     );
 }

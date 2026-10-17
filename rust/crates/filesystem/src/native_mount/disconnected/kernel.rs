@@ -20,6 +20,7 @@ loom::lazy_static! {
 pub(in crate::native_mount) struct Kernel {
     fixture: std::sync::OnceLock<Fixture>,
     pinned: std::sync::OnceLock<(RawFd, u64)>,
+    recovery_fence: std::sync::OnceLock<(u64, u64, RawFd)>,
     state: Mutex<State>,
     // Registry and destination flock state/wakeups are independent OS resources.
     locks: [Mutex<HashMap<(u64, u64), RawFd>>; 2],
@@ -31,10 +32,13 @@ struct Fixture {
     base: Statx,
     helper_stat: rustix::fs::Stat,
     early_release: bool,
+    verify_recovery: bool,
 }
 struct State {
     mount: Option<u64>,
     helper_running: bool,
+    helper_exited: bool,
+    early_releases: usize,
     live_detaches: usize,
     mount_before_exit: usize,
 }
@@ -48,9 +52,12 @@ impl Kernel {
         Self {
             fixture: std::sync::OnceLock::new(),
             pinned: std::sync::OnceLock::new(),
+            recovery_fence: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 mount: Some(0),
                 helper_running: false,
+                helper_exited: false,
+                early_releases: 0,
                 live_detaches: 0,
                 mount_before_exit: 0,
             }),
@@ -65,6 +72,7 @@ impl Kernel {
         base: Statx,
         helper_stat: rustix::fs::Stat,
         early_release: bool,
+        verify_recovery: bool,
     ) -> Arc<Self> {
         let kernel = current().unwrap();
         assert!(
@@ -73,7 +81,8 @@ impl Kernel {
                 .set(Fixture {
                     base,
                     helper_stat,
-                    early_release
+                    early_release,
+                    verify_recovery
                 })
                 .is_ok()
         );
@@ -129,17 +138,16 @@ impl Kernel {
         }
         locks.insert(identity, file.as_raw_fd());
         drop(locks);
-        // Start the competing opener at the successful fence syscall. Its
-        // opposite acquisition order is checked separately, avoiding schedules
-        // that differ only in unrelated constructor/accounting instructions.
-        if domain == 1 {
-            *self.gate.lock().unwrap() = true;
-            self.acquired.notify_all();
+        // Immutable observation of the actual first recovery fence. This is
+        // captured before the competing helper-phase opener starts.
+        if domain == 1 && self.fixture.get().unwrap().verify_recovery {
+            self.recovery_fence
+                .get_or_init(|| (identity.0, identity.1, file.as_raw_fd()));
         }
         Ok(())
     }
 
-    pub(super) fn wait_for_recovery_fence(&self) {
+    pub(super) fn wait_for_helper(&self) {
         let mut ready = self.gate.lock().unwrap();
         while !*ready {
             ready = self.acquired.wait(ready).unwrap();
@@ -157,10 +165,24 @@ impl Kernel {
 
     pub(in crate::native_mount) fn unlock(&self, file: &File, domain: usize) {
         let identity = Self::identity(file);
-        let mut locks = self.locks[domain].lock().unwrap();
-        if locks.get(&identity) == Some(&file.as_raw_fd()) {
-            locks.remove(&identity);
-            self.unlocked[domain].notify_all();
+        let released = {
+            let mut locks = self.locks[domain].lock().unwrap();
+            if locks.get(&identity) == Some(&file.as_raw_fd()) {
+                locks.remove(&identity);
+                self.unlocked[domain].notify_all();
+                true
+            } else {
+                false
+            }
+        };
+        if released
+            && domain == 1
+            && self.recovery_fence.get() == Some(&(identity.0, identity.1, file.as_raw_fd()))
+        {
+            let mut state = self.state.lock().unwrap();
+            if !state.helper_exited {
+                state.early_releases += 1;
+            }
         }
     }
 
@@ -185,12 +207,13 @@ impl Kernel {
     }
 
     pub(super) fn assert_safe(&self) {
-        let (live_detaches, mount_before_exit, helper_running) = {
+        let (live_detaches, mount_before_exit, helper_running, early_releases) = {
             let state = self.state.lock().unwrap();
             (
                 state.live_detaches,
                 state.mount_before_exit,
                 state.helper_running,
+                state.early_releases,
             )
         };
         assert_eq!(
@@ -202,6 +225,10 @@ impl Kernel {
             "remount acquired the fence before helper exit"
         );
         assert!(!helper_running, "helper custody was abandoned");
+        assert_eq!(
+            early_releases, 0,
+            "recovery fence released before helper exit"
+        );
     }
 
     pub(in crate::native_mount) fn helper_stat(&self) -> rustix::fs::Stat {
@@ -235,7 +262,20 @@ impl Helper {
         out: &mut Option<Self>,
     ) -> io::Result<()> {
         let kernel = current().ok_or_else(|| io::Error::other("missing modeled kernel"))?;
-        kernel.state.lock().unwrap().helper_running = true;
+        {
+            let mut state = kernel.state.lock().unwrap();
+            state.helper_running = true;
+            if kernel.fixture.get().unwrap().verify_recovery
+                && kernel.recovery_fence.get().is_none()
+            {
+                state.early_releases += 1;
+            }
+        }
+        // Admission and stale-identity paths have independent exhaustive cases.
+        // Here custody is checked on every original-fence release, and the
+        // competing opener explores the complete spawned-helper interval.
+        *kernel.gate.lock().unwrap() = true;
+        kernel.acquired.notify_all();
         *out = Some(Self {
             kernel: Some(kernel),
             real: None,
@@ -265,13 +305,11 @@ impl Helper {
             self.unmounted = true;
             return Ok(None);
         }
-        self.kernel
-            .as_ref()
-            .unwrap()
-            .state
-            .lock()
-            .unwrap()
-            .helper_running = false;
+        {
+            let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
+            state.helper_running = false;
+            state.helper_exited = true;
+        }
         self.exited = true;
         Ok(Some(std::process::ExitStatus::from_raw(0)))
     }
@@ -283,13 +321,11 @@ impl Helper {
         if let Some(real) = &mut self.real {
             return real.terminate(meter);
         }
-        self.kernel
-            .as_ref()
-            .unwrap()
-            .state
-            .lock()
-            .unwrap()
-            .helper_running = false;
+        {
+            let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
+            state.helper_running = false;
+            state.helper_exited = true;
+        }
         self.exited = true;
         Ok(())
     }
