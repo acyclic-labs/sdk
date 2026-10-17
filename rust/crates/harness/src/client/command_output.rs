@@ -80,11 +80,12 @@ pub struct CommandOutputView<'a> {
     #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub task: Option<crate::TaskId>,
 }
-#[derive(Default, Deserialize)]
-struct Display<'a> {
-    #[serde(borrow)]
-    text: Option<Cow<'a, str>>,
-    task: Option<crate::TaskId>,
+fn text(value: &RawValue) -> Option<Cow<'_, str>> {
+    #[derive(Deserialize)]
+    struct Text<'a>(#[serde(borrow)] Cow<'a, str>);
+    serde_json::from_str(value.get())
+        .ok()
+        .map(|Text(text)| text)
 }
 fn owners(key: &FileKey) -> [Option<OutputOwner>; 2] {
     match key {
@@ -108,21 +109,19 @@ impl<'a> CommandOutputView<'a> {
         Self::from_bytes(&file.key, &file.bytes)
     }
     fn from_bytes(key: &FileKey, bytes: &'a [u8]) -> Option<Self> {
-        owners(key)[0].as_ref()?;
+        Outputs::includes(key).then_some(())?;
         let outcome: Outcome<'_> = serde_json::from_slice(bytes).ok()?;
         let completion = settled(&outcome).ok()?;
-        let value: Display = outcome
+        let value: DisplayMetadata = outcome
             .ok
             .and_then(|value| serde_json::from_str(value.get()).ok())
             .unwrap_or_default();
         Some(Self {
             sequence: outcome.sequence,
             completion,
-            text: value.text,
+            text: value.text.and_then(text),
             task: value.task,
-            error: outcome
-                .error
-                .and_then(|value| serde_json::from_str(value.get()).ok()),
+            error: outcome.error.and_then(text),
         })
     }
 }
@@ -140,7 +139,7 @@ struct DisplayMetadata<'a> {
 }
 impl Metadata {
     fn from_file(file: &FileValue) -> Option<Self> {
-        owners(&file.key)[0].as_ref()?;
+        Outputs::includes(&file.key).then_some(())?;
         let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).ok()?;
         settled(&outcome).ok()?;
         let display: DisplayMetadata<'_> = outcome
@@ -163,7 +162,16 @@ pub(super) struct Outputs {
 }
 impl Outputs {
     pub(super) fn includes(key: &FileKey) -> bool {
-        owners(key)[0].is_some()
+        matches!(
+            key,
+            FileKey::Task {
+                file: TaskFile::ExecutionResult(_),
+                ..
+            } | FileKey::Session {
+                file: TaskFile::ExecutionResult(_),
+                ..
+            }
+        )
     }
     pub(super) fn remove(&mut self, key: &FileKey) {
         let Some(value) = self.keys.remove(key) else {
