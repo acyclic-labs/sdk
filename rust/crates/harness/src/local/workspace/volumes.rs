@@ -141,7 +141,8 @@ mod binding_paths {
             let projected=projection_root(&destination,&relative)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert_eq!(projected,root.as_path());
-            prop_assert!(projection_root(&destination,&format!("{relative}x")).is_err());
+            let other=format!("{relative}x");
+            prop_assert!(projection_root(&destination,&other).is_err());
             // Choosing the alias task's root loses the source binding.
             let task_root=root.join("task-view");
             prop_assert_ne!(task_root.as_path(),projected);
