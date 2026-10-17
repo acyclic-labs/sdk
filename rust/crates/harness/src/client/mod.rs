@@ -21,7 +21,6 @@ pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
 mod session;
-mod session_progress;
 pub use session::{
     ClientSession, ClientStateStore, MemoryClientState, SessionCheckpoint, SessionRecord,
 };
