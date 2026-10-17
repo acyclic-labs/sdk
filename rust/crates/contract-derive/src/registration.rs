@@ -137,6 +137,43 @@ impl File {
     }
 }
 
+// Streaming flags and authorization options from one method's `#[wire(..)]`.
+fn method_options(
+    variant: &syn::Variant,
+) -> syn::Result<(&'static str, &'static str, Vec<String>)> {
+    let mut client_stream = "";
+    let mut server_stream = "";
+    let mut authorization = Vec::<String>::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for attr in variant
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("wire"))
+    {
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("auth") {
+                let fields = crate::authorization::fields(&meta)?;
+                authorization.push(format!(
+                    "    option (acyclic.validation.v1.auth) = {{ {fields} }};\n"
+                ));
+                return Ok(());
+            }
+            if !seen.insert(meta.path.get_ident().map(ToString::to_string)) {
+                return Err(meta.error("duplicate streaming option"));
+            }
+            if meta.path.is_ident("client_streaming") {
+                client_stream = "stream ";
+            } else if meta.path.is_ident("server_streaming") {
+                server_stream = "stream ";
+            } else {
+                return Err(meta.error("unknown service option"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok((client_stream, server_stream, authorization))
+}
+
 pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new_spanned(
@@ -155,36 +192,7 @@ pub fn service(mut input: ItemEnum, file: &Path) -> syn::Result<TokenStream> {
         if !method_names.insert(crate::options::identifier(&variant.ident)) {
             return Err(syn::Error::new_spanned(variant, "duplicate service method"));
         }
-        let mut client_stream = "";
-        let mut server_stream = "";
-        let mut authorization = Vec::<String>::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for attr in variant
-            .attrs
-            .iter()
-            .filter(|attr| attr.path().is_ident("wire"))
-        {
-            attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("auth") {
-                    let fields = crate::authorization::fields(meta)?;
-                    authorization.push(format!(
-                        "    option (acyclic.validation.v1.auth) = {{ {fields} }};\n"
-                    ));
-                    return Ok(());
-                }
-                if !seen.insert(meta.path.get_ident().map(ToString::to_string)) {
-                    return Err(meta.error("duplicate streaming option"));
-                }
-                if meta.path.is_ident("client_streaming") {
-                    client_stream = "stream ";
-                } else if meta.path.is_ident("server_streaming") {
-                    server_stream = "stream ";
-                } else {
-                    return Err(meta.error("unknown service option"));
-                }
-                Ok(())
-            })?;
-        }
+        let (client_stream, server_stream, authorization) = method_options(variant)?;
         variant.attrs.retain(|attr| !attr.path().is_ident("wire"));
         let syn::Fields::Named(fields) = &mut variant.fields else {
             return Err(syn::Error::new_spanned(
