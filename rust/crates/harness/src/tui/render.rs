@@ -39,9 +39,9 @@ pub struct ClientRenderer {
     side_wrapped: bool,
     goal_changed: usize,
     plans_changed: usize,
-    goal_source: String,
+    goal_source: Vec<crate::task_volume::HeadFile>,
     goal: Vec<Line<'static>>,
-    plan_source: String,
+    plan_source: Vec<crate::task_volume::HeadFile>,
     plans: Vec<Line<'static>>,
     header: Line<'static>,
     status: Line<'static>,
@@ -163,39 +163,41 @@ impl ClientRenderer {
     }
 
     fn documents(&mut self, views: &ClientViews) {
-        let mut goal = String::new();
-        let mut plans = String::new();
-        for (_, selection) in views.selections() {
-            for file in selection.files().values() {
-                let [bytes] = file.segments.as_slice() else {
-                    continue;
-                };
-                match &file.key {
-                    crate::task_volume::FileKey::Goal => {
-                        goal.push_str(&String::from_utf8_lossy(bytes))
-                    }
-                    crate::task_volume::FileKey::Plan(name) => {
-                        if !plans.is_empty() {
-                            plans.push_str("\n\n");
-                        }
-                        plans.push_str(&format!(
-                            "# {}\n{}",
-                            name.as_str(),
-                            String::from_utf8_lossy(bytes)
-                        ));
-                    }
-                    _ => {}
+        let goals = || {
+            views
+                .selections()
+                .filter_map(|(_, files)| files.files().get(&crate::task_volume::FileKey::Goal))
+        };
+        let plans = || views.selections().flat_map(|(_, files)| files.plan_files());
+        if !self.goal_source.iter().eq(goals()) {
+            self.goal_source = goals().cloned().collect();
+            let mut parser = Markdown::default();
+            for file in &self.goal_source {
+                for bytes in &file.segments {
+                    parser.push(&String::from_utf8_lossy(bytes));
                 }
             }
-        }
-        if self.goal_source != goal {
-            self.goal = markdown(&goal);
-            self.goal_source = goal;
+            self.goal = parser.lines().iter().map(line).collect();
             self.goal_changed = 0;
         }
-        if self.plan_source != plans {
-            self.plans = markdown(&plans);
-            self.plan_source = plans;
+        if !self.plan_source.iter().eq(plans()) {
+            self.plan_source = plans().cloned().collect();
+            let mut parser = Markdown::default();
+            for (index, file) in self.plan_source.iter().enumerate() {
+                let crate::task_volume::FileKey::Plan(name) = &file.key else {
+                    unreachable!()
+                };
+                if index != 0 {
+                    parser.push("\n\n");
+                }
+                parser.push("# ");
+                parser.push(name.as_str());
+                parser.push("\n");
+                for bytes in &file.segments {
+                    parser.push(&String::from_utf8_lossy(bytes));
+                }
+            }
+            self.plans = parser.lines().iter().map(line).collect();
             self.plans_changed = 0;
         }
     }

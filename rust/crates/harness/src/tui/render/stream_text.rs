@@ -20,6 +20,9 @@ pub(super) struct StreamText {
     last: Option<FileKey>,
     segments: usize,
     turn: Option<u64>,
+    tool_limit: usize,
+    tool_lines: usize,
+    tool_partial: bool,
     #[cfg(test)]
     pub(super) work: usize,
 }
@@ -131,11 +134,34 @@ impl StreamText {
         }
         changed
     }
-    pub(super) fn update_tool(&mut self, tool: &ToolQueryView<'_>, stderr: bool) -> usize {
-        if !self
-            .source
-            .as_ref()
-            .is_some_and(|source| Arc::ptr_eq(source, tool.source()))
+    pub(super) fn tool_lines(&self) -> usize {
+        self.tool_lines + usize::from(self.tool_partial)
+    }
+    fn push_tool(&mut self, bytes: &[u8]) -> usize {
+        let mut end = 0;
+        while end < bytes.len() && self.tool_lines < self.tool_limit {
+            let byte = bytes[end];
+            end += 1;
+            if byte == b'\n' {
+                self.tool_lines += 1;
+                self.tool_partial = false;
+            } else {
+                self.tool_partial = true;
+            }
+        }
+        self.push(&bytes[..end])
+    }
+    pub(super) fn update_tool(
+        &mut self,
+        tool: &ToolQueryView<'_>,
+        stderr: bool,
+        limit: usize,
+    ) -> usize {
+        if self.tool_limit != limit
+            || !self
+                .source
+                .as_ref()
+                .is_some_and(|source| Arc::ptr_eq(source, tool.source()))
             || self
                 .first
                 .as_ref()
@@ -150,6 +176,7 @@ impl StreamText {
         {
             *self = Self {
                 source: Some(tool.source().clone()),
+                tool_limit: limit,
                 ..Self::default()
             };
         }
@@ -163,13 +190,13 @@ impl StreamText {
             };
             if start > file.segments.len() {
                 *self = Self::default();
-                return self.update_tool(tool, stderr);
+                return self.update_tool(tool, stderr, limit);
             }
             for (index, bytes) in file.segments.iter().enumerate().skip(start) {
                 if self.prefix.is_none() && !bytes.is_empty() {
                     self.prefix = Some((file.key.clone(), index, bytes.clone()));
                 }
-                changed = changed.min(self.push(bytes));
+                changed = changed.min(self.push_tool(bytes));
             }
             self.first.get_or_insert_with(|| file.key.clone());
             self.last = Some(file.key.clone());

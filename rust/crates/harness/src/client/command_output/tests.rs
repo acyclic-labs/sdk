@@ -3,11 +3,15 @@ use proptest::prelude::*;
 use serde_json::json;
 
 fn file(id: u8, sequence: u64, owner: u8, text: &str) -> FileValue {
+    let session = uuid::Uuid::from_u128(u128::from(owner % 3) + 1);
+    let path = if owner < 3 {
+        format!(".ui/sessions/{session}/executions/{id}/result.json")
+    } else {
+        let operation = uuid::Uuid::from_u128(u128::from(id) + 1);
+        format!(".tasks/t{owner}/executions/command-{session}.{operation}/result.json")
+    };
     FileValue::new(
-        FileKey::parse(&format!(
-            ".ui/sessions/s{owner}/executions/{id}/result.json"
-        ))
-        .unwrap(),
+        FileKey::parse(&path).unwrap(),
         serde_json::to_vec(&json!({"sequence":sequence,"ok":{"text":text}})).unwrap(),
     )
 }
@@ -27,14 +31,31 @@ fn check(operations: &[(u8, u64, u8, String, bool)], retain_removed: bool) {
             expected.insert(file.key.clone(), file);
         }
         for owner_id in 0..3 {
-            let owner = OutputOwner::Session(Component::new(format!("s{owner_id}")).unwrap());
+            let owner = OutputOwner::Session(
+                Component::new(uuid::Uuid::from_u128(owner_id + 1).to_string()).unwrap(),
+            );
             let mut oracle: Vec<_> = expected
                 .values()
                 .filter_map(|file| {
-                    let FileKey::Session { session, .. } = &file.key else {
-                        panic!("session");
+                    let expected_owner = uuid::Uuid::from_u128(owner_id + 1).to_string();
+                    // Independent identity extraction for the physical/session
+                    // namespaces; do not use the candidate's owner index/parser.
+                    let session = match &file.key {
+                        FileKey::Session { session, .. } => session.as_str(),
+                        FileKey::Task {
+                            file: TaskFile::ExecutionResult(id),
+                            ..
+                        } => {
+                            id.as_str()
+                                .strip_prefix("command-")
+                                .unwrap()
+                                .split_once('.')
+                                .unwrap()
+                                .0
+                        }
+                        _ => panic!("execution result"),
                     };
-                    if session.as_str() != format!("s{owner_id}") {
+                    if session != expected_owner {
                         return None;
                     }
                     // Independent decode and validation, never using the candidate parser.
@@ -91,7 +112,7 @@ proptest! {
     // immutable-file state; exact resume never drops another tied outcome.
     #[test]
     fn outcome_indexes_match_files(operations in prop::collection::vec(
-        (0u8..8, 0u64..6, 0u8..3, ".{0,24}", any::<bool>()),0..32)) {
+        (0u8..8, 0u64..6, 0u8..6, ".{0,24}", any::<bool>()),0..32)) {
         check(&operations,false);
     }
     #[test]
@@ -142,8 +163,30 @@ fn plain_command_text_borrows_its_canonical_file_payload() {
     assert_eq!(index.keys.len(), 1);
     // Metadata has no text buffer; all payload ownership remains in FileViews.
     let (_, metadata) = index
-        .after(&OutputOwner::Session(Component::new("s0").unwrap()), 0)
+        .after(
+            &OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap()),
+            0,
+        )
         .next()
         .unwrap();
     assert!(metadata.has_text);
+}
+
+#[test]
+fn task_scoped_commands_are_indexed_by_their_logical_session() {
+    let operations = vec![
+        (1, 1, 0, "first".into(), false),
+        (2, 2, 3, "second".into(), false),
+        (1, 3, 4, "other session".into(), false),
+        (2, 2, 3, "second".into(), true),
+    ];
+    check(&operations, false);
+    let file = file(2, 2, 3, "second");
+    let mut index = Outputs::default();
+    index.insert(&file);
+    let owner = OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap());
+    assert_eq!(index.after(&owner, 0).count(), 1);
+    // A physical-task-only index is the previous implementation.
+    index.rows.remove(&owner);
+    assert_ne!(index.after(&owner, 0).count(), 1);
 }

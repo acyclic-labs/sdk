@@ -66,3 +66,35 @@ fn lost_prefix_identity_negative_control() {
     replaced_head(&bodies, false);
     assert!(std::panic::catch_unwind(|| replaced_head(&bodies, true)).is_err());
 }
+
+fn bounded_tool(lines: usize, chunk: usize, broken: bool) {
+    let text = (0..lines)
+        .map(|index| format!("line{index}\n"))
+        .collect::<String>();
+    let mut actual = StreamText {
+        tool_limit: 20,
+        ..StreamText::default()
+    };
+    for bytes in text.as_bytes().chunks(chunk) {
+        if broken {
+            actual.push(bytes);
+        } else {
+            actual.push_tool(bytes);
+        }
+    }
+    let mut baseline = Markdown::default();
+    baseline.push(&text.lines().take(20).collect::<Vec<_>>().join("\n"));
+    assert_eq!(actual.markdown.lines(), baseline.lines());
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn tool_output_bounds_source_lines_before_markdown(lines in 0usize..40, chunk in 1usize..32) {
+        bounded_tool(lines,chunk,false);
+    }
+}
+#[test]
+fn markdown_row_cap_negative_control() {
+    bounded_tool(21, 3, false);
+    assert!(std::panic::catch_unwind(|| bounded_tool(21, 3, true)).is_err());
+}

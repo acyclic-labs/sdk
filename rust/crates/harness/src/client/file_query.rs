@@ -284,6 +284,11 @@ impl FileQueryView {
             .flat_map(|rows| rows.iter().map(String::as_str))
     }
 
+    #[cfg(feature = "tui")]
+    pub(crate) fn plan_files(&self) -> impl Iterator<Item = &crate::task_volume::HeadFile> {
+        self.rows.keys().filter_map(|key| self.storage.file(key))
+    }
+
     /// Collects plain rows for consumers that require an owned export.
     pub fn plan_lines(&self) -> Vec<String> {
         self.plan_rows().map(str::to_owned).collect()

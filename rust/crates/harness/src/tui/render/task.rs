@@ -139,14 +139,18 @@ impl TaskRows {
             let key = (tool.turn, tool.call.clone());
             retained.insert(key.clone());
             let cached = self.tools.entry(key).or_default();
-            let stdout = cached.stdout.update_tool(&tool, false);
-            let stderr = cached.stderr.update_tool(&tool, true);
+            let stdout = cached.stdout.update_tool(&tool, false, 20);
+            let stderr = cached
+                .stderr
+                .update_tool(&tool, true, 20 - cached.stdout.tool_lines());
             let request = tool.request();
             let result = tool.result();
             if cached.request.as_ref() != request
                 || cached.result.as_ref() != result
                 || stdout < cached.out.len()
+                || cached.stdout.len() != cached.out.len()
                 || stderr < cached.err.len()
+                || cached.stderr.len() != cached.err.len()
                 || cached.rows.is_empty()
             {
                 cached.out.truncate(stdout);

@@ -52,7 +52,7 @@ pub(super) fn completion(bytes: &[u8]) -> Result<HeadlessOutcome> {
     settled(&outcome)
 }
 
-/// Logical owner of an immutable command outcome file.
+/// Select physical task files or a logical UI session across admitted tasks.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum OutputOwner {
@@ -86,17 +86,20 @@ struct Display<'a> {
     text: Option<Cow<'a, str>>,
     task: Option<crate::TaskId>,
 }
-fn owner(key: &FileKey) -> Option<OutputOwner> {
+fn owners(key: &FileKey) -> [Option<OutputOwner>; 2] {
     match key {
         FileKey::Task {
             task,
             file: TaskFile::ExecutionResult(_),
-        } => Some(OutputOwner::Task(task.clone())),
+        } => [
+            Some(OutputOwner::Task(task.clone())),
+            crate::task_volume::command_query::owner(key).map(OutputOwner::Session),
+        ],
         FileKey::Session {
             session,
             file: TaskFile::ExecutionResult(_),
-        } => Some(OutputOwner::Session(session.clone())),
-        _ => None,
+        } => [Some(OutputOwner::Session(session.clone())), None],
+        _ => [None, None],
     }
 }
 impl<'a> CommandOutputView<'a> {
@@ -105,7 +108,7 @@ impl<'a> CommandOutputView<'a> {
         Self::from_bytes(&file.key, &file.bytes)
     }
     fn from_bytes(key: &FileKey, bytes: &'a [u8]) -> Option<Self> {
-        owner(key)?;
+        owners(key)[0].as_ref()?;
         let outcome: Outcome<'_> = serde_json::from_slice(bytes).ok()?;
         let completion = settled(&outcome).ok()?;
         let value: Display = outcome
@@ -137,7 +140,7 @@ struct DisplayMetadata<'a> {
 }
 impl Metadata {
     fn from_file(file: &FileValue) -> Option<Self> {
-        owner(&file.key)?;
+        owners(&file.key)[0].as_ref()?;
         let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).ok()?;
         settled(&outcome).ok()?;
         let display: DisplayMetadata<'_> = outcome
@@ -151,41 +154,45 @@ impl Metadata {
         })
     }
 }
-/// Two metadata indexes over the same parsed rows: ordered display and exact-key retirement.
+/// Ordered selections index metadata once; payloads stay in the canonical files.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Outputs {
-    rows: BTreeMap<OutputOwner, BTreeMap<u64, BTreeMap<FileKey, Metadata>>>,
-    keys: BTreeMap<FileKey, (OutputOwner, u64)>,
+    rows: BTreeMap<OutputOwner, BTreeMap<u64, std::collections::BTreeSet<FileKey>>>,
+    keys: BTreeMap<FileKey, Metadata>,
     text_tasks: BTreeMap<(OutputOwner, crate::TaskId), BTreeMap<u64, usize>>,
 }
 impl Outputs {
     pub(super) fn includes(key: &FileKey) -> bool {
-        owner(key).is_some()
+        owners(key)[0].is_some()
     }
     pub(super) fn remove(&mut self, key: &FileKey) {
-        let Some((owner, sequence)) = self.keys.remove(key) else {
+        let Some(value) = self.keys.remove(key) else {
             return;
         };
-        let rows = self.rows.get_mut(&owner).expect("indexed owner");
-        let sequence_rows = rows.get_mut(&sequence).expect("indexed sequence");
-        let value = sequence_rows.remove(key).expect("indexed output");
-        if let Some(task) = value.task.filter(|_| value.has_text) {
-            let task_key = (owner.clone(), task);
-            let sequences = self.text_tasks.get_mut(&task_key).expect("indexed task");
-            let count = sequences.get_mut(&sequence).expect("indexed task sequence");
-            *count -= 1;
-            if *count == 0 {
-                sequences.remove(&sequence);
+        for owner in owners(key).into_iter().flatten() {
+            let rows = self.rows.get_mut(&owner).expect("indexed owner");
+            let values = rows.get_mut(&value.sequence).expect("indexed sequence");
+            assert!(values.remove(key));
+            if values.is_empty() {
+                rows.remove(&value.sequence);
             }
-            if sequences.is_empty() {
-                self.text_tasks.remove(&task_key);
+            if rows.is_empty() {
+                self.rows.remove(&owner);
             }
-        }
-        if sequence_rows.is_empty() {
-            rows.remove(&sequence);
-        }
-        if rows.is_empty() {
-            self.rows.remove(&owner);
+            if let Some(task) = value.task.filter(|_| value.has_text) {
+                let identity = (owner, task);
+                let sequences = self.text_tasks.get_mut(&identity).expect("indexed task");
+                let count = sequences
+                    .get_mut(&value.sequence)
+                    .expect("indexed task sequence");
+                *count -= 1;
+                if *count == 0 {
+                    sequences.remove(&value.sequence);
+                }
+                if sequences.is_empty() {
+                    self.text_tasks.remove(&identity);
+                }
+            }
         }
     }
     pub(super) fn insert(&mut self, file: &FileValue) {
@@ -193,23 +200,23 @@ impl Outputs {
         let Some(value) = Metadata::from_file(file) else {
             return;
         };
-        let owner = owner(&file.key).expect("validated outcome owner");
-        self.keys
-            .insert(file.key.clone(), (owner.clone(), value.sequence));
-        if let Some(task) = value.task.filter(|_| value.has_text) {
-            *self
-                .text_tasks
-                .entry((owner.clone(), task))
+        for owner in owners(&file.key).into_iter().flatten() {
+            self.rows
+                .entry(owner.clone())
                 .or_default()
                 .entry(value.sequence)
-                .or_default() += 1;
+                .or_default()
+                .insert(file.key.clone());
+            if let Some(task) = value.task.filter(|_| value.has_text) {
+                *self
+                    .text_tasks
+                    .entry((owner, task))
+                    .or_default()
+                    .entry(value.sequence)
+                    .or_default() += 1;
+            }
         }
-        self.rows
-            .entry(owner)
-            .or_default()
-            .entry(value.sequence)
-            .or_default()
-            .insert(file.key.clone(), value);
+        self.keys.insert(file.key.clone(), value);
     }
     fn has_text(&self, owner: &OutputOwner, task: crate::TaskId, after: u64) -> bool {
         self.text_tasks
@@ -235,12 +242,16 @@ impl Outputs {
                 Unbounded,
             ))
         });
-        current.into_iter().flatten().chain(
-            later
-                .into_iter()
-                .flatten()
-                .flat_map(|(_, rows)| rows.iter()),
-        )
+        current
+            .into_iter()
+            .flatten()
+            .chain(
+                later
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|(_, keys)| keys.iter()),
+            )
+            .map(|key| (key, &self.keys[key]))
     }
     fn after<'a>(
         &'a self,
@@ -253,7 +264,8 @@ impl Outputs {
             .flat_map(move |rows| {
                 rows.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
             })
-            .flat_map(|(_, rows)| rows.iter())
+            .flat_map(|(_, keys)| keys.iter())
+            .map(|key| (key, &self.keys[key]))
     }
 }
 impl super::FileQueryView {
@@ -290,5 +302,6 @@ impl super::FileQueryView {
             .filter_map(|(key, _)| self.output(key))
     }
 }
+pub(in crate::client) mod follow;
 #[cfg(test)]
 mod tests;
