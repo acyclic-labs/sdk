@@ -35,6 +35,8 @@ use paths::*;
 mod names;
 use names::*;
 mod host_walk;
+#[cfg(all(test, feature = "memory"))]
+mod leaf_path_tests;
 use host_walk::*;
 #[cfg(test)]
 mod host_observation_tests;
