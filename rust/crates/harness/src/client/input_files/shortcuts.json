@@ -1,0 +1,5 @@
+[
+  {"action":"reasoning","key":"r","shift":true,"query":"reasoning","setting":"reasoning","marker":"Reasoning marker"},
+  {"action":"details","key":"d","shift":true,"query":"details","setting":"tool_details","marker":"Tool output marker"},
+  {"action":"help","key":"/","shift":false,"query":"shortcuts","marker":"Commands"}
+]
