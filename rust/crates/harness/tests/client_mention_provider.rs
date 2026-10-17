@@ -158,11 +158,11 @@ async fn scenario(
         let request = received.try_recv().expect("provider dispatched");
         let wire: Value = serde_json::from_slice(&request.body).unwrap();
         assert_eq!(
-            wire["input"][0]["content"][1]["type"], "input_text",
+            wire["input"][1]["content"][0]["type"], "input_text",
             "provider must receive pinned source as text"
         );
         assert_eq!(
-            wire["input"][0]["content"][1]["text"].as_str(),
+            wire["input"][1]["content"][0]["text"].as_str(),
             Some(std::str::from_utf8(body).unwrap()),
             "provider must receive pinned source as text"
         );
