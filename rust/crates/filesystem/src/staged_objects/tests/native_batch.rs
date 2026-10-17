@@ -108,50 +108,56 @@ fn run(
         },
         |state| {
             runtime.block_on(async {
-        let (directory, provider, store, writes, ids, token, native) = state?;
-        let began = std::time::Instant::now();
-        let mut work = AuthorityWork::native(&native, &token);
-        let result = match mode {
-            Mode::Staged => store.flush_before_publish(PublicationScope::Closure {
-                objects: &ids, proven_at: 0,
-            }, &mut work).await.map(drop),
-            Mode::Batch => {
-                match work.accounting().check().map_err(crate::async_storage::object_error) {
-                    Ok(()) => store.inner.put_many(&writes, &mut work).await,
-                    Err(error) => Err(error),
+                let (directory, provider, store, writes, ids, token, native) = state?;
+                let began = std::time::Instant::now();
+                let mut work = AuthorityWork::native(&native, &token);
+                let result = match mode {
+                    Mode::Staged => store
+                        .flush_before_publish(
+                            PublicationScope::Closure { objects: &ids, proven_at: 0 },
+                            &mut work,
+                        )
+                        .await
+                        .map(drop),
+                    Mode::Batch => {
+                        match work.accounting().check().map_err(crate::async_storage::object_error) {
+                            Ok(()) => store.inner.put_many(&writes, &mut work).await,
+                            Err(error) => Err(error),
+                        }
+                    }
+                    Mode::Individual => {
+                        let mut result = work.accounting().check().map_err(crate::async_storage::object_error);
+                        for write in &writes {
+                            if result.is_err() { break; }
+                            result = store.inner.put(write.object_id, write.bytes.clone(), &mut work).await;
+                        }
+                        result
+                    }
+                };
+                let elapsed = began.elapsed();
+                let cost = native.receipt();
+                let result = match result {
+                    Err(error) => Err(error.to_string()),
+                    Ok(()) => {
+                        let read_token = CancellationToken::new();
+                        let mut read_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &read_token);
+                        let mut output = Vec::new();
+                        for &id in &ids {
+                            output.push(store.inner.read(id, 32, &mut read_work).await?.bytes.to_vec());
+                        }
+                        Ok(output)
+                    }
+                };
+                eprintln!(
+                    "staged publication {mode:?} count={count} cancelled={cancelled}: {elapsed:?}, {cost:?}"
+                );
+                drop(store);
+                drop(provider);
+                if result.is_ok() {
+                    assert!(reopen_contains(directory.path(), &ids).await?);
                 }
-            }
-            Mode::Individual => {
-                let mut result = work.accounting().check().map_err(crate::async_storage::object_error);
-                for write in &writes {
-                    if result.is_err() { break; }
-                    result = store.inner.put(write.object_id, write.bytes.clone(), &mut work).await;
-                }
-                result
-            }
-        };
-        let elapsed = began.elapsed();
-        let cost = native.receipt();
-        let result = match result {
-            Err(error) => Err(error.to_string()),
-            Ok(()) => {
-                let read_token = CancellationToken::new();
-                let mut read_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &read_token);
-                let mut output = Vec::new();
-                for &id in &ids {
-                    output.push(store.inner.read(id, 32, &mut read_work).await?.bytes.to_vec());
-                }
-                Ok(output)
-            }
-        };
-        eprintln!("staged publication {mode:?} count={count} cancelled={cancelled}: {elapsed:?}, {cost:?}");
-        drop(store);
-        drop(provider);
-        if result.is_ok() {
-            assert!(reopen_contains(directory.path(), &ids).await?);
-        }
-        Ok::<_, Box<dyn std::error::Error>>((result, cost))
-    })
+                Ok::<_, Box<dyn std::error::Error>>((result, cost))
+            })
         },
     );
     Ok((result?, trace))
