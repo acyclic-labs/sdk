@@ -11,7 +11,6 @@ pub(in crate::native_mount) struct FuseRecoveryControl {
     pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
     pub(super) detached: bool,
     pub(in crate::native_mount) pinned: Option<std::fs::File>,
-    pub(in crate::native_mount) pinned_parent: Option<std::sync::Arc<std::os::fd::OwnedFd>>,
 }
 
 impl FuseRecoveryControl {

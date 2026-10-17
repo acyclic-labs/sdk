@@ -114,12 +114,26 @@ impl MountDestinationGuard {
         guard: &mut Option<Self>,
         recovery: bool,
     ) -> Result<(), NativeMountError> {
+        if guard.is_some() {
+            return Err(NativeMountError::ControlPending);
+        }
+        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
+        Self::acquire_in_directory(destination, directory, native, guard, recovery)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(super) fn acquire_in_directory(
+        destination: &Path,
+        directory: cap_std::fs::Dir,
+        native: &NativeMaterializationWork,
+        guard: &mut Option<Self>,
+        recovery: bool,
+    ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
         if guard.is_some() {
             return Err(NativeMountError::ControlPending);
         }
-        let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
         #[cfg(unix)]
         let (canonical_owner, held_recovery_directory) = if recovery {
             let copy = work.attempt_io(

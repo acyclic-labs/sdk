@@ -119,6 +119,29 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
+        Self::acquire_bound(destination, original, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn acquire_in_parent(
+        destination: &Path,
+        parent: &std::os::fd::OwnedFd,
+    ) -> Result<Self, NativeMountError> {
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        original.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
+        let directory = cap_std::fs::Dir::from_std_file(parent.try_clone()?.into());
+        Self::acquire_bound(destination, &original, Some(directory))
+    }
+
+    fn acquire_bound(
+        destination: &Path,
+        original: &crate::NativeMaterializationWork,
+        parent: Option<cap_std::fs::Dir>,
+    ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
             .1
@@ -181,7 +204,11 @@ impl NativeMountRecoveryOwner {
                 state
                     .as_mut()
                     .ok_or(NativeMountError::ControlPending)?
-                    .acquire(&owner.shared.destination, owner.shared._custody.work())
+                    .acquire(
+                        &owner.shared.destination,
+                        parent,
+                        owner.shared._custody.work(),
+                    )
             }))
             .unwrap_or_else(|panic| {
                 Err(NativeMountError::DriverPanicked {
@@ -254,7 +281,6 @@ impl NativeMountRecoveryOwner {
     pub(super) fn detach_pinned(
         &mut self,
         file: File,
-        parent: Arc<std::os::fd::OwnedFd>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         {
@@ -268,7 +294,6 @@ impl NativeMountRecoveryOwner {
                 .ok_or(NativeMountError::ControlPending)?
                 .control;
             control.pinned = Some(file);
-            control.pinned_parent = Some(parent);
         }
         self.finish(false, work)
     }
@@ -313,10 +338,27 @@ impl NativeRecoveryState {
     fn acquire(
         &mut self,
         destination: &Path,
+        parent: Option<cap_std::fs::Dir>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        MountDestinationGuard::acquire_with_work(destination, true, work, &mut self.guard, true)?;
+        if let Some(directory) = parent {
+            MountDestinationGuard::acquire_in_directory(
+                destination,
+                directory,
+                work,
+                &mut self.guard,
+                true,
+            )?;
+        } else {
+            MountDestinationGuard::acquire_with_work(
+                destination,
+                true,
+                work,
+                &mut self.guard,
+                true,
+            )?;
+        }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         return Err(NativeMountError::UnsupportedTarget);
         let (identity, _) = crate::native_host::file_identity_and_length(
@@ -399,7 +441,14 @@ impl NativeRecoveryState {
                     &mut &*work,
                 )?;
                 #[cfg(not(windows))]
-                remove_empty_recovery_destination(destination, work)?;
+                remove_empty_recovery_destination(
+                    destination,
+                    self.guard
+                        .as_ref()
+                        .and_then(|guard| guard.parent_directory.as_ref())
+                        .ok_or(NativeMountError::InvalidDestination)?,
+                    work,
+                )?;
                 self.destination_removed = true;
             }
             self.guard
@@ -450,20 +499,14 @@ pub(super) fn recover_driver_with_work(
 #[cfg(not(windows))]
 pub(super) fn remove_empty_recovery_destination(
     destination: &Path,
+    parent: &cap_std::fs::Dir,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    let parent = destination
-        .parent()
-        .ok_or(NativeMountError::InvalidDestination)?;
     let name = destination
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory(parent, &mut host)
-        .map(|(directory, _)| directory)
-        .and_then(|directory| {
-            crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
-        });
+    let result = crate::native_host::remove_leaf(parent, Path::new(name), true, &mut host);
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))

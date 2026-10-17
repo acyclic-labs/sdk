@@ -4,7 +4,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 
 pub(super) struct Pinned {
     file: OwnedFd,
-    parent: Arc<OwnedFd>,
+    parent: OwnedFd,
     path: PathBuf,
     mount: u64,
 }
@@ -54,7 +54,7 @@ impl Pinned {
         let path = std::fs::read_link(format!("/proc/self/fd/{}", parent.as_raw_fd()))?.join(leaf);
         Ok(Some(Self {
             file,
-            parent: Arc::new(parent),
+            parent,
             path,
             mount: metadata.stx_mnt_id,
         }))
@@ -73,24 +73,12 @@ impl Destination for Pinned {
     }
 
     fn acquire(&self) -> Result<Self::Fence<'_>, NativeMountError> {
-        // Acquire inside the already held physical parent, not a newly
-        // resolved parent pathname that could now name a different directory.
-        let parent = PathBuf::from(format!(
-            "/proc/self/fd/{}",
-            self.parent.as_ref().as_raw_fd()
-        ));
-        NativeMountRecoveryOwner::acquire(
-            &parent.join(".").join(
-                self.path
-                    .file_name()
-                    .ok_or(NativeMountError::InvalidDestination)?,
-            ),
-        )
+        NativeMountRecoveryOwner::acquire_in_parent(&self.path, &self.parent)
     }
 
     fn still_current(&self) -> Result<bool, NativeMountError> {
         let metadata = match rustix::fs::statx(
-            self.parent.as_ref(),
+            &self.parent,
             self.path
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?,
@@ -113,8 +101,9 @@ impl Destination for Pinned {
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeMountError::from(error))?;
-        let file = rustix::io::dup(&self.file).map_err(std::io::Error::from)?;
-        match fence.detach_pinned(file.into(), self.parent.clone(), &work) {
+        work.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
+        let file = self.file.try_clone()?;
+        match fence.detach_pinned(file.into(), &work) {
             Ok(_) => Ok(()),
             Err(error) => {
                 fence.mark_failed();
