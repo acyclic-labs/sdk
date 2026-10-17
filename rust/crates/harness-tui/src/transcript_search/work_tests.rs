@@ -1,4 +1,5 @@
 use super::*;
+use crate::WrappedLines;
 use proptest::prelude::*;
 use ratatui::{text::Line, widgets::Widget};
 
@@ -181,7 +182,7 @@ fn background_prefix_rescan_negative_control() {
     let projection = projection(&"a".repeat(4096));
     WORK.with(|work| work.set((0, 0)));
     for end in (32..=4096).step_by(32) {
-        scan(&projection, "b", &[0], 0..end, true, |_| {});
+        scan((&projection).into(), "b", &[0], 0..end, true, |_| {});
     }
     assert!(
         WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
@@ -205,7 +206,7 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
     assert!(!search.pending());
     assert_eq!(search.count(), count);
     assert_eq!(search.generation, generation);
-    assert_eq!(search.viewport.unwrap().1, projection.revision());
+    assert_eq!(search.viewport.unwrap().1, (projection.revision(), None));
 }
 
 #[test]

@@ -60,22 +60,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "client_recovery"
-path = "fuzz_targets/client_recovery.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_files"
-path = "fuzz_targets/client_files.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "command"
 path = "fuzz_targets/command.rs"
 required-features = ["runtime"]

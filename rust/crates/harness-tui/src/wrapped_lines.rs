@@ -150,13 +150,14 @@ impl WrappedLines {
 
     pub(crate) fn render_ranges(
         &self,
-        row: usize,
+        row: (usize, usize),
         matches: &[Range<usize>],
         selected: Option<&Range<usize>>,
         selection: Style,
         area: ratatui::layout::Rect,
         buffer: &mut ratatui::buffer::Buffer,
     ) {
+        let (row, source_offset) = row;
         let area = area.intersection(buffer.area);
         if area.is_empty() {
             return;
@@ -188,7 +189,7 @@ impl WrappedLines {
             ratatui::layout::Alignment::Right => area.width.saturating_sub(cells(base.width())),
         };
         for cell in row_cells {
-            let at = source.offset + cell.source.start;
+            let at = source_offset + source.offset + cell.source.start;
             while matches.get(next).is_some_and(|range| range.end <= at) {
                 next += 1;
             }
@@ -210,12 +211,12 @@ impl WrappedLines {
             );
             displayed += cell.symbol.len();
             if matches.get(next).is_some_and(|range| {
-                range.start < source.offset + cell.source.end && range.end > at
+                range.start < source_offset + source.offset + cell.source.end && range.end > at
             }) {
                 style = style.patch(selection).add_modifier(Modifier::UNDERLINED);
             }
             if selected.is_some_and(|range| {
-                range.start < source.offset + cell.source.end && range.end > at
+                range.start < source_offset + source.offset + cell.source.end && range.end > at
             }) {
                 style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
             }

@@ -1,4 +1,4 @@
-use crate::WrappedLines;
+use crate::TranscriptRows;
 use caseless::Caseless;
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 use std::ops::Range;
@@ -19,13 +19,15 @@ pub(crate) fn charge(bytes: usize, background: bool) {
     let _ = (bytes, background);
 }
 
+type ViewportCut = (u64, (u64, Option<u64>), usize, usize);
+
 /// Cancellable query fold over the transcript's maintained folded-text index.
 #[derive(Default)]
 pub struct TranscriptSearch {
     needle: String,
     previous_needle: String,
     prefix: Vec<usize>,
-    revision: Option<u64>,
+    revision: Option<(u64, Option<u64>)>,
     positions: Vec<usize>,
     previous: Vec<usize>,
     matches: Vec<Range<usize>>,
@@ -34,7 +36,7 @@ pub struct TranscriptSearch {
     refine: bool,
     complete: bool,
     generation: u64,
-    viewport: Option<(u64, u64, usize, usize)>,
+    viewport: Option<ViewportCut>,
     nearest: Option<Range<usize>>,
     probe: Option<Range<usize>>,
     index: i64,
@@ -47,21 +49,29 @@ pub struct TranscriptSearch {
 
 impl TranscriptSearch {
     /// Observe a transcript cut only while Find is open. Closing releases its query storage.
-    pub fn project(&mut self, projection: &WrappedLines, open: bool) {
+    pub fn project<'a>(&mut self, projection: impl Into<TranscriptRows<'a>>, open: bool) {
+        let projection = projection.into();
         if !open {
             *self = Self::default();
             self.complete = true;
             return;
         }
-        if self.revision == Some(projection.index.revision) {
+        if self.revision == Some(projection.index_revision()) {
             return;
         }
-        self.revision = Some(projection.index.revision);
+        self.revision = Some(projection.index_revision());
         self.restart(false);
     }
 
     /// A key only changes the needle and cancels the previous background fold.
-    pub fn update(&mut self, projection: &WrappedLines, query: &str, index: i64, style: Style) {
+    pub fn update<'a>(
+        &mut self,
+        projection: impl Into<TranscriptRows<'a>>,
+        query: &str,
+        index: i64,
+        style: Style,
+    ) {
+        let projection = projection.into();
         self.project(projection, true);
         self.style = style;
         charge(query.len(), false);
@@ -127,7 +137,13 @@ impl TranscriptSearch {
     }
 
     /// Search only the viewport (plus needle overlap) before the next frame.
-    pub fn prepare(&mut self, projection: &WrappedLines, first: usize, height: usize) {
+    pub fn prepare<'a>(
+        &mut self,
+        projection: impl Into<TranscriptRows<'a>>,
+        first: usize,
+        height: usize,
+    ) {
+        let projection = projection.into();
         let cut = (self.generation, projection.revision(), first, height);
         if self.viewport == Some(cut) {
             return;
@@ -137,13 +153,17 @@ impl TranscriptSearch {
         if self.needle.is_empty() {
             return;
         }
-        let rows = &projection.folded_rows;
-        let Some(start) = rows.get(first) else {
+        let Some(start) = projection.folded_row(first) else {
             return;
         };
-        let end = rows
-            .get(first.saturating_add(height).saturating_sub(1))
-            .or_else(|| rows.last())
+        let end = projection
+            .folded_row(first.saturating_add(height).saturating_sub(1))
+            .or_else(|| {
+                projection
+                    .len()
+                    .checked_sub(1)
+                    .and_then(|row| projection.folded_row(row))
+            })
             .map_or(start.end, |row| row.end);
         let range = start.start..end;
         scan(
@@ -153,28 +173,30 @@ impl TranscriptSearch {
             range.clone(),
             false,
             |at| {
-                push_range(
-                    &mut self.local,
-                    projection.index.source(at, self.needle.len()),
-                );
+                push_range(&mut self.local, projection.source(at, self.needle.len()));
             },
         );
         if self.probe.is_none() && self.nearest.is_none() {
             self.probe = Some(if self.index < 0 {
                 0..range.start
             } else {
-                range.end..projection.index.text.len()
+                range.end..projection.folded_len()
             });
         }
         self.select_initial();
         // A short transcript already fits the frame budget: its count is final.
-        if range.start == 0 && range.end == projection.index.text.len() {
-            self.advance(projection, projection.index.text.len().max(1));
+        if range.start == 0 && range.end == projection.folded_len() {
+            self.advance(projection, projection.folded_len().max(1));
         }
     }
 
     /// One cooperative background slice. Call between frames, after input wins.
-    pub fn advance(&mut self, projection: &WrappedLines, budget: usize) -> bool {
+    pub fn advance<'a>(
+        &mut self,
+        projection: impl Into<TranscriptRows<'a>>,
+        budget: usize,
+    ) -> bool {
+        let projection = projection.into();
         if self.complete {
             self.navigate(projection, budget);
             return false;
@@ -194,27 +216,21 @@ impl TranscriptSearch {
             );
             for &at in self.previous.get(self.cursor..end).unwrap_or_default() {
                 charge(extension.len(), true);
-                if projection
-                    .index
-                    .text
-                    .as_bytes()
-                    .get(at + self.previous_needle.len()..at + self.needle.len())
-                    == Some(extension)
+                if at + self.needle.len() <= projection.folded_len()
+                    && projection.matches(
+                        at + self.previous_needle.len()..at + self.needle.len(),
+                        extension,
+                    )
                 {
                     self.positions.push(at);
-                    push_range(
-                        &mut self.matches,
-                        projection.index.source(at, self.needle.len()),
-                    );
+                    push_range(&mut self.matches, projection.source(at, self.needle.len()));
                 }
             }
             self.cursor = end;
             self.complete = end == self.previous.len();
         } else {
             let end = projection
-                .index
-                .text
-                .len()
+                .folded_len()
                 .min(self.cursor.saturating_add(budget));
             scan(
                 projection,
@@ -224,14 +240,11 @@ impl TranscriptSearch {
                 true,
                 |at| {
                     self.positions.push(at);
-                    push_range(
-                        &mut self.matches,
-                        projection.index.source(at, self.needle.len()),
-                    );
+                    push_range(&mut self.matches, projection.source(at, self.needle.len()));
                 },
             );
             self.cursor = end;
-            self.complete = end == projection.index.text.len();
+            self.complete = end == projection.folded_len();
         }
         if self.complete {
             self.selected_rank = self.selected.as_ref().and_then(|selected| {
@@ -265,7 +278,7 @@ impl TranscriptSearch {
         self.pending()
     }
 
-    fn probe_nearest(&mut self, projection: &WrappedLines, budget: usize) {
+    fn probe_nearest(&mut self, projection: TranscriptRows<'_>, budget: usize) {
         if self.local.is_empty()
             && self.nearest.is_none()
             && let Some(probe) = &mut self.probe
@@ -283,7 +296,7 @@ impl TranscriptSearch {
                 true,
                 |at| {
                     if self.nearest.is_none() || self.index < 0 {
-                        self.nearest = Some(projection.index.source(at, self.needle.len()));
+                        self.nearest = Some(projection.source(at, self.needle.len()));
                     }
                 },
             );
@@ -311,9 +324,14 @@ impl TranscriptSearch {
     }
 
     /// Borrow cached display text and overlay ranges directly in the buffer.
-    pub fn row<'a>(&'a self, projection: &'a WrappedLines, row: usize) -> impl Widget + 'a {
+    pub fn row<'a>(
+        &'a self,
+        projection: impl Into<TranscriptRows<'a>>,
+        row: usize,
+    ) -> impl Widget + 'a {
+        let projection = projection.into();
         let selected = self.selected.as_ref();
-        let range = projection.ranges().get(row).cloned().unwrap_or(0..0);
+        let range = projection.range(row);
         let matches = &self.local;
         let first = matches.partition_point(|matched| matched.end <= range.start);
         let tail = matches.get(first..).unwrap_or_default();
@@ -374,7 +392,8 @@ impl TranscriptSearch {
     }
 
     /// Project the stable source-byte match identity to its current row.
-    pub fn selected_row(&self, projection: &WrappedLines, index: i64) -> usize {
+    pub fn selected_row<'a>(&self, projection: impl Into<TranscriptRows<'a>>, index: i64) -> usize {
+        let projection = projection.into();
         let selected = if index == self.index {
             self.selected.as_ref()
         } else {
@@ -383,8 +402,7 @@ impl TranscriptSearch {
                 .and_then(|rank| self.active().get(rank))
         };
         selected
-            .and_then(|range| projection.source_rows.get(range.start))
-            .copied()
+            .and_then(|range| projection.source_row(range.start))
             .unwrap_or(0)
     }
 }
@@ -396,7 +414,7 @@ fn push_range(ranges: &mut Vec<Range<usize>>, range: Range<usize>) {
 }
 
 fn scan(
-    projection: &WrappedLines,
+    projection: TranscriptRows<'_>,
     needle: &str,
     prefix: &[usize],
     starts: Range<usize>,
@@ -406,17 +424,20 @@ fn scan(
     if needle.is_empty() || starts.is_empty() {
         return;
     }
-    let bytes = projection.index.text.as_bytes();
     // Include enough context for a match crossing either edge of a wrapped row.
     let from = if background {
         starts.start
     } else {
         starts.start.saturating_sub(needle.len() - 1)
     };
-    let end = bytes.len().min(starts.end.saturating_add(needle.len() - 1));
+    let end = projection
+        .folded_len()
+        .min(starts.end.saturating_add(needle.len() - 1));
     charge(end - from, background);
-    let bytes = bytes.get(from..end).unwrap_or_default();
-    if prefix.last() == Some(&0) {
+    if let Some(bytes) = projection
+        .slice(from..end)
+        .filter(|_| prefix.last() == Some(&0))
+    {
         // Unbordered needles cannot overlap. memmem uses SIMD where available.
         for at in memchr::memmem::find_iter(bytes, needle.as_bytes()) {
             let at = from + at;
@@ -427,7 +448,7 @@ fn scan(
     } else {
         // Borderful needles need overlapping matches; prefix links bound work.
         let mut length = 0;
-        for (offset, &byte) in bytes.iter().enumerate() {
+        for (offset, byte) in projection.bytes(from..end).enumerate() {
             while length != 0 && needle.as_bytes().get(length) != Some(&byte) {
                 charge(1, background);
                 length = prefix.get(length - 1).copied().unwrap_or(0);
@@ -445,7 +466,7 @@ fn scan(
 }
 
 struct SearchRow<'a> {
-    projection: &'a WrappedLines,
+    projection: TranscriptRows<'a>,
     row: usize,
     matches: &'a [Range<usize>],
     selected: Option<&'a Range<usize>>,
@@ -453,7 +474,7 @@ struct SearchRow<'a> {
 }
 impl Widget for SearchRow<'_> {
     fn render(self, area: Rect, buffer: &mut Buffer) {
-        self.projection.render_ranges(
+        self.projection.render(
             self.row,
             self.matches,
             self.selected,

@@ -1,7 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{CommandFileRoot, CommandSession, TaskFileViews},
-    model::ModelEvent,
+    client::{CommandFileRoot, CommandSession},
     task_volume::TaskVolume,
     tui::{
         ClientRenderer, PromptInput, Viewport,
@@ -39,54 +38,36 @@ async fn followed_presentation_rows_are_declarative_and_live() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let turn = OperationId::from_bytes([13; 16]);
-    let mut views = TaskFileViews::default();
-    views
-        .model_event(
-            &owner,
-            turn,
-            ModelEvent::Reasoning {
-                delta: "Private reasoning".into(),
-            },
-        )
-        .unwrap();
-    views
-        .model_event(
-            &owner,
-            turn,
-            ModelEvent::Content {
-                delta: "**Visible answer**".into(),
-            },
-        )
-        .unwrap();
+    let mut views = super::file_views::empty();
+    super::file_views::append_text(&mut views, &owner.id, true, "Private reasoning");
+    super::file_views::append_text(&mut views, &owner.id, false, "**Visible answer**");
     let mut renderer = ClientRenderer::default();
     renderer.update(&views, &owner);
     for row in rows {
-        views.tasks.clear();
-        views.tools.clear();
-        if let Some(count) = row["tool_lines"].as_u64() {
-            views
-                .model_event(
-                    &owner,
-                    turn,
-                    ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                        "call".into(),
-                        "read".into(),
-                        Default::default(),
-                    )),
+        let keys: Vec<_> = views
+            .selections()
+            .flat_map(|(_, files)| files.files().keys())
+            .filter(|key| {
+                !matches!(
+                    key,
+                    acyclic_harness::task_volume::FileKey::Task {
+                        file: acyclic_harness::task_volume::TaskFile::Chunk { .. },
+                        ..
+                    }
                 )
-                .unwrap();
-            views.tool_output(
-                &owner,
-                "call",
-                &(0..count)
-                    .map(|index| format!("detail {index:02}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            );
+            })
+            .cloned()
+            .collect();
+        for key in keys {
+            super::file_views::remove(&mut views, key);
         }
-        views.documents.clear();
-        let mut documents = acyclic_harness::client::DocumentViews::default();
+        if let Some(count) = row["tool_lines"].as_u64() {
+            let output = (0..count)
+                .map(|index| format!("detail {index:02}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            super::file_views::tool(&mut views, &owner.id, "read", &output);
+        }
         for (field, key) in [
             ("goal", acyclic_harness::task_volume::FileKey::Goal),
             (
@@ -97,30 +78,15 @@ async fn followed_presentation_rows_are_declarative_and_live() {
             ),
         ] {
             if let Some(text) = row[field].as_str() {
-                documents
-                    .apply(&acyclic_harness::task_volume::Write::new(
-                        key,
-                        text.as_bytes().to_vec(),
-                    ))
-                    .unwrap();
+                super::file_views::document(&mut views, key, text);
             }
         }
-        views.documents.insert(
-            format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),
-            documents,
-        );
-        if let Some(status) = row.get("status") {
-            views.tasks.insert(
-                format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),
-                acyclic_harness::client::TaskView {
-                    status: serde_json::from_value(status.clone()).unwrap(),
-                    lifecycle_operation_id: None,
-                    reason: row
-                        .get("feedback")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned),
-                    parent: None,
-                },
+        if let Some(status) = row["status"].as_str() {
+            super::file_views::status(
+                &mut views,
+                &owner.id,
+                &status.to_ascii_lowercase(),
+                row["feedback"].as_str(),
             );
         }
         renderer.update(&views, &owner);
@@ -225,18 +191,15 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = TaskFileViews::default();
+    let mut views = super::file_views::empty();
     let mut live = ClientRenderer::default();
     for width in [12, 20, 12] {
-        views
-            .model_event(
-                &owner,
-                OperationId::from_bytes([22; 16]),
-                ModelEvent::Content {
-                    delta: "界👩‍💻e\u{301} end ".repeat(8),
-                },
-            )
-            .unwrap();
+        super::file_views::append_text(
+            &mut views,
+            &owner.id,
+            false,
+            &"界👩‍💻e\u{301} end ".repeat(8),
+        );
         live.update(&views, &owner);
         let mut replay = ClientRenderer::default();
         replay.update(&views, &owner);
@@ -271,7 +234,7 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
         }
         assert_eq!(pictures[0], pictures[1]);
     }
-    live.update(&TaskFileViews::default(), &owner);
+    live.update(&super::file_views::empty(), &owner);
     live.layout(&files, &PromptInput::default(), 12, 12)
         .unwrap();
     assert!(live.screen().transcript.is_empty());
@@ -280,7 +243,7 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
     // Property: streamed reasoning and live visibility changes paint the same
-    // cells as reopening the current TaskFileViews and settings-file snapshot.
+    // cells as reopening the current ClientViews and settings-file snapshot.
     #[test]
     fn reasoning_visibility_and_chunking_are_replay_equivalent(chunks in proptest::collection::vec((".{0,12}", proptest::bool::ANY), 1..6)) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -288,13 +251,12 @@ proptest::proptest! {
             let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("reasoning-replay").unwrap()).await.unwrap());
             let mut files = CommandSession::open(volume, OperationId::from_bytes([12;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
-            let turn = OperationId::from_bytes([13;16]);
-            let mut views = TaskFileViews::default();
-            views.model_event(&owner, turn, ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new("call".into(), "read".into(), Default::default()))).unwrap();
+            let mut views = super::file_views::empty();
+            super::file_views::tool(&mut views,&owner.id,"read","");
             let mut live = ClientRenderer::default();
-            for (chunk, visible) in chunks {
-                views.tool_output(&owner, "call", &chunk);
-                views.model_event(&owner, turn, ModelEvent::Reasoning { delta: chunk }).unwrap();
+            for (index,(chunk, visible)) in chunks.into_iter().enumerate() {
+                super::file_views::put(&mut views,acyclic_harness::task_volume::FileKey::parse(&format!(".tasks/task/turns/0/tools/call/stdout/{index}")).unwrap(),chunk.as_bytes().to_vec(),None);
+                super::file_views::append_text(&mut views,&owner.id,true,&chunk);
                 files.write_state(CommandFileRoot::Config, "settings.json", &serde_json::json!({"reasoning":visible,"tool_details":visible})).await.unwrap();
                 live.update(&views, &owner);
                 let mut replay = ClientRenderer::default();

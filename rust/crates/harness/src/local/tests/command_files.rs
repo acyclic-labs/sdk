@@ -68,9 +68,22 @@ async fn roundtrip(prompt: String) -> Result<()> {
         65_536,
     )
     .await?;
-    projected.project_commands(&owner, &harness.client_owner())?;
-    let key = format!("AGGREGATE_KIND_TASK:{}", harness.client_owner().id);
-    assert_eq!(projected.views().transcripts[&key].streaming_text, "done");
+    projected.follow_commands(&owner).await?;
+    let text: Vec<_> = projected
+        .views()
+        .selections()
+        .filter(|(_, selection)| matches!(selection.query(), Query::CommandSession { .. }))
+        .flat_map(|(_, selection)| {
+            selection.outputs(
+                &crate::client::OutputOwner::Session(
+                    crate::task_volume::Component::new(session.to_string()).unwrap(),
+                ),
+                0,
+            )
+        })
+        .filter_map(|(_, row)| row.text.map(|text| text.into_owned()))
+        .collect();
+    assert_eq!(text, vec!["done"]);
     drop(projected);
     assert_eq!(provider.requests().len(), 1);
     assert!(

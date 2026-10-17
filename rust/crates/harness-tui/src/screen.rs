@@ -17,8 +17,10 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Independently cached tool tail, following the answer rows without copies.
+    pub tools: &'a [Line<'a>],
     /// Search decoration over the existing wrapping projection; only visible rows are painted.
-    pub transcript_search: Option<(&'a crate::WrappedLines, &'a crate::TranscriptSearch)>,
+    pub transcript_search: Option<(crate::TranscriptRows<'a>, &'a crate::TranscriptSearch)>,
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -75,13 +77,20 @@ fn take_top(area: &mut Rect, height: u16) -> Rect {
 }
 
 impl Screen<'_> {
+    fn transcript_len(&self) -> usize {
+        self.transcript_search
+            .map_or(self.transcript.len() + self.tools.len(), |(rows, _)| {
+                rows.len()
+            })
+    }
+
     /// Default follow-tail position; a followed layout file may override it.
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
         let height = self.areas(area, input).transcript.height;
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
-            (self.reasoning.len() + self.transcript.len() + usize::from(input.busy))
+            (self.reasoning.len() + self.transcript_len() + usize::from(input.busy))
                 .saturating_sub(usize::from(height))
         } else {
             self.overlay
@@ -179,7 +188,7 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> Option<Line<'static>> {
         let area = areas.transcript;
-        let row = self.reasoning.len() + self.transcript.len();
+        let row = self.reasoning.len() + self.transcript_len();
         if !input.busy
             || self.feedback
             || !self.overlay.is_empty()
@@ -205,7 +214,7 @@ impl Screen<'_> {
         )
     }
 
-    /// Compose shared widgets without cloning `TaskFileViews` or their transcript.
+    /// Compose shared widgets without cloning client views or their transcript.
     /// Scroll and open panels are supplied from the user's followed layout file.
     pub fn render(
         &self,
@@ -218,8 +227,7 @@ impl Screen<'_> {
         let mut areas = self.areas(frame.area(), input);
         let transcript_scroll = self.search_row.map_or(transcript_scroll, |row| {
             row.min(
-                self.transcript
-                    .len()
+                self.transcript_len()
                     .saturating_sub(usize::from(areas.transcript.height)),
             )
         });
@@ -229,7 +237,7 @@ impl Screen<'_> {
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
-            let count = self.reasoning.len() + self.transcript.len() + usize::from(input.busy);
+            let count = self.reasoning.len() + self.transcript_len() + usize::from(input.busy);
             let end =
                 count.min(transcript_scroll.saturating_add(usize::from(areas.transcript.height)));
             for (row, index) in (transcript_scroll..end).enumerate() {
@@ -243,11 +251,13 @@ impl Screen<'_> {
                 );
                 if let Some(line) = self.reasoning.get(index) {
                     frame.render_widget(line, area);
-                } else if index < self.reasoning.len() + self.transcript.len() {
+                } else if index < self.reasoning.len() + self.transcript_len() {
                     let index = index - self.reasoning.len();
                     if let Some((projection, search)) = self.transcript_search {
                         frame.render_widget(search.row(projection, index), area);
                     } else if let Some(line) = self.transcript.get(index) {
+                        frame.render_widget(line, area);
+                    } else if let Some(line) = self.tools.get(index - self.transcript.len()) {
                         frame.render_widget(line, area);
                     }
                 } else if let Some(line) = thinking.as_ref() {
