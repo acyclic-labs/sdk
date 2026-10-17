@@ -1,7 +1,6 @@
 use crate::*;
 pub(crate) use wait::{
-    BlockingWaitWake, allocate_blocking_wait_wake, measured_completion_meter,
-    wait_measured_completion,
+    PreparedWake, allocate_blocking_wait_wake, measured_completion_meter, wait_measured_completion,
 };
 
 mod wait;
@@ -95,6 +94,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
         broken_wake: false,
         #[cfg(all(test, acyclic_native_runtime_loom))]
         broken_accounting: false,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_charge: false,
     }));
     let completion = Arc::clone(&state);
     let span = if std::ptr::eq(pool, &BLOCKING_WORKERS) {

@@ -71,7 +71,7 @@ pub struct LocalHarness {
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
-    hooks: crate::hooks::Hooks,
+    settings: Arc<crate::native_settings::SettingsConfig>,
     #[cfg(test)]
     context_read_observer:
         Option<for<'a> fn(&'a Self, &'a str) -> acyclic_stream::BoxProviderFuture<'a, Result<()>>>,
@@ -119,13 +119,17 @@ impl LocalHarness {
                 tools.register((tool, None), &mut None, None)?;
             }
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-            let settings = settings::load(&config.project, config.settings).await?;
+            let settings_configuration = settings::configuration(&config.project, config.settings)?;
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                &settings_configuration,
+            ))
+            .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let mcp_workspace =
                 std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = settings
-                .mcp
+            let installation = mcp
                 .install(tools, &mcp_workspace, config.mcp_limits)
                 .await?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
@@ -306,7 +310,7 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 checkout_context: matches!(config.project, LocalProject::Workspace(_)),
                 #[cfg(feature = "hooks")]
-                hooks: settings.hooks,
+                settings: settings_configuration,
                 limits: config.limits,
                 compaction,
                 #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]

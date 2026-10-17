@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, Write};
 
 use super::{Capabilities, ModeState};
@@ -15,7 +16,7 @@ pub enum ScreenMode {
 /// order. Dropping during unwinding runs the same restoration as normal exit.
 pub struct RestoreGuard<W: Write> {
     writer: W,
-    undo: Vec<(u16, Vec<u8>)>,
+    undo: Vec<(u16, Cow<'static, [u8]>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
 }
@@ -52,7 +53,7 @@ impl<W: Write> RestoreGuard<W> {
         if self.modes.get(&mode) != Some(&ModeState::Reset) {
             return Ok(());
         }
-        let undo = format!("\x1b[?{mode}l").into_bytes();
+        let undo = Cow::Owned(format!("\x1b[?{mode}l").into_bytes());
         // Journal before writing: write_all can fail after emitting a prefix.
         self.undo.push((mode, undo));
         if !self.desired.contains(&mode) {
@@ -111,6 +112,105 @@ impl<W: Write> RestoreGuard<W> {
             first_error.get_or_insert(error);
         }
         first_error.map_or(Ok(()), Err)
+    }
+}
+
+const SHOW_CURSOR: (u16, &'static [u8]) = (25, b"[?25h");
+const END_SYNCHRONIZED: (u16, &'static [u8]) = (2026, b"[?2026l");
+const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
+
+/// Frame presentation under the restoration journal: a synchronized update's
+/// close and a hidden cursor's show are journaled before the first byte, so
+/// an error, timeout or unwind at any byte is undone by restoration.
+impl<W: Write> RestoreGuard<W> {
+    fn journal(&mut self, (mode, undo): (u16, &'static [u8])) {
+        if !self.undo.iter().any(|(journaled, _)| *journaled == mode) {
+            self.undo.push((mode, Cow::Borrowed(undo)));
+        }
+    }
+
+    /// Journal a frame before writing it; returns whether to bracket it as a
+    /// synchronized update (DECSET 2026, when the probe found the mode).
+    pub(crate) fn begin_frame(&mut self, cursor_hidden: bool) -> bool {
+        if cursor_hidden {
+            self.journal(SHOW_CURSOR);
+        }
+        let synchronized = self
+            .modes
+            .get(&END_SYNCHRONIZED.0)
+            .is_some_and(|state| state.supported());
+        if synchronized {
+            self.journal(END_SYNCHRONIZED);
+        }
+        synchronized
+    }
+
+    /// Write part of a frame as one contiguous buffer, opening and/or closing
+    /// its synchronized update. The buffer's contents are consumed.
+    pub(crate) fn write_frame(
+        &mut self,
+        part: &mut Vec<u8>,
+        open: bool,
+        close: bool,
+    ) -> io::Result<()> {
+        if open {
+            part.splice(0..0, BEGIN_SYNCHRONIZED.iter().copied());
+        }
+        if close {
+            part.extend_from_slice(END_SYNCHRONIZED.1);
+        }
+        self.writer.write_all(part)?;
+        self.writer.flush()
+    }
+
+    /// Whether a begun frame's synchronized update is still open.
+    #[cfg(any(windows, test))]
+    pub(crate) fn frame_open(&self) -> bool {
+        self.undo
+            .iter()
+            .any(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+    }
+
+    /// The whole frame reached the device: its update is closed, and a shown
+    /// cursor needs no restoration.
+    pub(crate) fn end_frame(&mut self, cursor_hidden: bool) {
+        self.undo.retain(|(mode, _)| {
+            *mode != END_SYNCHRONIZED.0 && (cursor_hidden || *mode != SHOW_CURSOR.0)
+        });
+    }
+
+    /// A frame failed partway: close its update now, bounded by the writer's
+    /// own deadline. If that fails too, the journal still holds the close.
+    pub(crate) fn abort_frame(&mut self) -> io::Result<()> {
+        let Some(index) = self
+            .undo
+            .iter()
+            .position(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+        else {
+            return Ok(());
+        };
+        // CAN cancels any partial escape sequence the failed write left open.
+        self.writer.write_all(b"")?;
+        self.writer.write_all(END_SYNCHRONIZED.1)?;
+        self.writer.flush()?;
+        self.undo.remove(index);
+        Ok(())
+    }
+}
+
+impl<W: Write> super::Present for RestoreGuard<W> {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        let synchronized = self.begin_frame(cursor_hidden);
+        match self.write_frame(frame, synchronized, synchronized) {
+            Ok(()) => {
+                self.end_frame(cursor_hidden);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = self.abort_frame();
+                Err(error)
+            }
+        }
     }
 }
 

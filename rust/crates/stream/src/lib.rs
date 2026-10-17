@@ -100,6 +100,8 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
+#[cfg(all(feature = "local", feature = "test-support"))]
+pub use local::PersistenceCut;
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

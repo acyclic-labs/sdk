@@ -15,7 +15,7 @@ pub enum HookEvent {
 }
 
 impl HookEvent {
-    pub(super) fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::SessionStart => "SessionStart",
             Self::PreToolUse => "PreToolUse",

@@ -2,6 +2,26 @@ use super::*;
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
+    /// Runs configured hooks inside this executor's selected, owner-fenced workspace.
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    fn run_hooks<'a>(
+        &'a self,
+        _configuration: (&'a crate::hooks::Hooks, [u8; 32]),
+        _event: crate::hooks::HookEvent,
+        _input: Value,
+        _registry: &'a ToolRegistry,
+        _context: crate::runtime::ToolContext,
+        reconcile_only: bool,
+    ) -> BoxFuture<'a, Result<crate::hooks::HookOutput>> {
+        Box::pin(async move {
+            if reconcile_only {
+                return Ok(crate::hooks::HookOutput::default());
+            }
+            Err(Error::Unsupported(
+                "workspace hook execution is not bound".into(),
+            ))
+        })
+    }
     /// Checks grants and the original context before replay, dispatch or reconciliation.
     fn authorize(
         &self,

@@ -23,6 +23,8 @@ mod compact;
 mod goals;
 #[cfg(feature = "hooks")]
 mod hook_configuration;
+#[cfg(all(feature = "native-execution", unix))]
+mod hook_lifecycle;
 use std::{
     path::Path,
     sync::{Arc, Mutex},
