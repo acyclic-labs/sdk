@@ -8,9 +8,11 @@
 //! fresh directory and crashes at one boundary:
 //! - `BeforeWrite(k)`: frames `1..=k` landed, along with every non-durable
 //!   effect performed before frame `k + 1`, which is never written;
-//! - `LostAck(k)`: frame `k` landed but the process died before seeing it.
+//! - `LostAck(k)`: frame `k` was flushed but the process died before seeing it.
 //!
-//! A crash poisons the provider, so every later call fails. All handles are
+//! The provider flushes each frame before acknowledging it, and a crash models
+//! power loss: a written but unflushed frame does not survive. A crash
+//! poisons the provider, so every later call fails. All handles are
 //! dropped, an independent provider reopens the directory, and `recover`
 //! observes it.
 use acyclic_stream::{LocalStream, PersistenceCut};
@@ -34,9 +36,9 @@ pub(crate) enum Cut {
 
 #[cfg(test)]
 thread_local! {
-    /// Fault switch: a lost acknowledgement fires before its frame is written,
-    /// so the cut names a frame that never reached the journal.
-    static LOSE_UNWRITTEN_ACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Fault switch: a lost acknowledgement fires after its frame is written
+    /// but before it is flushed, so the frame does not survive the crash.
+    static LOSE_UNFLUSHED_ACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 struct Cutter {
@@ -56,15 +58,17 @@ impl Cutter {
 
 impl PersistenceCut for Cutter {
     fn admit(&self) -> bool {
-        let landed = self.landed.load(Ordering::SeqCst);
-        #[cfg(test)]
-        if LOSE_UNWRITTEN_ACK.with(std::cell::Cell::get)
-            && self.cut == Some(Cut::LostAck(landed + 1))
-        {
-            self.landed.store(landed + 1, Ordering::SeqCst);
-            return !self.fires(Cut::LostAck(landed + 1));
+        !self.fires(Cut::BeforeWrite(self.landed.load(Ordering::SeqCst)))
+    }
+
+    #[cfg(test)]
+    fn written(&self) -> bool {
+        let next = Cut::LostAck(self.landed.load(Ordering::SeqCst) + 1);
+        if LOSE_UNFLUSHED_ACK.with(std::cell::Cell::get) && self.cut == Some(next) {
+            self.landed.fetch_add(1, Ordering::SeqCst);
+            return !self.fires(next);
         }
-        !self.fires(Cut::BeforeWrite(landed))
+        true
     }
 
     fn acknowledge(&self) -> bool {

@@ -251,6 +251,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
+        Self::open(self.provider.clone(), self.file_volume_path(key).await?).await
+    }
+
+    /// The stream of `key`'s file volume, which may not exist yet.
+    pub(crate) async fn file_volume_path(&self, key: &FileKey) -> Result<StreamPath> {
         // A separate file stream cannot contend with unrelated parent-volume writes.
         // Release the parent index before opening/locking the child volume.
         let identity = {
@@ -261,12 +266,11 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             hash.update(key.path().as_bytes());
             hash.finalize()
         };
-        let path = StreamPath::new(format!(
+        Ok(StreamPath::new(format!(
             "{}/files/{}",
             self.path.as_str(),
             identity.to_hex()
-        ))?;
-        Self::open(self.provider.clone(), path).await
+        ))?)
     }
     /// Opens or atomically initializes a volume, then reconstructs its logical index.
     pub async fn open(provider: Arc<P>, path: StreamPath) -> Result<Self> {

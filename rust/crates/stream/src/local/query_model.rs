@@ -61,6 +61,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
             durable_tails: Mutex::new(Default::default()),
             #[cfg(feature = "test-support")]
             persistence_cut: Default::default(),
+            #[cfg(feature = "test-support")]
+            durable_len: Default::default(),
         }),
         work: None,
     })

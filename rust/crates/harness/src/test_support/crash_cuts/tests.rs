@@ -113,10 +113,10 @@ async fn conflict_receipts_are_cut_points_and_replays_are_not() {
 }
 
 #[tokio::test]
-async fn negative_control_an_ack_lost_before_its_frame_is_detected() {
-    LOSE_UNWRITTEN_ACK.with(|flag| flag.set(true));
+async fn negative_control_an_ack_lost_before_its_flush_is_detected() {
+    LOSE_UNFLUSHED_ACK.with(|flag| flag.set(true));
     let found = cuts().await;
-    LOSE_UNWRITTEN_ACK.with(|flag| flag.set(false));
+    LOSE_UNFLUSHED_ACK.with(|flag| flag.set(false));
     let lost: Vec<_> = mismatches(&found).into_iter().map(|(cut, _)| cut).collect();
     assert_eq!(lost, [Cut::LostAck(1), Cut::LostAck(2), Cut::LostAck(3)]);
 }

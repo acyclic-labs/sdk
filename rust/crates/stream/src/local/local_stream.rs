@@ -142,6 +142,8 @@ impl LocalStream {
                 durable_tails: Mutex::new(Default::default()),
                 #[cfg(feature = "test-support")]
                 persistence_cut: Default::default(),
+                #[cfg(feature = "test-support")]
+                durable_len: Default::default(),
             }),
             work: None,
         })
@@ -202,10 +204,18 @@ impl LocalStream {
     }
 
     fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let length;
         let (target, file, durability) = {
             let journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal.synced >= journal.appended {
                 return Ok(());
+            }
+            #[cfg(feature = "test-support")]
+            {
+                length = (&journal.file)
+                    .stream_position()
+                    .map_err(|_| self.inner.poison())?;
             }
             span.record("batch_len", journal.appended - journal.synced);
             (
@@ -217,6 +227,10 @@ impl LocalStream {
         sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
         self.inner.publish_synced(&mut journal, target);
+        #[cfg(feature = "test-support")]
+        self.inner
+            .durable_len
+            .fetch_max(length, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -226,7 +240,7 @@ impl LocalStream {
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]
         if cut.as_ref().is_some_and(|cut| !cut.admit()) {
-            return Err(self.inner.poison());
+            return Err(self.cut_crash().await);
         }
         let required = !deferred();
         let journal = self.inner.journal.clone();
@@ -244,8 +258,8 @@ impl LocalStream {
             return Err(self.inner.poison());
         }
         #[cfg(feature = "test-support")]
-        if cut.is_some_and(|cut| !cut.acknowledge()) {
-            return Err(self.inner.poison());
+        if let Some(cut) = cut {
+            return self.cut_after_write(cut).await;
         }
         self.inner.published();
         Ok(())
