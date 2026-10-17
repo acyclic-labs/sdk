@@ -134,7 +134,9 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         }
     }
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
-    assert!(TaskFileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
+    assert!(
+        TaskFileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err()
+    );
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
     assert!(TaskFileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
     // Check both the bounded source and the client's independent revision validation.

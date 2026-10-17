@@ -270,11 +270,11 @@ pub(crate) fn write_bounded_in_place(
             let mut transfer =
                 NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
             meter.admit_write(0)?;
-            // SAFETY: the validated range and borrowed payload remain live through pwrite.
             #[allow(
                 unsafe_code,
                 reason = "writes the validated borrowed range on a held descriptor"
             )]
+            // SAFETY: the validated range and borrowed payload remain live through pwrite.
             let count = unsafe {
                 libc::pwrite(
                     file.as_raw_fd(),

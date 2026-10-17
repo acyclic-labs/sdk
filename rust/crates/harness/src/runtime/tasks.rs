@@ -361,6 +361,8 @@ impl<I, O> TaskDefinition<I, O> {
             let owner_matches = journal.task_binding() == Some((task_id, &fence));
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let owner_matches = owner_matches
+                & (context.owned_mailbox.is_none()
+                    || context.original_task_binding_matches(task_id, &fence))
                 & native.is_none_or(|work| {
                     context.native_metadata_matches(work)
                         && context.original_task_binding_matches(task_id, &fence)
@@ -372,8 +374,9 @@ impl<I, O> TaskDefinition<I, O> {
                 ));
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let original = native
-                .and_then(|_| context.owned_mailbox.as_ref())
+            let original = context
+                .owned_mailbox
+                .as_ref()
                 .map(|owner| owner.admission());
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let original: Option<(&TaskAdmissionRecord, &WorkflowAdmission)> = None;

@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
+
 #[derive(Default)]
 pub(super) struct ExecutionSummary {
     pub(super) operation: Option<OperationId>,
@@ -64,7 +67,8 @@ impl ExecutionSummary {
                     && *request_digest != [0; 32]
                     && !self.models.contains_key(&(*step, *purpose))
             }
-            ExecutionEvent::Model { step, purpose, .. } => self
+            ExecutionEvent::Model { step, purpose, .. }
+            | ExecutionEvent::ModelStopped { step, purpose } => self
                 .models
                 .get(&(*step, *purpose))
                 .is_some_and(Option::is_some),
@@ -219,6 +223,15 @@ impl ExecutionSummary {
                     *state = None;
                 }
             }
+            ExecutionEvent::ModelStopped { step, purpose } => {
+                *self.models.get_mut(&(*step, *purpose)).ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "stopped model has no dispatch",
+                    )
+                })? = None;
+            }
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
@@ -288,6 +301,7 @@ impl PreparationRecord for Observation {
                 "context_prepared",
                 "context_compacted",
                 "model_started",
+                "model_stopped",
                 "model",
                 "tool_started",
                 "tool_completed",

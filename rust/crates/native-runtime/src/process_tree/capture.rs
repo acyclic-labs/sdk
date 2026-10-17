@@ -179,6 +179,11 @@ impl<'a> PendingStdin<'a> {
         Ok(progressed)
     }
 
+    /// Whether an exchange still holds input the child never took.
+    pub(super) fn undelivered(&self) -> bool {
+        self.terminate_on_completion && self.written < self.bytes.len()
+    }
+
     pub(super) fn observe(
         &mut self,
         chunk: &[u8],

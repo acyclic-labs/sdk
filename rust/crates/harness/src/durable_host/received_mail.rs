@@ -63,11 +63,11 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .read_mail_workflow_record(owner, &workflow, index, io)
             .await?;
         let prior;
-        let receive = if let [command] = latest.transition.commands.as_slice()
+        let (receive, receive_transition) = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
             && command.kind == crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND
         {
-            command
+            (command, &latest.transition)
         } else {
             let results = latest
                 .input
@@ -141,7 +141,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     "parcel receive operation differs",
                 ));
             }
-            command
+            (command, &prior.transition)
         };
         let receiver_admission = self
             .admission(owner.workflow_admission().operation_id, &mut work)
@@ -158,7 +158,20 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             None => crate::contract::json_from_slice(&selection_bytes)
                 .map_err(|error| Error::Storage(error.to_string()))?,
         };
-        if selection.after.checked_add(1) != Some(item.sequence) {
+        let after = if crate::filesystem::child_agent::is_child(&receiver_admission) {
+            crate::filesystem::child_agent::mail_cursor(receive_transition, receive).map_err(
+                |reason| {
+                    crate::store::guarded_boundary(
+                        &work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        reason,
+                    )
+                },
+            )?
+        } else {
+            selection.after
+        };
+        if after.checked_add(1) != Some(item.sequence) {
             return Err(crate::store::guarded_boundary(
                 &work,
                 crate::wire::ErrorCode::Unauthorized,

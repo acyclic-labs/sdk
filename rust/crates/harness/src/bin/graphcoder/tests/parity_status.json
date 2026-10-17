@@ -47,7 +47,7 @@
   {
     "section": "1. Slash commands",
     "row": "/find",
-    "status": "Deferred follow-up; omitted from ratatui catalog"
+    "status": "Implemented on hf/gc-graphcoder-transcript-find: file-backed query/selection, Unicode highlights, Ctrl+F and next/previous; TestBackend replay/resize/draft/control and matcher properties"
   },
   {
     "section": "1. Slash commands",
@@ -457,7 +457,7 @@
   {
     "section": "3. TUI polish",
     "row": "Transcript search (incremental, Unicode case-fold)",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Implemented on hf/gc-graphcoder-transcript-find: file-backed query/selection, Unicode highlights, Ctrl+F and next/previous; TestBackend replay/resize/draft/control and matcher properties"
   },
   {
     "section": "3. TUI polish",
