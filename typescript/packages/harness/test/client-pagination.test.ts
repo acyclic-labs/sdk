@@ -60,9 +60,9 @@ test("page reset fences an older in-flight response", async () => {
 test("page window evicts the opposite edge at maxItems after loads and oversized reset", async () => {
   type Item = { id: string; value: number };
   const pages: Page<Item, string>[] = [
-    { generation: "one", items: [{ id: "c", value: 2 }, { id: "d", value: 1 }], after: "d", hasMoreBefore: true, hasMoreAfter: true },
+    { generation: "one", items: [{ id: "c", value: 2 }, { id: "d", value: 1 }], before: "c", after: "d", hasMoreBefore: true, hasMoreAfter: true },
     { generation: "one", items: [{ id: "e", value: 1 }, { id: "f", value: 1 }, { id: "g", value: 1 }], after: "g", hasMoreBefore: true, hasMoreAfter: true },
-    { generation: "one", items: [{ id: "b", value: 2 }, { id: "c", value: 3 }], before: "b", hasMoreBefore: false, hasMoreAfter: true },
+    { generation: "one", items: [{ id: "b", value: 2 }, { id: "c", value: 3 }], before: "b", after: "c", hasMoreBefore: false, hasMoreAfter: true },
   ];
   const requests: [string, string | undefined][] = [];
   const window = new PageWindow<Item, string>(item => item.id, async (direction, cursor) => {
@@ -70,7 +70,7 @@ test("page window evicts the opposite edge at maxItems after loads and oversized
     const page = pages.shift();
     if (page === undefined) throw new Error("unexpected page request");
     return page;
-  }, 2);
+  }, 2, item => item.id);
   window.reset({ generation: "one", items: [{ id: "b", value: 1 }, { id: "c", value: 1 }], before: "b", after: "c", hasMoreBefore: true, hasMoreAfter: true });
   expect(window.items).toEqual([{ id: "b", value: 1 }, { id: "c", value: 1 }]);
   expect(await window.load("after")).toEqual([{ id: "d", value: 1 }]);
@@ -79,13 +79,13 @@ test("page window evicts the opposite edge at maxItems after loads and oversized
   expect(window.items).toEqual([{ id: "f", value: 1 }, { id: "g", value: 1 }]);
   expect(await window.load("before")).toEqual([{ id: "b", value: 2 }, { id: "c", value: 3 }]);
   expect(window.items).toEqual([{ id: "b", value: 2 }, { id: "c", value: 3 }]);
-  expect(requests).toEqual([["after", "c"], ["after", "d"], ["before", "b"]]);
+  expect(requests).toEqual([["after", "c"], ["after", "d"], ["before", "f"]]);
   expect(await window.load("before")).toEqual([]);
   expect(requests).toHaveLength(3);
 
   window.reset({ generation: "two", items: [{ id: "x", value: 1 }, { id: "y", value: 1 }, { id: "z", value: 1 }, { id: "w", value: 1 }], hasMoreBefore: false, hasMoreAfter: false });
   expect(window.items).toEqual([{ id: "z", value: 1 }, { id: "w", value: 1 }]);
-  expect(window.hasMoreBefore).toBe(false);
+  expect(window.hasMoreBefore).toBe(true);
   expect(window.hasMoreAfter).toBe(false);
 });
 
@@ -93,7 +93,7 @@ test("a new page generation fences both stale page directions without clearing a
   type Item = { id: string };
   const requests: { direction: string; cursor: string | undefined; resolve: (page: Page<Item, string>) => void }[] = [];
   const window = new PageWindow<Item, string>(item => item.id, (direction, cursor) =>
-    new Promise(resolve => { requests.push({ direction, cursor, resolve }); }), 2);
+    new Promise(resolve => { requests.push({ direction, cursor, resolve }); }), 2, (item, direction) => `${item.id}-${direction}`);
   window.reset({ generation: "old", items: [{ id: "old" }], before: "old-before", after: "old-after", hasMoreBefore: true, hasMoreAfter: true });
   const staleBefore = window.load("before");
   const staleAfter = window.load("after");
@@ -103,7 +103,7 @@ test("a new page generation fences both stale page directions without clearing a
   expect(window.items).toEqual([{ id: "fresh-b" }, { id: "fresh-c" }]);
   const freshBefore = window.load("before");
   expect(requests.map(({ direction, cursor }) => [direction, cursor])).toEqual([
-    ["before", "old-before"], ["after", "old-after"], ["before", "new-before"],
+    ["before", "old-before"], ["after", "old-after"], ["before", "fresh-b-before"],
   ]);
   for (const request of requests.slice(0, 2)) {
     request.resolve({ generation: "old", items: [{ id: "stale" }], before: "stale-before", after: "stale-after", hasMoreBefore: false, hasMoreAfter: false });

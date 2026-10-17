@@ -17,7 +17,8 @@ export function conversationDemand(options: {
   bodyBytes: number;
 }) {
   const window = new PageWindow<ConversationMessage, bigint>(message => message.id, (direction, cursor) =>
-    options.scheduler.schedule(options.pageBytes, () => options.loadPage(direction, cursor)), options.windowMessages);
+    options.scheduler.schedule(options.pageBytes, () => options.loadPage(direction, cursor)), options.windowMessages,
+    message => message.sequence);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const bodies = new DemandLoader<FileRef, string>({
     // UTF-16 text costs at most twice its UTF-8 input. Reserve the input and
