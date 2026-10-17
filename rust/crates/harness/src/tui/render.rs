@@ -578,6 +578,6 @@ mod thinking_tests;
 #[path = "frame_tests.rs"]
 mod frame_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "thinking_frame_tests.rs"]
 mod thinking_frame_tests;
