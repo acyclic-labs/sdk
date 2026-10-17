@@ -213,6 +213,30 @@ impl std::task::Wake for ProgressWake {
     }
 }
 
+/// Forced order: the pool is full at the first poll, so the work waits for
+/// admission and starts only after the observer is polled again.
+fn start_after_admission(
+    observer: &mut (dyn Future<Output = std::io::Result<()>> + Unpin),
+    pool: &'static std::sync::LazyLock<std::io::Result<crate::NativeWorkers>>,
+    progress_tx: std::sync::mpsc::Sender<Progress>,
+    progress_rx: &std::sync::mpsc::Receiver<Progress>,
+) {
+    let saturation = crate::tests::Saturation::new(pool).unwrap();
+    let waker = Waker::from(std::sync::Arc::new(ProgressWake(progress_tx)));
+    assert!(matches!(
+        Pin::new(&mut *observer).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    assert!(progress_rx.try_recv().is_err());
+    drop(saturation);
+    while progress_rx.recv_timeout(Duration::from_secs(10)).unwrap() == Progress::Woken {
+        assert!(matches!(
+            Pin::new(&mut *observer).poll(&mut Context::from_waker(&waker)),
+            Poll::Pending
+        ));
+    }
+}
+
 #[test]
 fn admitted_work_keeps_observation_after_observer_drop() {
     // The test fills a process-global pool, so it must not share one.
@@ -278,27 +302,16 @@ fn admitted_work_keeps_observation_after_observer_drop() {
                         }
                     })
             });
-        // Forced order: the pool is full at the first poll, so the work waits
-        // for admission and starts only after the observer is polled again.
-        let saturation = crate::tests::Saturation::new(if native_control {
-            &crate::NATIVE_WORKERS
-        } else {
-            &crate::BLOCKING_WORKERS
-        })
-        .unwrap();
-        let waker = Waker::from(std::sync::Arc::new(ProgressWake(progress_tx)));
-        assert!(matches!(
-            Pin::new(&mut observer).poll(&mut Context::from_waker(&waker)),
-            Poll::Pending
-        ));
-        assert!(progress_rx.try_recv().is_err());
-        drop(saturation);
-        while progress_rx.recv_timeout(Duration::from_secs(10)).unwrap() == Progress::Woken {
-            assert!(matches!(
-                Pin::new(&mut observer).poll(&mut Context::from_waker(&waker)),
-                Poll::Pending
-            ));
-        }
+        start_after_admission(
+            &mut *observer,
+            if native_control {
+                &crate::NATIVE_WORKERS
+            } else {
+                &crate::BLOCKING_WORKERS
+            },
+            progress_tx,
+            &progress_rx,
+        );
         drop(observer);
         tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
         done_rx.recv_timeout(Duration::from_secs(10)).unwrap();

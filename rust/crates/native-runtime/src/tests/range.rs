@@ -7,16 +7,30 @@ fn completed(read: Read<'_>) -> io::Result<Vec<u8>> {
     complete(read)
 }
 
-fn read_range<F: std::borrow::Borrow<NativeFile>>(
-    file: F,
+/// One range read: where the cursor starts, what it covers, the caller's
+/// buffer bound, which read API drives it, and whether the caller rejects it.
+#[derive(Clone, Copy)]
+struct Shape {
     offset: usize,
     length: usize,
     maximum: usize,
     api: u8,
     reject: bool,
+}
+
+fn read_range<F: std::borrow::Borrow<NativeFile>>(
+    file: F,
+    shape: Shape,
     meter: Arc<ReadBudgetMeter>,
     drive: impl FnOnce(Read<'_>) -> io::Result<Vec<u8>>,
 ) -> (Result<Vec<u8>, io::ErrorKind>, u64) {
+    let Shape {
+        offset,
+        length,
+        maximum,
+        api,
+        reject,
+    } = shape;
     let mut range = AsyncRangeReader::new(file, offset as u64, length as u64);
     let accept = move |result: io::Result<(Vec<u8>, usize)>| {
         let (mut bytes, filled) = result?;
@@ -102,21 +116,25 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
                 let borrowed_meter = make_meter();
                 let owned = read_range(
                     file.clone(),
-                    offset,
-                    length,
-                    maximum,
-                    api,
-                    reject,
+                    Shape {
+                        offset,
+                        length,
+                        maximum,
+                        api,
+                        reject,
+                    },
                     owned_meter.clone(),
                     completed,
                 );
                 let borrowed = read_range(
                     file.as_ref(),
-                    offset,
-                    length,
-                    maximum,
-                    api,
-                    reject,
+                    Shape {
+                        offset,
+                        length,
+                        maximum,
+                        api,
+                        reject,
+                    },
                     borrowed_meter.clone(),
                     completed,
                 );
@@ -213,11 +231,13 @@ fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Res
             let contended = Arc::new(ReadBudgetMeter::new(16, 256));
             let uncontended = read_range(
                 file.as_ref(),
-                offset,
-                87,
-                29,
-                api,
-                reject,
+                Shape {
+                    offset,
+                    length: 87,
+                    maximum: 29,
+                    api,
+                    reject,
+                },
                 free.clone(),
                 completed,
             );
@@ -230,11 +250,13 @@ fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Res
             let mut retained_while_held = None;
             let waited = read_range(
                 file.as_ref(),
-                offset,
-                87,
-                29,
-                api,
-                reject,
+                Shape {
+                    offset,
+                    length: 87,
+                    maximum: 29,
+                    api,
+                    reject,
+                },
                 contended.clone(),
                 |mut read: Read<'_>| {
                     let (entered_tx, entered_rx) = std::sync::mpsc::channel();
