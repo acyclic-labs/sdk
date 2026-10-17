@@ -82,6 +82,30 @@ async fn invoke(client: &mut grpc::Client, add: Option<i32>, counter: i32) -> Te
     state(&response, counter)
 }
 
+#[test]
+fn actor_observation_rejects_other_identities_and_revisions() -> TestResult {
+    let valid = wire::ActorObservation {
+        actor_id: ACTOR.into(),
+        code_sha256: create().code_sha256,
+        home_region: "la".into(),
+        configuration_revision: 1,
+        ..Default::default()
+    };
+    observation(Some(valid.clone()), 1)?;
+    assert!(observation(None, 1).is_err());
+    for field in 0..4 {
+        let mut changed = valid.clone();
+        match field {
+            0 => changed.actor_id.push_str("-other"),
+            1 => changed.code_sha256.clear(),
+            2 => changed.home_region.push_str("-other"),
+            _ => changed.configuration_revision += 1,
+        }
+        assert!(observation(Some(changed), 1).is_err());
+    }
+    Ok(())
+}
+
 proptest::proptest! {
     #[test]
     fn invocation_oracle_checks_exact_state_and_status(counter in -1000i32..1000) {
