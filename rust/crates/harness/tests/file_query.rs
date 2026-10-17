@@ -69,7 +69,7 @@ async fn ordinary_plan_names_and_non_markdown_files_follow_without_consuming_mat
     view.apply(next(&mut changes).await)?;
     assert_eq!(
         view.files()[&acyclic_harness::task_volume::FileKey::parse("plans/release notes.md")?]
-            .bytes
+            .segments[0]
             .as_ref(),
         b"- [x] Done"
     );

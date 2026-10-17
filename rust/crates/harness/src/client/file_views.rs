@@ -30,7 +30,7 @@ pub struct FileViews {
     pub(super) files: Files,
     limits: QueryViewLimits,
     segments: usize,
-    bytes: u64,
+    pub(super) bytes: u64,
 }
 
 fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> Result<()> {
@@ -294,6 +294,7 @@ impl FileViews {
                         }
                         head.length = length;
                         head.publication = file.publication;
+                        head.channel = file.channel;
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(HeadFile {

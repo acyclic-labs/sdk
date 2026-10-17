@@ -68,7 +68,7 @@ pub struct FileQueryView {
     goal_revision: Option<crate::OperationId>,
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
-    bytes: usize,
+    materialized: bool,
     maximum_files: usize,
     maximum_bytes: usize,
 }
@@ -175,7 +175,7 @@ impl FileQueryView {
             goal_line_starts,
             progress,
             storage,
-            bytes,
+            materialized: false,
             maximum_files,
             maximum_bytes,
         })
@@ -346,7 +346,14 @@ impl FileQueryView {
         )?;
         let storage = super::FileViews::snapshot(snapshot, limits).map_err(super::query_error)?;
         view.storage = storage;
+        view.materialized = true;
         Ok(view)
+    }
+
+    fn apply_materialized(&mut self, change: &Change) -> Result<()> {
+        let apply = self.storage.prepare(change).map_err(super::query_error)?;
+        self.project(change);
+        apply(&mut self.storage).map_err(super::query_error)
     }
 
     pub(super) fn session_change(
@@ -357,10 +364,7 @@ impl FileQueryView {
             .storage
             .session_change(data)
             .map_err(super::query_error)?;
-        // Prepare before updating any projection; live and snapshot paths share project().
-        let apply = self.storage.prepare(&change).map_err(super::query_error)?;
-        self.project(&change);
-        apply(&mut self.storage).map_err(super::query_error)?;
+        self.apply_materialized(&change)?;
         Ok(change)
     }
     pub(super) fn session_watermark(
@@ -380,6 +384,10 @@ impl FileQueryView {
 
     /// Folds the next accepted record atomically. Gaps require a new snapshot.
     pub fn apply(&mut self, change: Change) -> Result<bool> {
+        if self.materialized {
+            self.apply_materialized(&change)?;
+            return Ok(change.file.is_some());
+        }
         let invalid = || Error::Conflict("file query follow requires reset".into());
         let cursor = &change.cursor;
         let files = change.file.iter().chain(&change.files);
@@ -423,7 +431,7 @@ impl FileQueryView {
         {
             return Err(invalid());
         }
-        let mut bytes = self.bytes;
+        let mut bytes = usize::try_from(self.storage.bytes).map_err(|_| invalid())?;
         let mut count = self.storage.files.len() + self.rejected_models.len();
         for key in &change.removed {
             let old = self.storage.files.get(key);
@@ -458,7 +466,6 @@ impl FileQueryView {
         }
         self.project(&change);
         self.storage.replace(&change, &self.rejected_models);
-        self.bytes = bytes;
         Ok(changed)
     }
 }

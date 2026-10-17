@@ -422,7 +422,7 @@ fn oversized_follow_preserves_small_rows_and_discards_only_the_large_payload() {
     assert!(
         view.files()
             .values()
-            .map(|file| file.bytes.len())
+            .map(|file| file.length as usize)
             .sum::<usize>()
             <= 512
     );
