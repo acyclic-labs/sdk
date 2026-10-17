@@ -37,6 +37,10 @@ impl Executor {
             context.ok_or_else(|| Error::Unauthorized("child context is absent".into()))?;
         let limits = context.effective_scope().limits();
         let owner = context.task().owned_mailbox.as_deref();
+        #[cfg(feature = "filesystem")]
+        let cancellation = context.task().invocation_cancellation();
+        #[cfg(not(feature = "filesystem"))]
+        let cancellation = None;
         let files = bound_files(&context).await?;
         let value = match self.0 {
             "spawn" => {
@@ -83,7 +87,7 @@ impl Executor {
                 }
                 if cancellable(
                     files::follow(files.as_ref(), &reference, limits, !reconcile, false),
-                    owner.and_then(|owner| owner.invocation_cancellation()),
+                    cancellation,
                 )
                 .await?
                 .is_none()
@@ -134,7 +138,7 @@ impl Executor {
                             .task_id(),
                         owner,
                     ),
-                    owner.and_then(|owner| owner.invocation_cancellation()),
+                    cancellation,
                 )
                 .await?;
                 match result {
@@ -166,7 +170,7 @@ impl Executor {
                 }
                 if cancellable(
                     files::follow(files.as_ref(), &reference, limits, !reconcile, true),
-                    owner.and_then(|owner| owner.invocation_cancellation()),
+                    cancellation,
                 )
                 .await?
                 .is_none()
