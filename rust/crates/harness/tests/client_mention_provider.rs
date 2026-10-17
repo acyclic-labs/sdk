@@ -11,7 +11,7 @@ use acyclic_harness::{
 };
 use acyclic_harness_providers::{
     Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
-    ModelSpec, ProviderSpec, Registry,
+    ModelSpec, ProviderSpec, Registry, TokenCounterSpec, TokenCountField,
 };
 use acyclic_stream::BoxProviderFuture;
 use futures::TryStreamExt as _;
@@ -120,7 +120,10 @@ async fn scenario(
                     },
                 },
             )]),
-            token_counter: None,
+            token_counter: Some(TokenCounterSpec {
+                path: "count_tokens".into(), adapter: Adapter::Responses,
+                response_field: TokenCountField::InputTokens, framing_tokens: 0,
+            }),
             max_event_bytes: 4096,
         },
     )?;
