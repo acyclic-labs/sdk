@@ -27,10 +27,8 @@ pub async fn run(
     let reader = local.client_reader()?;
     let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
     let mut tty = Tty::open()?;
-    let synchronized = tty
-        .negotiate(&Environment::capture())?
-        .mode(2026)
-        .supported();
+    // Synchronized output follows the probed modes in the session journal.
+    tty.negotiate(&Environment::capture())?;
     tty.setup(if inline {
         ScreenMode::Inline
     } else {
@@ -38,7 +36,7 @@ pub async fn run(
     })?;
     let (tty, output) = tty.split();
     let terminal_size = || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
-    let mut terminal = FrameTerminal::new(output, terminal_size()?, synchronized)?;
+    let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();

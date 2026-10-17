@@ -101,7 +101,9 @@ pub(crate) fn restore<W: Write>(
     terminate: bool,
     os_restore: impl FnOnce(&mut W) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut state = state.lock().map_err(|_| io::ErrorKind::Other)?;
+    // A panic while writing poisons the lock, but the journal is written
+    // before every terminal byte, so it is exact at any unwinding point.
+    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     state.closed |= terminate;
     state.active = false;
     if state.restored {
@@ -127,6 +129,29 @@ pub(crate) fn resume<W: Write>(
         state.restored = false;
     }
     Ok(())
+}
+
+#[cfg(all(test, not(acyclic_harness_tui_loom)))]
+mod poison_tests {
+    use super::*;
+
+    #[test]
+    fn restoration_survives_a_panic_while_writing() {
+        let state = Mutex::new(State::new(Vec::<u8>::new()));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            active(&state, |guard| -> io::Result<()> {
+                // Journaled before the first byte, as every frame is.
+                guard.begin_frame(true);
+                panic!("injected writer panic");
+            })
+        }));
+        assert!(panicked.is_err());
+        // Negative control: the previous `lock().map_err(..)?` refused this state.
+        assert!(state.lock().is_err(), "the state lock is poisoned");
+        assert!(restore(&state, true, |_| Ok(())).is_ok());
+        let mut state = state.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(state.guard.writer().as_slice(), b"[?25h");
+    }
 }
 
 #[cfg(all(test, acyclic_harness_tui_loom))]

@@ -33,6 +33,11 @@ impl Write for Output {
         lifecycle::active(&self.state, |guard| guard.writer().flush())
     }
 }
+impl super::Present for Output {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.present(frame, cursor_hidden))
+    }
+}
 impl Drop for Output {
     fn drop(&mut self) {
         let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);

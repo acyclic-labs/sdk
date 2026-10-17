@@ -16,7 +16,7 @@ use acyclic_harness::{
             buffer::Cell,
             layout::{Position, Size},
         },
-        term::FrameTerminal,
+        term::{Capabilities, FrameTerminal, RestoreGuard},
     },
     wire,
 };
@@ -119,7 +119,7 @@ pub(super) struct Rig {
 }
 
 enum Output {
-    Frame(FrameTerminal<Counter>),
+    Frame(FrameTerminal<RestoreGuard<Counter>>),
     PerCommand(Terminal<PerCommand>),
 }
 
@@ -204,7 +204,11 @@ impl Rig {
                 )
             } else {
                 Output::Frame(
-                    FrameTerminal::new(output.clone(), Size::new(width, height), false).unwrap(),
+                    FrameTerminal::new(
+                        RestoreGuard::new(output.clone(), &Capabilities::default()),
+                        Size::new(width, height),
+                    )
+                    .unwrap(),
                 )
             },
             size: Size::new(width, height),

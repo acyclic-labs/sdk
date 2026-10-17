@@ -13,7 +13,7 @@ use acyclic_harness_tui::ratatui::{
     text::Line,
     widgets::Paragraph,
 };
-use acyclic_harness_tui::term::FrameTerminal;
+use acyclic_harness_tui::term::{Capabilities, FrameTerminal, ModeState, Present, RestoreGuard};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line as Row, Point};
@@ -71,10 +71,19 @@ fn per_command(scenes: &[Scene]) -> Vec<Vec<Vec<u8>>> {
         .collect()
 }
 
+/// Probed capabilities with synchronized output (DECSET 2026) known or not.
+fn caps(synchronized: bool) -> Capabilities {
+    let mut caps = Capabilities::default();
+    if synchronized {
+        caps.modes.insert(2026, ModeState::Reset);
+    }
+    caps
+}
+
 fn per_frame(scenes: &[Scene], synchronized: bool) -> Vec<Vec<Vec<u8>>> {
     let device = Device::default();
-    let mut terminal =
-        FrameTerminal::new(device.clone(), Size::new(WIDTH, HEIGHT), synchronized).unwrap();
+    let guard = RestoreGuard::new(device.clone(), &caps(synchronized));
+    let mut terminal = FrameTerminal::new(guard, Size::new(WIDTH, HEIGHT)).unwrap();
     scenes
         .iter()
         .map(|scene| {
@@ -176,7 +185,9 @@ fn steady_frames_allocate_exactly_as_the_per_command_path() {
         },
     )
     .unwrap();
-    let mut new = FrameTerminal::new(io::sink(), Size::new(WIDTH, HEIGHT), true).unwrap();
+    let mut new =
+        FrameTerminal::new(RestoreGuard::new(io::sink(), &caps(true)), Size::new(WIDTH, HEIGHT))
+            .unwrap();
     // Warm the retained frame buffer with a full repaint.
     old.draw(|frame| paint(frame, &scene(0))).unwrap();
     new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(0))).unwrap();
@@ -194,7 +205,8 @@ fn steady_frames_allocate_exactly_as_the_per_command_path() {
 #[test]
 fn resize_repaints_in_one_write() {
     let device = Device::default();
-    let mut terminal = FrameTerminal::new(device.clone(), Size::new(WIDTH, HEIGHT), true).unwrap();
+    let guard = RestoreGuard::new(device.clone(), &caps(true));
+    let mut terminal = FrameTerminal::new(guard, Size::new(WIDTH, HEIGHT)).unwrap();
     let scene: Scene = (vec!["before".into()], None);
     terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene)).unwrap();
     device.take();
@@ -214,7 +226,8 @@ fn negative_control_per_command_writes_are_detected() {
     assert_one_write_per_frame(&per_command(&scenes));
 }
 
-/// Device write calls reaching the real terminal output half.
+/// Device calls reaching the real terminal output half: writes for the old
+/// path, presented frames for the new one.
 struct Calls<W>(W, Rc<std::cell::Cell<u64>>, Rc<std::cell::Cell<u64>>);
 impl<W: Write> Write for Calls<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -225,6 +238,13 @@ impl<W: Write> Write for Calls<W> {
     }
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
+    }
+}
+impl<W: Present> Present for Calls<W> {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        self.1.set(self.1.get() + 1);
+        self.2.set(self.2.get() + frame.len() as u64);
+        self.0.present(frame, cursor_hidden)
     }
 }
 
@@ -299,7 +319,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
                     terminal.draw(scrolled(offset * usize::from(size.height)))?;
                 }
             } else {
-                let mut terminal = FrameTerminal::new(device, size, true)?;
+                let mut terminal = FrameTerminal::new(device, size)?;
                 for offset in 0..FRAMES {
                     terminal.draw(size, scrolled(offset * usize::from(size.height)))?;
                 }
@@ -321,4 +341,30 @@ fn real_terminal_frame_cost() -> io::Result<()> {
         eprintln!("{line}");
     }
     Ok(())
+}
+
+/// A frame far beyond any realistic screen (16 MiB) reaches the real console:
+/// bounded calls each finish within their own deadline. One unbounded call
+/// of 4 MiB measured 110 ms against the 100 ms deadline and timed out.
+#[cfg(windows)]
+#[test]
+#[ignore = "needs an attached console: run with --ignored"]
+fn very_large_frames_reach_the_real_console() -> io::Result<()> {
+    let (mut output, _guard) = real_terminal()?;
+    for mib in [1usize, 4, 16] {
+        let mut frame = Vec::new();
+        let mut row = 0u32;
+        while frame.len() < mib * 1024 * 1024 {
+            frame.extend_from_slice(format!("[{};1H", row % 40 + 1).as_bytes());
+            for cell in 0..100u32 {
+                let glyph = char::from(b'a' + (cell % 26) as u8);
+                frame.extend_from_slice(format!("[38;2;{cell};{};90m{glyph}", row % 256).as_bytes());
+            }
+            row += 1;
+        }
+        let start = std::time::Instant::now();
+        output.present(&mut frame, false)?;
+        eprintln!("windows {mib} MiB frame: {:.1} ms", start.elapsed().as_secs_f64() * 1e3);
+    }
+    output.write_all(b"[0m[2J")
 }

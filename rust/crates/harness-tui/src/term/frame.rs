@@ -7,23 +7,81 @@ use ratatui::{
     layout::{Position, Size},
 };
 
-const BEGIN_SYNCHRONIZED: &[u8] = b"\x1b[?2026h";
-const END_SYNCHRONIZED: &[u8] = b"\x1b[?2026l";
-
-/// Frame bytes retained until the terminal commits a completed frame.
-/// Backend flushes inside one draw are deferred, so the device receives one
-/// write per frame (bounded per call only by the device writer itself).
-struct FrameOutput<W: Write> {
-    device: W,
-    frame: Vec<u8>,
-    synchronized: bool,
+/// A terminal device that presents whole frames under its restoration
+/// journal (see `RestoreGuard`): the session's `Output`, or a guard itself.
+pub trait Present {
+    /// Present one frame. `cursor_hidden` is the cursor's visibility after it.
+    /// The buffer's contents are consumed. On error, a begun synchronized
+    /// update has been closed or remains journaled for restoration.
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()>;
 }
 
-impl<W: Write> Write for FrameOutput<W> {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.frame.is_empty() && self.synchronized && !bytes.is_empty() {
-            self.frame.extend_from_slice(BEGIN_SYNCHRONIZED);
+impl<P: Present + ?Sized> Present for &mut P {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        (**self).present(frame, cursor_hidden)
+    }
+}
+
+/// One device call of a frame presented in bounded parts.
+#[cfg(any(windows, test))]
+pub(crate) struct Part {
+    bytes: Vec<u8>,
+    first: bool,
+    last: bool,
+}
+
+/// Split a frame into calls of at most `chunk` bytes, for devices whose
+/// calls each run under their own deadline (the Windows console owner).
+#[cfg(any(windows, test))]
+pub(crate) fn present_parts(
+    frame: &[u8],
+    chunk: usize,
+    mut call: impl FnMut(Part) -> io::Result<()>,
+) -> io::Result<()> {
+    let count = frame.len().div_ceil(chunk);
+    for (index, bytes) in frame.chunks(chunk).enumerate() {
+        call(Part {
+            bytes: bytes.to_vec(),
+            first: index == 0,
+            last: index + 1 == count,
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+impl Part {
+    /// Write this part under the guard's journal: the first part journals the
+    /// frame and opens its update, the last closes it.
+    pub(crate) fn apply<W: Write>(
+        mut self,
+        guard: &mut super::RestoreGuard<W>,
+        cursor_hidden: bool,
+    ) -> io::Result<()> {
+        let synchronized = if self.first {
+            guard.begin_frame(cursor_hidden)
+        } else {
+            guard.frame_open()
+        };
+        guard.write_frame(&mut self.bytes, self.first && synchronized, self.last && synchronized)?;
+        if self.last {
+            guard.end_frame(cursor_hidden);
         }
+        Ok(())
+    }
+}
+
+/// Frame bytes retained until the terminal commits a completed frame.
+/// Backend flushes inside one draw are deferred, so the device receives the
+/// frame at once instead of one write per queued command.
+struct FrameOutput<D: Present> {
+    device: D,
+    frame: Vec<u8>,
+    cursor_hidden: bool,
+}
+
+impl<D: Present> Write for FrameOutput<D> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.frame.extend_from_slice(bytes);
         Ok(bytes.len())
     }
@@ -33,36 +91,37 @@ impl<W: Write> Write for FrameOutput<W> {
     }
 }
 
-impl<W: Write> FrameOutput<W> {
+impl<D: Present> FrameOutput<D> {
     fn commit(&mut self) -> io::Result<()> {
         if self.frame.is_empty() {
             return Ok(());
         }
-        if self.synchronized {
-            self.frame.extend_from_slice(END_SYNCHRONIZED);
-        }
-        // Keep the capacity: steady-state frames allocate nothing here.
-        let written = self.device.write_all(&self.frame);
-        self.frame.clear();
-        written.and_then(|()| self.device.flush())
+        // Taken, so a device that unwinds cannot leave a half-presented frame
+        // to be presented again; returned with its capacity, so steady-state
+        // frames allocate nothing here.
+        let mut frame = std::mem::take(&mut self.frame);
+        let presented = self.device.present(&mut frame, self.cursor_hidden);
+        frame.clear();
+        self.frame = frame;
+        presented
     }
 }
 
 /// Crossterm encoding over a deferred frame, with the terminal size supplied
 /// by the caller's one query per frame instead of re-queried by every draw.
-struct FrameBackend<W: Write> {
-    output: FrameOutput<W>,
+struct FrameBackend<D: Present> {
+    output: FrameOutput<D>,
     size: Size,
 }
 
-impl<W: Write> FrameBackend<W> {
+impl<D: Present> FrameBackend<D> {
     // Encoding is stateless; borrowing the frame keeps ownership here.
-    fn crossterm(&mut self) -> CrosstermBackend<&mut FrameOutput<W>> {
+    fn crossterm(&mut self) -> CrosstermBackend<&mut FrameOutput<D>> {
         CrosstermBackend::new(&mut self.output)
     }
 }
 
-impl<W: Write> Backend for FrameBackend<W> {
+impl<D: Present> Backend for FrameBackend<D> {
     type Error = io::Error;
     fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
         self.crossterm().draw(content)
@@ -71,9 +130,11 @@ impl<W: Write> Backend for FrameBackend<W> {
         self.crossterm().append_lines(lines)
     }
     fn hide_cursor(&mut self) -> io::Result<()> {
+        self.output.cursor_hidden = true;
         self.crossterm().hide_cursor()
     }
     fn show_cursor(&mut self) -> io::Result<()> {
+        self.output.cursor_hidden = false;
         self.crossterm().show_cursor()
     }
     fn get_cursor_position(&mut self) -> io::Result<Position> {
@@ -102,30 +163,39 @@ impl<W: Write> Backend for FrameBackend<W> {
     }
 }
 
-/// The only full-screen presentation path: each draw reaches the device as
-/// one write, wrapped in synchronized output (DECSET 2026) when the probed
-/// terminal supports it. A frame with an unchanged buffer and cursor still
-/// commits only its cursor placement.
-pub struct FrameTerminal<W: Write> {
-    terminal: Terminal<FrameBackend<W>>,
+// Dropping the terminal queues ratatui's cursor restoration (shown again)
+// into the frame; teardown presents it before releasing the device. If the
+// device is already closed, its journal has restored the cursor.
+impl<D: Present> Drop for FrameBackend<D> {
+    fn drop(&mut self) {
+        let _ = self.output.commit();
+    }
 }
 
-impl<W: Write> FrameTerminal<W> {
-    /// `synchronized` comes from `Capabilities::mode(2026).supported()`.
-    pub fn new(device: W, size: Size, synchronized: bool) -> io::Result<Self> {
+/// The only full-screen presentation path: each draw reaches the device as
+/// one presented frame, wrapped in synchronized output (DECSET 2026) by the
+/// device when the probed terminal supports it. A frame with an unchanged
+/// buffer and cursor still commits only its cursor placement.
+pub struct FrameTerminal<D: Present> {
+    terminal: Terminal<FrameBackend<D>>,
+}
+
+impl<D: Present> FrameTerminal<D> {
+    /// Present frames of `size` to `device`.
+    pub fn new(device: D, size: Size) -> io::Result<Self> {
         Ok(Self {
             terminal: Terminal::new(FrameBackend {
                 output: FrameOutput {
                     device,
                     frame: Vec::new(),
-                    synchronized,
+                    cursor_hidden: false,
                 },
                 size,
             })?,
         })
     }
 
-    /// Render at the current terminal size and commit the frame in one write.
+    /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
         self.terminal.backend_mut().size = size;
@@ -134,3 +204,7 @@ impl<W: Write> FrameTerminal<W> {
         drawn.and(committed)
     }
 }
+
+#[cfg(test)]
+#[path = "frame_tests.rs"]
+mod tests;
