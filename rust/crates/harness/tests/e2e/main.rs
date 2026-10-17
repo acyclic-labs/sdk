@@ -23,6 +23,7 @@ mod provider_case;
 mod provider_http;
 mod provider_tests;
 mod providers;
+mod remote_swarm;
 mod resume;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
