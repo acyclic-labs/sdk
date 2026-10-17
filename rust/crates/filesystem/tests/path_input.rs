@@ -17,21 +17,82 @@ const FOLDS: &[(&str, &str)] = &[
     ("Ꭰꭰ", "ᎠᎠ"),
 ];
 
-pub fn check(data: &[u8]) {
-    check_with_lowercase_fold(data, false);
+#[derive(Debug)]
+pub struct Seen {
+    site: &'static str,
+    equal: bool,
 }
 
-pub fn check_with_lowercase_fold(data: &[u8], broken: bool) {
+fn judge(event: &Seen, site: &str) -> Result<(), String> {
+    if event.site != site || event.equal {
+        Ok(())
+    } else {
+        Err(site.into())
+    }
+}
+type Invariant = (&'static str, fn(&Seen) -> Result<(), String>);
+pub const INVARIANTS: [Invariant; 5] = [
+    ("portable", |event| judge(event, "portable")),
+    ("utf8-fold", |event| judge(event, "utf8-fold")),
+    ("full-fold", |event| judge(event, "full-fold")),
+    ("posix", |event| judge(event, "posix")),
+    ("utf16", |event| judge(event, "utf16")),
+];
+pub type Parse = fn(&str, VolumeLimits) -> Result<PortablePath, acyclic_fs::path::PathError>;
+pub type New = fn(NameEncoding, Vec<u8>, u32) -> Result<LogicalName, TreePageError>;
+pub type Fold = fn(&LogicalName) -> Vec<u8>;
+
+fn record<E>(
+    see: &mut impl FnMut(Seen) -> Result<(), E>,
+    site: &'static str,
+    equal: bool,
+) -> Result<(), E> {
+    see(Seen { site, equal })
+}
+
+pub fn check(data: &[u8]) {
+    observe(
+        data,
+        PortablePath::parse,
+        LogicalName::new,
+        LogicalName::case_fold_key,
+        &mut |event| {
+            for (name, invariant) in INVARIANTS {
+                if let Err(detail) = invariant(&event) {
+                    panic!("{name}: {detail}");
+                }
+            }
+            Ok::<_, std::convert::Infallible>(())
+        },
+    )
+    .unwrap_or_else(|never| match never {});
+}
+
+pub fn observe<E>(
+    data: &[u8],
+    parse: Parse,
+    new: New,
+    fold: Fold,
+    see: &mut impl FnMut(Seen) -> Result<(), E>,
+) -> Result<(), E> {
     let limits = VolumeLimits::default();
     if let Ok(text) = std::str::from_utf8(data)
-        && let Ok(path) = PortablePath::parse(text, limits)
+        && let Ok(path) = parse(text, limits)
     {
-        assert_eq!(path.as_str(), text, "parsing silently normalized a path");
-        assert_eq!(PortablePath::parse(path.as_str(), limits).unwrap(), path);
-        assert!(path.is_within(&path));
-        assert!(path.is_within(&PortablePath::parse("/", limits).unwrap()));
+        record(see, "portable", path.as_str() == text)?;
+        record(
+            see,
+            "portable",
+            parse(path.as_str(), limits).is_ok_and(|other| other == path),
+        )?;
+        record(see, "portable", path.is_within(&path))?;
+        record(
+            see,
+            "portable",
+            path.is_within(&parse("/", limits).unwrap()),
+        )?;
     }
-    native_names(data, LogicalName::new);
+    native_names(data, new, see)?;
     if let Ok(text) = std::str::from_utf8(data) {
         for component in text.split('/') {
             let Ok(name) = LogicalName::new(
@@ -47,19 +108,18 @@ pub fn check_with_lowercase_fold(data: &[u8], broken: bool) {
                 limits.maximum_component_bytes,
             )
             .unwrap();
-            let key = name.case_fold_key();
-            assert_eq!(key, alias.case_fold_key());
+            let key = fold(&name);
+            record(see, "utf8-fold", key == fold(&alias))?;
             if let Ok(folded) = LogicalName::new(
                 NameEncoding::Utf8,
                 key.clone(),
                 limits.maximum_component_bytes,
             ) {
-                assert_eq!(folded.case_fold_key(), key);
+                record(see, "utf8-fold", fold(&folded) == key)?;
             }
         }
     }
-    // Known full-fold mappings compose without locale or surrounding context.
-    // This catches lowercase-only folding, final-sigma rules and lost expansions.
+    // Independent full-fold mappings compose without locale/context.
     let parts: Vec<_> = data
         .iter()
         .take(16)
@@ -75,26 +135,14 @@ pub fn check_with_lowercase_fold(data: &[u8], broken: bool) {
         limits.maximum_component_bytes,
     )
     .unwrap();
-    let folded_key = if broken {
-        std::str::from_utf8(name.as_bytes())
-            .unwrap()
-            .to_lowercase()
-            .into_bytes()
-    } else {
-        name.case_fold_key()
-    };
-    assert_eq!(
-        folded_key,
-        expected.as_bytes(),
-        "full Unicode case fold was lost"
-    );
+    record(see, "full-fold", fold(&name) == expected.as_bytes())?;
     let folded = LogicalName::new(
         NameEncoding::Utf8,
         expected.into_bytes(),
         limits.maximum_component_bytes,
     )
     .unwrap();
-    assert_eq!(folded.case_fold_key(), folded.as_bytes());
+    record(see, "full-fold", fold(&folded) == folded.as_bytes())?;
     let path = format!(
         "/{}",
         parts
@@ -103,37 +151,30 @@ pub fn check_with_lowercase_fold(data: &[u8], broken: bool) {
             .collect::<Vec<_>>()
             .join("/")
     );
-    let canonical = PortablePath::parse(&path, limits).unwrap();
-    assert_eq!(canonical.depth(), parts.len());
+    let canonical = parse(&path, limits).unwrap();
+    record(see, "portable", canonical.depth() == parts.len())?;
     for suffix in ["/", "//leaf", "/.", "/..", "/\0"] {
-        assert!(PortablePath::parse(&format!("{path}{suffix}"), limits).is_err());
+        record(
+            see,
+            "portable",
+            parse(&format!("{path}{suffix}"), limits).is_err(),
+        )?;
     }
-    let child = PortablePath::parse(&format!("{path}/child"), limits).unwrap();
-    let sibling = PortablePath::parse(&format!("{path}-sibling"), limits).unwrap();
-    assert!(child.is_within(&canonical));
-    assert!(!sibling.is_within(&canonical));
-    assert!(!canonical.is_within(&child));
+    let child = parse(&format!("{path}/child"), limits).unwrap();
+    let sibling = parse(&format!("{path}-sibling"), limits).unwrap();
+    record(see, "portable", child.is_within(&canonical))?;
+    record(see, "portable", !sibling.is_within(&canonical))?;
+    record(see, "portable", !canonical.is_within(&child))?;
+    Ok(())
 }
 
-#[cfg(test)]
-pub fn check_with_rejected_native_names(data: &[u8], rejected: NameEncoding) {
-    native_names(data, |encoding, bytes, maximum| {
-        let result = LogicalName::new(encoding, bytes, maximum);
-        if encoding == rejected {
-            Err(TreePageError::InvalidName)
-        } else {
-            result
-        }
-    });
-}
-
-fn native_names(
+fn native_names<E>(
     data: &[u8],
-    new: impl Fn(NameEncoding, Vec<u8>, u32) -> Result<LogicalName, TreePageError>,
-) {
+    new: New,
+    see: &mut impl FnMut(Seen) -> Result<(), E>,
+) -> Result<(), E> {
     let maximum = VolumeLimits::default().maximum_component_bytes;
-    // Prefixes exclude dot components and force opaque, non-Unicode examples.
-    // The empty chunk ensures even an empty fuzz input requires both encodings.
+    // Prefixes force opaque non-Unicode cases. Empty input still tests both encodings.
     for chunk in data.chunks(64).chain(std::iter::once(&[][..])) {
         let posix: Vec<_> = [b'n', 0xff, b'\\']
             .into_iter()
@@ -152,25 +193,25 @@ fn native_names(
             .chain([0xd800, 0xd800])
             .flat_map(u16::to_le_bytes)
             .collect();
-        for (encoding, bytes) in [
-            (NameEncoding::PosixBytes, posix),
-            (NameEncoding::WindowsUtf16Le, windows),
+        for (encoding, bytes, site) in [
+            (NameEncoding::PosixBytes, posix, "posix"),
+            (NameEncoding::WindowsUtf16Le, windows, "utf16"),
         ] {
-            let name =
-                new(encoding, bytes.clone(), maximum).expect("valid native name was rejected");
-            assert_eq!(name.encoding(), encoding, "native encoding changed");
-            assert_eq!(name.as_bytes(), bytes, "native byte spelling changed");
-            assert_eq!(
-                name.case_fold_key(),
-                bytes,
-                "native encoding was Unicode folded"
-            );
+            let name = new(encoding, bytes.clone(), maximum);
+            record(see, site, name.is_ok())?;
+            // A deleted admission invariant must proceed past the exposing
+            // event without an unrelated unwrap becoming its detector.
+            let Ok(name) = name else { continue };
+            record(see, site, name.encoding() == encoding)?;
+            record(see, site, name.as_bytes() == bytes)?;
+            record(see, site, name.case_fold_key() == bytes)?;
             let length = u32::try_from(bytes.len()).unwrap();
-            assert_eq!(
-                new(encoding, bytes.clone(), length).expect("exact native byte bound was rejected"),
-                name
-            );
-            assert!(new(encoding, bytes.clone(), length - 1).is_err());
+            record(
+                see,
+                site,
+                new(encoding, bytes.clone(), length).is_ok_and(|other| other == name),
+            )?;
+            record(see, site, new(encoding, bytes.clone(), length - 1).is_err())?;
             for unit in [0, u16::from(b'/'), u16::from(b'\\')] {
                 if encoding == NameEncoding::PosixBytes && unit == u16::from(b'\\') {
                     continue;
@@ -181,30 +222,36 @@ fn native_names(
                 } else {
                     invalid.push(u8::try_from(unit).unwrap());
                 }
-                assert!(
-                    new(encoding, invalid, maximum).is_err(),
-                    "invalid native name was accepted"
-                );
+                record(see, site, new(encoding, invalid, maximum).is_err())?;
             }
         }
     }
     for invalid in ["", ".", ".."] {
-        assert!(
+        record(
+            see,
+            "posix",
             new(
                 NameEncoding::PosixBytes,
                 invalid.as_bytes().to_vec(),
-                maximum
+                maximum,
             )
-            .is_err()
-        );
-        assert!(
+            .is_err(),
+        )?;
+        record(
+            see,
+            "utf16",
             new(
                 NameEncoding::WindowsUtf16Le,
                 invalid.encode_utf16().flat_map(u16::to_le_bytes).collect(),
                 maximum,
             )
-            .is_err()
-        );
+            .is_err(),
+        )?;
     }
-    assert!(new(NameEncoding::WindowsUtf16Le, vec![b'n'], maximum).is_err());
+    record(
+        see,
+        "utf16",
+        new(NameEncoding::WindowsUtf16Le, vec![b'n'], maximum).is_err(),
+    )?;
+    Ok(())
 }
