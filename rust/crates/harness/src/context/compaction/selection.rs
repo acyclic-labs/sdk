@@ -153,6 +153,12 @@ pub(in crate::context) fn mandatory_flags<'a>(
             context.current_input_index.map(|index| index as usize) == Some(position)
                 || position + 1 == context.messages.len()
                 || position >= covered
+                || message.content.file_parts().any(|(_, policy)| {
+                    matches!(
+                        policy,
+                        crate::model::FileProjectionPolicy::ProjectInstructions(_)
+                    )
+                })
                 || retention.roles.contains(&message.role)
                 || (retention.native_media && message.content.contains_native_media()),
         );

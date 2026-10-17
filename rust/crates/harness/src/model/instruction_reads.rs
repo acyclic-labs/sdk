@@ -43,145 +43,193 @@ pub(crate) fn deduplicate_reads(
     messages: &mut [ModelMessage],
     io: Option<&PreparationIo>,
 ) -> Result<bool> {
-    if !messages
-        .iter()
-        .flat_map(|message| message.content.parts())
-        .any(|part| {
-            matches!(
+    let mut parts_count = 0usize;
+    let mut instructions = false;
+    for message in messages.iter() {
+        super::instruction_index::step(io, 1)?;
+        for part in message.content.parts() {
+            super::instruction_index::step(io, 1)?;
+            parts_count = parts_count
+                .checked_add(1)
+                .ok_or_else(super::inventory::overflow)?;
+            instructions |= matches!(
                 part,
                 ModelContentPart::File {
                     policy: FileProjectionPolicy::ProjectInstructions(_),
                     ..
                 }
-            )
-        })
-    {
-        return Ok(false);
-    }
-    let mut changed = false;
-    for index in 0..messages.len() {
-        let (prior, current) = messages.split_at_mut(index);
-        let parts = match &mut current[0].content {
-            ModelContent::Text(_) => continue,
-            ModelContent::Part(part) => std::slice::from_mut(part),
-            ModelContent::Parts(parts) => parts.as_mut_slice(),
-        };
-        for part in parts {
-            let ModelContentPart::ToolResult {
-                call_id,
-                name,
-                content:
-                    ToolResultContent::Json {
-                        value: Value::String(body),
-                    },
-            } = part
-            else {
-                continue;
-            };
-            let call = prior
-                .iter()
-                .flat_map(|message| message.content.parts())
-                .find_map(|part| match part {
-                    ModelContentPart::ToolCall(call)
-                        if &call.call_id == call_id && &call.name == name =>
-                    {
-                        Some(call)
-                    }
-                    _ => None,
-                });
-            let Some(call) = call else { continue };
-            let Some(arguments) = call.arguments.as_object() else {
-                continue;
-            };
-            if arguments
-                .keys()
-                .any(|key| !matches!(key.as_str(), "file" | "range"))
-            {
-                continue;
-            }
-            let Some(file) = arguments.get("file").and_then(Value::as_object) else {
-                continue;
-            };
-            if file.len() != 5
-                || ["volume", "path", "version", "descriptor", "display_name"]
-                    .iter()
-                    .any(|key| !file.contains_key(*key))
-            {
-                continue;
-            }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let work = io.and_then(PreparationIo::original_native_work);
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let work = None;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let mut _owned_hold = None;
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let owned = io.filter(|io| io.original_native_work().is_none());
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let decoded = if let Some(io) = owned {
-                let (input, hold) = owned_read_input(&call.arguments, io)?;
-                _owned_hold = Some(hold);
-                Ok((input, None))
-            } else {
-                crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work)
-            };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let decoded =
-                crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work);
-            let input = match decoded {
-                Ok(input) => input,
-                Err(Error::Invalid(_)) => continue,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Err(Error::NativeJson {
-                    code: crate::wire::ErrorCode::Invalid,
-                    ref source,
-                    ..
-                }) if source.is_data() => continue,
-                Err(error) => return Err(error),
-            };
-            if input.0.range.is_some_and(|range| {
-                range.start != 0 || range.end != input.0.file.descriptor().byte_length()
-            }) {
-                continue;
-            }
-            let source = prior
-                .iter()
-                .flat_map(|message| message.content.parts())
-                .find_map(|part| match part {
-                    ModelContentPart::File {
-                        file,
-                        policy: FileProjectionPolicy::ProjectInstructions(source),
-                    } if InstructionSource::with_identity(file, source)
-                        .same_content(&input.0.file) =>
-                    {
-                        Some(InstructionSource::with_identity(file, source))
-                    }
-                    _ => None,
-                });
-            let Some(source) = source else { continue };
-            if !with_history_io(io, |work| {
-                input
-                    .0
-                    .file
-                    .descriptor()
-                    .matches_bytes(body.as_bytes(), work)
-            })? {
-                continue;
-            }
-            *body = with_history_io(io, |work| {
-                crate::executor::preparation_format(
-                    format_args!(
-                        "Read completed; instructions already included from {} for {}.",
-                        source.filename(),
-                        source.directory()
-                    ),
-                    work,
-                )
-            })?;
-            changed = true;
+            );
         }
     }
-    Ok(changed)
+    if !instructions {
+        return Ok(false);
+    }
+    with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut index_map = super::instruction_index::Index::new(parts_count, &mut quota)?;
+        let mut changed = false;
+        for index in 0..messages.len() {
+            super::instruction_index::step(io, 1)?;
+            let (prior, current) = messages.split_at_mut(index);
+            let parts = match &mut current[0].content {
+                ModelContent::Text(_) => continue,
+                ModelContent::Part(part) => std::slice::from_mut(part),
+                ModelContent::Parts(parts) => parts.as_mut_slice(),
+            };
+            for (part_index, part) in parts.iter_mut().enumerate() {
+                super::instruction_index::step(io, 1)?;
+                match &*part {
+                    ModelContentPart::File {
+                        policy: FileProjectionPolicy::ProjectInstructions(source),
+                        ..
+                    } => {
+                        let key = super::instruction_index::source_key(
+                            source.volume(),
+                            source.path(),
+                            io,
+                        )?;
+                        index_map.set(0, key, Some((index, part_index)), io)?;
+                    }
+                    ModelContentPart::ToolCall(call) => {
+                        index_map.set(
+                            1,
+                            hash_bytes(call.call_id.as_bytes(), io)?,
+                            Some((index, part_index)),
+                            io,
+                        )?;
+                    }
+                    _ => {}
+                }
+                let ModelContentPart::ToolResult {
+                    call_id,
+                    name,
+                    content,
+                } = part
+                else {
+                    continue;
+                };
+                let key = hash_bytes(call_id.as_bytes(), io)?;
+                let paired = index_map.get(1, &key, io)?;
+                // Consume every result, including non-string/partial/non-read results.
+                index_map.set(1, key, None, io)?;
+                let Some((call_message, call_part)) = paired else {
+                    continue;
+                };
+                let Some(ModelContentPart::ToolCall(call)) = prior
+                    .get(call_message)
+                    .and_then(|message| message.content.parts().get(call_part))
+                else {
+                    continue;
+                };
+                if &call.call_id != call_id || &call.name != name {
+                    continue;
+                }
+                let ToolResultContent::Json {
+                    value: Value::String(body),
+                } = content
+                else {
+                    continue;
+                };
+                let Some(arguments) = call.arguments.as_object() else {
+                    continue;
+                };
+                if arguments
+                    .keys()
+                    .any(|key| !matches!(key.as_str(), "file" | "range"))
+                {
+                    continue;
+                }
+                let Some(file) = arguments.get("file").and_then(Value::as_object) else {
+                    continue;
+                };
+                if file.len() != 5
+                    || ["volume", "path", "version", "descriptor", "display_name"]
+                        .iter()
+                        .any(|key| !file.contains_key(*key))
+                {
+                    continue;
+                }
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let work = io.and_then(PreparationIo::original_native_work);
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let work = None;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let mut _owned_hold = None;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let owned = io.filter(|io| io.original_native_work().is_none());
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let decoded = if let Some(io) = owned {
+                    let (input, hold) = owned_read_input(&call.arguments, io)?;
+                    _owned_hold = Some(hold);
+                    Ok((input, None))
+                } else {
+                    crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work)
+                };
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let decoded =
+                    crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work);
+                let input = match decoded {
+                    Ok(input) => input,
+                    Err(Error::Invalid(_)) => continue,
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    Err(Error::NativeJson {
+                        code: crate::wire::ErrorCode::Invalid,
+                        ref source,
+                        ..
+                    }) if source.is_data() => continue,
+                    Err(error) => return Err(error),
+                };
+                if input.0.range.is_some_and(|range| {
+                    range.start != 0 || range.end != input.0.file.descriptor().byte_length()
+                }) {
+                    continue;
+                }
+                let key = super::instruction_index::source_key(
+                    input.0.file.volume(),
+                    input.0.file.path(),
+                    io,
+                )?;
+                let Some((source_message, source_part)) = index_map.get(0, &key, io)? else {
+                    continue;
+                };
+                let Some(ModelContentPart::File {
+                    file,
+                    policy: FileProjectionPolicy::ProjectInstructions(identity),
+                }) = prior
+                    .get(source_message)
+                    .and_then(|message| message.content.parts().get(source_part))
+                else {
+                    continue;
+                };
+                let source = InstructionSource::with_identity(file, identity);
+                if !source.same_content(&input.0.file) {
+                    continue;
+                }
+                if !with_history_io(io, |work| {
+                    input
+                        .0
+                        .file
+                        .descriptor()
+                        .matches_bytes(body.as_bytes(), work)
+                })? {
+                    continue;
+                }
+                *body = with_history_io(io, |work| {
+                    crate::executor::preparation_format(
+                        format_args!(
+                            "Read completed; instructions already included from {} for {}.",
+                            source.filename(),
+                            source.directory()
+                        ),
+                        work,
+                    )
+                })?;
+                changed = true;
+            }
+        }
+        drop(index_map);
+        Ok(changed)
+    })
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]

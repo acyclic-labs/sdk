@@ -3,6 +3,7 @@
 mod call_id;
 mod content;
 mod instruction_identity;
+mod instruction_index;
 mod instruction_reads;
 mod instructions;
 pub use instruction_identity::{InstructionIdentity, ProjectInstruction};
@@ -22,6 +23,8 @@ mod usage;
 pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod instruction_tests;
+#[cfg(test)]
+mod instruction_review_tests;
 #[cfg(test)]
 mod tests;
 mod tool_call;

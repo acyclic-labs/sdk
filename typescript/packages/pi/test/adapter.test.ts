@@ -147,3 +147,29 @@ test("Pi accounting rejects absent capacity and counts without guessing", async 
   expect(() => provider.contextCapacity(request.model)).toThrow();
   await expect((await provider.prepare({ ...request, serializedInput: new Uint8Array() })).countTokens()).rejects.toThrow();
 });
+
+test("Pi preflights combined instruction frames including tool results before any read", async () => {
+  const bytes = new TextEncoder().encode("rules");
+  const file = await attachment("archive/rules", bytes, "text/markdown");
+  const instruction = { kind: "file" as const, file, policy: { project_instructions: { volume: file.volume, path: "nested/AGENTS.md" } } };
+  const first: ModelRequest = { ...request, messages: [{ role: "user", content: instruction }] };
+  const rendered = await projectPiRequest(first, { resolveFile: async () => bytes });
+  const text = rendered.messages[0]!.content[0]!;
+  if (text.type !== "text") throw new Error("expected frame");
+  const length = new TextEncoder().encode(text.text).length;
+  for (const inResult of [false, true]) {
+    const input: ModelRequest = { ...first, messages: [...first.messages, inResult ? {
+      role: "tool", content: { kind: "tool_result", callId: "call", name: "read", content: { kind: "parts", parts: [instruction] } },
+    } : { role: "user", content: instruction }] };
+    let reads = 0;
+    const resolveFile = async () => { reads++; return bytes; };
+    await expect(projectPiRequest(input, { resolveFile, maxResolvedBytes: 2 * length - 1 })).rejects.toThrow();
+    expect(reads).toBe(0);
+    await projectPiRequest(input, { resolveFile, maxResolvedBytes: 2 * length });
+    expect(reads).toBe(2);
+    // The former per-file-only path accepts the same overflowing aggregate.
+    await projectPiRequest(first, { resolveFile, maxResolvedBytes: 2 * length - 1 });
+    await projectPiRequest(first, { resolveFile, maxResolvedBytes: 2 * length - 1 });
+    expect(reads).toBe(4);
+  }
+});

@@ -73,6 +73,21 @@ export function verifiedContentResolver(
   };
 }
 
+export { HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES } from "./limits-contract.js";
+
+/** Exact body/frame allowance required before a model adapter reads any file. */
+export async function modelFileProjectionBytes(part: Extract<ModelContentPart, { kind: "file" }>): Promise<number> {
+  const contracts = await NativeContracts.create();
+  const file = contracts.validate("file_ref", part.file);
+  if (part.policy === "reference") return 0;
+  if (!file.descriptor.media_type.startsWith("text/")) throw new TypeError("unsupported file content for selected projection policy");
+  if (part.policy === "bounded_full") return file.descriptor.byte_length;
+  if (typeof part.policy === "object" && "project_instructions" in part.policy) {
+    return contracts.instructionFrameBytes(file, part.policy.project_instructions);
+  }
+  throw new TypeError("unsupported file projection policy");
+}
+
 /** Shared fail-closed file boundary for default model adapters. */
 export async function projectModelFile(
   part: Extract<ModelContentPart, { kind: "file" }>, options: FileProjectionOptions,
