@@ -591,7 +591,7 @@ impl MountDestinationGuard {
 }
 
 pub(super) fn lock_mount_file_with_work<W: crate::native_host::NativeHostWork>(
-    file: &File,
+    file: &MountLockFile,
     blocking: bool,
     work: &mut W,
 ) -> Result<(), NativeMountError>

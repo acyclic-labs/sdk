@@ -1,4 +1,4 @@
-use crate::sync::native::{Condvar, Mutex};
+use crate::sync::native::{Arc, Condvar, Mutex};
 use rustix::fs::{AtFlags, Statx};
 use std::collections::HashMap;
 use std::fs::File;
@@ -11,7 +11,7 @@ use std::os::unix::process::ExitStatusExt;
 // locks never nest or call an owner/ledger. Fixture metadata is immutable before
 // actors start; it is not a synchronization dependency between syscalls.
 loom::lazy_static! {
-    static ref CONTEXT: Kernel = Kernel::new();
+    static ref CONTEXT: Arc<Kernel> = Arc::new(Kernel::new());
 }
 
 pub(in crate::native_mount) struct Kernel {
@@ -35,8 +35,8 @@ struct State {
     mount_before_exit: usize,
 }
 
-pub(in crate::native_mount) fn current() -> Option<&'static Kernel> {
-    Some(&CONTEXT)
+pub(in crate::native_mount) fn current() -> Option<Arc<Kernel>> {
+    Some(Arc::clone(&CONTEXT))
 }
 
 impl Kernel {
@@ -61,8 +61,8 @@ impl Kernel {
         base: Statx,
         helper_stat: rustix::fs::Stat,
         early_release: bool,
-    ) -> &'static Self {
-        let kernel = &*CONTEXT;
+    ) -> Arc<Self> {
+        let kernel = current().unwrap();
         assert!(
             kernel
                 .fixture
@@ -199,7 +199,7 @@ impl Kernel {
 // An OS-process handle at the existing closed-process syscall boundary. The
 // production FuseRecoveryControl still owns spawn, wait, terminate and custody.
 pub(in crate::native_mount) struct Helper {
-    kernel: Option<&'static Kernel>,
+    kernel: Option<Arc<Kernel>>,
     real: Option<acyclic_native_runtime::ProcessTree>,
     exited: bool,
     unmounted: bool,
@@ -243,7 +243,7 @@ impl Helper {
         // makes the real wait loop retain custody across that interval.
         loom::thread::yield_now();
         if !self.unmounted {
-            let mut state = self.kernel.unwrap().state.lock().unwrap();
+            let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
             if state.mount == Some(1) {
                 state.live_detaches += 1;
             }
@@ -251,7 +251,13 @@ impl Helper {
             self.unmounted = true;
             return Ok(None);
         }
-        self.kernel.unwrap().state.lock().unwrap().helper_running = false;
+        self.kernel
+            .as_ref()
+            .unwrap()
+            .state
+            .lock()
+            .unwrap()
+            .helper_running = false;
         self.exited = true;
         Ok(Some(std::process::ExitStatus::from_raw(0)))
     }

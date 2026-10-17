@@ -25,7 +25,7 @@ fn scenario(
 ) {
     let kernel = kernel::Kernel::install(base, helper_stat, broken);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
-    let peer_kernel = kernel;
+    let peer_kernel = kernel.clone();
     let peer_destination = destination.to_path_buf();
     let peer = loom::thread::spawn(move || {
         peer_kernel.wait_for_recovery_fence();
@@ -49,7 +49,7 @@ fn scenario(
 fn remount_first(destination: &Path, base: rustix::fs::Statx, helper_stat: rustix::fs::Stat) {
     let kernel = kernel::Kernel::install(base, helper_stat, false);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
-    let mounted = remount(destination, kernel).unwrap();
+    let mounted = remount(destination, &kernel).unwrap();
     assert!(matches!(
         recover(&pinned),
         Err(NativeMountError::DestinationBusy)
