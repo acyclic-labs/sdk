@@ -234,6 +234,18 @@ mod tests {
                 else {
                     unreachable!()
                 };
+                if let Some(ModelMessage {
+                    content:
+                        ModelContent::Part(ModelContentPart::ToolResult {
+                            content: ToolResultContent::Parts { parts },
+                            ..
+                        }),
+                    ..
+                }) = messages.last_mut()
+                {
+                    parts.push(ModelDataPart::File { file, policy });
+                    continue;
+                }
                 messages.push(ModelMessage {
                     role: ModelRole::Assistant,
                     content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
