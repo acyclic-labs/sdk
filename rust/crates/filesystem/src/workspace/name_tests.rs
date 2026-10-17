@@ -162,7 +162,7 @@ fn compare(
     let [
         ((expected_output, expected_work, expected_heap), expected_trace),
         ((actual_output, actual_work, actual_heap), actual_trace),
-    ] = acyclic_test_support::differential::pair(
+    ] = acyclic_test_support::differential::pair::<_, _, (u8, u64, u64)>(
         || (),
         |(), baseline| {
             let (output, work, trace, heap) = run(
