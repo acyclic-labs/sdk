@@ -150,7 +150,7 @@ impl FileValue {
         if record.sequence == 0 {
             let header: Header =
                 serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-            if !matches!(header.schema, 2 | 3 | SCHEMA) {
+            if !matches!(header.schema, 2 | 3 | 4 | SCHEMA) {
                 return Err(Error::InvalidSegment);
             }
             Ok(None)
@@ -303,7 +303,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         }
         let header: Header =
             serde_json::from_slice(&record.value).map_err(|_| Error::InvalidSegment)?;
-        if !matches!(header.schema, 2 | 3 | SCHEMA) {
+        if !matches!(header.schema, 2 | 3 | 4 | SCHEMA) {
             return Err(Error::InvalidSegment);
         }
         let mut hasher = blake3::Hasher::new();
@@ -558,3 +558,6 @@ impl<P: StreamProvider + 'static> TaskVolume<P> {
         TaskVolume::open(provider, self.path.clone()).await
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod cursor_version_tests;

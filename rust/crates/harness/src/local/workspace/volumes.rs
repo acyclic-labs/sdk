@@ -3,6 +3,27 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+#[cfg(target_os = "linux")]
+pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
+    let relative = Path::new(SCRATCH_PATH);
+    let parent = relative
+        .parent()
+        .ok_or_else(|| Error::Invalid("scratch mount has no parent".into()))?;
+    create_mount_directory(root, parent)?;
+    let destination = root.join(relative);
+    match std::fs::metadata(&destination) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {
+            // A killed FUSE owner leaves a disconnected namespace. Reuse the
+            // platform's exclusive recovery fence before inspecting the source.
+            acyclic_fs::detach_native_mount_destination_after_crash(&destination)?;
+            Ok(())
+        }
+        Err(error) => Err(storage(error)),
+    }
+}
+
 pub(in crate::local) fn require_available(
     capabilities: acyclic_fs::NativeMountCapabilities,
 ) -> Result<()> {
