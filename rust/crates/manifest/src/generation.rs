@@ -24,7 +24,7 @@ pub fn typescript() -> Result<String, String> {
         let mut include = true;
         for line in source.lines() {
             if line.starts_with("export type ") {
-                include = seen.insert(line.to_string());
+                include = seen.insert(line.to_owned());
             }
             if include {
                 output.push_str(line);
