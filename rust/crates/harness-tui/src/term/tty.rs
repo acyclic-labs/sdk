@@ -103,15 +103,20 @@ pub(crate) fn write_until(
 
 impl NonblockingWrite for RawTty {
     fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
         self.file.write(bytes)
     }
 
     #[cfg(not(target_vendor = "apple"))]
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        super::counters::waited();
         let timeout = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
             .map_err(|_| io::ErrorKind::InvalidInput)?;
-        match poll(&mut [PollFd::new(&self.file, PollFlags::OUT)], Some(&timeout)) {
+        match poll(
+            &mut [PollFd::new(&self.file, PollFlags::OUT)],
+            Some(&timeout),
+        ) {
             Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
             Err(error) => Err(error.into()),
         }
@@ -119,6 +124,7 @@ impl NonblockingWrite for RawTty {
 
     #[cfg(target_vendor = "apple")]
     fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
+        super::counters::waited();
         if self.readiness.is_none() {
             self.readiness = Some(darwin::Readiness::register(&self.file)?);
         }
@@ -160,64 +166,65 @@ impl Write for RawTty {
 
 #[cfg(target_vendor = "apple")]
 mod darwin {
+    use acyclic_native_runtime::terminal::Writable;
     use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
-    use nix::sys::select::{FD_SETSIZE, FdSet, select};
-    use nix::sys::time::{TimeSpec, TimeVal, TimeValLike};
+    use nix::sys::time::TimeSpec;
     use std::fs::File;
     use std::io;
     use std::os::fd::{AsFd, AsRawFd};
     use std::time::Instant;
 
-    /// Writability of the terminal device. kqueue has no descriptor limit;
-    /// Darwin's kqueue rejects only the /dev/tty alias (EINVAL), whose
-    /// readiness select(2) reports when the descriptor fits an fd_set.
-    /// (Darwin's poll(2) reports POLLNVAL for terminals.)
+    /// Writability of the terminal device, for every descriptor number.
+    /// kqueue serves every terminal but the /dev/tty alias, which it rejects
+    /// with EINVAL; that alias waits in select(2) through its unlimited entry
+    /// point, so no descriptor is left without a working wait. (Darwin's
+    /// poll(2) reports POLLNVAL for terminals.)
     pub(super) enum Readiness {
         Kqueue(Kqueue),
-        Select,
+        Select(Writable),
     }
 
     fn event(file: &File, flags: EvFlags) -> io::Result<KEvent> {
         let ident = usize::try_from(file.as_raw_fd()).map_err(|_| io::ErrorKind::InvalidInput)?;
-        Ok(KEvent::new(ident, EventFilter::EVFILT_WRITE, flags, FilterFlag::empty(), 0, 0))
+        Ok(KEvent::new(
+            ident,
+            EventFilter::EVFILT_WRITE,
+            flags,
+            FilterFlag::empty(),
+            0,
+            0,
+        ))
     }
 
     impl Readiness {
         pub(super) fn register(file: &File) -> io::Result<Self> {
             let queue = Kqueue::new()?;
             // Level-triggered: a wait returns at once while the queue has room.
-            match queue.kevent(&[event(file, EvFlags::EV_ADD)?], &mut [], Some(*TimeSpec::from_duration(std::time::Duration::ZERO).as_ref())) {
+            let zero = *TimeSpec::from_duration(std::time::Duration::ZERO).as_ref();
+            match queue.kevent(&[event(file, EvFlags::EV_ADD)?], &mut [], Some(zero)) {
                 Ok(_) => Ok(Self::Kqueue(queue)),
-                Err(nix::errno::Errno::EINVAL)
-                    if usize::try_from(file.as_raw_fd()).is_ok_and(|fd| fd < FD_SETSIZE) =>
-                {
-                    Ok(Self::Select)
-                }
+                Err(nix::errno::Errno::EINVAL) => Self::select(file),
                 Err(error) => Err(error.into()),
             }
         }
 
+        /// The /dev/tty alias's wait; also what tests force on any terminal.
+        pub(super) fn select(file: &File) -> io::Result<Self> {
+            Ok(Self::Select(Writable::new(file.as_fd())?))
+        }
+
         pub(super) fn wait(&mut self, file: &File, deadline: Instant) -> io::Result<()> {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let waited = match self {
+            match self {
                 Self::Kqueue(queue) => {
                     let mut ready = [event(file, EvFlags::empty())?];
-                    queue
-                        .kevent(&[], &mut ready, Some(*TimeSpec::from_duration(remaining).as_ref()))
-                        .map(drop)
+                    let timeout = *TimeSpec::from_duration(remaining).as_ref();
+                    match queue.kevent(&[], &mut ready, Some(timeout)) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
                 }
-                Self::Select => {
-                    let mut timeout = TimeVal::microseconds(
-                        i64::try_from(remaining.as_micros()).unwrap_or(i64::MAX),
-                    );
-                    let mut set = FdSet::new();
-                    set.insert(file.as_fd());
-                    select(None, None, &mut set, None, &mut timeout).map(drop)
-                }
-            };
-            match waited {
-                Ok(()) | Err(nix::errno::Errno::EINTR) => Ok(()),
-                Err(error) => Err(error.into()),
+                Self::Select(writable) => writable.wait(file.as_fd(), remaining),
             }
         }
     }

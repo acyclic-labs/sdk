@@ -42,7 +42,7 @@ rustix = { workspace = true, features = ["event", "fs", "termios"], optional = t
 signal-hook = { version = "0.4", optional = true }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
-nix = { version = "0.31", default-features = false, features = ["event", "poll"], optional = true }
+nix = { version = "0.31", default-features = false, features = ["event"], optional = true }
 
 [target.'cfg(acyclic_harness_tui_loom)'.dependencies]
 loom = "=0.7.2"
@@ -51,7 +51,8 @@ loom = "=0.7.2"
 rustix = { workspace = true, features = ["process"] }
 rustix-openpty = "0.2"
 
-[target.'cfg(windows)'.dependencies]
+# Native device primitives: the Windows console, and Darwin's terminal wait.
+[target.'cfg(any(windows, target_vendor = "apple"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 
 [lints]

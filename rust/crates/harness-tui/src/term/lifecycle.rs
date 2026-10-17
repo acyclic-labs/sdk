@@ -103,7 +103,9 @@ pub(crate) fn restore<W: Write>(
 ) -> io::Result<()> {
     // A panic while writing poisons the lock, but the journal is written
     // before every terminal byte, so it is exact at any unwinding point.
-    let mut state = state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut state = state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.closed |= terminate;
     state.active = false;
     if state.restored {
@@ -149,7 +151,9 @@ mod poison_tests {
         // Negative control: the previous `lock().map_err(..)?` refused this state.
         assert!(state.lock().is_err(), "the state lock is poisoned");
         assert!(restore(&state, true, |_| Ok(())).is_ok());
-        let mut state = state.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut state = state
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert_eq!(state.guard.writer().as_slice(), b"[?25h");
     }
 }

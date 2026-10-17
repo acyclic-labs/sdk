@@ -2,8 +2,7 @@ use acyclic_harness::{
     OperationId, client,
     local::LocalHarness,
     tui::{
-        self, PromptBox, PromptInput, Viewport,
-        crossterm,
+        self, PromptBox, PromptInput, Viewport, crossterm,
         ratatui::layout::Size,
         term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
@@ -35,7 +34,8 @@ pub async fn run(
         ScreenMode::Alternate
     })?;
     let (tty, output) = tty.split();
-    let terminal_size = || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
+    let terminal_size =
+        || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
     let mut input = PromptInput::default();

@@ -50,7 +50,11 @@ impl NonblockingWrite for Scripted {
 
 type Loop<D> = fn(&mut D, &[u8], Instant) -> io::Result<usize>;
 
-fn write_all<D: NonblockingWrite>(device: &mut D, mut bytes: &[u8], each: Loop<D>) -> io::Result<()> {
+fn write_all<D: NonblockingWrite>(
+    device: &mut D,
+    mut bytes: &[u8],
+    each: Loop<D>,
+) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !bytes.is_empty() {
         let count = each(device, bytes, deadline)?;
@@ -60,7 +64,11 @@ fn write_all<D: NonblockingWrite>(device: &mut D, mut bytes: &[u8], each: Loop<D
 }
 
 /// The removed loop: a fixed 1 ms sleep after EAGAIN, no readiness wait.
-fn sleeping<D: NonblockingWrite>(device: &mut D, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
+fn sleeping<D: NonblockingWrite>(
+    device: &mut D,
+    bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<usize> {
     loop {
         match device.try_write(bytes) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -148,7 +156,9 @@ const FRAME: usize = 256 * 1024;
 
 /// Write a frame far larger than the kernel PTY queue (1 KiB on macOS, 4 KiB
 /// on Linux) while the emulator side starts reading late.
-fn real_trace(user: File, controller: File, spin: bool) -> io::Result<Vec<Op>> {
+/// `select` forces Darwin's /dev/tty-alias wait (unlimited select) on any
+/// terminal; elsewhere every terminal has the one poll(2) wait.
+fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Result<Vec<Op>> {
     let drain = std::thread::spawn(move || {
         let mut controller = controller;
         std::thread::sleep(Duration::from_millis(20));
@@ -163,6 +173,12 @@ fn real_trace(user: File, controller: File, spin: bool) -> io::Result<Vec<Op>> {
         total
     });
     let mut tty = RawTty::from_file(user)?;
+    #[cfg(target_vendor = "apple")]
+    if select {
+        tty.readiness = Some(super::darwin::Readiness::select(&tty.file)?);
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    let _ = select;
     let mut traced = Traced {
         tty: &mut tty,
         trace: Vec::new(),
@@ -196,26 +212,45 @@ fn assert_waits_make_progress(trace: &[Op]) {
 
 #[test]
 fn real_pty_waits_only_until_writable() -> io::Result<()> {
-    let pty = rustix_openpty::openpty(None, None)?;
-    let trace = real_trace(File::from(pty.user), File::from(pty.controller), false)?;
-    assert_waits_make_progress(&trace);
+    for select in [false, true] {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let trace = real_trace(
+            File::from(pty.user),
+            File::from(pty.controller),
+            false,
+            select,
+        )?;
+        assert_waits_make_progress(&trace);
+    }
     Ok(())
 }
 
-/// Descriptors beyond select(2)'s FD_SETSIZE (1024) wait like any other.
+/// Descriptors beyond select(2)'s `FD_SETSIZE` (1024) wait like any other, on
+/// every wait the platform has (Darwin: kqueue and the unlimited select).
+/// Skipped, and reported, when `RLIMIT_NOFILE` cannot reach fd 1500.
 #[test]
 fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
     use rustix::process::{Resource, getrlimit, setrlimit};
+    const HIGH: u64 = 1500;
     let mut limit = getrlimit(Resource::Nofile);
-    if limit.current.is_some_and(|current| current < 2048) {
-        limit.current = Some(limit.maximum.map_or(2048, |maximum| maximum.min(2048)));
-        setrlimit(Resource::Nofile, limit)?;
+    if limit.maximum.is_some_and(|maximum| maximum <= HIGH) {
+        eprintln!("skipped: RLIMIT_NOFILE maximum {limit:?} cannot reach fd {HIGH}");
+        return Ok(());
     }
-    let pty = rustix_openpty::openpty(None, None)?;
-    let high = rustix::io::fcntl_dupfd_cloexec(&pty.user, 1500)?;
-    drop(pty.user);
-    let trace = real_trace(File::from(high), File::from(pty.controller), false)?;
-    assert_waits_make_progress(&trace);
+    if limit.current.is_some_and(|current| current <= HIGH) {
+        limit.current = Some(limit.maximum.map_or(2048, |maximum| maximum.min(2048)));
+        if let Err(error) = setrlimit(Resource::Nofile, limit) {
+            eprintln!("skipped: RLIMIT_NOFILE cannot be raised to reach fd {HIGH}: {error}");
+            return Ok(());
+        }
+    }
+    for select in [false, true] {
+        let pty = rustix_openpty::openpty(None, None)?;
+        let high = rustix::io::fcntl_dupfd_cloexec(&pty.user, 1500)?;
+        drop(pty.user);
+        let trace = real_trace(File::from(high), File::from(pty.controller), false, select)?;
+        assert_waits_make_progress(&trace);
+    }
     Ok(())
 }
 
@@ -223,7 +258,12 @@ fn high_descriptors_wait_only_until_writable() -> io::Result<()> {
 #[should_panic(expected = "without room")]
 fn negative_control_spinning_wait_is_detected() {
     let pty = rustix_openpty::openpty(None, None).unwrap_or_else(|error| panic!("{error}"));
-    let trace = real_trace(File::from(pty.user), File::from(pty.controller), true)
-        .unwrap_or_else(|error| panic!("{error}"));
+    let trace = real_trace(
+        File::from(pty.user),
+        File::from(pty.controller),
+        true,
+        false,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     assert_waits_make_progress(&trace);
 }

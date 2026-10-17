@@ -13,7 +13,9 @@ use acyclic_harness_tui::ratatui::{
     text::Line,
     widgets::Paragraph,
 };
-use acyclic_harness_tui::term::{Capabilities, FrameTerminal, ModeState, Present, RestoreGuard};
+use acyclic_harness_tui::term::{
+    Capabilities, FrameTerminal, ModeState, Present, RestoreGuard, device_io,
+};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line as Row, Point};
@@ -98,7 +100,11 @@ fn per_frame(scenes: &[Scene], synchronized: bool) -> Vec<Vec<Vec<u8>>> {
 /// Exact property every frame must satisfy: at most one device write.
 fn assert_one_write_per_frame(frames: &[Vec<Vec<u8>>]) {
     for (index, writes) in frames.iter().enumerate() {
-        assert!(writes.len() <= 1, "frame {index} reached the device {} times", writes.len());
+        assert!(
+            writes.len() <= 1,
+            "frame {index} reached the device {} times",
+            writes.len()
+        );
     }
 }
 
@@ -176,7 +182,12 @@ proptest! {
 #[test]
 fn steady_frames_allocate_exactly_as_the_per_command_path() {
     let scene = |n: usize| -> Scene {
-        ((0..HEIGHT).map(|row| format!("row {row} frame {n}")).collect(), Some((1, 1)))
+        (
+            (0..HEIGHT)
+                .map(|row| format!("row {row} frame {n}"))
+                .collect(),
+            Some((1, 1)),
+        )
     };
     let mut old = Terminal::with_options(
         CrosstermBackend::new(io::sink()),
@@ -185,18 +196,22 @@ fn steady_frames_allocate_exactly_as_the_per_command_path() {
         },
     )
     .unwrap();
-    let mut new =
-        FrameTerminal::new(RestoreGuard::new(io::sink(), &caps(true)), Size::new(WIDTH, HEIGHT))
-            .unwrap();
+    let mut new = FrameTerminal::new(
+        RestoreGuard::new(io::sink(), &caps(true)),
+        Size::new(WIDTH, HEIGHT),
+    )
+    .unwrap();
     // Warm the retained frame buffer with a full repaint.
     old.draw(|frame| paint(frame, &scene(0))).unwrap();
-    new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(0))).unwrap();
+    new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(0)))
+        .unwrap();
     for n in 1..4 {
         let old = acyclic_test_support::measure(|| {
             old.draw(|frame| paint(frame, &scene(n))).unwrap();
         });
         let new = acyclic_test_support::measure(|| {
-            new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(n))).unwrap();
+            new.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene(n)))
+                .unwrap();
         });
         assert_eq!(new.count_total, old.count_total, "frame {n}");
     }
@@ -208,9 +223,13 @@ fn resize_repaints_in_one_write() {
     let guard = RestoreGuard::new(device.clone(), &caps(true));
     let mut terminal = FrameTerminal::new(guard, Size::new(WIDTH, HEIGHT)).unwrap();
     let scene: Scene = (vec!["before".into()], None);
-    terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene)).unwrap();
+    terminal
+        .draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &scene))
+        .unwrap();
     device.take();
-    terminal.draw(Size::new(WIDTH - 4, HEIGHT), |frame| paint(frame, &scene)).unwrap();
+    terminal
+        .draw(Size::new(WIDTH - 4, HEIGHT), |frame| paint(frame, &scene))
+        .unwrap();
     let writes = device.take();
     assert_eq!(writes.len(), 1);
     // The clear for the new size and the repaint share the synchronized update.
@@ -226,8 +245,9 @@ fn negative_control_per_command_writes_are_detected() {
     assert_one_write_per_frame(&per_command(&scenes));
 }
 
-/// Device calls reaching the real terminal output half: writes for the old
-/// path, presented frames for the new one.
+/// Submissions reaching the real terminal output half: writes for the old
+/// path, presented frames for the new one. Device calls beneath them (PTY-full
+/// retries, console parts) are counted at the device by `device_io`.
 struct Calls<W>(W, Rc<std::cell::Cell<u64>>, Rc<std::cell::Cell<u64>>);
 impl<W: Write> Write for Calls<W> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -258,7 +278,8 @@ fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std
         let mut bytes = [0; 65536];
         while matches!(controller.read(&mut bytes), Ok(count) if count > 0) {}
     });
-    let (tty, output) = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?.split();
+    let (tty, output) =
+        acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?.split();
     Ok((output, Box::new((tty, drain))))
 }
 
@@ -281,7 +302,10 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
         let lines: Vec<Line<'_>> = (offset..offset + height)
             .map(|row| {
                 Line::from(vec![
-                    Span::styled(format!("{row:>6} "), Style::default().fg(Color::Rgb(120, 120, 140))),
+                    Span::styled(
+                        format!("{row:>6} "),
+                        Style::default().fg(Color::Rgb(120, 120, 140)),
+                    ),
                     Span::raw("Streaming ").bold(),
                     Span::styled("markdown", Style::default().fg(Color::Rgb(200, 120, 60))),
                     // Distinct text per row, as when paging through a transcript.
@@ -311,6 +335,7 @@ fn real_terminal_frame_cost() -> io::Result<()> {
             let calls = Rc::default();
             let bytes = Rc::default();
             let device = Calls(&mut output, Rc::clone(&calls), Rc::clone(&bytes));
+            let before = device_io();
             let start = std::time::Instant::now();
             if per_command {
                 let mut terminal =
@@ -325,14 +350,18 @@ fn real_terminal_frame_cost() -> io::Result<()> {
                 }
             }
             let elapsed = start.elapsed();
+            let after = device_io();
+            let per_frame = |count: u64| count as f64 / FRAMES as f64;
             report.push(format!(
-                "{} {}x{} {}: {:.0} bytes/frame, {:.1} device writes/frame, {:.1} us/frame",
+                "{} {}x{} {}: {:.0} bytes/frame, {:.1} submissions/frame, {:.1} device writes/frame, {:.2} full-queue waits/frame, {:.1} us/frame",
                 std::env::consts::OS,
                 size.width,
                 size.height,
                 if per_command { "per-command" } else { "frame" },
-                bytes.get() as f64 / FRAMES as f64,
-                calls.get() as f64 / FRAMES as f64,
+                per_frame(bytes.get()),
+                per_frame(calls.get()),
+                per_frame(after.writes - before.writes),
+                per_frame(after.waits - before.waits),
                 elapsed.as_secs_f64() * 1e6 / FRAMES as f64
             ));
         }
@@ -358,13 +387,21 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
             frame.extend_from_slice(format!("[{};1H", row % 40 + 1).as_bytes());
             for cell in 0..100u32 {
                 let glyph = char::from(b'a' + (cell % 26) as u8);
-                frame.extend_from_slice(format!("[38;2;{cell};{};90m{glyph}", row % 256).as_bytes());
+                frame.extend_from_slice(
+                    format!("[38;2;{cell};{};90m{glyph}", row % 256).as_bytes(),
+                );
             }
             row += 1;
         }
+        let before = device_io();
         let start = std::time::Instant::now();
         output.present(&mut frame, false)?;
-        eprintln!("windows {mib} MiB frame: {:.1} ms", start.elapsed().as_secs_f64() * 1e3);
+        let elapsed = start.elapsed();
+        eprintln!(
+            "windows {mib} MiB frame: {:.1} ms, {} console writes",
+            elapsed.as_secs_f64() * 1e3,
+            device_io().writes - before.writes
+        );
     }
     output.write_all(b"[0m[2J")
 }

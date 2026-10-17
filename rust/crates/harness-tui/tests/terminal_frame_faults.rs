@@ -122,15 +122,27 @@ fn emulated(bytes: &[u8]) -> (bool, bool) {
 
 /// Draw every scene with the fault at byte `at`, stopping at the first
 /// failure, then tear the session down after the device recovers.
-fn run<D: Present>(device: impl FnOnce(Faulty) -> D, at: usize, fault: Fault) -> (Vec<u8>, bool, bool) {
+fn run<D: Present>(
+    device: impl FnOnce(Faulty) -> D,
+    at: usize,
+    fault: Fault,
+) -> (Vec<u8>, bool, bool) {
     let bytes = Rc::new(RefCell::new(Vec::new()));
     let healed = Rc::new(Cell::new(false));
-    let faulty = Faulty { bytes: Rc::clone(&bytes), at, fault, spent: false, healed: Rc::clone(&healed) };
+    let faulty = Faulty {
+        bytes: Rc::clone(&bytes),
+        at,
+        fault,
+        spent: false,
+        healed: Rc::clone(&healed),
+    };
     let mut terminal = FrameTerminal::new(device(faulty), SIZE).unwrap();
     let mut failed = false;
     let mut closed_at_failure = true;
     for (index, cursor) in scenes().into_iter().enumerate() {
-        let drawn = catch_unwind(AssertUnwindSafe(|| terminal.draw(SIZE, |frame| paint(frame, index, cursor))));
+        let drawn = catch_unwind(AssertUnwindSafe(|| {
+            terminal.draw(SIZE, |frame| paint(frame, index, cursor))
+        }));
         if !matches!(drawn, Ok(Ok(()))) {
             failed = true;
             // A returned error must already have closed the update, unless
@@ -145,7 +157,10 @@ fn run<D: Present>(device: impl FnOnce(Faulty) -> D, at: usize, fault: Fault) ->
     drop(terminal);
     let bytes = bytes.take();
     let (open, visible) = emulated(&bytes);
-    assert!(closed_at_failure, "a failed frame left its synchronized update open: {bytes:?}");
+    assert!(
+        closed_at_failure,
+        "a failed frame left its synchronized update open: {bytes:?}"
+    );
     assert!(!open, "teardown left a synchronized update open: {bytes:?}");
     assert!(visible, "teardown left the cursor hidden: {bytes:?}");
     (bytes, failed, visible)
@@ -171,7 +186,13 @@ fn normal_teardown_shows_a_hidden_cursor() {
     // Every scene hides the cursor; dropping the terminal must present
     // ratatui's restoration rather than discard it.
     let bytes = Rc::new(RefCell::new(Vec::new()));
-    let faulty = Faulty { bytes: Rc::clone(&bytes), at: usize::MAX, fault: Fault::Transient, spent: false, healed: Rc::default() };
+    let faulty = Faulty {
+        bytes: Rc::clone(&bytes),
+        at: usize::MAX,
+        fault: Fault::Transient,
+        spent: false,
+        healed: Rc::default(),
+    };
     let mut terminal = FrameTerminal::new(journaled(faulty), SIZE).unwrap();
     terminal.draw(SIZE, |frame| paint(frame, 0, None)).unwrap();
     assert!(!emulated(&bytes.borrow()).1, "the frame hides the cursor");

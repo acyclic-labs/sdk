@@ -30,21 +30,44 @@ pub(crate) struct Part {
     last: bool,
 }
 
-/// Split a frame into calls of at most `chunk` bytes, for devices whose
-/// calls each run under their own deadline (the Windows console owner).
+/// The longest prefix of `bytes`, at most `limit` long, that ends on a UTF-8
+/// character boundary, so no device call splits a character. A boundary is
+/// any byte other than a continuation byte (`0b10xx_xxxx`), and a character is
+/// at most four bytes, so one lies within the last four positions; input that
+/// is not UTF-8 falls back to `limit`.
+#[cfg(any(windows, test))]
+pub(crate) fn char_prefix(bytes: &[u8], limit: usize) -> usize {
+    if bytes.len() <= limit {
+        return bytes.len();
+    }
+    (limit.saturating_sub(3)..=limit)
+        .rev()
+        .find(|&end| end > 0 && bytes.get(end).is_some_and(|byte| byte & 0xC0 != 0x80))
+        .unwrap_or(limit)
+}
+
+/// Split a frame into calls of at most `chunk` bytes, each ending on a
+/// character boundary, for devices whose calls each run under their own
+/// deadline (the Windows console owner).
 #[cfg(any(windows, test))]
 pub(crate) fn present_parts(
     frame: &[u8],
     chunk: usize,
     mut call: impl FnMut(Part) -> io::Result<()>,
 ) -> io::Result<()> {
-    let count = frame.len().div_ceil(chunk);
-    for (index, bytes) in frame.chunks(chunk).enumerate() {
+    if chunk == 0 {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    let (mut rest, mut first) = (frame, true);
+    while !rest.is_empty() {
+        let (bytes, tail) = rest.split_at(char_prefix(rest, chunk));
+        rest = tail;
         call(Part {
             bytes: bytes.to_vec(),
-            first: index == 0,
-            last: index + 1 == count,
+            first,
+            last: rest.is_empty(),
         })?;
+        first = false;
     }
     Ok(())
 }
@@ -63,7 +86,11 @@ impl Part {
         } else {
             guard.frame_open()
         };
-        guard.write_frame(&mut self.bytes, self.first && synchronized, self.last && synchronized)?;
+        guard.write_frame(
+            &mut self.bytes,
+            self.first && synchronized,
+            self.last && synchronized,
+        )?;
         if self.last {
             guard.end_frame(cursor_hidden);
         }

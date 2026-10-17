@@ -147,7 +147,12 @@ impl<W: Write> RestoreGuard<W> {
 
     /// Write part of a frame as one contiguous buffer, opening and/or closing
     /// its synchronized update. The buffer's contents are consumed.
-    pub(crate) fn write_frame(&mut self, part: &mut Vec<u8>, open: bool, close: bool) -> io::Result<()> {
+    pub(crate) fn write_frame(
+        &mut self,
+        part: &mut Vec<u8>,
+        open: bool,
+        close: bool,
+    ) -> io::Result<()> {
         if open {
             part.splice(0..0, BEGIN_SYNCHRONIZED.iter().copied());
         }
@@ -161,7 +166,9 @@ impl<W: Write> RestoreGuard<W> {
     /// Whether a begun frame's synchronized update is still open.
     #[cfg(any(windows, test))]
     pub(crate) fn frame_open(&self) -> bool {
-        self.undo.iter().any(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+        self.undo
+            .iter()
+            .any(|(mode, _)| *mode == END_SYNCHRONIZED.0)
     }
 
     /// The whole frame reached the device: its update is closed, and a shown
@@ -175,7 +182,11 @@ impl<W: Write> RestoreGuard<W> {
     /// A frame failed partway: close its update now, bounded by the writer's
     /// own deadline. If that fails too, the journal still holds the close.
     pub(crate) fn abort_frame(&mut self) -> io::Result<()> {
-        let Some(index) = self.undo.iter().position(|(mode, _)| *mode == END_SYNCHRONIZED.0) else {
+        let Some(index) = self
+            .undo
+            .iter()
+            .position(|(mode, _)| *mode == END_SYNCHRONIZED.0)
+        else {
             return Ok(());
         };
         // CAN cancels any partial escape sequence the failed write left open.

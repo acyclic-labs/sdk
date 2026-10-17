@@ -37,6 +37,7 @@ impl ConsoleIo {
 }
 impl Write for ConsoleIo {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
         self.output.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -94,7 +95,11 @@ impl super::Present for Output {
 
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(CONSOLE_CHUNK)].to_vec();
+        let end = super::frame::char_prefix(bytes, CONSOLE_CHUNK);
+        let bytes = bytes
+            .get(..end)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_vec();
         Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
             guard.writer().write(&bytes)
         })

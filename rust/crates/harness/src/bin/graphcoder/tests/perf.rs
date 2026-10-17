@@ -7,9 +7,7 @@ use acyclic_harness::{
     task_volume::TaskVolume,
     tui::{
         ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
-        key_event::{
-            InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
-        },
+        key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
         ratatui::{
             Frame, Terminal,
             backend::{Backend, ClearType, CrosstermBackend, WindowSize},
@@ -75,7 +73,10 @@ impl Backend for PerCommand {
         Ok(self.size)
     }
     fn window_size(&mut self) -> io::Result<WindowSize> {
-        Ok(WindowSize { columns_rows: self.size, pixels: Size::default() })
+        Ok(WindowSize {
+            columns_rows: self.size,
+            pixels: Size::default(),
+        })
     }
     fn flush(&mut self) -> io::Result<()> {
         Backend::flush(&mut self.inner)
@@ -163,7 +164,10 @@ impl Rig {
             );
             CommandSession::open(
                 volume,
-                OperationId::from_bytes([7; 16]).to_string().parse().unwrap(),
+                OperationId::from_bytes([7; 16])
+                    .to_string()
+                    .parse()
+                    .unwrap(),
                 1 << 20,
                 64,
             )
@@ -432,7 +436,9 @@ fn prepare(rig: &mut Rig, name: &str) {
 #[ignore = "measurement table, not an assertion"]
 fn baseline() {
     let lines = std::env::var("PERF_LINES").unwrap_or_else(|_| "1000,10000".into());
-    println!("| scenario | lines | output | events | frames | bytes/event | writes/event | allocs/event | us/event |");
+    println!(
+        "| scenario | lines | output | events | frames | bytes/event | writes/event | allocs/event | us/event |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|");
     for lines in lines.split(',').map(|n| n.parse::<usize>().unwrap()) {
         for per_command in [true, false] {
@@ -488,11 +494,21 @@ fn every_frame_is_one_device_write_independent_of_transcript_length() {
         let mut new = Rig::with_output(lines, 100, 40, false);
         let before = old.measure(mixed);
         let after = new.measure(mixed);
-        assert_eq!(new.device_bytes(), old.device_bytes(), "identical terminal bytes");
+        assert_eq!(
+            new.device_bytes(),
+            old.device_bytes(),
+            "identical terminal bytes"
+        );
         assert_eq!(after.frames, before.frames);
         assert_eq!(after.bytes, before.bytes);
-        assert_eq!(after.allocations, before.allocations, "retained frame buffer");
-        assert!(before.writes > 10 * before.frames, "baseline issues per-command writes");
+        assert_eq!(
+            after.allocations, before.allocations,
+            "retained frame buffer"
+        );
+        assert!(
+            before.writes > 10 * before.frames,
+            "baseline issues per-command writes"
+        );
         assert_one_write_per_frame(&after);
         work.push(after);
     }
