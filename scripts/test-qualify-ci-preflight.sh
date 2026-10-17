@@ -193,6 +193,7 @@ cat >"$gate/bin/mcp_loom" <<'EOF'
 case "${1:-}" in
   distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
+  hooks::*|local::checkout_tools::hooks::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
 esac
 EOF
@@ -204,26 +205,26 @@ chmod +x "$gate/bin/mcp_loom"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 14 ]]
+[[ "${#cargo_calls[@]}" -eq 15 ]]
 [[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness-fuzz --bins' ]]
 [[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --features model-checking --lib' ]]
 [[ "${cargo_calls[2]}" == 'check --locked -p acyclic-harness --features filesystem-local,model-checking --lib' ]]
 [[ "${cargo_calls[3]}" == 'test -p acyclic-harness --locked --features model-checking --test client-mailbox-model --test client_journal_model --test mcp-loom' ]]
 [[ "${cargo_calls[4]}" == 'test -p acyclic-harness --locked --features model-checking --lib workflow::model_checking::tests::' ]]
 [[ "${cargo_calls[5]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features --features model-checking' ]]
-for index in 6 7; do
+for index in 6 7 8; do
   [[ "${cargo_calls[index]}" == 'test --locked --message-format=json -p acyclic-harness --lib --no-run --all-features --features model-checking' ]]
 done
 timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
-[[ "${cargo_calls[8]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
-[[ "${cargo_calls[9]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
-[[ "${cargo_calls[10]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
+[[ "${cargo_calls[9]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
+[[ "${cargo_calls[10]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[11]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
 memory_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"))')"
-[[ "${cargo_calls[11]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
-[[ "${cargo_calls[12]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
-[[ "${cargo_calls[13]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
+[[ "${cargo_calls[12]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
+[[ "${cargo_calls[13]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[14]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
 mapfile -t flags <"$gate/flags.log"
-for index in 0 1 2 3 4 11; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
+for index in 0 1 2 3 4 12; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
 for index in 1 2 3 4; do
   [[ "${flags[index]}" == *'--cfg acyclic_harness_loom'* ]]
   [[ "${flags[index]}" == *'--cfg acyclic_loom'* ]]
