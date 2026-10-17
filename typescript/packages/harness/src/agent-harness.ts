@@ -438,12 +438,14 @@ export class AgentHarness {
       arguments: admittedInput,
     });
     await this.assertPolicyIdentity();
+    signal.throwIfAborted();
     const policy = this.scope.policyProvider ?? this.components.policy;
     const decision = await policy?.evaluate(
       { kind: "tool", tool: invocation.name, arguments: admittedInput },
       { grants: this.scope.grants, limits: this.scope.limits },
     ) ?? { kind: "allow" as const };
     await this.assertPolicyIdentity();
+    signal.throwIfAborted();
     if (decision.kind === "deny") throw new Error(decision.reason);
     const approvals = policyApprovals(decision, policy?.identity() ?? null);
     return { admittedInput, publishOutput, invocation, approvals };
@@ -458,6 +460,7 @@ export class AgentHarness {
       await this.#prepareToolCall(tool, input, signal, operationId, providerCallId);
     const actionInstance = invocation.operationId;
     for (const [approvalIndex, request] of approvals.entries()) {
+      signal.throwIfAborted();
       const contracts = this.contracts;
       const actionDigest = contracts.digestCanonicalJson({
         domain: "harness:local-tool-approval:v2",
@@ -482,6 +485,7 @@ export class AgentHarness {
         id: contracts.idFromDigest(actionDigest, "interaction"), kind: "approval", prompt: request.prompt,
         operationId: approval.operation_id, actionDigest: approval.action_digest,
       });
+      signal.throwIfAborted();
       if (answer?.kind === "approved") continue;
       if (answer?.kind === "indeterminate" && answer.operationId !== approval.operation_id) {
         throw new TypeError("approval outcome refers to another operation");
@@ -490,6 +494,7 @@ export class AgentHarness {
         : answer.kind === "accepted" || answer.kind === "answered" ? "invalid_response" : answer.kind;
       throw new ToolApprovalError(kind, approval.operation_id);
     }
+    signal.throwIfAborted();
     const erased = this.#tools.get(componentKey(tool.definition.name, tool.definition.revision));
     if (erased === undefined) {
       throw new Error("tool definition is not registered or no longer active");
@@ -510,6 +515,7 @@ export class AgentHarness {
       throw new Error("durable tool calls require task state, task identity, and stable operation ID");
     }
     const { invocation, publishOutput } = await this.#prepareToolCall(tool, input, signal, operationId);
+    signal.throwIfAborted();
     const outcome = await this.components.state.executeTool(taskId, operationId, tool, invocation.arguments, this);
     return outcome.kind === "succeeded"
       ? { kind: "succeeded", value: publishOutput(outcome.value) }
