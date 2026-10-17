@@ -110,15 +110,17 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         let claude = source("CLAUDE.md", BODY.as_bytes());
         let context = discovered(vec![agents.clone(), agents.clone(), claude.clone()]).await;
         assert_eq!(context.messages.len(), 2, "same source must be projected once");
-        for (read_file, returned, repeated) in [
-            (agents.clone(), BODY, true),
-            (source("elsewhere/AGENTS.md", BODY.as_bytes()), BODY, false),
-            (agents.clone(), "changed after capture", false),
-            (source("nested/AGENTS.md", b"changed after capture"), "changed after capture", false),
+        for (read_file, returned, range, repeated) in [
+            (agents.clone(), BODY, None, true),
+            (agents.clone(), BODY, Some(json!({"start":0,"end":BODY.len()})), true),
+            (agents.clone(), "Project", Some(json!({"start":0,"end":7})), false),
+            (source("elsewhere/AGENTS.md", BODY.as_bytes()), BODY, None, false),
+            (agents.clone(), "changed after capture", None, false),
+            (source("nested/AGENTS.md", b"changed after capture"), "changed after capture", None, false),
         ] {
             let mut messages = Vec::new();
             messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Part(
-                ModelContentPart::ToolCall(ToolCall::new("call".into(), "read".into(), json!({"file":read_file})))
+                ModelContentPart::ToolCall(ToolCall::new("call".into(), "read".into(), json!({"file":read_file,"range":range})))
             ) });
             messages.push(ModelMessage { role: ModelRole::Tool, content: ModelContent::Part(
                 ModelContentPart::ToolResult { call_id: "call".into(), name: "read".into(),
@@ -159,7 +161,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         let dispatch = ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: request.request_digest() };
         assert!(limited.generate(request, dispatch).try_collect::<Vec<_>>().await.is_err());
         assert_eq!(reader.0.load(Ordering::SeqCst), before);
-        assert_eq!(received.lock().unwrap().len(), 4);
+        assert_eq!(received.lock().unwrap().len(), 6);
         server.abort();
     }).await.expect("loopback watchdog");
 }
