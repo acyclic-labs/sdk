@@ -205,10 +205,20 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 cursor.accepted = cursor.accepted.max(cursor.position);
                 cursor.commit = *record.commit_id.as_bytes();
                 let file = query.matches_file(&file).then_some(file);
+                let (file, removed) = if query == Query::ActiveAgents {
+                    match file {
+                        Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
+                            (None, vec![file.key])
+                        }
+                        file => (file, Vec::new()),
+                    }
+                } else {
+                    (file, Vec::new())
+                };
                 let change = Change {
                     file,
                     files: Vec::new(),
-                    removed: Vec::new(),
+                    removed,
                     cursor: cursor.clone(),
                 };
                 Ok(Some((change, (records, query, cursor))))

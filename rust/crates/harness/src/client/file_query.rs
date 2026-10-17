@@ -435,13 +435,16 @@ impl FileQueryView {
         let mut count = self.storage.files.len() + self.rejected_models.len();
         for key in &change.removed {
             let old = self.storage.files.get(key);
-            if old.is_none() && !self.rejected_models.contains(key) {
+            if old.is_none()
+                && !self.rejected_models.contains(key)
+                && self.query != Query::ActiveAgents
+            {
                 return Err(invalid());
             }
             bytes = bytes
                 .checked_sub(old.map_or(0, |file| file.length as usize))
                 .ok_or_else(invalid)?;
-            count -= 1;
+            count -= usize::from(old.is_some() || self.rejected_models.contains(key));
         }
         let mut changed = !change.removed.is_empty();
         for file in files.clone() {

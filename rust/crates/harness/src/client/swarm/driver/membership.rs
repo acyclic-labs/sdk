@@ -28,31 +28,38 @@ impl Membership {
         })
     }
     pub async fn next(&mut self) -> Result<Option<(StreamPath, bool)>> {
-        let file = if let Some(file) = self.initial.next() {
-            Some(file)
+        let value = |file: crate::task_volume::FileValue| -> Result<_> {
+            let status =
+                ChildStatus::parse(&file.bytes).map_err(|e| Error::Invalid(e.to_string()))?;
+            Ok((file.key, status.active()))
+        };
+        let (key, active) = if let Some(file) = self.initial.next() {
+            value(file)?
         } else {
-            self.changes
+            let change = self
+                .changes
                 .next()
                 .await
                 .ok_or_else(|| Error::Storage("membership follow ended; reobserve".into()))?
-                .map_err(|e| Error::Storage(e.to_string()))?
-                .file
-        };
-        let Some(file) = file else {
-            return Ok(None);
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            match (change.file, change.removed.as_slice()) {
+                (Some(file), []) => value(file)?,
+                (None, [key]) => (key.clone(), false),
+                (None, []) => return Ok(None),
+                _ => return Err(Error::Invalid("invalid atomic membership change".into())),
+            }
         };
         let FileKey::Child {
             reference,
             file: ChildFile::Status,
-        } = file.key
+        } = key
         else {
             return Err(Error::Invalid(
                 "membership received a non-status file".into(),
             ));
         };
-        let status = ChildStatus::parse(&file.bytes).map_err(|e| Error::Invalid(e.to_string()))?;
         let agent = StreamPath::new(format!("{}/{}", self.root, reference.as_str()))
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        Ok(Some((agent, status.active())))
+        Ok(Some((agent, active)))
     }
 }
