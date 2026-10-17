@@ -7,6 +7,113 @@ use proptest::test_runner::TestCaseError;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 type Store = LogicalObjectStore<MemoryObjects>;
 
+thread_local! {
+    static QUADRATIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Restore the discarded production scan, charging its actual comparisons. The
+// same exact-count property must reject it even though results are unchanged.
+pub(super) fn replay_duplicate_scan<T, V>(
+    unique: &[Option<&T>],
+    id: ObjectId,
+    parts: V,
+    work: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError>
+where
+    V: Copy + for<'a> Fn(&'a T) -> (ObjectId, &'a OwnedBytes),
+{
+    if QUADRATIC.get() {
+        for previous in unique.iter().flatten() {
+            work.charge(WorkCounters {
+                items_examined: 1,
+                bytes_examined: ObjectId::ENCODED_LEN as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            if parts(previous).0 == id {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn linear_batch_work(cost: WorkCounters, count: u64) -> bool {
+    cost.items_examined == count
+        && cost.bytes_examined == ObjectId::ENCODED_LEN as u64 * count
+        && cost.allocation_operations == 3 + 3 * count
+}
+
+async fn measured_unique_batch(
+    count: usize,
+    quadratic: bool,
+) -> Result<WorkCounters, TestCaseError> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            QUADRATIC.set(false);
+        }
+    }
+    let store = store(32).map_err(|error| TestCaseError::fail(error.to_string()))?;
+    let writes: Vec<_> = (0..count)
+        .map(|index| {
+            let mut body = vec![0; 32];
+            body[..size_of::<usize>()].copy_from_slice(&index.to_le_bytes());
+            let bytes = OwnedBytes::from(body);
+            ObjectWrite {
+                object_id: ObjectId {
+                    kind: ObjectKind::BlobChunk,
+                    digest: object_digest(ObjectKind::BlobChunk, &bytes),
+                },
+                bytes,
+            }
+        })
+        .collect();
+    let cancel = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
+    QUADRATIC.set(quadratic);
+    let reset = Reset;
+    store
+        .put_many(&writes, &mut work)
+        .await
+        .map_err(|error| TestCaseError::fail(error.to_string()))?;
+    drop(reset);
+    let cost = work.spent();
+    for write in &writes {
+        let read = store
+            .read(
+                write.object_id,
+                32,
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel),
+            )
+            .await
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        proptest::prop_assert_eq!(&read.bytes, &write.bytes);
+    }
+    Ok(cost)
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Every distinct input performs one indexed examination and funds exactly
+    // three fixed allocations plus three request allocations per object.
+    #[test]
+    fn indexed_batch_has_exact_n_and_2n_work(count in 2usize..65) {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        runtime.block_on(async {
+            for n in [count, 2 * count] {
+                let cost = measured_unique_batch(n, false).await?;
+                proptest::prop_assert!(linear_batch_work(cost, n as u64), "{cost:?}");
+                let broken = measured_unique_batch(n, true).await?;
+                proptest::prop_assert!(!linear_batch_work(broken, n as u64));
+                proptest::prop_assert_eq!(broken.items_examined, (n + n * (n - 1) / 2) as u64);
+                proptest::prop_assert_eq!(broken.object_bytes_written, cost.object_bytes_written);
+            }
+            Ok(())
+        })?;
+    }
+}
+
 fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();

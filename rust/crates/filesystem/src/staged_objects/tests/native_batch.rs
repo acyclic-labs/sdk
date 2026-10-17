@@ -7,7 +7,7 @@ enum Event {
     Read(ObjectId),
 }
 
-struct Observed<S>(S);
+struct Observed<S>(S, Option<std::fs::File>);
 
 impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
     async fn put(
@@ -27,7 +27,17 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         for write in writes {
             record(Event::Write(write.object_id, write.bytes.to_vec()));
         }
-        self.0.put_many(writes, work).await
+        self.0.put_many(writes, work).await?;
+        if let Some(file) = &self.1 {
+            let original = work.original.ok_or(ObjectStoreError::NativeUnavailable)?;
+            acyclic_native_runtime::sync_file(
+                file,
+                acyclic_native_runtime::Durability::Full,
+                Some(original.runtime_meter().as_ref()),
+            )
+            .map_err(|error| ObjectStoreError::Rejected(error.to_string()))?;
+        }
+        Ok(())
     }
     async fn read(
         &self,
@@ -59,6 +69,7 @@ enum Mode {
     Individual,
     Batch,
     Staged,
+    ExtraFlush,
 }
 
 type Contents = Result<Vec<Vec<u8>>, String>;
@@ -77,8 +88,13 @@ fn run(
             runtime.block_on(async {
                 let directory = tempfile::tempdir()?;
                 let (old, provider) = open_staged(directory.path()).await?;
+                let extra = if matches!(mode, Mode::ExtraFlush) {
+                    Some(tempfile::tempfile()?)
+                } else {
+                    None
+                };
                 let store =
-                    StagedObjects::open(Observed(old.inner), directory.path().to_path_buf())
+                    StagedObjects::open(Observed(old.inner, extra), directory.path().to_path_buf())
                         .await?;
                 let token = CancellationToken::new();
                 let mut writes = Vec::new();
@@ -113,7 +129,7 @@ fn run(
                 let began = std::time::Instant::now();
                 let mut work = AuthorityWork::native(&native, &token);
                 let result = match mode {
-                    Mode::Staged => store
+                    Mode::Staged | Mode::ExtraFlush => store
                         .flush_before_publish(
                             PublicationScope::Closure { objects: &ids, proven_at: 0 },
                             &mut work,
@@ -169,7 +185,8 @@ fn exact_batch_work(actual: WorkCounters, batch: WorkCounters, count: usize) -> 
     // change frame length: each extra byte is hashed once, encoded twice
     // (inline placement and final encoding), and copied once into the frame.
     // Pin the work beyond those physical output bytes, without clock coupling.
-    actual.durability_operations == batch.durability_operations
+    actual.durability_operations == 1
+        && batch.durability_operations == 1
         && actual.backend_write_operations == batch.backend_write_operations
         && actual.object_bytes_written == batch.object_bytes_written
         && actual.bytes_hashed + batch.output_bytes == batch.bytes_hashed + actual.output_bytes
@@ -190,10 +207,21 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
         let (old_result, old, old_trace) = run(&runtime, Mode::Individual, false, count)?;
         let (batch_result, batch, batch_trace) = run(&runtime, Mode::Batch, false, count)?;
         let (result, cost, trace) = run(&runtime, Mode::Staged, false, count)?;
+        let (extra_result, extra, extra_trace) = run(&runtime, Mode::ExtraFlush, false, count)?;
         assert_eq!(result, old_result);
         assert_eq!(result, batch_result);
         assert_eq!(trace, old_trace);
         assert_eq!(trace, batch_trace);
+        assert_eq!(extra_result, result);
+        assert_eq!(extra_trace, trace);
+        assert_eq!(cost.durability_operations, 1);
+        assert_eq!(batch.durability_operations, 1);
+        assert_eq!(old.durability_operations, count as u64);
+        assert_eq!(extra.durability_operations, 2);
+        assert!(
+            !exact_batch_work(extra, batch, count),
+            "extra flush passed the same work pins"
+        );
         assert_eq!(cost.object_bytes_written, 32 * count as u64);
         assert!(
             exact_batch_work(cost, batch, count),
@@ -203,7 +231,6 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
             !exact_batch_work(old, batch, count),
             "per-object negative control passed"
         );
-        assert!(old.durability_operations > cost.durability_operations);
     }
     let (old_error, _, old_trace) = run(&runtime, Mode::Individual, true, 4)?;
     let (error, cost, trace) = run(&runtime, Mode::Staged, true, 4)?;

@@ -138,6 +138,23 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
         let (mut unique, unique_custody) = vector::<Option<&T>>(writes.len(), work)?;
+        // Retain the first body as well as its identity so duplicate validation
+        // preserves the collision/mismatch check without scanning prior writes.
+        let index_bytes = |capacity: usize| {
+            capacity
+                .checked_mul(2 * (size_of::<(ObjectId, &T)>() + 1))
+                .and_then(|bytes| bytes.checked_add(32))
+                .map(|bytes| bytes as u64)
+                .ok_or(WorkError::Overflow)
+        };
+        let bytes = index_bytes(writes.len())?;
+        let mut index_custody = work.claim_owned(bytes, 1)?;
+        let mut index = std::collections::HashMap::new();
+        index
+            .try_reserve(writes.len())
+            .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
+        let capacity_bytes = index_bytes(index.capacity())?;
+        work.reconcile_owned(&mut index_custody, bytes, capacity_bytes)?;
         let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
@@ -149,15 +166,27 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             } else {
                 self.validate_write(id, body, work)?;
             }
-            if let Some(previous) = unique
-                .iter()
-                .flatten()
-                .find(|previous| parts(previous).0 == id)
-            {
-                if parts(previous).1 != body {
-                    return Err(ObjectStoreError::DigestMismatch.into());
+            work.charge(WorkCounters {
+                items_examined: 1,
+                bytes_examined: ObjectId::ENCODED_LEN as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            #[cfg(all(test, feature = "memory"))]
+            super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
+            match index.entry(id) {
+                std::collections::hash_map::Entry::Occupied(previous) => {
+                    work.charge(WorkCounters {
+                        bytes_examined: body.len() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    if parts(previous.get()).1 != body {
+                        return Err(ObjectStoreError::DigestMismatch.into());
+                    }
+                    continue;
                 }
-                continue;
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(write);
+                }
             }
             let (request, mut allocation) = put_request(&self.bucket, id, body.clone(), work)?;
             request_bytes = request_bytes
@@ -188,6 +217,8 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 .checked_add(body.len() as u64)
                 .ok_or(WorkError::Overflow)?;
         }
+        drop(index);
+        release(work, index_custody, capacity_bytes)?;
         work.admit(WorkCounters {
             object_bytes_written: total,
             ..WorkCounters::UNCHARGED
