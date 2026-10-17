@@ -86,7 +86,10 @@ impl SkillMetadata {
             String::from_utf8(bytes)
                 .map_err(|_| stock_boundary(io, ErrorCode::Invalid, "skill body is invalid text"))?
         };
+        #[cfg(feature = "filesystem")]
         drop(hold);
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
         Ok(ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(text),

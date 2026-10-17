@@ -1,3 +1,4 @@
+//! Exercise portable path normalization and rejection.
 #![no_main]
 
 #[path = "../../tests/path_input.rs"]

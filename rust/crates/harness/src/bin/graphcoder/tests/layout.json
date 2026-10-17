@@ -1,0 +1,128 @@
+[
+  {
+    "row": "Layout: header, messages, input dock and status",
+    "width": 80, "height": 20,
+    "expected": ["● GraphCoder", "message 00", "draft", "model · tokens"],
+    "absent": ["shell output", "GOAL.md"]
+  },
+  {
+    "row": "Optional terminal panel composition",
+    "width": 80, "height": 20, "terminal": true,
+    "expected": ["shell output", "message 00", "draft", "model · tokens"],
+    "absent": ["GOAL.md"]
+  },
+  {
+    "row": "Goal, plans and diff panels",
+    "width": 100, "height": 30, "documents": true,
+    "expected": ["GOAL.md", "Goal contents", "plans/", "Plan contents", "Diff", "+added code"],
+    "absent": ["shell output"]
+  },
+  {
+    "row": "Resize: narrow layout yields side panels to transcript",
+    "width": 40, "height": 12, "documents": true,
+    "expected": ["message 00", "draft", "model · tokens"],
+    "absent": ["GOAL.md", "Goal contents", "Plan contents", "+added code"]
+  },
+  {
+    "row": "Notifications reserve two rows above the prompt",
+    "width": 80, "height": 20,
+    "notices": ["First notice", "Second notice", "Third notice"],
+    "expected": ["First notice", "Second notice", "draft", "model · tokens"],
+    "absent": ["Third notice"]
+  },
+  {
+    "row": "Follow tail after resize",
+    "width": 40, "height": 12, "tail": true,
+    "expected": ["message 39", "draft", "model · tokens"],
+    "absent": ["message 00"]
+  },
+  {
+    "row": "Follow tail with terminal and notifications",
+    "width": 80, "height": 20, "tail": true, "terminal": true,
+    "notices": ["Turn completed"],
+    "expected": ["message 39", "shell output", "Turn completed", "draft"],
+    "absent": ["message 00"]
+  },
+  {
+    "row": "Help overlay preserves prompt, status and side panels",
+    "width": 100,
+    "height": 30,
+    "documents": true,
+    "overlay": [
+      "Ctrl+R  History search",
+      "Ctrl+/  Shortcuts"
+    ],
+    "expected": [
+      "Shortcuts",
+      "History search",
+      "draft",
+      "model · tokens",
+      "GOAL.md",
+      "Goal contents",
+      "+added code"
+    ],
+    "absent": [
+      "message 00"
+    ]
+  },
+  {
+    "row": "Help overlay tail scroll uses its bordered interior",
+    "width": 40,
+    "height": 12,
+    "tail": true,
+    "overlay": [
+      "shortcut 00",
+      "shortcut 01",
+      "shortcut 02",
+      "shortcut 03",
+      "shortcut 04",
+      "shortcut 05",
+      "shortcut 06",
+      "shortcut 07",
+      "shortcut 08",
+      "shortcut 09",
+      "shortcut 10",
+      "shortcut 11",
+      "shortcut 12",
+      "shortcut 13",
+      "shortcut 14",
+      "shortcut 15",
+      "shortcut 16",
+      "shortcut 17",
+      "shortcut 18",
+      "shortcut 19"
+    ],
+    "expected": [
+      "Shortcuts",
+      "shortcut 19",
+      "draft",
+      "model · tokens"
+    ],
+    "absent": [
+      "shortcut 00",
+      "message 39"
+    ]
+  },
+  {
+    "row": "Help overlay composes with terminal and attention",
+    "width": 80,
+    "height": 20,
+    "terminal": true,
+    "notices": [
+      "Turn completed"
+    ],
+    "overlay": [
+      "Ctrl+R  History search"
+    ],
+    "expected": [
+      "Shortcuts",
+      "History search",
+      "shell output",
+      "Turn completed",
+      "draft"
+    ],
+    "absent": [
+      "message 00"
+    ]
+  }
+]

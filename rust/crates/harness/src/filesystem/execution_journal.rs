@@ -31,11 +31,15 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod conversation;
 
+mod cancellation;
 mod canonical;
+mod chunks;
 mod configuration;
 mod content;
 mod interactions;
 mod observations;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod publication_future_tests;
 mod replay;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod replay_capacity_tests;
@@ -67,6 +71,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     verified: tokio::sync::Mutex<ExecutionSummary>,
     conversation_projection: tokio::sync::Mutex<Option<StreamAggregate<P>>>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
+    task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }

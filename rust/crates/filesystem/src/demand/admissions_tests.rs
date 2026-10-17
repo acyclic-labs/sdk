@@ -53,7 +53,7 @@ fn retirement_trace(sizes: &[u16], actions: &[(bool, usize)]) -> TestResult {
         let shared = if headers == 0 {
             0
         } else {
-            std::mem::size_of::<NativeProofAccounting>() as u64
+            NativeProofAccounting::ALLOCATION_BYTES
         };
         assert_eq!(
             original.live_allocation_bytes(),
@@ -239,7 +239,7 @@ fn native_payload_outlives_checkout_and_retires_resource_exactly_once() -> TestR
     assert_eq!(
         original.live_allocation_bytes(),
         baseline
-            - std::mem::size_of::<NativeProofAccounting>() as u64
+            - NativeProofAccounting::ALLOCATION_BYTES
             - std::mem::size_of::<ProofDataCustody>() as u64
     );
     assert_eq!(original.receipt(), receipt);

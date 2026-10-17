@@ -61,6 +61,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         })
     }
 
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) const fn maximum_bytes(&self) -> u64 {
         self.maximum_bytes
     }
@@ -75,6 +76,15 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
     pub async fn write(&self, expected: Generation, file: &FileValue) -> super::Result<Generation> {
         authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
         self.inner.append(expected, file).await
+    }
+
+    /// Reads the authorized private volume at one exact query cut.
+    pub async fn snapshot(
+        &self,
+        query: &Query,
+        maximum_files: usize,
+    ) -> super::Result<super::Snapshot> {
+        self.inner.snapshot(query, maximum_files).await
     }
 
     /// Captures an atomic snapshot and push follow, or resumes a durable cursor.

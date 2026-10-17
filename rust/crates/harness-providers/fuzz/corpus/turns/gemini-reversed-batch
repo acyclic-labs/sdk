@@ -1,0 +1,1 @@
+1[{"role":"user","parts":[{"text":"q"}]},{"role":"model","parts":[{"functionCall":{"name":"f","id":"a","args":{}}},{"functionCall":{"name":"g","id":"b","args":{}}}]},{"role":"user","parts":[{"text":"interrupt"},{"functionResponse":{"name":"g","id":"b","response":{}}},{"functionResponse":{"name":"f","id":"a","response":{}}}]}]

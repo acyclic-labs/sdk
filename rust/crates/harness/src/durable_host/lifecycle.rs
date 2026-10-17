@@ -375,6 +375,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 + workflow.initial.machine.version.capacity() as u64;
             custody.absorb(&mut io.take_native_custody(retained)?)?;
         }
+        #[cfg(not(target_arch = "wasm32"))]
         let before_scope = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let (scope, _scope_bytes) = self.authenticated_scope(&admission, &mut work).await?;
         let created = scope.created_access();

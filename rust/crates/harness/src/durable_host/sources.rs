@@ -81,12 +81,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             )
         })?;
         let check = || {
-            cancellation.check().map_err(|_| {
+            cancellation.check().map_err(|cause| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if native.is_some() {
                     return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
                 }
-                Error::Unauthorized("project source invocation is cancelled".into())
+                Error::from(cause)
             })
         };
         check()?;
@@ -293,31 +293,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("project source caller differs".into()));
         }
-        if self
-            .invocation_cancellation
-            .as_ref()
-            .is_none_or(|token| token.is_cancelled())
-        {
-            return Err(Error::Unauthorized(
-                "project source invocation cancelled".into(),
-            ));
-        }
+        self.check_project_source_invocation()?;
         self.verify(false, &mut work).await?;
         let handle = self
             .host
             .seal_project_source_authorization(authorization, self.task_id(), io)
             .await?;
         self.verify(false, &mut work).await?;
-        if self
-            .invocation_cancellation
-            .as_ref()
-            .is_none_or(|token| token.is_cancelled())
-        {
-            return Err(Error::Unauthorized(
-                "project source invocation cancelled".into(),
-            ));
-        }
+        self.check_project_source_invocation()?;
         Ok(handle)
+    }
+    fn check_project_source_invocation(&self) -> Result<()> {
+        self.invocation_cancellation
+            .as_ref()
+            .ok_or_else(|| {
+                Error::Unauthorized("project source requires invocation cancellation".into())
+            })?
+            .check()
+            .map_err(Error::from)
     }
     pub(crate) async fn verify_project_source_handle(
         &self,
@@ -339,10 +332,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) async fn verify_project_source_read(
         &self,
         handle: &ProjectSourceReadHandle,
-        native: crate::NativeWork<'_>,
+        _native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        let mut io = native
+        let mut io = _native
             .map(|work| {
                 crate::executor::PreparationIo::from_native_work(work)
                     .map(crate::store::HistoryWork::new)
@@ -353,7 +346,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(target_arch = "wasm32")]
         let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native {
+        if let Some(work) = _native {
             work.remaining()?;
         }
         let cancellation = self.invocation_cancellation.as_ref().ok_or_else(|| {
@@ -365,14 +358,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         })?;
         let check = || {
             #[cfg(not(target_arch = "wasm32"))]
-            if native.is_some() {
+            if _native.is_some() {
                 return cancellation.check().map_err(|_| {
                     Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled)
                 });
             }
-            cancellation
-                .check()
-                .map_err(|_| Error::Unauthorized("selected project invocation cancelled".into()))
+            cancellation.check().map_err(Error::from)
         };
         check()?;
         if handle.authorization().caller_admission_digest

@@ -282,7 +282,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         .build()?;
     runtime.block_on(async {
         let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-        let (mut pool, healthy) = pool::fixture::fixture(fixture.channel.clone());
+        let (mut pool, healthy) = pool::fixture::fixture(fixture._channel.clone());
         pool.links.remove("bad");
         let a_origin = origin(&a_dispatch, true);
         let b_origin = origin(&b_dispatch, false);
@@ -376,7 +376,7 @@ async fn moved_owner_withdraws() -> TestResult {
     let cancelled = std::sync::Arc::new(tokio::sync::Notify::new());
     let begin = started.clone();
     let end = cancelled.clone();
-    let target = destination.channel.clone();
+    let target = destination._channel.clone();
     let connect: Connect = std::sync::Arc::new(move |node| {
         assert_eq!(node.node_id, "away");
         let gate = blocked.lock().unwrap().take().unwrap();
@@ -390,7 +390,7 @@ async fn moved_owner_withdraws() -> TestResult {
         })
     });
     let client = Client::with_connector(
-        home.channel.clone(),
+        home._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,
@@ -498,7 +498,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
             }
         });
         let client = Client::with_connector(
-            fixture.channel.clone(),
+            fixture._channel.clone(),
             None,
             Some(credential),
             std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),

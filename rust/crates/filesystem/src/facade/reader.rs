@@ -10,9 +10,9 @@ pub struct PinnedReader<A, O> {
 #[derive(Clone)]
 pub(super) enum PinnedReaderRoot {
     Owned(GenerationRoot),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
     FundedOwned(Arc<(GenerationRoot, NativeAllocation)>),
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
     NativeCheckout(Arc<(crate::collection::CheckoutRoots, NativeAllocation)>),
 }
 
@@ -22,9 +22,9 @@ impl std::ops::Deref for PinnedReaderRoot {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Owned(root) => root,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
             Self::FundedOwned(carrier) => &carrier.0,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
             Self::NativeCheckout(carrier) => &carrier.0,
         }
     }
@@ -60,7 +60,7 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Funds only the legacy readonly root copy. It keeps standalone query
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
     pub(crate) fn pinned_reader_for_materialization_with_work(
         &self,
         work: &NativeMaterializationWork,
@@ -88,7 +88,7 @@ impl<A, O> Checkout<A, O> {
     }
 
     /// Consumes an original-native checkout into a cheap cloneable readonly
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
     pub(crate) fn into_pinned_reader_with_native_work(
         self,
         work: &NativeMaterializationWork,
@@ -141,18 +141,19 @@ impl<A, O> PinnedReader<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn validate_native_work(
         &self,
-        work: &NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<(), FsError> {
-        let PinnedReaderRoot::NativeCheckout(carrier) = &self.root else {
-            return Err(FsError::NativeKernel(
+        match &self.root {
+            #[cfg(any(test, feature = "native-mount"))]
+            PinnedReaderRoot::NativeCheckout(carrier)
+                if carrier.1.work().shares_ledger(_work)
+                    && carrier.0.same_original_scope(&_work.state) =>
+            {
+                Ok(())
+            }
+            _ => Err(FsError::NativeKernel(
                 NativeTreeMaterializationError::InvalidLayout,
-            ));
-        };
-        if !carrier.1.work().shares_ledger(work) || !carrier.0.same_original_scope(&work.state) {
-            return Err(FsError::NativeKernel(
-                NativeTreeMaterializationError::InvalidLayout,
-            ));
+            )),
         }
-        Ok(())
     }
 }

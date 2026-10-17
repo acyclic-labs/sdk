@@ -119,7 +119,10 @@ fuzz_target!(|input: &[u8]| {
         });
     }
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) {
-        let machine = command_machine::DirectTool::new();
+        let machine = std::sync::Arc::new(command_machine::DirectTool::new());
+        let definition = machine.definition().unwrap();
+        assert_eq!(definition.identity().name, machine.identity().name);
+        assert_eq!(definition.identity().version, machine.identity().version);
         if let Ok(state) = machine.initialize(&value) {
             let encoded = serde_json::to_vec(&state).unwrap();
             let restored = serde_json::from_slice(&encoded).unwrap();

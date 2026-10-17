@@ -1,0 +1,8 @@
+{
+  "name": "graphcoder-pty-qualification",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@xterm/headless": "6.0.0"
+  }
+}

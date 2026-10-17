@@ -3,6 +3,20 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+#[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
+mod recovery_tests;
+
+#[cfg(target_os = "linux")]
+pub(super) fn recover_after_crash(root: &Path) -> Result<()> {
+    let relative = Path::new(SCRATCH_PATH);
+    let parent = relative
+        .parent()
+        .ok_or_else(|| Error::Invalid("scratch mount has no parent".into()))?;
+    create_mount_directory(root, parent)?;
+    acyclic_fs::recover_disconnected_native_mount_destination(&root.join(relative))?;
+    Ok(())
+}
+
 pub(in crate::local) fn require_available(
     capabilities: acyclic_fs::NativeMountCapabilities,
 ) -> Result<()> {
@@ -197,6 +211,23 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     Ok(())
 }
 
+// Recover only SDK-owned mount destinations. The existing recovery API takes
+// the exclusive destination fence before probing or detaching the driver, so
+// a live owner is rejected and authored host residue is retained.
+pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+    if let Some(parent) = relative.parent() {
+        create_mount_directory(root, parent)?;
+    }
+    let destination = root.join(relative);
+    let [fence, _] = acyclic_fs::native_mount_control_paths(&destination)?;
+    match std::fs::symlink_metadata(fence) {
+        Ok(_) => acyclic_fs::detach_native_mount_destination_after_crash(&destination)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(mount_io(error)),
+    }
+    create_mount_directory(root, relative)
+}
+
 pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let mut path = root.to_path_buf();
     for part in relative.components() {
@@ -248,7 +279,7 @@ mod tests {
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
         let error =
-            create_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
+            prepare_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
                 .expect_err("the mount parent is absent");
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(error), ..
@@ -263,7 +294,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
         assert!(matches!(
-            create_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
+            prepare_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
             Err(Error::Invalid(_))
         ));
         assert!(!outside.path().join("scratch").exists());

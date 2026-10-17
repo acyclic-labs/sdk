@@ -1,0 +1,132 @@
+[
+  {
+    "row": "Kitty Shift+Enter continues the composed prompt",
+    "text": "one",
+    "bytes": "\u001b[?1u\u001b[13;2utwo",
+    "expected": "one\ntwo",
+    "visible": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "row": "modifyOtherKeys Ctrl+Enter continues the composed prompt",
+    "text": "one",
+    "bytes": "\u001b[27;5;13~two",
+    "expected": "one\ntwo",
+    "visible": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "row": "Kitty repeat and release do not submit or insert released keys",
+    "text": "",
+    "bytes": "\u001b[?1u\u001b[120;1u\u001b[13;1:2u\u001b[120;1:3u",
+    "expected": "x",
+    "visible": [
+      "x"
+    ]
+  },
+  {
+    "row": "UTF-8 terminal input retains graphemes without paste heuristics",
+    "text": "",
+    "bytes": "日本語 é 👩‍💻",
+    "expected": "日本語 é 👩‍💻",
+    "visible": [
+      "日本語 é 👩‍💻"
+    ]
+  },
+  {
+    "row": "Focus loss breaks the external-editor chord",
+    "text": "draft",
+    "bytes": "\u0018\u001b[Oe",
+    "expected": "drafte",
+    "visible": [
+      "drafte"
+    ]
+  },
+  {
+    "row": "Late capability replies never become prompt text",
+    "text": "",
+    "bytes": "\u001b]11;rgb:1111/2222/3333\u001b\\\u001b[?1u\u001b[?2026;1$y\u001b[?1;2ctext",
+    "expected": "text",
+    "visible": [
+      "text"
+    ]
+  },
+  {
+    "row": "Legacy Home is routed as navigation",
+    "text": "abc",
+    "bytes": "\u001b[Hx",
+    "expected": "xabc",
+    "visible": [
+      "xabc"
+    ]
+  },
+  {
+    "row": "Bracketed paste reaches the folded-paste widget",
+    "text": "",
+    "bytes": "\u001b[200~line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9\u001b[201~",
+    "expected": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9",
+    "visible": [
+      "Pasted 9 lines"
+    ],
+    "folded": true
+  },
+  {
+    "row": "Kitty copy preserves the selected Unicode prompt",
+    "text": "日本語",
+    "bytes": "\u001b[?1u\u001b[97;5u\u001b[99;5u",
+    "expected": "日本語",
+    "visible": [
+      "日本語"
+    ],
+    "copied": "日本語"
+  },
+  {
+    "row": "ConPTY CR LF submits exactly once across transport chunks",
+    "text": "draft",
+    "bytes": "\r\n",
+    "expected": "",
+    "visible": [],
+    "submitted": "draft"
+  },
+  {
+    "row": "Backslash continuation consumes one ConPTY CR LF as one newline",
+    "text": "one\\",
+    "bytes": "\r\ntwo",
+    "expected": "one\ntwo",
+    "visible": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "row": "Kitty repeated Backspace remains an editing key",
+    "text": "abc",
+    "bytes": "\u001b[?1u\u001b[127;1:2u",
+    "expected": "ab",
+    "visible": [
+      "ab"
+    ]
+  },
+  {
+    "row": "SGR mouse drag selects prompt text before keyboard copy",
+    "text": "abcd",
+    "bytes": "\u001b[<0;2;2M\u001b[<32;5;2M\u001b[<0;5;2m\u0003",
+    "expected": "abcd",
+    "visible": [
+      "abcd"
+    ],
+    "copied": "abc"
+  },
+  {
+    "row": "Ordinary startup typing submits a slash prompt once with CR LF",
+    "text": "",
+    "bytes": "/delegate say hello\r\n",
+    "expected": "",
+    "visible": [],
+    "submitted": "/delegate say hello"
+  }
+]

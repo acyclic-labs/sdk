@@ -206,6 +206,11 @@ impl Environment {
         )
     }
 
+    /// A dumb terminal uses the client's headless runner and no TTY lifecycle.
+    pub fn is_dumb(&self) -> bool {
+        self.get("TERM") == "dumb"
+    }
+
     pub(crate) fn get(&self, key: &str) -> &str {
         self.0.get(key).map_or("", String::as_str)
     }
@@ -220,7 +225,7 @@ impl Environment {
             } else {
                 Multiplexer::None
             },
-            dumb: self.get("TERM") == "dumb",
+            dumb: self.is_dumb(),
             ..Capabilities::default()
         }
     }

@@ -246,6 +246,37 @@ where
             Ok(future) => future.await,
             Err(error) => Err(error),
         };
+        // This rejection is returned only after a model stream has been dropped
+        // or before a tool dispatch. Indeterminate native work retains its lease.
+        if matches!(
+            &result,
+            Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled
+            ))
+        ) {
+            let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+            let fence = LeaseFence::from(&lease.reservation);
+            let settled = async {
+                self.host.cancel(task).await?;
+                self.host
+                    .settle_task(
+                        task,
+                        &fence,
+                        Outcome::Cancelled,
+                        &mut observed::history(io)?
+                            .as_mut()
+                            .map(|work| work as &mut dyn crate::store::HistoryIo),
+                    )
+                    .await
+            }
+            .await;
+            return match settled {
+                Ok(()) => {
+                    TaskWorkerAttempt::Progress(WorkerTurn::Completed { task }.with_lease(lease))
+                }
+                Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
+            };
+        }
         match result {
             Ok(progress) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),
             Err(error) => TaskWorkerAttempt::Unresolved { lease, error },

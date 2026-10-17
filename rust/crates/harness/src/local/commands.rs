@@ -56,6 +56,24 @@ impl LocalHarness {
                 self.queue_prompt(operation, target, &text, settings).await
             }
             CommandResolution::Submit {
+                request: CommandRequest::Replace { message, text },
+            } => {
+                let original = crate::runtime::task_id_for_admission(message);
+                self.runtime.task_host().observe_admission(original).await?;
+                // Replacement is a new immutable branch; the original history
+                // remains available for replay and explicit transcript rewind.
+                let mut result = self.queue_prompt(operation, None, &text, settings).await?;
+                result["replaces"] = json!(message);
+                Ok(result)
+            }
+            CommandResolution::Submit {
+                request: CommandRequest::Cancel { task },
+            } => {
+                self.runtime.task_host().cancel(task).await?;
+                self.refresh_command_task(task).await?;
+                Ok(json!({"task": task, "cancel_requested": true}))
+            }
+            CommandResolution::Submit {
                 request: CommandRequest::New,
             } => Ok(json!({"selected_task":null})),
             CommandResolution::Submit {

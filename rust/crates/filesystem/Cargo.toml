@@ -55,6 +55,16 @@ name = "projfs_names"
 path = "tests/projfs_names.rs"
 required-features = ["native-mount"]
 
+[[bench]]
+name = "lease_paths"
+harness = false
+required-features = ["memory"]
+
+[[bench]]
+name = "lease_paths_alloc"
+harness = false
+required-features = ["memory"]
+
 [[test]]
 name = "projfs_paths"
 path = "tests/projfs_paths.rs"
@@ -142,7 +152,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-loom = "=0.7.2"
+loom = { version = "=0.7.2", features = ["checkpoint"] }
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

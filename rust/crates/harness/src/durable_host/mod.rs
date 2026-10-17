@@ -60,6 +60,7 @@ struct MailLocation {
 
 const MAX_MAIL_LOCATION_BYTES: usize = 1024;
 
+#[cfg(any(test, feature = "filesystem"))]
 type TimerEvent = acyclic_actors::timers::TimerRecord<TaskId, OperationId>;
 
 #[test]
@@ -237,6 +238,8 @@ mod preparation;
 mod readonly;
 mod received_mail;
 #[cfg(feature = "filesystem")]
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(target_arch = "wasm32"))]
 mod release;
 #[cfg(feature = "filesystem")]
 mod source_graph;

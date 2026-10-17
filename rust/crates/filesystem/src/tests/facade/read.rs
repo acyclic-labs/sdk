@@ -669,3 +669,55 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn scoped_reads_batch_uses_each_handle_after_candidate_changes() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
+    let id = create(
+        &mut checkout,
+        "file",
+        OwnedBytes::from_static(b"old"),
+        &cancel,
+    )
+    .await?;
+    let old = checkout.snapshot_reader();
+    let old_files = old.resolve_files(&[path("file")?], B, &cancel).await?.value;
+    checkout
+        .change_content(
+            id,
+            ContentChange::Write {
+                offset: 0,
+                bytes: OwnedBytes::from_static(b"new"),
+            },
+            ContentTimes::Preserve,
+            B,
+            &cancel,
+        )
+        .await?;
+    let new = checkout.snapshot_reader();
+    let new_files = new.resolve_files(&[path("file")?], B, &cancel).await?.value;
+    let range = ByteRange {
+        offset: 0,
+        length: 3,
+    };
+    let requests = [
+        ResolvedFileRangeReadRequest {
+            file: old_files[0].as_ref().unwrap(),
+            range,
+        },
+        ResolvedFileRangeReadRequest {
+            file: new_files[0].as_ref().unwrap(),
+            range,
+        },
+    ];
+    for concurrency in [1, 2] {
+        let result = new
+            .read_resolved_ranges(&requests, concurrency, B, &cancel)
+            .await?
+            .value;
+        assert_eq!(result[0].bytes.as_ref(), b"old");
+        assert_eq!(result[1].bytes.as_ref(), b"new");
+    }
+    Ok(())
+}

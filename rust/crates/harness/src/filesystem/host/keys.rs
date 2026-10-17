@@ -150,7 +150,7 @@ pub(crate) fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::ContentLengthOverflow
         | WorkspaceError::Work(_)
         | WorkspaceError::WorkMerge { .. } => Error::Invalid(error.to_string()),
-        WorkspaceError::Cancelled(error) => Error::Storage(error.to_string()),
+        WorkspaceError::Cancelled(error) => Error::from(error),
         WorkspaceError::Filesystem(error) => Error::Storage(error.to_string()),
         WorkspaceError::Engine(value) => Error::Storage(value),
     }

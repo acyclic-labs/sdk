@@ -38,3 +38,9 @@ pub(super) async fn schedule<F: Future>(
         Some(effect.await)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(feature = "filesystem-local", all(test, not(acyclic_harness_loom))))]
+mod owner;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(super) use owner::drive_command_owner;

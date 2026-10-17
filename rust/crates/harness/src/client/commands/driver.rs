@@ -4,6 +4,7 @@ use crate::OperationId;
 use acyclic_stream::StreamProvider;
 use futures::{Stream, StreamExt as _};
 use serde_json::Value;
+#[cfg(feature = "filesystem-local")]
 use std::sync::Arc;
 
 async fn consume<P, D, Fut>(

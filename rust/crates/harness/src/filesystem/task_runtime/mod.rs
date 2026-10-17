@@ -5,6 +5,9 @@ use super::{
     FilesystemHost, FilesystemInteractionHost, FilesystemWorkflowJournal,
 };
 use crate::runtime::TaskStateProvider;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::runtime::{InteractionRouter, OwnedTaskMailbox};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::store::HistoryIo;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
@@ -18,8 +21,8 @@ use crate::{
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
-        AgentHarness, ContentBindings, InteractionRouter, OwnedTaskMailbox, ResumableTaskSession,
-        RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        AgentHarness, ContentBindings, ResumableTaskSession, RuntimeScope, TaskAdmissionRecord,
+        TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -257,6 +260,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
     recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
+    task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -277,6 +281,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl TaskContext {
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     pub(crate) fn ordinary_journal_owner<P: StreamProvider + 'static>(
         &self,
     ) -> Result<Arc<crate::durable_host::TaskJournalOwner<P>>> {

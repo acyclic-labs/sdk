@@ -295,15 +295,13 @@ impl StreamProvider for MemoryStream {
             }
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
-            let cursor = HistoryCursor {
-                root: None,
-                windows: windows.into(),
-                next: request.from,
-            };
+            // A bounded native read never refreshes a history root. Keep only
+            // its already-admitted windows, rather than a live follow cursor.
+            let cursor: VecDeque<HistoryWindow> = windows.into();
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(window) = cursor.windows.front() else {
+                    let Some(window) = cursor.front() else {
                         return Ok(None);
                     };
                     let length = window
@@ -321,10 +319,28 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let record = cursor
-                        .next_record()
+                    let window = cursor.front_mut().ok_or(std::io::ErrorKind::InvalidData)?;
+                    let record = window
+                        .records
+                        .records
+                        .get(window.start)
+                        .cloned()
                         .ok_or(std::io::ErrorKind::InvalidData)?;
+                    window.start += 1;
+                    record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
+                    if window.start == window.end {
+                        cursor.pop_front();
+                    }
+                    #[cfg(test)]
+                    let read = crate::test_meter::trace::recordings_reordered()
+                        .then(|| bytes.record(length));
                     let examined = meter.record_examination(1, copied);
+                    #[cfg(test)]
+                    let read = read.unwrap_or_else(|| bytes.record(length));
+                    #[cfg(not(test))]
                     let read = bytes.record(length);
                     examined?;
                     read?;

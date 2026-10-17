@@ -1,5 +1,7 @@
 use super::*;
-use futures::{Stream as _, TryStreamExt as _};
+#[cfg(feature = "filesystem")]
+use futures::Stream as _;
+use futures::TryStreamExt as _;
 
 pub(crate) fn stream_error_with_work(
     source: StreamError,
@@ -99,6 +101,7 @@ pub(super) fn original_sdk_metadata_output<T>(
 }
 
 impl ObservedRecords {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Ordinary(records) => records.size_hint(),

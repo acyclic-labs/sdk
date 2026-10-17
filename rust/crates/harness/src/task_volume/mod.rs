@@ -17,11 +17,17 @@ pub(crate) use publication::publish;
 mod refresh;
 mod schema;
 mod segment;
+pub(crate) use segment::record_bytes;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
+pub(crate) use follow::query_id;
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub(crate) use follow::record_changes;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
-pub(crate) use follow::{query_id, record_changes};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{
@@ -229,6 +235,10 @@ pub struct TaskVolume<P: ?Sized> {
 }
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    pub(crate) async fn reopen(&self) -> Result<Self> {
+        Self::open_existing(self.provider.clone(), self.path.clone()).await
+    }
+
     /// Authenticated provider path bound to this volume's history identity.
     pub fn path(&self) -> &StreamPath {
         &self.path

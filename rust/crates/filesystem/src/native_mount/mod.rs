@@ -268,13 +268,18 @@ mod filesystem;
 pub use filesystem::*;
 mod error;
 pub use error::*;
+mod fence_io;
 mod recovery;
 pub use recovery::*;
 mod startup;
 pub use startup::*;
 mod session;
 pub use session::*;
+#[cfg(target_os = "linux")]
+mod disconnected;
 mod lifecycle;
+#[cfg(target_os = "linux")]
+pub use disconnected::recover_disconnected_native_mount_destination;
 pub use lifecycle::*;
 mod fence;
 use fence::*;

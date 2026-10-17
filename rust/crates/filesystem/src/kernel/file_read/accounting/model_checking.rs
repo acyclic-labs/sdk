@@ -12,10 +12,10 @@ fn copy_once<const BROKEN: bool>(
     OMIT_RESERVATION.with(|flag| flag.set(BROKEN));
     let mut accounting = KernelAccounting::native(work, cancellation);
     let mut observed = OriginalReadAccounting {
+        credit: crate::kernel::allocation::effects::EffectCredit::for_accounting(&accounting),
         accounting: &mut accounting,
         allocation,
         owned_bytes: 0,
-        pending: WorkCounters::UNCHARGED,
     };
     if observed
         .observe(super::super::super::codec::ReadAllocationStep::CheckCopy(8))
@@ -142,14 +142,14 @@ fn observer<'a, 'operation>(
     allocation: crate::NativeAllocation,
 ) -> OriginalReadAccounting<'a, 'operation> {
     OriginalReadAccounting {
+        credit: crate::kernel::allocation::effects::EffectCredit::for_accounting(accounting),
         accounting,
         allocation: KernelOwnedAllocation::NativeOriginal(allocation),
         owned_bytes: 0,
-        pending: WorkCounters::UNCHARGED,
     }
 }
 
-// Read the real root's withheld credit, independently of observer.pending.
+// Read the real root's withheld credit, independently of the observer's credit.
 // Root reservations subtract from budget; completed work is in the receipt.
 fn assert_credit(
     work: &crate::NativeMaterializationWork,

@@ -23,7 +23,7 @@ impl WorkspaceName {
         accounting.check()?;
         let (mut pending, mut maximum_pending, mut maximum_chunk) = (0_u64, 0_u64, 0_u64);
         for character in name.chars() {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             let mut chunk = 0_u64;
             let mut failure = None;
             unicode_normalization::char::decompose_canonical(character, |scalar| {
@@ -31,7 +31,7 @@ impl WorkspaceName {
                     return;
                 }
                 failure = (|| -> Result<(), WorkspaceError> {
-                    accounting.charge(item_work(1))?;
+                    accounting.charge_items(1)?;
                     chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
                     if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
                         pending = 0;
@@ -203,14 +203,22 @@ impl WorkspaceId {
         cancellation: &CancellationToken,
     ) -> W::Output<Self, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = (|| -> Result<Self, WorkspaceError> {
-            accounting.check()?;
-            let performed = crate::WorkCounters {
-                bytes_hashed: (WORKSPACE_ID_DOMAIN.len() + 16 + 8 + name.as_str().len()) as u64,
-                bytes_copied: 16,
-                ..crate::WorkCounters::UNCHARGED
-            };
-            accounting.admit(performed)?;
+        let result = Self::with_accounting(namespace, name, &mut accounting);
+        work.finish(result, &accounting)
+    }
+
+    fn with_accounting(
+        namespace: [u8; 16],
+        name: &WorkspaceName,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, WorkspaceError> {
+        accounting.check()?;
+        let performed = crate::WorkCounters {
+            bytes_hashed: (WORKSPACE_ID_DOMAIN.len() + 16 + 8 + name.as_str().len()) as u64,
+            bytes_copied: 16,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        Ok(Self(accounting.perform(performed, || {
             let mut hasher = blake3::Hasher::new();
             hasher.update(WORKSPACE_ID_DOMAIN);
             hasher.update(&namespace);
@@ -222,10 +230,13 @@ impl WorkspaceId {
             hasher.update(name.as_str().as_bytes());
             let mut bytes = [0_u8; 16];
             bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-            accounting.record_completed(performed)?;
-            Ok(Self(bytes))
-        })();
-        work.finish(result, &accounting)
+            #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+            model::completed(
+                bytes.len() as u64,
+                (WORKSPACE_ID_DOMAIN.len() + namespace.len() + 8 + name.as_str().len()) as u64,
+            );
+            bytes
+        })?))
     }
 
     /// Returns the stable opaque bytes for persistence or transport.
@@ -270,3 +281,11 @@ impl Default for IdempotencyKey {
         Self::new()
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "identity_tests.rs"]
+mod tests;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "identity_loom.rs"]
+mod model;

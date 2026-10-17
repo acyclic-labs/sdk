@@ -3,12 +3,14 @@ use super::*;
 impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
     pub(crate) fn new(accounting: &'a mut KernelAccounting<'operation>) -> Result<Self, FsError> {
         let allocation = accounting.claim_owned(0, 0)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let credit = crate::kernel::allocation::effects::EffectCredit::for_accounting(accounting);
         Ok(Self {
             accounting,
             allocation,
             owned_bytes: 0,
             #[cfg(not(target_arch = "wasm32"))]
-            pending: WorkCounters::UNCHARGED,
+            credit,
         })
     }
 
@@ -113,29 +115,16 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
 
     pub(crate) fn admit(&mut self, delta: WorkCounters) -> Result<(), FsError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let KernelAccounting::NativeOriginal { work, cancellation } = &*self.accounting {
-            let (work, cancellation) = (*work, *cancellation);
-            return crate::kernel::allocation::effects::reserve(
-                work,
-                cancellation,
-                &mut self.pending,
-                delta,
-                false,
-            );
+        if let Some(credit) = &mut self.credit {
+            return credit.reserve(delta, false);
         }
         self.accounting.admit(delta)
     }
 
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), FsError> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let KernelAccounting::NativeOriginal { work, cancellation } = &*self.accounting {
-            let (work, cancellation) = (*work, *cancellation);
-            return crate::kernel::allocation::effects::complete(
-                work,
-                cancellation,
-                &mut self.pending,
-                delta,
-            );
+        if let Some(credit) = &mut self.credit {
+            return credit.complete(delta);
         }
         self.accounting.record_completed(delta)
     }
@@ -143,15 +132,6 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
     pub(crate) fn release_failed(mut self) -> Result<(), FsError> {
         self.accounting
             .release_owned(&mut self.allocation, self.owned_bytes)
-    }
-}
-
-impl Drop for OriginalReadAccounting<'_, '_> {
-    fn drop(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.accounting.native_work() {
-            crate::kernel::allocation::effects::refund(work, &mut self.pending);
-        }
     }
 }
 

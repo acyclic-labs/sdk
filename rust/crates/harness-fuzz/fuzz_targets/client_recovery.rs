@@ -8,13 +8,30 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     if let Ok(text) = std::str::from_utf8(data) {
-        if let Ok(frame) = jsonl::parse_client_frame(text) {
-            let json = jsonl::client_frame(&frame).unwrap();
-            assert_eq!(jsonl::parse_client_frame(&json).unwrap(), frame);
+        if let Ok(file) = jsonl::parse_request(text) {
+            assert_eq!(
+                jsonl::parse_request(&jsonl::request(&file).unwrap()).unwrap(),
+                file
+            );
         }
-        if let Ok(frame) = jsonl::parse_server_frame(text) {
-            let json = jsonl::server_frame(&frame).unwrap();
-            assert_eq!(jsonl::parse_server_frame(&json).unwrap(), frame);
+        if let Ok((query, head)) = jsonl::parse_snapshot(text) {
+            let encoded = jsonl::snapshot(&query, &head).unwrap();
+            let (query, head) = jsonl::parse_snapshot(&encoded).unwrap();
+            assert_eq!(jsonl::snapshot(&query, &head).unwrap(), encoded);
+        }
+        if let Ok(change) = jsonl::parse_change(text) {
+            let encoded = jsonl::change(&change).unwrap();
+            let change = jsonl::parse_change(&encoded).unwrap();
+            assert_eq!(jsonl::change(&change).unwrap(), encoded);
+        }
+        if let Ok(resolution) =
+            serde_json::from_str::<acyclic_harness::client::CommandResolution>(text)
+        {
+            let encoded = serde_json::to_string(&resolution).unwrap();
+            let decoded =
+                serde_json::from_str::<acyclic_harness::client::CommandResolution>(&encoded)
+                    .unwrap();
+            assert_eq!(resolution, decoded);
         }
         // Exercise arbitrary single filenames without escaping the temporary root.
         let mut components = std::path::Path::new(text).components();

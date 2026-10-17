@@ -54,7 +54,11 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn for_workspace(
         &self,
         volume: &VolumeRef,
@@ -81,6 +85,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl<A, O> FilesystemHost<A, O> {
+    #[cfg(feature = "native-execution")]
     pub(crate) fn with_project_family(
         mut self: Arc<Self>,
         root: acyclic_fs::WorkspaceId,

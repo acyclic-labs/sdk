@@ -1,4 +1,4 @@
-use acyclic_harness::{client::jsonl, wire};
+use acyclic_harness::wire;
 use prost::Message;
 
 pub fn check(data: &[u8]) {
@@ -18,20 +18,6 @@ pub fn check_with_dropped_generation(data: &[u8], broken: bool) {
             frame
         );
     }
-    if let Ok(text) = std::str::from_utf8(data) {
-        if let Ok(frame) = jsonl::parse_client_frame(text) {
-            assert_eq!(
-                jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap(),
-                frame
-            );
-        }
-        if let Ok(frame) = jsonl::parse_server_frame(text) {
-            assert_eq!(
-                jsonl::parse_server_frame(&jsonl::server_frame(&frame).unwrap()).unwrap(),
-                frame
-            );
-        }
-    }
     // Every input also exercises valid messages, arbitrary UTF-8 escaping,
     // unknown enum values and the full u64 range.
     let text = String::from_utf8_lossy(data).into_owned();
@@ -45,7 +31,7 @@ pub fn check_with_dropped_generation(data: &[u8], broken: bool) {
             through_revision: u64::from_le_bytes(number),
         })),
     };
-    let mut decoded = jsonl::parse_client_frame(&jsonl::client_frame(&frame).unwrap()).unwrap();
+    let mut decoded = wire::ClientFrame::decode(frame.encode_to_vec().as_slice()).unwrap();
     if broken {
         let Some(wire::client_frame::Frame::Acknowledge(ack)) = &mut decoded.frame else {
             unreachable!();
@@ -54,7 +40,7 @@ pub fn check_with_dropped_generation(data: &[u8], broken: bool) {
     }
     assert_eq!(
         decoded, frame,
-        "client JSONL roundtrip changed the generation"
+        "client protobuf roundtrip changed the generation"
     );
     let frame = wire::ServerFrame {
         frame: Some(wire::server_frame::Frame::Admission(wire::Admission {
@@ -67,7 +53,7 @@ pub fn check_with_dropped_generation(data: &[u8], broken: bool) {
         })),
     };
     assert_eq!(
-        jsonl::parse_server_frame(&jsonl::server_frame(&frame).unwrap()).unwrap(),
+        wire::ServerFrame::decode(frame.encode_to_vec().as_slice()).unwrap(),
         frame
     );
 }

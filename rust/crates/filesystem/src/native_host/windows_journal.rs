@@ -135,6 +135,8 @@ pub(super) fn open_windows_named<W: NativeHostWork>(
             let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
             let mut handle = win::HANDLE::default();
             // SAFETY: the held parent, validated leaf, and outputs remain live for this call.
+            #[cfg(test)]
+            super::stat_probe::event("NtCreateFile");
             let status = unsafe {
                 nt::NtCreateFile(
                     &mut handle,
@@ -167,6 +169,8 @@ pub(super) fn windows_stat_information<W: NativeHostWork>(
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
         let mut information = nt::FILE_STAT_INFORMATION::default();
         // SAFETY: the held handle and fixed-size output remain live for the query.
+        #[cfg(test)]
+        super::stat_probe::event("NtQueryInformationFile");
         let status = unsafe {
             nt::NtQueryInformationFile(
                 win::HANDLE(file.as_handle().as_raw_handle()),
@@ -214,6 +218,8 @@ pub(crate) fn stat_windows_name(
     let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
     let mut information = nt::FILE_STAT_INFORMATION::default();
     // SAFETY: the held directory, name, and fixed-size output outlive the query.
+    #[cfg(test)]
+    super::stat_probe::event("NtQueryInformationByName");
     let status = unsafe {
         nt::NtQueryInformationByName(
             &attributes,

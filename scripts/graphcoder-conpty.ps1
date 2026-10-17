@@ -1,12 +1,15 @@
 # Actual Win32 ConPTY transport for test-graphcoder-pty.mjs; never a redirected-stdin substitute.
 param(
     [Parameter(Mandatory = $true)][string]$Binary,
-    [Parameter(Mandatory = $true)][string]$Config,
+    [Parameter(Mandatory = $true)][string]$Workspace,
+    [Parameter(Mandatory = $true)][string]$Catalog,
+    [Parameter(Mandatory = $true)][string]$SettingsRoot,
+    [string]$Model = "scripted/test",
     [int]$DeadlineMilliseconds = 90000
 )
 $ErrorActionPreference = 'Stop'
-if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Config)) {
-    throw 'ConPTY requires absolute installed binary and configuration paths'
+if (-not [IO.Path]::IsPathRooted($Binary) -or -not [IO.Path]::IsPathRooted($Workspace) -or -not [IO.Path]::IsPathRooted($Catalog)) {
+    throw 'ConPTY requires absolute binary, workspace and catalog paths'
 }
 if ($DeadlineMilliseconds -lt 1000 -or $DeadlineMilliseconds -gt 120000) {
     throw 'ConPTY deadline must be finite (1000..120000 ms)'
@@ -68,7 +71,7 @@ public static class GraphcoderConPty {
         }
         result.Append('\\', slashes * 2); return result.Append('"').ToString();
     }
-    public static int Run(string binary, string config, int deadline) {
+    public static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline) {
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero, job = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false;
@@ -76,7 +79,7 @@ public static class GraphcoderConPty {
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
-            int hr = CreatePseudoConsole(new Coord { X = 32767, Y = 100 }, inRead, outWrite, 0, out console);
+            int hr = CreatePseudoConsole(new Coord { X = 80, Y = 24 }, inRead, outWrite, 0, out console);
             if (hr != 0) throw new COMException("CreatePseudoConsole unavailable; real Windows ConPTY is mandatory", hr);
             IntPtr size = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
@@ -96,8 +99,8 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --session " + Quote(config)), IntPtr.Zero, IntPtr.Zero, false,
-                    0x00080000 | 0x00000004, IntPtr.Zero, Path.GetDirectoryName(config), ref startup, out process), "CreateProcessW with real ConPTY");
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model)), IntPtr.Zero, IntPtr.Zero, false,
+                    0x00080000 | 0x00000004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
                 bool restoredOutput = SetStdHandle(-11, parentOutput);
@@ -160,5 +163,5 @@ public static class GraphcoderConPty {
     }
 }
 '@
-try { exit [GraphcoderConPty]::Run($Binary, $Config, $DeadlineMilliseconds) }
+try { exit [GraphcoderConPty]::Run($Binary, $Workspace, $Catalog, $SettingsRoot, $Model, $DeadlineMilliseconds) }
 catch { [Console]::Error.WriteLine($_.Exception.ToString()); exit 125 }

@@ -46,7 +46,7 @@ fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(fixture.channel.clone());
+    let (mut pool, a, _terminal_b) = ended_sibling(fixture._channel.clone());
     let (release, held) = oneshot::channel::<()>();
     // One fixture lock, never nested and released before the credential await.
     let held = std::sync::Arc::new(Mutex::new(Some(held)));
@@ -63,7 +63,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
         }
     });
     pool.links.get_mut("good").unwrap().channel =
-        native::endpoint(fixture.channel.clone(), None, Some(credential));
+        native::endpoint(fixture._channel.clone(), None, Some(credential));
     pool.reconnect("good")?;
     assert!(
         futures::poll!(future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))).is_pending()
@@ -95,7 +95,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(fixture.channel.clone());
+    let (mut pool, a, _terminal_b) = ended_sibling(fixture._channel.clone());
     pool.reconnect("good")?;
     let (node, epoch, ready) = future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))
         .await

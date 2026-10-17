@@ -50,10 +50,10 @@ fn encode<const BROKEN: bool>(
     let mut accounting = allocation::KernelAccounting::native(work, cancellation);
     if let Some((wire, mut output, owner)) = storage {
         let mut observer = EncodeAccounting {
+            credit: crate::kernel::allocation::effects::EffectCredit::for_accounting(&accounting),
             accounting: &mut accounting,
             owned_bytes: output.len() as u64,
             allocation: Some(allocation::KernelOwnedAllocation::NativeOriginal(owner)),
-            pending: WorkCounters::UNCHARGED,
         };
         let delta = WorkCounters {
             bytes_encoded: wire.len() as u64,

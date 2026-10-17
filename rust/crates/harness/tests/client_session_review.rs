@@ -312,8 +312,8 @@ proptest::proptest! {
         let request = wire::ClientFrame { frame: Some(wire::client_frame::Frame::Acknowledge(wire::Acknowledge {
             authority: Some(wire::Authority { kind, id }), generation, through_revision: revision,
         })) };
-        let json = jsonl::client_frame(&request).unwrap();
-        proptest::prop_assert_eq!(jsonl::parse_client_frame(&json).unwrap(), request.clone());
+        let encoded = request.encode_to_vec();
+        proptest::prop_assert_eq!(wire::ClientFrame::decode(encoded.as_slice()).unwrap(), request.clone());
         let record = SessionRecord { request: Some(request), response: None, checkpoint: None };
         let directory = tempfile::tempdir().unwrap();
         let mut store = FileClientState::open(&directory.path().join("state")).unwrap();
