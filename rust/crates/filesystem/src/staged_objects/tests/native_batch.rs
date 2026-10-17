@@ -69,23 +69,23 @@ fn run(
     mode: Mode,
     cancelled: bool,
     count: usize,
-) -> ((Result<Vec<Vec<u8>>, String>, WorkCounters), Vec<Event>) {
-    observe(
+) -> Result<((Result<Vec<Vec<u8>>, String>, WorkCounters), Vec<Event>), Box<dyn std::error::Error>>
+{
+    let (result, trace) = observe(
         || {
             runtime.block_on(async {
-                let directory = tempfile::tempdir().unwrap();
-                let (old, provider) = open_staged(directory.path()).await.unwrap();
+                let directory = tempfile::tempdir()?;
+                let (old, provider) = open_staged(directory.path()).await?;
                 let store =
                     StagedObjects::open(Observed(old.inner), directory.path().to_path_buf())
-                        .await
-                        .unwrap();
+                        .await?;
                 let token = CancellationToken::new();
-                let writes = (0..count)
-                    .map(|index| {
-                        let (object_id, bytes) = blob(OwnedBytes::from(vec![index as u8; 32]));
-                        ObjectWrite { object_id, bytes }
-                    })
-                    .collect::<Vec<_>>();
+                let mut writes = Vec::new();
+                for index in 0..count {
+                    let marker = u8::try_from(index)?;
+                    let (object_id, bytes) = blob(OwnedBytes::from(vec![marker; 32]));
+                    writes.push(ObjectWrite { object_id, bytes });
+                }
                 let ids = writes
                     .iter()
                     .map(|write| write.object_id)
@@ -95,17 +95,20 @@ fn run(
                         &writes,
                         &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
                     )
-                    .await
-                    .unwrap();
-                let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token).unwrap();
+                    .await?;
+                let native = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &token)
+                    .map_err(|(error, _)| error)?;
                 if cancelled {
                     token.cancel();
                 }
-                (directory, provider, store, writes, ids, token, native)
+                Ok::<_, Box<dyn std::error::Error>>((
+                    directory, provider, store, writes, ids, token, native,
+                ))
             })
         },
-        |(directory, provider, store, writes, ids, token, native)| {
+        |state| {
             runtime.block_on(async {
+        let (directory, provider, store, writes, ids, token, native) = state?;
         let began = std::time::Instant::now();
         let mut work = AuthorityWork::native(&native, &token);
         let result = match mode {
@@ -136,7 +139,7 @@ fn run(
                 let mut read_work = AuthorityWork::new(WorkBudget::UNBOUNDED, &read_token);
                 let mut output = Vec::new();
                 for &id in &ids {
-                    output.push(store.inner.read(id, 32, &mut read_work).await.unwrap().bytes.to_vec());
+                    output.push(store.inner.read(id, 32, &mut read_work).await?.bytes.to_vec());
                 }
                 Ok(output)
             }
@@ -145,12 +148,13 @@ fn run(
         drop(store);
         drop(provider);
         if result.is_ok() {
-            assert!(reopen_contains(directory.path(), &ids).await.unwrap());
+            assert!(reopen_contains(directory.path(), &ids).await?);
         }
-        (result, cost)
+        Ok::<_, Box<dyn std::error::Error>>((result, cost))
     })
         },
-    )
+    );
+    Ok((result?, trace))
 }
 
 fn exact_batch_work(actual: WorkCounters, batch: WorkCounters, count: usize) -> bool {
@@ -170,15 +174,15 @@ fn exact_batch_work(actual: WorkCounters, batch: WorkCounters, count: usize) -> 
 }
 
 #[test]
-fn native_publication_batches_exact_work_with_individual_fsync_negative_control() {
+fn native_publication_batches_exact_work_with_individual_fsync_negative_control()
+-> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .unwrap();
+        .build()?;
     for count in [4, 8] {
-        let ((old_result, old), old_trace) = run(&runtime, Mode::Individual, false, count);
-        let ((batch_result, batch), batch_trace) = run(&runtime, Mode::Batch, false, count);
-        let ((result, cost), trace) = run(&runtime, Mode::Staged, false, count);
+        let ((old_result, old), old_trace) = run(&runtime, Mode::Individual, false, count)?;
+        let ((batch_result, batch), batch_trace) = run(&runtime, Mode::Batch, false, count)?;
+        let ((result, cost), trace) = run(&runtime, Mode::Staged, false, count)?;
         assert_eq!(result, old_result);
         assert_eq!(result, batch_result);
         assert_eq!(trace, old_trace);
@@ -194,11 +198,12 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
         );
         assert!(old.durability_operations > cost.durability_operations);
     }
-    let ((old_error, _), old_trace) = run(&runtime, Mode::Individual, true, 4);
-    let ((error, cost), trace) = run(&runtime, Mode::Staged, true, 4);
+    let ((old_error, _), old_trace) = run(&runtime, Mode::Individual, true, 4)?;
+    let ((error, cost), trace) = run(&runtime, Mode::Staged, true, 4)?;
     assert!(error.is_err());
     assert_eq!(error, old_error);
     assert_eq!(trace, old_trace);
     assert_eq!(cost.backend_write_operations, 0);
     assert_eq!(cost.durability_operations, 0);
+    Ok(())
 }
