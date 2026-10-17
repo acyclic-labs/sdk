@@ -3,38 +3,57 @@
 // service binaries on one Linux host, with no quorum outside localhost.
 //
 //   node scripts/local-cloud.mjs \
-//     --cloud <cloud checkout> --binaries <CLOUD_E2E_BINARIES> --out <new dir> -- <test argv...>
+//     --cloud <cloud checkout> --binaries <CLOUD_E2E_BINARIES> --out <new dir> \
+//     [--topology identity|full] -- <test argv...>
 //
 // Build the binaries first with `node ops/local/e2e.mjs --build-only` in the
 // cloud checkout. The checkout is only read: the gate stages helpers, engines
 // and dependencies beside itself, so the fixture runs it from a snapshot of the
 // committed tree in <out>/cloud, with the checkout's installed node_modules
 // linked in, and gives it fresh operator state in <out>/state and <out>/cache.
-// The cloud's own local gate (`ops/local/e2e.mjs
-// --identity-only`, as root, in a delegated systemd scope) prepares custody, starts the Objects and Streams
-// Hosts and their Edges in a private network namespace, and waits on their
-// readiness, the account keyring and identity. Its last step runs
-// `cloud-e2e identity-check`; a wrapper in front of that one command runs the
-// test command first, inside the fabric, with ACYCLIC_LOCAL_CLOUD naming
-// <out>/endpoints.json (Edge endpoints, the fabric CA and the bearers the
-// gate minted locally). The gate then finishes its own check and tears the
-// fabric down. The run passes only when the gate passes and the test command
-// ran and exited 0. A prebuilt harness e2e binary run away from its build tree
-// finds its scenario data through CARGO_MANIFEST_DIR, as under cargo.
+// The cloud's own local gate (`ops/local/e2e.mjs`, as root, in a delegated
+// systemd scope) prepares custody, starts Hosts and their Edges in a private
+// network namespace, and waits on their readiness, the account keyring and
+// identity. The `identity` topology (the default, `--identity-only`) serves
+// only Objects and Streams, and the hook is its last step, `cloud-e2e
+// identity-check`; after the test passes the gate finishes that check and tears
+// the fabric down. The `full` topology (`--worker-stream-only`) serves every
+// product, Filesystem and Actors included, and the hook is its first step after
+// identity readiness, `cloud-e2e worker-ingress`. What follows is the cloud's
+// own Workers deployment and data-path acceptance, which the SDK does not use
+// (and which fails on a loaded host), so after the test the wrapper stops the
+// gate with STOPPED instead, and the gate tears the fabric down. The test
+// command runs inside the fabric with ACYCLIC_LOCAL_CLOUD naming
+// <out>/endpoints.json (Edge endpoints, the fabric CA and the bearers the gate
+// minted locally). The run passes only when the test command ran and exited 0
+// and the gate passed, or, for a stopping topology, failed only by that stop.
+// A failed gate keeps its run directory in memory; the fixture moves its logs
+// into <out>/run-logs and releases the rest. A prebuilt harness e2e binary run
+// away from its build tree finds its scenario data through CARGO_MANIFEST_DIR,
+// as under cargo.
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const HOOKED = "identity-check";
-const PRODUCTS = ["streams", "objects"];
+/** The wrapper's exit status after the test passes, when its topology stops the gate there. */
+export const STOPPED = 75;
+
+/**
+ * Each topology: the gate's mode, the one command hooked, the gate phase that
+ * runs it when the topology stops there, and the products it serves.
+ */
+export const TOPOLOGIES = {
+  identity: { flag: "--identity-only", hooked: "identity-check", products: ["streams", "objects"] },
+  full: { flag: "--worker-stream-only", hooked: "worker-ingress", stop: "checks.worker_url", products: ["streams", "objects", "fs", "actors"] },
+};
 
 /** The SDK-owned endpoints file projected from the gate's topology. */
-export function endpoints(topology) {
+export function endpoints(topology, products = TOPOLOGIES.identity.products) {
   const ca_file = topology.ca_file;
   if (typeof ca_file !== "string" || !path.isAbsolute(ca_file)) throw new Error("topology has no absolute ca_file");
   const out = { version: 1 };
-  for (const product of PRODUCTS) {
+  for (const product of products) {
     const address = topology.edge?.[product], bearer = topology.bearers?.[product];
     if (typeof address !== "string" || !address) throw new Error(`topology has no ${product} Edge`);
     if (typeof bearer !== "string" || !bearer) throw new Error(`topology has no ${product} bearer`);
@@ -47,10 +66,13 @@ export function parseArgs(argv) {
   const at = argv.indexOf("--");
   const options = {}, rest = at < 0 ? argv : argv.slice(0, at);
   options.test = at < 0 ? [] : argv.slice(at + 1);
+  options.topology = "identity";
   for (let i = 0; i < rest.length; i += 2) {
     const [name, value] = [rest[i], rest[i + 1]];
-    if (!["--cloud", "--binaries", "--out"].includes(name) || !value) throw new Error(`usage: --cloud DIR --binaries DIR --out DIR -- TEST...`);
-    if (!path.isAbsolute(value)) throw new Error(`${name} must be absolute`);
+    if (!["--cloud", "--binaries", "--out", "--topology"].includes(name) || !value) throw new Error(`usage: --cloud DIR --binaries DIR --out DIR [--topology identity|full] -- TEST...`);
+    if (name === "--topology") {
+      if (!Object.hasOwn(TOPOLOGIES, value)) throw new Error(`unknown topology ${value}`);
+    } else if (!path.isAbsolute(value)) throw new Error(`${name} must be absolute`);
     options[name.slice(2)] = value;
   }
   for (const name of ["cloud", "binaries", "out"]) if (!options[name]) throw new Error(`--${name} is required`);
@@ -89,18 +111,19 @@ export function wrapperPath(file) {
   return file;
 }
 
-export function wrapperSource() {
+export function wrapperSource({ hooked, stop } = TOPOLOGIES.identity) {
+  if (!/^[a-z-]+$/.test(hooked)) throw new Error(`unsupported hooked command ${hooked}`);
   return `#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 int main(int argc, char **argv) {
-  if (argc >= 3 && strcmp(argv[1], "${HOOKED}") == 0) {
+  if (argc >= 3 && strcmp(argv[1], "${hooked}") == 0) {
     pid_t child = fork();
     if (child < 0) return 70;
     if (child == 0) { execl(NODE, NODE, SCRIPT, "hook", argv[2], (char *)0); _exit(127); }
     int status;
     if (waitpid(child, &status, 0) < 0) return 70;
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 71;
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 71;${stop ? `\n    return ${STOPPED};` : ""}
   }
   argv[0] = REAL;
   execv(REAL, argv);
@@ -109,11 +132,63 @@ int main(int argc, char **argv) {
 `;
 }
 
-/** Pass requires the gate's success and the test command's own exit 0. */
-export function verdict(gate, result) {
+/** The gate's phase records, in order, from its log. */
+export function phaseRecords(log) {
+  const records = [];
+  for (const line of log.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    try { const entry = JSON.parse(line); if (entry.operation === "local.e2e.phase") records.push(entry); } catch { /* not a phase line */ }
+  }
+  return records;
+}
+
+/** Teardown phases the gate reports after every run, last of all before `total`. */
+export const TEARDOWN = ["teardown", "teardown.release"];
+
+/**
+ * Why the gate's full phase record is not exactly the wrapper's deliberate stop
+ * in `phase`, or undefined when it is. The stop (exit 75) must be the only
+ * failed check, the stopped gate's aggregate `total` failure its last record, and
+ * every teardown phase between them reported and passed. A truncated log (no
+ * `total`), a failed or missing teardown, and any other failure all fail.
+ */
+export function stopDeviation(records, phase) {
+  const failed = records.filter(record => record.passed !== true);
+  const [stop, total] = failed;
+  if (failed.length !== 2 || stop.phase !== phase || total.phase !== "total") {
+    return `failed phases [${failed.map(record => record.phase).join(", ")}] are not [${phase}, total]`;
+  }
+  if (!new RegExp(`"code":${STOPPED}[,}]`).test(stop.last_error?.message ?? "")) return `${phase} did not exit ${STOPPED}`;
+  if (records.at(-1) !== total) return "total is not the gate's last phase";
+  const after = records.slice(records.indexOf(stop) + 1).map(record => record.phase);
+  const missing = TEARDOWN.filter(name => !after.includes(name));
+  if (missing.length) return `teardown phases [${missing.join(", ")}] were not reported after the stop`;
+  return undefined;
+}
+
+/**
+ * The run directory a failed gate kept, unless its teardown also kept custody
+ * (then it stays for the operator). Only a gate-created `cloud-e2e-` directory qualifies.
+ */
+export function keptRun(log) {
+  if (/^retained run custody: /m.test(log)) return undefined;
+  const runs = [...log.matchAll(/^run directory: (\/(?:dev\/shm|tmp)\/cloud-e2e-[A-Za-z0-9]{6})$/gm)];
+  return runs.length === 1 ? runs[0][1] : undefined;
+}
+
+/**
+ * Pass requires the test command's own exit 0 and the gate's success, or, for a
+ * topology that stops the gate after the test, a gate failure that is exactly that
+ * stop followed by a complete, passing teardown.
+ */
+export function verdict(gate, result, { stop } = {}, records = []) {
   if (!result) return { passed: false, reason: "the test command never ran inside the local cloud" };
   if (result.code !== 0) return { passed: false, reason: `the test command exited ${result.code ?? result.signal}` };
-  if (gate !== 0) return { passed: false, reason: `the local cloud gate failed (${gate})` };
+  if (stop) {
+    if (gate === 0) return { passed: false, reason: `the local cloud gate did not stop at ${stop} (it passed)` };
+    const deviation = stopDeviation(records, stop);
+    if (deviation) return { passed: false, reason: `the local cloud gate did not stop cleanly at ${stop}: ${deviation}` };
+  } else if (gate !== 0) return { passed: false, reason: `the local cloud gate failed (${gate})` };
   return { passed: true };
 }
 
@@ -131,11 +206,35 @@ function readJson(file) {
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
 }
 
-/** Runs inside the fabric, in place of the gate's last command. */
+/**
+ * The Objects bucket every Filesystem Host stores into, from their launch
+ * configs. Activation provisions it in a deployed cloud; the local gate creates
+ * it only in phases a stopping topology never reaches, so the test creates it.
+ */
+export function storageBucket(configs) {
+  const buckets = new Set(configs.map(config => config.objects_bucket));
+  if (buckets.size !== 1 || typeof [...buckets][0] !== "string" || ![...buckets][0]) {
+    throw new Error(`Filesystem Hosts name ${buckets.size} storage buckets`);
+  }
+  return [...buckets][0];
+}
+
+/** Launch configs of the Filesystem Hosts in a gate run. */
+function filesystemConfigs(run) {
+  const hosts = path.join(run, "hosts");
+  return fs.readdirSync(hosts)
+    .map(host => readJson(path.join(hosts, host, "units/fs/config/fs.json")))
+    .filter(Boolean);
+}
+
+/** Runs inside the fabric, before the hooked gate command. */
 async function hook(run) {
   const out = process.env.ACYCLIC_LOCAL_CLOUD_OUT, test = JSON.parse(process.env.ACYCLIC_LOCAL_CLOUD_TEST);
+  const { products } = TOPOLOGIES[process.env.ACYCLIC_LOCAL_CLOUD_TOPOLOGY];
   const file = path.join(out, "endpoints.json");
-  fs.writeFileSync(file, JSON.stringify(endpoints(readJson(path.join(run, "topology.json"))), null, 2), { mode: 0o600 });
+  const projected = endpoints(readJson(path.join(run, "topology.json")), products);
+  if (projected.fs) projected.fs.storage_bucket = storageBucket(filesystemConfigs(run));
+  fs.writeFileSync(file, JSON.stringify(projected, null, 2), { mode: 0o600 });
   const started = performance.now();
   const child = spawn(test[0], test.slice(1), { stdio: logStdio(path.join(out, "test.log")), env: { ...process.env, ACYCLIC_LOCAL_CLOUD: file } });
   const [code, signal] = await new Promise((resolve, reject) => {
@@ -196,7 +295,8 @@ async function main(options) {
     if (name !== "cloud-e2e") fs.symlinkSync(path.join(options.binaries, name), path.join(bin, name));
   }
   const source = path.join(options.out, "wrapper.c");
-  fs.writeFileSync(source, wrapperSource());
+  const topology = TOPOLOGIES[options.topology];
+  fs.writeFileSync(source, wrapperSource(topology));
   const define = (name, value) => `-D${name}="${wrapperPath(value)}"`;
   const cc = spawnSync("cc", ["-O2", "-o", path.join(bin, "cloud-e2e"), source,
     define("REAL", path.join(options.binaries, "cloud-e2e")), define("NODE", process.execPath),
@@ -206,9 +306,9 @@ async function main(options) {
   const gateLog = path.join(options.out, "gate.log");
   // The gate builds its heap cgroups inside its own delegated, memory-bounded scope.
   const gate = spawn("systemd-run", ["--scope", "-p", "Delegate=yes", "-p", "MemoryMax=16G", "--",
-    process.execPath, path.join(cloud, "ops/local/e2e.mjs"), "--identity-only"], {
+    process.execPath, path.join(cloud, "ops/local/e2e.mjs"), topology.flag], {
     cwd: cloud, stdio: logStdio(gateLog),
-    env: { ...process.env, CLOUDCTL_STATE_DIR: state, CLOUD_CACHE_DIR: cache, CLOUD_E2E_BINARIES: bin, ACYCLIC_LOCAL_CLOUD_OUT: options.out, ACYCLIC_LOCAL_CLOUD_TEST: JSON.stringify(options.test) },
+    env: { ...process.env, CLOUDCTL_STATE_DIR: state, CLOUD_CACHE_DIR: cache, CLOUD_E2E_BINARIES: bin, ACYCLIC_LOCAL_CLOUD_OUT: options.out, ACYCLIC_LOCAL_CLOUD_TOPOLOGY: options.topology, ACYCLIC_LOCAL_CLOUD_TEST: JSON.stringify(options.test) },
   });
   const stop = () => gate.kill("SIGTERM");
   process.on("SIGTERM", stop); process.on("SIGINT", stop);
@@ -216,13 +316,19 @@ async function main(options) {
     gate.once("error", reject);
     gate.once("close", (code, signal) => resolve(code ?? signal));
   });
-  const phases = {};
-  for (const line of fs.readFileSync(gateLog, "utf8").split("\n")) {
-    if (!line.startsWith("{")) continue;
-    try { const entry = JSON.parse(line); if (entry.operation === "local.e2e.phase") phases[entry.phase] = entry.wall_ms; } catch { /* not a phase line */ }
-  }
+  const log = fs.readFileSync(gateLog, "utf8");
+  const records = phaseRecords(log);
+  const phases = Object.fromEntries(records.map(record => [record.phase, record.wall_ms]));
   const result = readJson(path.join(options.out, "result.json"));
-  const outcome = { ...verdict(status, result), cloud: { head, tree }, gate: status, test: result ?? null, phases, total_ms: Math.round(performance.now() - started) };
+  // A failed gate (always, for a stopping topology) keeps its run directory, in
+  // memory, for diagnosis. The fabric's logs move into <out> and the rest is
+  // released, as the gate does after a pass, so repeated runs do not pin memory.
+  const run = keptRun(log);
+  if (run) {
+    fs.cpSync(path.join(run, "logs"), path.join(options.out, "run-logs"), { recursive: true });
+    fs.rmSync(run, { recursive: true, force: true });
+  }
+  const outcome = { ...verdict(status, result, topology, records), topology: options.topology, cloud: { head, tree }, gate: status, test: result ?? null, phases, total_ms: Math.round(performance.now() - started) };
   console.log(JSON.stringify(outcome));
   return outcome.passed ? 0 : 1;
 }

@@ -437,16 +437,21 @@ fn malformed_replies_do_not_swallow_user_input() -> io::Result<()> {
 }
 
 #[cfg(unix)]
+#[path = "support/status_flags.rs"]
+mod status_flags;
+
+#[cfg(unix)]
 #[test]
 fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error::Error>> {
-    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
+    use status_flags::settable_status_flags;
     let pty = rustix_openpty::openpty(None, None)?;
     let mut controller = std::fs::File::from(pty.controller);
     let user = std::fs::File::from(pty.user);
     let observer = user.try_clone()?;
     let original = tcgetattr(&observer)?;
-    let original_flags = fcntl_getfl(&observer)?;
+    let original_flags = settable_status_flags(&observer)?;
     {
         let mut tty = Tty::from_file(user)?;
         assert!(
@@ -454,7 +459,7 @@ fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error
                 .local_modes
                 .contains(LocalModes::ICANON)
         );
-        assert!(fcntl_getfl(&observer)?.contains(OFlags::NONBLOCK));
+        assert!(settable_status_flags(&observer)?.contains(OFlags::NONBLOCK));
         controller.write_all(b"typed\x1b[?0u\x1b[?62;4c")?;
         let (caps, mut decoder) = detect(&mut tty, &Environment::default())?;
         assert_eq!(caps.keyboard, KeyboardProtocol::Kitty);
@@ -472,7 +477,7 @@ fn controlling_tty_probe_and_os_state_restore() -> Result<(), Box<dyn std::error
     );
     assert_eq!(restored.input_speed(), original.input_speed());
     assert_eq!(restored.output_speed(), original.output_speed());
-    assert_eq!(fcntl_getfl(&observer)?, original_flags);
+    assert_eq!(settable_status_flags(&observer)?, original_flags);
     Ok(())
 }
 

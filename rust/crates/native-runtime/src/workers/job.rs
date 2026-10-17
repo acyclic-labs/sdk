@@ -162,7 +162,11 @@ impl NativeJob {
                 if let Some(completion) = completion {
                     completion.complete();
                 }
-                terminal.publish()
+                let waker = terminal.publish();
+                // The observer may take the result before this reference
+                // drops, so the state's charge travels with the observer.
+                crate::sync::release(terminal);
+                waker
             }
         }
     }

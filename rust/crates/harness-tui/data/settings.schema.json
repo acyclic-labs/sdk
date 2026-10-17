@@ -104,6 +104,9 @@
     },
     "$schema": {
       "type": "string"
+    },
+    "reduced_motion": {
+      "type": "boolean"
     }
   }
 }
