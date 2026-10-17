@@ -80,7 +80,8 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
       if (typeof part !== "object" || part === null) continue;
       const data = part.kind === "tool_result" && part.content?.kind === "parts" ? part.content.parts : [part];
       for (const item of data) {
-        if (item.kind === "file" && item.policy !== "reference" && item.policy !== "bounded_full") {
+        if (item.kind === "file" && item.policy !== "reference" && item.policy !== "bounded_full"
+          && !(typeof item.policy === "object" && "project_instructions" in item.policy)) {
           throw new TypeError("unsupported native media policy for Pi adapter");
         }
       }

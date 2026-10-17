@@ -5,12 +5,37 @@ import { composeContentBindings, DEFAULT_LIMITS,
 import {
   HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS,
 } from "../src/limits-contract.js";
+import { publicModelContent } from "../src/projection.js";
 
 const contracts = await NativeContracts.create();
 const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
 const id = ("03030303-0303-0303-0303-030303030303" as ConversationMessageId);
 const conversationState = (...messages: ConversationMessage[]): ProjectableConversation =>
   Object.freeze({ agent, revision: BigInt(messages.length), messages: Object.freeze(messages) });
+
+test("discovered instructions use the shared renderer and preflight before reads", async () => {
+  for (const name of ["AGENTS.md", "CLAUDE.md"]) {
+    const bytes = new TextEncoder().encode("verbatim project instructions λ\n");
+    const stored = { ...await reference("archive/body", bytes, "text/markdown"), display_name: "rules" };
+    const source = { volume: stored.volume, path: `nested/${name}` };
+    const projected = contracts.projectDiscoveredContext({ instructions: [{ file: stored, source }], skills: [] },
+      { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS);
+    const message = projected.messages[0]!;
+    expect(message.role).toBe("user");
+    const content: Parameters<typeof projectModelFile>[0] = { kind: "file", file: stored, policy: { project_instructions: source } };
+    expect(publicModelContent(message.content)).toEqual(content);
+    const expected = `# ${name} instructions for nested\n\n<INSTRUCTIONS>\nverbatim project instructions λ\n\n</INSTRUCTIONS>`;
+    let reads = 0;
+    const resolveFile = async () => { reads++; return bytes; };
+    const maximum = new TextEncoder().encode(expected).length;
+    await expect(projectModelFile(content, { resolveFile, maxResolvedBytes: maximum - 1 })).rejects.toThrow();
+    expect(reads).toBe(0);
+    expect(await projectModelFile(content, { resolveFile, maxResolvedBytes: maximum })).toBe(expected);
+    expect(reads).toBe(1);
+    await expect(projectModelFile(content, { resolveFile: async () => new Uint8Array(bytes.length), maxResolvedBytes: maximum })).rejects.toThrow();
+    expect(await projectModelFile({ ...content, policy: "bounded_full" }, { resolveFile })).not.toBe(expected);
+  }
+});
 
 async function reference(path: string, bytes: Uint8Array, mediaType: string): Promise<FileRef<"agent_private", "filesystem">> {
   return contracts.validate("file_ref", {
