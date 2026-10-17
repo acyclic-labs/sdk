@@ -1,3 +1,4 @@
+//! Ordinary filesystem queries and shared client projections at accepted cuts.
 use acyclic_fs::{
     AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend, performance::BOUNDARY_BUDGET,
 };

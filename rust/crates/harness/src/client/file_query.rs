@@ -123,25 +123,6 @@ impl FileQueryView {
                 .ok_or_else(invalid)?;
             files.insert(file.key.clone(), file);
         }
-        let rows = files
-            .iter()
-            .filter(|(key, _)| matches!(key, FileKey::Plan(_)))
-            .map(|(key, file)| (key.clone(), plan_rows(file)))
-            .collect();
-        let models = files
-            .iter()
-            .filter(|(key, _)| super::model_view::turn_request(key).is_some())
-            .map(|(key, file)| (key.clone(), super::ModelFileView::from_file(file)))
-            .chain(
-                rejected_models
-                    .iter()
-                    .map(|key| (key.clone(), super::ModelFileView::Invalid)),
-            )
-            .collect();
-        let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
-        let goal_revision = goal_revision(files.get(&FileKey::Goal));
-        let goal_line_starts = goal_line_starts(&goal);
-        let progress = super::GoalProgress::from_file(files.get(&FileKey::RequestHead));
         let storage = super::FileViews::ordinary(
             crate::task_volume::HeadSnapshot {
                 generation: snapshot.generation,
@@ -165,20 +146,73 @@ impl FileQueryView {
             },
         )
         .map_err(super::query_error)?;
-        Ok(Self {
+        Self::from_storage(
             query,
-            rows,
-            models,
-            rejected_models,
-            goal,
-            goal_revision,
-            goal_line_starts,
-            progress,
             storage,
-            materialized: false,
+            rejected_models,
             maximum_files,
             maximum_bytes,
-        })
+            false,
+        )
+    }
+
+    fn from_storage(
+        query: Query,
+        storage: super::FileViews,
+        rejected_models: BTreeSet<FileKey>,
+        maximum_files: usize,
+        maximum_bytes: usize,
+        materialized: bool,
+    ) -> Result<Self> {
+        let models = rejected_models
+            .iter()
+            .map(|key| (key.clone(), super::ModelFileView::Invalid))
+            .collect();
+        let mut view = Self {
+            query,
+            storage,
+            rows: BTreeMap::new(),
+            models,
+            rejected_models,
+            goal: GoalFileView::Missing,
+            goal_revision: None,
+            goal_line_starts: Arc::default(),
+            progress: None,
+            materialized,
+            maximum_files,
+            maximum_bytes,
+        };
+        // Parse only semantic files, directly from the sole segment index.
+        // Text/tool heads keep every shared segment; no temporary view is built.
+        for head in view.storage.files().filter(|head| semantic(&head.key)) {
+            let [bytes] = head.segments.as_slice() else {
+                return Err(Error::Invalid("semantic file must have one segment".into()));
+            };
+            let value = FileValue {
+                key: head.key.clone(),
+                bytes: bytes.clone(),
+                channel: head.channel,
+                publication: head.publication,
+            };
+            match &value.key {
+                FileKey::Goal => {
+                    view.goal = GoalFileView::from_file(Some(&value), maximum_bytes);
+                    view.goal_revision = value.publication;
+                }
+                FileKey::RequestHead => {
+                    view.progress = super::GoalProgress::from_file(Some(&value))
+                }
+                FileKey::Plan(_) => {
+                    view.rows.insert(value.key.clone(), plan_rows(&value));
+                }
+                _ => {
+                    view.models
+                        .insert(value.key.clone(), super::ModelFileView::from_file(&value));
+                }
+            }
+        }
+        view.goal_line_starts = goal_line_starts(&view.goal);
+        Ok(view)
     }
 
     /// File selection represented by this fold, including an empty snapshot.
@@ -311,43 +345,16 @@ impl FileQueryView {
         snapshot: crate::task_volume::HeadSnapshot,
         limits: super::QueryViewLimits,
     ) -> Result<Self> {
-        // Non-streaming semantic files each have one immutable segment. Text
-        // heads remain segmented and are never concatenated for projections.
-        let files = snapshot
-            .files
-            .iter()
-            .filter(|head| semantic(&head.key))
-            .map(|head| {
-                if head.segments.len() != 1 {
-                    return Err(Error::Invalid("semantic file is segmented".into()));
-                }
-                Ok(FileValue {
-                    key: head.key.clone(),
-                    bytes: head
-                        .segments
-                        .first()
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("semantic file has no segment".into()))?,
-                    channel: None,
-                    publication: head.publication,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let mut view = Self::from_snapshot(
-            Query::Root,
-            Snapshot {
-                generation: snapshot.generation.clone(),
-                cursor: snapshot.cursor.clone(),
-                files,
-            },
-            limits.files,
-            usize::try_from(limits.bytes)
-                .map_err(|_| Error::Invalid("view bytes overflow".into()))?,
-        )?;
+        let maximum_bytes = usize::try_from(limits.bytes).unwrap_or(usize::MAX);
         let storage = super::FileViews::snapshot(snapshot, limits).map_err(super::query_error)?;
-        view.storage = storage;
-        view.materialized = true;
-        Ok(view)
+        Self::from_storage(
+            Query::Root,
+            storage,
+            BTreeSet::new(),
+            limits.files,
+            maximum_bytes,
+            true,
+        )
     }
 
     fn apply_materialized(&mut self, change: &Change) -> Result<()> {
