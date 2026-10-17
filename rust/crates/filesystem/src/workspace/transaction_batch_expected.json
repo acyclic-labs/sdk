@@ -1,0 +1,74 @@
+{
+  "staging.false": {
+    "allocations": [
+      698,
+      100,
+      153,
+      593259,
+      12323,
+      149914
+    ],
+    "work": {
+      "allocationOperations": 473,
+      "authorityBytesRead": 0,
+      "authorityBytesWritten": 0,
+      "authorityRecordsAppended": 0,
+      "authorityRecordsRead": 0,
+      "backendReadOperations": 10,
+      "backendWriteOperations": 10,
+      "bytesCopied": 22822,
+      "bytesEncoded": 2556,
+      "bytesHashed": 5712,
+      "durabilityOperations": 0,
+      "itemsExamined": 974,
+      "itemsReturned": 58,
+      "materializations": 0,
+      "objectBytesRead": 704,
+      "objectBytesWritten": 1623,
+      "objectProbes": 10,
+      "outputBytes": 0,
+      "pageReads": 53,
+      "pageWrites": 8,
+      "peakAllocationBytes": 67124719,
+      "sourceBytesRead": 547,
+      "sourceEntriesVisited": 0,
+      "sourcePathComponents": 22
+    }
+  },
+  "staging.true": {
+    "allocations": [
+      142,
+      14,
+      69,
+      63956,
+      2580,
+      40546
+    ],
+    "work": {
+      "allocationOperations": 125,
+      "authorityBytesRead": 0,
+      "authorityBytesWritten": 0,
+      "authorityRecordsAppended": 0,
+      "authorityRecordsRead": 0,
+      "backendReadOperations": 3,
+      "backendWriteOperations": 0,
+      "bytesCopied": 4809,
+      "bytesEncoded": 925,
+      "bytesHashed": 2089,
+      "durabilityOperations": 0,
+      "itemsExamined": 231,
+      "itemsReturned": 25,
+      "materializations": 0,
+      "objectBytesRead": 459,
+      "objectBytesWritten": 0,
+      "objectProbes": 3,
+      "outputBytes": 0,
+      "pageReads": 5,
+      "pageWrites": 0,
+      "peakAllocationBytes": 67125500,
+      "sourceBytesRead": 0,
+      "sourceEntriesVisited": 0,
+      "sourcePathComponents": 17
+    }
+  }
+}

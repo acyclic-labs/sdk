@@ -485,6 +485,10 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Vec<u8>> {
+    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    if super::baseline::LEGACY.get() {
+        return super::baseline::serialization::json_bytes_bounded(value, bounds, code, charge);
+    }
     let mut scope = scope(bounds, code, charge);
     scope.grow_output = true;
     let mut bytes = Vec::new();
@@ -508,6 +512,12 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     code: Option<crate::wire::ErrorCode>,
     observer: &mut dyn crate::store::HistoryIo,
 ) -> Result<[u8; 32]> {
+    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    if super::baseline::LEGACY.get() {
+        return super::baseline::serialization::canonical_digest_with_work(
+            value, bounds, code, observer,
+        );
+    }
     let observer = RefCell::new(observer);
     let mut charge = |event| observer.borrow_mut().codec_charge(event);
     let mut scope = scope(bounds, code, &mut charge);
@@ -547,6 +557,12 @@ pub fn canonical_json_bytes_bounded<
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Vec<u8>> {
+    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    if super::baseline::LEGACY.get() {
+        return super::baseline::serialization::canonical_json_bytes_bounded(
+            value, bounds, code, charge,
+        );
+    }
     let mut scope = scope(bounds, code, charge);
     let (value, mut bytes) = build_buffered(value, &mut scope)?;
     // The source document is no longer needed after decoding. Its capacity
@@ -579,6 +595,10 @@ pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     code: Option<crate::wire::ErrorCode>,
     charge: &mut F,
 ) -> Result<Value> {
+    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    if super::baseline::LEGACY.get() {
+        return super::baseline::serialization::json_value_bounded(value, bounds, code, charge);
+    }
     let mut scope = scope(bounds, code, charge);
     let value = build(value, &mut scope)?;
     scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;

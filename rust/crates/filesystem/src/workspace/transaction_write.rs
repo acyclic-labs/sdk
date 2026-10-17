@@ -594,3 +594,10 @@ fn batch_contains(
 #[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_properties.rs"]
 mod batch_properties;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_original.rs"]
+mod batch_original;
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_differential.rs"]
+mod batch_differential;

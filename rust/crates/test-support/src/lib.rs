@@ -1,4 +1,6 @@
 //! Thread-local allocation measurements with the native System allocator.
+pub mod differential;
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

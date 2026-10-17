@@ -255,6 +255,8 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        crate::test_support::differential::record("prepare request", 1);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned((size_of::<Self>() - size_of::<ModelRequest>()) as u64)?;
