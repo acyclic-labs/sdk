@@ -60,12 +60,16 @@ impl Projection {
         ))
         .unwrap_or_else(|_| FileKey::parse(".tasks/invalid/notifications/invalid.json").unwrap())
     }
-    pub fn apply(&mut self, record: &AttentionNotification, remove: bool) {
+    pub fn apply(
+        &mut self,
+        record: &AttentionNotification,
+        remove: bool,
+    ) -> acyclic_harness::Result<()> {
         let key = Self::key(record);
         // Deleting an absent file publishes no removal. The ordinary query
         // correctly rejects a fabricated removal of an unknown file.
         if remove && !self.view.files().contains_key(&key) {
-            return;
+            return Ok(());
         }
         let mut cursor = self.view.cursor().clone();
         cursor.position += 1;
@@ -79,7 +83,7 @@ impl Projection {
                 files: Vec::new(),
                 removed: if remove { vec![key] } else { Vec::new() },
             })
-            .unwrap();
+            .map(|_| ())
     }
     pub fn records(&self) -> Vec<AttentionNotification> {
         self.view
@@ -100,18 +104,47 @@ pub(super) fn verify(
     options: (NotificationMode, TerminalNotificationProtocol, bool),
     retain_removed: bool,
 ) -> Vec<u8> {
+    verify_limits(operations, options, retain_removed, false)
+}
+
+pub(super) fn verify_limits(
+    operations: impl IntoIterator<Item = (AttentionNotification, bool)>,
+    options: (NotificationMode, TerminalNotificationProtocol, bool),
+    retain_removed: bool,
+    unwrap_limit: bool,
+) -> Vec<u8> {
     let mut projection = Projection::new();
     let mut expected = BTreeMap::new();
     let mut output = Vec::new();
     for (record, remove) in operations {
         let key = Projection::key(&record);
+        let mut candidate = expected.clone();
         if remove {
-            expected.remove(&key);
+            candidate.remove(&key);
         } else {
-            expected.insert(key, record.clone());
+            candidate.insert(key, record.clone());
         }
+        let over_limit = candidate.len() > 128
+            || candidate
+                .values()
+                .map(|record| serde_json::to_vec(record).unwrap().len())
+                .sum::<usize>()
+                > 1_048_576;
         if !remove || !retain_removed {
-            projection.apply(&record, remove);
+            let before = over_limit.then(|| projection.view.clone());
+            let result = projection.apply(&record, remove);
+            if over_limit && !unwrap_limit {
+                assert!(matches!(result,
+                    Err(acyclic_harness::Error::TaskFiles(error))
+                        if matches!(*error, acyclic_harness::task_volume::Error::LimitExceeded)));
+                assert_eq!(projection.view, before.unwrap());
+            } else {
+                // Negative control reproduces the former unconditional unwrap.
+                result.unwrap();
+            }
+        }
+        if !over_limit {
+            expected = candidate;
         }
         let expected: Vec<_> = expected
             .iter()

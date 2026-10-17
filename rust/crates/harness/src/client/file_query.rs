@@ -491,7 +491,7 @@ impl FileQueryView {
             }
         }
         if bytes > self.maximum_bytes || count > self.maximum_files {
-            return Err(invalid());
+            return Err(crate::task_volume::Error::LimitExceeded.into());
         }
         self.project(&change);
         self.storage.replace(&change, &self.rejected_models);

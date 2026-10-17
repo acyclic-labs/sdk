@@ -151,3 +151,68 @@ fn notification_parser_rejects_ignored_fields_and_vacuous_expectations() -> Test
     }
     Ok(())
 }
+
+fn bounded_history(count: u64, detail: &str) -> Vec<(AttentionNotification, bool)> {
+    let records: Vec<_> = (1..=count)
+        .map(|sequence| AttentionNotification {
+            task: "task-1".into(),
+            sequence,
+            event: AttentionEvent::TaskFailed,
+            detail: detail.into(),
+        })
+        .collect();
+    let mut operations: Vec<_> = records
+        .iter()
+        .cloned()
+        .map(|record| (record, false))
+        .collect();
+    // A rejected write must not poison subsequent removals or admission.
+    operations.push((records[0].clone(), true));
+    operations.push((records.last().unwrap().clone(), false));
+    operations
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    // Independently bound file count and serialized bytes. Rejected changes
+    // preserve the exact view and cursor, and a removal releases capacity.
+    #[test]
+    fn notification_limits_are_atomic_and_recoverable(count in 120_u64..134) {
+        crate::notification_history::verify(bounded_history(count, "Ready"),
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false);
+    }
+    #[test]
+    fn notification_byte_limit_is_atomic(detail_length in 1_048_400_usize..1_048_650) {
+        crate::notification_history::verify(bounded_history(1, &"x".repeat(detail_length)),
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false);
+    }
+}
+
+#[test]
+fn notification_limit_seed_and_unwrap_negative_control() -> TestResult {
+    let case = Notifications::parse(serde_json::from_slice(include_bytes!(
+        "../../../harness-fuzz/corpus/notification_scenario/129-files.json"
+    ))?)?;
+    assert_eq!(case.records.len(), 129);
+    assert!(case.verify_history().is_empty());
+    for operations in [
+        bounded_history(129, "Ready"),
+        bounded_history(1, &"x".repeat(1_048_576)),
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| crate::notification_history::verify_limits(
+                operations,
+                (
+                    NotificationMode::Off,
+                    TerminalNotificationProtocol::Bell,
+                    false
+                ),
+                false,
+                true
+            ))
+            .is_err(),
+            "former unwrap must fail the shared oracle"
+        );
+    }
+    Ok(())
+}

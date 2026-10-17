@@ -85,7 +85,7 @@ fn retry_after_removal(retain_removed: bool) {
     );
     let record = notice(1, AttentionEvent::GoalBlocked);
     let mut projection = Projection::new();
-    projection.apply(&record, false);
+    projection.apply(&record, false).unwrap();
     let mut terminal = Broken::default();
     assert!(
         write_terminal_notifications(
@@ -99,7 +99,7 @@ fn retry_after_removal(retain_removed: bool) {
     );
     assert_eq!(projection.records(), [record.clone()]);
     if !retain_removed {
-        projection.apply(&record, true);
+        projection.apply(&record, true).unwrap();
     }
     let mut output = Vec::new();
     assert_eq!(
@@ -130,7 +130,7 @@ fn retained_queue_negative_control_fails_the_same_removal_check() {
 fn write_failure_can_retry_current_rows_without_mutating_them() {
     let mut projection = Projection::new();
     let record = notice(1, AttentionEvent::GoalDone);
-    projection.apply(&record, false);
+    projection.apply(&record, false).unwrap();
     assert!(
         write_terminal_notifications(
             projection.view.notifications(),
@@ -174,7 +174,7 @@ fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
         ] {
             let mut projection = Projection::new();
             let record = notice(1, event);
-            projection.apply(&record, false);
+            projection.apply(&record, false).unwrap();
             let mut terminal = Broken::default();
             assert_eq!(
                 write_terminal_notifications(
@@ -195,7 +195,9 @@ fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
 #[test]
 fn current_rows_are_borrowed_without_copying_payloads() {
     let mut projection = Projection::new();
-    projection.apply(&notice(1, AttentionEvent::TaskFailed), false);
+    projection
+        .apply(&notice(1, AttentionEvent::TaskFailed), false)
+        .unwrap();
     let allocation = acyclic_test_support::measure(|| {
         for row in projection.view.notifications() {
             std::hint::black_box(row);
@@ -242,10 +244,10 @@ fn file_removal_keeps_other_rows_and_advances_the_shared_cursor() {
     let mut projection = Projection::new();
     let first = notice(1, AttentionEvent::TaskFailed);
     let second = notice(2, AttentionEvent::GoalBlocked);
-    projection.apply(&first, false);
-    projection.apply(&second, false);
+    projection.apply(&first, false).unwrap();
+    projection.apply(&second, false).unwrap();
     let before = projection.view.cursor().clone();
-    projection.apply(&first, true);
+    projection.apply(&first, true).unwrap();
     assert_eq!(projection.records(), [second]);
     assert_eq!(projection.view.cursor().position, before.position + 1);
     for row in projection.view.notifications() {

@@ -64,10 +64,10 @@ impl Notifications {
     pub(super) fn run(self) -> TestResult {
         let mut projection = Projection::new();
         for record in &self.records {
-            projection.apply(record, false);
+            projection.apply(record, false)?;
         }
         for index in self.remove {
-            projection.apply(&self.records[index], true);
+            projection.apply(&self.records[index], true)?;
         }
         let mut output = Vec::new();
         let presented = write_terminal_notifications(
