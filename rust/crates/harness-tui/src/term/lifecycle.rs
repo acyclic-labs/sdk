@@ -96,6 +96,20 @@ pub(crate) fn active<W: Write, T>(
     action(&mut state.guard)
 }
 
+// Lock order is the ordinary active path: terminal state only. Observation,
+// empty-frame acknowledgement and device presentation share this lock, so no
+// signal callback can intervene after the comparison and before the write.
+pub(crate) fn present_if_current<W: Write>(
+    state: &Mutex<State<W>>,
+    frame: &mut Vec<u8>,
+    cursor_hidden: bool,
+    expected: Option<u64>,
+) -> io::Result<Option<u64>> {
+    active(state, |guard| {
+        super::Present::present_if_current(guard, frame, cursor_hidden, expected)
+    })
+}
+
 pub(crate) fn restore<W: Write>(
     state: &Mutex<State<W>>,
     terminate: bool,

@@ -37,6 +37,14 @@ impl super::Present for Output {
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
         lifecycle::active(&self.state, |guard| guard.present(frame, cursor_hidden))
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        lifecycle::present_if_current(&self.state, frame, cursor_hidden, expected)
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         lifecycle::active(&self.state, |guard| Ok(guard.outside_writes()))
             .ok()

@@ -49,6 +49,21 @@ impl<W: Write + Send + 'static> Owner<W> {
         super::Present::outside_writes(state.guard.as_mut()?)
     }
 
+    /// An unchanged empty frame is acknowledged while holding owner state;
+    /// it never submits a driver job. A borrowed guard cannot acknowledge it.
+    pub(crate) fn empty_if_current(&self, expected: Option<u64>) -> io::Result<Option<u64>> {
+        let Ok(mut state) = self.state.try_lock() else {
+            return Ok(None);
+        };
+        if state.closed {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let Some(guard) = state.guard.as_mut() else {
+            return Ok(None);
+        };
+        super::Present::present_if_current(guard, &mut Vec::new(), false, expected)
+    }
+
     fn wait<'a>(
         &self,
         state: MutexGuard<'a, State<W>>,
@@ -351,6 +366,8 @@ mod tests {
                 |_| {},
             );
             assert_eq!(owner.outside_writes(), Some(0));
+            assert_eq!(owner.empty_if_current(Some(0)).unwrap(), Some(0));
+            assert!(owner.state.lock().unwrap().worker.is_none());
             let writing = Arc::clone(&owner);
             let worker = thread::spawn(move || {
                 Owner::run(
@@ -364,9 +381,12 @@ mod tests {
             assert!(matches!(owner.outside_writes(), None | Some(0 | 1)));
             worker.join().unwrap();
             assert_eq!(owner.outside_writes(), Some(1));
+            assert_eq!(owner.empty_if_current(Some(0)).unwrap(), None);
+            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), Some(1));
             let mut state = owner.state.lock().unwrap();
             let guard = state.guard.take().unwrap();
             drop(state);
+            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), None);
             let observed = if broken {
                 Some(1)
             } else {

@@ -359,6 +359,20 @@ impl<W: Present> Present for Calls<W> {
         self.2.set(self.2.get() + frame.len() as u64);
         self.0.present(frame, cursor_hidden)
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        let bytes = frame.len() as u64;
+        let accepted = self.0.present_if_current(frame, cursor_hidden, expected)?;
+        if accepted.is_some() && bytes != 0 {
+            self.1.set(self.1.get() + 1);
+            self.2.set(self.2.get() + bytes);
+        }
+        Ok(accepted)
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         self.0.outside_writes()
     }
@@ -515,6 +529,24 @@ impl Present for Shared {
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
         self.0.borrow_mut().present(frame, cursor_hidden)
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if self.1 {
+            self.0
+                .borrow_mut()
+                .present_if_current(frame, cursor_hidden, expected)
+        } else {
+            // Negative control: no validation at the lifecycle boundary.
+            if !frame.is_empty() {
+                self.0.borrow_mut().present(frame, cursor_hidden)?;
+            }
+            Ok(Some(0))
+        }
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         // The negative control reports an unchanging count: outside writes go
         // unseen, as before tracking was tied to the lifecycle path.
@@ -594,6 +626,20 @@ impl Present for RetryDevice {
         }
         self.device.write_all(frame)
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if expected.is_some_and(|count| count != 0) {
+            return Ok(None);
+        }
+        if !frame.is_empty() {
+            self.present(frame, cursor_hidden)?;
+        }
+        Ok(Some(0))
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         Some(0)
     }
@@ -635,4 +681,69 @@ proptest! {
         terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &changed)).unwrap();
         prop_assert!(device.take().is_empty());
     }
+}
+
+fn resume_inside_render<const CHECKED: bool>(hidden: bool, changed: bool) {
+    let device = Device::default();
+    let guard = Rc::new(RefCell::new(RestoreGuard::new(device.clone(), &caps(true))));
+    let size = Size::new(WIDTH, HEIGHT);
+    let mut terminal = FrameTerminal::new(Shared(Rc::clone(&guard), CHECKED), size).unwrap();
+    let base: Scene = (
+        vec!["prompt".into()],
+        if hidden { None } else { Some((3, 2)) },
+    );
+    terminal.draw(size, |frame| paint(frame, &base)).unwrap();
+    let mut bytes = device.take().concat();
+    let target: Scene = (
+        vec![if changed { "changed" } else { "prompt" }.into()],
+        base.1,
+    );
+    terminal
+        .draw(size, |frame| {
+            paint(frame, &target);
+            // The real signal callback can run after observation and before commit.
+            let mut guard = guard.borrow_mut();
+            guard.restore().unwrap();
+            guard
+                .setup(acyclic_harness_tui::term::ScreenMode::Inline)
+                .unwrap();
+            guard.writer().write_all(b"\x1b[1;1H").unwrap();
+        })
+        .unwrap();
+    let writes = device.take();
+    bytes.extend(writes.concat());
+    let (_, position, visible) = screen(&bytes);
+    assert_eq!(
+        visible, !hidden,
+        "resume during render must repair the cursor"
+    );
+    if !hidden {
+        assert_eq!(
+            position,
+            (2, 3),
+            "resume during render must repair the cursor"
+        );
+    }
+    // A repaired cursor carries the count from the same locked presentation:
+    // its next identical frame writes nothing, including no cursor restatement.
+    terminal.draw(size, |frame| paint(frame, &target)).unwrap();
+    assert!(
+        device.take().is_empty(),
+        "a repaired frame must be a zero-write repeat"
+    );
+}
+
+#[test]
+fn resume_between_observation_and_commit_repairs_empty_and_changed_frames() {
+    for hidden in [false, true] {
+        for changed in [false, true] {
+            resume_inside_render::<true>(hidden, changed);
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "resume during render must repair the cursor")]
+fn negative_control_snapshot_then_empty_skip_loses_resume() {
+    resume_inside_render::<false>(true, false);
 }

@@ -73,6 +73,17 @@ impl Present for Unjournaled {
         let bracketed = [b"\x1b[?2026h".as_slice(), frame, b"\x1b[?2026l"].concat();
         self.0.write_all(&bracketed)
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        _expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if !frame.is_empty() {
+            self.present(frame, cursor_hidden)?;
+        }
+        Ok(Some(0))
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         None
     }

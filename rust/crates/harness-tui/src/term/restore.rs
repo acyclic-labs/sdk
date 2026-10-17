@@ -233,6 +233,20 @@ impl<W: Write> super::Present for RestoreGuard<W> {
             }
         }
     }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        if expected.is_some_and(|expected| expected != self.outside) {
+            return Ok(None);
+        }
+        if !frame.is_empty() {
+            self.present(frame, cursor_hidden)?;
+        }
+        Ok(Some(self.outside))
+    }
     fn outside_writes(&mut self) -> Option<u64> {
         Some(self.outside)
     }
