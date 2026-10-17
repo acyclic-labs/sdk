@@ -93,15 +93,16 @@ async fn scenario<const BOUND: bool>(query: &str) {
     prompt.refresh(&files, &mut input).unwrap();
     input.editor.set_text("unsent draft", 1);
     prompt.save(&mut files, &mut input).await.unwrap();
-    file_tui_input(
-        &mut files,
-        &NoFiles,
-        InputEffect::Host(Action::App(AppAction::Find)),
-        20,
-        0,
-    )
-    .await
-    .unwrap();
+    let effects = input.key(KeyEvent::new(KeyCode::Char('f'), M::CONTROL), 2, 78);
+    assert_eq!(
+        effects,
+        vec![InputEffect::Host(Action::App(AppAction::Find))]
+    );
+    for effect in effects {
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
+            .await
+            .unwrap();
+    }
     prompt.refresh(&files, &mut input).unwrap();
     assert!(input.transcript_search, "search form must own the input");
     input.paste(query, 2);
