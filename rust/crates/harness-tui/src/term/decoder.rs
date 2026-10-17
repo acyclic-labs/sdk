@@ -93,9 +93,18 @@ impl Decoder {
         Ok(())
     }
 
+    pub(crate) fn input_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
+        if self.probe.pending_escape() {
+            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(30))
+        } else {
+            deadline
+        }
+    }
+
     /// Take only classified input; there is no raw startup replay API.
     pub fn take_events(&mut self) -> Vec<InputEvent> {
-        self.events.drain(..).collect()
+        // Keep an equally sized buffer for the next feed.
+        self.events.split_off(0)
     }
 
     /// Resolve a lone legacy Escape at an input deadline. Startup detection

@@ -10,6 +10,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("read", maximum_bytes));
         let owned;
         let io = if let Some(io) = io {
             io
@@ -124,6 +126,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         workspace: &WorkspaceRef,
         reference: &GenerationRef,
     ) -> Result<()> {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("retain", 0u64));
         let workspace = self.open(workspace, None).await?;
         let generation = self.generation(&workspace, reference, None).await?;
         let identity = format!(
@@ -252,32 +256,51 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 }
             }
         }
-        let committed = transaction
-            .commit(
-                None,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                budget,
-                &cancellation,
-                |_| async {
-                    Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    })
-                },
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        match committed {
-            TransactionCommit::Committed(generation)
-            | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
-            TransactionCommit::Conflict { .. } => {
-                Err(Error::Conflict("workspace generation changed".into()))
-            }
-            TransactionCommit::Fenced => Err(Error::Conflict("workspace writer was fenced".into())),
-            TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
-                "filesystem idempotency key belongs to another mutation".into(),
-            )),
+        loop {
+            let committed = transaction
+                .commit(
+                    None,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    budget,
+                    &cancellation,
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<Error>>(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::default(),
+                        })
+                    },
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
+            return match committed {
+                TransactionCommit::Committed(generation)
+                | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+                TransactionCommit::Conflict { .. } if expected_generation.is_none() => {
+                    // Reuse the original candidate only when the SDK proves its
+                    // exact observations and mutation dependencies still hold.
+                    match transaction
+                        .rebase(1, budget, &cancellation)
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| map_error(failure.error))?
+                    {
+                        acyclic_fs::TransactionRebase::Rebased(_) => continue,
+                        acyclic_fs::TransactionRebase::Conflicted { .. } => {
+                            Err(Error::Conflict("workspace generation changed".into()))
+                        }
+                    }
+                }
+                TransactionCommit::Conflict { .. } => {
+                    Err(Error::Conflict("workspace generation changed".into()))
+                }
+                TransactionCommit::Fenced => {
+                    Err(Error::Conflict("workspace writer was fenced".into()))
+                }
+                TransactionCommit::IdempotencyConflict => Err(Error::Conflict(
+                    "filesystem idempotency key belongs to another mutation".into(),
+                )),
+            };
         }
     }
 
@@ -468,7 +491,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             )
                             .await?;
                     }
-                    io.receive(
+                    break 'commit io.receive(
                         transaction
                             .commit(
                                 None,
@@ -489,7 +512,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 },
                             )
                             .await,
-                    )?
+                    )?;
                 };
                 Ok(commit)
             })?

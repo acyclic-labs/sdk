@@ -1,0 +1,107 @@
+{
+  "driver": "agents",
+  "prompt": "Permanently cancel the worker",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "original work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "fs",
+          "arguments": {
+            "command": "cat .volumes/agents/worker/control"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 5,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Cancelled",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "active": []
+  },
+  "routes": {
+    "original work": "worker"
+  },
+  "actions": [
+    {
+      "model": "parent",
+      "request": 3,
+      "agent": "worker",
+      "control": "cancel"
+    }
+  ]
+}

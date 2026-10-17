@@ -61,6 +61,7 @@ impl DemandWork {
     pub(crate) fn original_budget(&self) -> WorkBudget {
         self.initial_budget
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
@@ -105,6 +106,7 @@ impl DemandWork {
         let shell = Self::new(WorkBudget::default(), &self.cancellation);
         std::mem::replace(self, shell)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn allocation_parts(
         &mut self,
     ) -> (
@@ -350,6 +352,7 @@ impl DemandWork {
         }
         delta
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn merge(&mut self, delta: WorkCounters, live: u64) -> Result<(), DemandError> {
         let delta = self.item_charge(delta);
         self.work = self.work.with_backend(delta, live)?;

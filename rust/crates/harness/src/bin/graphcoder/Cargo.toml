@@ -1,0 +1,44 @@
+[package]
+name = "graphcoder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+autobins = false
+autotests = false
+
+[[bin]]
+name = "graphcoder"
+path = "../graphcoder.rs"
+
+[dependencies]
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui"] }
+acyclic-harness-providers = { path = "../../../../harness-providers" }
+clap.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+acyclic-harness = { path = "../../..", features = ["test-support"] }
+serde.workspace = true
+serde_json.workspace = true
+acyclic-stream = { path = "../../../../stream", default-features = false }
+proptest.workspace = true
+acyclic-test-support = { path = "../../../../test-support" }
+
+[[test]]
+name = "cli"
+path = "tests/cli.rs"
+
+[dev-dependencies.axum]
+workspace = true
+
+[dev-dependencies.acyclic-native-runtime]
+path = "../../../../native-runtime"
+
+[dev-dependencies.tempfile]
+version = "3.27.0"

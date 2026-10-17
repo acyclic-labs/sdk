@@ -27,6 +27,11 @@ pub enum InputEffect {
     Paste,
     /// Suspend terminal presentation and edit the current text externally.
     ExternalEditor,
+    /// Move through transcript matches; the host publishes the selection file.
+    FindStep {
+        /// Move to the preceding match instead of the following one.
+        previous: bool,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -75,6 +80,7 @@ pub struct PromptInput {
     pub recording: bool,
     /// Host transcript selection, already converted to markdown for copying.
     pub transcript_selection: Option<String>,
+    transcript_draft: Option<Editor>,
     /// User overrides used by both dispatch and help.
     pub keymap: InputKeymap,
     /// Completion results folded from the host's current file-query snapshots.
@@ -111,6 +117,9 @@ impl PromptInput {
         if !self.editor.set_settings(settings) {
             return false;
         }
+        if let Some(draft) = self.transcript_draft.as_mut() {
+            draft.set_settings(settings);
+        }
         if let Some(search) = self.search.as_mut() {
             search.original.set_settings(settings);
         }
@@ -118,6 +127,39 @@ impl PromptInput {
             edit.draft.set_settings(settings);
         }
         true
+    }
+
+    /// Whether the separate transcript-query editor is active.
+    pub fn transcript_search(&self) -> bool {
+        self.transcript_draft.is_some()
+    }
+
+    /// Apply a followed chat draft to its own editor, including during search.
+    pub fn set_chat_draft(&mut self, text: &str) {
+        self.transcript_draft
+            .as_mut()
+            .unwrap_or(&mut self.editor)
+            .set_text(text, 0);
+    }
+
+    /// Select the followed search editor without editing the suspended chat draft.
+    pub fn set_transcript_search(&mut self, query: Option<&str>) {
+        match (self.transcript_search(), query) {
+            (false, Some(query)) => {
+                let mut editor = Editor::new(query);
+                editor.set_settings(*self.editor.settings());
+                self.transcript_draft = Some(std::mem::replace(&mut self.editor, editor));
+                self.pending_chord = None;
+            }
+            (true, None) => {
+                if let Some(draft) = self.transcript_draft.take() {
+                    self.editor = draft;
+                }
+                self.pending_chord = None;
+            }
+            (true, Some(query)) if self.editor.text() != query => self.editor.set_text(query, 0),
+            _ => {}
+        }
     }
 
     /// Current history-file projection, shared by every editor context.
@@ -132,7 +174,11 @@ impl PromptInput {
 
     /// Refresh the popup from the editor delta and current file-query fold.
     pub fn refresh_completions(&mut self) {
-        self.completion.refresh(&self.editor);
+        if self.transcript_search() {
+            self.completion.dismiss(&self.editor);
+        } else {
+            self.completion.refresh(&self.editor);
+        }
     }
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
@@ -198,12 +244,7 @@ impl PromptInput {
             return 255;
         }
         let phase = (elapsed - idle) % cycle;
-        ((if phase < half {
-            half - phase
-        } else {
-            phase - half
-        }) * 255
-            / half) as u8
+        u8::try_from(half.abs_diff(phase) * 255 / half).unwrap_or(u8::MAX)
     }
 
     /// Current reverse-search query and whether a history entry matched it.
@@ -280,42 +321,39 @@ impl PromptInput {
         let decoded = decode_key(key, &self.keymap);
         if let Some((prefix, _, _)) = self.pending_chord.as_ref() {
             let chord = event_chord(key).map(|chord| format!("{prefix} {chord}"));
-            if key.kind == KeyEventKind::Press {
-                if let Some(binding) = chord
+            if key.kind == KeyEventKind::Press
+                && let Some(binding) = chord
                     .as_deref()
                     .and_then(|chord| self.keymap.resolve(chord))
-                {
-                    self.pending_chord = None;
-                    effects.extend(self.apply_decoded(
-                        DecodedKey::Action {
-                            action: binding.action,
-                            select: false,
-                        },
-                        now_ms,
-                        width,
-                    ));
-                    return effects;
-                }
+            {
+                self.pending_chord = None;
+                effects.extend(self.apply_decoded(
+                    DecodedKey::Action {
+                        action: binding.action,
+                        select: false,
+                    },
+                    now_ms,
+                    width,
+                ));
+                return effects;
             }
             effects.extend(self.flush_chord());
         }
-        if key.kind == KeyEventKind::Press {
-            if let Some(chord) = event_chord(key) {
-                if self.keymap.has_prefix(&chord)
-                    || matches!(
-                        decoded,
-                        Some(DecodedKey::Action {
-                            action: Action::CutPrefix,
-                            ..
-                        })
-                    )
-                {
-                    self.last_interrupt = None;
-                    self.last_activity = now_ms;
-                    self.pending_chord = Some((chord.as_str().to_owned(), now_ms, decoded));
-                    return effects;
-                }
-            }
+        if key.kind == KeyEventKind::Press
+            && let Some(chord) = event_chord(key)
+            && (self.keymap.has_prefix(&chord)
+                || matches!(
+                    decoded,
+                    Some(DecodedKey::Action {
+                        action: Action::CutPrefix,
+                        ..
+                    })
+                ))
+        {
+            self.last_interrupt = None;
+            self.last_activity = now_ms;
+            self.pending_chord = Some((chord.as_str().to_owned(), now_ms, decoded));
+            return effects;
         }
         if let Some(decoded) = decoded {
             effects.extend(self.apply_decoded(decoded, now_ms, width));
@@ -350,204 +388,246 @@ impl PromptInput {
             self.last_interrupt = None;
         }
         self.last_activity = now_ms;
-        if self.search.is_some() {
-            match &decoded {
-                DecodedKey::Text(text) => {
-                    effects.extend(self.committed_text(text.encode_utf8(&mut [0; 4]), now_ms));
-                    return effects;
+        if self.search.is_some() && self.search_key(decoded, now_ms, &mut effects) {
+            return effects;
+        }
+        if self.transcript_search()
+            && let DecodedKey::Action { action, .. } = decoded
+        {
+            match action {
+                Action::Submit | Action::Newline => {
+                    return vec![InputEffect::FindStep {
+                        previous: action == Action::Newline,
+                    }];
                 }
-                DecodedKey::Action {
-                    action: Action::ReverseSearch,
-                    ..
-                } => {
-                    self.search_previous();
-                    return effects;
-                }
-                DecodedKey::Action {
-                    action: Action::Escape,
-                    ..
-                } => {
-                    self.finish_search(now_ms, false);
-                    return effects;
-                }
-                DecodedKey::Action {
-                    action: Action::Submit,
-                    ..
-                } => {
-                    self.finish_search(now_ms, true);
-                    return effects;
-                }
-                DecodedKey::Action {
-                    action: Action::Delete(true),
-                    ..
-                } => {
-                    if let Some(search) = self.search.as_mut() {
-                        let end = search
-                            .query
-                            .grapheme_indices(true)
-                            .last()
-                            .map_or(0, |(i, _)| i);
-                        search.query.truncate(end);
-                        self.history.reset();
-                    }
-                    self.search_previous();
-                    return effects;
-                }
-                _ => self.finish_search(now_ms, true),
+                Action::Escape => return vec![InputEffect::Host(Action::Escape)],
+                Action::ReverseSearch => return effects,
+                _ => {}
             }
         }
-        if let DecodedKey::Action { action, select } = &decoded {
-            if !(*action == Action::Escape && self.editing.is_some())
-                && self
-                    .completion
-                    .action(&mut self.editor, *action, *select, now_ms)
-            {
-                return effects;
-            }
+        if let DecodedKey::Action { action, select } = decoded
+            && !(action == Action::Escape && self.editing.is_some())
+            && self
+                .completion
+                .action(&mut self.editor, action, select, now_ms)
+        {
+            return effects;
         }
         match decoded {
             DecodedKey::Text(text) => self.editor.insert(text.encode_utf8(&mut [0; 4]), now_ms),
-            DecodedKey::Action { action, select } => match action {
-                Action::Select(motion) => self.editor.move_cursor(motion, true, width),
-                Action::Move(motion) => {
-                    if self.dock_items
-                        && self.editor.text().is_empty()
-                        && !select
-                        && matches!(motion, Motion::Up | Motion::Down)
-                    {
-                        effects.push(InputEffect::Host(if motion == Motion::Up {
-                            Action::PreviousDock
-                        } else {
-                            Action::Tab
-                        }));
-                        return effects;
-                    }
-                    let previous = motion == Motion::Up;
-                    let history = !select
-                        && matches!(motion, Motion::Up | Motion::Down)
-                        && self.editor.recall(&mut self.history, previous, now_ms);
-                    if !history {
-                        self.editor.move_cursor(motion, select, width);
-                    }
-                }
-                Action::Delete(backwards) => self.editor.delete(backwards, now_ms),
-                Action::DeleteWord(backwards) => self.editor.delete_word(backwards, now_ms),
-                Action::Kill(motion) => self.editor.kill(motion, now_ms),
-                Action::SelectAll => self.editor.select_all(),
-                Action::Undo => {
-                    self.editor.undo();
-                }
-                Action::Redo => {
-                    self.editor.redo();
-                }
-                Action::Yank => self.editor.yank(now_ms),
-                Action::RotateYank => self.editor.rotate_yank(now_ms),
-                Action::Submit => {
-                    if let Some(text) = self.editor.enter(false, now_ms) {
-                        self.history.push(text.clone());
-                        let edit = self.editing.take().map(|edit| {
-                            self.editor = edit.draft;
-                            self.history.restore_navigation(edit.navigation);
-                            edit.message
-                        });
-                        effects.push(InputEffect::Submit {
-                            text,
-                            queued: self.busy,
-                            edit,
-                        });
-                    }
-                }
-                Action::Newline => {
-                    self.editor.enter(true, now_ms);
-                }
-                Action::LiteralTab => self.editor.insert("\t", now_ms),
-                Action::Tab if self.dock_items => effects.push(InputEffect::Host(Action::Tab)),
-                Action::Tab => {
-                    let column = self
-                        .editor
-                        .layout(usize::MAX)
-                        .position(self.editor.cursor())
-                        .1;
-                    let tab = self.editor.settings().tab_width;
-                    self.editor.insert(&" ".repeat(tab - column % tab), now_ms);
-                }
-                Action::CopyOrInterrupt => {
-                    if !self.editor.selection().is_empty() {
-                        self.last_interrupt = None;
-                        effects.push(InputEffect::Copy(self.editor.selected_text().to_owned()));
-                        self.editor.break_group();
-                    } else if let Some(markdown) = self
-                        .transcript_selection
-                        .as_ref()
-                        .filter(|text| !text.is_empty())
-                    {
-                        self.last_interrupt = None;
-                        self.editor.break_group();
-                        effects.push(InputEffect::Copy(markdown.clone()));
-                    } else if self.last_interrupt.is_some_and(|at| {
-                        now_ms >= at
-                            && now_ms - at <= self.editor.settings().double_interrupt_ms as u64
-                    }) {
-                        effects.push(InputEffect::Quit);
-                    } else {
-                        self.last_interrupt = Some(now_ms);
-                        if self.busy {
-                            effects.push(InputEffect::Interrupt);
-                        } else if !self.editor.text().is_empty() {
-                            self.editor.set_text("", now_ms);
-                        } else {
-                            effects.push(InputEffect::Interrupt);
-                        }
-                    }
-                }
-                Action::DeleteOrQuit => {
-                    if self.editor.text().is_empty() {
-                        effects.push(InputEffect::Quit);
-                    } else {
-                        self.editor.delete(false, now_ms);
-                    }
-                }
-                Action::CutPrefix => {
-                    let text = self.editor.selected_text().to_owned();
-                    self.editor.replace_selection("", now_ms);
-                    effects.push(InputEffect::Copy(text));
-                }
-                Action::Paste => {
-                    if self.question {
-                        self.comment_mode = true;
-                    }
-                    effects.push(InputEffect::Paste);
-                }
-                Action::ExternalEditor => effects.push(InputEffect::ExternalEditor),
-                Action::ReverseSearch => {
-                    let original = self.editor.clone();
-                    let navigation = self.history.navigation.clone();
-                    self.history.reset();
-                    self.search = Some(Search {
-                        original,
-                        navigation,
-                        query: String::new(),
-                        matched: false,
-                    });
-                    self.search_previous();
-                }
-                Action::Escape if self.editing.is_some() => {
-                    if let Some(edit) = self.editing.take() {
-                        self.editor = edit.draft;
-                        self.history.restore_navigation(edit.navigation);
-                        self.completion.dismiss(&self.editor);
-                    }
-                }
-                Action::Escape if !self.busy && !self.editor.selection().is_empty() => {
-                    self.editor.set_cursor(self.editor.cursor(), false);
-                }
-                other => {
-                    self.editor.break_group();
-                    effects.push(InputEffect::Host(other));
-                }
-            },
+            DecodedKey::Action { action, select } => {
+                self.apply_action(action, select, now_ms, width, &mut effects);
+            }
         }
         effects
+    }
+
+    /// Route a key while reverse search is open. Returns whether the search
+    /// consumed it; any other key accepts the search and then applies.
+    fn search_key(
+        &mut self,
+        decoded: DecodedKey,
+        now_ms: u64,
+        effects: &mut Vec<InputEffect>,
+    ) -> bool {
+        let action = match decoded {
+            DecodedKey::Text(text) => {
+                effects.extend(self.committed_text(text.encode_utf8(&mut [0; 4]), now_ms));
+                return true;
+            }
+            DecodedKey::Action { action, .. } => action,
+        };
+        match action {
+            Action::ReverseSearch => self.search_previous(),
+            Action::Escape => self.finish_search(now_ms, false),
+            Action::Submit => self.finish_search(now_ms, true),
+            Action::Delete(true) => {
+                if let Some(search) = self.search.as_mut() {
+                    let end = search
+                        .query
+                        .grapheme_indices(true)
+                        .next_back()
+                        .map_or(0, |(i, _)| i);
+                    search.query.truncate(end);
+                    self.history.reset();
+                }
+                self.search_previous();
+            }
+            _ => {
+                self.finish_search(now_ms, true);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn apply_action(
+        &mut self,
+        action: Action,
+        select: bool,
+        now_ms: u64,
+        width: usize,
+        effects: &mut Vec<InputEffect>,
+    ) {
+        match action {
+            Action::Select(motion) => self.editor.move_cursor(motion, true, width),
+            Action::Move(motion) => self.move_or_recall(motion, select, now_ms, width, effects),
+            Action::Delete(backwards) => self.editor.delete(backwards, now_ms),
+            Action::DeleteWord(backwards) => self.editor.delete_word(backwards, now_ms),
+            Action::Kill(motion) => self.editor.kill(motion, now_ms),
+            Action::SelectAll => self.editor.select_all(),
+            Action::Undo => {
+                self.editor.undo();
+            }
+            Action::Redo => {
+                self.editor.redo();
+            }
+            Action::Yank => self.editor.yank(now_ms),
+            Action::RotateYank => self.editor.rotate_yank(now_ms),
+            Action::Submit => self.submit(now_ms, effects),
+            Action::Newline => {
+                self.editor.enter(true, now_ms);
+            }
+            Action::LiteralTab => self.editor.insert("\t", now_ms),
+            Action::Tab if self.dock_items => effects.push(InputEffect::Host(Action::Tab)),
+            Action::Tab => {
+                let column = self
+                    .editor
+                    .layout(usize::MAX)
+                    .position(self.editor.cursor())
+                    .1;
+                let tab = self.editor.settings().tab_width;
+                self.editor.insert(&" ".repeat(tab - column % tab), now_ms);
+            }
+            Action::CopyOrInterrupt => self.copy_or_interrupt(now_ms, effects),
+            Action::DeleteOrQuit => {
+                if self.editor.text().is_empty() {
+                    effects.push(InputEffect::Quit);
+                } else {
+                    self.editor.delete(false, now_ms);
+                }
+            }
+            Action::CutPrefix => {
+                let text = self.editor.selected_text().to_owned();
+                self.editor.replace_selection("", now_ms);
+                effects.push(InputEffect::Copy(text));
+            }
+            Action::Paste => {
+                if self.question {
+                    self.comment_mode = true;
+                }
+                effects.push(InputEffect::Paste);
+            }
+            Action::ExternalEditor => effects.push(InputEffect::ExternalEditor),
+            Action::ReverseSearch => self.start_search(),
+            Action::Escape if self.editing.is_some() => {
+                if let Some(edit) = self.editing.take() {
+                    self.editor = edit.draft;
+                    self.history.restore_navigation(edit.navigation);
+                    self.completion.dismiss(&self.editor);
+                }
+            }
+            Action::Escape if !self.busy && !self.editor.selection().is_empty() => {
+                self.editor.set_cursor(self.editor.cursor(), false);
+            }
+            other => {
+                if other != Action::App(crate::AppAction::Find) {
+                    self.editor.break_group();
+                }
+                effects.push(InputEffect::Host(other));
+            }
+        }
+    }
+
+    /// Vertical motion in an empty docked prompt moves through the dock; at a
+    /// history edge it recalls the adjacent prompt instead of moving.
+    fn move_or_recall(
+        &mut self,
+        motion: Motion,
+        select: bool,
+        now_ms: u64,
+        width: usize,
+        effects: &mut Vec<InputEffect>,
+    ) {
+        if self.dock_items
+            && self.editor.text().is_empty()
+            && !select
+            && matches!(motion, Motion::Up | Motion::Down)
+        {
+            effects.push(InputEffect::Host(if motion == Motion::Up {
+                Action::PreviousDock
+            } else {
+                Action::Tab
+            }));
+            return;
+        }
+        let previous = motion == Motion::Up;
+        let history = !select
+            && !self.transcript_search()
+            && matches!(motion, Motion::Up | Motion::Down)
+            && self.editor.recall(&mut self.history, previous, now_ms);
+        if !history {
+            self.editor.move_cursor(motion, select, width);
+        }
+    }
+
+    fn submit(&mut self, now_ms: u64, effects: &mut Vec<InputEffect>) {
+        if let Some(text) = self.editor.enter(false, now_ms) {
+            self.history.push(text.clone());
+            let edit = self.editing.take().map(|edit| {
+                self.editor = edit.draft;
+                self.history.restore_navigation(edit.navigation);
+                edit.message
+            });
+            effects.push(InputEffect::Submit {
+                text,
+                queued: self.busy,
+                edit,
+            });
+        }
+    }
+
+    /// Copy a selection; otherwise interrupt, clear, or quit on a quick repeat.
+    fn copy_or_interrupt(&mut self, now_ms: u64, effects: &mut Vec<InputEffect>) {
+        if !self.editor.selection().is_empty() {
+            self.last_interrupt = None;
+            effects.push(InputEffect::Copy(self.editor.selected_text().to_owned()));
+            self.editor.break_group();
+        } else if let Some(markdown) = self
+            .transcript_selection
+            .as_ref()
+            .filter(|text| !text.is_empty())
+        {
+            self.last_interrupt = None;
+            self.editor.break_group();
+            effects.push(InputEffect::Copy(markdown.clone()));
+        } else if self.last_interrupt.is_some_and(|at| {
+            now_ms >= at && now_ms - at <= self.editor.settings().double_interrupt_ms as u64
+        }) {
+            effects.push(InputEffect::Quit);
+        } else {
+            self.last_interrupt = Some(now_ms);
+            if self.busy {
+                effects.push(InputEffect::Interrupt);
+            } else if !self.editor.text().is_empty() {
+                self.editor.set_text("", now_ms);
+            } else {
+                effects.push(InputEffect::Interrupt);
+            }
+        }
+    }
+
+    fn start_search(&mut self) {
+        let original = self.editor.clone();
+        let navigation = self.history.navigation.clone();
+        self.history.reset();
+        self.search = Some(Search {
+            original,
+            navigation,
+            query: String::new(),
+            matched: false,
+        });
+        self.search_previous();
     }
 
     fn search_previous(&mut self) {
@@ -630,7 +710,7 @@ impl PromptInput {
             self.dragging = true;
             match count {
                 _ if event.modifiers.contains(KeyModifiers::SHIFT) => {
-                    self.editor.set_cursor(offset, true)
+                    self.editor.set_cursor(offset, true);
                 }
                 2 => self.editor.select_word(offset),
                 3 => self.editor.select_line(offset),

@@ -287,10 +287,7 @@ async fn registration_uses_the_remaining_startup_deadline_off_the_runtime_thread
         assert!(matches!(
             task.await
                 .map_err(|error| Error::Invalid(error.to_string()))?,
-            Err(Error::Process {
-                kind: "timeout",
-                ..
-            })
+            Err(Error::Process(crate::ProcessError::Timeout { .. }))
         ));
         assert_eq!(active.load(Ordering::SeqCst), 0);
         assert_eq!(Arc::strong_count(&connection), 1);
@@ -410,9 +407,7 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
                 assert!(!required);
                 assert_eq!(installed.diagnostics[0].server, "hung");
             }
-            Err(Error::Process {
-                kind: "timeout", ..
-            }) => assert!(required),
+            Err(Error::Process(crate::ProcessError::Timeout { .. })) => assert!(required),
             _ => panic!("unexpected startup decision"),
         }
     }

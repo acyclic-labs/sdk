@@ -1,6 +1,6 @@
-import { createInterface } from "node:readline";
 import { create, equals, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
+import { acknowledge, serve, spend } from "./model-driver.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
 // Test-only fault injection changes the actual module loaded by Bun. Each
@@ -19,7 +19,7 @@ if (fault === "childSelect") {
   } });
 }
 const { StreamSessions } = await import("../src/session.js");
-const peer = new SessionNode();
+const peer = new SessionNode(spend);
 let rejectWrite = false;
 let observedRejection = false;
 const sessions = new StreamSessions(async (node, signal) => {
@@ -52,7 +52,7 @@ let settled = false;
 let rejected: unknown;
 if (scenario === "childSelect") void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
 async function command(action: string, hex?: string, path?: string,
-  work?: { warm: number; samples: number; reverse: boolean; shared: boolean }): Promise<unknown> {
+  work?: { warm: number; samples: number; reverse: boolean; shared: boolean }, count?: number): Promise<unknown> {
   switch (action) {
     case "latency": {
       if (work === undefined || path === undefined) throw new Error("latency work missing");
@@ -92,6 +92,20 @@ async function command(action: string, hex?: string, path?: string,
         void records.next().then(() => { settled = true; }, error => { settled = true; rejected = error; });
       }
       break;
+    // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
+    // reconnecting, and an exact number of connections. None may outlive the owner or the process-wide budget.
+    case "park":
+      setInterval(() => {}, 1 << 30);
+      acknowledge("parked");
+      await new Promise<void>(() => {});
+      break;
+    case "storm":
+      for (;;) { try { await peer.connect(undefined, controller.signal); } catch { /* each attempt spends a step */ } }
+    case "connect": {
+      const before = peer.connections.length;
+      for (let index = 0; index < (count ?? 0); index += 1) (await peer.connect(undefined, controller.signal)).close();
+      return { connections: peer.connections.length - before };
+    }
     case "releaseSelection": releaseSelection?.(); break;
     case "drop": await records.return(undefined); break;
     case "abort": controller.abort(); break;
@@ -101,7 +115,7 @@ async function command(action: string, hex?: string, path?: string,
       catch { return { valid: false, outcome: "invalid" }; }
       const encoded = toBinary(wire.SessionFrameSchema, decoded);
       if (!equals(wire.SessionFrameSchema, decoded, fromBinary(wire.SessionFrameSchema, encoded))) throw new Error("session frame round trip changed fields");
-      const validatorPeer = new SessionNode();
+      const validatorPeer = new SessionNode(spend);
       const validator = new StreamSessions(validatorPeer.connect);
       const cancel = new AbortController();
       const childFrame = decoded.body.case === "data" && decoded.body.value.item.case === "child";
@@ -135,8 +149,5 @@ async function command(action: string, hex?: string, path?: string,
   return { settled, code: (rejected as { code?: string } | undefined)?.code,
     active: peer.active, outstanding: peer.outstandingFrames };
 }
-for await (const line of createInterface({ input: process.stdin })) {
-  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action, input.hex, input.path, input.work))}\n`); }
-  catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
-}
-controller.abort();
+await serve((input: { action: string; hex?: string; path?: string; work?: Parameters<typeof command>[3]; count?: number }) =>
+  command(input.action, input.hex, input.path, input.work, input.count));

@@ -40,20 +40,29 @@ impl LocalHarness {
         settings: &Value,
     ) -> Result<Value> {
         match resolution {
-            CommandResolution::Tool {
-                tool: CommandTool::Spawn,
-                input,
-            } => {
-                let prompt = input["task"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
-                self.queue_prompt(operation, target, prompt, settings).await
-            }
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
             CommandResolution::Prompt { text, .. } => {
                 self.queue_prompt(operation, target, &text, settings).await
+            }
+            CommandResolution::Submit {
+                request: CommandRequest::Replace { message, text },
+            } => {
+                let original = crate::runtime::task_id_for_admission(message);
+                self.runtime.task_host().observe_admission(original).await?;
+                // Replacement is a new immutable branch; the original history
+                // remains available for replay and explicit transcript rewind.
+                let mut result = self.queue_prompt(operation, None, &text, settings).await?;
+                result["replaces"] = json!(message);
+                Ok(result)
+            }
+            CommandResolution::Submit {
+                request: CommandRequest::Cancel { task },
+            } => {
+                self.runtime.task_host().cancel(task).await?;
+                self.refresh_command_task(task).await?;
+                Ok(json!({"task": task, "cancel_requested": true}))
             }
             CommandResolution::Submit {
                 request: CommandRequest::New,
@@ -349,9 +358,9 @@ impl LocalHarness {
     ) -> Result<Value> {
         let name = match tool {
             CommandTool::Bash => "bash",
+            CommandTool::Spawn => "spawn",
             CommandTool::WebSearch => "web_search",
             CommandTool::UrlFetch => "web_search",
-            _ => return Err(Error::Invalid("delegate is a prompt admission".into())),
         };
         let definition = self
             .tools()
@@ -394,7 +403,12 @@ impl LocalHarness {
         .await?;
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
-        Box::pin(self.advance(task, &self.commands()?)).await?;
+        let commands = self.commands()?;
+        #[cfg(feature = "native-execution")]
+        self.advance_with_children(task, &commands, self.task_files.clone(), None)
+            .await?;
+        #[cfg(not(feature = "native-execution"))]
+        Box::pin(self.advance(task, &commands)).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(result) => Ok(result.value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),

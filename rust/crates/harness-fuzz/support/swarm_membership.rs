@@ -59,6 +59,7 @@ pub fn check(status: ChildStatus, broken: bool) {
 }
 pub fn exercise(bytes: &[u8]) {
     if let Ok(status) = ChildStatus::parse(bytes) {
+        paths(&status.task.to_string(), "mail", status.inputs);
         check(status, false);
     }
     if let Some((&selected, rest)) = bytes.split_first() {

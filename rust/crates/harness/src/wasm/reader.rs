@@ -40,12 +40,16 @@ impl ContentResidencyVerifier for BrowserContentReader {
                 .map_err(|_| Error::Storage("model file read failed".into()))?
                 .dyn_into::<Uint8Array>()
                 .map_err(|_| Error::Invalid("model file reader must return Uint8Array".into()))?;
-            if u64::from(bytes.length()) > maximum {
-                return Err(Error::Invalid(
-                    "model file exceeds projection byte limit".into(),
-                ));
-            }
-            Ok(OwnedBytes::from(bytes.to_vec()))
+            let (bytes, ()) = super::bytes::snapshot(&bytes, |length| {
+                if length > maximum {
+                    return Err(JsValue::from_str(
+                        "model file exceeds projection byte limit",
+                    ));
+                }
+                Ok(())
+            })
+            .map_err(|_| Error::Invalid("model file exceeds projection byte limit".into()))?;
+            Ok(OwnedBytes::from(bytes))
         })
     }
 }

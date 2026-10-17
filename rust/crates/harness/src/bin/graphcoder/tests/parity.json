@@ -1,0 +1,510 @@
+[
+  {
+    "row": "Multiline buffer",
+    "text": "one",
+    "events": [
+      {
+        "key": "Enter",
+        "shift": true
+      },
+      {
+        "text": "two"
+      }
+    ],
+    "expected": "one\ntwo",
+    "visible": [
+      "one",
+      "two"
+    ]
+  },
+  {
+    "row": "Char left/right, Shift to select",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Left"
+      },
+      {
+        "key": "Left",
+        "shift": true
+      },
+      {
+        "text": "X"
+      }
+    ],
+    "expected": "aXc",
+    "visible": [
+      "aXc"
+    ]
+  },
+  {
+    "row": "Line start/end",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Home"
+      },
+      {
+        "text": "X"
+      },
+      {
+        "key": "End"
+      },
+      {
+        "text": "Y"
+      }
+    ],
+    "expected": "XabcY",
+    "visible": [
+      "XabcY"
+    ]
+  },
+  {
+    "row": "Word left/right",
+    "text": "one two",
+    "events": [
+      {
+        "key": "Left",
+        "ctrl": true
+      },
+      {
+        "text": "X"
+      }
+    ],
+    "expected": "one Xtwo",
+    "visible": [
+      "one Xtwo"
+    ]
+  },
+  {
+    "row": "Undo/redo",
+    "text": "abc",
+    "events": [
+      {
+        "text": "X"
+      },
+      {
+        "key": "z",
+        "ctrl": true
+      },
+      {
+        "key": "z",
+        "ctrl": true,
+        "shift": true
+      }
+    ],
+    "expected": "abcX",
+    "visible": [
+      "abcX"
+    ]
+  },
+  {
+    "row": "Kill ring (Ctrl+K/U/W kill, Ctrl+Y yank, Alt+Y rotate)",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Home"
+      },
+      {
+        "key": "k",
+        "ctrl": true
+      },
+      {
+        "key": "y",
+        "ctrl": true
+      }
+    ],
+    "expected": "abc",
+    "visible": [
+      "abc"
+    ]
+  },
+  {
+    "row": "Grapheme and display-width wrap and motion (CJK, emoji, ZWJ, combining)",
+    "text": "日本👩‍💻é",
+    "events": [
+      {
+        "key": "Left"
+      },
+      {
+        "key": "Backspace"
+      }
+    ],
+    "expected": "日本é",
+    "visible": [
+      "日本é"
+    ]
+  },
+  {
+    "row": "IME-safe input",
+    "text": "",
+    "events": [
+      {
+        "text": "入力\n日本語"
+      }
+    ],
+    "expected": "入力\n日本語",
+    "visible": [
+      "入力",
+      "日本語"
+    ]
+  },
+  {
+    "row": "Large-paste collapse expanded on submit",
+    "text": "",
+    "events": [
+      {
+        "paste": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9",
+        "folded": true
+      },
+      {
+        "key": "Enter"
+      }
+    ],
+    "expected": "",
+    "visible": [],
+    "effects": 1,
+    "submitted": "line 1\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8\nline 9"
+  },
+  {
+    "row": "Repeat filter (only editing and navigation keys repeat)",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Enter",
+        "repeat": true
+      }
+    ],
+    "expected": "abc",
+    "visible": [
+      "abc"
+    ],
+    "effects": 0
+  },
+  {
+    "row": "Ctrl+C clears the input",
+    "text": "draft",
+    "events": [
+      {
+        "key": "c",
+        "ctrl": true
+      }
+    ],
+    "expected": "",
+    "visible": []
+  },
+  {
+    "row": "Enter submission at the typed input boundary",
+    "text": "abc",
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "expected": "",
+    "visible": [],
+    "effects": 1
+  },
+  {
+    "row": "Focus loss ends the current undo group",
+    "text": "abc",
+    "events": [
+      {
+        "text": "X",
+        "at": 1
+      },
+      {
+        "focus": false,
+        "at": 2
+      },
+      {
+        "text": "Y",
+        "at": 3
+      },
+      {
+        "key": "z",
+        "ctrl": true,
+        "at": 4
+      }
+    ],
+    "expected": "abcX",
+    "visible": [
+      "abcX"
+    ]
+  },
+  {
+    "row": "Resize preserves the prompt",
+    "text": "日本語 draft",
+    "events": [
+      {
+        "resize": true
+      }
+    ],
+    "expected": "日本語 draft",
+    "visible": [
+      "日本語 draft"
+    ]
+  },
+  {
+    "row": "Buffer start/end",
+    "text": "one\ntwo",
+    "events": [{"key":"Home","ctrl":true},{"text":"X"},{"key":"End","ctrl":true},{"text":"Y"}],
+    "expected": "Xone\ntwoY",
+    "visible": ["Xone","twoY"]
+  },
+  {
+    "row": "Backspace and Delete preserve graphemes",
+    "text": "a界b",
+    "events": [{"key":"Home"},{"key":"Delete"},{"key":"Right"},{"key":"Backspace"}],
+    "expected": "b",
+    "visible": ["b"]
+  },
+  {
+    "row": "Delete word backward",
+    "text": "one two",
+    "events": [{"key":"Backspace","ctrl":true}],
+    "expected": "one ",
+    "visible": ["one"]
+  },
+  {
+    "row": "Delete word forward",
+    "text": "one two",
+    "events": [{"key":"Home"},{"key":"Delete","ctrl":true}],
+    "expected": " two",
+    "visible": ["two"]
+  },
+  {
+    "row": "Select all; typing replaces the selection",
+    "text": "old\ntext",
+    "events": [{"key":"a","ctrl":true},{"text":"replacement"}],
+    "expected": "replacement",
+    "visible": ["replacement"]
+  },
+  {
+    "row": "Backslash then Enter inserts a newline",
+    "text": "one\\",
+    "events": [{"key":"Enter"},{"text":"two"}],
+    "expected": "one\ntwo",
+    "visible": ["one","two"]
+  },
+  {
+    "row": "Slash completion popup shows alias and tool suffix",
+    "text": "/ru",
+    "files": {"commands/tools.json":"[{\"name\":\"shell\",\"aliases\":[\"run\"],\"description\":\"Run a command\",\"tool\":true}]"},
+    "events": [], "completion": true,
+    "expected": "/ru", "visible": ["Completions","/run [tool]","Run a command"]
+  },
+  {
+    "row": "Enter accepts command completion without submitting",
+    "text": "/ru",
+    "files": {"commands/tools.json":"[{\"name\":\"shell\",\"aliases\":[\"run\"],\"tool\":true}]"},
+    "events": [{"key":"Enter"}], "completion": false,
+    "expected": "/run ", "visible": ["/run"]
+  },
+  {
+    "row": "File mention completion preserves at sign and uses fuzzy matching",
+    "text": "@sct",
+    "files": {"workspace/source_code_test.rs":""},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "@source_code_test.rs ", "visible": ["@source_code_test.rs"]
+  },
+  {
+    "row": "File completion does not activate inside email addresses",
+    "text": "person@example",
+    "files": {"workspace/example.rs":""},
+    "events": [], "completion": false,
+    "expected": "person@example", "visible": ["person@example"]
+  },
+  {
+    "row": "Custom prompt command completion",
+    "text": "/review",
+    "files": {"commands/review/code.md":"Review the changes"},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "/review:code ", "visible": ["/review:code"]
+  },
+  {
+    "row": "Prompt history Up at the buffer edge",
+    "text": "", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"Up"}],
+    "expected": "second prompt", "visible": ["second prompt"]
+  },
+  {
+    "row": "Prompt history Down restores the current draft",
+    "text": "", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"Up"},{"key":"End","ctrl":true},{"key":"Down"}],
+    "expected": "", "visible": []
+  },
+  {
+    "row": "Reverse history search uses Unicode query text",
+    "text": "draft", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"r","ctrl":true},{"text":"日本語"}],
+    "expected": "first 日本語", "visible": ["first 日本語"]
+  },
+  {
+    "row": "Escape from reverse history search restores draft",
+    "text": "draft", "history": ["first 日本語", "second prompt"],
+    "events": [{"key":"r","ctrl":true},{"text":"日本語"},{"key":"Escape"}],
+    "expected": "draft", "visible": ["draft"]
+  },
+  {
+    "row": "Alt+Enter inserts newline",
+    "text": "one", "events": [{"key":"Enter","alt":true},{"text":"two"}],
+    "expected": "one\ntwo", "visible": ["one","two"]
+  },
+  {
+    "row": "Ctrl+Enter inserts newline",
+    "text": "one", "events": [{"key":"Enter","ctrl":true},{"text":"two"}],
+    "expected": "one\ntwo", "visible": ["one","two"]
+  },
+  {
+    "row": "Theme name completion from followed theme definitions",
+    "text": "/theme da",
+    "files": {"commands/tools.json":"[{\"name\":\"theme\",\"action\":{\"kind\":\"theme\"}}]", "commands/themes.json":"[\"dark\",\"light\"]"},
+    "events": [{"key":"Tab"}], "completion": false,
+    "expected": "/theme dark", "visible": ["/theme dark"]
+  },
+  {
+    "row": "Tab inserts spaces when no completion is active",
+    "text": "a", "events": [{"key":"Tab"},{"text":"b"}],
+    "expected": "a   b", "visible": ["a   b"]
+  },
+  {
+    "row": "Alt+Tab inserts a literal tab",
+    "text": "a", "events": [{"key":"Tab","alt":true},{"text":"b"}],
+    "expected": "a\tb", "visible": ["a","b"]
+  },
+  {
+    "row": "Copy input selection preserves the prompt",
+    "text": "日本語", "events": [{"key":"a","ctrl":true},{"key":"c","ctrl":true}],
+    "expected": "日本語", "visible": ["日本語"], "copied": "日本語", "effects": 1
+  },
+  {
+    "row": "Only editing and navigation keys repeat: deletion",
+    "text": "abc", "events": [{"key":"Backspace","repeat":true}],
+    "expected": "ab", "visible": ["ab"]
+  },
+  {
+    "row": "Released keys do not edit the prompt",
+    "text": "abc", "events": [{"key":"Backspace","release":true}],
+    "expected": "abc", "visible": ["abc"]
+  },
+  {
+    "row": "Ctrl+D on empty input requests quit",
+    "text": "", "events": [{"key":"d","ctrl":true}],
+    "expected": "", "visible": [], "quit": true, "effects": 1
+  },
+  {
+    "row": "Double Ctrl+C clears then requests quit",
+    "text": "draft", "events": [{"key":"c","ctrl":true,"at":1},{"key":"c","ctrl":true,"at":2}],
+    "expected": "", "visible": [], "quit": true, "effects": 1
+  },
+  {
+    "row": "Copy transcript selection as Markdown when input has no selection",
+    "text": "draft", "transcript_selection": "**Selected Markdown**",
+    "events": [{"key":"c","ctrl":true}],
+    "expected": "draft", "visible": ["draft"], "copied": "**Selected Markdown**", "effects": 1
+  },
+  {
+    "row": "Input selection takes precedence over transcript selection",
+    "text": "日本語", "transcript_selection": "**Selected Markdown**",
+    "events": [{"key":"a","ctrl":true},{"key":"c","ctrl":true}],
+    "expected": "日本語", "visible": ["日本語"], "copied": "日本語", "effects": 1
+  },
+  {
+    "row": "Bracketed paste into a question enters comment mode",
+    "text": "", "question": true, "events": [{"paste":"日本語 comment"}],
+    "expected": "日本語 comment", "visible": ["日本語 comment"], "comment": true
+  },
+  {
+    "row": "Clipboard paste into a question requests paste in comment mode",
+    "text": "", "question": true, "events": [{"key":"v","ctrl":true}],
+    "expected": "", "visible": [], "comment": true, "clipboard_paste": true, "effects": 1
+  },
+  {
+    "row": "Message-select editing indicator",
+    "text": "live draft",
+    "edit": "message being edited",
+    "events": [],
+    "expected": "message being edited",
+    "visible": [
+      "Editing message",
+      "message being edited"
+    ]
+  },
+  {
+    "row": "Escape from message editing restores the live draft",
+    "text": "live draft",
+    "edit": "message being edited",
+    "events": [
+      {
+        "key": "Escape"
+      }
+    ],
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ]
+  },
+  {
+    "row": "Editing submission carries the selected message identity",
+    "text": "live draft",
+    "edit": "replacement text",
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "submitted": "replacement text",
+    "edit_id": "earlier",
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ],
+    "effects": 1
+  },
+  {
+    "row": "Recording and image attachment indicators",
+    "text": "draft",
+    "recording": true,
+    "images": 2,
+    "events": [],
+    "expected": "draft",
+    "visible": [
+      "REC",
+      "2 images attached",
+      "draft"
+    ]
+  },
+  {
+    "row": "Submitting during an active turn requests queuing",
+    "text": "next prompt",
+    "busy": true,
+    "events": [
+      {
+        "key": "Enter"
+      }
+    ],
+    "submitted": "next prompt",
+    "queued": true,
+    "expected": "",
+    "visible": [],
+    "effects": 1
+  },
+  {
+    "row": "Ctrl+C interrupts an active turn and preserves the draft",
+    "text": "live draft",
+    "busy": true,
+    "events": [
+      {
+        "key": "c",
+        "ctrl": true
+      }
+    ],
+    "expected": "live draft",
+    "visible": [
+      "live draft"
+    ],
+    "interrupt": true,
+    "effects": 1
+  }
+]

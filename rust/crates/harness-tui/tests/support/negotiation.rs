@@ -31,7 +31,8 @@ impl ProbeIo for Wire {
         if self.sends == 1
             && let Some(at) = self.fail_at
         {
-            self.sent.extend_from_slice(&bytes[..at.min(bytes.len())]);
+            self.sent
+                .extend_from_slice(bytes.get(..at).unwrap_or(bytes));
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         if self.broken == 2 && self.sends > 1 {
@@ -51,9 +52,12 @@ impl ProbeIo for Wire {
         let Some(packet) = self.packets.front() else {
             return Ok(0);
         };
-        let native = self.read_max.min(packet.len() - self.offset);
+        let source = packet.get(self.offset..).unwrap_or_default();
+        let native = self.read_max.min(source.len());
         let copied = native.min(buffer.len());
-        buffer[..copied].copy_from_slice(&packet[self.offset..self.offset + copied]);
+        if let (Some(target), Some(source)) = (buffer.get_mut(..copied), source.get(..copied)) {
+            target.copy_from_slice(source);
+        }
         // Negative control models consuming a large native read then silently
         // discarding bytes that do not fit the caller's remaining capacity.
         self.offset += if self.broken == 3 { native } else { copied };
@@ -131,7 +135,7 @@ pub fn run(
     assert_eq!(wire.receive(&mut [], Instant::now()).ok(), Some(0));
     let result = detect(&mut wire, &env);
     if fail_at.is_some() {
-        assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::BrokenPipe));
+        assert!(matches!(&result, Err(error) if error.kind() == io::ErrorKind::BrokenPipe));
         let mut cancel = vec![0x18];
         if mux != Multiplexer::None {
             cancel.extend_from_slice(&mux.wrap(b"\x18"));
@@ -141,19 +145,28 @@ pub fn run(
             "failed query was not cancelled"
         );
     } else {
-        let (caps, mut decoder) = result.unwrap_or_else(|error| panic!("{error}"));
+        assert!(result.is_ok(), "{:?}", result.as_ref().err());
+    }
+    if let Ok((caps, mut decoder)) = result {
         assert_eq!(caps, expected, "outer completion raced an inner reply");
         let mut events = decoder.take_events();
         let mut buffer = [0; 24];
         loop {
             let count = match wire.receive(&mut buffer, Instant::now() + PROBE_TIMEOUT) {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-                result => result.unwrap_or_else(|error| panic!("{error}")),
+                result => {
+                    assert!(result.is_ok(), "{result:?}");
+                    result.unwrap_or(0)
+                }
             };
             if count == 0 {
                 break;
             }
-            assert!(decoder.feed(&buffer[..count]).is_ok());
+            assert!(
+                decoder
+                    .feed(buffer.get(..count).unwrap_or_default())
+                    .is_ok()
+            );
             events.extend(decoder.take_events());
         }
         let expected_events: Vec<_> = std::iter::repeat_n('a', padding)

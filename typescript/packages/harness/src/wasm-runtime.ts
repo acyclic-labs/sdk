@@ -36,12 +36,13 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
 ] as const;
 
 const HYPOTHESIS_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
-const CLIENT_VIEW_METHODS = ["notifications", "models", "goals", "plans", "agents", "layout", "status", "cursor", "files", "segments", "free"] as const;
+const CLIENT_VIEW_METHODS = ["notifications", "outcomes", "task", "models", "goals", "plans", "agents", "layout", "status", "cursor", "files", "segments", "free"] as const;
 
-function hasClass(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[]): boolean {
+function hasClass(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[], constructed = false): boolean {
   return typeof exports[name] === "function"
     ? methods.every(method => typeof (exports[name] as { prototype: Record<string, unknown> }).prototype[method] === "function")
-    : methods.every(method => typeof exports[method === "free" ? `__wbg_${prefix}_free` : `${prefix}_${method}`] === "function");
+    : (!constructed || typeof exports[`${prefix}_new`] === "function")
+      && methods.every(method => typeof exports[method === "free" ? `__wbg_${prefix}_free` : `${prefix}_${method}`] === "function");
 }
 
 /** Reject a stale binding before runtime code can call a missing validator. */
@@ -54,14 +55,13 @@ export function assertHarnessWasmExports(value: unknown): void {
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
   const clientViews = hasClass(exports, "WasmClientViews", "wasmclientviews", CLIENT_VIEW_METHODS);
-  const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS);
-  const reducer = ["prepareInheritedModelRequest", "prepareForkRequest"].every(name =>
-    typeof exports.WasmReducer === "function"
-      ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype[name] === "function"
-      : typeof exports[`wasmreducer_${name}`] === "function");
+  const stream = hasClass(exports, "WasmStream", "wasmstream", [], true);
+  const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS, true);
+  const swarm = hasClass(exports, "WasmSwarmClient", "wasmswarmclient", ["views", "follow", "free"], true);
+  const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !clientViews || !hypotheses || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !clientViews || !stream || !hypotheses || !swarm || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

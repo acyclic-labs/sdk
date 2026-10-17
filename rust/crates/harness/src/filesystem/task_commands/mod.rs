@@ -22,8 +22,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+mod child;
 mod dispatch;
 mod effects;
+#[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+mod hooks;
 mod mail;
 mod manifest;
 mod model;
@@ -225,7 +228,8 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         model: &Model,
         provider: Arc<dyn ModelProvider>,
         compaction: &crate::context::CompactionPolicy,
-        io: Option<&super::PreparationIo>,
+        #[cfg(not(target_arch = "wasm32"))] io: Option<&super::PreparationIo>,
+        #[cfg(target_arch = "wasm32")] _: Option<&super::PreparationIo>,
     ) -> Result<Self> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
@@ -435,13 +439,13 @@ fn tool_invocation(
     Ok(invocation)
 }
 fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<TaskCommandProgress> {
-    let Some(io) = io else {
+    let Some(_native_io) = io else {
         return serde_json::to_value(value)
             .map(TaskCommandProgress::Ready)
             .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")));
     };
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = io.original_native_work() {
+    if let Some(native) = _native_io.original_native_work() {
         let output = super::PreparationIo::from_native_work(native)?;
         let value = output.value_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64)?;
         let retained = output.owned_bytes()?;

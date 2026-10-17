@@ -230,3 +230,38 @@ async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() ->
     );
     Ok(())
 }
+
+#[test]
+fn fired_cancellation_stays_cancelled_through_preparation_and_history() -> Result<()> {
+    use crate::client::HeadlessOutcome;
+    use crate::store::history::HistoryIo as _;
+    let cancellation = CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
+    let io = PreparationIo::from_budget(budget, &cancellation)?;
+    let history =
+        crate::store::HistoryWork::new(PreparationIo::from_budget(budget, &cancellation)?);
+    io.check_cancellation()?;
+    history.check_cancellation()?;
+    cancellation.cancel();
+    for failure in [
+        PreparationIo::from_budget(budget, &cancellation).err(),
+        PreparationIo::for_unmeasured(&cancellation).err(),
+        io.check_cancellation().err(),
+        history.check_cancellation().err(),
+    ] {
+        let Some(failure) = failure else {
+            return Err(Error::Invalid("a fired cancellation was accepted".into()));
+        };
+        assert!(matches!(failure, Error::Cancelled), "{failure:?}");
+        assert_eq!(failure.code(), crate::wire::ErrorCode::Cancelled);
+        assert_eq!(
+            HeadlessOutcome::from_error(&failure),
+            HeadlessOutcome::Cancelled
+        );
+    }
+    assert_eq!(
+        HeadlessOutcome::from_error(&Error::Storage("provider write failed".into())),
+        HeadlessOutcome::Failed
+    );
+    Ok(())
+}

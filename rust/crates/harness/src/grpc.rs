@@ -228,7 +228,7 @@ fn wire_status(error: Error) -> Status {
         wire::ErrorCode::Unauthorized
         | wire::ErrorCode::InteractionDeclined
         | wire::ErrorCode::InteractionDenied => Code::PermissionDenied,
-        wire::ErrorCode::InteractionCancelled => Code::Cancelled,
+        wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Code::Cancelled,
         wire::ErrorCode::InteractionExpired => Code::DeadlineExceeded,
         wire::ErrorCode::Storage
         | wire::ErrorCode::Indeterminate

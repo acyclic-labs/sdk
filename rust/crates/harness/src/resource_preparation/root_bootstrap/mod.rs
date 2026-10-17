@@ -31,6 +31,7 @@ impl<'a> RootBootstrapContentContext<'a> {
     pub const fn original_admission_digest(&self) -> [u8; 32] {
         self.admission_digest
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn authenticated(
         original_root: &'a TaskAdmissionRecord,
         owner: &'a Authority,

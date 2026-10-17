@@ -1,4 +1,6 @@
-use super::{Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile};
+use super::{
+    ChildFile, Component, Error, FileKey, InputPath, PlanName, Result, TaskFile, ToolFile,
+};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -19,6 +21,13 @@ pub enum Query {
     UiDirectory(Component),
     /// One UI session's requests and immutable execution records.
     Session(Component),
+    /// One admitted task and its caller session, without unrelated history.
+    TaskSession {
+        /// Admitted task identity.
+        task: Component,
+        /// Caller session identity.
+        session: Component,
+    },
     /// One request/execution folder in a UI session.
     SessionFiles {
         /// UI session identity.
@@ -97,13 +106,17 @@ pub enum Query {
     ActiveAgents,
     /// Child mount declarations.
     Agents,
+    /// All child requests, inbox files and lifecycle intents.
+    Children,
+    /// One child subtree.
+    Child(Component),
     /// One exact logical file, including goal, plan, status and mount declarations.
     File(FileKey),
 }
 
 impl Query {
     pub(crate) fn ranges(&self) -> Vec<(std::ops::Bound<FileKey>, std::ops::Bound<FileKey>)> {
-        use std::ops::Bound::{Included, Unbounded};
+        use std::ops::Bound::{Excluded, Included, Unbounded};
         let range = |task: &Component, first: TaskFile, last: TaskFile| {
             let bound = |file| {
                 Included(FileKey::Task {
@@ -115,6 +128,15 @@ impl Query {
         };
         let minimum = Component(Arc::from(""));
         let maximum = Component(Arc::from("\u{10ffff}"));
+        if let Self::TaskSession { task, session } = self {
+            let mut ranges = Self::Session(session.clone()).ranges();
+            ranges.push(range(
+                task,
+                TaskFile::Request(minimum),
+                TaskFile::Context(maximum),
+            ));
+            return ranges;
+        }
         let chunks = |task: &Component, turn: u64| {
             range(
                 task,
@@ -194,7 +216,27 @@ impl Query {
             ),
             Self::Plans => (
                 Included(FileKey::Plan(PlanName(Arc::from("")))),
-                std::ops::Bound::Excluded(FileKey::Agent(minimum)),
+                Excluded(FileKey::Agent(minimum)),
+            ),
+            Self::Children => (
+                Included(FileKey::Child {
+                    reference: minimum,
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: maximum,
+                    file: ChildFile::Result(u64::MAX),
+                }),
+            ),
+            Self::Child(reference) => (
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Request,
+                }),
+                Included(FileKey::Child {
+                    reference: reference.clone(),
+                    file: ChildFile::Result(u64::MAX),
+                }),
             ),
             Self::ActiveAgents => (
                 Included(FileKey::Child {
@@ -274,6 +316,15 @@ impl Query {
     /// Matches typed keys without rendering paths or decoding payload bytes.
     pub fn matches(&self, key: &FileKey) -> bool {
         match (self, key) {
+            (Self::TaskSession { task: selected, .. }, FileKey::Task { task, .. }) => {
+                selected == task && super::super::recent::kind(key).is_some()
+            }
+            (
+                Self::TaskSession {
+                    session: selected, ..
+                },
+                FileKey::Session { session, .. },
+            ) => selected == session,
             (Self::UiDirectory(selected), FileKey::Ui { directory, .. }) => selected == directory,
             (Self::CommandSession { session, .. }, key) => {
                 super::super::command_query::matches(session, key)
@@ -307,6 +358,8 @@ impl Query {
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
             | (Self::Tasks, FileKey::Task { .. }) => true,
+            (Self::Children, FileKey::Child { .. }) => true,
+            (Self::Child(wanted), FileKey::Child { reference, .. }) => wanted == reference,
             (Self::Inputs, FileKey::Input(path)) => !path.0.starts_with("config/"),
             (Self::Config, FileKey::Input(path)) => matches!(
                 path.0.as_str(),
@@ -443,6 +496,8 @@ impl Query {
             Ok(n)
         };
         Ok(match parts.as_slice() {
+            ["agents"] => Self::Children,
+            ["agents", reference] => Self::Child(component(reference)?),
             [".ui", directory] => Self::UiDirectory(component(directory)?),
             [""] => Self::Root,
             ["plans"] => Self::Plans,
@@ -483,6 +538,10 @@ impl Query {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/task_volume/ranges.rs"]
+mod tests;
 
 impl Query {
     pub(crate) fn snapshot_matches_file(&self, file: &super::super::FileValue) -> bool {

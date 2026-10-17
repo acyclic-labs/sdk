@@ -7,6 +7,28 @@ import { fileURLToPath } from "node:url";
 import { packageClosure } from "./package-closure.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Manual caller-array copies must stay behind the admitted byte snapshot.
+const assertByteSnapshotBoundary = (file, source) => {
+  // These existing expressions copy Rust-owned digests/requests, never JS arrays.
+  const rustOwned = source
+    .replaceAll("cursor.commit.to_vec()", "")
+    .replaceAll("prepared.bytes().to_vec()", "")
+    .replaceAll(".as_bytes()\n        .to_vec()", "")
+    .replaceAll(".map(|digest| digest.to_vec())", "")
+    .replace(/(canonical_json_digest\([^;]+?)\.to_vec\(\)/g, "$1");
+  if (/\.\s*(?:to_vec|copy_to|copy_to_uninit|raw_copy_to_ptr)\s*\(|Uint8Array::new\s*\(/.test(rustOwned)) {
+    throw new Error(`${file}: copy caller arrays through wasm/bytes.rs`);
+  }
+};
+const checkByteSnapshotBoundary = directory => {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const file = join(directory, entry.name);
+    if (entry.isDirectory()) checkByteSnapshotBoundary(file);
+    else if (entry.name.endsWith(".rs")) assertByteSnapshotBoundary(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n"));
+  }
+};
+checkByteSnapshotBoundary(join(root, "rust/crates/harness/src/wasm"));
+
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
 
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;

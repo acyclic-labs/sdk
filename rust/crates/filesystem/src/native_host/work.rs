@@ -77,6 +77,7 @@ pub(crate) trait NativeHostWork {
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     #[cfg(any(target_os = "linux", all(test, unix)))]
+    #[cfg(any(test, feature = "native-watch"))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
     #[cfg(any(windows, target_os = "linux", target_os = "macos", test))]
     fn attempt_cleanup_write<T>(
@@ -140,6 +141,7 @@ impl NativeHostWork for DemandWork {
             .map(|()| 1)
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
+    #[cfg(any(test, feature = "native-watch"))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         if let Err(error) = self
             .refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
@@ -218,6 +220,7 @@ impl NativeHostWork for &NativeMaterializationWork {
         NativeMaterializationWork::reserve_cleanup_write(self)
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
+    #[cfg(any(test, feature = "native-watch"))]
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
     }
@@ -231,6 +234,7 @@ impl NativeHostWork for &NativeMaterializationWork {
     }
 }
 
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn clone_path<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
@@ -257,6 +261,7 @@ pub(crate) fn clone_path<W: NativeHostWork>(
 }
 
 /// Creates unbounded native work.
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
 pub(crate) fn ordinary_work() -> DemandWork {
     static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
         std::sync::LazyLock::new(crate::CancellationToken::new);

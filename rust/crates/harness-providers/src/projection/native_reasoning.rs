@@ -48,6 +48,48 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
     accepted.then_some(raw)
 }
 
+/// Replays Responses transcript items through the production sequence fold,
+/// admitting native reasoning exactly as request projection does.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub(crate) fn replay_responses(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    replay_responses_with(items, crate::protocol::sequence::ResponseItem::allows)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub(super) fn replay_responses_with(
+    items: &[serde_json::Value],
+    allows: impl Fn(
+        crate::protocol::sequence::ResponseItem,
+        crate::protocol::sequence::ResponseItem,
+    ) -> bool,
+) -> Vec<serde_json::Value> {
+    use super::wire::{Item, Message};
+    let raw: Vec<_> = items
+        .iter()
+        .map(|item| serde_json::to_vec(item).unwrap())
+        .collect();
+    let mut messages = Vec::new();
+    for (item, bytes) in items.iter().zip(&raw) {
+        let next = match validated(Adapter::Responses, bytes) {
+            Some(native) => Item::Native(native),
+            None => Item::Json(item.clone()),
+        };
+        super::sequence::push_with_successor(
+            Adapter::Responses,
+            &mut messages,
+            Message::Item(next),
+            &allows,
+        )
+        .unwrap();
+    }
+    super::sequence::finish(Adapter::Responses, &mut messages);
+    let encoded = serde_json::to_vec(&messages).unwrap();
+    match crate::json(&encoded).unwrap() {
+        serde_json::Value::Array(output) => output,
+        _ => unreachable!("a message list encodes as an array"),
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;

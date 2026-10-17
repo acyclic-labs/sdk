@@ -56,6 +56,62 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
         assert!(tree.is_reaped());
     }
 }
+/// The child exits after a write found its stdin full, and the same capture
+/// pass sees its output end and its exit before any later write could meet
+/// the closed pipe. The exchange still fails: its input never reached the
+/// child.
+#[cfg(unix)]
+#[test]
+fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
+    use std::process::Stdio;
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", "exec sleep 60"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    let pid = tree
+        .child
+        .as_ref()
+        .map(std::process::Child::id)
+        .ok_or(io::ErrorKind::NotFound)?;
+    let input = vec![b'x'; 1 << 20];
+    let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    meter.blocked_write = Some(Box::new(move || {
+        // SAFETY: the unreaped direct child reserves this pid.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+        while super::platform::observe_exit_id(pid, None)
+            .expect("observe the killed child")
+            .is_none()
+        {
+            std::thread::yield_now();
+        }
+    }));
+    let failure = tree
+        .wait_with_output(
+            std::time::Duration::from_secs(5),
+            16,
+            Some(crate::CaptureInput::Exchange {
+                initial: &input,
+                maximum: input.len(),
+            }),
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            Some(&meter),
+            Some([
+                Vec::with_capacity(16),
+                Vec::with_capacity(16),
+                Vec::with_capacity(input.len()),
+            ]),
+        )
+        .expect_err("undelivered exchange input must fail");
+    assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
+    assert!(failure.status.is_some());
+    assert!(failure.cleanup_completed);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -> std::io::Result<()>
@@ -84,10 +140,11 @@ fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -
         .find(|entry| entry.data.starts_with(b"PATH="))
         .ok_or(std::io::ErrorKind::NotFound)?;
     let end = path.data.len() - 1;
-    if end <= 5 {
-        return Err(std::io::ErrorKind::InvalidInput.into());
-    }
-    path.data[5..end].fill(b'x');
+    path.data
+        .get_mut(5..end)
+        .filter(|value| !value.is_empty())
+        .ok_or(std::io::ErrorKind::InvalidInput)?
+        .fill(b'x');
     let mut custody = None;
     ProcessTree::spawn_closed_prepared(
         c"/bin/sh",
@@ -716,10 +773,10 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
                 |chunk| {
                     match chunk {
                         crate::ProcessOutput::Stdout(bytes) => {
-                            observed_stdout.extend_from_slice(bytes)
+                            observed_stdout.extend_from_slice(bytes);
                         }
                         crate::ProcessOutput::Stderr(bytes) => {
-                            observed_stderr.extend_from_slice(bytes)
+                            observed_stderr.extend_from_slice(bytes);
                         }
                     }
                     if !acknowledged
@@ -749,6 +806,26 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
         assert!(tree.is_reaped());
     }
     Ok(())
+}
+
+/// Holds this thread's capture clock at a chosen instant until dropped.
+struct FrozenCaptureClock;
+
+impl FrozenCaptureClock {
+    fn at(now: std::time::Instant) -> Self {
+        super::set_capture_clock(Some(now));
+        Self
+    }
+
+    fn advance_to(&self, now: std::time::Instant) {
+        super::set_capture_clock(Some(now));
+    }
+}
+
+impl Drop for FrozenCaptureClock {
+    fn drop(&mut self) {
+        super::set_capture_clock(None);
+    }
 }
 
 #[test]
@@ -813,10 +890,16 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     ready(temporary.path(), "stdin-stall-ready", || {
         tree_exited(&mut tree)
     });
+    // The capture clock is frozen and only reaches the deadline inside the
+    // second check, so expiry is ordered after two full capture iterations no
+    // matter how late the scheduler runs this thread.
+    let timeout = Duration::from_millis(20);
+    let started = std::time::Instant::now();
+    let clock = FrozenCaptureClock::at(started);
     let mut checks = 0;
     let failure = tree
         .wait_with_output(
-            Duration::from_millis(20),
+            timeout,
             4096,
             Some(crate::CaptureInput::Exchange {
                 initial: &vec![b'i'; BULK_BYTES],
@@ -824,6 +907,9 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             }),
             || {
                 checks += 1;
+                if checks == 2 {
+                    clock.advance_to(started + timeout);
+                }
                 Ok(())
             },
             |_| Ok(crate::ProcessInput::default()),
@@ -833,7 +919,8 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
         .expect_err("deadline stops stalled input");
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
-    assert!(checks > 1);
+    drop(clock);
+    assert_eq!(checks, 2, "the deadline expired only once the clock reached it");
     assert!(failure.cleanup_completed);
     assert!(tree.is_reaped());
 }

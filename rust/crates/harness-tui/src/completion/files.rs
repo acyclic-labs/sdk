@@ -17,15 +17,41 @@ impl CompletionMenu {
             .map(|bytes| parse_file(path, bytes))
             .transpose()?
             .unwrap_or_default();
-        let order = self
-            .files
-            .get(path)
-            .map(|(order, _)| *order)
-            .unwrap_or_else(|| {
+        self.set_entries(path, bytes.is_some(), entries);
+        Ok(())
+    }
+
+    /// Fold an atomic file publication, parsing every replacement before changing
+    /// any candidate. Unchanged files and their ranked entries are retained.
+    pub fn set_files<'a>(
+        &mut self,
+        files: impl IntoIterator<Item = (&'a str, Option<&'a [u8]>)>,
+    ) -> io::Result<()> {
+        let decoded = files
+            .into_iter()
+            .map(|(path, bytes)| {
+                let entries = bytes
+                    .map(|bytes| parse_file(path, bytes))
+                    .transpose()?
+                    .unwrap_or_default();
+                Ok((path, bytes.is_some(), entries))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        for (path, present, entries) in decoded {
+            self.set_entries(path, present, entries);
+        }
+        Ok(())
+    }
+
+    fn set_entries(&mut self, path: &str, present: bool, entries: Vec<Entry>) {
+        let order = self.files.get(path).map_or_else(
+            || {
                 let order = self.next_file;
                 self.next_file += 1;
                 order
-            });
+            },
+            |(order, _)| *order,
+        );
         if let Some((_, old)) = self.files.remove(path) {
             for entry in old.iter().filter(|entry| entry.theme) {
                 let name = entry.item.value.to_ascii_lowercase();
@@ -70,11 +96,10 @@ impl CompletionMenu {
             }
             self.rank_entry(order, index, entry);
         }
-        if bytes.is_some() {
+        if present {
             self.files.insert(path.to_owned(), (order, entries));
         }
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
-        Ok(())
     }
 
     /// Replace a lost query's disposable fold before applying its new snapshot.
@@ -88,8 +113,14 @@ impl CompletionMenu {
     }
 }
 
-fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
-    let make = |kind, value: String, description, tool, append_space| Entry {
+fn make(
+    kind: CompletionKind,
+    value: String,
+    description: String,
+    tool: bool,
+    append_space: bool,
+) -> Entry {
+    Entry {
         kind,
         theme: false,
         item: Rc::new(Completion {
@@ -103,7 +134,10 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             tool,
             append_space,
         }),
-    };
+    }
+}
+
+fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     if let Some(path) = path.strip_prefix("workspace/") {
         return Ok(vec![make(
             CompletionKind::Mention,
@@ -147,6 +181,11 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             })
             .collect();
     }
+    command_definitions(bytes)
+}
+
+/// Command entries, with their aliases, from a `commands/*.json` file.
+fn command_definitions(bytes: &[u8]) -> io::Result<Vec<Entry>> {
     let definitions: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
     definitions
         .into_iter()

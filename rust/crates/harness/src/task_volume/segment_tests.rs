@@ -6,6 +6,59 @@ use proptest::prelude::*;
 use std::sync::Arc;
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Attribution survives both the persisted segment and public file codecs.
+    #[test]
+    fn child_request_attribution_round_trips(
+        requester in proptest::option::of(any::<[u8; 16]>()),
+        bytes in proptest::collection::vec(any::<u8>(), 0..128),
+    ) {
+        let mut write = Write::new(FileKey::parse("agents/worker/request.md").unwrap(), bytes);
+        write.requester = requester.map(crate::TaskId::from_bytes);
+        let (encoded, _) = encode(&write, None).unwrap();
+        let decoded = decode(&encoded).unwrap();
+        prop_assert_eq!(&decoded, &write);
+        prop_assert_eq!(decoded.requester(), write.requester());
+        let json = serde_json::to_vec(&decoded).unwrap();
+        prop_assert_eq!(serde_json::from_slice::<Write>(&json).unwrap(), write);
+    }
+}
+
+#[test]
+fn request_attribution_corpus_rejects_non_request_claims() {
+    for (bytes, authored) in [
+        (
+            include_bytes!("../../../harness-fuzz/corpus/child_control/authored-segment")
+                .as_slice(),
+            Some(true),
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/child_control/legacy-segment").as_slice(),
+            Some(false),
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/child_control/forged-control-segment")
+                .as_slice(),
+            None,
+        ),
+    ] {
+        match authored {
+            Some(authored) => assert_eq!(
+                decode(&bytes.to_vec().into())
+                    .unwrap()
+                    .requester()
+                    .is_some(),
+                authored
+            ),
+            None => assert!(matches!(
+                decode(&bytes.to_vec().into()),
+                Err(Error::InvalidSegment)
+            )),
+        }
+    }
+}
+
+proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn goal_file_publication_survives_segment_and_query_json(
@@ -14,6 +67,7 @@ proptest! {
         let mut file = FileValue::new(FileKey::Goal, bytes);
         file.publication = publication.map(crate::OperationId::from_bytes);
         let (encoded, accepted) = encode(&file, None).unwrap();
+        prop_assert_eq!(record_bytes(&file).unwrap(), encoded.len());
         prop_assert_eq!(&accepted, &file);
         prop_assert_eq!(decode(&encoded).unwrap(), file.clone());
         let json = serde_json::to_vec(&file).unwrap();

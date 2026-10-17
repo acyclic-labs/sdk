@@ -17,6 +17,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             return Ok(None);
         };
         let operation = OperationId::new();
+        if form == "find"
+            && self
+                .state(CommandFileRoot::Config, "settings.json")?
+                .is_some_and(|settings| settings["renderer"] == "ratatui")
+        {
+            layout["search_query"] = json!(input);
+            layout["search_index"] = json!(0);
+            self.write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+                .await?;
+            return Ok(Some(operation));
+        }
         match form {
             "find" | "feedback" => {
                 let name = if form == "find" {
@@ -30,6 +41,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     &json!({"operation":operation,"text":input}),
                 )
                 .await?;
+                if form == "feedback"
+                    && self
+                        .state(CommandFileRoot::Config, "settings.json")?
+                        .is_some_and(|settings| settings["renderer"] == "ratatui")
+                {
+                    layout["open_view"] = Value::Null;
+                }
             }
             "theme" => {
                 let name = self

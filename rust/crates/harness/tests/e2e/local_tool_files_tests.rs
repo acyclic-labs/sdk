@@ -74,7 +74,7 @@ pub(super) fn fixture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::local_tool_files::check;
+    use crate::local_tool_files_check::check;
     use proptest::prelude::*;
 
     proptest! {

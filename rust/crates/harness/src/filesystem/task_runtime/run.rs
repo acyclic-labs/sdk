@@ -13,13 +13,13 @@ where
         revision: u64,
         command: OperationId,
         guard_execution: bool,
-        io: Option<&super::super::PreparationIo>,
+        _native_io: Option<&super::super::PreparationIo>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or_else(|| {
+        if let Some(_native_io) = _native_io {
+            let work = _native_io.original_native_work().ok_or_else(|| {
                 observed::boundary(
-                    Some(io),
+                    Some(_native_io),
                     crate::wire::ErrorCode::Unsupported,
                     "native suspension requires original observer",
                 )
@@ -28,7 +28,7 @@ where
                 self.execution_journal_with_native_work(task, fence, command, work)
                     .await?
                     .0
-                    .suspend_workflow_command_if_quiescent(revision, command, Some(io))
+                    .suspend_workflow_command_if_quiescent(revision, command, Some(_native_io))
                     .await
             } else {
                 self.host
@@ -123,18 +123,14 @@ where
                         .await?,
                 )
             } else {
-                WorkerContext::Ordinary(
-                    self.harness
-                        .durable_context(task, operation_id, None)
-                        .await?,
-                )
+                self.host.start_task(lease, &mut None).await?;
+                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
             };
             #[cfg(target_arch = "wasm32")]
-            let context = WorkerContext::Ordinary(
-                self.harness
-                    .durable_context(task, operation_id, None)
-                    .await?,
-            );
+            let context = {
+                self.host.start_task(lease, &mut None).await?;
+                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
+            };
             #[cfg(not(target_arch = "wasm32"))]
             let mut session = if let WorkerContext::Native(context) = &context {
                 let work =
@@ -146,14 +142,16 @@ where
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.host.start_task(lease, &mut None).await?;
-                self.open_task(task, fence.clone()).await?
+                let WorkerContext::Ordinary(context) = &context else {
+                    unreachable!()
+                };
+                let journal = self.workflow_journal_with_context(context)?;
+                self.harness
+                    .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
+                    .await?
             };
             #[cfg(target_arch = "wasm32")]
-            let mut session = {
-                self.host.start_task(lease, &mut None).await?;
-                self.open_task(task, fence.clone()).await?
-            };
+            let mut session = { self.open_task(task, fence.clone()).await? };
             #[cfg(not(target_arch = "wasm32"))]
             let mut wake_custody;
             #[cfg(not(target_arch = "wasm32"))]

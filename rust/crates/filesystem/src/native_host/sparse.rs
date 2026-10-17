@@ -1,7 +1,7 @@
 use super::*;
 
 /// Network, clustered, and user-space filesystems, by `statfs(2)` magic.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, feature = "native-watch")))]
 pub(super) const REMOTE_FILESYSTEMS: [u64; 13] = [
     0x6969,      // NFS
     0x517b,      // SMB
@@ -19,6 +19,7 @@ pub(super) const REMOTE_FILESYSTEMS: [u64; 13] = [
 ];
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
@@ -42,6 +43,7 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
@@ -72,6 +74,7 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     _directory: &Dir,
     work: &mut W,
@@ -156,7 +159,7 @@ pub fn punch_hole(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, any(test, feature = "native-mount")))]
 pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     source: &File,
     target: &File,
@@ -239,6 +242,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     Ok(false)
 }
 
+#[cfg(any(windows, test, feature = "local"))]
 pub(crate) fn truncate_file<W: NativeHostWork>(
     file: &File,
     length: u64,
@@ -306,7 +310,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, any(test, feature = "native-mount")))]
 pub(super) fn clonable_windows_length(length: u64) -> bool {
     length >= 4 * 1024 && i64::try_from(length).is_ok()
 }

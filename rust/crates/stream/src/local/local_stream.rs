@@ -140,6 +140,8 @@ impl LocalStream {
                 #[cfg(acyclic_loom)]
                 omit_follow_wake: false,
                 durable_tails: Mutex::new(Default::default()),
+                #[cfg(feature = "test-support")]
+                persistence_cut: Default::default(),
             }),
             work: None,
         })
@@ -200,10 +202,16 @@ impl LocalStream {
     }
 
     fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let written;
         let (target, file, durability) = {
             let journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal.synced >= journal.appended {
                 return Ok(());
+            }
+            #[cfg(feature = "test-support")]
+            {
+                written = (journal.epoch, journal.bytes);
             }
             span.record("batch_len", journal.appended - journal.synced);
             (
@@ -215,11 +223,24 @@ impl LocalStream {
         sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
         self.inner.publish_synced(&mut journal, target);
+        // A restart in between already marked its own header flushed.
+        #[cfg(feature = "test-support")]
+        if journal.epoch == written.0 {
+            journal.flushed = journal.flushed.max(written.1);
+        }
         Ok(())
     }
 
     /// Writes `frame`, in the order its mutation applied, without waiting for
     async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let cut = self.inner.persistence_cut.get().cloned();
+        #[cfg(feature = "test-support")]
+        if let Some(cut) = &cut
+            && !cut.admit()
+        {
+            return Err(self.cut_crash(cut.as_ref()).await);
+        }
         let required = !deferred();
         let journal = self.inner.journal.clone();
         let persist = spawn_blocking(move || {
@@ -234,6 +255,10 @@ impl LocalStream {
             .and_then(|result| result);
         if result.is_err() {
             return Err(self.inner.poison());
+        }
+        #[cfg(feature = "test-support")]
+        if let Some(cut) = cut {
+            return self.cut_after_write(cut).await;
         }
         self.inner.published();
         Ok(())

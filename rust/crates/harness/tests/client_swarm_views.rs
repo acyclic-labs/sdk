@@ -132,3 +132,5 @@ fn notification_parser_control_cannot_drop_valid_records() {
     let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
     notification_files::exercise(seed);
 }
+#[path = "client_task_files.rs"]
+mod task_files;

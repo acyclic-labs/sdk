@@ -1,6 +1,6 @@
 use acyclic_fs::{
-    AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectBackend, ObjectId, ObjectKind,
-    ObjectRead, ObjectReadRequest, ObjectStoreError, storage::ObjectWrite,
+    AsyncObjectStore, AuthorityAllocation, AuthorityWork, MemoryObjectBackend, ObjectId,
+    ObjectKind, ObjectRead, ObjectReadRequest, ObjectStoreError, storage::ObjectWrite,
 };
 use acyclic_stream::OwnedBytes;
 use std::sync::{

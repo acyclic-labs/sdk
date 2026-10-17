@@ -9,7 +9,7 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 
 [features]
 default = []
-tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:serde"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:memchr", "dep:serde"]
 
 [build-dependencies]
 serde_json.workspace = true
@@ -17,12 +17,13 @@ serde_json.workspace = true
 [dependencies]
 serde = { workspace = true, optional = true }
 vte = { version = "0.15", optional = true }
+memchr = { version = "2", optional = true }
 caseless = { version = "0.2.2", optional = true }
 arrayvec = { version = "0.7", optional = true }
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
-ratatui = { version = "0.30", default-features = false, optional = true }
-crossterm = { version = "0.28", optional = true }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"], optional = true }
+crossterm = { version = "0.28", features = ["event-stream"], optional = true }
 serde_json = { workspace = true, optional = true }
 shell-words = { version = "1.1", optional = true }
 tempfile = { version = "3.27", optional = true }
@@ -38,16 +39,21 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "termios"], optional = true }
+rustix = { workspace = true, features = ["event", "fs", "termios"], optional = true }
 signal-hook = { version = "0.4", optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["event"], optional = true }
 
 [target.'cfg(acyclic_harness_tui_loom)'.dependencies]
 loom = "=0.7.2"
 
 [target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["process"] }
 rustix-openpty = "0.2"
 
-[target.'cfg(windows)'.dependencies]
+# Native device primitives: the Windows console, and Darwin's terminal wait.
+[target.'cfg(any(windows, target_vendor = "apple"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 
 [lints]

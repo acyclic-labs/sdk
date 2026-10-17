@@ -7,8 +7,15 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+name = "effect_certificate"
+path = "fuzz_targets/effect_certificate.rs"
+test = false
+doc = false
+bench = false
+
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "cfg(fuzzing)"] }
 
 [features]
 default = ["runtime"]
@@ -17,7 +24,7 @@ notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/fil
 
 [dependencies]
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -47,22 +54,6 @@ bench = false
 [[bin]]
 name = "search_request"
 path = "fuzz_targets/search_request.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_recovery"
-path = "fuzz_targets/client_recovery.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "client_files"
-path = "fuzz_targets/client_files.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -181,6 +172,14 @@ doc = false
 bench = false
 
 [[bin]]
+name = "child_control"
+path = "fuzz_targets/child_control.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "client_commands"
 path = "fuzz_targets/client_commands.rs"
 required-features = ["runtime"]
@@ -277,16 +276,16 @@ doc = false
 bench = false
 
 [[bin]]
-name = "journal_decode"
-path = "fuzz_targets/journal_decode.rs"
-required-features = ["runtime"]
+name = "provider_scenario"
+path = "fuzz_targets/provider_scenario.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "provider_scenario"
-path = "fuzz_targets/provider_scenario.rs"
+name = "ui_prompt"
+path = "fuzz_targets/ui_prompt.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false

@@ -1,0 +1,16 @@
+[package]
+name = "acyclic-fs-lease-path-proof"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+hex = "=0.4.3"
+
+[lib]
+path = "lib.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

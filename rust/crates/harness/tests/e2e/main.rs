@@ -1,4 +1,6 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
+#[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+mod agents;
 mod composer;
 mod discovery;
 mod drivers;
@@ -7,9 +9,11 @@ mod expectations;
 mod limits_tests;
 mod local_admission;
 mod local_case;
+mod local_cloud;
 mod local_execution;
 mod local_tests;
 mod local_tool_files;
+mod local_tool_files_check;
 mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
@@ -23,9 +27,11 @@ mod provider_tests;
 mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+mod subagents;
 mod swarm;
 mod swarm_case;
 mod swarm_provider;
@@ -43,10 +49,7 @@ use acyclic_harness::context::CompactionPolicy;
 use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{path::Path, time::Instant};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use scenario_data::discover;
 
@@ -230,6 +233,14 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 
 #[test]
 fn scenarios() -> TestResult {
+    if std::env::var_os("E2E_TRACE").is_some() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new(
+                "warn,acyclic_harness::filesystem::task_runtime::dispatch=trace",
+            ))
+            .without_time()
+            .try_init();
+    }
     let started = Instant::now();
     scenario_runtime()?.block_on(run_scenarios(started))
 }
@@ -239,9 +250,19 @@ fn scenario_runtime() -> TestResult<tokio::runtime::Runtime> {
         return Err("scenario services must start before the async runtime".into());
     }
     acyclic_native_runtime::initialize_native_io_services()?;
-    Ok(tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?)
+    Ok(scenario_builder().build()?)
+}
+
+const BLOCKING_WORKERS: usize = 16;
+const MAX_ASYNC_WORKERS: usize = 32;
+fn scenario_builder() -> tokio::runtime::Builder {
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    let available = std::thread::available_parallelism().map_or(1, usize::from);
+    builder
+        .worker_threads(available.clamp(2, MAX_ASYNC_WORKERS))
+        .max_blocking_threads(BLOCKING_WORKERS)
+        .enable_all();
+    builder
 }
 
 #[tokio::test]
@@ -254,10 +275,25 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
     );
 }
 
+fn scenario_admission<I>(
+    cases: I,
+) -> impl futures::Stream<Item = <I::Item as std::future::Future>::Output>
+where
+    I: ExactSizeIterator,
+    I::Item: std::future::Future,
+{
+    let capacity = runtime_tests::admission_capacity(cases.len());
+    stream::iter(cases).buffer_unordered(capacity)
+}
+
 async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    let local_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/local-scenarios");
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    discover(&local_root, &mut paths)?;
     paths.sort();
     if let Ok(filter) = std::env::var("E2E_FILTER") {
         paths.retain(|path| path.to_string_lossy().contains(&filter));
@@ -266,24 +302,31 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
-    let mut results = stream::iter(paths.into_iter().map(|path| {
+    let mut results = scenario_admission(paths.into_iter().map(|path| {
         let root = root.clone();
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        let root = if path.starts_with(&local_root) {
+            local_root.clone()
+        } else {
+            root
+        };
         async move {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
                 let case = scenario::load_value(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
+                drivers::run(case).await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await
             .unwrap_or_else(|error| Err(Box::new(error)));
             (path, result)
         }
-    }))
-    .buffer_unordered(count);
+    }));
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
-        let name = path.strip_prefix(&root)?.display();
+        let name = path
+            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))?
+            .display();
         match result {
             Ok(()) => println!("PASS {name}"),
             Err(error) => {

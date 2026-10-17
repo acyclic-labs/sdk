@@ -7,7 +7,15 @@ mod completion;
 mod completion_popup;
 #[cfg(feature = "tui")]
 pub mod config;
+#[cfg(feature = "tui")]
+mod display_text;
+#[cfg(feature = "tui")]
+mod feedback;
+#[cfg(feature = "tui")]
+pub use feedback::Feedback;
 mod editor;
+#[cfg(feature = "tui")]
+pub use display_text::display_text;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
 mod editor_args;
 #[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
@@ -32,7 +40,23 @@ mod prompt_files;
 #[cfg(feature = "tui")]
 mod prompt_input;
 #[cfg(feature = "tui")]
+mod screen;
+#[cfg(feature = "tui")]
+mod transcript_search;
+#[cfg(feature = "tui")]
+pub use transcript_search::{TranscriptSearch, transcript_matches};
+#[cfg(feature = "tui")]
+mod thinking;
+#[cfg(feature = "tui")]
+pub use thinking::Thinking;
+#[cfg(feature = "tui")]
+mod transcript_rows;
+#[cfg(feature = "tui")]
 mod widget;
+#[cfg(feature = "tui")]
+mod wrapped_lines;
+#[cfg(feature = "tui")]
+pub use transcript_rows::TranscriptRows;
 
 #[cfg(feature = "tui")]
 pub use completion::{
@@ -67,6 +91,10 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
+#[cfg(feature = "tui")]
+pub use wrapped_lines::WrappedLines;
 
+#[cfg(feature = "tui")]
+pub use screen::{Screen, ScreenAreas};
 #[cfg(feature = "tui")]
 pub mod term;

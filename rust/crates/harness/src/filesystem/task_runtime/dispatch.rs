@@ -152,6 +152,9 @@ where
                             ),
                         });
                     }
+                    Err(error @ Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {
+                        return Err(error);
+                    }
                     Err(error) => {
                         tracing::trace!(
                             %task,

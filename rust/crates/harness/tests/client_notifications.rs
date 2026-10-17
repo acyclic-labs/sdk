@@ -31,6 +31,7 @@ fn lifecycle_mapping_uses_semantics_and_not_diagnostic_strings() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn terminal_encoding_allocates_only_its_output_buffer() {
     let notification = AttentionNotification {
@@ -192,6 +193,7 @@ fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn current_rows_are_borrowed_without_copying_payloads() {
     let mut projection = Projection::new();

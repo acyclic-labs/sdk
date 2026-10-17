@@ -46,6 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn detached_from_record<W: FsWork>(
         &self,
         record: FileRecord,

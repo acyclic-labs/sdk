@@ -148,7 +148,7 @@ pub(crate) fn canonical_chord(chord: &str) -> Option<String> {
                 "Insert" => KeyCode::Insert,
                 "Space" => KeyCode::Char(' '),
                 key if key.starts_with('F') => {
-                    let number = key[1..].parse::<u8>().ok()?;
+                    let number = key.strip_prefix('F')?.parse::<u8>().ok()?;
                     if !(1..=24).contains(&number) {
                         return None;
                     }

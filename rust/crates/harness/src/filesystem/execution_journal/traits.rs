@@ -22,6 +22,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        Box::pin(self.follow_cancellation())
+    }
+
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         Some(self.verifier.audience())
     }
@@ -88,6 +92,21 @@ where
         maximum: u32,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = obs_span!(
+                    "acyclic.harness.journal.replay",
+                    rev = after,
+                    items = crate::obs::Empty
+                );
+                crate::obs::traced_future(span, async move {
+                    let records = self.records(operation, after, maximum, None).await?;
+                    crate::obs::obs_record!("items" = records.len());
+                    Ok(records)
+                })
+                .await
+            });
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if io.is_none() {
                 let span = obs_span!(
@@ -120,6 +139,17 @@ where
         reference: &'a FileRef,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
+                crate::obs::traced_future(span, async move {
+                    let bytes = self.load_content(reference, None).await?;
+                    crate::obs::obs_record!("bytes" = bytes.len());
+                    Ok(bytes)
+                })
+                .await
+            });
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             if io.is_none() {
                 let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
@@ -141,13 +171,27 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = obs_span!("acyclic.harness.journal.append");
+                crate::obs::traced_future(
+                    span,
+                    self.append_validated(operation, None, key, event, None),
+                )
+                .await
+                .map(|_| ())
+            });
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_validated(operation, None, key, event, Some(&local))
-                    .await;
+                let result = async {
+                    self.append_validated(operation, None, key, event, Some(&local))
+                        .await?;
+                    self.publish_chunk(key, event, Some(&local)).await
+                }
+                .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
                 return result.map(|_| ());
@@ -155,8 +199,8 @@ where
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
                 self.append_validated(operation, None, key, event, io)
-                    .await
-                    .map(|_| ())
+                    .await?;
+                self.publish_chunk(key, event, io).await
             })
             .await
         })
@@ -170,6 +214,19 @@ where
         event: &'a ExecutionEvent,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = obs_span!(
+                    "acyclic.harness.journal.append_if_tail",
+                    rev = expected_tail
+                );
+                crate::obs::traced_future(
+                    span,
+                    self.append_validated(operation, Some(expected_tail), key, event, None),
+                )
+                .await
+            });
+        }
         crate::conversation::BoundedContentFuture::new(io, || async move {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
@@ -201,6 +258,16 @@ where
         media: &'static str,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        if io.is_none() {
+            return crate::conversation::BoundedContentFuture::new(None, || async move {
+                let span = obs_span!("acyclic.harness.journal.stage", bytes = bytes.len());
+                crate::obs::traced_future(
+                    span,
+                    self.stage_with_io(operation, key, bytes, media, None),
+                )
+                .await
+            });
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let native = match io.and_then(PreparationIo::original_native_work) {
             Some(work) => {

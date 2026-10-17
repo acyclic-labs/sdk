@@ -71,6 +71,13 @@ impl Driver for super::swarm_case::SwarmCase {
     }
 }
 
+impl Driver for super::subagents::SubagentCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        super::subagents::run(case).await
+    }
+}
+
 impl Driver for super::provider_case::ProviderCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -90,6 +97,8 @@ pub(super) async fn run(mut value: Value) -> TestResult {
     // Keep each selected driver frame out of the shared dispatch frame. Otherwise
     // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        Some("agents") => Box::pin(super::agents::run(value)).await,
         None if driver.is_none() => {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }
@@ -100,6 +109,12 @@ pub(super) async fn run(mut value: Value) -> TestResult {
         }
         Some("task_query") => {
             Box::pin(TaskQueryCase::execute(serde_json::from_value(value)?)).await
+        }
+        Some("subagents") => {
+            Box::pin(super::subagents::SubagentCase::execute(
+                serde_json::from_value(value)?,
+            ))
+            .await
         }
         Some("provider") => {
             Box::pin(super::provider_case::ProviderCase::execute(

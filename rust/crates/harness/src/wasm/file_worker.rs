@@ -29,7 +29,7 @@ enum Wake {
 pub(super) enum Command {
     Enqueue {
         key: FileKey,
-        bytes: js_sys::Uint8Array,
+        bytes: Vec<u8>,
         reply: mailbox::Sender<Result<(), JsValue>>,
     },
     Flush(mailbox::Sender<Result<usize, JsValue>>),
@@ -150,8 +150,7 @@ pub(super) async fn start(
                     match command {
                         Command::Enqueue { key, bytes, reply } => {
                             let result = inner
-                                .enqueue_with(key, u64::from(bytes.length()), || {
-                                    let bytes = bytes.to_vec();
+                                .enqueue_with(key, bytes.len() as u64, || {
                                     crate::client::validate_offline_request(&bytes)?;
                                     Ok(bytes.into())
                                 })

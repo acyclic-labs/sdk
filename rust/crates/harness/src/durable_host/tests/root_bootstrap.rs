@@ -27,6 +27,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .ok_or_else(|| Error::Unauthorized("ROOT lacks committed binding".into()))?;
         Ok(Arc::clone(proof))
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn root_bootstrap_owner(&self) -> &Authority {
         &self.host.owner
     }

@@ -185,8 +185,8 @@ pub(super) fn snapshot_js_json(
     }
     if value.is_instance_of::<js_sys::Uint8Array>() {
         return Ok(serde_json::Value::Array(
-            js_sys::Uint8Array::new(value)
-                .to_vec()
+            super::bytes::snapshot(value.unchecked_ref(), |_| Ok(()))?
+                .0
                 .into_iter()
                 .map(serde_json::Value::from)
                 .collect(),

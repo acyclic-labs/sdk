@@ -71,6 +71,7 @@ where
             }
             None => journal,
         };
+        let journal = journal.with_task_files(self.task_files.clone());
         let journal = if interaction {
             if let Some(owner) = &self.interaction_owner {
                 journal.with_interaction_owner(
@@ -139,6 +140,7 @@ where
                 io: None,
             },
         )?;
+        let journal = journal.with_task_files(self.task_files.clone());
         if admission
             .grants
             .contains(crate::contract::capability::INTERACTION_ROUTE)
@@ -260,6 +262,32 @@ where
         )
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn workflow_journal_with_context(
+        &self,
+        context: &crate::runtime::TaskContext,
+    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
+        let owner = context.ordinary_journal_owner::<P>()?;
+        if !owner.original_host_binding_matches(self.host.as_ref()) {
+            return Err(Error::Unauthorized(
+                "workflow owner belongs to another runtime".into(),
+            ));
+        }
+        let maximum_bytes = self
+            .maximum_payload_bytes
+            .min(owner.input_limits().file_bytes);
+        FilesystemWorkflowJournal::for_task(
+            owner,
+            self.filesystem.clone(),
+            crate::filesystem::FilesystemJournalBinding {
+                volume: &self.volume,
+                verifier: &self.verifier,
+                scope: &self.signed,
+                maximum_bytes,
+                io: None,
+            },
+        )
+    }
     /// Constructs the same owner-fenced journal with intrinsic native metadata custody.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn workflow_journal_with_native_work(

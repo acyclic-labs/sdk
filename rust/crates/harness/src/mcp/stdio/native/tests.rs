@@ -494,10 +494,7 @@ async fn invalid_bounds_and_spawn_failures_are_explicit() -> Result<()> {
     let command = Command::new(directory.path().join("nonexistent-mcp-server"));
     assert!(matches!(
         StdioMcpTransport::spawn(command, 4096, 5_000).await,
-        Err(Error::Process {
-            kind: "not_found",
-            ..
-        })
+        Err(Error::Process(crate::ProcessError::NotFound { .. }))
     ));
     Ok(())
 }

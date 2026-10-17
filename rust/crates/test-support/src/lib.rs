@@ -1,4 +1,5 @@
-//! Thread-local allocation measurements with the native System allocator.
+//! Thread-local allocation measurements and independent differential runs.
+pub mod differential;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -53,6 +54,25 @@ pub fn measure(run: impl FnOnce()) -> AllocationInfo {
     drop(scope);
     result
 }
+/// Compare independently initialized implementations, including their complete
+/// result/error/trace, and measure each without allocating measurement state.
+pub fn differential<T: Eq + std::fmt::Debug>(
+    baseline: impl FnOnce() -> T,
+    candidate: impl FnOnce() -> T,
+) -> (T, [AllocationInfo; 2]) {
+    let (mut before, mut after) = (None, None);
+    let baseline_work = measure(|| before = Some(baseline()));
+    let candidate_work = measure(|| after = Some(candidate()));
+    assert_eq!(
+        before, after,
+        "production behavior differs from independent baseline"
+    );
+    (
+        after.expect("candidate completed"),
+        [baseline_work, candidate_work],
+    )
+}
+
 fn record(pointer: *mut u8, size: usize, allocate: bool) -> *mut u8 {
     if !pointer.is_null()
         && let Some(mut info) = COUNTER.get()

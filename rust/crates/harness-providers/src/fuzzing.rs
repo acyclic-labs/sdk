@@ -7,6 +7,11 @@ use acyclic_harness::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+mod tool_arguments;
+mod turn_text;
+pub use tool_arguments::assert_tool_arguments;
+use turn_text::text_matches;
+
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
 }
@@ -442,4 +447,311 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         output_schema: value.clone(),
         projection_schema: value.clone(),
     });
+}
+
+/// OAR-RSN-02 from raw bytes. Validation agrees with an independent
+/// input-derived reference, and the production sequence fold repairs exactly
+/// the unanswered reasoning items without dropping or reordering any item.
+pub fn assert_response_sequence(input: &[u8]) {
+    use crate::projection::native_reasoning::replay_responses;
+    let Ok(body) = crate::json(input) else { return };
+    let errors = crate::validate_input(Adapter::Responses, &body);
+    let replay = crate::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    assert_eq!(body, replay);
+    assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
+    let Some(items) = body["input"].as_array() else {
+        return;
+    };
+    assert_eq!(
+        errors.contains(&"OAR-RSN-02"),
+        unanswered_reasoning(items) > 0
+    );
+    let output = replay_responses(items);
+    assert_eq!(response_repair_violation(items, &output), None);
+    assert_eq!(
+        replay_responses(&output),
+        output,
+        "repair is not idempotent"
+    );
+}
+
+/// The structured detector shared by the fuzz oracle and its negative controls.
+pub(crate) fn response_repair_violation(
+    items: &[serde_json::Value],
+    output: &[serde_json::Value],
+) -> Option<&'static str> {
+    if unanswered_reasoning(output) > 0 {
+        return Some("unanswered reasoning");
+    }
+    if output.len() != items.len() + unanswered_reasoning(items) {
+        return Some("unrequired repair");
+    }
+    let mut rest = output.iter();
+    (!items.iter().all(|item| rest.any(|next| next == item))).then_some("lost item")
+}
+
+/// Independent reference, deliberately not `ResponseItem`: each reasoning item
+/// is immediately followed by a function call or an assistant message.
+fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
+    (0..items.len())
+        .filter(|&index| {
+            items[index]["type"] == "reasoning"
+                && !items.get(index + 1).is_some_and(|next| {
+                    next["type"] == "function_call"
+                        || (next["type"].as_str().unwrap_or("message") == "message"
+                            && next["role"] == "assistant")
+                })
+        })
+        .count()
+}
+
+/// Role-alternating turns from raw bytes: an even first byte selects
+/// Anthropic, an odd one Gemini, and the rest is the wire message array.
+/// Validation agrees with an independent reference for turn boundaries and
+/// Gemini call/response pairing, and the production sequence fold repairs both.
+pub fn assert_turns(input: &[u8]) {
+    let Some((&selector, input)) = input.split_first() else {
+        return;
+    };
+    let adapter = [Adapter::Anthropic, Adapter::Gemini][usize::from(selector % 2)];
+    let Ok(serde_json::Value::Array(messages)) = crate::json(input) else {
+        return;
+    };
+    let errors = crate::validate_input(adapter, &turn_body(adapter, &messages));
+    let opens = user_turn(messages.first());
+    let closes = user_turn(messages.last());
+    if adapter == Adapter::Anthropic {
+        assert_eq!(errors.contains(&"ANT-SEQ-04"), !opens);
+        assert_eq!(errors.contains(&"ANT-SEQ-06"), !closes);
+        assert_eq!(
+            errors.contains(&"ANT-TOOL-05"),
+            messages.iter().any(interrupted_results)
+        );
+    } else {
+        assert_eq!(errors.contains(&"GEM-SEQ-05"), !(opens && closes));
+        assert_eq!(
+            errors.contains(&"GEM-TOOL-05"),
+            unanswered_exchange(&messages)
+        );
+    }
+    let replay = crate::projection::wire::replay_turns;
+    let Some(output) = replay(adapter, &messages) else {
+        return;
+    };
+    assert_eq!(turn_repair_violation(adapter, &messages, &output), None);
+    if errors.is_empty() && canonical_turns(adapter, &messages) {
+        assert_eq!(output, messages, "valid canonical turns were changed");
+    }
+    assert_eq!(
+        replay(adapter, &output).as_ref(),
+        Some(&output),
+        "turn repair is not idempotent"
+    );
+}
+
+/// Turns repair must leave unchanged: envelopes holding only the role and
+/// parts that replay represents, non-empty, alternating, already satisfying
+/// every repair rule, and with no blank Anthropic text block.
+pub(crate) fn canonical_turns(adapter: Adapter, messages: &[serde_json::Value]) -> bool {
+    let field = turn_field(adapter);
+    messages.iter().all(|message| {
+        message
+            .as_object()
+            .is_some_and(|envelope| envelope.len() == 2)
+            && message["role"].is_string()
+            && message[field].as_array().is_some_and(|parts| {
+                !parts.is_empty()
+                    && (adapter == Adapter::Gemini
+                        || parts.iter().all(|part| {
+                            part["text"]
+                                .as_str()
+                                .is_none_or(|text| !text.trim().is_empty())
+                        }))
+            })
+    }) && turn_repair_violation(adapter, messages, messages).is_none()
+}
+
+fn turn_field(adapter: Adapter) -> &'static str {
+    if adapter == Adapter::Anthropic {
+        "content"
+    } else {
+        "parts"
+    }
+}
+
+/// Every non-text block in order, split into the groups repair may move
+/// relative to each other: results (whose Gemini order follows the calls) and
+/// everything else.
+fn blocks<'a>(
+    adapter: Adapter,
+    messages: &'a [serde_json::Value],
+) -> (Vec<&'a serde_json::Value>, Vec<&'a serde_json::Value>) {
+    messages
+        .iter()
+        .filter_map(|message| message[turn_field(adapter)].as_array())
+        .flatten()
+        .filter(|part| !part["text"].is_string())
+        .partition(|part| {
+            if adapter == Adapter::Anthropic {
+                part["type"].as_str() == Some("tool_result")
+            } else {
+                part.get("functionCall").is_none() && part.get("functionResponse").is_some()
+            }
+        })
+}
+
+/// The structured detector shared by the turn oracle and its negative controls.
+pub(crate) fn turn_repair_violation(
+    adapter: Adapter,
+    input: &[serde_json::Value],
+    output: &[serde_json::Value],
+) -> Option<&'static str> {
+    if !user_turn(output.first()) {
+        return Some("open");
+    }
+    if !user_turn(output.last()) {
+        return Some("close");
+    }
+    if output
+        .windows(2)
+        .any(|pair| pair[0]["role"] == pair[1]["role"])
+    {
+        return Some("alternation");
+    }
+    let field = turn_field(adapter);
+    // Text runs are normalized; every other part survives exactly once.
+    let kept = |messages: &[serde_json::Value]| {
+        let mut parts: Vec<_> = messages
+            .iter()
+            .filter_map(|message| message[field].as_array())
+            .flatten()
+            .filter(|part| !part["text"].is_string())
+            .map(serde_json::Value::to_string)
+            .collect();
+        parts.sort();
+        parts
+    };
+    if kept(input) != kept(output) {
+        return Some("lost part");
+    }
+    // Within each group, blocks keep their order; Gemini results are ordered
+    // by their calls instead, which `unordered` checks below.
+    let ((results, others), (moved, rest)) = (blocks(adapter, input), blocks(adapter, output));
+    if others != rest || (adapter == Adapter::Anthropic && results != moved) {
+        return Some("reordered parts");
+    }
+    if !text_matches(adapter, input, output) {
+        return Some("changed text");
+    }
+    // A canonical text run has no blank fragment beside another text part.
+    let blank = |part: &serde_json::Value| part["text"].as_str().map(|text| text.trim().is_empty());
+    if output
+        .iter()
+        .filter_map(|message| message[field].as_array())
+        .any(|parts| {
+            parts
+                .windows(2)
+                .any(|pair| match (blank(&pair[0]), blank(&pair[1])) {
+                    (Some(left), Some(right)) => left || right,
+                    _ => false,
+                })
+        })
+    {
+        return Some("fragmented text");
+    }
+    if adapter == Adapter::Anthropic && output.iter().any(interrupted_results) {
+        return Some("interrupted results");
+    }
+    if adapter == Adapter::Gemini && output.windows(2).any(|pair| unordered(&pair[0], &pair[1])) {
+        return Some("unordered responses");
+    }
+    let errors = crate::validate_input(adapter, &turn_body(adapter, output));
+    errors
+        .iter()
+        .any(|rule| matches!(*rule, "ANT-SEQ-04" | "ANT-SEQ-06" | "GEM-SEQ-05"))
+        .then_some("validator boundary")
+}
+
+fn turn_body(adapter: Adapter, messages: &[serde_json::Value]) -> serde_json::Value {
+    if adapter == Adapter::Anthropic {
+        serde_json::json!({ "messages": messages })
+    } else {
+        serde_json::json!({ "contents": messages })
+    }
+}
+
+fn user_turn(message: Option<&serde_json::Value>) -> bool {
+    message.is_some_and(|message| message["role"] == "user")
+}
+
+/// Independent reference, deliberately not `protocol::sequence`: some
+/// `tool_result` block comes after a block of any other kind.
+fn interrupted_results(message: &serde_json::Value) -> bool {
+    let Some(parts) = message["content"].as_array() else {
+        return false;
+    };
+    let result = |part: &serde_json::Value| part["type"].as_str() == Some("tool_result");
+    parts
+        .iter()
+        .position(|part| !result(part))
+        .is_some_and(|first| parts[first..].iter().any(result))
+}
+
+type Key<'a> = (Option<&'a str>, Option<&'a str>);
+
+/// Independent reference keys, deliberately not `protocol::sequence`.
+/// A part carrying both members counts as a call, as on the wire.
+fn keys<'a>(parts: &'a [serde_json::Value], member: &str) -> Vec<Key<'a>> {
+    parts
+        .iter()
+        .filter(|part| member == "functionCall" || part.get("functionCall").is_none())
+        .filter_map(|part| part.get(member))
+        .map(|value| (value["name"].as_str(), value["id"].as_str()))
+        .collect()
+}
+
+fn unanswered_exchange(contents: &[serde_json::Value]) -> bool {
+    let mut pending = Vec::new();
+    let mut unanswered = false;
+    for content in contents {
+        let Some(parts) = content["parts"].as_array() else {
+            continue;
+        };
+        unanswered |= keys(parts, "functionResponse") != pending;
+        pending = keys(parts, "functionCall");
+    }
+    unanswered || !pending.is_empty()
+}
+
+/// A model turn whose distinct calls each have exactly one response in the
+/// next user turn must be answered first and in call order: its raw leading
+/// parts are exactly those responses, with no text ahead of them.
+fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
+    let (Some(calls), Some(responses)) = (model["parts"].as_array(), user["parts"].as_array())
+    else {
+        return false;
+    };
+    if model["role"] != "model" || user["role"] != "user" {
+        return false;
+    }
+    let calls = keys(calls, "functionCall");
+    // The raw leading parts, text included, must be the responses.
+    let leading: Vec<_> = responses
+        .iter()
+        .take(calls.len())
+        .map_while(|part| keys(std::slice::from_ref(part), "functionResponse").pop())
+        .collect();
+    let responses = keys(responses, "functionResponse");
+    let distinct = calls
+        .iter()
+        .enumerate()
+        .all(|(index, call)| !calls[..index].contains(call));
+    let complete = calls.iter().all(|call| {
+        responses
+            .iter()
+            .filter(|response| *response == call)
+            .count()
+            == 1
+    });
+    !calls.is_empty() && distinct && complete && leading != calls
 }

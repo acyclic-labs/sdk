@@ -1,6 +1,7 @@
 [package]
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
+autobins = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -12,6 +13,11 @@ description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
+
+[[test]]
+name = "client-mention-attachments"
+path = "tests/client_mention_attachments.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "tui-config"
@@ -26,6 +32,12 @@ required-features = ["tui"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "decoder-properties"
+path = "tests/decoder_properties.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "git_executor"
@@ -76,7 +88,7 @@ required-features = ["filesystem"]
 [[test]]
 name = "goal-files"
 path = "tests/goal_files.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "local-recursive-fork"
@@ -91,33 +103,19 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "filesystem_access"
 path = "tests/filesystem_access.rs"
 
 [[test]]
-name = "client_journal_model"
-path = "tests/client_journal_model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "client_session"
-path = "tests/client_session.rs"
-
-[[test]]
-name = "decoder_properties"
-path = "tests/decoder_properties.rs"
-
-[[test]]
 name = "client_history"
 path = "tests/client_history.rs"
 
 [[test]]
-name = "client_terminal"
-path = "tests/client_terminal.rs"
-required-features = ["terminal"]
+name = "jsonl-wire"
+path = "tests/jsonl_wire.rs"
 
 [[test]]
 name = "mcp-durable"
@@ -172,11 +170,6 @@ required-features = ["filesystem", "test-support"]
 [lib]
 crate-type = ["rlib", "cdylib"]
 
-[[bin]]
-name = "graphcoder"
-path = "src/bin/graphcoder.rs"
-required-features = ["terminal"]
-
 [[example]]
 name = "native-process-approval"
 required-features = ["filesystem"]
@@ -194,7 +187,7 @@ required-features = ["filesystem"]
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
-model-checking = ["dep:loom", "dep:same-file"]
+model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
@@ -280,7 +273,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -289,6 +282,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
 tonic.workspace = true
@@ -312,6 +306,11 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "local-cloud-objects"
+path = "tests/local_cloud_objects/main.rs"
+required-features = ["objects", "test-support", "grpc"]
 
 [[test]]
 name = "client-diff"

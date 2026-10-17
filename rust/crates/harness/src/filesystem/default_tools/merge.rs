@@ -116,9 +116,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     .await?
             }
         };
-        cancellation
-            .check()
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        cancellation.check()?;
         runtime
             .owner_observed(merge.caller, owner.task_binding().1, false, io)
             .await?;
@@ -165,9 +163,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         runtime
             .owner_observed(merge.caller, owner.task_binding().1, false, io)
             .await?;
-        cancellation
-            .check()
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        cancellation.check()?;
         match &outcome {
             JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
                 let (receipt, custody) = controller.merge_receipt(

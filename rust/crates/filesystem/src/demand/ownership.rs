@@ -138,6 +138,7 @@ impl NativeMountAllocationCustody {
             .as_ref()
             .map_or(0, |bytes| bytes.load(Ordering::Acquire))
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(super) fn accounts_for(&self, gauge: &Arc<AtomicU64>) -> bool {
         self.bytes
             .as_ref()
