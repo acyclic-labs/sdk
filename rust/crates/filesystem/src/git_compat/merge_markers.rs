@@ -49,7 +49,7 @@ impl Scanner {
     }
 }
 
-#[cfg(any(test, fuzzing))]
+#[cfg(any(all(test, not(acyclic_fs_loom)), fuzzing))]
 pub(super) fn contains(text: &str) -> bool {
     let mut scanner = Scanner::new();
     scanner.push(text.as_bytes()) || scanner.finish()

@@ -1,8 +1,18 @@
 //! Dedicated command: cargo rustc --test native_stage_loom ... -- --cfg acyclic_fs_loom.
 #![cfg(acyclic_fs_loom)]
 
-#[path = "../src/materializer/stage_state.rs"]
-mod stage_state;
+mod stage_state {
+    include!("../src/materializer/stage_state.rs");
+    impl<J, C> StageState<J, C> {
+        pub(super) fn assert_unlocked(&self) {
+            drop(
+                self.0
+                    .try_lock()
+                    .expect("phase lock spans an external call"),
+            );
+        }
+    }
+}
 #[path = "../src/sync.rs"]
 mod sync;
 

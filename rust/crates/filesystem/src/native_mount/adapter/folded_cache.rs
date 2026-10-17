@@ -58,49 +58,4 @@ impl<T> FoldedDirectoryCache<T> {
         };
         drop(previous);
     }
-
-    // Negative control: writers can select the same slot without one section.
-    #[cfg(all(test, acyclic_fs_loom))]
-    pub(super) fn insert_split(&self, key: ObjectId, value: DirectoryNames<T>) {
-        let position = {
-            let state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
-                return;
-            }
-            state.0
-        };
-        let previous = {
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.0 = (position + 1) % SLOTS;
-            state.1[position].replace((key, value))
-        };
-        drop(previous);
-    }
-
-    #[cfg(all(test, acyclic_fs_loom))]
-    pub(super) fn unlocked(&self) -> bool {
-        self.state.try_lock().is_ok()
-    }
-
-    // Negative control: payload retirement may acquire an accounting lock.
-    #[cfg(all(test, acyclic_fs_loom))]
-    pub(super) fn insert_dropping_locked(&self, key: ObjectId, value: DirectoryNames<T>) {
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.1.iter().flatten().any(|(tree, _)| *tree == key) {
-            return;
-        }
-        let position = state.0;
-        state.0 = (position + 1) % SLOTS;
-        let previous = state.1[position].replace((key, value));
-        drop(previous);
-    }
 }
