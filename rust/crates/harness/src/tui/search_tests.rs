@@ -210,6 +210,11 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
     prompt.save(&mut files, &mut input).await.unwrap();
     prompt.refresh(&files, &mut input).unwrap();
     assert!(!input.transcript_search());
+    assert_eq!(
+        format!("{:?}", input.editor),
+        draft,
+        "complete chat editor must survive file-backed search"
+    );
     for _ in 0..2 {
         paint_frame(&mut renderer, &files, &input, 80);
         assert!(!renderer.search_open);
@@ -223,11 +228,6 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
             "closed Find must release its matches"
         );
     }
-    assert_eq!(
-        format!("{:?}", input.editor),
-        draft,
-        "complete chat editor must survive file-backed search"
-    );
     for effect in input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 6, 78) {
         file_tui_input(&mut files, &NoFiles, effect, 20, 0)
             .await
