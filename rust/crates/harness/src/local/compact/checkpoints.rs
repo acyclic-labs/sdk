@@ -122,6 +122,7 @@ pub(in crate::local) async fn capture_selection<P: StreamProvider + ?Sized>(
 }
 
 impl LocalHarness {
+    #[cfg(test)]
     pub(in crate::local) async fn selected_checkpoint(
         &self,
         task: TaskId,
