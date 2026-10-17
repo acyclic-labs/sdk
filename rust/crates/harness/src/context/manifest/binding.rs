@@ -68,6 +68,13 @@ impl ContextManifest {
             });
         }
         let mut discovered = manifest.discovery.messages(limits, io)?;
+        for (message, file) in discovered.iter_mut().zip(&manifest.discovery.instructions) {
+            let bytes = reader
+                .read(file, limits.file_bytes.min(limits.render_bytes), content_io)?
+                .await?;
+            crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
+            *message = instruction_message(file.display_name(), &bytes, limits.render_bytes, io)?;
+        }
         append_context_messages(&mut messages, &mut discovered, io)?;
         let mut remaining = limits
             .render_bytes
@@ -139,5 +146,64 @@ impl ContextManifest {
                 sources: manifest.sources,
             }),
         ))
+    }
+}
+
+fn instruction_message(
+    name: &str,
+    bytes: &[u8],
+    maximum: u64,
+    io: Option<&PreparationIo>,
+) -> Result<ModelMessage> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        stock_boundary(io, ErrorCode::Invalid, "project instructions are not UTF-8")
+    })?;
+    let size = (name.len() as u64)
+        .checked_add(bytes.len() as u64)
+        .and_then(|size| {
+            size.checked_add("#  instructions\n\n<INSTRUCTIONS>\n\n</INSTRUCTIONS>".len() as u64)
+        });
+    if size.is_none_or(|size| size > maximum) {
+        return Err(stock_boundary(
+            io,
+            ErrorCode::Invalid,
+            "project instructions exceed render bound",
+        ));
+    }
+    let text = crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(
+            format_args!("# {name} instructions\n\n<INSTRUCTIONS>\n{text}\n</INSTRUCTIONS>"),
+            work,
+        )
+    })?;
+    Ok(ModelMessage {
+        role: ModelRole::User,
+        content: ModelContent::Text(text),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn project_instruction_framing_preserves_every_byte(
+            chars in prop::collection::vec(any::<char>(), 0..128), claude in any::<bool>(),
+        ) {
+            let body: String = chars.into_iter().collect();
+            let name = if claude { "CLAUDE.md" } else { "AGENTS.md" };
+            let expected = ModelMessage { role: ModelRole::User, content: ModelContent::Text(
+                format!("# {name} instructions\n\n<INSTRUCTIONS>\n{body}\n</INSTRUCTIONS>"),
+            ) };
+            let ModelContent::Text(ref text) = expected.content else { unreachable!() };
+            let exact = text.len() as u64;
+            prop_assert_eq!(instruction_message(name, body.as_bytes(), exact, None).unwrap(), expected.clone());
+            prop_assert!(instruction_message(name, body.as_bytes(), exact - 1, None).is_err());
+            let anonymous = ModelMessage { role: ModelRole::System, content: ModelContent::Text(body) };
+            prop_assert_ne!(anonymous, expected, "anonymous system text passed instruction framing");
+        }
     }
 }

@@ -61,23 +61,19 @@ async fn check_instructions(
     absent: &[&str],
 ) -> Result<()> {
     let requests = provider.requests();
-    let reader = harness.context_reader()?;
     let mut rendered = String::new();
+    for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {
+        let framed = format!("# {name} instructions\n\n<INSTRUCTIONS>\n{text}\n</INSTRUCTIONS>");
+        let message = requests[index]
+            .messages
+            .iter()
+            .find(|message| message.content == crate::model::ModelContent::Text(framed.clone()))
+            .expect("named, framed project instructions missing");
+        assert_eq!(message.role, crate::model::ModelRole::User);
+    }
     for message in &requests[index].messages {
-        if message.role != crate::model::ModelRole::System {
-            continue;
-        }
-        match &message.content {
-            crate::model::ModelContent::Text(text) => rendered.push_str(text),
-            crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
-                file,
-                policy,
-            }) => {
-                assert_eq!(policy, &crate::model::FileProjectionPolicy::BoundedFull);
-                let bytes = reader.read(file, harness.limits.file_bytes, None)?.await?;
-                rendered.push_str(std::str::from_utf8(&bytes).map_err(super::super::storage)?);
-            }
-            other => panic!("unexpected system content: {other:?}"),
+        if let crate::model::ModelContent::Text(text) = &message.content {
+            rendered.push_str(text);
         }
     }
     let agents = rendered
@@ -194,6 +190,7 @@ async fn volume_instructions_are_pinned_before_input_and_refreshed_for_the_next_
 async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_masks() -> Result<()>
 {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     std::fs::write(
         directory.path().join("AGENTS.md"),
         "checkout agents original",
@@ -209,7 +206,8 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
         ScriptedTurn::Text("second".into()),
     ]);
     let config =
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?;
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path());
     let harness = LocalHarness::open(config).await?;
     let operation = OperationId::new();
     let task = admitted(harness.submit(operation, "original request").await?)?;
@@ -235,7 +233,8 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
     .map_err(super::super::storage)?;
     drop(harness);
     let config =
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?;
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path());
     let reopened = LocalHarness::open(config).await?;
     assert_eq!(manifest(&reopened, operation).await?.0, reference);
     assert_eq!(reopened.resume(task).await?.text, "first");
