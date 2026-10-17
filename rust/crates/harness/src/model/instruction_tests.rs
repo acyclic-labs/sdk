@@ -111,11 +111,15 @@ proptest! {
         let per_file_only = [source, source].iter().all(|source| source.framed_bytes().unwrap() <= expected.len() as u64);
         prop_assert!(per_file_only, "negative control must accept overflowing total");
         let message = project_instruction(&file.clone().into(), None).unwrap();
-        let reservation = super::instructions::instruction_reservation(std::slice::from_ref(&file.clone().into()), u64::MAX, None).unwrap();
+        let files = [file.clone().into()];
+        let mut work = None;
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0).unwrap();
+        let sources = InstructionSources::new(&files, &mut quota).unwrap();
+        let reservation = sources.reservation(u64::MAX, None).unwrap();
         prop_assert_eq!(reservation, serde_json::to_vec(&message).unwrap().len() as u64 + expected.len() as u64 + 1);
         let decoded: ModelMessage = serde_json::from_slice(&serde_json::to_vec(&message).unwrap()).unwrap();
         prop_assert_eq!(decoded, message);
-        prop_assert!(super::instructions::instruction_reservation(std::slice::from_ref(&file.clone().into()), expected.len() as u64, None).is_err());
+        prop_assert!(sources.reservation(expected.len() as u64, None).is_err());
         let alternate = self::file(&path, &body, "arbitrary");
         prop_assert!(source.same_content(&alternate));
         let different = self::file(&format!("other/{path}"), &body, &label);

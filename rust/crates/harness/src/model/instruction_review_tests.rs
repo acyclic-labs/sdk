@@ -174,8 +174,10 @@ fn radix_storage_has_one_funded_allocation_with_redundant_storage_control() {
                 with_history_io(Some(io), |work| {
                     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                     let mut index = super::instruction_index::Index::new(256, &mut quota)?;
-                    let redundant = extra
-                        .then(|| super::instruction_index::Index::new(256, &mut quota).unwrap());
+                    let redundant = extra.then(|| {
+                        super::instruction_index::Index::<(usize, usize)>::new(256, &mut quota)
+                            .unwrap()
+                    });
                     for n in 0u8..=127 {
                         let mut key = [0u8; 32];
                         key[31] = n;

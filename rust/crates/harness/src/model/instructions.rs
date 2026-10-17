@@ -100,31 +100,26 @@ impl<'a> InstructionSource<'a> {
             && self.file.descriptor().byte_length() == other.descriptor().byte_length()
     }
 
-    pub(crate) fn same_source(self, other: Self) -> bool {
-        self.volume == other.volume
+    pub(crate) fn same_source(
+        self,
+        other: Self,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<bool> {
+        super::instruction_index::history_step_traced(work, 1)?;
+        super::instruction_index::trace_operation("instruction-source-compare", 1);
+        Ok(self.volume == other.volume
             && self.path == other.path
             && self.file.descriptor().sha256() == other.file.descriptor().sha256()
-            && self.file.descriptor().byte_length() == other.file.descriptor().byte_length()
+            && self.file.descriptor().byte_length() == other.file.descriptor().byte_length())
     }
 
-    pub(crate) fn identity_matches(self, other: Self) -> bool {
-        self.volume == other.volume && self.path == other.path
+    pub(super) fn index_key(self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
+        super::instruction_index::source_key_history(self.volume, self.path, work)
     }
 
     pub(crate) fn same_identity(self, other: &FileRef) -> bool {
         self.volume == other.volume() && self.path == other.path()
     }
-}
-
-pub(crate) fn instruction_files(
-    files: &[ProjectInstruction],
-) -> impl Iterator<Item = &ProjectInstruction> {
-    files.iter().enumerate().filter_map(|(index, file)| {
-        (!files[..index]
-            .iter()
-            .any(|prior| prior.source().same_source(file.source())))
-        .then_some(file)
-    })
 }
 
 pub(crate) fn reserve_instruction_bodies(
@@ -174,48 +169,47 @@ pub(crate) fn project_instruction(
 }
 
 // Both discovery entrypoints call this preflight before cloning any instruction.
-pub(crate) fn instruction_reservation(
-    files: &[ProjectInstruction],
-    maximum: u64,
-    io: Option<&PreparationIo>,
-) -> Result<u64> {
-    let mut remaining = maximum;
-    for file in instruction_files(files) {
-        let metadata = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&**file, remaining, work)
-        })?;
-        let overhead =
+impl super::instruction_sources::InstructionSources<'_> {
+    pub(crate) fn reservation(&self, maximum: u64, io: Option<&PreparationIo>) -> Result<u64> {
+        let mut remaining = maximum;
+        for file in self.iter(io) {
+            let file = file?;
+            let metadata = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(&**file, remaining, work)
+            })?;
+            let overhead =
             r#"{"role":"user","content":{"kind":"file","file":,"policy":{"project_instructions":}}}"#
                 .len() as u64
                 + 1;
-        #[derive(Serialize)]
-        struct Source<'a> {
-            volume: &'a crate::conversation::VolumeRef,
-            path: &'a str,
-        }
-        let source = file.source();
-        let identity_bytes = with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(
-                &Source {
-                    volume: source.volume,
-                    path: source.path,
-                },
-                remaining,
-                work,
-            )
-        })?;
-        remaining = remaining
-            .checked_sub(identity_bytes)
-            .and_then(|size| size.checked_sub(metadata))
-            .and_then(|size| size.checked_sub(overhead))
-            .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "instruction metadata exceeds render bound",
+            #[derive(Serialize)]
+            struct Source<'a> {
+                volume: &'a crate::conversation::VolumeRef,
+                path: &'a str,
+            }
+            let source = file.source();
+            let identity_bytes = with_history_io(io, |work| {
+                crate::executor::json::json_byte_length(
+                    &Source {
+                        volume: source.volume,
+                        path: source.path,
+                    },
+                    remaining,
+                    work,
                 )
             })?;
-        file.source().reserve(&mut remaining, io)?;
+            remaining = remaining
+                .checked_sub(identity_bytes)
+                .and_then(|size| size.checked_sub(metadata))
+                .and_then(|size| size.checked_sub(overhead))
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "instruction metadata exceeds render bound",
+                    )
+                })?;
+            file.source().reserve(&mut remaining, io)?;
+        }
+        Ok(maximum - remaining)
     }
-    Ok(maximum - remaining)
 }

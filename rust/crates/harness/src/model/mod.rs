@@ -4,15 +4,15 @@ mod call_id;
 mod content;
 mod instruction_identity;
 mod instruction_index;
+mod instruction_sources;
+pub(crate) use instruction_sources::InstructionSources;
 mod instruction_reads;
 mod instructions;
 pub use instruction_identity::{InstructionIdentity, ProjectInstruction};
 pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
 pub use instructions::InstructionSource;
-pub(crate) use instructions::{
-    instruction_files, instruction_reservation, project_instruction, reserve_instruction_bodies,
-};
+pub(crate) use instructions::{project_instruction, reserve_instruction_bodies};
 mod media;
 mod prefix;
 mod preparation;
@@ -22,9 +22,9 @@ mod request;
 mod usage;
 pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
-mod instruction_tests;
-#[cfg(test)]
 mod instruction_review_tests;
+#[cfg(test)]
+mod instruction_tests;
 #[cfg(test)]
 mod tests;
 mod tool_call;

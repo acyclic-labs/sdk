@@ -2,17 +2,17 @@
 use super::*;
 
 pub(super) type Position = (usize, usize);
-struct Node {
+struct Node<T> {
     key: [u8; 32],
-    value: Option<Position>,
+    value: Option<T>,
     bit: u16,
     children: [usize; 2],
 }
-pub(super) struct Index {
-    nodes: Vec<Node>,
+pub(super) struct Index<T = Position> {
+    nodes: Vec<Node<T>>,
     roots: [Option<usize>; 2],
 }
-impl Index {
+impl<T: Copy> Index<T> {
     pub(super) fn new(
         parts: usize,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -30,16 +30,32 @@ impl Index {
         domain: usize,
         key: &[u8; 32],
         io: Option<&PreparationIo>,
-    ) -> Result<Option<Position>> {
-        step(io, 1)?;
+    ) -> Result<Option<T>> {
+        self.get_with(domain, key, |items| step(io, items))
+    }
+    pub(super) fn get_history(
+        &self,
+        domain: usize,
+        key: &[u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<T>> {
+        self.get_with(domain, key, |items| history_step_traced(work, items))
+    }
+    fn get_with(
+        &self,
+        domain: usize,
+        key: &[u8; 32],
+        mut charge: impl FnMut(u64) -> Result<()>,
+    ) -> Result<Option<T>> {
+        charge(1)?;
         let Some(mut node) = self.roots[domain] else {
             return Ok(None);
         };
         loop {
-            step(io, 1)?;
+            charge(1)?;
             let current = &self.nodes[node];
             if current.bit == 256 {
-                step(io, 32)?;
+                charge(32)?;
                 return Ok((current.key == *key).then_some(current.value).flatten());
             }
             node = current.children[direction(key, current.bit)];
@@ -49,19 +65,37 @@ impl Index {
         &mut self,
         domain: usize,
         key: [u8; 32],
-        value: Option<Position>,
+        value: Option<T>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        step(io, 1)?;
+        self.set_with(domain, key, value, |items| step(io, items))
+    }
+    pub(super) fn set_history(
+        &mut self,
+        domain: usize,
+        key: [u8; 32],
+        value: Option<T>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        self.set_with(domain, key, value, |items| history_step_traced(work, items))
+    }
+    fn set_with(
+        &mut self,
+        domain: usize,
+        key: [u8; 32],
+        value: Option<T>,
+        mut charge: impl FnMut(u64) -> Result<()>,
+    ) -> Result<()> {
+        charge(1)?;
         let Some(mut node) = self.roots[domain] else {
             self.roots[domain] = Some(self.leaf(key, value));
             return Ok(());
         };
         while self.nodes[node].bit < 256 {
-            step(io, 1)?;
+            charge(1)?;
             node = self.nodes[node].children[direction(&key, self.nodes[node].bit)];
         }
-        step(io, 33)?;
+        charge(33)?;
         let old = self.nodes[node].key;
         let difference = old.iter().zip(key).enumerate().find_map(|(i, (a, b))| {
             let xor = a ^ b;
@@ -75,7 +109,7 @@ impl Index {
         let mut current = self.roots[domain].unwrap();
         let mut parent = None;
         while self.nodes[current].bit < bit {
-            step(io, 1)?;
+            charge(1)?;
             let side = direction(&key, self.nodes[current].bit);
             parent = Some((current, side));
             current = self.nodes[current].children[side];
@@ -95,7 +129,7 @@ impl Index {
         }
         Ok(())
     }
-    fn leaf(&mut self, key: [u8; 32], value: Option<Position>) -> usize {
+    fn leaf(&mut self, key: [u8; 32], value: Option<T>) -> usize {
         let node = self.nodes.len();
         assert!(
             node < self.nodes.capacity(),
@@ -119,32 +153,51 @@ pub(super) fn source_key(
     path: &str,
     io: Option<&PreparationIo>,
 ) -> Result<[u8; 32]> {
-    // These keys are request-local. The unobserved path can hash the borrowed
-    // wire directly without materializing a JSON Value merely to sort fields.
-    if io.is_none() {
+    with_history_io(io, |work| source_key_history(volume, path, work))
+}
+
+pub(super) fn source_key_history(
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<[u8; 32]> {
+    // Keys are request-local; the unobserved path hashes the borrowed wire.
+    if work.is_none() {
         return crate::executor::json::serialized_json_digest(&(volume, path));
     }
-    with_history_io(io, |work| {
-        #[cfg(feature = "filesystem")]
-        let maximum = io
-            .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
-        #[cfg(not(feature = "filesystem"))]
-        let maximum = u64::MAX;
-        crate::executor::json::canonical_json_digest(&(volume, path), maximum, work)
-    })
+    #[cfg(feature = "filesystem")]
+    let maximum = work
+        .as_deref()
+        .map(|work| work.remaining().map(|b| b.bytes_encoded))
+        .transpose()?
+        .unwrap_or(u64::MAX);
+    #[cfg(not(feature = "filesystem"))]
+    let maximum = u64::MAX;
+    crate::executor::json::canonical_json_digest(&(volume, path), maximum, work)
+}
+
+pub(super) fn history_step_traced(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
+    history_step(work, items)?;
+    trace_step(items);
+    Ok(())
 }
 
 pub(super) fn step(io: Option<&PreparationIo>, items: u64) -> Result<()> {
     charge_items(io, items)?;
+    trace_step(items);
+    Ok(())
+}
+fn trace_step(items: u64) {
+    trace_operation("instruction-step", items);
+}
+pub(super) fn trace_operation(name: &'static str, items: u64) {
+    let _ = (name, items);
     #[cfg(all(test, feature = "test-support"))]
     TRACE_STEPS.with(|active| {
         if active.get() {
-            acyclic_test_support::differential::record(("instruction-step", items));
+            acyclic_test_support::differential::record((name, items));
         }
     });
-    Ok(())
 }
 
 #[cfg(all(test, feature = "test-support"))]
