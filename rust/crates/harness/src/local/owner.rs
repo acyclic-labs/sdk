@@ -5,7 +5,29 @@ use std::{
     io::{Read, Write},
 };
 
-pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
+/// Root of every project's default harness state: the per-user local data directory. This is the only place the
+/// harness consults that directory. Unit tests cannot reach it: a test that does not inject
+/// `LocalHarnessConfig::state_directory` fails here instead of sharing the real per-user store with every other
+/// test and lane on the machine.
+#[cfg(not(test))]
+pub(super) fn user_state_root() -> Result<PathBuf> {
+    dirs::data_local_dir()
+        .map(|root| root.join("acyclic/harness"))
+        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))
+}
+
+/// Unit tests have no per-user store; see the production definition.
+#[cfg(test)]
+pub(super) fn user_state_root() -> Result<PathBuf> {
+    Err(Error::Unsupported(UNIT_TESTS_INJECT_STATE.into()))
+}
+
+#[cfg(test)]
+pub(super) const UNIT_TESTS_INJECT_STATE: &str =
+    "unit tests must inject LocalHarnessConfig::state_directory; the per-user store is unreachable";
+
+/// Default state directory for `project` under `root`: one directory per canonical project path and volume.
+pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<PathBuf> {
     let (path, volume) = match project {
         LocalProject::Workspace(path) => (path, None),
         LocalProject::Volume { directory, volume } => (directory, Some(volume)),
@@ -24,11 +46,7 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     if let Some(volume) = volume {
         hash.update(volume.storage_name(&mut None)?.as_bytes());
     }
-    let root = dirs::data_local_dir()
-        .ok_or_else(|| Error::Unsupported("per-user local data directory is unavailable".into()))?;
-    let directory = root
-        .join("acyclic/harness")
-        .join(hash.finalize().to_hex().as_str());
+    let directory = root.join(hash.finalize().to_hex().as_str());
     if matches!(project, LocalProject::Workspace(_)) && directory.starts_with(&canonical) {
         return Err(Error::Invalid(
             "per-user harness state would be inside the checkout".into(),

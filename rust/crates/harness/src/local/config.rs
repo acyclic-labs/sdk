@@ -18,6 +18,9 @@ pub struct LocalHarnessConfig {
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
+    /// Test-owned state root, moved into the harness so it outlives every store opened in it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) test_state: Option<tempfile::TempDir>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
@@ -52,6 +55,8 @@ impl LocalHarnessConfig {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             state_directory: None,
+            #[cfg(any(test, feature = "test-support"))]
+            test_state: None,
             model,
             context_manifest: None,
             tools: Vec::new(),
@@ -87,7 +92,27 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.state_directory = Some(directory.into());
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.test_state = None;
+        }
         self
+    }
+    /// Gives the harness a fresh test-owned state directory that lives exactly as long as the harness.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_test_state(mut self) -> Result<Self> {
+        let state = tempfile::tempdir().map_err(storage)?;
+        self.state_directory = Some(state.path().to_path_buf());
+        self.test_state = Some(state);
+        Ok(self)
+    }
+    /// The one resolution of this composition's durable state directory: the injected directory, else the
+    /// project's default under the per-user root.
+    pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
+        match &self.state_directory {
+            Some(directory) => Ok(directory.clone()),
+            None => owner::state_directory_in(&owner::user_state_root()?, &self.project),
+        }
     }
     /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
     #[must_use]

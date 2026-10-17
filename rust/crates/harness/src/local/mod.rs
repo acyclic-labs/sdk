@@ -89,6 +89,9 @@ pub struct LocalHarness {
     workspace: Option<Arc<workspace::LocalWorkspace>>,
     #[cfg(feature = "native-execution")]
     checkout_context: bool,
+    /// Test-owned state root (`LocalHarnessConfig::with_test_state`), removed only after every store in it closes.
+    #[cfg(any(test, feature = "test-support"))]
+    _test_state: Option<tempfile::TempDir>,
 }
 
 impl LocalHarness {
@@ -105,6 +108,7 @@ impl LocalHarness {
             if config.concurrency == 0 {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
+            let state_directory = config.resolved_state_directory()?;
             let (model, provider) = config.model;
             model.validate()?;
             let mut tools = ToolRegistry::default();
@@ -163,11 +167,7 @@ impl LocalHarness {
                     return Err(Error::Invalid("local workspace is not a directory".into()));
                 }
             }
-            let directory = match config.state_directory {
-                Some(path) => path,
-                None => owner::state_directory(&config.project)?,
-            };
-            let directory = owner::directory(&directory)?;
+            let directory = owner::directory(&state_directory)?;
             let owner = owner::Owner::open(&directory, &config.project)?;
             let filesystem =
                 acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(match &config.project {
@@ -326,6 +326,8 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
+                #[cfg(any(test, feature = "test-support"))]
+                _test_state: config.test_state,
             };
             if let Some(provider) = local
                 .provider

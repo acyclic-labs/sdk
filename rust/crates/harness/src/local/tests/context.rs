@@ -208,8 +208,11 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
         ScriptedTurn::Text("first".into()),
         ScriptedTurn::Text("second".into()),
     ]);
+    // The reopen below shares this state directory outside the checkout.
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let config =
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?;
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path());
     let harness = LocalHarness::open(config).await?;
     let operation = OperationId::new();
     let task = admitted(harness.submit(operation, "original request").await?)?;
@@ -235,7 +238,8 @@ async fn checkout_instructions_survive_source_edits_and_reopen_without_authored_
     .map_err(super::super::storage)?;
     drop(harness);
     let config =
-        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?;
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path());
     let reopened = LocalHarness::open(config).await?;
     assert_eq!(manifest(&reopened, operation).await?.0, reference);
     assert_eq!(reopened.resume(task).await?.text, "first");

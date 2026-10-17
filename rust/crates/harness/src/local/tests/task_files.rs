@@ -6,11 +6,13 @@ use futures::StreamExt as _;
 #[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    // The reopen below must find the same owner, so both opens share one injected state directory.
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
-        directory.path(),
-        (model()?, provider.clone()),
-    ))
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     let files = harness.task_files();
     assert_eq!(files.volume().class(), VolumeClass::AgentPrivate);
@@ -71,10 +73,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
     drop(initial);
     drop(harness);
 
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
-        directory.path(),
-        (model()?, provider),
-    ))
+    let harness = LocalHarness::open(
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path()),
+    )
     .await?;
     let reopened = harness
         .task_files()

@@ -1,6 +1,6 @@
 use super::{TestResult, matchers};
 use acyclic_harness::{
-    Error, LocalHarness, LocalHarnessConfig, Result,
+    Error, LocalHarness, Result,
     context::{ModelContextCapacity, ModelTokenCount},
     model::{
         Model, ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelProvider, ModelRole,
@@ -9,7 +9,7 @@ use acyclic_harness::{
     task_volume::{
         ChildFile, ChildState, ChildStatus, Component, Control, FileKey, FileValue, Query,
     },
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    test_support::{ScriptedModelProvider, ScriptedTurn, local_harness_config},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -259,10 +259,11 @@ pub(super) async fn run(value: Value) -> TestResult {
         std::fs::write(path, text)?;
     }
     let model = Model::new("scripted".into(), "parent".into(), "1".into(), Value::Null)?;
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    // The test composition owns its state and settings; nothing reaches the per-user store.
+    let harness = LocalHarness::open(local_harness_config(
         directory.path(),
         (model, provider.clone()),
-    ))
+    )?)
     .await?;
     let mut applied = 0;
     let outcome = tokio::select! {

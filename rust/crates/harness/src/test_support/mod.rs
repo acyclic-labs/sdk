@@ -22,7 +22,7 @@ pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,
 };
 
-/// Local test composition with temporary settings, independent of HOME and CODEX_HOME.
+/// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub fn local_harness_config(
     workspace: impl Into<std::path::PathBuf>,
@@ -34,7 +34,8 @@ pub fn local_harness_config(
     let workspace = workspace.into();
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let settings = crate::native_settings::SettingsConfig::for_test(&workspace)?;
-    let config = crate::LocalHarnessConfig::new(workspace, model);
+    // Each composition owns a fresh state directory; a test that reopens one passes its own `state_directory`.
+    let config = crate::LocalHarnessConfig::new(workspace, model).with_test_state()?;
     #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
     let config = config.settings(settings);
     Ok(config)

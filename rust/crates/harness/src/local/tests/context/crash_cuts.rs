@@ -113,13 +113,16 @@ async fn sweep_case(checkout: bool, cut: usize, after: bool, publications: usize
     } else {
         Some(volume(directory.path()).await?)
     };
+    // Every reopen of the checkout shares one state directory outside it.
+    let state = tempfile::tempdir().map_err(super::super::super::storage)?;
     let config = || -> Result<LocalHarnessConfig> {
         match &project {
             Some(project) => volume_config(directory.path(), project.clone(), provider.clone()),
-            None => crate::test_support::local_harness_config(
+            None => Ok(crate::test_support::local_harness_config(
                 directory.path(),
                 (model()?, provider.clone()),
-            ),
+            )?
+            .state_directory(state.path())),
         }
     };
     let harness = LocalHarness::open(config()?).await?;
