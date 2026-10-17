@@ -34,7 +34,7 @@ pub(in crate::context) fn place_context(
     io: Option<&PreparationIo>,
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, &contribution, placement, limits, io)?;
-    compose_context(context, contribution, placement, marker, io)
+    compose_context(context, contribution, placement, marker, limits, io)
 }
 
 pub(in crate::context) fn place_snapshot(
@@ -46,7 +46,7 @@ pub(in crate::context) fn place_snapshot(
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
     let snapshot = copy_context(snapshot, io)?;
-    compose_context(context, snapshot, placement, marker, io)
+    compose_context(context, snapshot, placement, marker, limits, io)
 }
 
 struct JoinedMetadata<'a>(
@@ -185,6 +185,7 @@ fn compose_context(
     mut contribution: Context,
     placement: ContextPlacement,
     marker: Option<u32>,
+    limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Context> {
     context.current_input_index = marker;
@@ -198,6 +199,8 @@ fn compose_context(
             append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
     }
-    crate::model::deduplicate_reads(&mut context.messages, io)?;
+    if crate::model::deduplicate_reads(&mut context.messages, io)? {
+        validate_projected_context(&context, limits, io)?;
+    }
     Ok(context)
 }

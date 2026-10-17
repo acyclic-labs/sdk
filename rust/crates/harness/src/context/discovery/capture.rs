@@ -7,8 +7,8 @@ use crate::{executor::stock_boundary, wire::ErrorCode};
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct DiscoveredContext {
     /// Root-to-leaf instructions in declared root/filename order.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
-    pub instructions: Vec<FileRef>,
+    #[cfg_attr(feature = "wasm", tsify(type = "ProjectInstruction[]"))]
+    pub instructions: Vec<crate::model::ProjectInstruction>,
     /// Skills in declared root and lexical directory order; duplicate names reject discovery.
     pub skills: Vec<SkillMetadata>,
 }
@@ -106,10 +106,10 @@ impl DiscoveredContext {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         for (index, file) in self.instructions.iter().enumerate() {
-            file.validate(work)?;
+            file.validate_source(work)?;
             if self.instructions[..index].iter().any(|prior| {
-                let source = crate::model::InstructionSource::new(prior);
-                source.same_identity(file) && !source.same_content(file)
+                let source = prior.source();
+                source.identity_matches(file.source()) && !source.same_source(file.source())
             }) {
                 return Err(discovery_error(
                     work,

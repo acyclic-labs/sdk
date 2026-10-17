@@ -10,7 +10,7 @@ pub enum FileProjectionPolicy {
     /// Verified bounded text.
     BoundedFull,
     /// Verified project instructions, framed with their canonical source scope.
-    ProjectInstructions,
+    ProjectInstructions(Box<InstructionIdentity>),
     /// Explicit bounded native media intent.
     Native(Box<NativeMediaPolicy>),
 }
@@ -31,10 +31,15 @@ impl FileProjectionPolicy {
         {
             return Err(invalid(work, "model file exceeds render limit"));
         }
-        if matches!(self, Self::ProjectInstructions)
-            && InstructionSource::new(file).framed_bytes()? > limits.render_bytes
-        {
-            return Err(invalid(work, "project instructions exceed render bound"));
+        if let Self::ProjectInstructions(source) = self {
+            source.validate(work)?;
+            if source.path().len() > limits.path_bytes {
+                return Err(invalid(work, "instruction source exceeds path bound"));
+            }
+            if InstructionSource::with_identity(file, source).framed_bytes()? > limits.render_bytes
+            {
+                return Err(invalid(work, "project instructions exceed render bound"));
+            }
         }
         Ok(())
     }

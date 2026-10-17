@@ -66,7 +66,7 @@ async fn check_instructions(
     for message in &requests[index].messages {
         if let crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
             file,
-            policy: crate::model::FileProjectionPolicy::ProjectInstructions,
+            policy: crate::model::FileProjectionPolicy::ProjectInstructions(source),
         }) = &message.content
         {
             assert_eq!(message.role, crate::model::ModelRole::User);
@@ -74,7 +74,10 @@ async fn check_instructions(
                 .read(file, file.descriptor().byte_length(), None)?
                 .await?;
             file.descriptor().verify(&bytes, &mut None)?;
-            rendered.push_str(&crate::model::InstructionSource::new(file).render(&bytes, None)?);
+            rendered.push_str(
+                &crate::model::InstructionSource::with_identity(file, source)
+                    .render(&bytes, None)?,
+            );
         }
     }
     for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {

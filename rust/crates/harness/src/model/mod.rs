@@ -2,8 +2,10 @@
 
 mod call_id;
 mod content;
+mod instruction_identity;
 mod instruction_reads;
 mod instructions;
+pub use instruction_identity::{InstructionIdentity, ProjectInstruction};
 pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
 pub use instructions::InstructionSource;

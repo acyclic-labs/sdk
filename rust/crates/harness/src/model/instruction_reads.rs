@@ -5,7 +5,7 @@ use super::*;
 pub(crate) fn deduplicate_reads(
     messages: &mut [ModelMessage],
     io: Option<&PreparationIo>,
-) -> Result<()> {
+) -> Result<bool> {
     if !messages
         .iter()
         .flat_map(|message| message.content.parts())
@@ -13,14 +13,15 @@ pub(crate) fn deduplicate_reads(
             matches!(
                 part,
                 ModelContentPart::File {
-                    policy: FileProjectionPolicy::ProjectInstructions,
+                    policy: FileProjectionPolicy::ProjectInstructions(_),
                     ..
                 }
             )
         })
     {
-        return Ok(());
+        return Ok(false);
     }
+    let mut changed = false;
     for index in 0..messages.len() {
         let (prior, current) = messages.split_at_mut(index);
         let parts = match &mut current[0].content {
@@ -73,9 +74,11 @@ pub(crate) fn deduplicate_reads(
                 .find_map(|part| match part {
                     ModelContentPart::File {
                         file,
-                        policy: FileProjectionPolicy::ProjectInstructions,
-                    } if InstructionSource::new(file).same_content(&input.0.file) => {
-                        Some(InstructionSource::new(file))
+                        policy: FileProjectionPolicy::ProjectInstructions(source),
+                    } if InstructionSource::with_identity(file, source)
+                        .same_content(&input.0.file) =>
+                    {
+                        Some(InstructionSource::with_identity(file, source))
                     }
                     _ => None,
                 });
@@ -99,7 +102,8 @@ pub(crate) fn deduplicate_reads(
                     work,
                 )
             })?;
+            changed = true;
         }
     }
-    Ok(())
+    Ok(changed)
 }

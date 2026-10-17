@@ -5,23 +5,39 @@ use crate::conversation::ContentIo;
 /// Canonical instruction identity, derived from the authenticated source path.
 /// Display labels never determine a filename or directory.
 #[derive(Clone, Copy)]
-pub struct InstructionSource<'a>(&'a FileRef);
+pub struct InstructionSource<'a> {
+    file: &'a FileRef,
+    volume: &'a crate::conversation::VolumeRef,
+    path: &'a str,
+}
 
 impl<'a> InstructionSource<'a> {
     /// Borrows the immutable file carrying volume, source path and descriptor.
     pub fn new(file: &'a FileRef) -> Self {
-        Self(file)
+        Self {
+            file,
+            volume: file.volume(),
+            path: file.path(),
+        }
+    }
+
+    /// Borrows an explicitly retained original source identity.
+    pub fn with_identity(file: &'a FileRef, source: &'a InstructionIdentity) -> Self {
+        Self {
+            file,
+            volume: source.volume(),
+            path: source.path(),
+        }
     }
 
     /// Canonical source filename.
     pub fn filename(self) -> &'a str {
-        self.0.path().rsplit('/').next().unwrap_or(self.0.path())
+        self.path.rsplit('/').next().unwrap_or(self.path)
     }
 
     /// Canonical volume-relative directory; a root file belongs to `.`.
     pub fn directory(self) -> &'a str {
-        self.0
-            .path()
+        self.path
             .rsplit_once('/')
             .map_or(".", |(directory, _)| directory)
     }
@@ -29,7 +45,7 @@ impl<'a> InstructionSource<'a> {
     /// Exact UTF-8 frame length, before reading its body.
     pub fn framed_bytes(self) -> Result<u64> {
         let overhead = "#  instructions for \n\n<INSTRUCTIONS>\n\n</INSTRUCTIONS>".len() as u64;
-        self.0
+        self.file
             .descriptor()
             .byte_length()
             .checked_add(overhead)
@@ -47,12 +63,12 @@ impl<'a> InstructionSource<'a> {
                 "project instructions exceed render bound",
             )
         })?;
-        Ok(self.0.descriptor().byte_length())
+        Ok(self.file.descriptor().byte_length())
     }
 
     /// Frames already authenticated UTF-8 bytes, preserving them verbatim.
     pub fn render(self, bytes: &[u8], io: Option<&ContentIo>) -> Result<String> {
-        if bytes.len() as u64 != self.0.descriptor().byte_length() {
+        if bytes.len() as u64 != self.file.descriptor().byte_length() {
             return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -80,20 +96,33 @@ impl<'a> InstructionSource<'a> {
 
     pub(crate) fn same_content(self, other: &FileRef) -> bool {
         self.same_identity(other)
-            && self.0.descriptor().sha256() == other.descriptor().sha256()
-            && self.0.descriptor().byte_length() == other.descriptor().byte_length()
+            && self.file.descriptor().sha256() == other.descriptor().sha256()
+            && self.file.descriptor().byte_length() == other.descriptor().byte_length()
+    }
+
+    pub(crate) fn same_source(self, other: Self) -> bool {
+        self.volume == other.volume
+            && self.path == other.path
+            && self.file.descriptor().sha256() == other.file.descriptor().sha256()
+            && self.file.descriptor().byte_length() == other.file.descriptor().byte_length()
+    }
+
+    pub(crate) fn identity_matches(self, other: Self) -> bool {
+        self.volume == other.volume && self.path == other.path
     }
 
     pub(crate) fn same_identity(self, other: &FileRef) -> bool {
-        self.0.volume() == other.volume() && self.0.path() == other.path()
+        self.volume == other.volume() && self.path == other.path()
     }
 }
 
-pub(crate) fn instruction_files(files: &[FileRef]) -> impl Iterator<Item = &FileRef> {
+pub(crate) fn instruction_files(
+    files: &[ProjectInstruction],
+) -> impl Iterator<Item = &ProjectInstruction> {
     files.iter().enumerate().filter_map(|(index, file)| {
         (!files[..index]
             .iter()
-            .any(|prior| InstructionSource::new(prior).same_content(file)))
+            .any(|prior| prior.source().same_source(file.source())))
         .then_some(file)
     })
 }
@@ -106,45 +135,78 @@ pub(crate) fn reserve_instruction_bodies(
     for part in messages.iter().flat_map(|message| message.content.parts()) {
         if let ModelContentPart::File {
             file,
-            policy: FileProjectionPolicy::ProjectInstructions,
+            policy: FileProjectionPolicy::ProjectInstructions(source),
         } = part
         {
-            InstructionSource::new(file).reserve(remaining, io)?;
+            InstructionSource::with_identity(file, source).reserve(remaining, io)?;
         }
     }
     Ok(())
 }
 
 pub(crate) fn project_instruction(
-    file: &FileRef,
+    instruction: &ProjectInstruction,
     io: Option<&PreparationIo>,
 ) -> Result<ModelMessage> {
+    let identity = instruction.source();
+    let source = with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        quota.replace(
+            quota
+                .retained()
+                .checked_add(std::mem::size_of::<InstructionIdentity>() as u64)
+                .ok_or_else(super::inventory::overflow)?,
+        )?;
+        let value = InstructionIdentity {
+            volume: identity.volume.clone_in_quota(&mut quota)?,
+            path: crate::core::copy_text(identity.path, &mut quota)?,
+        };
+        quota.transfer();
+        Ok::<_, Error>(Box::new(value))
+    })?;
     Ok(ModelMessage {
         role: ModelRole::User,
         content: ModelContent::Part(ModelContentPart::File {
-            file: clone_file(file, io)?,
-            policy: FileProjectionPolicy::ProjectInstructions,
+            file: clone_file(instruction, io)?,
+            policy: FileProjectionPolicy::ProjectInstructions(source),
         }),
     })
 }
 
 // Both discovery entrypoints call this preflight before cloning any instruction.
 pub(crate) fn instruction_reservation(
-    files: &[FileRef],
+    files: &[ProjectInstruction],
     maximum: u64,
     io: Option<&PreparationIo>,
 ) -> Result<u64> {
     let mut remaining = maximum;
     for file in instruction_files(files) {
         let metadata = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(file, remaining, work)
+            crate::executor::json::json_byte_length(&**file, remaining, work)
         })?;
         let overhead =
-            r#"{"role":"user","content":{"kind":"file","file":,"policy":"project_instructions"}}"#
+            r#"{"role":"user","content":{"kind":"file","file":,"policy":{"project_instructions":}}}"#
                 .len() as u64
                 + 1;
+        #[derive(Serialize)]
+        struct Source<'a> {
+            volume: &'a crate::conversation::VolumeRef,
+            path: &'a str,
+        }
+        let source = file.source();
+        let identity_bytes = with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(
+                &Source {
+                    volume: source.volume,
+                    path: source.path,
+                },
+                remaining,
+                work,
+            )
+        })?;
         remaining = remaining
-            .checked_sub(metadata)
+            .checked_sub(identity_bytes)
+            .and_then(|size| size.checked_sub(metadata))
             .and_then(|size| size.checked_sub(overhead))
             .ok_or_else(|| {
                 crate::executor::stock_boundary(
@@ -153,7 +215,7 @@ pub(crate) fn instruction_reservation(
                     "instruction metadata exceeds render bound",
                 )
             })?;
-        InstructionSource::new(file).reserve(&mut remaining, io)?;
+        file.source().reserve(&mut remaining, io)?;
     }
     Ok(maximum - remaining)
 }

@@ -29,13 +29,13 @@ fn file(path: &str, body: &str, label: &str) -> FileRef {
 ))]
 #[test]
 fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
-    let body = "verbatim project instructions λ";
+    let body = "verbatim project instructions Î»";
     let file = file("nested/AGENTS.md", body, "rules");
     for native in [false, true] {
         let result =
             crate::test_support::accounted::accounted(native, 8 * 1024 * 1024, false, |io| {
                 let mut messages = vec![
-                    project_instruction(&file, Some(io)).unwrap(),
+                    project_instruction(&file.clone().into(), Some(io)).unwrap(),
                     ModelMessage {
                         role: ModelRole::Assistant,
                         content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
@@ -97,7 +97,8 @@ proptest! {
         let file = file(&path, &body, &label);
         let source = InstructionSource::new(&file);
         let expected = format!("# {name} instructions for {directory}\n\n<INSTRUCTIONS>\n{body}\n</INSTRUCTIONS>");
-        prop_assert_eq!(source.render(body.as_bytes(), None).unwrap(), &expected);
+        let rendered = source.render(body.as_bytes(), None).unwrap();
+        prop_assert_eq!(&rendered, &expected);
         prop_assert_eq!(source.framed_bytes().unwrap(), expected.len() as u64);
         let mut remaining = expected.len() as u64;
         source.reserve(&mut remaining, None).unwrap();
@@ -105,13 +106,26 @@ proptest! {
         prop_assert!(source.reserve(&mut remaining, None).is_err());
         let per_file_only = [source, source].iter().all(|source| source.framed_bytes().unwrap() <= expected.len() as u64);
         prop_assert!(per_file_only, "negative control must accept overflowing total");
-        let message = project_instruction(&file, None).unwrap();
+        let message = project_instruction(&file.clone().into(), None).unwrap();
+        let reservation = super::instructions::instruction_reservation(std::slice::from_ref(&file.clone().into()), u64::MAX, None).unwrap();
+        prop_assert_eq!(reservation, serde_json::to_vec(&message).unwrap().len() as u64 + expected.len() as u64 + 1);
         let decoded: ModelMessage = serde_json::from_slice(&serde_json::to_vec(&message).unwrap()).unwrap();
         prop_assert_eq!(decoded, message);
-        prop_assert!(super::instructions::instruction_reservation(std::slice::from_ref(&file), expected.len() as u64, None).is_err());
+        prop_assert!(super::instructions::instruction_reservation(std::slice::from_ref(&file.clone().into()), expected.len() as u64, None).is_err());
         let alternate = self::file(&path, &body, "arbitrary");
         prop_assert!(source.same_content(&alternate));
         let different = self::file(&format!("other/{path}"), &body, &label);
         prop_assert!(!source.same_content(&different));
+        let legacy: ProjectInstruction = serde_json::from_slice(&serde_json::to_vec(&file).unwrap()).unwrap();
+        prop_assert!(legacy.source().same_content(&file));
+        let captured = ProjectInstruction::Captured {
+            file: self::file("archive/opaque", &body, "rules"),
+            source: InstructionIdentity::new(file.volume().clone(), path).unwrap(),
+        };
+        prop_assert_eq!(captured.source().render(body.as_bytes(), None).unwrap(), expected);
+        prop_assert!(captured.source().same_content(&file));
+        prop_assert!(!InstructionSource::new(&captured).same_content(&file), "archive-location negative control must lose identity");
+        let decoded: ProjectInstruction = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
+        prop_assert_eq!(decoded, captured);
     }
 }

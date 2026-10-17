@@ -18,7 +18,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-const BODY: &str = "Project marker: λ\nverbatim <literal>\n";
+const BODY: &str = "Project marker: Î»\nverbatim <literal>\n";
 
 fn source(path: &str, bytes: &[u8]) -> FileRef {
     FileRef::new(
@@ -53,10 +53,17 @@ impl ContentResidencyVerifier for Reader {
 }
 
 async fn discovered(files: Vec<FileRef>) -> Context {
-    projected(files, Context::default()).await
+    projected(
+        files.into_iter().map(Into::into).collect(),
+        Context::default(),
+    )
+    .await
 }
 
-async fn projected(files: Vec<FileRef>, context: Context) -> Context {
+async fn projected(
+    files: Vec<acyclic_harness::model::ProjectInstruction>,
+    context: Context,
+) -> Context {
     let stage = DiscoveredContext {
         instructions: files,
         skills: vec![],
@@ -117,7 +124,11 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
                 ModelContentPart::ToolResult { call_id: "call".into(), name: "read".into(),
                     content: ToolResultContent::Json { value: json!(returned) } }
             ) });
-            let context = projected(vec![agents.clone(), claude.clone()], Context { messages, ..Context::default() }).await;
+            let captured = acyclic_harness::model::ProjectInstruction::Captured {
+                file: source("inputs/context/private-copy", BODY.as_bytes()),
+                source: acyclic_harness::model::InstructionIdentity::new(agents.volume().clone(), agents.path().into()).unwrap(),
+            };
+            let context = projected(vec![captured, claude.clone().into()], Context { messages, ..Context::default() }).await;
             let request = PreparedModelRequest::prepare(ModelRequest { model: provider.model().clone(),
                 messages: context.messages, tools: vec![acyclic_harness::tool::ToolDefinition {
                     name: "read".into(), revision: "1".into(), description: "Read".into(),
