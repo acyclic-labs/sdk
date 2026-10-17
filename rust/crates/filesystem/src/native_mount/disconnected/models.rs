@@ -4,7 +4,16 @@ fn check_case(name: &str, scenario: impl Fn() + Send + Sync + 'static) {
     let mut model = loom::model::Builder::new();
     // Each independent scenario needs its own saved schedule on replay.
     model.checkpoint_file = model.checkpoint_file.map(|path| path.with_extension(name));
-    model.check(scenario);
+    if model.log {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_env("LOOM_LOG"))
+            .with_test_writer()
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || model.check(scenario));
+    } else {
+        model.check(scenario);
+    }
 }
 
 fn remount(

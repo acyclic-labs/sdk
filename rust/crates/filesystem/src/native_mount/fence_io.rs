@@ -4,10 +4,7 @@ use std::{fs::File, io};
 pub(super) type MountLockFile = File;
 
 #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
-pub(super) struct MountLockFile(
-    File,
-    crate::sync::native::Arc<super::disconnected::kernel::Kernel>,
-);
+pub(super) struct MountLockFile(File, std::sync::Arc<super::disconnected::kernel::Kernel>);
 
 #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
 impl std::fmt::Debug for MountLockFile {
