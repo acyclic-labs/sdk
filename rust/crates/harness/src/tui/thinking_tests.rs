@@ -73,7 +73,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
     };
     assert!(
         !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
-            .contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦")
+            .contains("Thinking…")
     );
     files.submit("hello", &NoFiles).await.unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
@@ -90,14 +90,14 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
         "animation must not publish layout state"
     );
     assert!(
-        text(&first).contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"),
+        text(&first).contains("Thinking…"),
         "followed busy state must render thinking"
     );
     let start = first
         .content
         .windows(9)
         .position(|cells| {
-            cells.iter().map(|cell| cell.symbol()).collect::<String>() == "ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"
+            cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Thinking…"
         })
         .unwrap();
     assert_ne!(first.content[start].style(), later.content[start].style());
@@ -115,7 +115,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
         .unwrap();
     let static_first = paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0);
     let static_later = paint::<BOUND, PREFERENCES>(&mut renderer, &files, Thinking::FRAME_MS);
-    assert!(text(&static_first).contains("ThinkingÃ¢â‚¬Â¦"));
+    assert!(text(&static_first).contains("Thinking…"));
     assert_eq!(
         static_first, static_later,
         "followed reduced motion must freeze the label"
@@ -153,7 +153,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
     renderer.configure(&views, &owner, &files).unwrap();
     assert!(
         !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
-            .contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦")
+            .contains("Thinking…")
     );
 }
 
@@ -174,7 +174,7 @@ proptest::proptest! {
     fn shimmer_text_and_phase_are_periodic(now in proptest::prelude::any::<u64>()) {
         let theme = super::super::config::ThemeStyles::default();
         let row = Thinking::new(&theme,now).line();
-        proptest::prop_assert_eq!(row.spans.iter().map(|span|span.content.as_ref()).collect::<String>(),"ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦");
+        proptest::prop_assert_eq!(row.spans.iter().map(|span|span.content.as_ref()).collect::<String>(),"Thinking…");
         let lit: Vec<_> = row.spans.iter().enumerate().filter(|(_,span)|span.style.add_modifier.contains(Modifier::BOLD)).map(|(i,_)|i).collect();
         proptest::prop_assert_eq!(lit,vec![((now/Thinking::FRAME_MS)%9) as usize]);
         let period = Thinking::FRAME_MS*9;
