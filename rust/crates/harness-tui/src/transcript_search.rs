@@ -1,6 +1,7 @@
 use caseless::Caseless;
 use std::{collections::VecDeque, ops::Range};
-mod view;
+pub(crate) mod index;
+pub(crate) mod view;
 pub use view::TranscriptSearch;
 
 /// Unicode case-folded matches, expressed as byte ranges in the original text.

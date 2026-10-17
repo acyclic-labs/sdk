@@ -52,10 +52,13 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    renderer: &mut crate::tui::ClientRenderer,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
+        biased;
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+        _ = renderer.search_progress() => Ok(None),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
             client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;

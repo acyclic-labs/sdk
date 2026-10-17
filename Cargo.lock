@@ -458,6 +458,7 @@ dependencies = [
  "crossterm 0.28.1",
  "image",
  "loom",
+ "memchr",
  "proptest",
  "ratatui",
  "rustix 1.1.5",

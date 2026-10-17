@@ -1,11 +1,57 @@
 use super::*;
 use proptest::prelude::*;
+fn settle(view: &mut TranscriptSearch, wrapped: &crate::WrappedLines) {
+    view.prepare(wrapped, 0, wrapped.rows().len());
+    while view.pending() {
+        view.advance(wrapped, 31);
+    }
+}
 fn painted(
     view: &TranscriptSearch,
     wrapped: &crate::WrappedLines,
 ) -> Vec<ratatui::text::Line<'static>> {
-    (0..wrapped.rows().len())
-        .map(|row| view.row(wrapped, row))
+    use ratatui::{
+        buffer::Buffer,
+        layout::Rect,
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::Widget,
+    };
+    wrapped
+        .rows()
+        .iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let width = line.width() as u16;
+            if width == 0 {
+                return Line::default();
+            }
+            let area = Rect::new(0, 0, width, 1);
+            let mut buffer = Buffer::empty(area);
+            view.row(wrapped, row).render(area, &mut buffer);
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut skip = 0;
+            for cell in buffer.content {
+                if skip != 0 {
+                    skip -= 1;
+                    continue;
+                }
+                skip = unicode_width::UnicodeWidthStr::width(cell.symbol()).saturating_sub(1);
+                let mut style = Style::default().add_modifier(cell.modifier);
+                if cell.fg != Color::Reset {
+                    style = style.fg(cell.fg);
+                }
+                if cell.bg != Color::Reset {
+                    style = style.bg(cell.bg);
+                }
+                if let Some(last) = spans.last_mut().filter(|last| last.style == style) {
+                    last.content.to_mut().push_str(cell.symbol());
+                } else {
+                    spans.push(Span::styled(cell.symbol().to_owned(), style));
+                }
+            }
+            Line::from(spans)
+        })
         .collect()
 }
 fn selection() -> ratatui::style::Style {
@@ -72,12 +118,13 @@ proptest! {
         let mut wrapped=crate::WrappedLines::default();
         wrapped.update(&source,0,width);
         view.update(&mut wrapped,&query,0,selection());
+    settle(&mut view, &wrapped);
         prop_assert_eq!(view.count(),reference(&text,&query).len());
         let actual: String=painted(&view,&wrapped).iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
         let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
         let expected: String=layout.rows.iter().flat_map(|row| &row.cells).map(|cell|cell.symbol.as_str()).collect();
         prop_assert_eq!(actual,expected);
-        if view.count()!=0 {prop_assert!(view.selected_row(-1)<wrapped.rows().len());}
+        if view.count()!=0 {prop_assert!(view.selected_row(&wrapped, -1)<wrapped.rows().len());}
     }
 }
 
@@ -112,10 +159,11 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
     view.update(&mut wrapped, "strasse", 0, selection());
+    settle(&mut view, &wrapped);
     let painted_rows = painted(&view, &wrapped);
     assert_eq!(view.count(), 2);
-    assert_eq!(view.selected_row(-1), 1);
-    assert_eq!(view.selected_row(2), 0);
+    assert_eq!(view.selected_row(&wrapped, -1), 1);
+    assert_eq!(view.selected_row(&wrapped, 2), 0);
     assert!(
         painted_rows[0].spans[0]
             .style
@@ -141,8 +189,9 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     );
     wrapped.update(&source, 0, 3);
     view.update(&mut wrapped, "strasse", 0, selection());
+    settle(&mut view, &wrapped);
     assert_eq!(view.count(), 2, "wrapping must not split the search needle");
-    assert!(view.selected_row(1) > 0);
+    assert!(view.selected_row(&wrapped, 1) > 0);
 }
 
 #[test]
@@ -195,6 +244,7 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     let ordinary = wrapped.rows().to_vec();
     let mut search = TranscriptSearch::default();
     search.update(&mut wrapped, "strasse", 0, selection());
+    settle(&mut search, &wrapped);
     assert_eq!(search.count(), 2);
     assert_ne!(painted(&search, &wrapped), ordinary);
     assert_eq!(wrapped.rows(), ordinary);
@@ -216,6 +266,7 @@ fn partial_matches_preserve_every_style_boundary() {
     wrapped.update(&source, 0, 80);
     let mut search = TranscriptSearch::default();
     search.update(&mut wrapped, "bc", 0, selection());
+    settle(&mut search, &wrapped);
     let rows = painted(&search, &wrapped);
     let spans = &rows[0].spans;
     assert_eq!(
@@ -251,6 +302,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     let mut search = TranscriptSearch::default();
     let red = Style::default().fg(Color::Red);
     search.update(&mut wrapped, "one", 0, red);
+    settle(&mut search, &wrapped);
     assert_eq!(search.position(0), 1);
     assert!(
         painted(&search, &wrapped)[0].spans[0]
@@ -259,6 +311,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
             .contains(Modifier::REVERSED)
     );
     search.update(&mut wrapped, "one", if INDEX { 1 } else { 0 }, red);
+    settle(&mut search, &wrapped);
     assert!(
         !painted(&search, &wrapped)[0].spans[0]
             .style
@@ -275,10 +328,14 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
             .add_modifier
             .contains(Modifier::REVERSED)
     );
-    assert_eq!(search.selected_row(0), search.selected_row(1));
+    assert_eq!(
+        search.selected_row(&wrapped, 0),
+        search.selected_row(&wrapped, 1)
+    );
     assert_eq!(search.position(1), 2);
     let blue = Style::default().fg(Color::Blue).bg(Color::Yellow);
     search.update(&mut wrapped, "one", 1, if THEME { blue } else { red });
+    settle(&mut search, &wrapped);
     assert_eq!(
         painted(&search, &wrapped)[0].spans[0].style.fg,
         Some(Color::Blue),

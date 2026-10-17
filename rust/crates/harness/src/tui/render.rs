@@ -361,6 +361,7 @@ impl ClientRenderer {
             || self.wrapped_transcript.rows().is_empty();
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
+        self.search.project(&self.wrapped_transcript);
         self.wrapped_reasoning
             .update(&self.reasoning_rows, self.reasoning_changed, width);
         self.transcript_changed = self.transcript.len();
@@ -393,10 +394,35 @@ impl ClientRenderer {
                     .update(&mut self.wrapped_transcript, &cut.0, cut.3, cut.4);
                 self.search_cut = Some(cut);
             }
+            let height = usize::from(areas.transcript.height);
+            let first = if self.search.count() != 0 {
+                self.search.selected_row(
+                    &self.wrapped_transcript,
+                    layout["search_index"].as_i64().unwrap_or(0),
+                )
+            } else {
+                self.wrapped_transcript
+                    .rows()
+                    .len()
+                    .saturating_sub(height)
+                    .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
+            }
+            .min(self.wrapped_transcript.rows().len().saturating_sub(height));
+            self.search.prepare(&self.wrapped_transcript, first, height);
         } else {
             self.search_cut = None;
         }
         Ok(())
+    }
+
+    /// Yield before a bounded, cancellable full-search-count slice.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn search_progress(&mut self) {
+        if self.search_cut.is_none() || !self.search.pending() {
+            std::future::pending::<()>().await;
+        }
+        tokio::task::yield_now().await;
+        self.search.advance(&self.wrapped_transcript, 4096);
     }
 
     fn compose_notices(&mut self) {
@@ -489,12 +515,13 @@ impl ClientRenderer {
                 screen.transcript_search =
                     (self.search.count() != 0).then_some((&self.wrapped_transcript, &self.search));
                 screen.reasoning = &[];
-                screen.search_row =
-                    (self.search.count() != 0).then(|| self.search.selected_row(index));
+                screen.search_row = (self.search.count() != 0)
+                    .then(|| self.search.selected_row(&self.wrapped_transcript, index));
                 screen.status = Line::raw(format!(
-                    "Find: {}/{} matches · Enter next · Shift+Enter previous · Escape closes",
+                    "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
                     self.search.position(index),
-                    self.search.count()
+                    self.search.count(),
+                    if self.search.pending() { "…" } else { "" }
                 ));
             }
             Some("feedback") => {

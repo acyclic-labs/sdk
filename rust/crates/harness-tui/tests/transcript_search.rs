@@ -1,9 +1,6 @@
 //! Complete draft isolation and allocation accounting for transcript search.
 #![cfg(feature = "tui")]
-use acyclic_harness_tui::ratatui::{
-    style::Modifier,
-    text::{Line, Span},
-};
+use acyclic_harness_tui::ratatui::text::Line;
 use acyclic_harness_tui::{Editor, PromptInput, WrappedLines};
 use proptest::prelude::*;
 
@@ -71,80 +68,83 @@ fn undoable_chat_replacement_negative_control() {
     round_trip::<false>(&"folded\n".repeat(20), "needle", 0, false);
 }
 
-fn allocation_model<const PER_GRAPHEME: bool, const QUERY_GRAPHEME: bool>() {
+fn allocation_model<const COPIES: bool, const FULL: bool>() {
+    use acyclic_harness_tui::ratatui::{buffer::Buffer, layout::Rect, widgets::Widget};
     let selected = acyclic_harness_tui::config::default_style(
         acyclic_harness_tui::config::ThemeRole::Selection,
-    )
-    .add_modifier(Modifier::UNDERLINED);
-    let visible = 10;
-    for length in [8192, 81920] {
+    );
+    for length in [8192, 16384] {
         let text = "a".repeat(length);
         let mut projection = WrappedLines::default();
         projection.update(&[Line::raw(text.clone())], 0, 80);
         let mut search = acyclic_harness_tui::TranscriptSearch::default();
+        search.project(&projection);
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buffer = Buffer::empty(area);
         let query = acyclic_test_support::measure(|| {
             search.update(&projection, "a", 0, selected);
-            if QUERY_GRAPHEME {
-                let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
-                std::hint::black_box(spans);
+            search.prepare(&projection, 10, 10);
+        });
+        assert_eq!(query.count_total, 0, "query must reuse index storage");
+        let background = acyclic_test_support::measure(|| {
+            while search.pending() {
+                search.advance(&projection, 256);
             }
         });
-        assert!(
-            query.count_total <= 64,
-            "query metadata must not allocate per grapheme"
+        assert_eq!(
+            background.count_total, 0,
+            "background must reuse index storage"
         );
-        // Independently initialized fixed-width baseline for the same viewport.
-        let mut baseline = Vec::with_capacity(visible);
-        let reference = acyclic_test_support::measure(|| {
-            for chunk in text.as_bytes().chunks(80).skip(10).take(visible) {
-                baseline.push(Line::from(vec![Span::styled(
-                    String::from_utf8(chunk.to_vec()).unwrap(),
-                    selected,
-                )]));
+        let frame = acyclic_test_support::measure(|| {
+            search.update(&projection, "A", 1, selected);
+            search.prepare(&projection, 10, 10);
+            for row in 10..20 {
+                search.row(&projection, row).render(area, &mut buffer);
+            }
+            if COPIES {
+                for row in 10..20 {
+                    std::hint::black_box(projection.rows()[row].clone());
+                }
+            }
+            if FULL {
+                std::hint::black_box(acyclic_harness_tui::transcript_matches(&text, "a"));
             }
         });
-        let mut frame = Vec::with_capacity(visible);
-        let candidate = acyclic_test_support::measure(|| {
-            // Navigation and unchanged-query checks are part of frame work.
-            search.update(&projection, "a", 1, selected);
-            for row in 10..10 + visible {
-                frame.push(search.row(&projection, row));
-            }
-            if PER_GRAPHEME {
-                let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
-                std::hint::black_box(spans);
+        assert_eq!(
+            frame.count_total, 0,
+            "unchanged frame must allocate zero times"
+        );
+        assert_eq!(
+            frame.bytes_total, 0,
+            "unchanged frame must allocate zero bytes"
+        );
+        let refinement = acyclic_test_support::measure(|| {
+            search.update(&projection, "aa", 0, selected);
+            search.prepare(&projection, 10, 10);
+            while search.pending() {
+                search.advance(&projection, 256);
             }
         });
-        assert_eq!(reference.count_total, (2 * visible) as u64);
         assert_eq!(
-            reference.bytes_total,
-            ((80 + std::mem::size_of::<Span<'static>>()) * visible) as u64
-        );
-        assert_eq!(
-            candidate.count_total, reference.count_total,
-            "highlight allocation count must equal coalesced rows"
-        );
-        assert_eq!(
-            candidate.bytes_total, reference.bytes_total,
-            "highlight allocation bytes must equal coalesced rows"
-        );
-        assert_eq!(frame, baseline);
-        assert_eq!(
-            frame.iter().map(|row| row.spans.len()).sum::<usize>(),
-            visible
+            refinement.count_total, 0,
+            "refinement must reuse index storage"
         );
     }
 }
 
 #[test]
-fn highlights_allocate_exactly_one_owned_span_per_uniform_row() {
+fn highlights_and_query_folds_allocate_zero_after_projection() {
     allocation_model::<false, false>();
 }
-
 #[test]
-#[should_panic(expected = "highlight allocation count must equal coalesced rows")]
-fn per_grapheme_spans_negative_control() {
+#[should_panic(expected = "unchanged frame must allocate zero times")]
+fn owned_display_copies_negative_control() {
     allocation_model::<true, false>();
+}
+#[test]
+#[should_panic(expected = "unchanged frame must allocate zero times")]
+fn whole_query_reallocation_negative_control() {
+    allocation_model::<false, true>();
 }
 
 #[test]
@@ -163,10 +163,4 @@ fn physical_find_shortcut_preserves_the_open_undo_group() {
     input.set_transcript_search(Some("needle"));
     input.set_transcript_search(None);
     assert_eq!(format!("{:?}", input.editor), before);
-}
-
-#[test]
-#[should_panic(expected = "query metadata must not allocate per grapheme")]
-fn query_per_grapheme_spans_negative_control() {
-    allocation_model::<false, true>();
 }

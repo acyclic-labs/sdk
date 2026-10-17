@@ -27,6 +27,9 @@ pub struct WrappedLines {
     rows: Vec<Line<'static>>,
     origins: Vec<(usize, usize)>,
     revision: u64,
+    pub(crate) index: crate::transcript_search::index::Index,
+    pub(crate) folded_rows: Vec<Range<usize>>,
+    pub(crate) source_rows: Vec<usize>,
 }
 
 impl WrappedLines {
@@ -39,12 +42,19 @@ impl WrappedLines {
             self.width = Some(width);
             0
         };
+        if !reflow && changed == source.len() && source.len() == self.sources.len() {
+            return;
+        }
         if reflow || changed < source.len() || source.len() < self.sources.len() {
             self.revision = self
                 .revision
                 .checked_add(1)
                 .expect("projection revision overflow");
         }
+        let at = self
+            .sources
+            .get(changed)
+            .map_or(self.text.len(), |line| line.offset);
         let row = self.starts.get(changed).copied().unwrap_or(self.rows.len());
         self.rows.truncate(row);
         self.ranges.truncate(row);
@@ -56,6 +66,7 @@ impl WrappedLines {
         );
         self.starts.truncate(changed);
         self.sources.truncate(changed);
+        self.folded_rows.truncate(row);
         for line in &source[changed..] {
             self.starts.push(self.rows.len());
             let offset = self.text.len();
@@ -95,6 +106,19 @@ impl WrappedLines {
             paint(&source, &[], None, Style::default(), &mut self.rows);
             self.sources.push(source);
         }
+        let text = &self.text[..self.text.len().saturating_sub(1)];
+        self.index.replace_suffix(text, at.min(text.len()));
+        self.source_rows.resize(text.len() + 1, 0);
+        for (row_index, range) in self.ranges.iter().enumerate().skip(row) {
+            for offset in range.start..range.end.min(text.len() + 1) {
+                self.source_rows[offset] = row_index;
+            }
+        }
+        self.folded_rows.extend(
+            self.ranges[row..]
+                .iter()
+                .map(|range| self.index.folded_range(range)),
+        );
     }
 
     /// Normalized logical text, shared by wrapping and Unicode search.
@@ -130,6 +154,70 @@ impl WrappedLines {
             selected,
             style,
         )
+    }
+
+    pub(crate) fn render_ranges(
+        &self,
+        row: usize,
+        matches: &[Range<usize>],
+        selected: Option<&Range<usize>>,
+        selection: Style,
+        area: ratatui::layout::Rect,
+        buffer: &mut ratatui::buffer::Buffer,
+    ) {
+        use ratatui::widgets::Widget;
+        (&self.rows[row]).render(area, buffer);
+        let (source, index) = self.origins[row];
+        let source = &self.sources[source];
+        let cells = &source.layout.rows[index].cells;
+        crate::transcript_search::view::charge(cells.len(), false);
+        #[cfg(test)]
+        WORK.with(|work| {
+            let (rows, count, layouts) = work.get();
+            work.set((rows + 1, count + cells.len(), layouts));
+        });
+        let mut next = 0;
+        let inset = match source.alignment.unwrap_or(ratatui::layout::Alignment::Left) {
+            ratatui::layout::Alignment::Left => 0,
+            ratatui::layout::Alignment::Center => {
+                area.width.saturating_sub(self.rows[row].width() as u16) / 2
+            }
+            ratatui::layout::Alignment::Right => {
+                area.width.saturating_sub(self.rows[row].width() as u16)
+            }
+        };
+        for cell in cells {
+            let at = source.offset + cell.source.start;
+            while matches.get(next).is_some_and(|range| range.end <= at) {
+                next += 1;
+            }
+            let mut style = Style::default();
+            if matches.get(next).is_some_and(|range| {
+                range.start < source.offset + cell.source.end && range.end > at
+            }) {
+                style = selection.add_modifier(Modifier::UNDERLINED);
+            }
+            if selected.is_some_and(|range| {
+                range.start < source.offset + cell.source.end && range.end > at
+            }) {
+                style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+            }
+            let x = area
+                .x
+                .saturating_add(inset)
+                .saturating_add(cell.column as u16);
+            if x < area.right() && area.height > 0 {
+                buffer.set_style(
+                    ratatui::layout::Rect::new(
+                        x,
+                        area.y,
+                        (cell.width as u16).min(area.right() - x),
+                        1,
+                    ),
+                    style,
+                );
+            }
+        }
     }
 
     /// Borrow the last projection. No per-frame transcript clone is needed.
