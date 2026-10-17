@@ -3,11 +3,16 @@ use std::{
     task::Poll,
 };
 
+mod job;
+#[cfg(acyclic_loom)]
+pub(crate) mod model;
+
 // Implementations acquire locks first, then synchronously update their cursor.
 // Cancellation before readiness must leave the cursor unchanged. This module is
 // the only place stream snapshots are polled: pending acquisitions are dropped
 // within the poll and restarted under independent ownership, never in a Stream.
 pub(crate) trait Snapshot: Send + 'static {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
     type Output: Send + 'static;
     fn read(&mut self) -> impl Future<Output = Self::Output> + Send;
@@ -42,33 +47,38 @@ async fn read_owned<S: Snapshot>(
         let result = state.read().await;
         return (state, result);
     }
-    let ready = poll_fn(|cx| {
-        let future = std::pin::pin!(state.read());
-        Poll::Ready(future.poll(cx))
-    })
-    .await;
-    if let Poll::Ready(result) = ready {
-        return (state, result);
+    loop {
+        let ready = poll_fn(|cx| {
+            let future = std::pin::pin!(state.read());
+            Poll::Ready(future.poll(cx))
+        })
+        .await;
+        if let Poll::Ready(result) = ready {
+            return (state, result);
+        }
+        let (job, completed) = job::new(state);
+        let worker = job.run();
+        #[cfg(acyclic_loom)]
+        model::spawn(worker);
+        #[cfg(all(not(acyclic_loom), not(target_arch = "wasm32")))]
+        if tokio::runtime::Handle::try_current().is_ok() {
+            #[cfg(feature = "test-support")]
+            drop(acyclic_native_runtime::testing::spawn(worker));
+            #[cfg(not(feature = "test-support"))]
+            drop(tokio::spawn(worker));
+        } else {
+            std::thread::spawn(move || futures::executor::block_on(worker));
+        }
+        #[cfg(all(not(acyclic_loom), target_arch = "wasm32"))]
+        wasm_bindgen_futures::spawn_local(worker);
+        let (returned, result) = completed.await;
+        if let Some(result) = result {
+            return (returned, result);
+        }
+        // Executor shutdown cancelled the read, after dropping its lock future.
+        // The next consumer poll owns the cursor again and may use any executor.
+        state = returned;
     }
-    let (output, completed) = crate::query_sync::oneshot::channel();
-    let worker = async move {
-        let result = state.read().await;
-        let _ = output.send((state, result));
-    };
-    #[cfg(acyclic_loom)]
-    loom::thread::spawn(move || park(worker));
-    #[cfg(all(not(acyclic_loom), not(target_arch = "wasm32")))]
-    if tokio::runtime::Handle::try_current().is_ok() {
-        #[cfg(feature = "test-support")]
-        drop(acyclic_native_runtime::testing::spawn(worker));
-        #[cfg(not(feature = "test-support"))]
-        drop(tokio::spawn(worker));
-    } else {
-        std::thread::spawn(move || futures::executor::block_on(worker));
-    }
-    #[cfg(all(not(acyclic_loom), target_arch = "wasm32"))]
-    wasm_bindgen_futures::spawn_local(worker);
-    completed.await.expect("snapshot worker disappeared")
 }
 
 #[cfg(acyclic_loom)]

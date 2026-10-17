@@ -7,12 +7,7 @@ pub use loom::sync::Mutex as SyncMutex;
 #[cfg(not(acyclic_loom))]
 pub use std::sync::Mutex as SyncMutex;
 #[cfg(not(acyclic_loom))]
-pub use tokio::sync::oneshot;
-#[cfg(not(acyclic_loom))]
 pub use tokio::sync::{Mutex, RwLock, watch};
-#[cfg(acyclic_loom)]
-#[path = "query_sync/oneshot.rs"]
-pub mod oneshot;
 
 #[cfg(acyclic_loom)]
 #[path = "query_sync/locks.rs"]

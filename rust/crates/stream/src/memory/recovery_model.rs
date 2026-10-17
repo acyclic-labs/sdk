@@ -375,6 +375,17 @@ pub fn memory_follow_parking(retain_pending: bool, children: bool, checked: bool
     crate::memory::parking_model::verify(retain_pending, children, checked);
 }
 
+/// Cancels real dispatched snapshot jobs while the writer and consumer race.
+pub fn snapshot_executor_shutdown(
+    discard: bool,
+    children: bool,
+    checked: bool,
+    cancel: bool,
+    polled: bool,
+) {
+    crate::memory::parking_model::shutdown(discard, children, checked, cancel, polled);
+}
+
 /// Accepted readers and watermark queries must not wait for snapshot device I/O.
 pub fn local_compaction_visibility(hold_publication: bool) {
     crate::local::compaction_model::verify(u8::from(hold_publication));

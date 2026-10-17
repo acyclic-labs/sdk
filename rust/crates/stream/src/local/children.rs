@@ -8,6 +8,7 @@ struct ChildrenState {
     failed: watch::Receiver<bool>,
 }
 impl crate::snapshot::Snapshot for Box<ChildrenState> {
+    #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
     type Output = Result<Option<StreamPath>, StreamError>;
     async fn read(&mut self) -> Self::Output {

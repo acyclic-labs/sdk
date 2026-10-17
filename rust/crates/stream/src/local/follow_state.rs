@@ -9,6 +9,7 @@ struct FollowState {
     span: obs::OperationSpan,
 }
 impl crate::snapshot::Snapshot for Box<FollowState> {
+    #[cfg(feature = "test-support")]
     const OBSERVE: bool = true;
     type Output = Result<Option<crate::Record>, StreamError>;
     async fn read(&mut self) -> Self::Output {

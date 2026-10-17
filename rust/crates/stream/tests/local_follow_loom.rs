@@ -2,6 +2,37 @@
 #![cfg(all(acyclic_loom, feature = "local"))]
 
 #[test]
+fn executor_shutdown_returns_unpolled_snapshot_ownership() {
+    for (children, checked) in [(false, false), (false, true), (true, false)] {
+        acyclic_stream::verification::snapshot_executor_shutdown(
+            false, children, checked, false, false,
+        );
+    }
+}
+
+#[test]
+fn executor_shutdown_returns_queued_or_granted_snapshot_ownership() {
+    for (children, checked) in [(false, false), (false, true), (true, false)] {
+        acyclic_stream::verification::snapshot_executor_shutdown(
+            false, children, checked, false, true,
+        );
+    }
+}
+
+#[test]
+fn consumer_cancellation_races_executor_shutdown() {
+    for polled in [false, true] {
+        acyclic_stream::verification::snapshot_executor_shutdown(false, false, false, true, polled);
+    }
+}
+
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_executor_shutdown_discards_snapshot_ownership() {
+    acyclic_stream::verification::snapshot_executor_shutdown(true, false, false, false, true);
+}
+
+#[test]
 fn memory_follow_cannot_park_state() {
     acyclic_stream::verification::memory_follow_parking(false, false, false);
     acyclic_stream::verification::memory_follow_parking(false, false, true);
