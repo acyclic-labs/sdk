@@ -93,7 +93,7 @@ proptest! {
     #[test]
     fn framing_reservation_and_source_identity_round_trip(
         body in prop::collection::vec(any::<char>(), 0..64),
-        directory in "[a-z]{1,12}", label in "[a-z]{1,12}",
+        directory in "[a-zé猫]{1,12}", label in "[a-z]{1,12}",
         name in prop::sample::select(vec!["AGENTS.md", "CLAUDE.md"]),
     ) {
         let body: String = body.into_iter().collect();
