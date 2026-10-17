@@ -509,6 +509,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let path = rendered.0;
                 let opened = (self).open(&workspace, Some(io)).await?;
                 let pinned = (self).generation(&opened, &generation, Some(io)).await?;
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                crate::test_support::differential::record("read", maximum_bytes);
                 let bytes = pinned
                     .read(&path, maximum_bytes, original, io.cancellation())
                     .await
@@ -551,6 +553,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(io) => {
                     let opened = (self).open(&workspace, Some(io)).await?;
                     let pinned = (self).generation(&opened, &generation, Some(io)).await?;
+                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    crate::test_support::differential::record("read", maximum_bytes);
                     let bytes = io.receive(
                         pinned
                             .read(&path, maximum_bytes, io.remaining()?, io.cancellation())
