@@ -41,6 +41,10 @@ pub(super) async fn schedule<F: Future>(
 
 // One race owns both futures until presentation exits. Neither event handling
 // nor an awaited file write can stop polling the owner that may unblock it.
+#[cfg(any(
+    all(test, not(acyclic_harness_loom)),
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 pub(super) async fn drive_command_owner<T, E: From<crate::Error>>(
     owner: impl Future<Output = crate::Result<()>>,
     presentation: impl Future<Output = Result<T, E>>,
