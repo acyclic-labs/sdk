@@ -169,6 +169,7 @@ impl HostRoot {
             )
         }
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn stat_file_metadata<W: NativeHostWork>(
         &self,
         file: &File,
