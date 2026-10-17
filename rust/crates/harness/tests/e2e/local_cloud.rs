@@ -363,12 +363,15 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     if executor_cases.is_empty() {
         return Err("no executor scenarios discovered".into());
     }
-    // These phases use disjoint stream paths and journal identities. Join all
-    // results before returning so a failure cannot cancel a child mid-cleanup.
-    let contract = timed("Streams conformance", async {
+    // Catalog pagination fences the whole account's hierarchy generation, so
+    // conformance needs a stable catalog before the other phases create streams.
+    timed("Streams conformance", async {
         acyclic_stream::conformance::verify(remote.as_ref()).await?;
         TestResult::Ok(())
-    });
+    })
+    .await?;
+    // The remaining phases use disjoint paths and journal identities. Join all
+    // results before returning so a failure cannot cancel a child mid-cleanup.
     let probes = timed(
         "Session refusals",
         refusals(remote.clone(), &remote, "probe"),
@@ -402,9 +405,7 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
         }
         TestResult::Ok(())
     });
-    let (contract, refused, compared, resumed) =
-        futures::join!(contract, probes, compared, resumed);
-    contract?;
+    let (refused, compared, resumed) = futures::join!(probes, compared, resumed);
     let refused = refused?;
     compared?;
     resumed?;
@@ -428,7 +429,7 @@ async fn timed<T>(
         "local cloud phase {phase}: {:.3}s",
         started.elapsed().as_secs_f64()
     );
-    result
+    result.map_err(|error| format!("{phase}: {error}").into())
 }
 
 #[tokio::test]
