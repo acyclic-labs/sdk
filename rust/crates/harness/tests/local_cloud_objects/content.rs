@@ -15,7 +15,7 @@ use acyclic_harness::{
     objects::ObjectContentStore,
     resources::ProviderRef,
 };
-use acyclic_objects::v1::{GrpcObjects, ObjectsProvider, wire};
+use acyclic_objects::v1::{ObjectsProvider, grpc::GrpcObjects, wire};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -169,7 +169,7 @@ pub(super) async fn run(
         ranged.as_ref(),
         content.expected.get(1..4).unwrap_or_default(),
     )?;
-    owner_store.verify(&file, None)?.await?;
+    owner_store.verify(&file, MAXIMUM, None)?.await?;
     // An attachment manifest round-trips through the same bucket.
     let items = vec![Attachment {
         file: file.clone(),
