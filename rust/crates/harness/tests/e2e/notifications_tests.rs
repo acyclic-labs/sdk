@@ -8,7 +8,7 @@ fn record() -> impl Strategy<Value = AttentionNotification> {
     (
         0_u8..4,
         any::<u64>(),
-        0_u8..4,
+        0_u8..5,
         proptest::collection::vec(any::<char>(), 0..32),
     )
         .prop_map(|(task, sequence, event, detail)| AttentionNotification {
@@ -19,23 +19,20 @@ fn record() -> impl Strategy<Value = AttentionNotification> {
                 AttentionEvent::TaskFailed,
                 AttentionEvent::TaskBlocked,
                 AttentionEvent::GoalDone,
+                AttentionEvent::GoalBlocked,
             ][usize::from(event)],
             detail: detail.into_iter().collect(),
         })
 }
 
 proptest! {
-    // An arbitrary history preserves accepted records in FIFO order. Rejected
-    // and replayed records cannot change either the queue or source cursors.
+    // Current file membership, including removal, is the entire terminal input.
     #[test]
-    fn replay_and_backpressure_preserve_the_view(
+    fn file_changes_and_removals_preserve_the_shared_view(
         operations in proptest::collection::vec((record(), any::<bool>()), 0..64),
-        maximum_tasks in 1_usize..5,
-        maximum_pending in 1_usize..9,
     ) {
         crate::notification_history::verify(operations,
-            (maximum_tasks, maximum_pending, 256),
-            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false));
+            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false), false);
     }
 
     // The actual case codec preserves all data, defaults and typed enum values.
@@ -47,8 +44,7 @@ proptest! {
         protocol in prop_oneof![Just("osc9"), Just("osc777"), Just("bell")],
     ) {
         let mut value = json!({"records":records, "focused":focused, "protocol":protocol,
-            "maximum_tasks":4, "maximum_pending":16, "maximum_text_bytes":256,
-            "expect":{"applied":vec![true; records.len()], "output":""}});
+            "expect":{"presented":records.len(), "output":""}});
         if let Some(mode) = mode { value["mode"] = json!(mode); }
         let case = Notifications::parse(value).unwrap();
         let _ = case.verify_history();
@@ -86,7 +82,7 @@ fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
 }
 
 #[test]
-fn notification_oracles_reject_wrong_output_counts_apply_and_view() -> TestResult {
+fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = crate::scenario::load_value(
         &root,
@@ -95,7 +91,7 @@ fn notification_oracles_reject_wrong_output_counts_apply_and_view() -> TestResul
     for mutation in [
         "output",
         "presented",
-        "applied",
+        "remove",
         "view",
         "focused",
         "mode",
@@ -108,8 +104,8 @@ fn notification_oracles_reject_wrong_output_counts_apply_and_view() -> TestResul
         match mutation {
             "output" => value["expect"]["output"] = json!("wrong"),
             "presented" => value["expect"]["presented"] = json!(0),
-            "applied" => value["expect"]["applied"] = json!([false]),
-            "view" => value["expect"]["view"] = json!({"latest":{"task-1":{"event":"goal_done"}}}),
+            "remove" => value["remove"] = json!([0]),
+            "view" => value["expect"]["view"] = json!([{"event":"goal_done"}]),
             "focused" => value["focused"] = json!(true),
             "mode" => value["mode"] = json!("off"),
             "protocol" => value["protocol"] = json!("bell"),
@@ -137,21 +133,14 @@ fn notification_parser_rejects_ignored_fields_and_vacuous_expectations() -> Test
         ("prompt", json!("wrong driver")),
         ("protocol", json!("unknown")),
         ("mode", json!("always")),
-        ("maximum_tasks", json!(-1)),
-        ("expect", json!({"applied":[true]})),
+        ("remove", json!([1])),
+        ("expect", json!({"output":""})),
+        ("expect", json!({"presented":0})),
+        ("expect", json!({"presented":1, "output":"", "view":{}})),
         (
             "expect",
-            json!({"applied":[true], "output":"", "error":"x"}),
+            json!({"presented":1, "output":"", "applied":[true]}),
         ),
-        ("expect", json!({"applied":[true], "error":""})),
-        (
-            "expect",
-            json!({"applied":[true], "error":"x", "view":{"pending":[]}}),
-        ),
-        ("expect", json!({"applied":[true], "output":"", "view":{}})),
-        ("expect", json!({"applied":[], "output":""})),
-        ("expect", json!({"applied":[null], "output":""})),
-        ("expect", json!({"applied":[""], "output":""})),
     ] {
         let mut value = baseline.clone();
         value[field] = replacement;

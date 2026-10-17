@@ -1,2 +1,1 @@
-{"records":[{"task":"task-1","sequence":1,"event":"goal_done","detail":"Ready"}],"expect":{"applied":[true],
- "presented":1,"output":"\u0007","view":{"latest":{"task-1":{"sequence":1,"event":"goal_done"}}}}}
+{"records":[{"task":"task-1","sequence":1,"event":"goal_done","detail":"Ready"}],"expect":{"output":"\u0007","presented":1,"view":[{"task":"task-1","sequence":1,"event":"goal_done","detail":"Ready"}]}}

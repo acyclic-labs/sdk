@@ -217,8 +217,8 @@ async fn exercise(
         .unwrap();
     put(
         &volume,
-        ".tasks/t/notifications/approval.json",
-        br#"{"task":"t","sequence":9007199254740993,"event":"needs_approval","detail":"approve"}"#,
+        ".tasks/t/notifications/settled.json",
+        br#"{"task":"t","sequence":9007199254740993,"event":"goal_blocked","detail":"blocked"}"#,
     )
     .await;
     put(&volume, "GOAL.md", b"initial goal").await;

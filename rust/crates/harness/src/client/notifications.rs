@@ -1,11 +1,7 @@
-//! Attention records projected from followed task streams, plus terminal encoding.
+//! Attention records projected from followed files, plus stateless terminal encoding.
 
-use crate::{Error, Result};
+use super::{NotificationFileView, NotificationQueryView};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
 
 /// Attention events owned by task/goal records, never inferred from renderer text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -18,15 +14,13 @@ pub enum AttentionEvent {
     TaskFailed,
     /// Task is blocked.
     TaskBlocked,
-    /// An immutable tool binding needs a decision.
-    NeedsApproval,
     /// The file-driven goal cannot make progress without input.
     GoalBlocked,
     /// The file-driven goal reached done.
     GoalDone,
 }
 
-/// One notification in ClientViews; identity is its task and source stream offset.
+/// One notification file in ClientViews; identity is its task and source sequence.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -69,128 +63,9 @@ impl AttentionNotification {
             AttentionEvent::TaskSettled => "Task settled",
             AttentionEvent::TaskFailed => "Task failed",
             AttentionEvent::TaskBlocked => "Task blocked",
-            AttentionEvent::NeedsApproval => "Approval needed",
             AttentionEvent::GoalBlocked => "Goal blocked",
             AttentionEvent::GoalDone => "Goal done",
         }
-    }
-}
-
-/// Bounded terminal-presentation queue. ClientViews reads authoritative files.
-/// A full queue returns backpressure
-/// before acknowledging a source offset, so a caller can resume from that record.
-#[derive(Clone, Debug, Serialize)]
-pub struct NotificationView {
-    latest: BTreeMap<String, Arc<AttentionNotification>>,
-    pending: VecDeque<Arc<AttentionNotification>>,
-    maximum_tasks: usize,
-    maximum_pending: usize,
-    maximum_text_bytes: usize,
-}
-
-impl NotificationView {
-    /// Chooses bounds independently of UI interest. Attention for offscreen tasks
-    /// belongs here too; changing focus must not drop these records.
-    pub fn new(
-        maximum_tasks: usize,
-        maximum_pending: usize,
-        maximum_text_bytes: usize,
-    ) -> Result<Self> {
-        if maximum_tasks == 0 || maximum_pending == 0 || maximum_text_bytes == 0 {
-            return Err(Error::Invalid(
-                "notification bounds must be positive".into(),
-            ));
-        }
-        Ok(Self {
-            latest: BTreeMap::new(),
-            pending: VecDeque::new(),
-            maximum_tasks,
-            maximum_pending,
-            maximum_text_bytes,
-        })
-    }
-
-    /// Projects a followed attention record. Older offsets are replay; an exact
-    /// duplicate is idempotent, and conflicting reuse of the latest offset fails.
-    pub fn apply(&mut self, notification: AttentionNotification) -> Result<bool> {
-        if notification.sequence == 0
-            || notification.task.trim().is_empty()
-            || notification
-                .task
-                .len()
-                .checked_add(notification.detail.len())
-                .is_none_or(|bytes| bytes > self.maximum_text_bytes)
-        {
-            return Err(Error::Invalid("invalid attention record".into()));
-        }
-        if let Some(previous) = self.latest.get(&notification.task) {
-            if notification.sequence < previous.sequence {
-                return Ok(false);
-            }
-            if notification.sequence == previous.sequence {
-                return if previous.as_ref() == &notification {
-                    Ok(false)
-                } else {
-                    Err(Error::Conflict("attention offset was reused".into()))
-                };
-            }
-        } else if self.latest.len() >= self.maximum_tasks {
-            return Err(Error::Conflict("notification task bound reached".into()));
-        }
-        if self.pending.len() >= self.maximum_pending {
-            return Err(Error::Conflict(
-                "notification consumer must drain before advancing".into(),
-            ));
-        }
-        let notification = Arc::new(notification);
-        if let Some(previous) = self.latest.get_mut(&notification.task) {
-            *previous = Arc::clone(&notification);
-        } else {
-            self.latest
-                .insert(notification.task.clone(), Arc::clone(&notification));
-        }
-        self.pending.push_back(notification);
-        Ok(true)
-    }
-
-    /// Borrows the next attention event; presentation failure leaves it pending.
-    pub fn front(&self) -> Option<&AttentionNotification> {
-        self.pending.front().map(Arc::as_ref)
-    }
-    /// Removes a presented or deliberately suppressed event. Its immutable
-    /// payload stays shared with replay tracking and any other consumers.
-    pub fn pop(&mut self) -> Option<Arc<AttentionNotification>> {
-        self.pending.pop_front()
-    }
-    /// Number of pending presentation events.
-    pub fn len(&self) -> usize {
-        self.pending.len()
-    }
-    /// Whether presentation has caught up.
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    /// Turns an owner-authorized task-volume notification query into the client
-    /// notification stream. Demand drives the source follow directly; there is
-    /// no spawned pump, timer or offscreen-event conflation. Source errors stop
-    /// delivery so the owner can reopen at its retained query cursor.
-    pub fn follow<'a>(
-        self,
-        source: acyclic_stream::BoxProviderStream<'a, Result<AttentionNotification>>,
-    ) -> impl futures::Stream<Item = Result<Arc<AttentionNotification>>> + 'a {
-        use futures::StreamExt as _;
-        futures::stream::try_unfold((self, source), |(mut view, mut source)| async move {
-            loop {
-                if let Some(notification) = view.pop() {
-                    return Ok(Some((notification, (view, source))));
-                }
-                let Some(notification) = source.next().await else {
-                    return Ok(None);
-                };
-                view.apply(notification?)?;
-            }
-        })
     }
 }
 
@@ -270,24 +145,26 @@ fn append_terminal_text(output: &mut String, text: &str) {
     }
 }
 
-/// Presents pending notifications one at a time. GraphCoder writes these bytes
-/// to its terminal, separately from JSONL/stdout wire records. A failed write
-/// leaves the current item pending. The caller owns terminal IO scheduling.
-pub fn write_terminal_notifications(
-    view: &mut NotificationView,
+/// Presents current rows directly from the shared file projection. No terminal
+/// queue retains removed or replaced files. The caller retries from its current
+/// query after an IO failure and owns any persisted presentation cursor.
+pub fn write_terminal_notifications<'a>(
+    rows: impl IntoIterator<Item = NotificationQueryView<'a>>,
     output: &mut impl std::io::Write,
     mode: NotificationMode,
     protocol: TerminalNotificationProtocol,
     focused: bool,
 ) -> std::io::Result<usize> {
     let mut presented = 0;
-    while let Some(notification) = view.front() {
+    for row in rows {
+        let NotificationFileView::Present { notification } = row.notification else {
+            continue;
+        };
         let bytes = terminal_notification(notification, mode, protocol, focused);
         if !bytes.is_empty() {
             output.write_all(bytes.as_bytes())?;
             output.flush()?;
         }
-        view.pop();
         presented += 1;
     }
     Ok(presented)

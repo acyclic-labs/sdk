@@ -1,8 +1,10 @@
 use acyclic_harness::client::{
-    AttentionNotification, NotificationMode, NotificationView, TerminalNotificationProtocol,
-    terminal_notification, write_terminal_notifications,
+    AttentionNotification, FileQueryView, NotificationFileView, NotificationMode,
+    TerminalNotificationProtocol, terminal_notification, write_terminal_notifications,
 };
-use std::collections::VecDeque;
+use acyclic_harness::task_volume::{Change, FileKey, Query, TaskVolume, Write};
+use acyclic_stream::{MemoryStream, StreamPath};
+use std::{collections::BTreeMap, sync::Arc};
 
 pub(super) fn encode(
     record: &AttentionNotification,
@@ -29,81 +31,119 @@ pub(super) fn encode(
     output
 }
 
-// Shared by the shrinking property and byte fuzzer. Fixture expectations do not
-// participate: every record is attempted, including those after a rejected one.
-pub(super) fn verify(
-    operations: impl IntoIterator<Item = (AttentionNotification, bool)>,
-    (maximum_tasks, maximum_pending, maximum_text_bytes): (usize, usize, usize),
-    (mode, protocol, focused): (NotificationMode, TerminalNotificationProtocol, bool),
-) -> Vec<u8> {
-    let Ok(mut view) = NotificationView::new(maximum_tasks, maximum_pending, maximum_text_bytes)
-    else {
-        assert!(maximum_tasks == 0 || maximum_pending == 0 || maximum_text_bytes == 0);
-        for (record, _) in operations {
-            let _ = encode(&record, (mode, protocol, focused));
-        }
-        return Vec::new();
-    };
-    assert!(maximum_tasks > 0 && maximum_pending > 0 && maximum_text_bytes > 0);
-    let mut pending = VecDeque::new();
-    for (record, drain) in operations {
-        let _ = encode(&record, (mode, protocol, focused));
-        let before = serde_json::to_value(&view).unwrap();
-        let serialized = serde_json::to_value(&record).unwrap();
-        let previous = before["latest"].get(&record.task);
-        let valid = record.sequence > 0
-            && !record.task.trim().is_empty()
-            && record
-                .task
-                .len()
-                .checked_add(record.detail.len())
-                .is_some_and(|bytes| bytes <= maximum_text_bytes);
-        let replay = valid
-            && previous.is_some_and(|old| {
-                old["sequence"].as_u64().unwrap() > record.sequence || old == &serialized
-            });
-        let eligible = valid
-            && previous.is_none_or(|old| old["sequence"].as_u64().unwrap() < record.sequence)
-            && (previous.is_some() || before["latest"].as_object().unwrap().len() < maximum_tasks)
-            && pending.len() < maximum_pending;
-        match view.apply(record.clone()) {
-            Ok(true) => assert!(eligible),
-            Ok(false) => assert!(replay),
-            Err(_) => assert!(!eligible && !replay),
-        }
-        if eligible {
-            let mut latest = before["latest"].clone();
-            latest[&record.task] = serialized;
-            assert_eq!(serde_json::to_value(&view).unwrap()["latest"], latest);
-            pending.push_back(record.clone());
-            assert!(!view.apply(record.clone()).unwrap());
-            let mut conflicting = record;
-            conflicting.detail.push('!');
-            let accepted = serde_json::to_value(&view).unwrap();
-            assert!(view.apply(conflicting).is_err());
-            assert_eq!(serde_json::to_value(&view).unwrap(), accepted);
-        } else {
-            assert_eq!(serde_json::to_value(&view).unwrap(), before);
-        }
-        assert_eq!(view.front(), pending.front());
-        assert_eq!(view.len(), pending.len());
-        if drain {
-            assert_eq!(view.pop().as_deref(), pending.pop_front().as_ref());
+// Exercise the same snapshot/change fold that receives filesystem publications.
+// There is deliberately no independent terminal queue or replay cache.
+pub(super) struct Projection {
+    pub view: FileQueryView,
+}
+impl Projection {
+    pub fn new() -> Self {
+        let snapshot = futures::executor::block_on(async {
+            TaskVolume::open(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("files").unwrap(),
+            )
+            .await
+            .unwrap()
+            .snapshot(&Query::Root, 128)
+            .await
+            .unwrap()
+        });
+        Self {
+            view: FileQueryView::from_snapshot(Query::Root, snapshot, 128, 1_048_576).unwrap(),
         }
     }
-    let state = serde_json::to_value(&view).unwrap();
-    assert_eq!(state["pending"], serde_json::to_value(&pending).unwrap());
-    let latest = state["latest"].clone();
-    let expected: String = pending
-        .iter()
-        .map(|record| encode(record, (mode, protocol, focused)))
-        .collect();
+    pub fn key(record: &AttentionNotification) -> FileKey {
+        FileKey::parse(&format!(
+            ".tasks/{}/notifications/{}.json",
+            record.task, record.sequence
+        ))
+        .unwrap_or_else(|_| FileKey::parse(".tasks/invalid/notifications/invalid.json").unwrap())
+    }
+    pub fn apply(&mut self, record: &AttentionNotification, remove: bool) {
+        let key = Self::key(record);
+        // Deleting an absent file publishes no removal. The ordinary query
+        // correctly rejects a fabricated removal of an unknown file.
+        if remove && !self.view.files().contains_key(&key) {
+            return;
+        }
+        let mut cursor = self.view.cursor().clone();
+        cursor.position += 1;
+        cursor.accepted = cursor.position;
+        cursor.durable = cursor.position;
+        self.view
+            .apply(Change {
+                cursor,
+                file: (!remove)
+                    .then(|| Write::new(key.clone(), serde_json::to_vec(record).unwrap())),
+                files: Vec::new(),
+                removed: if remove { vec![key] } else { Vec::new() },
+            })
+            .unwrap();
+    }
+    pub fn records(&self) -> Vec<AttentionNotification> {
+        self.view
+            .notifications()
+            .filter_map(|row| match row.notification {
+                NotificationFileView::Present { notification } => Some(notification.clone()),
+                NotificationFileView::Invalid => None,
+            })
+            .collect()
+    }
+}
+
+// Independent file-state oracle shared by the shrinking property and byte fuzzer.
+// Every operation is checked, independently of fixture expectations. The mutant
+// models the former queue retaining a removed notification after failed output.
+pub(super) fn verify(
+    operations: impl IntoIterator<Item = (AttentionNotification, bool)>,
+    options: (NotificationMode, TerminalNotificationProtocol, bool),
+    retain_removed: bool,
+) -> Vec<u8> {
+    let mut projection = Projection::new();
+    let mut expected = BTreeMap::new();
     let mut output = Vec::new();
-    let presented =
-        write_terminal_notifications(&mut view, &mut output, mode, protocol, focused).unwrap();
-    assert_eq!(presented, pending.len());
-    assert_eq!(output, expected.as_bytes());
-    assert!(view.is_empty());
-    assert_eq!(serde_json::to_value(view).unwrap()["latest"], latest);
+    for (record, remove) in operations {
+        let key = Projection::key(&record);
+        if remove {
+            expected.remove(&key);
+        } else {
+            expected.insert(key, record.clone());
+        }
+        if !remove || !retain_removed {
+            projection.apply(&record, remove);
+        }
+        let expected: Vec<_> = expected
+            .iter()
+            .filter_map(|(key, record)| match key {
+                FileKey::Task { task, .. }
+                    if task.as_str() == record.task && record.sequence != 0 =>
+                {
+                    Some(record.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(projection.records(), expected);
+        let bytes: String = expected
+            .iter()
+            .map(|record| encode(record, options))
+            .collect();
+        output.clear();
+        assert_eq!(
+            write_terminal_notifications(
+                projection.view.notifications(),
+                &mut output,
+                options.0,
+                options.1,
+                options.2
+            )
+            .unwrap(),
+            expected.len()
+        );
+        assert_eq!(output, bytes.as_bytes());
+        // A retry borrows the same rows and does not mutate the projection.
+        assert_eq!(projection.records(), expected);
+    }
     output
 }

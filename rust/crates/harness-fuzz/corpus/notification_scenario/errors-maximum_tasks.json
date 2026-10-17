@@ -1,2 +1,0 @@
-{"protocol":"osc9","maximum_tasks":0,"maximum_pending":16,"maximum_text_bytes":256,"records":[],
- "expect":{"applied":[],"presented":null,"view":null,"error":"bounds must be positive"}}

@@ -9,12 +9,11 @@ pub fn encoded(event: u8, sequence: u64, detail: String) -> AttentionNotificatio
         task: "t".into(),
         sequence,
         detail,
-        event: match event % 6 {
+        event: match event % 5 {
             0 => AttentionEvent::TaskSettled,
             1 => AttentionEvent::TaskFailed,
             2 => AttentionEvent::TaskBlocked,
             3 => AttentionEvent::GoalDone,
-            4 => AttentionEvent::NeedsApproval,
             _ => AttentionEvent::GoalBlocked,
         },
     }
@@ -46,18 +45,18 @@ pub fn check(record: &AttentionNotification, dropped: bool) {
     }
 }
 pub fn exercise(bytes: &[u8]) {
-    for event in 0..6 {
+    for event in 0..5 {
         check(
             &encoded(event, 1, String::from_utf8_lossy(bytes).into_owned()),
             false,
         );
     }
-    let mut foreign = encoded(4, 1, "approve".into());
+    let mut foreign = encoded(4, 1, "blocked".into());
     foreign.task = "foreign".into();
     check(&foreign, false);
     check(&encoded(5, 0, "blocked".into()), false);
     let unknown =
-        br#"{"task":"t","sequence":1,"event":"needs_approval","detail":"approve","unknown":true}"#;
+        br#"{"task":"t","sequence":1,"event":"goal_blocked","detail":"blocked","unknown":true}"#;
     assert_eq!(
         NotificationFileView::from_file(&file(unknown)),
         NotificationFileView::Invalid

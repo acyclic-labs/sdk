@@ -1,3 +1,1 @@
-{"records":[{"task":"名","sequence":1,"event":"task_failed","detail":"こんにちは🔔"}],"expect":{"applied":[true],
- "presented":1,"output":"\u001b]9;Task failed: 名: こんにちは🔔\u0007","view":{"latest":{"名":{"task":"名","sequence":1,
- "event":"task_failed","detail":"こんにちは🔔"}}}}}
+{"records":[{"task":"\u540d","sequence":1,"event":"task_failed","detail":"\u3053\u3093\u306b\u3061\u306f\ud83d\udd14"}],"expect":{"output":"\u001b]9;Task failed: \u540d: \u3053\u3093\u306b\u3061\u306f\ud83d\udd14\u0007","presented":1,"view":[{"task":"\u540d","sequence":1,"event":"task_failed","detail":"\u3053\u3093\u306b\u3061\u306f\ud83d\udd14"}]}}

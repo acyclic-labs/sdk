@@ -124,11 +124,11 @@ proptest::proptest! {
 fn notification_parser_control_cannot_drop_valid_records() {
     assert!(
         std::panic::catch_unwind(|| notification_files::check(
-            &notification_files::encoded(4, 1, "approve".into()),
+            &notification_files::encoded(4, 1, "blocked".into()),
             true,
         ))
         .is_err()
     );
-    let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-approval");
+    let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
     notification_files::exercise(seed);
 }

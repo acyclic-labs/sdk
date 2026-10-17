@@ -28,8 +28,8 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
       task: "01010101-0101-0101-0101-010101010101", state: "Running", settled: false, inputs: 1,
     })), null);
   }
-  await a.write(await a.head(), { Task: { task: "task", file: { Notification: "approval" } } },
-    encode.encode('{"task":"task","sequence":9007199254740993,"event":"needs_approval","detail":"approve"}'), null);
+  await a.write(await a.head(), { Task: { task: "task", file: { Notification: "settled" } } },
+    encode.encode('{"task":"task","sequence":9007199254740993,"event":"goal_blocked","detail":"blocked"}'), null);
   await put(a, 1n, "before"); await put(b, 1n, "other");
   await status("swarm/a", false); await status("swarm/b", false);
   await layout("layout", { prefetch: ["swarm/a"] });
