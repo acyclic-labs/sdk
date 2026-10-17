@@ -1,7 +1,6 @@
 use super::*;
 use crate::{snapshot::park, verification::block_on};
 use std::{
-    future::Future,
     mem::ManuallyDrop,
     task::{Context, Waker},
 };
@@ -157,7 +156,7 @@ pub(crate) fn shutdown(
                 idempotency_key: None,
             }))
             .unwrap();
-            assert_eq!(block_on(follow.next()), Some(Ok(())));
+            assert_eq!(park(follow.next()), Some(Ok(())));
             drop(ManuallyDrop::into_inner(follow));
             shutdown.join().unwrap();
             drop(ManuallyDrop::into_inner(keeper));
