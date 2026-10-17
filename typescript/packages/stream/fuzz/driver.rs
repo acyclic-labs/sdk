@@ -83,11 +83,11 @@ impl Driver {
     }
     pub fn call(&mut self, request: serde_json::Value) -> serde_json::Value {
         self.send(request);
-        let value = self
+        let mut value = self
             .answer()
             .expect("model process exited before answering (step budget exhausted or crashed)");
         assert!(value.get("error").is_none(), "{value}");
-        value["result"].clone()
+        value["result"].take()
     }
 }
 impl Drop for Driver {
