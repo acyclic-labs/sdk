@@ -73,7 +73,8 @@ mod tests {
         ) {
             let task = TaskId::from_bytes(identity);
             let operation = OperationId::from_bytes(identity);
-            let (files,calls,results) = fixture(task,operation,&stdout,&stderr)?;
+            let (files,calls,results) = fixture(task,operation,&stdout,&stderr)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
             prop_assert!(check(&files,task,operation,&calls,&results).is_ok());
             let request = files.keys().find(|key| matches!(key, FileKey::Task {file:TaskFile::Tool {file:ToolFile::Request,..},..})).unwrap();
             let result = files.keys().find(|key| matches!(key, FileKey::Task {file:TaskFile::Tool {file:ToolFile::Result,..},..})).unwrap();
