@@ -346,6 +346,7 @@ dependencies = [
  "rmcp",
  "rustls",
  "rustls-platform-verifier",
+ "rustix 1.1.5",
  "same-file",
  "schemars",
  "serde",

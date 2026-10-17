@@ -8,11 +8,12 @@ const OWNER_ROOT: &str = "ACYCLIC_SCRATCH_RECOVERY_TEST_ROOT";
 const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mount_owner";
 
 // Own the real provider process through every assertion, including failures.
-struct Owner(Child);
+struct Owner(Child, PathBuf);
 impl Drop for Owner {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        let _ = recover_after_crash(&self.1);
     }
 }
 
@@ -101,6 +102,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?,
+        root.clone(),
     );
     let mut output = std::io::BufReader::new(owner.0.stdout.take().unwrap());
     loop {
@@ -128,13 +130,23 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     ));
     owner.0.kill()?;
     owner.0.wait()?;
+
+    // Negative control: cached attributes misclassify the dead provider as live.
+    assert!(std::fs::metadata(&destination).is_ok());
+    assert!(
+        require_recovered(&root, |root| {
+            if std::fs::metadata(root.join(SCRATCH_PATH)).is_ok() {
+                Ok(())
+            } else {
+                recover_after_crash(root)
+            }
+        })
+        .is_err()
+    );
     assert_eq!(
-        std::fs::metadata(&destination).unwrap_err().kind(),
+        scratch_status(&destination).unwrap_err().kind(),
         std::io::ErrorKind::NotConnected
     );
-
-    // Negative control: omitting recovery fails the same authored-content oracle.
-    assert!(require_recovered(&root, |_| Ok(())).is_err());
 
     // Hold the actual destination flock, not a substitute synchronization model.
     // Recovery must reject it without detaching; releasing it permits recovery.
@@ -149,7 +161,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         "recovery bypassed the fence"
     );
     assert_eq!(
-        std::fs::metadata(&destination).unwrap_err().kind(),
+        scratch_status(&destination).unwrap_err().kind(),
         std::io::ErrorKind::NotConnected
     );
     drop(fence);
