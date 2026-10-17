@@ -1,9 +1,5 @@
-use super::{Error, PlanName, Result};
+use super::{ChildFile, Error, PlanName, Result};
 use serde::{Deserialize, Serialize};
-
-#[cfg(test)]
-#[path = "../../tests/task_volume/ranges.rs"]
-mod tests;
 
 /// Task namespace and packed-segment format revision.
 pub const SCHEMA: u32 = 4;
@@ -61,6 +57,8 @@ pub enum TaskFile {
     ExecutionClaim(Component),
     /// Immutable outcome of that dispatch (absence after a claim is uncertain).
     ExecutionResult(Component),
+    /// Immutable selection made by one child wait operation.
+    ChildWait(Component),
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -104,7 +102,7 @@ pub enum TaskFile {
 }
 
 impl TaskFile {
-    fn turn(&self) -> Option<u64> {
+    pub(super) fn turn(&self) -> Option<u64> {
         match self {
             Self::TurnRequest(n) | Self::Completion(n) => Some(*n),
             Self::Chunk { turn, .. } | Self::TextHead { turn, .. } | Self::Tool { turn, .. } => {
@@ -123,6 +121,7 @@ impl TaskFile {
             Self::Status => "status.json".into(),
             Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
+            Self::ChildWait(id) => format!("child-waits/{}.json", id.as_str()),
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -183,17 +182,17 @@ pub enum FileKey {
     Goal,
     /// Editable command definitions and workspace files followed by UI queries.
     Input(InputPath),
-    /// Parent-owned child lifecycle and input files (gc-agents).
-    Child {
-        /// Child reference in this parent volume.
-        reference: Component,
-        /// Canonical file under agents/<ref>/.
-        file: super::ChildFile,
-    },
     /// Ordinary editable Markdown in the private volume's plans folder.
     Plan(PlanName),
     /// Child fork mount declaration with lineage and capability references.
     Agent(Component),
+    /// Parent-owned child request, message or lifecycle intent.
+    Child {
+        /// Canonical reference, scoped to this parent volume.
+        reference: Component,
+        /// File below the child directory.
+        file: ChildFile,
+    },
     /// Protected task namespace.
     Task {
         /// Task identity in the private volume.
@@ -288,16 +287,16 @@ impl FileKey {
                 return Ok(Self::Input(InputPath::try_from(path.to_owned())?));
             }
             ["GOAL.md"] => return Ok(Self::Goal),
+            ["agents", reference, rest @ ..] => {
+                return Ok(Self::Child {
+                    reference: id(reference)?,
+                    file: ChildFile::parse(rest)?,
+                });
+            }
             ["plans", name] => {
                 return Ok(Self::Plan(PlanName::new(
                     name.strip_suffix(".md").ok_or(Error::InvalidPath)?,
                 )?));
-            }
-            ["agents", reference, rest @ ..] => {
-                return Ok(Self::Child {
-                    reference: id(reference)?,
-                    file: super::ChildFile::parse(rest)?,
-                });
             }
             [".volumes", "agents", reference] => return Ok(Self::Agent(id(reference)?)),
             _ => {}
@@ -315,6 +314,9 @@ impl FileKey {
             ["status.json"] => TaskFile::Status,
             ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
             ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
+            ["child-waits", name] => {
+                TaskFile::ChildWait(id(name.strip_suffix(".json").ok_or(Error::InvalidPath)?)?)
+            }
             ["turns", n, "request.json"] => TaskFile::TurnRequest(number(n)?),
             ["turns", n, "completion.json"] => TaskFile::Completion(number(n)?),
             ["turns", n, "text.md"] => TaskFile::TextHead {
@@ -381,10 +383,10 @@ impl FileKey {
             Self::RequestHead => "inputs/current.json".into(),
             Self::Input(path) => path.0.clone(),
             Self::Goal => "GOAL.md".into(),
-            Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Child { reference, file } => {
                 format!("agents/{}/{}", reference.as_str(), file.path())
             }
+            Self::Plan(id) => format!("plans/{}.md", id.as_str()),
             Self::Agent(id) => format!(".volumes/agents/{}", id.as_str()),
             Self::Task { task, file } => format!(".tasks/{}/{}", task.as_str(), file.path()),
         }
@@ -400,7 +402,7 @@ impl FileKey {
                 ..
             } => Owner::Caller,
             Self::Child {
-                file: super::ChildFile::Status | super::ChildFile::Result(_),
+                file: ChildFile::Status | ChildFile::Delivered | ChildFile::Result(_),
                 ..
             } => Owner::Harness,
             Self::Goal | Self::Plan(_) | Self::Input(_) | Self::Child { .. } => Owner::Agent,
@@ -419,12 +421,17 @@ impl FileKey {
     pub(crate) fn mutable(&self) -> bool {
         matches!(
             self,
-            Self::Child {
-                file: super::ChildFile::Control | super::ChildFile::Status,
-                ..
-            } | Self::Ui { .. }
+            Self::Ui { .. }
                 | Self::RequestHead
                 | Self::Goal
+                | Self::Child {
+                    file: ChildFile::Control,
+                    ..
+                }
+                | Self::Child {
+                    file: ChildFile::Status | ChildFile::Delivered,
+                    ..
+                }
                 | Self::Input(_)
                 | Self::Plan(_)
                 | Self::Task {

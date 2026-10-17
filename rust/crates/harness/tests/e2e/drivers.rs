@@ -97,6 +97,8 @@ pub(super) async fn run(mut value: Value) -> TestResult {
     // Keep each selected driver frame out of the shared dispatch frame. Otherwise
     // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
+        #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+        Some("agents") => Box::pin(super::agents::run(value)).await,
         None if driver.is_none() => {
             Box::pin(run_execution(scenario::Scenario::from_value(value)?)).await
         }

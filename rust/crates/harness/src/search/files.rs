@@ -592,10 +592,10 @@ pub async fn drive_for_test<P: StreamProvider>(
     Ok(())
 }
 
-#[cfg(all(test, acyclic_loom))]
-mod model;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod crash_cut_tests;
+#[cfg(all(test, acyclic_loom))]
+mod model;
 #[cfg(test)]
 mod native_retry_tests;
 #[cfg(test)]

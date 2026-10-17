@@ -1,0 +1,5 @@
+---
+tools: &tools [read]
+model: *tools
+---
+inspect

@@ -38,13 +38,17 @@ proptest! {
     // A definitive unsupported result is probed exactly once per owner, for
     // every supported denial code and any nonempty bounded request sequence.
     #[test]
-    fn unsupported_selection_is_sticky(index in 0usize..4, requests in 1usize..16) {
-        prop_assert_eq!(probe_count(UNSUPPORTED[index], requests, false).unwrap(), 1);
+    fn unsupported_selection_is_sticky(
+        code in proptest::sample::select(UNSUPPORTED.to_vec()),
+        requests in 1usize..16,
+    ) {
+        prop_assert_eq!(probe_count(code, requests, false).unwrap(), 1);
     }
 
     #[test]
-    fn operational_probe_errors_keep_their_exact_cause(index in 0usize..5) {
-        let code = [libc::EIO, libc::EMFILE, libc::ENOMEM, libc::EINVAL, libc::EBADF][index];
+    fn operational_probe_errors_keep_their_exact_cause(
+        code in proptest::sample::select(vec![libc::EIO, libc::EMFILE, libc::ENOMEM, libc::EINVAL, libc::EBADF]),
+    ) {
         let mut owner = Owner::new();
         let error = owner.select_with(|| Err(io::Error::from_raw_os_error(code))).unwrap_err();
         prop_assert_eq!(error.raw_os_error(), Some(code));
@@ -55,7 +59,7 @@ proptest! {
     // The independent expected file is derived only from generated input.
     #[test]
     fn unsupported_ring_uses_real_positional_io(
-        index in 0usize..4,
+        code in proptest::sample::select(UNSUPPORTED.to_vec()),
         offset in 0usize..32,
         bytes in proptest::collection::vec(any::<u8>(), 1..128),
     ) {
@@ -66,7 +70,7 @@ proptest! {
             _allocation: None,
         });
         let mut owner = Owner::new();
-        prop_assert_eq!(owner.select_with(|| Err(io::Error::from_raw_os_error(UNSUPPORTED[index]))).unwrap(), Selected::Positional);
+        prop_assert_eq!(owner.select_with(|| Err(io::Error::from_raw_os_error(code))).unwrap(), Selected::Positional);
         owner.write_batch(&file, vec![OwnedWrite {
             offset: offset as u64, bytes: Bytes::copy_from_slice(&bytes),
         }]).unwrap();
@@ -74,7 +78,7 @@ proptest! {
         expected.extend_from_slice(&bytes);
         prop_assert_eq!(&std::fs::read(directory.path().join("fallback")).unwrap(), &expected);
         let actual = owner.read_batch(&file, &[OwnedRead { offset: 0, length: expected.len() + 8 }]).unwrap();
-        prop_assert_eq!(&actual[0][..], &expected);
+        prop_assert_eq!(actual, vec![Bytes::from(expected)]);
         prop_assert!(matches!(owner.backend, Backend::Positional));
     }
 }
@@ -85,20 +89,18 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
     if owner.select()? == Selected::Positional {
         return Ok(());
     }
-    let temporary = tempfile::tempdir()?;
+    // The retired read waits on an empty pipe, so it is still pending until
+    // the test writes: unrelated progress and reaping are forced to happen
+    // before its terminal completion instead of racing it.
+    let (reader, mut writer) = std::io::pipe()?;
     let affected = Arc::new(NativeFilePayload {
-        file: std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(temporary.path().join("affected"))?,
+        file: std::fs::File::from(std::os::fd::OwnedFd::from(reader)),
         _allocation: None,
     });
-    affected.set_len(MAX_IO_BYTES as u64)?;
     let op = ReadAt::new(
         SharedFd::new(Arc::clone(&affected)),
         0,
-        compio_buf::IoBuf::slice(Vec::with_capacity(MAX_IO_BYTES), ..MAX_IO_BYTES),
+        compio_buf::IoBuf::slice(Vec::with_capacity(8), ..8),
     );
     let Backend::Ring(driver) = &mut owner.backend else {
         return Err(io::Error::other("missing proactor"));
@@ -115,6 +117,7 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
     assert!(matches!(owner.backend, Backend::Retiring(_)));
     assert_eq!(owner.select()?, Selected::Positional);
 
+    let temporary = tempfile::tempdir()?;
     let unrelated = Arc::new(NativeFilePayload {
         file: std::fs::OpenOptions::new()
             .read(true)
@@ -140,16 +143,18 @@ fn compio_poll_failure_retains_key_and_allows_unrelated_progress() -> io::Result
         )?,
         vec![Bytes::from_static(b"progress")]
     );
+    owner.reap_retired();
+    assert!(
+        matches!(owner.backend, Backend::Retiring(_)),
+        "a pending retired key was released"
+    );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    while matches!(owner.backend, Backend::Retiring(_)) {
-        owner.reap_retired();
-        if std::time::Instant::now() >= deadline {
-            return Err(io::Error::other(
-                "retired proactor did not reach terminal completion",
-            ));
-        }
-        std::thread::yield_now();
-    }
+    std::io::Write::write_all(&mut writer, b"complete")?;
+    let Backend::Retiring(retired) = &mut owner.backend else {
+        return Err(io::Error::other("retired proactor was released early"));
+    };
+    retired.wait_terminal()?;
+    owner.reap_retired();
+    assert!(matches!(owner.backend, Backend::Unprobed));
     Ok(())
 }

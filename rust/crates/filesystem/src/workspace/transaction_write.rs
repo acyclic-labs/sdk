@@ -109,9 +109,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         {
             let prefix = path.get(..end).ok_or(crate::FsError::InvalidDiff)?;
             let path = self.mutation_path(prefix, accounting, cancellation)?;
+            // Existing prefixes require the exact name binding and kind, not
+            // the directory's child-entry payload. Sibling additions are safe.
             match self
                 .checkout
-                .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
+                .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, false)
                 .await?
                 .0
                 .record

@@ -131,7 +131,7 @@ impl AgentHarness {
         operation: OperationId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Arc<TaskContext>> {
-        self.open_durable_context(task, operation, io, IssuedContextPurpose::Read, None)
+        self.open_durable_context(task, operation, io, IssuedContextPurpose::Read, None, None)
             .await
     }
 
@@ -142,6 +142,7 @@ impl AgentHarness {
         io: Option<&crate::executor::PreparationIo>,
         issued_purpose: IssuedContextPurpose,
         owned_mailbox: Option<(Arc<dyn OwnedTaskMailbox>, RuntimeScope, NativeCustody)>,
+        ordinary_scope: Option<RuntimeScope>,
     ) -> Result<Arc<TaskContext>> {
         let (owned_mailbox, native_scope) = match owned_mailbox {
             Some((mailbox, scope, custody)) => (Some(mailbox), Some((scope, custody))),
@@ -188,8 +189,13 @@ impl AgentHarness {
                 (admitted.0, Some(custody))
             }
             _ => (
-                self.scope
-                    .resume_sealed(host.resume_scope(task, operation).await?, operation)?,
+                self.scope.resume_sealed(
+                    match ordinary_scope {
+                        Some(scope) => scope,
+                        None => host.resume_scope(task, operation).await?,
+                    },
+                    operation,
+                )?,
                 None::<NativeCustody>,
             ),
         };

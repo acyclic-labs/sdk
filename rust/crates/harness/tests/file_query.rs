@@ -138,12 +138,13 @@ fn empty_stem_publications_preserve_live_and_snapshot_plan_views()
                 .values()
                 .map(|file| {
                     assert_eq!(file.segments.len(), 1);
-                    acyclic_harness::task_volume::FileValue {
-                        key: file.key.clone(),
-                        channel: file.channel,
-                        publication: file.publication,
-                        bytes: file.segments[0].clone(),
-                    }
+                    let mut value = acyclic_harness::task_volume::FileValue::new(
+                        file.key.clone(),
+                        file.segments[0].clone(),
+                    );
+                    value.channel = file.channel;
+                    value.publication = file.publication;
+                    value
                 })
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected);

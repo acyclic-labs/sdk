@@ -38,6 +38,7 @@ fn capacity(fault: Fault) {
         let workers = NativeWorkers {
             sender,
             admission: Arc::new(Mutex::new(admission)),
+            threads: 1,
         };
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
@@ -299,4 +300,101 @@ fn observer_retires_the_state_charge_before_the_worker_lets_go() {
 #[should_panic(expected = "charge outlived its observer")]
 fn a_charge_left_on_the_shared_state_is_detected() {
     charge(false, true);
+}
+
+/// A metered submission waits for capacity while the worker's release
+/// notifier holds its waiter node. When the owner is admitted or cancels, its
+/// node's charge must be back in the meter before it returns, whether or not
+/// the notifier has let go of the node yet.
+fn waiter_charge(cancel: bool, broken: bool) {
+    let schedules = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let explored = schedules.clone();
+    loom::model(move || {
+        explored.fetch_add(1, Ordering::Relaxed);
+        let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let mut admission = AdmissionState::new();
+        admission.broken_charge = broken;
+        let workers = NativeWorkers {
+            sender,
+            admission: Arc::new(Mutex::new(admission)),
+            threads: 1,
+        };
+        let mut filler = run_blocking_io(|| (), None).unwrap();
+        assert!(
+            workers
+                .sender
+                .try_send(filler.pending.take().unwrap())
+                .is_ok()
+        );
+        workers.admission.lock().unwrap().queued_jobs = 1;
+
+        let meter = Arc::new(crate::tests::ReadBudgetMeter::new(1, 0));
+        let observed: Arc<dyn crate::NativeReadMeter> = meter.clone();
+        let mut task = run_blocking_io(|| 17, Some((observed, false))).unwrap();
+        let mut pending = task.pending.take();
+        let mut waiter = None;
+        let flag = Arc::new(Woken(AtomicUsize::new(0)));
+        let waker = Waker::from(flag);
+        let cx = std::task::Context::from_waker(&waker);
+        let before = meter.memory.load(Ordering::SeqCst);
+        assert!(
+            crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx)
+                .is_pending()
+        );
+        assert!(waiter.is_some());
+        assert_ne!(meter.memory.load(Ordering::SeqCst), before, "waiter uncharged");
+
+        let released = workers.admission.clone();
+        let receiving = receiver.clone();
+        let notifier = thread::spawn(move || {
+            let filler = crate::workers::receive_job(&receiving, &released).unwrap();
+            wake_capacity_waiter(filler.run());
+        });
+        if cancel {
+            crate::remove_capacity_waiter(&workers, waiter.take());
+        } else {
+            while crate::workers::poll_submission_with(&workers, &mut pending, &mut waiter, &cx)
+                .is_pending()
+            {
+                thread::yield_now();
+            }
+            assert!(pending.is_none() && waiter.is_none());
+        }
+        // Checked before the notifier is joined: it may still hold the node.
+        assert_eq!(
+            meter.memory.load(Ordering::SeqCst),
+            before,
+            "waiter charge outlived its owner"
+        );
+        notifier.join().unwrap();
+        let admission = workers.admission.lock().unwrap();
+        assert_eq!(admission.waiter_count, 0);
+        assert_eq!(admission.queued_jobs, usize::from(!cancel));
+        drop(admission);
+        drop(pending);
+        drop(task);
+    });
+    eprintln!(
+        "waiter charge schedules (cancel={cancel}): {}",
+        schedules.load(Ordering::Relaxed)
+    );
+}
+
+#[test]
+fn admitted_or_cancelled_waiters_retire_their_charge_before_the_notifier() {
+    waiter_charge(false, false);
+    waiter_charge(true, false);
+}
+
+#[test]
+#[should_panic(expected = "waiter charge outlived its owner")]
+fn an_admitted_waiter_charge_left_on_its_node_is_detected() {
+    waiter_charge(false, true);
+}
+
+#[test]
+#[should_panic(expected = "waiter charge outlived its owner")]
+fn a_cancelled_waiter_charge_left_on_its_node_is_detected() {
+    waiter_charge(true, true);
 }

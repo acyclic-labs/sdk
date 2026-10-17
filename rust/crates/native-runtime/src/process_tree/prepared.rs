@@ -14,8 +14,8 @@ pub(super) struct PreparedProcessBuffer<T> {
     _allocation: crate::ReadAllocation,
 }
 
-// Argument slots are inert outside synchronous spawn and are overwritten
-// before reuse. Environment pointers address this frame's stable owned bytes.
+// SAFETY: argument slots are inert outside synchronous spawn and are
+// overwritten before reuse. Environment pointers address this frame's stable owned bytes.
 #[cfg(unix)]
 unsafe impl Send for PreparedClosedProcess {}
 

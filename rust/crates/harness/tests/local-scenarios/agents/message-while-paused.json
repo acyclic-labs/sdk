@@ -1,0 +1,223 @@
+{
+  "driver": "agents",
+  "prompt": "Resume a paused worker after a queued message without replaying its first turn",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "original work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "fs",
+          "arguments": {
+            "command": "cat .volumes/agents/worker/control"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "queued-message",
+          "name": "send",
+          "arguments": {
+            "agent": "worker",
+            "message": "queued while paused"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "fs",
+          "arguments": {
+            "command": "cat .volumes/agents/worker/control"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished",
+      "queued message finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 8,
+      "worker": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 2
+      }
+    },
+    "model_requests": {
+      "worker": [
+        {},
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "kind": "file",
+                  "policy": "bounded_full",
+                  "file": {
+                    "descriptor": {
+                      "byte_length": 19,
+                      "media_type": "text/plain",
+                      "sha256": [
+                        83,
+                        190,
+                        59,
+                        144,
+                        131,
+                        155,
+                        5,
+                        108,
+                        183,
+                        174,
+                        253,
+                        159,
+                        22,
+                        232,
+                        111,
+                        16,
+                        150,
+                        229,
+                        214,
+                        190,
+                        44,
+                        41,
+                        149,
+                        96,
+                        47,
+                        182,
+                        83,
+                        188,
+                        228,
+                        16,
+                        228,
+                        158
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "routes": {
+    "original work": "worker",
+    "queued while paused": "worker"
+  },
+  "actions": [
+    {
+      "model": "parent",
+      "request": 3,
+      "agent": "worker",
+      "control": "pause"
+    },
+    {
+      "model": "parent",
+      "request": 6,
+      "agent": "worker",
+      "control": "resume"
+    }
+  ]
+}

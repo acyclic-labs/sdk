@@ -71,11 +71,61 @@ fn wait_helper() -> io::Result<()> {
     println!("{READY}");
     std::io::stdout().flush()?;
     // SAFETY: this helper retains its event while the parent controls release.
-    assert_eq!(
-        unsafe { WaitForSingleObject(event.as_raw_handle(), 5000) },
-        WAIT_OBJECT_0
-    );
+    let status = unsafe { WaitForSingleObject(event.as_raw_handle(), 5000) };
+    assert_eq!(status, WAIT_OBJECT_0);
     Ok(())
+}
+
+/// This test binary re-run as `wait_helper`, which waits on the named event.
+fn helper_command(name: &str) -> io::Result<Command> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "process_tree::wait_tests::wait_helper",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env(EVENT, name)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped());
+    Ok(command)
+}
+
+type Reader = std::thread::JoinHandle<io::Result<()>>;
+
+/// Forward one message per helper readiness line until its stdout closes.
+fn readiness(stdout: std::process::ChildStdout) -> (std::sync::mpsc::Receiver<()>, Reader) {
+    let (sent, received) = std::sync::mpsc::sync_channel(1);
+    let reader = std::thread::spawn(move || -> io::Result<()> {
+        for line in std::io::BufReader::new(stdout).lines() {
+            if line?.ends_with(READY) {
+                sent.send(()).map_err(io::Error::other)?;
+            }
+        }
+        Ok(())
+    });
+    (received, reader)
+}
+
+/// Signal the helper's gate so it exits.
+fn release(gate: &OwnedHandle) -> io::Result<()> {
+    // SAFETY: the parent still owns this gate and the helper waits on it.
+    if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A precise tree wait charged to the optional read meter.
+fn metered_wait(
+    meter: Option<&dyn crate::NativeReadMeter>,
+    tree: &mut ProcessTree,
+    timeout: Duration,
+) -> io::Result<ExitStatus> {
+    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        tree.wait(timeout)
+    })
 }
 
 #[test]
@@ -117,28 +167,8 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
     );
     let name = name.replace(['\\', '/', ':'], "-");
     let gate = event(&name)?;
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .args([
-            "--exact",
-            "process_tree::wait_tests::wait_helper",
-            "--nocapture",
-        ])
-        .env_clear()
-        .env(EVENT, name)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped());
-    let mut tree = ProcessTree::spawn(&mut command)?;
-    let stdout = tree.take_stdout().ok_or(io::ErrorKind::NotFound)?;
-    let (ready, receive_ready) = std::sync::mpsc::sync_channel(1);
-    let reader = std::thread::spawn(move || -> io::Result<()> {
-        for line in std::io::BufReader::new(stdout).lines() {
-            if line?.ends_with(READY) {
-                ready.send(()).map_err(io::Error::other)?;
-            }
-        }
-        Ok(())
-    });
+    let mut tree = ProcessTree::spawn(&mut helper_command(&name)?)?;
+    let (receive_ready, reader) = readiness(tree.take_stdout().ok_or(io::ErrorKind::NotFound)?);
     receive_ready
         .recv_timeout(Duration::from_secs(5))
         .map_err(io::Error::other)?;
@@ -215,12 +245,7 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
         Ok(())
     })();
     // Always release the child, including when a missed resume hits the watchdog.
-    // SAFETY: the parent still owns this gate and the helper waits on it.
-    let released = if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    };
+    let released = release(&gate);
     let (mut tree, status) = waiter
         .join()
         .map_err(|_| io::Error::other("resume waiter panicked"))??;
@@ -235,13 +260,14 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
     Ok(())
 }
 
-fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
+/// Optional measurement hooks: wait for a start byte, and trace spans.
+fn measurement_setup() -> io::Result<Option<tracing::subscriber::DefaultGuard>> {
     if std::env::var_os("ACYCLIC_NATIVE_WAIT_START_GATE").is_some() {
         let mut signal = [0];
         std::io::stdin().read_exact(&mut signal)?;
         assert_eq!(signal, *b"g");
     }
-    let _subscriber = std::env::var_os("ACYCLIC_NATIVE_WAIT_TRACING").map(|_| {
+    Ok(std::env::var_os("ACYCLIC_NATIVE_WAIT_TRACING").map(|_| {
         tracing::subscriber::set_default(
             tracing_subscriber::fmt()
                 .with_max_level(tracing::Level::TRACE)
@@ -249,7 +275,43 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
                 .with_ansi(false)
                 .finish(),
         )
-    });
+    }))
+}
+
+/// Unbounded, already-expired and zero waits fail without reaping the child.
+fn assert_immediate_waits(
+    meter: Option<&dyn crate::NativeReadMeter>,
+    tree: &mut ProcessTree,
+) -> io::Result<()> {
+    assert_eq!(
+        metered_wait(meter, tree, Duration::MAX)
+            .err()
+            .ok_or(io::ErrorKind::Other)?
+            .kind(),
+        io::ErrorKind::InvalidInput,
+    );
+    assert_eq!(
+        platform::wait_for_exit_coarse(
+            tree.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
+            Instant::now(),
+        )
+        .err()
+        .ok_or(io::ErrorKind::Other)?
+        .kind(),
+        io::ErrorKind::TimedOut,
+    );
+    assert_eq!(
+        metered_wait(meter, tree, Duration::ZERO)
+            .err()
+            .ok_or(io::ErrorKind::Other)?
+            .kind(),
+        io::ErrorKind::TimedOut
+    );
+    Ok(())
+}
+
+fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
+    let _subscriber = measurement_setup()?;
     let root = tempfile::tempdir()?;
     let suffix = root
         .path()
@@ -263,17 +325,7 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
     let meter = accounting
         .as_ref()
         .map(|meter| meter as &dyn crate::NativeReadMeter);
-    let mut command = Command::new(std::env::current_exe()?);
-    command
-        .args([
-            "--exact",
-            "process_tree::wait_tests::wait_helper",
-            "--nocapture",
-        ])
-        .env_clear()
-        .env(EVENT, name)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped());
+    let mut command = helper_command(&name)?;
     let mut custody = None;
     if let Err(error) = ProcessTree::spawn_controlled(&mut command, meter, &mut custody) {
         if let Some(tree) = custody.as_mut() {
@@ -282,11 +334,7 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
         return Err(error);
     }
     let mut tree = custody.ok_or(io::ErrorKind::NotFound)?;
-    let wait = |tree: &mut ProcessTree, timeout| {
-        process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-            tree.wait(timeout)
-        })
-    };
+    let wait = |tree: &mut ProcessTree, timeout| metered_wait(meter, tree, timeout);
     let pending_wait = |tree: &mut ProcessTree, timeout: Duration| {
         if !coarse {
             return wait(tree, timeout);
@@ -301,44 +349,12 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
             )
         })
     };
-    let stdout = tree.take_stdout().ok_or(io::ErrorKind::NotFound)?;
-    let (sent, received) = std::sync::mpsc::sync_channel(1);
-    let reader = std::thread::spawn(move || -> io::Result<()> {
-        for line in std::io::BufReader::new(stdout).lines() {
-            if line?.ends_with(READY) {
-                sent.send(()).map_err(io::Error::other)?;
-            }
-        }
-        Ok(())
-    });
+    let (received, reader) = readiness(tree.take_stdout().ok_or(io::ErrorKind::NotFound)?);
     let result = (|| {
         received
             .recv_timeout(Duration::from_secs(5))
             .map_err(io::Error::other)?;
-        assert_eq!(
-            wait(&mut tree, Duration::MAX)
-                .err()
-                .ok_or(io::ErrorKind::Other)?
-                .kind(),
-            io::ErrorKind::InvalidInput,
-        );
-        assert_eq!(
-            platform::wait_for_exit_coarse(
-                tree.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
-                Instant::now(),
-            )
-            .err()
-            .ok_or(io::ErrorKind::Other)?
-            .kind(),
-            io::ErrorKind::TimedOut,
-        );
-        assert_eq!(
-            wait(&mut tree, Duration::ZERO)
-                .err()
-                .ok_or(io::ErrorKind::Other)?
-                .kind(),
-            io::ErrorKind::TimedOut
-        );
+        assert_immediate_waits(meter, &mut tree)?;
         let cycles = thread_cycles()?;
         let cpu = thread_cpu()?;
         let operations = || {
@@ -367,10 +383,7 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
             "NATIVE_WAIT_TIMEOUT elapsed_us={} cpu_100ns={cpu} cycles={cycles} recorded_ops={recorded} coarse={coarse}",
             elapsed.as_micros()
         );
-        // SAFETY: this parent owns the event and the ready helper waits on it.
-        if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
-            return Err(io::Error::last_os_error());
-        }
+        release(&gate)?;
         assert!(pending_wait(&mut tree, Duration::from_secs(5))?.success());
         assert!(!tree.is_reaped());
         assert!(wait(&mut tree, Duration::ZERO)?.success());

@@ -1,6 +1,22 @@
 //! Task observations reuse canonical retained records and payloads.
 use super::*;
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    // Lifecycle/control decisions need the authenticated outcome variant, not
+    // the immutable result body. Keep this separate from the payload API so a
+    // status read cannot trigger result IO, decoding or canonical re-encoding.
+    pub(crate) async fn terminal_status(&self, task: TaskId) -> Result<Option<Outcome<()>>> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(&mut None).await?;
+        let state = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            &mut None,
+        )?;
+        Ok(state.outcome.as_ref().map(project_terminal))
+    }
+
     pub(super) async fn task_outcome(
         &self,
         task: TaskId,
@@ -55,5 +71,34 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         quota.transfer();
         Ok(outcome)
+    }
+}
+
+fn project_terminal<T>(outcome: &Outcome<T>) -> Outcome<()> {
+    match outcome {
+        Outcome::Succeeded(_) => Outcome::Succeeded(()),
+        Outcome::Failed { message } => Outcome::Failed {
+            message: message.clone(),
+        },
+        Outcome::Cancelled => Outcome::Cancelled,
+        Outcome::Indeterminate { operation_id } => Outcome::Indeterminate {
+            operation_id: *operation_id,
+        },
+    }
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
+
+#[cfg(all(test, not(acyclic_loom)))]
+impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    pub(crate) async fn test_coordinator_barrier(
+        &self,
+        entered: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let _coordinator = self.coordinator.lock().await;
+        entered.send(()).unwrap();
+        let _ = release.await;
     }
 }

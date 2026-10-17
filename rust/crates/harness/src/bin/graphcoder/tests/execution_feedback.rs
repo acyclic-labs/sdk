@@ -1,7 +1,7 @@
 //! Immutable failed command outcomes remain visible and recoverable.
 use acyclic_harness::{
     Error, OperationId, TaskId,
-    client::{TaskFileViews, CommandFileRoot, CommandSession},
+    client::{CommandFileRoot, CommandSession, TaskFileViews},
     task_volume::TaskVolume,
     tui::{ClientRenderer, PromptInput, Viewport},
     wire,
