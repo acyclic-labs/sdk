@@ -23,6 +23,18 @@ fn status_key(task: TaskId) -> FileKey {
     }
 }
 
+fn status(task: TaskId, parent: Option<TaskId>, state: TaskState, attention: bool) -> Vec<u8> {
+    TaskStatus {
+        task,
+        parent,
+        state,
+        attention,
+        owner_agent: None,
+    }
+    .encode()
+    .unwrap()
+}
+
 /// Frames, checkpoints from unrelated publications and selection changes do
 /// no tree work; only a status publication rebuilds. `guard` false removes
 /// the revision guard, re-adding the redundant per-frame rebuild.
@@ -39,7 +51,7 @@ async fn rebuilds_follow_status_publications(guard: bool) {
     append(
         &volume,
         status_key(root),
-        br#"{"parent":null,"state":"completed"}"#.to_vec(),
+        status(root, None, TaskState::Completed, false),
     )
     .await;
     let owner = wire::Authority {
@@ -92,7 +104,7 @@ async fn rebuilds_follow_status_publications(guard: bool) {
     append(
         &volume,
         status_key(child),
-        format!(r#"{{"parent":"{root}","state":"pending","attention":true}}"#).into_bytes(),
+        status(child, Some(root), TaskState::Pending, true),
     )
     .await;
     client
@@ -120,16 +132,19 @@ async fn rebuilding_without_the_revision_guard_is_detected_negative_control() {
 
 #[tokio::test]
 async fn malformed_and_unknown_status_files_are_rejected() {
+    let task = TaskId::from_bytes([1; 16]);
+    let other = TaskId::from_bytes([9; 16]);
     for (bytes, expected) in [
-        (&br#"{"parent":null}"#[..], "task status"),
+        (br#"{"parent":null}"#.to_vec(), "task status"),
         (
-            br#"{"parent":null,"state":"dreaming"}"#,
-            "unknown task state",
-        ),
-        (
-            br#"{"parent":"not-a-task","state":"pending"}"#,
+            format!(r#"{{"task":"{task}","parent":null,"state":"dreaming","attention":false,"owner_agent":null}}"#).into_bytes(),
             "task status",
         ),
+        (
+            format!(r#"{{"task":"{task}","parent":"not-a-task","state":"pending","attention":false,"owner_agent":null}}"#).into_bytes(),
+            "task status",
+        ),
+        (status(other, None, TaskState::Pending, false), "under"),
     ] {
         let volume = Arc::new(
             TaskVolume::open(
@@ -141,8 +156,8 @@ async fn malformed_and_unknown_status_files_are_rejected() {
         );
         append(
             &volume,
-            status_key(TaskId::from_bytes([1; 16])),
-            bytes.to_vec(),
+            status_key(task),
+            bytes,
         )
         .await;
         let snapshot = volume.snapshot(&Query::TaskOverviews, 64).await.unwrap();

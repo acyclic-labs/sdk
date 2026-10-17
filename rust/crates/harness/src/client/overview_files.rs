@@ -35,3 +35,11 @@ pub async fn task_overview_files(
         stream::once(async { Ok(snapshot) }).chain(changes),
     ))
 }
+
+#[cfg(all(
+    test,
+    feature = "test-support",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+mod tests;

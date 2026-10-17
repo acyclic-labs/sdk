@@ -551,3 +551,60 @@ impl Query {
                     .is_ok_and(|status| status.active()))
     }
 }
+
+/// Lifetime of one followed selection inside a client. A task-scoped
+/// selection belongs to the followed task and is evicted on a task switch;
+/// a global one keeps following across switches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryScope<'a> {
+    /// Session, UI, input and overview selections shared by every task.
+    Global,
+    /// Selections keyed by one task's identity.
+    Task(&'a Component),
+}
+
+impl Query {
+    /// Classifies every selector; there is deliberately no wildcard arm, so a
+    /// new selector cannot be added without choosing its lifetime.
+    pub fn scope(&self) -> QueryScope<'_> {
+        match self {
+            Self::CommandSession { .. }
+            | Self::UiDirectory(_)
+            | Self::Session(_)
+            | Self::SessionFiles { .. }
+            | Self::Root
+            | Self::Inputs
+            | Self::Config
+            | Self::Plans
+            | Self::Tasks
+            | Self::TaskOverviews
+            | Self::ActiveAgents
+            | Self::Agents
+            | Self::Children
+            | Self::Child(_) => QueryScope::Global,
+            Self::TaskSession { task, .. }
+            | Self::Task(task)
+            | Self::TaskView { task, .. }
+            | Self::Requests(task)
+            | Self::Executions(task)
+            | Self::Turns(task)
+            | Self::Turn { task, .. }
+            | Self::Chunks { task, .. }
+            | Self::Tools { task, .. }
+            | Self::Tool { task, .. }
+            | Self::Approvals(task)
+            | Self::Notifications(task) => QueryScope::Task(task),
+            Self::File(key) => match key {
+                FileKey::Task { task, .. } => QueryScope::Task(task),
+                FileKey::Session { .. }
+                | FileKey::Ui { .. }
+                | FileKey::RequestHead
+                | FileKey::Goal
+                | FileKey::Input(_)
+                | FileKey::Child { .. }
+                | FileKey::Plan(_)
+                | FileKey::Agent(_) => QueryScope::Global,
+            },
+        }
+    }
+}
