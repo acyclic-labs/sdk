@@ -1,11 +1,34 @@
 //! Properties over authenticated chains and current trust snapshots.
+#[path = "common/limits.rs"]
+mod limits;
+use limits::limits;
+#[path = "common/admission.rs"]
+mod admission;
 #[path = "common/signed.rs"]
 mod signed;
 use acyclic_auth::{authority::PolicyDecision, contract::*, verify::*};
+use admission::request;
 use ed25519_dalek::Signer;
 use proptest::prelude::*;
 use prost::Message;
 use signed::*;
+
+/// Flips one bit of the byte at `index`, if present.
+fn flip(bytes: &mut [u8], index: usize, bit: u8) -> Option<()> {
+    *bytes.get_mut(index)? ^= 1 << bit;
+    Some(())
+}
+
+/// An encoded capability's root block.
+fn root_block(wire: &mut CapabilityProto) -> Option<&mut SignedBlockProto> {
+    wire.blocks.first_mut()
+}
+
+/// The first key the root block's chain certifies.
+fn root_key(block: &mut Block) -> Option<&mut CertifiedKey> {
+    let certificates = block.certificates.as_mut()?;
+    Some(&mut certificates.keys.first_mut()?.key)
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
@@ -107,7 +130,7 @@ proptest! {
         let filter = || Caveat { kind: CaveatKind::Filter(Filter { keys: vec![], attributes: vec![] }) };
         let trust = Snapshot::default();
         let bytes = root(|block| {
-            block.certificates.as_mut().unwrap().keys[0].key.principal.lineage = certified.clone();
+            root_key(block).unwrap().principal.lineage = certified.clone();
             block.caveats.push(filter());
             if !root_ids.is_empty() { block.caveats.push(lineage(root_ids.clone())); }
         });
@@ -121,10 +144,13 @@ proptest! {
         let filters = effective.filters().collect::<Vec<_>>();
         let root_expected = std::iter::once("issuer").chain(certified.iter().chain(&root_ids).map(String::as_str)).collect::<Vec<_>>();
         let parent_expected = root_expected.iter().copied().chain(parent_ids.iter().map(String::as_str)).collect::<Vec<_>>();
-        prop_assert_eq!(filters[0].lineage().collect::<Vec<_>>(), root_expected.clone());
-        prop_assert_eq!(filters[1].lineage().collect::<Vec<_>>(), parent_expected.clone());
-        prop_assert_eq!(filters[0].subject_id(), *root_expected.last().unwrap());
-        prop_assert_eq!(filters[1].subject_id(), *parent_expected.last().unwrap());
+        let [root_filter, parent_filter] = filters.as_slice() else {
+            return Err(TestCaseError::fail("expected exactly the root and parent filters"));
+        };
+        prop_assert_eq!(root_filter.lineage().collect::<Vec<_>>(), root_expected.clone());
+        prop_assert_eq!(parent_filter.lineage().collect::<Vec<_>>(), parent_expected.clone());
+        prop_assert_eq!(root_filter.subject_id(), *root_expected.last().unwrap());
+        prop_assert_eq!(parent_filter.subject_id(), *parent_expected.last().unwrap());
     }
     #[test]
     fn verified_admission_preserves_typed_noncanonical_denials(name in "[a-z]{1,8}") {
@@ -175,7 +201,7 @@ proptest! {
         let trust = Snapshot::default();
         let original = verify(&root(|_| {}), &trust, NOW).unwrap().attenuate(vec![], &[5;32]).unwrap().encode();
         let mut changed = original.to_vec();
-        let index = index % changed.len(); changed[index] ^= 1 << bit;
+        let index = index % changed.len(); flip(&mut changed, index, bit).unwrap();
         prop_assert!(verify(&changed, &trust, NOW).is_err());
     }
     #[test]
@@ -183,7 +209,7 @@ proptest! {
         let trust = Snapshot::default();
         let bytes = root(|_| {});
         let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
-        wire.blocks[0].signature[index] ^= 1 << bit;
+        flip(&mut root_block(&mut wire).unwrap().signature, index, bit).unwrap();
         let changed = wire.encode_to_vec();
         // Negative control: replacing authenticated verification with structural
         // admission accepts every generated forgery. The signature property fails.
@@ -192,12 +218,13 @@ proptest! {
         // Re-sign the outer block to isolate each certificate signature check.
         for birth in [false, true] {
             let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
-            let mut block = BlockProto::decode(wire.blocks[0].payload.as_slice()).unwrap();
+            let root_signed = root_block(&mut wire).unwrap();
+            let mut block = BlockProto::decode(root_signed.payload.as_slice()).unwrap();
             let certificates = block.certificates.as_mut().unwrap();
-            let signature = if birth { &mut certificates.birth.as_mut().unwrap().signature } else { &mut certificates.keys[0].signature };
-            signature[index] ^= 1 << bit;
-            wire.blocks[0].payload = block.encode_to_vec();
-            wire.blocks[0].signature = key(3).sign(&acyclic_auth::crypto::block_transcript(0, &[0;32], &wire.blocks[0].payload)).to_bytes().to_vec();
+            let signature = if birth { &mut certificates.birth.as_mut().unwrap().signature } else { &mut certificates.keys.first_mut().unwrap().signature };
+            flip(signature, index, bit).unwrap();
+            root_signed.payload = block.encode_to_vec();
+            root_signed.signature = key(3).sign(&acyclic_auth::crypto::block_transcript(0, &[0;32], &root_signed.payload)).to_bytes().to_vec();
             let changed = wire.encode_to_vec();
             prop_assert!(acyclic_auth::authority::decode_capability(&changed).is_ok());
             prop_assert!(matches!(verify(&changed, &trust, NOW), Err(VerifyError::Signature)));
@@ -205,7 +232,7 @@ proptest! {
         let sealed = verify(&bytes, &trust, NOW).unwrap().seal().unwrap().encode();
         let mut wire = CapabilityProto::decode(sealed.as_slice()).unwrap();
         let Some(TipProofProto::Sealed(signature)) = &mut wire.proof else { unreachable!() };
-        signature[index] ^= 1 << bit;
+        flip(signature, index, bit).unwrap();
         prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::Signature)));
     }
     #[test]
@@ -213,7 +240,8 @@ proptest! {
         let mut trust = Snapshot::default();
         let mut chain = vec![verify(&root(|_| {}), &trust, NOW).unwrap()];
         for seed in 5..8u8 { chain.push(chain.last().unwrap().attenuate(vec![], &[seed;32]).unwrap()); }
-        trust.revoked_blocks.push(chain[k].block_ids()[k]);
+        let revoked = chain.get(k).and_then(|cap| cap.block_ids().get(k)).copied().unwrap();
+        trust.revoked_blocks.push(revoked);
         for (index, cap) in chain.iter().enumerate() {
             prop_assert_eq!(cap.check(&trust, NOW).is_ok(), index < k);
             prop_assert_eq!(verify(&cap.encode(), &trust, NOW).is_ok(), index < k);
@@ -242,7 +270,7 @@ proptest! {
         // Bypass the append API and sign an otherwise valid child by hand.
         let mut wire = CapabilityProto::decode(cap.encode().as_slice()).unwrap();
         let payload = BlockProto::from(Block { certificates: None, caveats: vec![], next_public_key: key(seed).verifying_key().to_bytes().to_vec() }).encode_to_vec();
-        let message = acyclic_auth::crypto::block_transcript(1, &cap.block_ids()[0], &payload);
+        let message = acyclic_auth::crypto::block_transcript(1, cap.block_ids().first().unwrap(), &payload);
         wire.blocks.push(SignedBlockProto { payload, signature: key(4).sign(&message).to_bytes().to_vec() });
         wire.proof = Some(TipProofProto::Secret(vec![seed;32]));
         prop_assert!(matches!(verify(&wire.encode_to_vec(), &trust, NOW), Err(VerifyError::RepeatedKey)));
@@ -307,7 +335,7 @@ fn effective_filters_keep_the_declaring_subject() {
                     }],
                 }],
             }),
-        })
+        });
     });
     let parent = verify(&bytes, &trust, NOW).unwrap();
     let child = parent
@@ -330,13 +358,13 @@ fn effective_filters_keep_the_declaring_subject() {
         .unwrap();
     let effective = child.effective();
     let filters = effective.filters().collect::<Vec<_>>();
-    assert_eq!(filters[0].subject_id(), "issuer");
-    assert_eq!(filters[0].lineage().collect::<Vec<_>>(), ["issuer"]);
-    assert_eq!(filters[1].subject_id(), "child");
-    assert_eq!(
-        filters[1].lineage().collect::<Vec<_>>(),
-        ["issuer", "child"]
-    );
+    let [declared, appended] = filters.as_slice() else {
+        panic!("expected the declaring and the appended filter");
+    };
+    assert_eq!(declared.subject_id(), "issuer");
+    assert_eq!(declared.lineage().collect::<Vec<_>>(), ["issuer"]);
+    assert_eq!(appended.subject_id(), "child");
+    assert_eq!(appended.lineage().collect::<Vec<_>>(), ["issuer", "child"]);
     let attributes = RecordAttributes::try_new(vec![Attribute {
         name: "author".into(),
         value: b"issuer".to_vec(),
@@ -365,11 +393,11 @@ fn valid_blocks_cannot_be_spliced_reordered_or_truncated() {
     let other = root(|block| {
         block.caveats.push(Caveat {
             kind: CaveatKind::Label("different root".into()),
-        })
+        });
     });
     let other = CapabilityProto::decode(other.as_slice()).unwrap();
     let mut spliced = original.clone();
-    spliced.blocks[0] = other.blocks[0].clone();
+    *root_block(&mut spliced).unwrap() = other.blocks.first().unwrap().clone();
     let mut reordered = original.clone();
     reordered.blocks.swap(1, 2);
     let mut truncated = original;
@@ -385,10 +413,10 @@ fn valid_blocks_cannot_be_spliced_reordered_or_truncated() {
 #[test]
 fn cached_admission_observes_current_trust_epochs_and_parent_revocations() {
     let bytes = root(|block| {
-        block.certificates.as_mut().unwrap().keys[0]
-            .key
+        root_key(block)
+            .unwrap()
             .parent_revocation_ids
-            .push(vec![9; 32])
+            .push(vec![9; 32]);
     });
     let mut trust = Snapshot::default();
     let cap = verify(&bytes, &trust, NOW).unwrap();
@@ -444,7 +472,7 @@ fn cached_and_fresh_admission_agree_when_issuer_sets_change() {
 fn every_signature_precedes_semantic_claim_admission() {
     // Fully signed, structurally decodable claims with a duplicate attribute.
     let bytes = root(|block| {
-        let principal = &mut block.certificates.as_mut().unwrap().keys[0].key.principal;
+        let principal = &mut root_key(block).unwrap().principal;
         principal.attributes = vec![
             Attribute {
                 name: "role".into(),
@@ -462,7 +490,7 @@ fn every_signature_precedes_semantic_claim_admission() {
         Err(VerifyError::Malformed)
     ));
     let mut wire = CapabilityProto::decode(bytes.as_slice()).unwrap();
-    wire.blocks[0].signature[0] ^= 1;
+    flip(&mut root_block(&mut wire).unwrap().signature, 0, 0).unwrap();
     assert!(matches!(
         verify(&wire.encode_to_vec(), &trust, NOW),
         Err(VerifyError::Signature)
@@ -478,7 +506,7 @@ fn cached_clock_cannot_predate_birth_and_validity_is_half_open() {
             .unwrap()
             .birth
             .birth
-            .issued_at_unix_seconds = 50
+            .issued_at_unix_seconds = 50;
     });
     let trust = Snapshot::default();
     let cap = verify(&bytes, &trust, NOW).unwrap();

@@ -1,7 +1,10 @@
 //! Shrinking properties exercise the actual contract append and decision algebra.
 mod common;
+#[path = "common/limits.rs"]
+mod limits;
 use acyclic_auth::{authority::*, contract::*, *};
 use common::*;
+use limits::limits;
 use proptest::prelude::*;
 use prost::Message;
 
@@ -74,7 +77,7 @@ proptest! {
         if let Ok(child)=attenuate(&parent,after,vec![6;32]) {
             prop_assert!(!permits(&child,&r,PolicyDecision::Allow).is_ok() || permits(&parent,&r,PolicyDecision::Allow).is_ok());
             prop_assert!(!permits(&child,&r,PolicyDecision::Deny).is_ok());
-            prop_assert_eq!(&child[..parent.len()],parent.as_slice());
+            prop_assert!(child.starts_with(&parent));
         }
     }
     #[test]
@@ -121,7 +124,7 @@ proptest! {
     #[test]
     fn max_depth_is_absolute_and_sealing_costs_no_block(max in 0..6u32, ceilings in prop::collection::vec(0..8u32,0..8)) {
         let len=ceilings.len();let effective=ceilings.iter().copied().fold(max,u32::min);
-        let mut blocks=vec![root()]; blocks[0].caveats.push(Caveat {kind:CaveatKind::MaxDepth(max)});
+        let mut first=root(); first.caveats.push(Caveat {kind:CaveatKind::MaxDepth(max)}); let mut blocks=vec![first];
         for max in ceilings { blocks.push(Block {certificates:None,caveats:vec![Caveat {kind:CaveatKind::MaxDepth(max)}],next_public_key:vec![6;32]}); }
         prop_assert_eq!(valid_chain(&blocks),len<=effective as usize);
         let signed=blocks.into_iter().map(|b| SignedBlock {payload:BlockProto::from(b).encode_to_vec(),signature:vec![1;64]}).collect::<Vec<_>>();
@@ -142,9 +145,12 @@ proptest! {
     fn attenuation_exposes_only_public_certificates(suffix in "[A-Za-z0-9_-]{1,64}", caveats in prop::collection::vec(caveat(),0..8)) {
         let parent=vec![root()];
         if let Ok(child)=attenuate(&parent,caveats,vec![6;32]) {
-            prop_assert_eq!(&child[0].certificates,&parent[0].certificates);
-            prop_assert!(child[1..].iter().all(|b| b.certificates.is_none()));
-            let root_bytes=BlockProto::from(child[0].clone()).encode_to_vec();
+            let (Some(first), Some(original))=(child.first(),parent.first()) else {
+                return Err(TestCaseError::fail("both chains carry a root block"));
+            };
+            prop_assert_eq!(&first.certificates,&original.certificates);
+            prop_assert!(child.iter().skip(1).all(|b| b.certificates.is_none()));
+            let root_bytes=BlockProto::from(first.clone()).encode_to_vec();
             prop_assert!(!root_bytes.windows(b"acyclic-account+jwt".len()).any(|w| w==b"acyclic-account+jwt"));
         }
         let bearer=format!("eyJ0eXAiOiJhY3ljbGljLWFjY291bnQrand0In0.{suffix}.{suffix}");
@@ -182,7 +188,7 @@ proptest! {
     #[test]
     fn root_certificates_and_versions_cannot_be_reintroduced(version in any::<u32>()) {
         let payload=BlockProto::from(root()).encode_to_vec();
-        let signed=SignedBlock {payload:payload.clone(),signature:vec![1;64]};
+        let signed=SignedBlock {payload,signature:vec![1;64]};
         let cap=Capability {version,blocks:vec![signed.clone()],proof:TipProof::Secret(vec![2;32])};
         let mut bytes=CapabilityProto::from(cap).encode_to_vec();
         let parsed=decode_capability(&bytes);
@@ -195,17 +201,19 @@ proptest! {
     #[test]
     fn certificate_ancestry_is_complete(parent_id in "[a-z]{1,12}", wrong_id in "[a-z]{1,12}", revoked in prop::collection::vec(any::<u8>(),32), expiry in 2..1001u64) {
         let mut chain=root().certificates.unwrap();
-        chain.keys[0].key.key_id=parent_id.clone();
-        chain.keys[0].key.parent_revocation_ids=vec![revoked];
-        let mut child=chain.keys[0].clone();child.key.key_id="child-key".into();
+        let parent=chain.keys.first_mut().unwrap();
+        parent.key.key_id=parent_id.clone();
+        parent.key.parent_revocation_ids=vec![revoked];
+        let mut child=parent.clone();child.key.key_id="child-key".into();
         child.key.parent_key_id=Some(parent_id.clone());child.key.validity.expires_at_unix_seconds=expiry;
         chain.keys.push(child);
         let wire:CertificateChainProto=chain.clone().into();
         prop_assert_eq!(CertificateChain::try_from(wire),Ok(chain.clone()));
-        chain.keys[1].key.parent_key_id=Some(wrong_id.clone());
+        chain.keys.last_mut().unwrap().key.parent_key_id=Some(wrong_id.clone());
         prop_assert_eq!(CertificateChain::try_from(CertificateChainProto::from(chain.clone())).is_ok(),wrong_id==parent_id);
-        chain.keys[1].key.parent_key_id=Some(parent_id);
-        chain.keys[1].key.parent_revocation_ids.clear();
+        let child=chain.keys.last_mut().unwrap();
+        child.key.parent_key_id=Some(parent_id);
+        child.key.parent_revocation_ids.clear();
         prop_assert!(CertificateChain::try_from(CertificateChainProto::from(chain)).is_err());
     }
     #[test]
@@ -213,7 +221,7 @@ proptest! {
         let resource=ResourceGrant {resource:ResourcePattern {name:"execution:/".into(),prefix:true},actions:vec!["execution/invoke".into()]};
         let set=GrantSet {grants:vec![
             Grant {kind:GrantKind::Resource(resource.clone())},
-            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource.clone(),cpu_millis:cpu,memory_bytes:memory})},
+            Grant {kind:GrantKind::Execution(ExecutionGrant {grant:resource,cpu_millis:cpu,memory_bytes:memory})},
             Grant {kind:GrantKind::Billing(BillingGrant {grant:ResourceGrant {resource:ResourcePattern {name:"billing:/".into(),prefix:true},actions:vec!["billing/read".into()]},spend_micros:spend})},
             Grant {kind:GrantKind::WebsocketConnect(WebsocketConnectGrant {rules:vec![SocketHostRule {host:"example.com".into(),ports:vec![SocketPortRange {first:443,last:443}]}]})} ]};
         let bytes=GrantSetProto::from(set.clone()).encode_to_vec();

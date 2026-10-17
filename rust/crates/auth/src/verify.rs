@@ -114,9 +114,6 @@ pub fn verify(
     if envelope.version != VERSION {
         return Err(VerifyError::Version(envelope.version));
     }
-    if envelope.blocks.is_empty() {
-        return Err(VerifyError::Malformed);
-    }
     let wire = envelope
         .blocks
         .iter()
@@ -124,9 +121,9 @@ pub fn verify(
             BlockProto::decode(signed.payload.as_slice()).map_err(|_| VerifyError::Malformed)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let certificates = wire[0]
-        .certificates
-        .as_ref()
+    let certificates = wire
+        .first()
+        .and_then(|block| block.certificates.as_ref())
         .ok_or(VerifyError::Malformed)?;
     let birth = certificates.birth.as_ref().ok_or(VerifyError::Malformed)?;
     let claims = birth.birth.as_ref().ok_or(VerifyError::Malformed)?;
@@ -174,42 +171,10 @@ pub fn verify(
         .last()
         .and_then(|cert| cert.key.as_ref())
         .ok_or(VerifyError::Malformed)?;
-    let mut signer = public_key(&leaf.public_key)?;
-    let mut previous = [0; 32];
-    let mut ids = Vec::with_capacity(wire.len());
-    for (index, (block, signed)) in wire.iter().zip(&envelope.blocks).enumerate() {
-        block_message(&mut message, index as u64, &previous, &signed.payload);
-        verify_signature(&signer, &message, &signed.signature)?;
-        previous = block_id(&message, &signed.signature);
-        ids.push(previous);
-        signer = public_key(&block.next_public_key)?;
-        if !seen.insert(signer.to_bytes()) {
-            return Err(VerifyError::RepeatedKey);
-        }
-        if block.encode_to_vec() != signed.payload {
-            return Err(VerifyError::Malformed);
-        }
-    }
-    let proof = match envelope.proof {
-        wire::Proof::Secret(secret) => {
-            let seed: &[u8; 32] = secret
-                .as_slice()
-                .try_into()
-                .map_err(|_| VerifyError::Malformed)?;
-            let key = SigningKey::from_bytes(seed);
-            if key.verifying_key() != signer {
-                return Err(VerifyError::Signature);
-            }
-            Proof::Append(key)
-        }
-        wire::Proof::Sealed(signature) => {
-            message.clear();
-            message.extend_from_slice(SEAL_DOMAIN);
-            message.extend_from_slice(&previous);
-            verify_signature(&signer, &message, &signature)?;
-            Proof::Sealed(signature)
-        }
-    };
+    let leaf = public_key(&leaf.public_key)?;
+    let (signer, ids) = verify_blocks(&wire, &envelope.blocks, leaf, &mut seen, &mut message)?;
+    let tip = ids.last().copied().unwrap_or([0; 32]);
+    let proof = verify_proof(envelope.proof, &signer, &tip, &mut message)?;
     // No expensive claims/subset conversion happens until every signature is valid.
     let blocks = wire
         .into_iter()
@@ -243,10 +208,71 @@ pub fn verify(
     Ok(verified)
 }
 
+/// Verifies each block's signature, starting from the leaf certificate key,
+/// and returns the tip's next signer with the oldest-to-tip block identities.
+fn verify_blocks(
+    wire: &[BlockProto],
+    signed_blocks: &[SignedBlockProto],
+    mut signer: ed25519_dalek::VerifyingKey,
+    seen: &mut HashSet<[u8; 32]>,
+    message: &mut Vec<u8>,
+) -> Result<(ed25519_dalek::VerifyingKey, Vec<BlockId>), VerifyError> {
+    let mut previous = [0; 32];
+    let mut ids = Vec::with_capacity(wire.len());
+    for (index, (block, signed)) in wire.iter().zip(signed_blocks).enumerate() {
+        block_message(message, index as u64, &previous, &signed.payload);
+        verify_signature(&signer, message, &signed.signature)?;
+        previous = block_id(message, &signed.signature);
+        ids.push(previous);
+        signer = public_key(&block.next_public_key)?;
+        if !seen.insert(signer.to_bytes()) {
+            return Err(VerifyError::RepeatedKey);
+        }
+        if block.encode_to_vec() != signed.payload {
+            return Err(VerifyError::Malformed);
+        }
+    }
+    Ok((signer, ids))
+}
+
+/// Checks that the proof belongs to the tip signer: its secret, or its seal
+/// over the tip block identity.
+fn verify_proof(
+    proof: wire::Proof,
+    signer: &ed25519_dalek::VerifyingKey,
+    tip: &BlockId,
+    message: &mut Vec<u8>,
+) -> Result<Proof, VerifyError> {
+    match proof {
+        wire::Proof::Secret(secret) => {
+            let seed: &[u8; 32] = secret
+                .as_slice()
+                .try_into()
+                .map_err(|_| VerifyError::Malformed)?;
+            let key = SigningKey::from_bytes(seed);
+            if key.verifying_key() != *signer {
+                return Err(VerifyError::Signature);
+            }
+            Ok(Proof::Append(key))
+        }
+        wire::Proof::Sealed(signature) => {
+            message.clear();
+            message.extend_from_slice(SEAL_DOMAIN);
+            message.extend_from_slice(tip);
+            verify_signature(signer, message, &signature)?;
+            Ok(Proof::Sealed(signature))
+        }
+    }
+}
+
 impl VerifiedCapability {
     /// Borrow effective principal, conjunctive grant/filter sets and numeric minima.
     pub fn effective(&self) -> Effective<'_> {
         Effective { capability: self }
+    }
+    /// The issuer certificate chain carried by the root block.
+    fn root_certificates(&self) -> Option<&CertificateChain> {
+        self.blocks.first()?.certificates.as_ref()
     }
     /// Oldest-to-tip revocation identities; revoking any entry invalidates descendants.
     pub fn block_ids(&self) -> &[BlockId] {
@@ -258,10 +284,7 @@ impl VerifiedCapability {
         if now_unix_seconds < self.not_before || now_unix_seconds >= self.expires_at {
             return Err(VerifyError::Time);
         }
-        let certificates = self.blocks[0]
-            .certificates
-            .as_ref()
-            .ok_or(VerifyError::Malformed)?;
+        let certificates = self.root_certificates().ok_or(VerifyError::Malformed)?;
         let id = &certificates.birth.birth.account_id;
         let environments = trust.environment_keys(&certificates.birth.birth.environment)?;
         if !environments.contains(&self.environment_issuer) {
