@@ -230,6 +230,7 @@ impl ClientViews {
     pub fn selections(&self) -> impl Iterator<Item = (&([u8; 32], [u8; 32]), &FileQueryView)> {
         self.agents.values().flat_map(|agent| agent.files.iter())
     }
+    /// Borrows the agent-owned selection at an exact volume/query identity.
     pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
         self.agents
             .values()
