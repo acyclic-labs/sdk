@@ -90,15 +90,16 @@ proptest! {
         use acyclic_test_support::differential::observe;
         for count in [n,2*n] {
             for native in [false,true] {
-                let ((output, receipt), trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
+                let ((output, receipt, remaining_custody), trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     let measured = crate::test_support::accounted::accounted(native,32*1024*1024,false,|io| {
                         deduplicate_reads(&mut messages,Some(io)).unwrap();
                     }).unwrap();
-                    (messages,measured.1)
+                    (messages,measured.1,measured.5)
                 }));
                 let steps:u64 = trace.iter().filter(|(name,_)|*name=="instruction-step").map(|(_,items)|items).sum();
                 prop_assert_eq!(steps,144*count as u64-28);
                 prop_assert!(receipt.items_examined >= steps);
+                prop_assert_eq!(remaining_custody,if native { acyclic_fs::NativeMaterializationWork::accounting_state_bytes() } else { 0 });
                 // Independent baseline constructs the expected projection, never
                 // calling the candidate decoder or sharing its retained state.
                 let (baseline, baseline_trace): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| {
@@ -114,7 +115,15 @@ proptest! {
                     }
                     messages
                 });
-                prop_assert_eq!(trace.iter().filter(|(name,_)|*name!="instruction-step").copied().collect::<Vec<_>>(),baseline_trace);
+                // Compare the complete authentication observer trace. The independent
+                // semantic baseline has no native custody implementation; check
+                // that protocol separately, rather than fabricating its events.
+                prop_assert_eq!(trace.iter().filter(|(name,_)|*name=="verify").copied().collect::<Vec<_>>(),baseline_trace);
+                let custody:Vec<_>=trace.iter().filter(|(name,_)|name.starts_with("custody-")).map(|(name,_)|*name).collect();
+                let expected_custody=if native {
+                    ["custody-take","custody-absorb","custody-transfer","custody-absorb"].repeat(count)
+                } else { Vec::new() };
+                prop_assert_eq!(custody,expected_custody);
                 prop_assert_eq!(serde_json::to_vec(&output).unwrap(),serde_json::to_vec(&baseline).unwrap());
                 let (_, broken): (_,Vec<(&'static str,u64)>) = observe(||fixture(count), |mut messages| super::instruction_index::traced(|| {
                     // Deliberately restore a whole-history visit before each result.
