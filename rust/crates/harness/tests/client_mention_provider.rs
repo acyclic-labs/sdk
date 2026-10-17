@@ -1,0 +1,215 @@
+//! Composer -> pin -> real Rust provider projection -> scripted model response.
+use super::{CommandCatalog, CommandResolution, Fixture, Result};
+use acyclic_harness::{
+    Error, OperationId,
+    context::ModelContextCapacity,
+    conversation::Limits,
+    model::{
+        ModelContent, ModelContentPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider,
+        ModelRequest, ModelRole, PreparedModelRequest,
+    },
+};
+use acyclic_harness_providers::{
+    Adapter, Authentication, Credentials, HttpRequest, HttpResponse, HttpTransport, ModelFeatures,
+    ModelSpec, ProviderSpec, Registry, TokenCounterSpec, TokenCountField,
+};
+use acyclic_stream::BoxProviderFuture;
+use futures::TryStreamExt as _;
+use serde_json::Value;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, mpsc},
+};
+
+struct Script(mpsc::Sender<HttpRequest>);
+impl HttpTransport for Script {
+    fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        Box::pin(async move {
+            self.0.send(request).expect("request receiver retained");
+            Ok(HttpResponse {
+                status: 200,
+                body: Box::pin(futures::stream::iter([Ok(bytes::Bytes::from_static(concat!(
+                    "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"run\",\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n\n"
+                ).as_bytes()))])),
+            })
+        })
+    }
+}
+
+async fn scenario(
+    body: &[u8],
+    staged: Option<&str>,
+    text: bool,
+    drop_attachment: bool,
+) -> Result<()> {
+    let fixture = Fixture::new(&[]).await?;
+    if let Some(media) = staged {
+        fixture
+            .put_file("src/lib.rs", body, media, "source")
+            .await?;
+    } else {
+        fixture
+            .put_workspace_file("src/lib.rs", body, "source")
+            .await?;
+    }
+    let page = fixture
+        .reader
+        .list_private_directory(&fixture.root.volume, "", "", None, None, 16, None)?
+        .await?;
+    let resolved = CommandCatalog::builtins()?
+        .resolve_input(
+            "Inspect @src/lib.rs @src/lib.rs",
+            &fixture.root,
+            &page.generation,
+            fixture.reader.as_ref(),
+            4096,
+        )
+        .await?;
+    let CommandResolution::Prompt { mentions, .. } = &resolved else {
+        panic!("prompt");
+    };
+    assert_eq!(mentions.len(), 2);
+    let pinned = mentions[0].file.clone();
+    assert_eq!(mentions[1].file, pinned);
+    assert_eq!(
+        pinned.descriptor().media_type(),
+        if text {
+            "text/plain"
+        } else {
+            "application/octet-stream"
+        }
+    );
+    pinned.descriptor().verify(body, &mut None)?;
+    let mut content = resolved.into_model_input()?;
+    let ModelContent::Parts(parts) = &mut content else {
+        panic!("file parts");
+    };
+    assert_eq!(parts.len(), 2, "duplicate mentions attach once");
+    assert!(matches!(&parts[1], ModelContentPart::File { file, .. } if file == &pinned));
+    if drop_attachment {
+        parts.pop();
+    }
+    // A newer, invalid body at head must never replace the original pinned file.
+    fixture
+        .put_workspace_file("src/lib.rs", b"changed\xff", "later-head")
+        .await?;
+    let (sent, received) = mpsc::channel();
+    let mut registry = Registry::with_transport(
+        Credentials::explicit(BTreeMap::new()),
+        Arc::new(Script(sent)),
+    )
+    .with_content(fixture.reader.clone(), 4096);
+    registry.register(
+        "scripted".into(),
+        ProviderSpec {
+            adapter: Adapter::Responses,
+            authentication: Authentication::Optional,
+            base_url: "https://scripted.invalid/v1".into(),
+            headers: BTreeMap::new(),
+            models: BTreeMap::from([(
+                "model".into(),
+                ModelSpec {
+                    capacity: ModelContextCapacity {
+                        context_tokens: 8192,
+                        output_tokens: 64,
+                    },
+                    features: ModelFeatures {
+                        tools: false,
+                        images: false,
+                    },
+                },
+            )]),
+            token_counter: Some(TokenCounterSpec {
+                path: "count_tokens".into(), adapter: Adapter::Responses,
+                response_field: TokenCountField::InputTokens, framing_tokens: 0,
+            }),
+            max_event_bytes: 4096,
+        },
+    )?;
+    let provider = registry.resolve("scripted/model")?;
+    let request = PreparedModelRequest::prepare(
+        ModelRequest {
+            model: provider.model().clone(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content,
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(64),
+        },
+        Limits::default(),
+        None,
+    )?;
+    let dispatch = ModelDispatch {
+        operation_id: OperationId::new(),
+        step: 0,
+        request_digest: request.request_digest(),
+    };
+    let result = provider
+        .generate(request, dispatch)
+        .try_collect::<Vec<_>>()
+        .await;
+    if text {
+        let events = result.expect("verified workspace source must reach the Rust provider");
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, ModelEvent::Content { delta } if delta == "ok"))
+        );
+        assert!(matches!(events.last(), Some(ModelEvent::Completed { .. })));
+        let request = received.try_recv().expect("provider dispatched");
+        let wire: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(
+            wire["input"][1]["content"][0]["type"], "input_text",
+            "provider must receive pinned source as text"
+        );
+        assert_eq!(
+            wire["input"][1]["content"][0]["text"].as_str(),
+            Some(std::str::from_utf8(body).unwrap()),
+            "provider must receive pinned source as text"
+        );
+        assert!(received.try_recv().is_err(), "one provider dispatch");
+    } else {
+        assert!(
+            matches!(result, Err(Error::Unsupported(_))),
+            "binary content must be rejected before provider dispatch: {result:?}"
+        );
+        assert!(
+            received.try_recv().is_err(),
+            "binary content cannot dispatch"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn composer_mentions_reach_the_rust_provider_with_pinned_utf8_and_reject_binary() -> Result<()>
+{
+    for (body, staged, text) in [
+        (
+            "pub fn answer() -> &'static str { \"\u{8abf}\u{67fb}\" }\n".as_bytes(),
+            None,
+            true,
+        ),
+        (b"\0valid UTF-8 but binary".as_slice(), None, false),
+        (b"invalid\xff".as_slice(), None, false),
+        (
+            b"declared binary".as_slice(),
+            Some("application/octet-stream"),
+            false,
+        ),
+        (b"declared text".as_slice(), Some("text/plain"), true),
+    ] {
+        scenario(body, staged, text, false).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[should_panic(expected = "provider must receive pinned source as text")]
+async fn negative_control_prompt_only_dispatch_fails_the_same_provider_scenario() {
+    scenario(b"pub fn answer() {}", None, true, true)
+        .await
+        .unwrap();
+}
