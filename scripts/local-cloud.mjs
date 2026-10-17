@@ -117,6 +117,15 @@ export function verdict(gate, result) {
   return { passed: true };
 }
 
+/**
+ * A child's stdio with stdout and stderr on one descriptor of `file`. Two
+ * separate opens keep two file offsets, so each stream overwrites the other.
+ */
+export function logStdio(file) {
+  const fd = fs.openSync(file, "w");
+  return ["ignore", fd, fd];
+}
+
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
@@ -127,9 +136,8 @@ async function hook(run) {
   const out = process.env.ACYCLIC_LOCAL_CLOUD_OUT, test = JSON.parse(process.env.ACYCLIC_LOCAL_CLOUD_TEST);
   const file = path.join(out, "endpoints.json");
   fs.writeFileSync(file, JSON.stringify(endpoints(readJson(path.join(run, "topology.json"))), null, 2), { mode: 0o600 });
-  const log = fs.openSync(path.join(out, "test.log"), "w");
   const started = performance.now();
-  const child = spawn(test[0], test.slice(1), { stdio: ["ignore", log, log], env: { ...process.env, ACYCLIC_LOCAL_CLOUD: file } });
+  const child = spawn(test[0], test.slice(1), { stdio: logStdio(path.join(out, "test.log")), env: { ...process.env, ACYCLIC_LOCAL_CLOUD: file } });
   const [code, signal] = await new Promise((resolve, reject) => {
     child.once("error", reject);
     child.once("close", (status, killed) => resolve([status, killed]));
@@ -199,7 +207,7 @@ async function main(options) {
   // The gate builds its heap cgroups inside its own delegated, memory-bounded scope.
   const gate = spawn("systemd-run", ["--scope", "-p", "Delegate=yes", "-p", "MemoryMax=16G", "--",
     process.execPath, path.join(cloud, "ops/local/e2e.mjs"), "--identity-only"], {
-    cwd: cloud, stdio: ["ignore", fs.openSync(gateLog, "w"), fs.openSync(gateLog, "a")],
+    cwd: cloud, stdio: logStdio(gateLog),
     env: { ...process.env, CLOUDCTL_STATE_DIR: state, CLOUD_CACHE_DIR: cache, CLOUD_E2E_BINARIES: bin, ACYCLIC_LOCAL_CLOUD_OUT: options.out, ACYCLIC_LOCAL_CLOUD_TEST: JSON.stringify(options.test) },
   });
   const stop = () => gate.kill("SIGTERM");

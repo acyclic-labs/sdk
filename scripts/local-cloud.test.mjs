@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { dependencyDirectories, endpoints, parseArgs, requireStateDir, verdict, within, wrapperPath, wrapperSource } from "./local-cloud.mjs";
+import { spawnSync } from "node:child_process";
+import { dependencyDirectories, endpoints, logStdio, parseArgs, requireStateDir, verdict, within, wrapperPath, wrapperSource } from "./local-cloud.mjs";
 
 const topology = {
   ca_file: "/dev/shm/cloud-e2e-x/ca.pem",
@@ -81,4 +82,27 @@ test("the wrapper hooks only the gate's last command and embeds only plain paths
   assert.equal(wrapperPath("/work/target/debug/cloud-e2e"), "/work/target/debug/cloud-e2e");
   assert.throws(() => wrapperPath('/tmp/a"b'), /unsupported/);
   assert.throws(() => wrapperPath("relative/cloud-e2e"), /unsupported/);
+});
+
+test("one log descriptor keeps interleaved stdout and stderr lines", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "local-cloud-log-"));
+  const expected = "o0\ne0\no1\ne1\no2\ne2\no3\ne3\n";
+  // No double quotes or backslashes: Windows argument quoting would rewrite them.
+  const writer = "const fs = require('node:fs'), end = String.fromCharCode(10); for (let i = 0; i < 4; i++) { fs.writeSync(1, 'o' + i + end); fs.writeSync(2, 'e' + i + end); }";
+  const run = (stdio) => {
+    const result = spawnSync(process.execPath, ["-e", writer], { stdio });
+    for (const fd of new Set(stdio.slice(1))) fs.closeSync(fd);
+    assert.equal(result.status, 0);
+  };
+  try {
+    const shared = path.join(dir, "shared.log");
+    run(logStdio(shared));
+    assert.equal(fs.readFileSync(shared, "utf8"), expected);
+    // Negative control: two opens of one file lose lines to overwrites.
+    const split = path.join(dir, "split.log");
+    run(["ignore", fs.openSync(split, "w"), fs.openSync(split, "a")]);
+    assert.notEqual(fs.readFileSync(split, "utf8"), expected);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
