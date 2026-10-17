@@ -17,6 +17,33 @@ pub(super) fn admission_error(value: FileClientError) -> JsValue {
     to_js(&value).unwrap_or_else(|error| error)
 }
 
+// Capture the brand-checking getters once; caller-owned properties cannot
+// describe the storage retained by a genuine typed-array view.
+#[wasm_bindgen(inline_js = "
+const getter = (prototype, name) => {
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+    return descriptor && Function.prototype.call.bind(descriptor.get);
+};
+const backing = getter(Object.getPrototypeOf(Uint8Array.prototype), 'buffer');
+const arrayMaximum = getter(ArrayBuffer.prototype, 'maxByteLength')
+    ?? getter(ArrayBuffer.prototype, 'byteLength');
+const sharedMaximum = typeof SharedArrayBuffer === 'undefined' ? undefined
+    : getter(SharedArrayBuffer.prototype, 'maxByteLength')
+        ?? getter(SharedArrayBuffer.prototype, 'byteLength');
+export function retainedBufferBytes(view) {
+    const buffer = backing(view);
+    try { return arrayMaximum(buffer); }
+    catch (error) {
+        if (!sharedMaximum) throw error;
+        return sharedMaximum(buffer);
+    }
+}
+")]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = retainedBufferBytes)]
+    fn retained_buffer_bytes(view: &js_sys::Uint8Array) -> Result<f64, JsValue>;
+}
+
 /// One ordered Rust owner of private outbox and remote task publication.
 #[wasm_bindgen]
 pub struct WasmFileClient {
@@ -62,11 +89,10 @@ impl WasmFileClient {
         }
         // Reserve synchronously, before any future or mailbox waiter retains the buffer.
         // A small view still retains its entire backing buffer, including permitted growth.
-        let buffer = bytes.buffer();
-        let retained = js_sys::Reflect::get(&buffer, &JsValue::from_str("maxByteLength"))
-            .ok()
-            .and_then(|value| value.as_f64())
-            .unwrap_or(f64::from(buffer.byte_length())) as u64;
+        let retained = match retained_buffer_bytes(&bytes) {
+            Ok(bytes) => bytes as u64,
+            Err(failure) => return js_sys::Promise::reject(&failure),
+        };
         let reservation = match self.waiting.reserve(retained) {
             Ok(reservation) => reservation,
             Err(failure) => return js_sys::Promise::reject(&admission_error(failure)),

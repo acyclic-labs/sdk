@@ -44,6 +44,40 @@ test(`waiting quotas bound the backing buffer, including growth: ${resizable}`, 
 });
 }
 
+test("waiting byte admission ignores shadowed buffer properties across shrinking backing stores", async () => {
+  const stream = new WasmStream();
+  const outbox = await TaskVolume.create(stream, "client/files");
+  const target = await TaskVolume.create(stream, "agent/files");
+  const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
+  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
+  const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
+  let getterCalls = 0;
+  const hidden = { get: () => { getterCalls++; return 0; } };
+  try {
+    await fc.assert(fc.asyncProperty(
+      fc.integer({ min: payload.length + 1, max: 65536 }),
+      async maximum => {
+        for (const shared of [false, true]) for (const resizable of [false, true]) {
+        const Constructor = shared ? SharedArrayBuffer : ArrayBuffer;
+        const options = { maxByteLength: maximum };
+        const buffer = resizable ? Reflect.construct(Constructor, [payload.length, options])
+          : Reflect.construct(Constructor, [maximum]);
+        const bytes = new Uint8Array(buffer, 0, payload.length);
+        bytes.set(payload);
+        for (const name of ["byteLength", "maxByteLength"]) Object.defineProperty(buffer, name, hidden);
+        // The view can also shadow its backing-buffer accessor.
+        Object.defineProperty(bytes, "buffer", { get: () => { getterCalls++; return new ArrayBuffer(0); } });
+        await expect(client.enqueue(key, bytes)).rejects.toEqual({ kind: "ByteQuota", detail: { limit: BigInt(payload.length) } });
+        expect(client.pending()).toBe(0);
+        }
+      },
+    ), { numRuns: 32 });
+    expect(getterCalls).toBe(0);
+  } finally {
+    client.close(); client.free(); outbox.free(); target.free(); stream.free();
+  }
+});
+
 for (const quota of ["CommandQuota", "ByteQuota"] as const) {
 test(`waiting ${quota} is reserved before futures retain caller buffers`, async () => {
   const stream = new WasmStream();
