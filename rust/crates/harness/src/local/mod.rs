@@ -289,7 +289,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            Ok(Self {
+            let mut local = Self {
                 files,
                 runtime,
                 task_files,
@@ -315,7 +315,14 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-            })
+            };
+            if let Some(provider) = local
+                .provider
+                .bind_content(local.context_reader()?, local.limits.file_bytes)
+            {
+                local.provider = provider;
+            }
+            Ok(local)
         })
     }
 
