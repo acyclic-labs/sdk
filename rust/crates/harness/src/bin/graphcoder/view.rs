@@ -54,7 +54,7 @@ pub async fn run(
             )
             .await?;
         client.project_commands(&commands, &authority)?;
-        renderer.update(client.views(), &authority);
+        renderer.update_files(&client, &authority);
         if commands.exit_requested()? {
             return Ok(());
         }
