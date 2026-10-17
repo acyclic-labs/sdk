@@ -1,3 +1,4 @@
+#[cfg(any(windows, test, feature = "native-watch"))]
 use super::*;
 
 #[cfg(windows)]
