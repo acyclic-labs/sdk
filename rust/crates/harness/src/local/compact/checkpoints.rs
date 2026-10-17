@@ -347,56 +347,77 @@ impl LocalHarness {
         target: TaskId,
         checkpoint: &SummaryCheckpoint,
     ) -> Result<(FileKey, bool)> {
-        if checkpoint.boundary.task != target {
-            return Err(Error::Conflict(
-                "summary belongs to another conversation".into(),
-            ));
-        }
-        let key = checkpoint_key(target, checkpoint.boundary.through.position, operation)?;
-        let bytes = serde_json::to_vec(checkpoint).map_err(storage)?;
-        if bytes.len() as u64 > self.limits.file_bytes {
-            return Err(Error::Invalid("checkpoint exceeds file bound".into()));
-        }
-        loop {
-            let snapshot = self
-                .task_files
-                .inner
-                .snapshot(&Query::File(key.clone()), 1)
-                .await
-                .map_err(storage)?;
-            if let Some(file) = snapshot.files.first() {
-                if file.bytes.as_ref() != bytes {
-                    return Err(Error::Conflict(
-                        "summary checkpoint identity changed".into(),
-                    ));
-                }
-                break;
-            }
-            match self
-                .task_files
-                .inner
-                .create(
-                    snapshot.generation,
-                    &FileValue::new(key.clone(), bytes.clone()),
-                )
-                .await
-            {
-                Ok(_) => break,
-                Err(crate::task_volume::Error::Conflict(_)) => continue,
-                Err(error) => return Err(storage(error)),
-            }
-        }
-        let selected = select::<_, true>(
+        publish(
             &self.task_files.inner,
+            operation,
             target,
             checkpoint,
-            &key,
             self.limits.file_bytes,
         )
-        .await?;
-        Ok((key, selected))
+        .await
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Fault switch: treat a retained checkpoint file as completed publication,
+    /// skipping the selection write that follows it.
+    static RETAINED_MEANS_SELECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Two durable writes: the immutable checkpoint file, then its selection. A
+// replay after either cut reruns both steps; neither implies the other.
+pub(in crate::local) async fn publish<P: StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    operation: OperationId,
+    target: TaskId,
+    checkpoint: &SummaryCheckpoint,
+    maximum: u64,
+) -> Result<(FileKey, bool)> {
+    if checkpoint.boundary.task != target {
+        return Err(Error::Conflict(
+            "summary belongs to another conversation".into(),
+        ));
+    }
+    let key = checkpoint_key(target, checkpoint.boundary.through.position, operation)?;
+    let bytes = serde_json::to_vec(checkpoint).map_err(storage)?;
+    if bytes.len() as u64 > maximum {
+        return Err(Error::Invalid("checkpoint exceeds file bound".into()));
+    }
+    loop {
+        let snapshot = volume
+            .snapshot(&Query::File(key.clone()), 1)
+            .await
+            .map_err(storage)?;
+        if let Some(file) = snapshot.files.first() {
+            if file.bytes.as_ref() != bytes {
+                return Err(Error::Conflict(
+                    "summary checkpoint identity changed".into(),
+                ));
+            }
+            #[cfg(test)]
+            if RETAINED_MEANS_SELECTED.with(std::cell::Cell::get) {
+                return Ok((key, true));
+            }
+            break;
+        }
+        match volume
+            .create(
+                snapshot.generation,
+                &FileValue::new(key.clone(), bytes.clone()),
+            )
+            .await
+        {
+            Ok(_) => break,
+            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(error) => return Err(storage(error)),
+        }
+    }
+    let selected = select::<_, true>(volume, target, checkpoint, &key, maximum).await?;
+    Ok((key, selected))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod crash_cut_tests;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;

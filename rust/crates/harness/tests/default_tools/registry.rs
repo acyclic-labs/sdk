@@ -63,11 +63,11 @@ proptest! {
     // subset of builtin names and never synthesizes registrations or grants.
     #[test]
     fn registry_replacement_preserves_selections_with_any_bindings(
-        names in proptest::collection::btree_set(0usize..5, 0..=5),
+        names in proptest::collection::btree_set(0usize..9, 0..=9),
         volume in any::<bool>(), workspace in any::<bool>(), hidden in any::<bool>(),
         revision in 1u8..=2, description in ".{0,32}",
     ) {
-        let builtins = ["bash", "fs", "read", "write", "edit"];
+        let builtins = ["bash", "fs", "read", "write", "edit", "spawn", "send", "wait", "archive"];
         let mut registry = ToolRegistry::default();
         for &index in &names {
             for version in 1..=2 {
@@ -124,7 +124,9 @@ fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
 #[test]
 fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
     let defaults = crate::tools::defaults()?;
-    let names = ["bash", "fs", "read", "write", "edit"];
+    let names = [
+        "bash", "fs", "read", "write", "edit", "spawn", "send", "wait", "archive",
+    ];
     for name in names {
         assert_eq!(
             defaults
@@ -244,6 +246,10 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
                 ("read", volume),
                 ("write", volume),
                 ("edit", volume),
+                ("spawn", workspace),
+                ("send", workspace),
+                ("wait", workspace),
+                ("archive", workspace),
             ] {
                 assert_eq!(harness.runtime().tool(name).is_ok(), available);
                 assert_eq!(
@@ -265,7 +271,9 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
         .agent_loop(Arc::new(DelegatingLoop))
         .build()?;
     assert_eq!(harness.runtime().tool("read")?.name, "read");
-    for name in ["bash", "fs", "write", "edit"] {
+    for name in [
+        "bash", "fs", "write", "edit", "spawn", "send", "wait", "archive",
+    ] {
         assert!(matches!(
             harness.runtime().tool(name),
             Err(Error::NotFound(_))
@@ -303,7 +311,7 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
     assert!(combined.get("example.echo", Some("2"), None)?.is_some());
-    assert_eq!(combined.definitions(None)?.len(), 5);
+    assert_eq!(combined.definitions(None)?.len(), 9);
     combined.select_model_version("example.echo", "2")?;
     assert_eq!(
         combined

@@ -318,6 +318,7 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
             .is_pending()
     );
     assert_eq!(observer.memory.load(Ordering::Acquire), prepared);
+    // SAFETY: F_GETFD only queries the descriptor table entry.
     assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
     release.send(()).map_err(io::Error::other)?;
     worker

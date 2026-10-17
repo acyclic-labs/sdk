@@ -5,7 +5,10 @@ use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/src/tools/command.rs"]
 mod command;
-use command::{parse_command, parse_fs_command};
+#[path = "../../harness/src/tools/fs_command.rs"]
+mod fs_command;
+use command::parse_command;
+use fs_command::parse_fs_command;
 
 fuzz_target!(|input: &str| {
     if let Ok(arguments) = parse_command(input) {
@@ -24,8 +27,8 @@ fuzz_target!(|input: &str| {
         let restored = parse_command(&encoded).unwrap();
         assert_eq!(restored, arguments);
         assert_eq!(
-            command::agent_diff(&restored),
-            command::agent_diff(&arguments)
+            fs_command::agent_diff(&restored),
+            fs_command::agent_diff(&arguments)
         );
     }
     if let Ok(parsed) = parse_fs_command(input) {

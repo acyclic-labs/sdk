@@ -30,6 +30,7 @@ impl Default for ThresholdCompaction {
 impl ThresholdCompaction {
     /// Keeps at least half the capacity after fixed overhead for input, then
     /// splits that input between recent context and mandatory content/summary.
+    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
         let available = capacity

@@ -7,7 +7,7 @@ use futures::StreamExt as _;
 use std::collections::BTreeMap;
 
 /// A logical materialized file whose content is a sequence of shared segment slices.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HeadFile {
     /// Status, tool, plan, or derived `turns/<n>/{text,reasoning}.md` location.
     pub key: FileKey,
@@ -24,6 +24,7 @@ pub struct HeadFile {
 }
 
 /// Materialized files at one cut, usable for a tier transition followed from `cursor`.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HeadSnapshot {
     /// Latest-value ordinary files plus materialized assistant text heads.
     pub files: Vec<HeadFile>,
@@ -166,7 +167,10 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         if index.commit.as_bytes() != &cursor.commit {
             return Err(Error::ResetRequired);
         }
-        let files = if matches!(query, Query::TaskView { .. } | Query::TaskOverviews) {
+        let files = if matches!(
+            query,
+            Query::TaskView { .. } | Query::TaskSession { .. } | Query::TaskOverviews
+        ) {
             super::recent::snapshot(&index, query, maximum_files)?
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?

@@ -8,9 +8,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<FileRangeRead, FsError> {
-        self.reader
-            .read_record_range(self.record, range, budget, cancellation)
-            .await
+        let mut accounting = budget.accounting(cancellation);
+        let result = self
+            .reader
+            .read_range_record(self.record, range, &mut accounting, cancellation)
+            .await;
+        budget.finish(result, &accounting)
     }
 
     /// Reads opaque symbolic-link target bytes without another namespace lookup.
@@ -26,21 +29,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Reads one authenticated record's range, preserving intrinsic byte custody.
-    pub async fn read_record_range<W: FsWork>(
-        &self,
-        record: FileRecord,
-        range: ByteRange,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<FileRangeRead, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = self
-            .read_range_record(record, range, &mut accounting, cancellation)
-            .await;
-        budget.finish(result, &accounting)
-    }
-
     pub(super) async fn read_range_record(
         &self,
         record: FileRecord,

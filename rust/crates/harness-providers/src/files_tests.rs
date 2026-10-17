@@ -119,6 +119,36 @@ fn with_parts(
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn fix_live_composition_reader_resolves_exact_file_bytes(chars in prop::collection::vec(any::<char>(), 0..64)) {
+        futures::executor::block_on(async {
+            let text: String = chars.into_iter().collect();
+            let (provider, script) = provider(Adapter::Responses, 200);
+            let request = with_parts(&provider, vec![ModelContentPart::File {
+                file: file(text.as_bytes(), "text/plain").unwrap(),
+                policy: FileProjectionPolicy::BoundedFull,
+            }]).unwrap();
+            let dispatch = ModelDispatch { request_digest: request.request_digest(), ..parser_dispatch() };
+            // Negative control: the original unbound composition cannot issue HTTP.
+            let error = provider.generate(request.clone(), dispatch).try_collect::<Vec<_>>().await.unwrap_err();
+            assert!(error.to_string().contains("model file byte resolution is unavailable"));
+            assert!(script.sent.lock().unwrap().is_empty());
+            let reader = Arc::new(Reader { data: text.as_bytes().to_vec(), reads: AtomicUsize::new(0) });
+            let bound = provider.bind_content(reader.clone(), 4096).unwrap();
+            bound.generate(request, dispatch).try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(reader.reads.load(Ordering::SeqCst), 1);
+            let sent = script.sent.lock().unwrap();
+            let body = crate::json(&sent[0].body).unwrap();
+            let expected = if text.is_empty() { json!([]) } else { json!([
+                {"type":"message","role":"user","content":[{"type":"input_text","text":text}]}
+            ]) };
+            assert_eq!(body["input"], expected);
+        });
+    }
+}
+
+proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn shared_preparation_matches_independent_requests_without_repeated_reads(chars in prop::collection::vec(any::<char>(), 0..96)) {

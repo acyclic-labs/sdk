@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
@@ -14,6 +14,8 @@ pub(crate) struct RawTty {
     file: File,
     original: Termios,
     flags: OFlags,
+    #[cfg(target_vendor = "apple")]
+    readiness: Option<darwin::Readiness>,
 }
 
 impl RawTty {
@@ -26,6 +28,8 @@ impl RawTty {
             file,
             original,
             flags,
+            #[cfg(target_vendor = "apple")]
+            readiness: None,
         };
         if let Err(error) = tty.reapply() {
             let _ = tty.restore();
@@ -65,15 +69,68 @@ impl RawTty {
     }
 
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
-        loop {
-            if Instant::now() >= deadline {
-                return Err(io::ErrorKind::TimedOut.into());
+        write_until(self, bytes, deadline)
+    }
+}
+
+/// Nonblocking device primitives the terminal write loop is built from.
+pub(crate) trait NonblockingWrite {
+    fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize>;
+    /// Return once a write can make progress, or at the deadline.
+    fn wait_writable(&mut self, deadline: Instant) -> io::Result<()>;
+}
+
+/// Retry EINTR at once and wait for writability after EAGAIN: the loop never
+/// sleeps a fixed interval and never spins on a full queue.
+pub(crate) fn write_until(
+    device: &mut impl NonblockingWrite,
+    bytes: &[u8],
+    deadline: Instant,
+) -> io::Result<usize> {
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        match device.try_write(bytes) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                device.wait_writable(deadline)?;
             }
-            match self.file.write(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause(deadline),
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                result => return result,
-            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            result => return result,
+        }
+    }
+}
+
+impl NonblockingWrite for RawTty {
+    fn try_write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
+        self.file.write(bytes)
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+        super::counters::waited();
+        let timeout = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        match poll(
+            &mut [PollFd::new(&self.file, PollFlags::OUT)],
+            Some(&timeout),
+        ) {
+            Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn wait_writable(&mut self, deadline: Instant) -> io::Result<()> {
+        super::counters::waited();
+        if self.readiness.is_none() {
+            self.readiness = Some(darwin::Readiness::register(&self.file)?);
+        }
+        match &mut self.readiness {
+            Some(readiness) => readiness.wait(&self.file, deadline),
+            None => Err(io::ErrorKind::NotConnected.into()),
         }
     }
 }
@@ -90,16 +147,10 @@ impl ProbeIo for RawTty {
         self.flush()
     }
 
-    fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        loop {
-            if Instant::now() >= deadline {
-                return Ok(0);
-            }
-            match self.file.read(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause(deadline),
-                result => return result,
-            }
-        }
+    fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
+        // The lifecycle takes its state lock around this call. Never sleep
+        // while holding it: a pending input read must not starve frame output.
+        self.file.read(bytes)
     }
 }
 
@@ -113,10 +164,72 @@ impl Write for RawTty {
     }
 }
 
-// Nonblocking reads work on /dev/tty on macOS, where poll(2) is unsupported.
-// A single owner and bounded 1 ms waits avoid a reader thread or global lock.
-fn pause(deadline: Instant) {
-    std::thread::sleep(
-        Duration::from_millis(1).min(deadline.saturating_duration_since(Instant::now())),
-    );
+#[cfg(target_vendor = "apple")]
+mod darwin {
+    use acyclic_native_runtime::terminal::Writable;
+    use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
+    use nix::sys::time::TimeSpec;
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsFd, AsRawFd};
+    use std::time::Instant;
+
+    /// Writability of the terminal device, for every descriptor number.
+    /// kqueue serves every terminal but the /dev/tty alias, which it rejects
+    /// with EINVAL; that alias waits in select(2) through its unlimited entry
+    /// point, so no descriptor is left without a working wait. (Darwin's
+    /// poll(2) reports POLLNVAL for terminals.)
+    pub(super) enum Readiness {
+        Kqueue(Kqueue),
+        Select(Writable),
+    }
+
+    fn event(file: &File, flags: EvFlags) -> io::Result<KEvent> {
+        let ident = usize::try_from(file.as_raw_fd()).map_err(|_| io::ErrorKind::InvalidInput)?;
+        Ok(KEvent::new(
+            ident,
+            EventFilter::EVFILT_WRITE,
+            flags,
+            FilterFlag::empty(),
+            0,
+            0,
+        ))
+    }
+
+    impl Readiness {
+        pub(super) fn register(file: &File) -> io::Result<Self> {
+            let queue = Kqueue::new()?;
+            // Level-triggered: a wait returns at once while the queue has room.
+            let zero = *TimeSpec::from_duration(std::time::Duration::ZERO).as_ref();
+            match queue.kevent(&[event(file, EvFlags::EV_ADD)?], &mut [], Some(zero)) {
+                Ok(_) => Ok(Self::Kqueue(queue)),
+                Err(nix::errno::Errno::EINVAL) => Self::select(file),
+                Err(error) => Err(error.into()),
+            }
+        }
+
+        /// The /dev/tty alias's wait; also what tests force on any terminal.
+        pub(super) fn select(file: &File) -> io::Result<Self> {
+            Ok(Self::Select(Writable::new(file.as_fd())?))
+        }
+
+        pub(super) fn wait(&mut self, file: &File, deadline: Instant) -> io::Result<()> {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match self {
+                Self::Kqueue(queue) => {
+                    let mut ready = [event(file, EvFlags::empty())?];
+                    let timeout = *TimeSpec::from_duration(remaining).as_ref();
+                    match queue.kevent(&[], &mut ready, Some(timeout)) {
+                        Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+                        Err(error) => Err(error.into()),
+                    }
+                }
+                Self::Select(writable) => writable.wait(file.as_fd(), remaining),
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "tty_tests.rs"]
+mod tests;

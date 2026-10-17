@@ -6,10 +6,23 @@ use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
 use serde_json::{Value, json};
 use std::{collections::VecDeque, sync::Arc};
+#[path = "session_activity.rs"]
+mod activity;
 #[path = "session_archive.rs"]
 mod archive;
 #[path = "session_confirmation.rs"]
 mod confirmation;
+#[path = "session_consume.rs"]
+mod consumption;
+#[path = "session_init.rs"]
+mod init;
+#[cfg(all(test, acyclic_harness_loom))]
+#[path = "session_init_models.rs"]
+mod init_models;
+#[path = "session_input.rs"]
+mod input;
+#[path = "session_publish.rs"]
+mod publication;
 #[path = "session_view.rs"]
 mod view;
 
@@ -17,11 +30,14 @@ mod view;
 /// are ordinary files in the supplied, already-authorized private/config volume.
 pub struct CommandSession<P: ?Sized> {
     volume: Arc<files::TaskVolume<P>>,
+    writer: Option<Arc<files::TaskFiles<P>>>,
     changes: files::ChangeStream,
     next_change: Option<files::Change>,
     generation: files::Generation,
     files: BTreeMap<files::FileKey, files::FileValue>,
     pending: VecDeque<files::FileValue>,
+    pending_session: usize,
+    pending_tasks: BTreeMap<String, usize>,
     outputs: BTreeMap<u64, files::FileKey>,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
@@ -63,6 +79,27 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         maximum_bytes: u64,
         maximum_files: usize,
     ) -> Result<Self> {
+        Self::open_bound(volume, None, session, maximum_bytes, maximum_files).await
+    }
+
+    /// Open the caller-authorized file binding; execution-owned writes stay denied.
+    pub async fn open_authorized(
+        files: Arc<files::TaskFiles<P>>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
+        let volume = Arc::new(files.inner.reopen().await.map_err(storage)?);
+        Self::open_bound(volume, Some(files), session, maximum_bytes, maximum_files).await
+    }
+
+    async fn open_bound(
+        volume: Arc<files::TaskVolume<P>>,
+        writer: Option<Arc<files::TaskFiles<P>>>,
+        session: uuid::Uuid,
+        maximum_bytes: u64,
+        maximum_files: usize,
+    ) -> Result<Self> {
         if maximum_bytes == 0 || maximum_files == 0 {
             return Err(Error::Invalid("zero command-session bound".into()));
         }
@@ -83,11 +120,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
         let mut client = Self {
             volume,
+            writer,
             changes: observed.changes,
             next_change: None,
             generation: snapshot.generation,
             files: BTreeMap::new(),
             pending: VecDeque::new(),
+            pending_session: 0,
+            pending_tasks: BTreeMap::new(),
             outputs: BTreeMap::new(),
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
@@ -121,9 +161,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     .map_err(codec)?,
             ),
         ] {
-            if !client.files.contains_key(&key) {
-                client.publish(key, bytes, true).await?;
-            }
+            client.initialize_file::<true>(key, bytes).await?;
         }
         Ok(client)
     }
@@ -218,6 +256,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .map(|(_, cursor)| cursor.as_str())
     }
 
+    /// Borrow one authoritative UI/config file at the latest query cut.
+    pub fn state_file(
+        &self,
+        root: CommandFileRoot,
+        name: &str,
+    ) -> Result<Option<&files::FileValue>> {
+        Ok(self.files.get(&self.state_key(root, name)?))
+    }
+
     /// Read one ordinary UI/config file from the latest query cut.
     pub fn state(&self, root: CommandFileRoot, name: &str) -> Result<Option<Value>> {
         let value: Option<Value> = self
@@ -274,6 +321,11 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(value)
     }
 
+    /// Payload space in an ordinary UI file, after its exact record framing.
+    pub fn state_byte_limit(&self, root: CommandFileRoot, name: &str) -> Result<usize> {
+        self.publication_byte_limit(self.state_key(root, name)?)
+    }
+
     /// Publish an ordinary UI/config file, then follow its accepted cut.
     pub async fn write_state(
         &mut self,
@@ -281,7 +333,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish(
+        self.publish_rebased::<true, true>(
             self.state_key(root, name)?,
             serde_json::to_vec(value).map_err(codec)?,
             false,
@@ -304,7 +356,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command catalog changed; review the new revision".into(),
             ));
         }
-        self.publish(key, bytes, false).await
+        self.publish_rebased::<true, true>(key, bytes, false).await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
@@ -351,39 +403,20 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(snapshot)
     }
 
-    /// Resolve at the current file-query cut, then publish the ordinary file
-    /// change with that generation as its precondition. Stale cuts fail closed.
-    pub async fn submit(
+    /// Publishes an already-resolved key action at its observed file cut.
+    pub async fn publish_resolution(
         &mut self,
-        input: &str,
-        reader: &dyn ContentResidencyVerifier,
+        resolution: CommandResolution,
     ) -> Result<OperationId> {
-        if let Some(confirmation) = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .and_then(|layout| layout.get("confirmation").cloned())
-            .filter(|value| !value.is_null())
-        {
-            match input.trim().to_ascii_lowercase().as_str() {
-                "yes" | "y" => return self.confirm_request(confirmation, true).await,
-                "no" | "n" => return self.confirm_request(confirmation, false).await,
-                _ => {}
-            }
-        }
-        if let Some(operation) = self.view_input(input).await? {
-            return Ok(operation);
-        }
-        let cut = self.generation;
-        let resolution = self
-            .catalog
-            .resolve(input, reader, self.maximum_bytes)
-            .await?;
-        self.load_task_settings().await?;
-        if self.generation != cut {
-            return Err(Error::Conflict(
-                "command query advanced during resolution; retry from the new cut".into(),
-            ));
-        }
-        let operation = OperationId::new();
+        self.publish_resolution_with_retry::<false>(resolution, OperationId::new())
+            .await
+    }
+
+    pub(super) async fn publish_resolution_with_retry<const RETRY: bool>(
+        &mut self,
+        resolution: CommandResolution,
+        operation: OperationId,
+    ) -> Result<OperationId> {
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
                 let task = if change.root == CommandFileRoot::Session {
@@ -405,7 +438,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             } else {
                 self.state_key(change.root, &change.path)?
             };
-            self.publish(
+            self.publish_rebased::<RETRY, true>(
                 key,
                 serde_json::to_vec(&change.contents).map_err(codec)?,
                 change.create_only,
@@ -534,6 +567,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         {
             self.pending.push_back(file.clone());
         }
+        self.fold_pending_execution(&file.key);
         self.files.insert(file.key.clone(), file);
         self.trim_archive();
         Ok(())
@@ -569,45 +603,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(())
     }
 
-    async fn publish(
-        &mut self,
-        key: files::FileKey,
-        bytes: Vec<u8>,
-        create_only: bool,
-    ) -> Result<()> {
-        if bytes.len() as u64 > self.maximum_bytes {
-            return Err(Error::Invalid(
-                "command publication exceeds byte bound".into(),
-            ));
-        }
-        if create_only && self.files.contains_key(&key) {
-            return Err(Error::Conflict("command file already exists".into()));
-        }
-        self.make_room(usize::from(!self.files.contains_key(&key)))?;
-        let file = files::FileValue::new(key, bytes);
-        let published = if create_only {
-            self.volume.create(self.generation, &file).await
-        } else {
-            self.volume.append(self.generation, &file).await
-        };
-        let generation = match published {
-            Ok(generation) => generation,
-            Err(files::Error::Conflict(generation)) => {
-                while self.generation.position < generation.position {
-                    self.advance().await?;
-                }
-                return Err(Error::Conflict(
-                    "command query advanced; retry from the new cut".into(),
-                ));
-            }
-            Err(error) => return Err(storage(error)),
-        };
-        while self.generation.position < generation.position {
-            self.advance().await?;
-        }
-        Ok(())
-    }
-
     /// Wait on the existing push follow; no timer, watcher or polling loop.
     /// Non-request file changes refresh the fold before the next pending request.
     pub async fn next_request(&mut self) -> Result<files::FileValue> {
@@ -617,114 +612,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
             self.advance().await?;
         }
-    }
-
-    /// Claim an immutable request before dispatch. A second process must win the
-    /// same generation CAS and immutable claim key; it cannot execute a duplicate.
-    /// A crash after claiming leaves an explicit uncertain effect, never a resend.
-    pub async fn consume<F, Fut>(
-        &mut self,
-        request: &files::FileValue,
-        execute: F,
-    ) -> Result<Option<Value>>
-    where
-        F: FnOnce(OperationId, Option<TaskId>, CommandResolution) -> Fut,
-        Fut: std::future::Future<Output = Result<Value>>,
-    {
-        if self.read_file(&request.key).await?.as_ref() != Some(request) {
-            return Err(Error::Unauthorized(
-                "command request differs from its observed immutable file".into(),
-            ));
-        }
-        let (task_id, id) = match &request.key {
-            files::FileKey::Task {
-                task,
-                file: files::TaskFile::Request(id),
-            } => (Some(TaskId::parse(task.as_str())?), id),
-            files::FileKey::Session {
-                session,
-                file: files::TaskFile::Request(id),
-            } if session.as_str() == self.session.to_string() => (None, id),
-            _ => {
-                return Err(Error::Invalid(
-                    "expected this session's command request file".into(),
-                ));
-            }
-        };
-        let (owner, operation) = files::command_query::identity(id)
-            .ok_or_else(|| Error::Invalid("not a command request identity".into()))?;
-        if owner.is_some_and(|owner| owner != self.session) {
-            return Err(Error::Invalid(
-                "command belongs to another UI session".into(),
-            ));
-        }
-        let key = |file| match &request.key {
-            files::FileKey::Task { task, .. } => files::FileKey::Task {
-                task: task.clone(),
-                file,
-            },
-            files::FileKey::Session { session, .. } => files::FileKey::Session {
-                session: session.clone(),
-                file,
-            },
-            _ => unreachable!(),
-        };
-        let claim = key(files::TaskFile::ExecutionClaim(id.clone()));
-        if self.read_file(&claim).await?.is_some() {
-            return if self
-                .read_file(&key(files::TaskFile::ExecutionResult(id.clone())))
-                .await?
-                .is_some()
-            {
-                Ok(None)
-            } else {
-                Err(Error::Indeterminate(operation))
-            };
-        }
-        let resolution: CommandResolution = serde_json::from_slice(&request.bytes)
-            .or_else(|_| {
-                serde_json::from_slice(&request.bytes)
-                    .map(|request| CommandResolution::Submit { request })
-            })
-            .map_err(codec)?;
-        let bytes = request.bytes.to_vec();
-        self.make_room(3)?;
-        if let Err(error) = self.publish(claim, bytes, true).await {
-            if matches!(error, Error::Conflict(_)) {
-                self.pending.push_front(request.clone());
-            }
-            return Err(error);
-        }
-        let result = execute(operation, task_id, resolution).await;
-        loop {
-            let previous = self.generation;
-            let sequence = self.generation.position;
-            let bytes = archive::output_bytes(sequence, &result, self.maximum_bytes)?;
-            match self
-                .publish(
-                    key(files::TaskFile::ExecutionResult(id.clone())),
-                    bytes,
-                    true,
-                )
-                .await
-            {
-                Ok(()) => break,
-                // The effect has already finished. Only retry its outcome file,
-                // after following the competing publication; never run it again.
-                Err(Error::Conflict(_))
-                    if self.generation.position > previous.position
-                        && self.next_change.is_none() =>
-                {
-                    continue;
-                }
-                Err(error) => return Err(error),
-            }
-        }
-        self.persist_activity().await?;
-        if let Ok(value) = &result {
-            self.apply_outcome(value).await?;
-        }
-        result.map(Some)
     }
 
     /// Query-derived exit flag used by native and renderer clients alike.

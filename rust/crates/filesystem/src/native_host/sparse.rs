@@ -1,7 +1,7 @@
 use super::*;
 
 /// Network, clustered, and user-space filesystems, by `statfs(2)` magic.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, feature = "native-watch")))]
 pub(super) const REMOTE_FILESYSTEMS: [u64; 13] = [
     0x6969,      // NFS
     0x517b,      // SMB
@@ -19,6 +19,7 @@ pub(super) const REMOTE_FILESYSTEMS: [u64; 13] = [
 ];
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
@@ -42,6 +43,7 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
@@ -72,6 +74,7 @@ pub(crate) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     _directory: &Dir,
     work: &mut W,
@@ -239,6 +242,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     Ok(false)
 }
 
+#[cfg(any(windows, test, feature = "local"))]
 pub(crate) fn truncate_file<W: NativeHostWork>(
     file: &File,
     length: u64,

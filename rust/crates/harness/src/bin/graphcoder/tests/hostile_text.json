@@ -1,0 +1,31 @@
+[
+  {
+    "row": "Terminal escapes in streamed Markdown are visible",
+    "text": "**safe\u001b[31m tail**",
+    "expected": "safe\\u{1b}[31m tail"
+  },
+  {
+    "row": "Bidi overrides in streamed Markdown are visible",
+    "text": "**name\u202eevil**",
+    "expected": "name\\u{202e}evil"
+  },
+  {
+    "row": "Bidi isolates in streamed Markdown are visible",
+    "text": "**name\u2066evil\u2069**",
+    "expected": "name\\u{2066}evil\\u{2069}"
+  },
+  {
+    "row": "Sanitizing preserves styled Unicode graphemes",
+    "text": "**日本語 é 👩‍💻**",
+    "expected": "日本語 é 👩‍💻"
+  },
+  {
+    "row": "Usage status makes provider bidi controls visible",
+    "text": "**normal**",
+    "expected": "normal",
+    "usage": {
+      "model": "evil\u202e"
+    },
+    "status_expected": "evil\\u{202e}"
+  }
+]

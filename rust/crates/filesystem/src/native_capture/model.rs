@@ -14,7 +14,7 @@ pub(crate) struct NativeViewBaseline {
 
 impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
-    #[cfg(any(feature = "native-mount", all(test, unix)))]
+    #[cfg(any(feature = "native-mount", test))]
     pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
         Self {
             root_identity,

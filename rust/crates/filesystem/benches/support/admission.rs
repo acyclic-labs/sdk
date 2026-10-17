@@ -78,6 +78,73 @@ fn admission_charge(bencher: Bencher, (context, recheck): (u8, bool)) {
         });
 }
 
+#[divan::bench(args = [(0, false), (0, true), (1, false), (1, true), (2, false), (2, true)], threads = [1, 4])]
+fn kernel_charge(bencher: Bencher, (context, recheck): (u8, bool)) {
+    let cancellation = CancellationToken::new();
+    let delta = WorkCounters {
+        items_examined: 1,
+        bytes_copied: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    let operation = |work: &NativeMaterializationWork| {
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: &cancellation,
+        };
+        for _ in 0..CHARGES_PER_BATCH {
+            accounting.charge(delta).unwrap_or_else(fail);
+        }
+    };
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some()
+        || std::env::var_os("ACYCLIC_BENCH_MARKERS").is_some()
+    {
+        let work = fixture(context, recheck);
+        eprintln!(
+            "kernel_charge context={context} recheck={recheck} before live={} work={:?}",
+            work.live_allocation_bytes(),
+            work.receipt()
+        );
+        marker(&work, context, recheck, true);
+        operation(&work);
+        marker(&work, context, recheck, false);
+        eprintln!(
+            "kernel_charge context={context} recheck={recheck} after live={} work={:?}",
+            work.live_allocation_bytes(),
+            work.receipt()
+        );
+    }
+    bencher
+        .counter(divan::counter::ItemsCount::new(CHARGES_PER_BATCH))
+        .with_inputs(|| fixture(context, recheck))
+        .bench_refs(|work| operation(work));
+}
+
+#[divan::bench(args = [0, 1], threads = [4], sample_count = 64, sample_size = 8)]
+fn kernel_charge_shared(bencher: Bencher, context: u8) {
+    let cancellation = CancellationToken::new();
+    let work = fixture(context, false);
+    let delta = WorkCounters {
+        items_examined: 1,
+        bytes_copied: 1,
+        ..WorkCounters::UNCHARGED
+    };
+    marker(&work, context, false, true);
+    bencher.bench(|| {
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        accounting.charge(delta).unwrap_or_else(fail);
+    });
+    marker(&work, context, false, false);
+    if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
+        eprintln!(
+            "kernel_charge_shared context={context} work={:?}",
+            work.receipt()
+        );
+    }
+}
+
 #[divan::bench]
 fn admission_charge_local(bencher: Bencher) {
     let cancellation = CancellationToken::new();

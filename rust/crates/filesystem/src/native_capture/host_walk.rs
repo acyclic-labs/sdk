@@ -24,7 +24,7 @@ pub(super) fn collect_host_walk_measured(
         capture_drop_host_path(host_path, meter)?;
         while let Some(mut entry) = reader
             .0
-            .next(&mut &*meter)
+            .next_metadata(&mut &*meter)
             .map_err(crate::native_name::original_name_error)
             .map_err(capture_demand_error)?
         {
@@ -63,12 +63,20 @@ pub(super) fn collect_host_walk_measured(
             } else {
                 let host_path = namespace_to_host_path_measured(&child, meter)?;
                 let stat = root
-                    .stat_source(&host_path, &mut meter.clone())
+                    .stat_source_metadata(&host_path, &mut meter.clone())
                     .map_err(capture_demand_error)?;
                 capture_drop_host_path(host_path, meter)?;
                 stat
             };
             let recurse = stat.file_type() == crate::demand::SourceNodeKind::Directory;
+            let move_leaf = !recurse;
+            #[cfg(all(test, feature = "memory"))]
+            let move_leaf = move_leaf && !super::leaf_path_tests::clone_leaves();
+            if move_leaf {
+                meter.clone().check().map_err(capture_demand_error)?;
+                insert(child, stat, meter)?;
+                continue;
+            }
             insert(clone_capture_path(&child, meter)?, stat, meter)?;
             if recurse {
                 capture_reserve(&mut pending, 1, meter)?;
@@ -110,7 +118,7 @@ pub(super) fn observe_host_path(
     host_path: &CaptureHostPath,
     meter: &NativeMaterializationWork,
 ) -> Result<Option<HostStat>, CaptureError> {
-    classify_host_observation(source_root.stat_source(host_path, &mut meter.clone()))
+    classify_host_observation(source_root.stat_source_metadata(host_path, &mut meter.clone()))
 }
 
 pub(super) fn classify_host_observation(

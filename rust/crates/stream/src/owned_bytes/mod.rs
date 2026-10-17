@@ -157,16 +157,17 @@ impl OwnedBytes {
     }
     /// Borrows the visible bytes.
     #[must_use]
+    #[inline]
     pub fn as_slice(&self) -> &[u8] {
         let bytes = match &self.data {
+            // Ordinary Bytes views already carry their checked start and length.
+            // Only retained-capacity owners use the outer range projection.
+            Data::Plain(bytes) if self.retained_capacity.is_none() => return bytes.as_ref(),
             Data::Plain(bytes) => bytes.as_ref(),
             #[cfg(not(target_arch = "wasm32"))]
             Data::Native(guard) => guard.data.as_slice(),
         };
-        let Some(bytes) = bytes.get(self.range.clone()) else {
-            unreachable!("visible range is checked when bytes are sliced")
-        };
-        bytes
+        checked_range(bytes, self.range.clone())
     }
     /// Number of visible bytes.
     #[must_use]
@@ -324,8 +325,18 @@ impl Borrow<[u8]> for OwnedBytes {
     }
 }
 impl PartialEq for OwnedBytes {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
+        let (left, right) = (self.as_slice(), other.as_slice());
+        if std::ptr::eq(left, right) {
+            return true;
+        }
+        if left.len() != right.len() {
+            return false;
+        }
+        #[cfg(test)]
+        BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
+        left == right
     }
 }
 impl Eq for OwnedBytes {}
@@ -335,8 +346,13 @@ impl PartialOrd for OwnedBytes {
     }
 }
 impl Ord for OwnedBytes {
+    #[inline]
     fn cmp(&self, other: &Self) -> Ordering {
-        self.as_slice().cmp(other.as_slice())
+        let (left, right) = (self.as_slice(), other.as_slice());
+        if std::ptr::eq(left, right) {
+            return Ordering::Equal;
+        }
+        compare_bytes(left, right)
     }
 }
 impl Hash for OwnedBytes {
@@ -363,3 +379,72 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 }
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
+
+#[inline]
+fn compare_bytes(mut left: &[u8], mut right: &[u8]) -> Ordering {
+    #[cfg(test)]
+    BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
+    #[cfg(test)]
+    if OLD_BYTE_COMPARE.get() {
+        return compare_suffix(left, right);
+    }
+    if let (Some(a), Some(b)) = (left.first_chunk::<16>(), right.first_chunk::<16>()) {
+        let order = u128::from_be_bytes(*a).cmp(&u128::from_be_bytes(*b));
+        if order != Ordering::Equal {
+            return order;
+        }
+        return compare_suffix(&left[16..], &right[16..]);
+    }
+    // Short keys stay inline. Every load consumes a disjoint prefix; equal
+    // prefixes are never examined again by the remaining comparison.
+    macro_rules! word {
+        ($size:literal, $integer:ty) => {
+            if let (Some(a), Some(b)) = (left.first_chunk::<$size>(), right.first_chunk::<$size>())
+            {
+                let order = <$integer>::from_be_bytes(*a).cmp(&<$integer>::from_be_bytes(*b));
+                if order != Ordering::Equal {
+                    return order;
+                }
+                left = &left[$size..];
+                right = &right[$size..];
+            }
+        };
+    }
+    word!(8, u64);
+    word!(4, u32);
+    word!(2, u16);
+    word!(1, u8);
+    left.len().cmp(&right.len())
+}
+#[inline]
+fn compare_suffix(left: &[u8], right: &[u8]) -> Ordering {
+    #[cfg(test)]
+    {
+        FALLBACK_COMPARISONS.set(FALLBACK_COMPARISONS.get() + 1);
+        FALLBACK_BYTES.set(FALLBACK_BYTES.get() + left.len().min(right.len()));
+    }
+    left.cmp(right)
+}
+#[cfg(test)]
+std::thread_local! {
+    static BYTE_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    static FALLBACK_COMPARISONS: Cell<usize> = const { Cell::new(0) };
+    static FALLBACK_BYTES: Cell<usize> = const { Cell::new(0) };
+    static OLD_BYTE_COMPARE: Cell<bool> = const { Cell::new(false) };
+}
+#[cfg(test)]
+use std::cell::Cell;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod comparison_work;
+
+#[inline]
+fn checked_range(bytes: &[u8], range: Range<usize>) -> &[u8] {
+    #[cfg(test)]
+    RANGE_CHECKS.with(|count| count.set(count.get() + 1));
+    let Some(bytes) = bytes.get(range) else {
+        unreachable!("visible range is checked when bytes are sliced")
+    };
+    bytes
+}
+#[cfg(test)]
+std::thread_local! { static RANGE_CHECKS: Cell<usize> = const { Cell::new(0) }; }

@@ -1,6 +1,6 @@
 //! Count actual native advances through the production owner/tool path.
 use super::*;
-use crate::runtime::{RuntimeTask, TaskStateProvider};
+use crate::runtime::RuntimeTask;
 use serde_json::json;
 use std::sync::atomic::Ordering;
 

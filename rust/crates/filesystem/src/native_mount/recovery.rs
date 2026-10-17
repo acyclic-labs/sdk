@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::native::{Arc as RecoveryArc, Condvar, Mutex, RetirementSender};
 
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,17 +83,19 @@ pub(super) struct NativeRecoveryState {
 
 pub(super) struct NativeRecoveryShared {
     destination: PathBuf,
-    pub(super) state: std::sync::Mutex<Option<NativeRecoveryState>>,
-    wake: std::sync::Condvar,
+    // Lock order: recovery state -> work ledger -> native syscall boundary.
+    // The retirement worker and helper never acquire this lock in reverse.
+    pub(super) state: Mutex<Option<NativeRecoveryState>>,
+    wake: Condvar,
     // Path and state data retire before their allocation.
     _custody: crate::NativeAllocation,
 }
 
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
-    pub(super) shared: Arc<NativeRecoveryShared>,
-    // Closing the only sender asks the prestarted worker to retire the owner.
-    retirement: std::sync::mpsc::SyncSender<()>,
+    pub(super) shared: RecoveryArc<NativeRecoveryShared>,
+    // Last drop notifies the prestarted worker to retire the owner.
+    retirement: Option<RetirementSender>,
 }
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
@@ -101,6 +104,14 @@ impl std::fmt::Debug for NativeMountRecoveryOwner {
             .debug_struct("NativeMountRecoveryOwner")
             .field("cleanup", &self.cleanup_state())
             .finish()
+    }
+}
+
+impl Drop for NativeMountRecoveryOwner {
+    fn drop(&mut self) {
+        if let Some(retirement) = self.retirement.take() {
+            let _ = retirement.send(());
+        }
     }
 }
 
@@ -119,14 +130,37 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
+        Self::acquire_bound(destination, original, None)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn acquire_in_parent(
+        destination: &Path,
+        parent: &std::os::fd::OwnedFd,
+    ) -> Result<Self, NativeMountError> {
+        let original = crate::NativeMaterializationWork::new(
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
+        original.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
+        let directory = cap_std::fs::Dir::from_std_file(parent.try_clone()?.into());
+        Self::acquire_bound(destination, &original, Some(directory))
+    }
+
+    fn acquire_bound(
+        destination: &Path,
+        original: &crate::NativeMaterializationWork,
+        parent: Option<cap_std::fs::Dir>,
+    ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &*original)?;
         destination
             .1
             .grow(std::mem::size_of::<NativeRecoveryShared>() as u64)?;
         let closure = original.claim(
             std::mem::size_of::<(
-                Arc<NativeRecoveryShared>,
-                std::sync::mpsc::Receiver<()>,
+                RecoveryArc<NativeRecoveryShared>,
+                crate::sync::native::mpsc::Receiver<()>,
                 crate::NativeAllocation,
             )>() as u64,
             1,
@@ -142,9 +176,9 @@ impl NativeMountRecoveryOwner {
             backend_write_operations: 1,
             ..Default::default()
         })?;
-        let shared = Arc::new(NativeRecoveryShared {
+        let shared = RecoveryArc::new(NativeRecoveryShared {
             destination: destination.0,
-            state: std::sync::Mutex::new(Some(NativeRecoveryState {
+            state: Mutex::new(Some(NativeRecoveryState {
                 identity: None,
                 #[cfg(windows)]
                 destination_identity: None,
@@ -155,11 +189,11 @@ impl NativeMountRecoveryOwner {
                 measured_cleanup_failed: false,
                 final_close,
             })),
-            wake: std::sync::Condvar::new(),
+            wake: Condvar::new(),
             _custody: destination.1,
         });
-        let (retirement, receiver) = std::sync::mpsc::sync_channel(1);
-        let worker = (Arc::clone(&shared), receiver, closure);
+        let (retirement, receiver) = crate::sync::native::retirement_channel();
+        let worker = (RecoveryArc::clone(&shared), receiver, closure);
         crate::native_host::NativeHostWork::started_io(
             &mut worker.2.work(),
             crate::WorkCounters {
@@ -167,10 +201,13 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(std::thread::Builder::new().spawn(move || {
+        drop(crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?);
-        let owner = Self { shared, retirement };
+        let mut owner = Self {
+            shared,
+            retirement: Some(retirement),
+        };
         let result = {
             let mut state = owner
                 .shared
@@ -181,7 +218,11 @@ impl NativeMountRecoveryOwner {
                 state
                     .as_mut()
                     .ok_or(NativeMountError::ControlPending)?
-                    .acquire(&owner.shared.destination, owner.shared._custody.work())
+                    .acquire(
+                        &owner.shared.destination,
+                        parent,
+                        owner.shared._custody.work(),
+                    )
             }))
             .unwrap_or_else(|panic| {
                 Err(NativeMountError::DriverPanicked {
@@ -192,7 +233,9 @@ impl NativeMountRecoveryOwner {
         };
         if let Err(error) = result {
             // Constructor rejection waits for the physical acquisition prefix to retire.
-            let _ = owner.retirement.send(());
+            if let Some(retirement) = owner.retirement.take() {
+                let _ = retirement.send(());
+            }
             let mut state = owner
                 .shared
                 .state
@@ -250,6 +293,29 @@ impl NativeMountRecoveryOwner {
         self.finish(false, work)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn detach_pinned(
+        &mut self,
+        file: File,
+        parent: File,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<bool, NativeMountError> {
+        {
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let control = &mut state
+                .as_mut()
+                .ok_or(NativeMountError::ControlPending)?
+                .control;
+            control.pinned = Some(file);
+            control.pinned_parent = Some(parent);
+        }
+        self.finish(false, work)
+    }
+
     fn finish(
         &mut self,
         remove_destination: bool,
@@ -290,10 +356,27 @@ impl NativeRecoveryState {
     fn acquire(
         &mut self,
         destination: &Path,
+        parent: Option<cap_std::fs::Dir>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        MountDestinationGuard::acquire_with_work(destination, true, work, &mut self.guard, true)?;
+        if let Some(directory) = parent {
+            MountDestinationGuard::acquire_in_directory(
+                destination,
+                directory,
+                work,
+                &mut self.guard,
+                true,
+            )?;
+        } else {
+            MountDestinationGuard::acquire_with_work(
+                destination,
+                true,
+                work,
+                &mut self.guard,
+                true,
+            )?;
+        }
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         return Err(NativeMountError::UnsupportedTarget);
         let (identity, _) = crate::native_host::file_identity_and_length(
@@ -361,6 +444,13 @@ impl NativeRecoveryState {
             if self.guard.is_none() {
                 return Ok(false);
             }
+            #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+            if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release()) {
+                self.guard
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?
+                    .release(&mut &*work)?;
+            }
             if !self.driver_step_complete {
                 recover_driver_with_work(&mut self.control, destination, remove_destination, work)?;
                 if self.control.controls_pending() {
@@ -376,7 +466,14 @@ impl NativeRecoveryState {
                     &mut &*work,
                 )?;
                 #[cfg(not(windows))]
-                remove_empty_recovery_destination(destination, work)?;
+                remove_empty_recovery_destination(
+                    destination,
+                    self.guard
+                        .as_ref()
+                        .and_then(|guard| guard.parent_directory.as_ref())
+                        .ok_or(NativeMountError::InvalidDestination)?,
+                    work,
+                )?;
                 self.destination_removed = true;
             }
             self.guard
@@ -427,20 +524,14 @@ pub(super) fn recover_driver_with_work(
 #[cfg(not(windows))]
 pub(super) fn remove_empty_recovery_destination(
     destination: &Path,
+    parent: &cap_std::fs::Dir,
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    let parent = destination
-        .parent()
-        .ok_or(NativeMountError::InvalidDestination)?;
     let name = destination
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory(parent, &mut host)
-        .map(|(directory, _)| directory)
-        .and_then(|directory| {
-            crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
-        });
+    let result = crate::native_host::remove_leaf(parent, Path::new(name), true, &mut host);
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))
@@ -454,8 +545,8 @@ pub(super) fn remove_empty_recovery_destination(
 
 fn retire_recovery(
     (shared, receiver, _closure): (
-        Arc<NativeRecoveryShared>,
-        std::sync::mpsc::Receiver<()>,
+        RecoveryArc<NativeRecoveryShared>,
+        crate::sync::native::mpsc::Receiver<()>,
         crate::NativeAllocation,
     ),
 ) {

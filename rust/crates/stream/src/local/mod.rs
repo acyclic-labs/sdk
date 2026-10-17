@@ -99,6 +99,8 @@ include!("recovered.rs");
 
 include!("local_stream.rs");
 
+include!("persistence_cut.rs");
+
 include!("provider.rs");
 
 include!("read_observation.rs");
@@ -127,3 +129,6 @@ include!("frames.rs");
 include!("snapshot.rs");
 
 include!("frame_checksum.rs");
+
+#[cfg(all(feature = "test-support", not(acyclic_loom)))]
+mod publication_barrier;

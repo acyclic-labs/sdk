@@ -1,4 +1,9 @@
-use crate::sync::{Condvar as RawCondvar, Mutex as RawMutex, MutexGuard as RawMutexGuard};
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "native-mount", target_os = "linux")
+))]
+use crate::sync::{Condvar as RawCondvar, WaitTimeoutResult};
+use crate::sync::{Mutex as RawMutex, MutexGuard as RawMutexGuard};
 #[cfg(acyclic_fs_loom)]
 use loom::thread_local;
 use std::cell::RefCell;
@@ -7,9 +12,11 @@ use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
 #[cfg(not(acyclic_fs_loom))]
 use std::thread_local;
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "native-mount", target_os = "linux")
+))]
 use std::time::Duration;
-#[cfg(test)]
-use std::time::Instant;
 
 #[cfg(not(acyclic_fs_loom))]
 thread_local! {
@@ -65,7 +72,7 @@ impl Drop for Held {
 pub(crate) struct TrackedGuard<G> {
     // Unlock before removing the thread's held-rank record.
     inner: G,
-    held: Held,
+    _held: Held,
 }
 
 impl<G: Deref> Deref for TrackedGuard<G> {
@@ -89,7 +96,7 @@ fn acquire<G>(rank: u16, acquire: impl FnOnce() -> LockResult<G>) -> LockResult<
     let site = Location::caller();
     let wrap = |inner| TrackedGuard {
         inner,
-        held: Held(rank, site).enter(),
+        _held: Held(rank, site).enter(),
     };
     match acquire() {
         Ok(inner) => Ok(wrap(inner)),
@@ -103,8 +110,22 @@ pub(crate) fn lock<T, const RANK: u16>(mutex: &RawMutex<T>) -> LockResult<MutexG
 }
 
 #[derive(Debug, Default)]
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "native-watch"),
+        not(target_arch = "wasm32")
+    )
+))]
 pub(crate) struct Mutex<T, const RANK: u16>(RawMutex<T>);
 
+#[cfg(any(
+    test,
+    all(
+        any(feature = "local", feature = "native-watch"),
+        not(target_arch = "wasm32")
+    )
+))]
 impl<T, const RANK: u16> Mutex<T, RANK> {
     #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new(value: T) -> Self {
@@ -122,8 +143,16 @@ impl<T, const RANK: u16> Mutex<T, RANK> {
 }
 
 #[derive(Default)]
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "native-mount", target_os = "linux")
+))]
 pub(crate) struct Condvar(RawCondvar);
 
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "native-mount", target_os = "linux")
+))]
 impl Condvar {
     #[cfg(not(acyclic_fs_loom))]
     pub(crate) const fn new() -> Self {
@@ -134,22 +163,15 @@ impl Condvar {
         Self(RawCondvar::new())
     }
 
+    #[cfg(any(acyclic_fs_loom, all(feature = "native-mount", target_os = "linux")))]
     pub(crate) fn notify_all(&self) {
         self.0.notify_all();
     }
 
+    #[cfg(any(acyclic_fs_loom, all(feature = "native-mount", target_os = "linux")))]
     #[track_caller]
     pub(crate) fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         wait_plain(guard, |inner| self.0.wait(inner))
-    }
-
-    #[track_caller]
-    pub(crate) fn wait_while<'a, T>(
-        &self,
-        guard: MutexGuard<'a, T>,
-        condition: impl FnMut(&mut T) -> bool,
-    ) -> LockResult<MutexGuard<'a, T>> {
-        while_locked(guard, condition, |guard| self.wait(guard))
     }
 
     #[track_caller]
@@ -158,101 +180,15 @@ impl Condvar {
         guard: MutexGuard<'a, T>,
         duration: Duration,
     ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        let result = wait(guard, |inner| self.0.wait_timeout(inner, duration));
-        #[cfg(not(test))]
-        {
-            result
-        }
-        #[cfg(test)]
-        {
-            match result {
-                Ok((guard, timeout)) => Ok((guard, WaitTimeoutResult::from(timeout))),
-                Err(error) => {
-                    let (guard, timeout) = error.into_inner();
-                    Err(PoisonError::new((guard, WaitTimeoutResult::from(timeout))))
-                }
-            }
-        }
+        wait(guard, |inner| self.0.wait_timeout(inner, duration))
     }
-
-    #[cfg(test)]
-    #[track_caller]
-    pub(crate) fn wait_timeout_while<'a, T>(
-        &self,
-        guard: MutexGuard<'a, T>,
-        duration: Duration,
-        condition: impl FnMut(&mut T) -> bool,
-    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        while_timed(guard, duration, condition, |guard, remaining| {
-            self.wait_timeout(guard, remaining)
-        })
-    }
-}
-
-#[cfg(not(test))]
-type WaitTimeoutResult = crate::sync::WaitTimeoutResult;
-
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct WaitTimeoutResult(bool);
-
-#[cfg(test)]
-impl From<crate::sync::WaitTimeoutResult> for WaitTimeoutResult {
-    fn from(timeout: crate::sync::WaitTimeoutResult) -> Self {
-        Self(timeout.timed_out())
-    }
-}
-
-#[cfg(test)]
-impl WaitTimeoutResult {
-    pub(crate) fn timed_out(&self) -> bool {
-        self.0
-    }
-}
-
-fn predicate<T: ?Sized>(value: &mut T, condition: &mut impl FnMut(&mut T) -> bool) -> bool {
-    #[cfg(all(test, acyclic_fs_loom))]
-    if model::fault() == model::Fault::UntrackedPredicate {
-        let saved = HELD.with(|held| std::mem::take(&mut *held.borrow_mut()));
-        let result = condition(value);
-        HELD.with(|held| *held.borrow_mut() = saved);
-        return result;
-    }
-    condition(value)
 }
 
 #[track_caller]
-fn while_locked<G: DerefMut>(
-    mut guard: TrackedGuard<G>,
-    mut condition: impl FnMut(&mut G::Target) -> bool,
-    mut wait: impl FnMut(TrackedGuard<G>) -> LockResult<TrackedGuard<G>>,
-) -> LockResult<TrackedGuard<G>> {
-    while predicate(&mut *guard, &mut condition) {
-        guard = wait(guard)?;
-    }
-    Ok(guard)
-}
-
-#[cfg(test)]
-#[track_caller]
-fn while_timed<G: DerefMut>(
-    mut guard: TrackedGuard<G>,
-    duration: Duration,
-    mut condition: impl FnMut(&mut G::Target) -> bool,
-    mut wait: impl FnMut(TrackedGuard<G>, Duration) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)>,
-) -> LockResult<(TrackedGuard<G>, WaitTimeoutResult)> {
-    let started = Instant::now();
-    while predicate(&mut *guard, &mut condition) {
-        let remaining = duration.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Ok((guard, WaitTimeoutResult(true)));
-        }
-        (guard, _) = wait(guard, remaining)?;
-    }
-    Ok((guard, WaitTimeoutResult(false)))
-}
-
-#[track_caller]
+#[cfg(any(
+    all(test, acyclic_fs_loom),
+    all(feature = "native-mount", target_os = "linux")
+))]
 fn wait_plain<G>(
     guard: TrackedGuard<G>,
     operation: impl FnOnce(G) -> LockResult<G>,
@@ -267,11 +203,15 @@ fn wait_plain<G>(
 }
 
 #[track_caller]
+#[cfg(any(
+    all(test, not(target_arch = "wasm32")),
+    all(feature = "native-mount", target_os = "linux")
+))]
 fn wait<G, R>(
     guard: TrackedGuard<G>,
     wait: impl FnOnce(G) -> LockResult<(G, R)>,
 ) -> LockResult<(TrackedGuard<G>, R)> {
-    let TrackedGuard { inner, held } = guard;
+    let TrackedGuard { inner, _held: held } = guard;
     let rank = held.0;
     let site = held.1;
     drop(held);
@@ -287,7 +227,7 @@ fn wait<G, R>(
         };
         #[cfg(not(all(test, acyclic_fs_loom)))]
         let held = held.enter();
-        (TrackedGuard { inner, held }, timeout)
+        (TrackedGuard { inner, _held: held }, timeout)
     };
     match wait(inner) {
         Ok(result) => Ok(wrap(result)),

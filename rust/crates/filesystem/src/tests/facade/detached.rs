@@ -279,12 +279,6 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
     )
     .await?;
     commit(&mut checkout, &cancel).await?;
-    let source = checkout
-        .lookup_no_follow(&path("source")?, B, &cancel)
-        .await?
-        .value
-        .record
-        .unwrap();
     let original = crate::NativeMaterializationWork::new(B, &cancel).map_err(|(cause, _)| cause)?;
     let reader = checkout
         .private_candidate(
@@ -293,8 +287,8 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition() -> 
         )?
         .into_pinned_reader_with_native_work(&original, &cancel)?;
     let bytes = reader
-        .read_record_range(
-            source,
+        .read_file_range(
+            &path("source")?,
             ByteRange {
                 offset: 0,
                 length: 20,

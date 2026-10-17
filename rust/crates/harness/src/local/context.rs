@@ -5,6 +5,7 @@ use crate::{
     filesystem::FilesystemContentVerifier,
 };
 
+pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
 
@@ -94,10 +95,13 @@ impl LocalHarness {
             ));
         }
         #[cfg(feature = "hooks")]
-        let hook_configuration = if self.hooks.is_empty() {
+        let hooks =
+            crate::native_settings::NativeSettings::load_hooks(Arc::clone(&self.settings)).await?;
+        #[cfg(feature = "hooks")]
+        let hook_configuration = if hooks.is_empty() {
             None
         } else {
-            Some(settings::capture_hooks(&self.hooks, publisher, self.limits).await?)
+            Some(hooks.publish(publisher, self.limits).await?)
         };
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
@@ -105,10 +109,14 @@ impl LocalHarness {
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        let mut manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        #[cfg(any(feature = "native-execution", feature = "hooks"))]
+        let mut manifest = manifest;
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
-            manifest.conventions.push(workspace.context_line().to_owned());
+            manifest
+                .conventions
+                .push(workspace.context_line().to_owned());
         }
         #[cfg(feature = "hooks")]
         manifest.sources.extend(hook_configuration);

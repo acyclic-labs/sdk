@@ -44,6 +44,49 @@ struct Fixture {
     codex: PathBuf,
 }
 
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "hooks",
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
+#[test]
+fn mcp_startup_queries_only_its_selected_settings_roles() -> Result<()> {
+    use proptest::prelude::*;
+    // Reuse the fixture and worker runtime: only the selected file data changes
+    // in each shrinking case, rather than paying directory setup 256 times.
+    let fixture = Fixture::new()?;
+    let config = std::sync::Arc::new(fixture.config().trust_project_hooks(true));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::process_io)?;
+    proptest!(|(invalid in prop_oneof![
+        any::<i64>().prop_map(|value| value.to_string()), Just("false".into()),
+        Just("'invalid'".into()), Just("[]".into()),
+    ])| {
+        runtime.block_on(async {
+            let user = fixture.home.join(".claude/settings.json");
+            let project = fixture.workspace.join(".claude/settings.json");
+            write(&user, "{}")?;
+            write(&project, "{}")?;
+            write(&fixture.codex.join("config.toml"), format!(
+                "hooks = {invalid}\n[mcp_servers.selected]\ncommand = 'selected'\n"
+            ))?;
+            let selected = NativeSettings::load_mcp(std::sync::Arc::clone(&config)).await?;
+            prop_assert_eq!(selected.server_names().collect::<Vec<_>>(), ["selected"]);
+            // The hook query must reject the same malformed selected table;
+            // this is also the negative control for accidental eager import.
+            prop_assert!(NativeSettings::load_hooks(std::sync::Arc::clone(&config)).await.is_err());
+            write(&user, "{invalid JSON")?;
+            write(&project, "{invalid JSON")?;
+            let selected = NativeSettings::load_mcp(std::sync::Arc::clone(&config)).await?;
+            prop_assert_eq!(selected.server_names().collect::<Vec<_>>(), ["selected"]);
+            Ok(())
+        })?;
+    });
+    Ok(())
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn project_keys_accept_nonverbatim_case_and_separator_aliases() -> Result<()> {

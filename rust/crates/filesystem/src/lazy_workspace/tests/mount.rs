@@ -496,84 +496,120 @@ async fn source_directory_identity_cannot_be_promoted_twice() {
 }
 
 #[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn source_parent_promotion_reads_only_the_record() {
-    for published in [false, true] {
-        let root = attach(
-            &Fs::memory(),
-            Arc::new(CountingSource::new(Bytes::new())),
-            MemoryLazyWorkspaceStore::default(),
+#[derive(Clone, Copy, PartialEq)]
+enum ParentRead {
+    Record,
+    Promote,
+    // Negative control: promotion plus one more frontier read below the parent.
+    PromoteAndChild,
+}
+
+// Each measurement opens its own filesystem. Stores of one filesystem share a
+// decoded-page cache (#788), so a second measurement on the same fixture would
+// read nothing from the backend and could not be compared with the first.
+#[cfg(feature = "native-mount")]
+async fn parent_read_work(published: bool, read: ParentRead, repeat: bool) -> WorkCounters {
+    let root = attach(
+        &Fs::memory(),
+        Arc::new(CountingSource::new(Bytes::new())),
+        MemoryLazyWorkspaceStore::default(),
+    )
+    .await
+    .unwrap();
+    let begin = || async {
+        root.workspace()
+            .begin_transaction(
+                IdempotencyKey::new(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .value
+    };
+    if published {
+        let mut transaction = begin().await;
+        transaction
+            .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .unwrap();
+        root.commit(
+            &mut transaction,
+            crate::PublicationPermit::Unrestricted,
+            accounting!(),
         )
         .await
         .unwrap();
-        if published {
-            let mut transaction = root
-                .workspace()
-                .begin_transaction(
-                    IdempotencyKey::new(),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .unwrap()
-                .value;
+    }
+    let mut spent = WorkCounters::UNCHARGED;
+    for _ in 0..=usize::from(repeat) {
+        let mut transaction = begin().await;
+        if !published {
             transaction
                 .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
                 .unwrap();
-            root.commit(
-                &mut transaction,
-                crate::PublicationPermit::Unrestricted,
-                accounting!(),
-            )
-            .await
-            .unwrap();
         }
-        let mut counts = Vec::new();
-        for promote in [false, true] {
-            let mut transaction = root
-                .workspace()
-                .begin_transaction(
-                    IdempotencyKey::new(),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .unwrap()
-                .value;
-            if !published {
-                transaction
-                    .create_dir_all("/d", WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .unwrap();
-            }
+        let cancel = CancellationToken::new();
+        let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+        if read == ParentRead::Record {
             let path = root.namespace_path("/d", accounting!()).unwrap();
-            let cancel = CancellationToken::new();
-            let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
-            if promote {
-                root.stage_source_parents(&mut transaction, "/d/file", &mut ctx)
-                    .await
-                    .unwrap();
-            } else {
-                transaction
-                    .checkout
-                    .lookup_no_follow_with_accounting(&path.value, &mut ctx, &cancel, true)
-                    .await
-                    .unwrap();
-            }
-            counts.push(ctx.spent());
+            transaction
+                .checkout
+                .lookup_no_follow_with_accounting(&path.value, &mut ctx, &cancel, true)
+                .await
+                .unwrap();
+        } else {
+            root.stage_source_parents(&mut transaction, "/d/file", &mut ctx)
+                .await
+                .unwrap();
         }
-        assert_eq!(
-            counts[1].backend_read_operations,
-            counts[0].backend_read_operations
-        );
-        assert_eq!(counts[1].object_bytes_read, counts[0].object_bytes_read);
+        if read == ParentRead::PromoteAndChild {
+            let path = root.namespace_path("/d/child", accounting!()).unwrap();
+            transaction
+                .checkout
+                .lookup_no_follow_with_accounting(&path.value, &mut ctx, &cancel, true)
+                .await
+                .unwrap();
+        }
+        spent = ctx.spent();
+    }
+    spent
+}
+
+#[cfg(feature = "native-mount")]
+#[tokio::test]
+async fn source_parent_promotion_reads_only_the_record() {
+    for published in [false, true] {
+        let record = parent_read_work(published, ParentRead::Record, false).await;
+        let promoted = parent_read_work(published, ParentRead::Promote, false).await;
         eprintln!(
             "existing source parent (published={published}): {} reads / {} bytes (record-only control: {} / {})",
-            counts[1].backend_read_operations,
-            counts[1].object_bytes_read,
-            counts[0].backend_read_operations,
-            counts[0].object_bytes_read
+            promoted.backend_read_operations,
+            promoted.object_bytes_read,
+            record.backend_read_operations,
+            record.object_bytes_read
+        );
+        assert!(record.backend_read_operations > 0, "cold record read");
+        // Page reads count every authenticated frontier page, cached or not.
+        let reads = |work: WorkCounters| {
+            (
+                work.backend_read_operations,
+                work.object_bytes_read,
+                work.page_reads,
+            )
+        };
+        assert_eq!(reads(promoted), reads(record), "record-only promotion");
+        // Negative control: one more frontier read fails the same comparison.
+        let extra = parent_read_work(published, ParentRead::PromoteAndChild, false).await;
+        assert_ne!(
+            reads(extra),
+            reads(record),
+            "an extra frontier read must be detected"
         );
     }
+    // Why measurements need separate filesystems: a repeated published read
+    // from a new transaction is served entirely by the shared decoded cache.
+    let warm = parent_read_work(true, ParentRead::Record, true).await;
+    assert_eq!(warm.backend_read_operations, 0, "shared decoded cache");
 }

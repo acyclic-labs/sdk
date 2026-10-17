@@ -1,3 +1,5 @@
+pub(crate) mod trace;
+
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter};
 use std::sync::{
     Arc, Mutex,
@@ -159,6 +161,7 @@ impl Meter {
 
 impl NativeReadMeter for Meter {
     fn check(&self) -> std::io::Result<()> {
+        trace::record("check", 0, 0, 0);
         if self.cancelled.load(Ordering::SeqCst) {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
@@ -206,6 +209,7 @@ impl NativeReadMeter for Meter {
         self.check()
     }
     fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> std::io::Result<()> {
+        trace::record("reserve_bytes", kind as u64, maximum, 0);
         self.check()?;
         let pending = self.pending_bytes(kind);
         pending
@@ -223,6 +227,7 @@ impl NativeReadMeter for Meter {
         Ok(())
     }
     fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
+        trace::record("cancel_reserved_bytes", kind as u64, maximum, 0);
         assert!(
             self.pending_bytes(kind)
                 .fetch_sub(maximum, Ordering::SeqCst)
@@ -235,6 +240,7 @@ impl NativeReadMeter for Meter {
         maximum: u64,
         actual: u64,
     ) -> std::io::Result<()> {
+        trace::record("record_reserved_bytes", kind as u64, maximum, actual);
         self.cancel_reserved_bytes(kind, maximum);
         assert!(actual <= maximum);
         match kind {
@@ -248,6 +254,7 @@ impl NativeReadMeter for Meter {
         }
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+        trace::record("allocate", bytes, 0, 0);
         self.check()?;
         if self.deny_allocation.load(Ordering::SeqCst) {
             return Err(Self::denial("allocation"));
@@ -307,7 +314,8 @@ impl NativeReadMeter for Meter {
         self.admit_examination(items, copied)?;
         self.record_examination(items, copied)
     }
-    fn admit_examination(&self, items: u64, _: u64) -> std::io::Result<()> {
+    fn admit_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+        trace::record("admit_examination", items, copied, 0);
         self.check()?;
         if self
             .examined
@@ -321,6 +329,7 @@ impl NativeReadMeter for Meter {
         Ok(())
     }
     fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+        trace::record("record_examination", items, copied, 0);
         self.examined.fetch_add(items, Ordering::SeqCst);
         self.copied.fetch_add(copied, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {
@@ -349,6 +358,7 @@ impl NativeReadMeter for Meter {
         self.record_examination(items, 0)
     }
     fn release(&self, bytes: u64) {
+        trace::record("release", bytes, 0, 0);
         assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);
     }
     fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> {
@@ -370,6 +380,7 @@ impl NativeReadMeter for Meter {
         Ok(())
     }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
+        trace::record("record_read", bytes as u64, 0, 0);
         let completed = self.read.fetch_add(bytes as u64, Ordering::SeqCst) + bytes as u64;
         if completed >= self.cancel_after_read {
             self.cancelled.store(true, Ordering::SeqCst);

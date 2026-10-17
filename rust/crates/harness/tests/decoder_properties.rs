@@ -1,3 +1,4 @@
+//! Shrinking properties for journal decoding and rejected-input cleanup.
 #![cfg(not(target_arch = "wasm32"))]
 
 #[path = "support/journal_input.rs"]
@@ -32,7 +33,7 @@ proptest! {
 }
 
 #[test]
-#[should_panic(expected = "client JSONL roundtrip changed the generation")]
+#[should_panic(expected = "client protobuf roundtrip changed the generation")]
 fn negative_control_detects_dropped_generation() {
     wire::check_with_dropped_generation(b"generation", true);
 }

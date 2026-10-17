@@ -82,10 +82,7 @@ impl HistoryIo for HistoryWork {
         if self.io.original_native_work().is_some() {
             return self.io.check_cancellation();
         }
-        self.io
-            .cancellation()
-            .check()
-            .map_err(|_| Error::Invalid("history read cancelled".into()))
+        self.io.cancellation().check().map_err(Error::from)
     }
     fn begin_call(&mut self) -> Result<()> {
         HistoryIo::begin_call(&mut &self.io)

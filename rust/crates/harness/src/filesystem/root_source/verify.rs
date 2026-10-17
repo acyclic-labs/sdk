@@ -12,12 +12,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<()> {
         let denied = |reason| stock_boundary(io, ErrorCode::Unauthorized, reason);
         let check = || {
-            context.cancellation.check().map_err(|_| {
+            context.cancellation.check().map_err(|cause| {
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.and_then(PreparationIo::original_native_work).is_some() {
                     return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
                 }
-                denied("project source operation cancelled")
+                Error::from(cause)
             })
         };
         if io.is_some() {

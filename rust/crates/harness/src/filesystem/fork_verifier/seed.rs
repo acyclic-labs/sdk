@@ -413,15 +413,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         drop(_paths);
         let head_generation = self.pinned(&seed.child_private_volume, &head, io).await?;
-        let (diff, changes_allocation) = io.sdk(
+        let (diff, _changes_allocation) = io.sdk(
             initial
                 .diff_to(&head_generation, u32::MAX, io, io.cancellation())
                 .await,
         )?;
-        let (changes, paths_allocation) =
+        let (changes, _paths_allocation) =
             io.sdk(diff.changed_paths(u32::MAX, io, io.cancellation()).await)?;
         drop(diff);
-        drop(changes_allocation);
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(_changes_allocation);
         let mut owned =
             (changes.capacity() * std::mem::size_of::<acyclic_fs::ChangedPath>()) as u64;
         for change in &changes {
@@ -535,7 +536,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         fork_preparer_io::retain(&head_generation, Some(io)).await?;
         drop(changes);
-        drop(paths_allocation);
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(_paths_allocation);
         drop(_changes);
         Ok(())
     }

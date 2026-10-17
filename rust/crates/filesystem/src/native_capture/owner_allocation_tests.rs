@@ -46,6 +46,9 @@ pub(super) fn owner(file: NativeFile, work: &NativeMaterializationWork) -> Owner
 }
 
 struct OldOwner(bool);
+pub(super) fn restore_owner() -> impl Drop {
+    OldOwner(OLD_OWNER.replace(true))
+}
 impl Drop for OldOwner {
     fn drop(&mut self) {
         OLD_OWNER.set(self.0);

@@ -37,6 +37,7 @@ impl ConsoleIo {
 }
 impl Write for ConsoleIo {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
         self.output.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -64,7 +65,66 @@ pub struct Tty {
     decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
+/// Output half using the console owner's existing I/O/restoration boundary.
+pub struct Output {
+    owner: Arc<Owner<ConsoleIo>>,
+}
+/// Bytes per console call. Each call runs under its own write deadline
+/// (PROBE_TIMEOUT, 100 ms). Measured on the local console: one 4 MiB call
+/// times out (110 ms); 256 KiB calls take 10-17 ms at worst and lose no
+/// throughput (4 MiB in 256 KiB calls 99 ms, 1 MiB calls 98 ms, 64 KiB calls
+/// 114 ms, 4 KiB calls 289 ms). Frames up to 256 KiB are one call.
+pub(crate) const CONSOLE_CHUNK: usize = 256 * 1024;
+
+impl super::Present for Output {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        let owner = &self.owner;
+        let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
+            Owner::run(owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+                part.apply(guard, cursor_hidden)
+            })
+        });
+        if presented.is_err() {
+            let _ = Owner::run(owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+                guard.abort_frame()
+            });
+        }
+        presented
+    }
+}
+
+impl Write for Output {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let end = super::frame::char_prefix(bytes, CONSOLE_CHUNK);
+        let bytes = bytes
+            .get(..end)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_vec();
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+            guard.writer().write(&bytes)
+        })
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+            guard.writer().flush()
+        })
+    }
+}
+impl Drop for Output {
+    fn drop(&mut self) {
+        let _ = Owner::close(&self.owner, ConsoleIo::restore);
+    }
+}
+
 impl Tty {
+    /// Separate output while retaining this decoder's negotiation-buffered keys.
+    /// Dropping either half restores the console and cancels its outstanding I/O.
+    pub fn split(self) -> (Self, Output) {
+        let output = Output {
+            owner: Arc::clone(&self.owner),
+        };
+        (self, output)
+    }
     /// Capture modes and code pages before enabling VT and UTF-8.
     pub fn open() -> io::Result<Self> {
         let input = OpenOptions::new().read(true).write(true).open("CONIN$")?;
@@ -134,7 +194,7 @@ impl Tty {
             return Ok(events);
         }
         let mut bytes = [0; 1024];
-        let count = self.receive(&mut bytes, deadline)?;
+        let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
         self.decoder.feed(&bytes[..count])?;
         if count == 0 || Instant::now() >= deadline {
             self.decoder.finish_input()?;
@@ -142,7 +202,7 @@ impl Tty {
         Ok(self.decoder.take_events())
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(4096)].to_vec();
+        let bytes = bytes.to_vec();
         Owner::run(&self.owner, deadline, move |guard| {
             guard.writer().write(&bytes)
         })
@@ -165,9 +225,22 @@ impl ProbeIo for Tty {
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
         // Input stays on the caller: a timed-out output worker must never
         // consume bytes whose result could be abandoned at the deadline.
-        let input = ffi::console_read(self.reader.as_raw_handle() as usize, bytes.len(), deadline)?;
-        bytes[..input.len()].copy_from_slice(&input);
-        Ok(input.len())
+        loop {
+            self.owner.check_open()?;
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(0);
+            }
+            let input = ffi::console_read(
+                self.reader.as_raw_handle() as usize,
+                bytes.len(),
+                deadline.min(now + std::time::Duration::from_millis(1)),
+            )?;
+            if !input.is_empty() {
+                bytes[..input.len()].copy_from_slice(&input);
+                return Ok(input.len());
+            }
+        }
     }
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();

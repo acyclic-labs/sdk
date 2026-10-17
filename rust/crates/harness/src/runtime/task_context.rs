@@ -3,6 +3,12 @@ use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
+    fn task_id(&self) -> TaskId;
+    #[cfg(feature = "filesystem")]
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        None
+    }
+
     fn validate_scope(
         &self,
         scope: &RuntimeScope,
@@ -12,10 +18,20 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform + Any {
     fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn admission(&self) -> (&TaskAdmissionRecord, &WorkflowAdmission);
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        dispatch: crate::model::ModelDispatch,
+        fence: &'a crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>>;
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
+    fn file_publication_condition(
+        &self,
+    ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>>;
     fn send<'a>(
         &'a self,
         recipient: TaskId,
@@ -56,6 +72,78 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.owned_mailbox
+            .as_ref()
+            .and_then(|owner| owner.invocation_cancellation())
+    }
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn bind_ordinary_created_owner<P: acyclic_stream::StreamProvider + 'static>(
+        &mut self,
+        owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.native_custody.is_some() {
+            return Err(Error::Unauthorized(
+                "ordinary publication owner requires an ordinary context".into(),
+            ));
+        }
+        if self.scope.created_access.is_none() {
+            return Ok(());
+        }
+        owner.require_task_context_binding(self, None)?;
+        if let Some(access) = self.scope.created_access.as_mut() {
+            if Arc::get_mut(access).is_none() {
+                *access = Arc::new(crate::resource_preparation::CreatedResourceAccess {
+                    operation: access.operation,
+                    admission_digest: access.admission_digest,
+                    grants: access.grants.clone(),
+                    content: access
+                        .content
+                        .iter()
+                        .map(
+                            |binding| crate::resource_preparation::CreatedContentBinding {
+                                volume: binding.volume.clone(),
+                                authority: binding.authority.clone(),
+                                binding: binding.binding.clone(),
+                                default_writer: binding.default_writer,
+                                artifact_writer: binding.artifact_writer,
+                                scratch_creation: binding.scratch_creation.clone(),
+                            },
+                        )
+                        .collect(),
+                    references: access.references.clone(),
+                    proofs: access.proofs.clone(),
+                    publication_lease: access.publication_lease.clone(),
+                });
+            }
+            let access = Arc::get_mut(access).ok_or_else(|| {
+                Error::Conflict("created task scope is not uniquely owned".into())
+            })?;
+            if access.operation.into_bytes() != owner.task_id().into_bytes()
+                || access.admission_digest
+                    != owner.admission().canonical_digest_with_work(&mut None)?
+            {
+                return Err(Error::Unauthorized(
+                    "created publication owner differs from the admission seal".into(),
+                ));
+            }
+            access.publication_lease = Some(owner);
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn require_ordinary_metadata(&self) -> Result<()> {
+        if self.native_custody.is_some() {
+            return Err(Error::Unsupported(
+                "ordinary task files require ordinary ownership".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),
@@ -195,6 +283,7 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) fn ancestors(
         &self,
         task: TaskId,
@@ -420,6 +509,10 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     ))
 }
 
+#[cfg(any(
+    all(test, not(acyclic_harness_loom)),
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
 where
     F: FnMut(TaskId) -> Fut,

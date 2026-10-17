@@ -12,6 +12,52 @@ pub struct FileDescription {
 }
 
 /// One file resolved and authenticated by a specific pinned reader.
+///
+/// The handle is the only public way to read or plan a resolved record, and it
+/// always uses the reader that authenticated it.
+/// ```no_run
+/// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
+/// use acyclic_fs::{ResolvedFile, WorkBudget};
+/// async fn read<A: AsyncAuthorityStore, O: AsyncObjectStore>(file: &ResolvedFile<A, O>) {
+///     let range = ByteRange { offset: 0, length: 1 };
+///     let cancel = CancellationToken::new();
+///     let _ = file.read_range(range, WorkBudget::UNBOUNDED, &cancel).await;
+///     let _ = file.plan_extents(range, 1, WorkBudget::UNBOUNDED, &cancel).await;
+/// }
+/// ```
+/// A raw record cannot be read through an arbitrary reader.
+/// ```compile_fail,E0599
+/// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
+/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+///     reader: &PinnedReader<A, O>,
+///     record: FileRecord,
+/// ) {
+///     let range = ByteRange { offset: 0, length: 1 };
+///     let cancel = CancellationToken::new();
+///     let _ = reader.read_record_range(record, range, WorkBudget::UNBOUNDED, &cancel).await;
+/// }
+/// ```
+/// Nor can its extents be planned through an arbitrary reader.
+/// ```compile_fail,E0624
+/// use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken};
+/// use acyclic_fs::{PinnedReader, WorkBudget, kernel::FileRecord};
+/// async fn transplant<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+///     reader: &PinnedReader<A, O>,
+///     record: FileRecord,
+/// ) {
+///     let range = ByteRange { offset: 0, length: 1 };
+///     let cancel = CancellationToken::new();
+///     let _ = reader.plan_record_extents(record, range, 1, WorkBudget::UNBOUNDED, &cancel).await;
+/// }
+/// ```
+/// The authenticated record cannot be replaced after resolution.
+/// ```compile_fail,E0616
+/// use acyclic_fs::ResolvedFile;
+/// fn transplant<A, O>(file: &mut ResolvedFile<A, O>) {
+///     file.record.file_id = acyclic_fs::FileId::new();
+/// }
+/// ```
 pub struct ResolvedFile<A, O> {
     pub(super) reader: PinnedReader<A, O>,
     pub(super) record: FileRecord,
@@ -142,13 +188,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                             index,
                             request
                                 .file
-                                .reader
-                                .read_record_range(
-                                    request.file.record,
-                                    request.range,
-                                    WorkBudget::UNBOUNDED,
-                                    cancellation,
-                                )
+                                .read_range(request.range, WorkBudget::UNBOUNDED, cancellation)
                                 .await,
                         )
                     });

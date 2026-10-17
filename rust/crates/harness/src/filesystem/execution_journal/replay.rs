@@ -7,12 +7,15 @@ where
     O: AsyncObjectStore + 'static,
 {
     pub(super) fn journal_read_stream_error(
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
         code: crate::wire::ErrorCode,
         source: StreamError,
     ) -> Error {
         #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
+        if _native_io
+            .and_then(PreparationIo::original_native_work)
+            .is_some()
+        {
             return Error::NativeStream {
                 code,
                 source,

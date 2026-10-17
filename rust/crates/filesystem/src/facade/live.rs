@@ -178,6 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     /// Resumes the existing live retry controller on the original operation.
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) async fn resume_live_with_native_work<'a, E, F, Fut>(
         &mut self,
         operation_id: OperationId,

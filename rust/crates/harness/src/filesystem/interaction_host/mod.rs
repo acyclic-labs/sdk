@@ -64,7 +64,7 @@ where
         } = binding;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut result = with_history_io(io, |work| {
+        let result = with_history_io(io, |work| {
             verifier.verify_audience(authority, work)?;
             if authority.kind != crate::core::AggregateKind::Conversation
                 || private_volume.class() != VolumeClass::AgentPrivate
@@ -99,6 +99,8 @@ where
                 _native_metadata: None,
             })
         })?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut result = result;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;

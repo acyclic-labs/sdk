@@ -45,6 +45,7 @@ use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+mod bytes;
 mod admission;
 use admission::*;
 mod content;

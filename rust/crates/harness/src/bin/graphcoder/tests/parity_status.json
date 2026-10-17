@@ -1,0 +1,617 @@
+[
+  {
+    "section": "1. Slash commands",
+    "row": "/quit",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/shortcuts",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/new",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/delete",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/reasoning",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/details",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/diff",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/tree",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/terminal",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/find",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/pause",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/stop, /stopall",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/resume, /resumeall",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/mode",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/clearall",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/attention",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/theme",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/export",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/feedback",
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/killserver",
+    "status": "N/A; in-process LocalHarness by user ruling"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/open",
+    "status": "N/A; in-process LocalHarness by user ruling"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/shell",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/delegate",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/search",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/fetch",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "Slash autocomplete popup: prefix on name or alias, tools first, \"[tool]\" suffix, Tab or Enter applies, trailing space for tools and /theme",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "/theme name completion",
+    "status": "Deferred follow-up; omitted from ratatui catalog"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "Command palette: substring over name, alias and description; wraps",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "Catalog-driven help",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "1. Slash commands",
+    "row": "Custom prompt commands and skills",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Multiline buffer",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Soft wrap with memoized cache; vertical moves keep the target column",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Input grows to at most half the screen, then scrolls internally",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Scroll the input box",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Char left/right, Shift to select",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Word left/right",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Line start/end",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Buffer start/end",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Up/Down by visual line; Up on empty input cycles approvals and questions",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Backspace / Delete",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Delete word backward/forward",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Delete to line start",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Select all; typing replaces the selection",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Undo/redo grouped by 300 ms, 20 chars, or a whitespace or newline boundary",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Copy the input selection, else the transcript selection as markdown",
+    "status": "Deferred after #626: clipboard/copy effects; active-turn Ctrl+C cancellation is implemented separately"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Cut / paste (arboard)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Image paste: compress to 1568 px at q85, attach, \"N images attached\"",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Bracketed paste",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Burst fallback for terminals without bracketed paste",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Paste into an approval or question enters comment mode",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Submit",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Newline",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "`\\` then Enter inserts a newline",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Tab inserts spaces when no completion is active; Alt+Tab inserts a literal tab",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Tab or Shift+Tab cycles dock items",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Esc ladder (cancel edit, close popup, pause if busy, resume if stopped, clear selections, focus messages)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Edit a previous user message (yellow border, \"Editing message…\")",
+    "status": "Partial in #626; cancel/replacement file binding; navigation/copy deferred"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Contextual placeholder",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Opacity-fade cursor blink, reset on input; bar cursor when focused",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Input activity dot",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "@-file completion (keep the \"@\"; fuzzy, not substring)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Per-item drafts for approvals and questions",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "\"[Queued]\" badge on messages submitted while busy",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Repeat filter (only editing and navigation keys repeat)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "ConPTY CR and LF become one Enter",
+    "status": "Production uses term::Decoder; executable CR/LF/typeahead/late-reply scenario added; Windows ConPTY run remains live"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Voice dictation, \"● REC\"",
+    "status": "Deferred follow-up; no recording production binding"
+  },
+  {
+    "section": "2. Prompt editor",
+    "row": "Mouse: click, drag, double-click, triple-click",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Layout: header, messages, optional terminal panel, input dock, status line",
+    "status": "Partial in #626: transcript/prompt/completion/status/documents composed; terminal and question dock deferred"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Header: breadcrumb with busy ●/○, current agent bold, \"■ STOPPED\", [^P]ick hint",
+    "status": "Partial in #626: busy marker/title; breadcrumbs, stopped navigation and pick hint deferred"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Usage % (yellow at 75%, red at 90%)",
+    "status": "Deferred follow-up; thresholds and usage hints lack production binding"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Status line: Esc hint, attention [^.], REC, toggle hints lit when active, mode right-aligned",
+    "status": "Deferred follow-up; full contextual status hints lack production binding"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Message-select status hints",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Per-owner feedback line",
+    "status": "Bound in #626: followed notifications and immutable execution errors; execution_feedback TestBackend property"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Streaming markdown",
+    "status": "Bound in #626: canonical execution chunks followed live; styled TestBackend and withheld-completion PTY frames; missing-binding negative control"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "File-directive block previews",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "\"Thinking…\" shimmer",
+    "status": "Implemented on hf/gc-graphcoder-thinking-widget: file-backed busy state, themed shimmer, idle-free frame deadline; TestBackend/model controls and held-preparation PTY"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Typewriter reveal",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Reasoning toggle",
+    "status": "Implemented on hf/gc-graphcoder-shortcuts: declared shortcuts resolve enabled catalog actions; file-backed TestBackend remap/rename/removal property and missing-binding control"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Tool details toggle; subagent messages collapsed",
+    "status": "Details shortcut bound on hf/gc-graphcoder-shortcuts with file-backed TestBackend/control; subagent message grouping remains deferred"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Per-tool renderers, 20-line cap",
+    "status": "Deferred follow-up; generic shared rendering does not establish specialized production renderers"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Diffs: unified, split or auto; diffstat; caps",
+    "status": "Partial shared-model rendering; live changes, split/auto modes and pager deferred"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Code pager",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Changes panel (commits and diff, merge)",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Approval panel (no approval modes in release 1: always-approve. Keep the panel for question tools only)",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Questions: select, multi, rating, free text, comment mode",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Input dock header (pos/total, \"across N agents\")",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Agent tree navigator: Tree, Family and Attention views, fuzzy search, actions",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Agent navigation: parent, child, sibling, history",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Attention cycling",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Sessions panel",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Embedded terminal panel (vt100)",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Transcript search (incremental, Unicode case-fold)",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Message-select / rewind mode",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Transcript mouse selection; copy as markdown",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Smooth wheel scroll and coalescing",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Clickable scrollbar",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Load older history near the top",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Scroll anchor across updates and resize; follow tail",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "OSC 8 hyperlinks (wide-safe); Ctrl/Cmd+click opens",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Hostile-text sanitizing (escapes, bidi, unsafe URIs)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Themes: presets plus swatch picker, persisted",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Help overlay (generated from the keymap; must not drift)",
+    "status": "Implemented on hf/gc-graphcoder-shortcuts: declared shortcuts resolve enabled catalog actions; file-backed TestBackend remap/rename/removal property and missing-binding control"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Feedback overlay",
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Alt screen, mouse capture, bracketed paste, kitty DISAMBIGUATE, raw-mode guard, cleanup on partial failure",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Use /dev/tty or CONOUT$ when stdout is redirected",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "TERM=dumb leads to headless",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Terminal title (restore on exit)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Synchronized updates, frame skipping, keystroke fast path",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Resize coalescing and re-layout",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "3. TUI polish",
+    "row": "Incremental line cache",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Prompt history Up/Down at the buffer edges",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Ctrl+R reverse history search",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Kill ring (Ctrl+K/U/W kill, Ctrl+Y yank, Alt+Y rotate)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "$EDITOR via Ctrl+X Ctrl+E",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Large-paste collapse \"[Pasted N lines]\", expanded on submit",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Draft persistence across restarts",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "IME-safe input",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Grapheme and display-width wrap and motion (CJK, emoji, ZWJ, combining)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Status line: model, tokens, cost, context %",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Desktop notification or bell (BEL / OSC 9 / OSC 777) on turn end or attention while unfocused",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Exit summary (session id, resume hint, tokens/cost, pending work)",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "OSC 52 clipboard fallback (SSH, Wayland)",
+    "status": "Deferred follow-up; no production parity claimed"
+  },
+  {
+    "section": "Additions beyond the old TUI",
+    "row": "Inline (non-alt-screen) mode option",
+    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+  }
+]

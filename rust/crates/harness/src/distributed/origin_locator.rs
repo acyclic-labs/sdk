@@ -5,6 +5,7 @@ pub(super) fn encode(sequence: u64, key: &[u8; 32]) -> [u8; 40] {
     bytes
 }
 
+#[cfg(any(test, feature = "filesystem"))]
 pub(super) fn decode(bytes: &[u8]) -> Option<(u64, &[u8; 32])> {
     if bytes.len() != 40 {
         return None;

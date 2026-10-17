@@ -33,11 +33,34 @@ mod fixture {
 }
 use fixture::{Counts, Fixture};
 impl Fixture {
+    pub(super) async fn open<P: StreamProvider>(
+        provider: Arc<P>,
+        node: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::configured(provider, node, false, true).await
+    }
+    pub(super) async fn configured<P: StreamProvider>(
+        provider: Arc<P>,
+        node: &str,
+        withhold_welcome: bool,
+        confirm_checked: bool,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::with_options(
+            provider,
+            node,
+            fixture::Options {
+                withhold_welcome,
+                confirm_checked,
+                tls: false,
+            },
+        )
+        .await
+    }
     fn client(&self) -> Result<grpc::Client, Box<dyn std::error::Error + Send + Sync>> {
         match &self.tls_client {
             Some(client) => Ok(client.with_credential("fixture")?),
             None => Ok(grpc::Client::from_channel(
-                self.channel.clone(),
+                self._channel.clone(),
                 "Bearer fixture".parse()?,
             )),
         }
@@ -143,7 +166,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
     let (release, blocked) = oneshot::channel();
     let blocked = Arc::new(Mutex::new(Some(blocked)));
-    let channel = new.channel.clone();
+    let channel = new._channel.clone();
     let dials = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&dials);
     let started = Arc::new(tokio::sync::Notify::new());
@@ -162,7 +185,7 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,
@@ -342,7 +365,7 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
     append(&provider, "a", 1).await?;
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = Client::open(
-        fixture.channel.clone(),
+        fixture._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         None,
@@ -526,13 +549,13 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     }
     let old = Fixture::open(Arc::clone(&provider), "old").await?;
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
-    let channel = new.channel.clone();
+    let channel = new._channel.clone();
     let connect: Connect = Arc::new(move |_| {
         let channel = channel.clone();
         Box::pin(async move { Ok(channel) })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,

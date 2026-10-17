@@ -43,7 +43,7 @@ impl MountedVolume {
 
     pub(super) async fn project(&self, root: &Path, relative: &str, read_only: bool) -> Result<()> {
         initialize(&self.native, async || {
-            volumes::create_mount_directory(root, Path::new(relative))?;
+            volumes::prepare_mount_directory(root, Path::new(relative))?;
             let options = if read_only {
                 acyclic_fs::MountOptions::read_only()
             } else {

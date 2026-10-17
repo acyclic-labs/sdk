@@ -1,6 +1,7 @@
+#![cfg(feature = "filesystem-local")]
+
 use super::*;
 
-#[cfg(feature = "filesystem-local")]
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,

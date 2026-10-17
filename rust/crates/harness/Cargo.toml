@@ -1,6 +1,7 @@
 [package]
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
+autobins = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -26,6 +27,7 @@ required-features = ["tui"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "git_executor"
@@ -76,7 +78,7 @@ required-features = ["filesystem"]
 [[test]]
 name = "goal-files"
 path = "tests/goal_files.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "local-recursive-fork"
@@ -91,7 +93,7 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "filesystem_access"
@@ -113,11 +115,6 @@ path = "tests/decoder_properties.rs"
 [[test]]
 name = "client_history"
 path = "tests/client_history.rs"
-
-[[test]]
-name = "client_terminal"
-path = "tests/client_terminal.rs"
-required-features = ["terminal"]
 
 [[test]]
 name = "mcp-durable"
@@ -172,11 +169,6 @@ required-features = ["filesystem", "test-support"]
 [lib]
 crate-type = ["rlib", "cdylib"]
 
-[[bin]]
-name = "graphcoder"
-path = "src/bin/graphcoder.rs"
-required-features = ["terminal"]
-
 [[example]]
 name = "native-process-approval"
 required-features = ["filesystem"]
@@ -194,7 +186,7 @@ required-features = ["filesystem"]
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
-model-checking = ["dep:loom", "dep:same-file"]
+model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
@@ -280,7 +272,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
 proptest.workspace = true

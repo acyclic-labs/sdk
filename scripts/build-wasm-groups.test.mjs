@@ -231,3 +231,18 @@ test("Linux warms isolated WASM targets within its worker budget before the comp
   assert.equal(JSON.parse(readFileSync("package.json", "utf8")).scripts.test,
     "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts");
 });
+
+
+test("WASM builds reject manual JS byte copies outside the snapshot boundary", () => {
+  const start = build.indexOf("const assertByteSnapshotBoundary =");
+  const end = build.indexOf("const checkByteSnapshotBoundary =", start);
+  const check = runInNewContext(`${build.slice(start, end)}; assertByteSnapshotBoundary`);
+  const directory = "rust/crates/harness/src/wasm";
+  for (const file of readdirSync(directory, { recursive: true }).filter(file => file.endsWith(".rs"))) {
+    check(file, readFileSync(`${directory}/${file}`, "utf8").replaceAll("\r\n", "\n"));
+  }
+  for (const expression of ["caller.to_vec()", "caller.copy_to(&mut bytes)", "Uint8Array::new(&caller)"]) {
+    assert.throws(() => check("file_worker.rs", expression), /copy caller arrays through/);
+  }
+  assert.ok(build.indexOf("checkByteSnapshotBoundary(join(root,") < build.indexOf("const cargo ="));
+});

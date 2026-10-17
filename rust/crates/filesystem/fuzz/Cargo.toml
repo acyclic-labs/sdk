@@ -12,6 +12,10 @@ acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 libfuzzer-sys = "0.4"
 serde.workspace = true
 serde_json.workspace = true
+tempfile = "3.27.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["fs", "net"] }
 
 [dev-dependencies]
 loom = "0.7"
@@ -23,6 +27,13 @@ path = "tests/model.rs"
 [[bin]]
 name = "access"
 path = "fuzz_targets/access.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuse_reply"
+path = "fuzz_targets/fuse_reply.rs"
 test = false
 doc = false
 bench = false

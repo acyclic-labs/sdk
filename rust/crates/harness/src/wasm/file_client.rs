@@ -60,16 +60,12 @@ impl WasmFileClient {
         if let Err(failure) = crate::client::validate_request_key(&key) {
             return js_sys::Promise::reject(&admission_error(failure));
         }
-        // Reserve synchronously, before any future or mailbox waiter retains the buffer.
-        // A small view still retains its entire backing buffer, including permitted growth.
-        let buffer = bytes.buffer();
-        let retained = js_sys::Reflect::get(&buffer, &JsValue::from_str("maxByteLength"))
-            .ok()
-            .and_then(|value| value.as_f64())
-            .unwrap_or(f64::from(buffer.byte_length())) as u64;
-        let reservation = match self.waiting.reserve(retained) {
-            Ok(reservation) => reservation,
-            Err(failure) => return js_sys::Promise::reject(&admission_error(failure)),
+        // Copy synchronously after admission. No future or command retains JS storage.
+        let (bytes, reservation) = match super::bytes::snapshot(&bytes, |length| {
+            self.waiting.reserve(length).map_err(admission_error)
+        }) {
+            Ok(snapshot) => snapshot,
+            Err(failure) => return js_sys::Promise::reject(&failure),
         };
         let commands = self.commands.clone();
         wasm_bindgen_futures::future_to_promise(async move {
