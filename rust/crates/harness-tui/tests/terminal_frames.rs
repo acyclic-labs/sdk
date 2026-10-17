@@ -575,3 +575,58 @@ fn an_outside_cursor_move_is_corrected_by_an_unchanged_frame() {
     let (_, cursor, _) = after_outside_access(&placed, false, None, move_home);
     assert_eq!(cursor, (0, 0));
 }
+
+/// Fail a whole presentation before it reaches the device, then recover.
+struct RetryDevice {
+    device: Device,
+    fail: Rc<std::cell::Cell<bool>>,
+}
+impl Present for RetryDevice {
+    fn present(&mut self, frame: &mut Vec<u8>, _: bool) -> io::Result<()> {
+        if self.fail.replace(false) {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.device.write_all(frame)
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        Some(0)
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(48))]
+    // Property: after any failed cursor-only change, retry restores the
+    // requested position/visibility and the successful repeat costs nothing.
+    #[test]
+    fn a_failed_cursor_change_is_retried(
+        position in (1..WIDTH, 1..HEIGHT), hidden in any::<bool>(),
+    ) {
+        let device = Device::default();
+        let fail = Rc::new(std::cell::Cell::new(false));
+        let mut terminal = FrameTerminal::new(RetryDevice {
+            device: device.clone(), fail: Rc::clone(&fail),
+        }, Size::new(WIDTH, HEIGHT)).unwrap();
+        let base: Scene = (vec!["prompt".into()], Some((0, 0)));
+        let changed: Scene = (base.0.clone(), if hidden { None } else { Some(position) });
+        terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &base)).unwrap();
+        let mut bytes = device.take().concat();
+        let before = screen(&bytes);
+        fail.set(true);
+        let error = terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &changed));
+        prop_assert_eq!(error.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        prop_assert!(device.take().is_empty());
+        terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &changed)).unwrap();
+        let retry = device.take();
+        prop_assert_eq!(retry.len(), 1);
+        bytes.extend(retry.concat());
+        let recovered = screen(&bytes);
+        prop_assert_eq!(recovered.2, !hidden);
+        if !hidden {
+            prop_assert_eq!(recovered.1, (usize::from(position.1), usize::from(position.0)));
+        }
+        // Negative control: dropping the retry leaves the original cursor.
+        prop_assert_ne!((before.1, before.2), (recovered.1, recovered.2));
+        terminal.draw(Size::new(WIDTH, HEIGHT), |frame| paint(frame, &changed)).unwrap();
+        prop_assert!(device.take().is_empty());
+    }
+}
