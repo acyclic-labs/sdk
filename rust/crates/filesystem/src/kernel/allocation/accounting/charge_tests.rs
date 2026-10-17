@@ -9,10 +9,12 @@ fn scope(
 ) -> crate::NativeMaterializationWork {
     let mut work = root.clone();
     for limit in limits {
-        // Linking the invocation examines one cancellation registration.
-        // Keep the generated allowance available after that setup charge.
+        // Linking examines one registration and reserves three cleanup items.
+        // Keep the generated allowance available after setup and reservation.
         let mut limit = *limit;
-        limit.items_examined = limit.items_examined.saturating_add(u64::from(invocation));
+        limit.items_examined = limit
+            .items_examined
+            .saturating_add(4 * u64::from(invocation));
         work = work.native_volume_work(limit).unwrap();
     }
     if invocation {
@@ -36,17 +38,34 @@ proptest! {
     ) {
         let root_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
         let caller_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
-        let roots = [0,1].map(|i| crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &root_cancel[i]).unwrap());
         let allowances = resource_limits.map(|limits| WorkBudget {
             bytes_copied: limits[0], items_examined: limits[1], bytes_hashed: limits[2], ..WorkBudget::UNBOUNDED
         });
+        // Discover only the deterministic setup cost in independent state;
+        // construct the tested roots with real finite budgets. Never overwrite
+        // a budget after setup: invocation cleanup already owns reserved credit.
+        let setup_root = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).unwrap();
+        let setup = scope(&setup_root, &allowances[..usize::from(depth)], invocation);
+        let cost = setup.state(|state| {
+            let mut reserved = state.budget.remaining(state.original_budget()).unwrap();
+            reserved.peak_allocation_bytes = 0;
+            state.work.checked_add(reserved).unwrap()
+        });
+        drop(setup);
+        drop(setup_root);
+        let mut total = serde_json::to_value(cost).unwrap();
+        let extra = serde_json::to_value(counters(limits)).unwrap();
+        for (key, value) in total.as_object_mut().unwrap() {
+            *value = serde_json::json!(value.as_u64().unwrap().saturating_add(extra[key].as_u64().unwrap()));
+        }
+        let budget = if bounded { serde_json::from_value(total).unwrap() } else { WorkBudget::UNBOUNDED };
+        let roots = [0,1].map(|i| crate::NativeMaterializationWork::new(budget, &root_cancel[i]).unwrap());
         let work = roots.each_ref().map(|root| {
             let work = scope(root, &allowances[..usize::from(depth)], invocation);
             if recheck { work.recheck_admitted() } else { work }
         });
-        let budget = if bounded { counters(limits) } else { WorkBudget::UNBOUNDED };
         for original in &work {
-            original.state(|state| { state.work = counters(prior); state.budget = budget; });
+            let _ = original.record_admitted(counters(prior));
         }
         for (step, delta) in deltas.into_iter().map(counters).enumerate() {
             if step == stop_at {
