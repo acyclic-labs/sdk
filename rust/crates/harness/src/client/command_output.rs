@@ -206,7 +206,11 @@ impl Projection {
         if archived || reset {
             self.archive_len = transcript.streaming_text.len();
         }
-        if offset == 0 && !delta.is_empty() && self.archive_len != 0 {
+        if offset == 0
+            && !delta.is_empty()
+            && self.archive_len != 0
+            && (restart || self.live_len == 0)
+        {
             transcript.streaming_text.push_str("\n\n");
         }
         if !restart {

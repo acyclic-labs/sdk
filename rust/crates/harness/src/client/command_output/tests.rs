@@ -27,7 +27,7 @@ proptest! {
 }
 
 #[cfg(all(feature = "tui", feature = "terminal"))]
-fn check_partition(text: &str, cuts: &[bool]) {
+fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
     use crate::{
         client::{ClientViews, task_projection},
         task_volume::{Channel, Component, FileKey, TaskFile},
@@ -42,6 +42,13 @@ fn check_partition(text: &str, cuts: &[bool]) {
     let mut views = ClientViews::default();
     let mut projection = Projection {
         owner: "AGGREGATE_KIND_TASK:composed".into(),
+        after: u64::from(!prefix.is_empty()),
+        revision: 1,
+        segments: if prefix.is_empty() {
+            Vec::new()
+        } else {
+            vec![std::sync::Arc::from(prefix)]
+        },
         ..Default::default()
     };
     let mut renderer = ClientRenderer::default();
@@ -69,9 +76,14 @@ fn check_partition(text: &str, cuts: &[bool]) {
         compose_work += projection.apply(&mut views, Some(task));
         renderer.update(&views, &owner);
         let composed = &views.transcripts["AGGREGATE_KIND_TASK:composed"];
+        let head = if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}\n\n")
+        };
         assert_eq!(
             composed.streaming_text,
-            String::from_utf8_lossy(&text.as_bytes()[..end])
+            format!("{head}{}", String::from_utf8_lossy(&text.as_bytes()[..end]))
         );
         start = end;
         chunks += 1;
@@ -81,16 +93,20 @@ fn check_partition(text: &str, cuts: &[bool]) {
         .transcripts
         .entry("AGGREGATE_KIND_TASK:composed".into())
         .or_default();
-    transcript.streaming_text = text.into();
+    transcript.streaming_text = if prefix.is_empty() {
+        text.into()
+    } else {
+        format!("{prefix}\n\n{text}")
+    };
     transcript.streaming_turn = views.transcripts["AGGREGATE_KIND_TASK:composed"].streaming_turn;
     let mut expected = ClientRenderer::default();
     expected.update(&unsplit, &owner);
     assert_eq!(renderer.screen().transcript, expected.screen().transcript);
     assert!(fold_work <= text.len() + 3 * chunks as usize);
-    assert!(compose_work <= text.len() + 6 * chunks as usize);
+    assert!(compose_work <= prefix.len() + text.len() + 6 * chunks as usize);
     assert_eq!(
         renderer.text_work(),
-        text.len(),
+        prefix.len() + usize::from(!prefix.is_empty()) * 2 + text.len(),
         "stable Markdown bytes must be fed exactly once"
     );
 }
@@ -111,7 +127,8 @@ fn every_partition_repairs_same_length_utf8_in_composition_and_rendering() {
         let cuts: Vec<_> = (0..text.len() - 1)
             .map(|bit| mask & (1 << bit) != 0)
             .collect();
-        check_partition(text, &cuts);
+        check_partition(text, &cuts, "");
+        check_partition(text, &cuts, "retained archive");
     }
 }
 
@@ -123,5 +140,5 @@ proptest! {
     #[test]
     fn utf8_byte_partitions_preserve_rendered_text_and_linear_work(
         text in "[a-z日é€🙂\\n*# ]{1,40}", cuts in prop::collection::vec(any::<bool>(), 0..200)
-    ) { check_partition(&text, &cuts); }
+    ) { check_partition(&text, &cuts, ""); check_partition(&text, &cuts, "retained archive"); }
 }
