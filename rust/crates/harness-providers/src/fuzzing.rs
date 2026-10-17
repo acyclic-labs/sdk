@@ -443,3 +443,59 @@ pub(crate) fn assert_model_json_round_trip(value: &serde_json::Value) {
         projection_schema: value.clone(),
     });
 }
+
+/// OAR-RSN-02 from raw bytes. Validation agrees with an independent
+/// input-derived reference, and the production sequence fold repairs exactly
+/// the unanswered reasoning items without dropping or reordering any item.
+pub fn assert_response_sequence(input: &[u8]) {
+    use crate::projection::native_reasoning::replay_responses;
+    let Ok(body) = crate::json(input) else { return };
+    let errors = crate::validate_input(Adapter::Responses, &body);
+    let replay = crate::json(&serde_json::to_vec(&body).unwrap()).unwrap();
+    assert_eq!(body, replay);
+    assert_eq!(errors, crate::validate_input(Adapter::Responses, &replay));
+    let Some(items) = body["input"].as_array() else {
+        return;
+    };
+    assert_eq!(
+        errors.contains(&"OAR-RSN-02"),
+        unanswered_reasoning(items) > 0
+    );
+    let output = replay_responses(items);
+    assert_eq!(response_repair_violation(items, &output), None);
+    assert_eq!(
+        replay_responses(&output),
+        output,
+        "repair is not idempotent"
+    );
+}
+
+/// The structured detector shared by the fuzz oracle and its negative controls.
+pub(crate) fn response_repair_violation(
+    items: &[serde_json::Value],
+    output: &[serde_json::Value],
+) -> Option<&'static str> {
+    if unanswered_reasoning(output) > 0 {
+        return Some("unanswered reasoning");
+    }
+    if output.len() != items.len() + unanswered_reasoning(items) {
+        return Some("unrequired repair");
+    }
+    let mut rest = output.iter();
+    (!items.iter().all(|item| rest.any(|next| next == item))).then_some("lost item")
+}
+
+/// Independent reference, deliberately not `ResponseItem`: each reasoning item
+/// is immediately followed by a function call or an assistant message.
+fn unanswered_reasoning(items: &[serde_json::Value]) -> usize {
+    (0..items.len())
+        .filter(|&index| {
+            items[index]["type"] == "reasoning"
+                && !items.get(index + 1).is_some_and(|next| {
+                    next["type"] == "function_call"
+                        || (next["type"].as_str().unwrap_or("message") == "message"
+                            && next["role"] == "assistant")
+                })
+        })
+        .count()
+}

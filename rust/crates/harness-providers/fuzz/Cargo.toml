@@ -19,3 +19,10 @@ path = "fuzz_targets/provider_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "response_sequence"
+path = "fuzz_targets/response_sequence.rs"
+test = false
+doc = false
+bench = false

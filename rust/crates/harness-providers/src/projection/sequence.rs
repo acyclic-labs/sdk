@@ -1,13 +1,23 @@
 //! Portable role boundaries and stateless reasoning-item adjacency.
 use super::wire::{Item, Message};
-use crate::Adapter;
+use crate::{Adapter, protocol::sequence::ResponseItem};
 use acyclic_harness::Result;
 use serde_json::json;
 
 pub(super) fn push<'a>(
     adapter: Adapter,
     messages: &mut Vec<Message<'a>>,
+    next: Message<'a>,
+) -> Result<()> {
+    push_with_successor(adapter, messages, next, ResponseItem::allows)
+}
+
+/// `allows` is always `ResponseItem::allows` outside negative controls.
+pub(super) fn push_with_successor<'a>(
+    adapter: Adapter,
+    messages: &mut Vec<Message<'a>>,
     mut next: Message<'a>,
+    allows: impl Fn(ResponseItem, ResponseItem) -> bool,
 ) -> Result<()> {
     if matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         && messages.is_empty()
@@ -16,8 +26,9 @@ pub(super) fn push<'a>(
         messages.push(continuation(adapter));
     }
     if adapter == Adapter::Responses
-        && matches!(messages.last(), Some(Message::Item(Item::Native(_))))
-        && !produced(&next)
+        && messages
+            .last()
+            .is_some_and(|last| !allows(response_item(last), response_item(&next)))
     {
         messages.push(reasoning_output());
     }
@@ -104,7 +115,11 @@ pub(super) fn finish(adapter: Adapter, messages: &mut Vec<Message<'_>>) {
                 messages.push(continuation(adapter));
             }
         }
-        Adapter::Responses if matches!(messages.last(), Some(Message::Item(Item::Native(_)))) => {
+        Adapter::Responses
+            if messages
+                .last()
+                .is_some_and(|last| !response_item(last).allows(ResponseItem::End)) =>
+        {
             messages.push(reasoning_output())
         }
         _ => {}
@@ -116,9 +131,14 @@ fn role(message: &Message<'_>) -> &'static str {
         _ => "",
     }
 }
-fn produced(message: &Message<'_>) -> bool {
-    matches!(message, Message::Item(Item::Call(_)))
-        || matches!(message,Message::Item(Item::Json(item)) if item["type"]=="function_call" || (item["type"]=="message" && item["role"]=="assistant"))
+fn response_item(message: &Message<'_>) -> ResponseItem {
+    match message {
+        // Native replay admits only the Responses reasoning shape.
+        Message::Item(Item::Native(_)) => ResponseItem::Reasoning,
+        Message::Item(Item::Call(_)) => ResponseItem::Output,
+        Message::Item(Item::Json(item)) => ResponseItem::of(item),
+        _ => ResponseItem::Other,
+    }
 }
 fn continuation<'a>(adapter: Adapter) -> Message<'a> {
     match adapter {
@@ -137,3 +157,6 @@ fn reasoning_output<'a>() -> Message<'a> {
         json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"(no visible response)","annotations":[]}]}),
     ))
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
