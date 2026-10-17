@@ -40,15 +40,22 @@ impl DemandWork {
             roots: Admissions::default(),
         }
     }
+    #[inline]
     pub(crate) fn scope<T, R>(
         &mut self,
-        field: fn(&mut Self) -> &mut T,
+        field: impl Fn(&mut Self) -> &mut T,
         value: T,
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let saved = std::mem::replace(field(self), value);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(self)));
-        *field(self) = saved;
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let restore = !super::scope_tests::omit_restore();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let restore = true;
+        if restore {
+            *field(self) = saved;
+        }
         answer.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     }
     pub(crate) fn original_budget(&self) -> WorkBudget {
