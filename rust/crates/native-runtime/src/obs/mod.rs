@@ -35,9 +35,12 @@ pub struct OperationSpan {
     dispatch: Dispatch,
 }
 
+#[cfg(not(test))]
+use tracing::dispatcher::with_default as with_dispatch;
+
+#[cfg(test)]
 #[inline]
 fn with_dispatch<T>(dispatch: &Dispatch, work: impl FnOnce() -> T) -> T {
-    #[cfg(test)]
     tests::DISPATCH_INSTALLS.with(|count| count.set(count.get() + 1));
     tracing::dispatcher::with_default(dispatch, work)
 }
