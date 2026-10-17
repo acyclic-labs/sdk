@@ -1,20 +1,9 @@
-// Product documentation and byte-input fixtures are the only places for Markdown.
-// Reserved operational names still lose inside documentation directories.
-const rootDocs = new Set([
-  'ARCHITECTURE.md', 'CHANGELOG.md', 'CODE_OF_CONDUCT.md', 'CONTRIBUTING.md',
-  'DCO.md', 'NATIVE_MOUNT_QUALIFICATION.md', 'README.md', 'SECURITY.md',
-  '.github/pull_request_template.md',
-]);
-const specialDocs = new Set([
-  'arena/evals/REPORT.md', 'arena/evals/labelbias/REPORT.md',
-  'arena/evals/variance/REPORT.md', 'arena/evals/variance/variance-space.md',
-  'arena/evals/variance/variance.md', 'arena/evals/published/2026-09-22-first.md',
-  'ffi/abi-policy.md', 'plugin/identity-api.md', 'plugin/identity-mcp.md',
-  'rust/crates/conformance/S3_STORAGE_DESIGN.md', 'rust/crates/filesystem/KANI.md',
-  'rust/crates/filesystem/native-exchange-contract.md',
-  'rust/crates/sdk-docs/proofs/safe-version-injectivity.md',
-  'rust/vendor/tonic-web-wasm-client-0.9.2/ACYCLIC_PROVENANCE.md',
-]);
+import {readFileSync} from 'node:fs';
+
+// New product documentation requires explicit registration in the same diff.
+const productDocs = new Set(JSON.parse(readFileSync(
+  new URL('./product-documentation.json', import.meta.url), 'utf8',
+)));
 
 export function laneArtifactViolation(path) {
   const lower = path.toLowerCase();
@@ -27,10 +16,6 @@ export function laneArtifactViolation(path) {
       || /(?:^|[-_.])(?:verdict|lane-log|build-receipt|scratch-notes)(?:[-_.]|$)/.test(name)
       || /\.log$/.test(lower)) return 'lane artifacts belong outside the product repository';
   if (!/\.(?:md|markdown|mdown)$/i.test(path)) return;
-  if (rootDocs.has(path) || specialDocs.has(path)
-      || /^(?:arena|conformance|examples|ffi|languages|plugin|proto|provenance|release|rust|scripts\/vendor|tools\/sdk-generator|typescript\/packages)\/(?:[^/]+\/)*(?:README|CHANGELOG)\.md$/.test(path)
-      || /^docs\/[^/]+\.md$/.test(path)
-      || /^rust\/crates\/harness\/docs\/(?:client\/)?[^/]+\.md$/.test(path)
-      || /^typescript\/packages\/[^/]+\/docs\/[^/]+\.md$/.test(path)) return;
+  if (productDocs.has(path)) return;
   return 'Markdown path is outside the product documentation and fixture allowlist';
 }

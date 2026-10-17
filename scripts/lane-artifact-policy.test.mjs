@@ -8,7 +8,8 @@ test('operational names cannot hide under product documentation', () => {
       assert.ok(laneArtifactViolation(root + name), root + name);
     }
   }
-  for (const path of ['notes.md', 'plans/fix.markdown', 'lanes/README.md', 'review.mdown']) {
+  for (const path of ['notes.md', 'plans/fix.markdown', 'lanes/README.md', 'review.mdown',
+    'docs/approvals-map.md', 'docs/scratch-plan.md', 'docs/new-product-guide.md', 'docs/README.md']) {
     assert.ok(laneArtifactViolation(path), path);
   }
 });

@@ -21,12 +21,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          fetch-depth: 0
       - name: Check changed paths for lane artifacts
         env:
           ARTIFACT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           ARTIFACT_HEAD: ${{ github.sha }}
-        run: node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
+        run: |
+          if [[ -n "$ARTIFACT_BASE" && ! "$ARTIFACT_BASE" =~ ^0+$ ]]; then
+            git fetch --no-tags --depth=1 origin "$ARTIFACT_BASE"
+          fi
+          node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
       - name: Verify lane artifact gate and its negative control
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
       - name: Check lockfile and manifests without compiling

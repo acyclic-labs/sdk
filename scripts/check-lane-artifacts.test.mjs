@@ -14,8 +14,8 @@ test('every PR and main push runs the real changed-path gate with event-bound co
   assert.deepEqual(workflow.on.push, {branches: ['main']});
   const job = workflow.jobs.static;
   assert.equal(job.if, undefined);
-  assert.equal(job.steps[0].with['fetch-depth'], 0);
-  const gate = job.steps.find(step => step.run?.startsWith('node scripts/check-lane-artifacts.mjs'));
+  assert.equal(job.steps[0].with['fetch-depth'] ?? 1, 1);
+  const gate = job.steps.find(step => step.run?.includes('node scripts/check-lane-artifacts.mjs'));
   assert.ok(gate);
   assert.equal(gate.if, undefined);
   assert.equal(gate['continue-on-error'], undefined);
@@ -23,7 +23,13 @@ test('every PR and main push runs the real changed-path gate with event-bound co
     ARTIFACT_BASE: '${{ github.event.pull_request.base.sha || github.event.before }}',
     ARTIFACT_HEAD: '${{ github.sha }}',
   });
-  assert.equal(gate.run, 'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"');
+  assert.equal(gate.run, [
+    'if [[ -n "$ARTIFACT_BASE" && ! "$ARTIFACT_BASE" =~ ^0+$ ]]; then',
+    '  git fetch --no-tags --depth=1 origin "$ARTIFACT_BASE"',
+    'fi',
+    'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"',
+    '',
+  ].join('\n'));
 });
 
 test('real Git changed-path gate rejects committed artifacts and permits their removal', () => {
@@ -45,8 +51,15 @@ test('real Git changed-path gate rejects committed artifacts and permits their r
   try {
     git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
     write('README.md'); write('inherited.md'); const baseline = commit();
-    write('docs/product.md'); const healthy = commit();
+    write('docs/ci-releases.md'); const healthy = commit();
     assert.equal(check(baseline).status, 0);
+    for (const path of ['docs/approvals-map.md', 'docs/scratch-plan.md', 'docs/new-product-guide.md']) {
+      write(path); commit();
+      const result = check(healthy);
+      assert.equal(result.status, 1, path + ': ' + result.stderr);
+      assert.ok(result.stderr.includes(path), result.stderr);
+      git('rm', path); commit();
+    }
     // Negative control: introduce the real forbidden path through Git, then
     // run exactly the CLI used by CI. A detached policy-only oracle cannot pass.
     write('docs/rev-839-verdict2.md'); commit();
@@ -55,7 +68,7 @@ test('real Git changed-path gate rejects committed artifacts and permits their r
     assert.match(rejected.stderr, /docs\/rev-839-verdict2\.md/);
     git('rm', 'docs/rev-839-verdict2.md'); commit();
     assert.equal(check(healthy).status, 0);
-    git('mv', 'docs/product.md', 'lane-log.txt'); commit();
+    git('mv', 'docs/ci-releases.md', 'lane-log.txt'); commit();
     assert.equal(check(healthy).status, 1);
     git('rm', 'lane-log.txt'); write('inherited.md', 'edited\n'); commit();
     assert.equal(check(healthy).status, 1, 'modifying inherited disallowed docs is gated');
