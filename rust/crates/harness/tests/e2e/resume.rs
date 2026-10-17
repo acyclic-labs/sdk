@@ -275,7 +275,7 @@ impl ModelProvider for PausedPrefix {
         _: PreparedModelRequest,
         _: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
-        Box::pin(futures::stream::unfold(false, |sent| async move {
+        Box::pin(futures::stream::unfold(false, move |sent| async move {
             if !sent {
                 return Some((
                     Ok(ModelEvent::Content {
