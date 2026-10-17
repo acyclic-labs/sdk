@@ -21,6 +21,7 @@ const REMEMBERED_COLLECTIONS: usize = 4;
 pub struct Collection {
     gate: Arc<tokio::sync::RwLock<()>>,
     running: Arc<tokio::sync::Mutex<()>>,
+    epochs: Epochs,
     state: Mutex<State>,
     holds: Mutex<Holds>,
 }
@@ -83,6 +84,11 @@ impl Collection {
         self.state().sweeps
     }
 
+    /// Collections begun, for cached proofs that must not outlive one.
+    pub(crate) fn epochs(&self) -> &Epochs {
+        &self.epochs
+    }
+
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -123,6 +129,8 @@ impl Collection {
         // One at a time: a collection owns the admitted set until it ends.
         let running = Arc::clone(&self.running).lock_owned().await;
         let _admitted_before = self.gate.write().await;
+        // Before marking: a proof cached under an earlier epoch is never reused.
+        self.epochs.begin();
         let mut state = self.state();
         let began = state.sweeps;
         state.collections.push_back(began);
@@ -195,10 +203,12 @@ impl Drop for Collecting {
 }
 
 mod buffers;
+mod epoch;
 mod holds;
 mod roots;
 pub(crate) use buffers::{clone_generation_root, clone_generation_root_with_accounting};
 use buffers::{held_owned_bytes, root_parent_bytes};
+pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::Hold;
 use holds::{Holds, Slot};
 pub(crate) use roots::CheckoutRoots;
