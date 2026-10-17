@@ -80,7 +80,7 @@ impl Destination for Pinned {
             self.parent.as_ref().as_raw_fd()
         ));
         NativeMountRecoveryOwner::acquire(
-            &parent.join(
+            &parent.join(".").join(
                 self.path
                     .file_name()
                     .ok_or(NativeMountError::InvalidDestination)?,

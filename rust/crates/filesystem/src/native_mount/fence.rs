@@ -121,7 +121,21 @@ impl MountDestinationGuard {
         }
         let directory = Self::destination_directory(destination, allow_nonempty, recovery, native)?;
         #[cfg(unix)]
-        let canonical_owner = crate::native_host::canonical_directory_path_held(directory, work)?;
+        let (canonical_owner, held_recovery_directory) = if recovery {
+            let copy = work.attempt_io(
+                crate::materializer::NativeResourceCredit::ReadOperations.delta(1),
+                || directory.try_clone(),
+            )?;
+            (
+                crate::native_host::canonical_directory_path_held(copy, work)?,
+                Some(directory),
+            )
+        } else {
+            (
+                crate::native_host::canonical_directory_path_held(directory, work)?,
+                None,
+            )
+        };
         #[cfg(windows)]
         let canonical_owner = crate::native_host::canonical_directory_wide(&directory, work)?;
         // The actual native allocation guard stays after the path in this
@@ -171,10 +185,7 @@ impl MountDestinationGuard {
             if recovery && result.is_ok() {
                 #[cfg(unix)]
                 {
-                    crate::native_host::open_root_directory(canonical, work)
-                        .map(|(directory, _)| directory)
-                        .map(Some)
-                        .map_err(Into::into)
+                    Ok(held_recovery_directory)
                 }
                 #[cfg(windows)]
                 {
