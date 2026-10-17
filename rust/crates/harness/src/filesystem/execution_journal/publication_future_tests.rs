@@ -1,6 +1,7 @@
 use super::*;
-use crate::test_support::differential;
+use crate::test_support::accounted::accounted;
 use crate::{AgentId, conversation::VolumeOwner, resources::ProviderRef};
+use acyclic_test_support::differential;
 use proptest::prelude::*;
 
 type Journal = FilesystemExecutionJournal<
@@ -206,11 +207,12 @@ async fn persisted(journal: &Journal, operation: OperationId) -> Result<[Vec<Vec
 }
 
 async fn turn(
-    journal: Journal,
+    journal: &Journal,
     old: bool,
     prompt: &str,
     deltas: usize,
     broken: bool,
+    host: Option<Arc<dyn crate::runtime::DurableTaskHost>>,
 ) -> Result<[Vec<Vec<u8>>; 3]> {
     use crate::{
         context::ContextPipeline,
@@ -244,13 +246,19 @@ async fn turn(
         ToolRegistry::default(),
     )
     .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
+    let executor = if let Some(host) = host {
+        let (task, fence) = journal.owner.as_ref().unwrap().0.task_binding();
+        executor.with_durable_task(host, task, fence.clone())
+    } else {
+        executor
+    };
     let input = TurnInput {
         operation_id: operation,
         input: ModelContent::Text(prompt.into()),
         selected_context: None,
         max_steps: 1,
     };
-    let selected = Choice(&journal, old);
+    let selected = Choice(journal, old);
     let output = executor.execute(input.clone(), &selected).await?;
     assert_eq!(executor.execute(input, &selected).await?, output);
     assert_eq!(provider.remaining(), 0);
@@ -260,7 +268,7 @@ async fn turn(
         .map(crate::contract::canonical_json_bytes)
         .collect::<Result<Vec<_>>>()?;
     assert_eq!(requests.len(), 1);
-    let [raw, publications] = persisted(&journal, operation).await?;
+    let [raw, publications] = persisted(journal, operation).await?;
     assert!(!raw.is_empty() && !publications.is_empty());
     if broken {
         let descriptor = crate::conversation::FileDescriptor::from_bytes(
@@ -271,6 +279,90 @@ async fn turn(
         descriptor.verify(&requests[0], &mut None)?; // Extra real verification, unchanged outputs.
     }
     Ok([requests, raw, publications])
+}
+
+#[test]
+fn journal_unmetered_task_files_match_main() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let operation = OperationId::from_bytes([4; 16]);
+    let initialize = || {
+        runtime
+            .block_on(async {
+                let fixture = crate::durable_host::tests::fixture::Fixture::new(
+                    Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+                        Default::default(),
+                        Arc::new(Clock),
+                    )),
+                    acyclic_fs::Fs::memory(),
+                    serde_json::json!({"type":"integer"}),
+                    Some(crate::scheduler::SessionLimits {
+                        active_tasks: 1,
+                        total_tasks: 1,
+                        depth: 0,
+                        model_steps: 2,
+                    }),
+                    &[],
+                )
+                .await?;
+                let journal = fixture.execution(fixture.running(80).await?, operation)?;
+                let files = crate::task_volume::TaskFiles::open(
+                    fixture.stream.clone(),
+                    &fixture.storage,
+                    &fixture.issuer.verifier(&mut None)?,
+                    &journal.scope,
+                    65_536,
+                )
+                .await?;
+                Ok::<_, Error>((journal.with_task_files(Some(Arc::new(files))), fixture.host))
+            })
+            .unwrap()
+    };
+    for broken in [false, true] {
+        let [expected, actual] =
+            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
+                runtime.block_on(async {
+                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
+                        .await
+                        .unwrap();
+                    if broken && !old {
+                        // Restore the erroneous unconditional publication on a fresh
+                        // candidate fixture; canonical journal bytes stay unchanged.
+                        let records = journal.records(operation, 0, 64, None).await.unwrap();
+                        let record = records
+                            .iter()
+                            .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
+                            .unwrap();
+                        journal
+                            .publish_chunk("model:0:event:0", &record.event, None)
+                            .await
+                            .unwrap();
+                    }
+                    let snapshot = journal
+                        .task_files
+                        .as_ref()
+                        .unwrap()
+                        .snapshot(&crate::task_volume::Query::Root, 16)
+                        .await
+                        .unwrap();
+                    (artifacts, snapshot.files)
+                })
+            });
+        assert_eq!(expected.0.0, actual.0.0);
+        assert!(expected.0.1.is_empty());
+        if broken {
+            assert_eq!(actual.0.1.len(), 1);
+            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
+            assert_ne!(
+                expected, actual,
+                "unconditional publication was not detected"
+            );
+        } else {
+            assert_eq!(expected, actual);
+        }
+    }
 }
 
 proptest! {
@@ -289,7 +381,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: if failure == 1 { [0;32] } else { digest } };
         let key = if failure == 2 { "" } else { &key };
         for mode in 0..5 {
-            let observations = differential::pair(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
+            let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
                 let selected = Choice(&journal, old);
                 let file = runtime.block_on(selected.stage(operation, "seed-only", b"seed", "application/octet-stream", None).unwrap()).unwrap();
                 if mode == 2 { runtime.block_on(selected.append(operation, "start", &ExecutionEvent::Started { request_digest: digest }, None).unwrap()).unwrap(); }
@@ -312,8 +404,8 @@ proptest! {
         prompt in ".{1,128}", deltas in 0usize..9,
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let [expected, actual] = differential::pair(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(journal, old, &prompt, deltas, false)).unwrap());
+        let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
+            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, false, None)).unwrap());
         prop_assert_eq!(&actual, &expected);
         for group in 0..3 {
             let mut broken = actual.clone();
@@ -323,8 +415,8 @@ proptest! {
         let mut missing = actual;
         missing.0[2].pop();
         prop_assert_ne!(missing, expected);
-        let [expected, broken] = differential::pair(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(journal, old, &prompt, deltas, !old)).unwrap());
+        let [expected, broken] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
+            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, !old, None)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
     }
@@ -339,7 +431,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: digest };
         let oversized = vec![0;4097];
         for mode in 0..5 {
-            let [before, after] = differential::pair(|| {
+            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(|| {
                 let mut journal = runtime.block_on(fixture()).unwrap();
                 let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
                 journal.execution = Some((OperationId::from_bytes([5;16]), operation));
@@ -359,7 +451,7 @@ proptest! {
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            // Append's original frame now includes canonical chunk publication.
+            // Main added chunk publication to the accounted append frame (+64 bytes).
             let saved = [21200, 21024, 14304, 11840, 14192][mode as usize];
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
@@ -405,7 +497,7 @@ fn journal_accounting_admits_the_original_frames() {
             for native in [false, true] {
                 // Measure the real admission peak with this ledger, including
                 // native ledger storage and staging's owner/grant checks.
-                let measured = differential::accounted(native, 1 << 24, false, |io| {
+                let measured = accounted(native, 1 << 24, false, |io| {
                     construct(&journal, mode, true, operation, &event, &file, io)
                 })
                 .unwrap();
@@ -418,13 +510,15 @@ fn journal_accounting_admits_the_original_frames() {
                 };
                 assert!(boundary > ledger, "factory frame was not admitted");
                 for maximum in [boundary - 1, boundary, boundary + 1] {
-                    let [before, after] =
-                        differential::pair(&initialize, |(journal, file), old| {
-                            differential::accounted(native, maximum, cancelled, |io| {
+                    let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
+                        &initialize,
+                        |(journal, file), old| {
+                            accounted(native, maximum, cancelled, |io| {
                                 construct(&journal, mode, old, operation, &event, &file, io)
                                     .map_err(|e| e.to_string())
                             })
-                        });
+                        },
+                    );
                     let held = before.0.as_ref().unwrap();
                     assert_eq!(
                         held.0.is_ok(),
@@ -460,14 +554,17 @@ fn journal_accounting_admits_the_original_frames() {
             }
         }
         for native in [false, true] {
-            let [before, after] = differential::pair(&initialize, |(journal, file), old| {
-                differential::accounted(native, 1 << 24, cancelled, |io| {
-                    runtime
-                        .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
-                        .map(|bytes| bytes.as_ref().to_vec())
-                        .map_err(|e| e.to_string())
-                })
-            });
+            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
+                &initialize,
+                |(journal, file), old| {
+                    accounted(native, 1 << 24, cancelled, |io| {
+                        runtime
+                            .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
+                            .map(|bytes| bytes.as_ref().to_vec())
+                            .map_err(|e| e.to_string())
+                    })
+                },
+            );
             assert_eq!(before.0.as_ref().unwrap().0.is_ok(), !cancelled);
             assert_eq!(before, after, "polled load, native {native}");
         }

@@ -47,7 +47,7 @@ fn check_encoder(index: usize, canonical: bool, repeat: bool) -> TestCaseResult 
         maximum_items: 65536,
         maximum_depth: 128,
     };
-    let [(old, _), (new, _)] = differential::pair(
+    let [(old, _), (new, _)] = differential::pair::<_, _, (&'static str, u64)>(
         || Source(input.clone()),
         |state, old| run(state, old, canonical, bounds, !old && repeat),
     );
@@ -112,10 +112,10 @@ fn encode_with_ledger(
 fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> TestCaseResult {
     use acyclic_fs::WorkCounters;
     let value = values().into_iter().nth(index).unwrap();
-    let [(old, _), (new, trace)] = differential::pair(
+    let [(old, _), (new, trace)] = differential::pair::<_, _, (&'static str, u64)>(
         || value.clone(),
         |value, old| {
-            differential::accounted(native, 64_000_000, false, |io| {
+            crate::test_support::accounted::accounted(native, 64_000_000, false, |io| {
                 let bytes = encode_with_ledger(&value, io, old, canonical);
                 if !old && repeat {
                     drop(encode_with_ledger(&value, io, false, canonical));

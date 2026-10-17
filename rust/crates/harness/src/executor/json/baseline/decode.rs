@@ -6,8 +6,8 @@ use super::{Error, JsonCodecCharge, Result, Value, boundary, serialization::Scop
 pub(super) fn value(bytes: &mut [u8], table: &[u8], scope: &mut Scope<'_>) -> Result<Value> {
     #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
     {
-        crate::test_support::differential::record("decode document", bytes.len() as u64);
-        crate::test_support::differential::record("decode index", table.len() as u64);
+        acyclic_test_support::differential::record(("decode document", bytes.len() as u64));
+        acyclic_test_support::differential::record(("decode index", table.len() as u64));
     }
     let mut decoder = Decoder {
         bytes,

@@ -619,3 +619,6 @@ mod history_bounds;
 
 #[path = "tests/execution_feedback.rs"]
 mod execution_feedback;
+
+#[path = "tests/feedback_overlay.rs"]
+mod feedback_overlay;

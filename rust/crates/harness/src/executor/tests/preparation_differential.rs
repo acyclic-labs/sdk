@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_support::differential;
+use acyclic_test_support::differential;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
@@ -80,7 +80,7 @@ fn pair(
         .build()
         .unwrap();
     let mut first = true;
-    differential::pair(
+    differential::pair::<_, _, (&'static str, u64)>(
         || {
             crate::executor::json::baseline::LEGACY.set(first);
             first = false;

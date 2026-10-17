@@ -71,7 +71,8 @@ async fn read(
     }
 }
 
-use crate::test_support::differential;
+use crate::test_support::accounted::accounted;
+use acyclic_test_support::differential;
 
 // (Requested allocation bytes saved, enclosing future bytes). Native mount
 // support retains an execution pointer in the native custody layouts.
@@ -99,7 +100,7 @@ proptest! {
             }
             (host, file)
         };
-        let [before, after] = differential::pair(initialize, |(host, file), old| {
+        let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old| {
             let mut result = None;
             let allocation = acyclic_test_support::measure(|| {
                 result = Some(runtime.block_on(read(&host, &file, maximum, None, old))
@@ -120,8 +121,8 @@ proptest! {
         prop_assert_ne!(before.0.1.bytes_total - before.0.1.bytes_total, EXPECTED_BYTES.0);
         for allowance in [budget, 64 * 1024 * 1024] {
             for native in [false, true] {
-                let [before, after] = differential::pair(initialize, |(host, file), old|
-                    differential::accounted(native, allowance, cancelled, |io|
+                let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old|
+                    accounted(native, allowance, cancelled, |io|
                         runtime.block_on(read(&host, &file, maximum, Some(io), old))
                             .map(|bytes| bytes.as_ref().to_vec()).map_err(|e| e.to_string())));
                 prop_assert_eq!(before, after, "native {}", native);
@@ -137,31 +138,33 @@ fn pinned_read_trace_and_native_custody_reject_broken_paths() {
         .build()
         .unwrap();
     let initialize = || runtime.block_on(fixture(b"independent payload")).unwrap();
-    let [before, broken] = differential::pair(initialize, |(host, file), old| {
-        let bytes = runtime
-            .block_on(read(&host, &file, 4096, None, old))
-            .unwrap();
-        if !old {
-            file.descriptor().verify(&bytes, &mut None).unwrap();
-        }
-        bytes.as_ref().to_vec()
-    });
+    let [before, broken] =
+        differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old| {
+            let bytes = runtime
+                .block_on(read(&host, &file, 4096, None, old))
+                .unwrap();
+            if !old {
+                file.descriptor().verify(&bytes, &mut None).unwrap();
+            }
+            bytes.as_ref().to_vec()
+        });
     assert_eq!(before.0, broken.0);
     assert_ne!(
         before.1, broken.1,
         "extra real digest verification was not detected"
     );
-    let [before, broken] = differential::pair(initialize, |(host, file), old| {
-        differential::accounted(true, 64 * 1024 * 1024, false, |io| {
-            let bytes = runtime
-                .block_on(read(&host, &file, 4096, Some(io), old))
-                .unwrap();
-            if !old {
-                io.retain_owned(1).unwrap();
-            }
-            bytes.as_ref().to_vec()
-        })
-    });
+    let [before, broken] =
+        differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old| {
+            accounted(true, 64 * 1024 * 1024, false, |io| {
+                let bytes = runtime
+                    .block_on(read(&host, &file, 4096, Some(io), old))
+                    .unwrap();
+                if !old {
+                    io.retain_owned(1).unwrap();
+                }
+                bytes.as_ref().to_vec()
+            })
+        });
     assert_eq!(before.0.as_ref().unwrap().0, broken.0.as_ref().unwrap().0);
     assert_ne!(before, broken, "extra native custody was not detected");
 }

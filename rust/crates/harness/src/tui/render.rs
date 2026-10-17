@@ -426,6 +426,11 @@ impl ClientRenderer {
             };
         }
         match view {
+            Some("feedback") => {
+                screen.feedback = layout
+                    .as_ref()
+                    .is_some_and(|value| value["view_input"] == "feedback");
+            }
             Some("shortcuts") => {
                 screen.overlay = &self.help.lines;
                 screen.overlay_title = "Shortcuts";

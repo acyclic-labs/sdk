@@ -1,5 +1,7 @@
 //! TUI intents and drafts use the command session's ordinary file publications.
-use super::{CommandFileRoot, CommandRequest, CommandResolution, CommandSession};
+use super::{
+    CommandAction, CommandFileRoot, CommandQuery, CommandRequest, CommandResolution, CommandSession,
+};
 use crate::{
     Error, Result,
     conversation::ContentResidencyVerifier,
@@ -19,6 +21,30 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
             text, edit: None, ..
         } => {
             files.submit_input(&text, reader).await?;
+        }
+        InputEffect::Host(crate::tui::Action::App(action)) => {
+            use crate::tui::AppAction;
+            let query = match action {
+                AppAction::Help => CommandQuery::Shortcuts,
+                AppAction::Reasoning => CommandQuery::Reasoning,
+                AppAction::Details => CommandQuery::Details,
+                _ => {
+                    return Err(Error::Unsupported(
+                        "This shortcut is unavailable in this session".into(),
+                    ));
+                }
+            };
+            let command = files
+                .catalog()
+                .commands()
+                .find(|spec| spec.action == CommandAction::Select { query })
+                .map(|spec| format!("/{}", spec.name))
+                .ok_or_else(|| {
+                    Error::Unsupported(
+                        "This shortcut has no enabled command in this session".into(),
+                    )
+                })?;
+            files.submit_input(&command, reader).await?;
         }
         InputEffect::Host(crate::tui::Action::Escape) => {
             let mut layout = files
@@ -64,6 +90,15 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
     }
     Ok(())
 }
+
+#[cfg(all(
+    test,
+    feature = "terminal",
+    not(acyclic_harness_loom),
+    not(target_arch = "wasm32")
+))]
+#[path = "input_files/shortcuts.rs"]
+mod shortcuts;
 
 /// Process a user action, retaining ordinary command errors as session feedback.
 /// Contention and peer edits stay visible as feedback; authority, storage and

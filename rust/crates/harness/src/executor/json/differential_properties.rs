@@ -1,6 +1,6 @@
 use super::*;
-use crate::test_support::differential;
 use acyclic_test_support::AllocationInfo;
+use acyclic_test_support::differential;
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
 
@@ -10,7 +10,7 @@ impl Serialize for Source {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        differential::record("serialize input", 1);
+        differential::record(("serialize input", 1u64));
         self.0.serialize(serializer)
     }
 }
@@ -36,7 +36,7 @@ impl Charges {
             }
             JsonCodecCharge::Copy { bytes } => self.copied += bytes,
             JsonCodecCharge::Read { bytes } => {
-                differential::record("decoder read", bytes);
+                differential::record(("decoder read", bytes));
                 self.read += bytes;
             }
             JsonCodecCharge::Inspect { items } => self.inspected += items,
@@ -49,10 +49,10 @@ impl Charges {
                 maximum_owned_bytes,
                 value_shape,
             } => {
-                differential::record("decoder admission", maximum_owned_bytes);
-                differential::record("decoder source bytes", value_shape.input_bytes);
-                differential::record("decoder items", value_shape.lexical_items);
-                differential::record("decoder containers", value_shape.containers);
+                differential::record(("decoder admission", maximum_owned_bytes));
+                differential::record(("decoder source bytes", value_shape.input_bytes));
+                differential::record(("decoder items", value_shape.lexical_items));
+                differential::record(("decoder containers", value_shape.containers));
             }
         }
         Ok(())
@@ -101,10 +101,11 @@ fn run(
 }
 
 fn compare(value: &Value, canonical: bool, bounds: JsonBounds) -> TestCaseResult {
-    let [(old, mut old_trace), (new, mut new_trace)] = differential::pair(
-        || Source(value.clone()),
-        |state, old| run(state, old, canonical, bounds, false),
-    );
+    let [(old, mut old_trace), (new, mut new_trace)] =
+        differential::pair::<_, _, (&'static str, u64)>(
+            || Source(value.clone()),
+            |state, old| run(state, old, canonical, bounds, false),
+        );
     prop_assert_eq!(&old.0, &new.0, "complete bytes or exact error differs");
     if new.0.is_ok() {
         prop_assert_eq!(

@@ -1,7 +1,6 @@
-//! Independent, current-thread differential runs over the real filesystem paths.
+//! Native ledger and custody observations for differential runs.
 use crate::filesystem::PreparationIo;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-pub(crate) use acyclic_test_support::differential::{allocation_counts, pair, record};
 
 // Include the original native ledger and live custody on both sides of IO drop;
 // copying returned bytes in `run` releases their producer custody before sampling.

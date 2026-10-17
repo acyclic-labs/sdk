@@ -1,7 +1,9 @@
 //! Only advertise selections this renderer can display.
 use crate::{
     Result,
-    client::{BuiltinCommand, CommandAction, CommandFileRoot, CommandQuery, CommandSession},
+    client::{
+        BuiltinCommand, CommandAction, CommandFileRoot, CommandQuery, CommandSession, CommandSpec,
+    },
 };
 use acyclic_stream::StreamProvider;
 
@@ -14,7 +16,19 @@ fn query_supported(query: CommandQuery) -> bool {
             | CommandQuery::Diff
             | CommandQuery::Goal
             | CommandQuery::Plan
+            | CommandQuery::Feedback
     )
+}
+
+fn supported(spec: &CommandSpec) -> bool {
+    match spec.action {
+        CommandAction::Select { query } => query_supported(query),
+        CommandAction::Theme
+        | CommandAction::Builtin {
+            command: BuiltinCommand::Model | BuiltinCommand::Mcp,
+        } => false,
+        _ => true,
+    }
 }
 
 pub(crate) async fn configure<P: StreamProvider + ?Sized>(
@@ -23,14 +37,8 @@ pub(crate) async fn configure<P: StreamProvider + ?Sized>(
     let commands: Vec<_> = files
         .catalog()
         .commands()
-        .filter(|spec| match spec.action {
-            CommandAction::Select { query } => query_supported(query),
-            CommandAction::Theme
-            | CommandAction::Builtin {
-                command: BuiltinCommand::Model | BuiltinCommand::Mcp,
-            } => false,
-            _ => true,
-        })
+        .filter(|spec| supported(spec))
+        .cloned()
         .collect();
     if commands.len() != files.catalog().commands().count() {
         let bytes = serde_json::to_vec(&commands)
@@ -41,13 +49,18 @@ pub(crate) async fn configure<P: StreamProvider + ?Sized>(
         let unsupported = layout
             .get("open_view")
             .and_then(serde_json::Value::as_str)
-            .is_some_and(|view| !matches!(view, "shortcuts" | "diff" | "goal" | "plan"));
-        // This renderer has no interactive view forms. A stale form pointer
-        // must not intercept chat, even after another client closed the view.
+            .is_some_and(|view| {
+                !matches!(view, "shortcuts" | "diff" | "goal" | "plan" | "feedback")
+            });
+        // Only a visible feedback form can intercept chat. Stale form pointers
+        // from another frontend must never consume the next ordinary prompt.
         let form = layout
             .get("view_input")
-            .is_some_and(|value| !value.is_null());
-        if unsupported || form {
+            .is_some_and(|value| !value.is_null())
+            && !(layout["open_view"] == "feedback" && layout["view_input"] == "feedback");
+        let closed_feedback =
+            layout["open_view"] == "feedback" && layout["view_input"] != "feedback";
+        if unsupported || form || closed_feedback {
             if let Some(object) = layout.as_object_mut() {
                 for key in ["open_view", "view_input", "view_request", "view_back"] {
                     object.remove(key);

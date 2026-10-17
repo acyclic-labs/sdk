@@ -55,7 +55,10 @@ fn counted_model(
         })
         .with_token_counter(move |request| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            crate::test_support::differential::record("count tokens", request.bytes().len() as u64);
+            acyclic_test_support::differential::record((
+                "count tokens",
+                request.bytes().len() as u64,
+            ));
             counter.fetch_add(1, Ordering::SeqCst);
             let message_tokens = request
                 .request()
@@ -541,7 +544,7 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        crate::test_support::differential::record("journal append", expected_tail);
+        acyclic_test_support::differential::record(("journal append", expected_tail));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal append is unavailable".into(),
@@ -577,7 +580,7 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        crate::test_support::differential::record("journal stage", bytes.len() as u64);
+        acyclic_test_support::differential::record(("journal stage", bytes.len() as u64));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal stage is unavailable".into(),
@@ -600,7 +603,10 @@ impl ExecutionJournal for Journal {
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        crate::test_support::differential::record("journal load", reference.descriptor().byte_length());
+        acyclic_test_support::differential::record((
+            "journal load",
+            reference.descriptor().byte_length(),
+        ));
         if io.is_some() {
             return Err(crate::Error::Unsupported(
                 "finite test journal IO is unavailable".into(),
@@ -712,11 +718,11 @@ mod invocation_bounds;
 mod output_bounds;
 mod recovery;
 mod replay;
-mod summary_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
+mod summary_file;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;

@@ -30,7 +30,7 @@ async fn commit(transaction: &mut MemoryTransaction) -> Result<GenerationId, Str
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
         |_| async {
-            differential::record("publish", 1);
+            differential::record(("publish", 1u64));
             Ok(crate::OperationReceipt {
                 value: (),
                 work: Default::default(),
@@ -81,7 +81,7 @@ fn pair(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    differential::pair(
+    differential::pair::<_, _, (&'static str, u64)>(
         || runtime.block_on(initialize()),
         |(workspace, mut transaction), old| {
             let cancellation = CancellationToken::new();
