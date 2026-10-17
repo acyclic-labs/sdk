@@ -123,17 +123,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 /// Saves the outbox at its accepted tail, then announces that path's watermarks.
-async fn save_outbox(State(host): State<Host>) -> Result<(), String> {
+async fn save_outbox(State(host): State<Host>) -> Result<(), (StatusCode, String)> {
     let path = acyclic_stream::StreamPath::new("remote-outbox/files")
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(|error| fixture_error(&error))?;
     let accepted = host
         .streams
         .tail(path)
         .await
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(|error| fixture_error(&error))?;
     host.streams.outbox_saved.store(accepted, Ordering::Release);
     let _ = host.saved.send(Some("remote-outbox/files".into()));
     Ok(())
+}
+fn fixture_error(error: &StreamError) -> (StatusCode, String) {
+    (StatusCode::INTERNAL_SERVER_ERROR, format!("{error:?}"))
 }
 /// The unary gRPC-web service behind the test credential and injected outages.
 fn grpc_routes(host: &Host) -> Router {
