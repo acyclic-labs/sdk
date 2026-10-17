@@ -33,12 +33,16 @@ pub(super) async fn files(context: &ToolContext) -> Result<Arc<TaskFiles<dyn Str
     Ok(root.clone())
 }
 
-pub(super) async fn inspect(
-    context: &ToolContext,
-    command: &str,
-) -> Result<Option<crate::tool::ToolResult>> {
-    use crate::task_volume::{FileQuerySource, Query};
-    let command = super::parse_fs_command(command)?;
+/// Selects the registered-agent inspections `fs ls`/`fs cat` under
+/// `.volumes/agents`. A command that does not parse is never an inspection:
+/// the fs facade owner alone parses and reports it, as a model-visible
+/// argument error, so this interception cannot turn it into a task failure.
+/// Returns whether it is a `cat`, the query and the inspected path.
+fn selection(command: &str) -> Result<Option<(bool, crate::task_volume::Query, String)>> {
+    use crate::task_volume::Query;
+    let Ok(command) = super::parse_fs_command(command) else {
+        return Ok(None);
+    };
     let [verb, path] = command.arguments.as_slice() else {
         return Ok(None);
     };
@@ -63,9 +67,20 @@ pub(super) async fn inspect(
         ),
         _ => return Ok(None),
     };
+    Ok(Some((verb == "cat", query, path.clone())))
+}
+
+pub(super) async fn inspect(
+    context: &ToolContext,
+    command: &str,
+) -> Result<Option<crate::tool::ToolResult>> {
+    use crate::task_volume::FileQuerySource;
+    let Some((cat, query, path)) = selection(command)? else {
+        return Ok(None);
+    };
     let limits = context.effective_scope().limits();
     let files = files(context).await?;
-    let stdout = if verb == "cat" {
+    let stdout = if cat {
         let snapshot = files
             .observe_files(
                 query,
@@ -78,7 +93,7 @@ pub(super) async fn inspect(
             .snapshot
             .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
         let [file] = snapshot.files.as_slice() else {
-            return Err(Error::NotFound(path.clone()));
+            return Err(Error::NotFound(path));
         };
         std::str::from_utf8(&file.bytes)
             .map_err(storage)?
@@ -218,7 +233,40 @@ fn storage(error: impl std::fmt::Display) -> Error {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests {
     use super::*;
+    use crate::task_volume::Query;
     use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        // Every command the fs facade cannot parse is left to the facade owner,
+        // which reports it to the model; an exact agent inspection is selected.
+        #[test]
+        fn only_parsed_agent_inspections_are_intercepted(
+            verb in prop::sample::select(vec!["ls", "cat", "git ls", "status"]),
+            path in prop::sample::select(vec![
+                ".volumes/agents", ".volumes/agents/worker", ".volumes/agents/worker/status.json",
+            ]),
+            suffix in prop::sample::select(vec!["", " | cat", "; ls", " && ls", " `x`", " < in", " > out",
+                " 'open", " \\", " \0", " --volume", " --volume ''"]),
+        ) {
+            let command = format!("{verb} {path}{suffix}");
+            let selected = selection(&command);
+            if super::super::parse_fs_command(&command).is_err() {
+                prop_assert!(matches!(selected, Ok(None)), "{command}: {selected:?}");
+            }
+        }
+    }
+
+    // Negative control: the parse error this interception used to propagate is
+    // real, so the property above is not vacuous.
+    #[test]
+    fn unparseable_agent_listing_is_a_facade_error_not_an_inspection() {
+        let command = "ls .volumes/agents | cat";
+        assert!(super::super::parse_fs_command(command).is_err());
+        assert!(matches!(selection(command), Ok(None)));
+        assert!(matches!(selection("ls .volumes/agents"), Ok(Some((false, Query::Children, _)))));
+        assert!(matches!(selection("cat .volumes/agents/worker/status.json"), Ok(Some((true, Query::File(_), _)))));
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
