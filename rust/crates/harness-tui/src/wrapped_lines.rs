@@ -205,13 +205,17 @@ impl WrappedLines {
                 .saturating_add(inset)
                 .saturating_add(cell.column as u16);
             if x < area.right() && area.height > 0 {
-                buffer.set_stringn(
-                    x,
-                    area.y,
-                    &cell.symbol,
-                    usize::from(area.right() - x),
-                    style,
-                );
+                if buffer[(x, area.y)].symbol() == cell.symbol {
+                    buffer[(x, area.y)].set_style(style);
+                } else {
+                    buffer.set_stringn(
+                        x,
+                        area.y,
+                        &cell.symbol,
+                        usize::from(area.right() - x),
+                        style,
+                    );
+                }
             }
         }
     }

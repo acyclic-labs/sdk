@@ -164,3 +164,22 @@ fn physical_find_shortcut_preserves_the_open_undo_group() {
     input.set_transcript_search(None);
     assert_eq!(format!("{:?}", input.editor), before);
 }
+
+#[test]
+fn unchanged_unicode_cells_allocate_zero() {
+    use acyclic_harness_tui::{
+        TranscriptSearch,
+        ratatui::{buffer::Buffer, layout::Rect, widgets::Widget},
+    };
+    let mut projection = WrappedLines::default();
+    projection.update(&[Line::raw(format!("x{} 👨‍👩‍👧‍👦", "\u{301}".repeat(40)))], 0, 80);
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "x", 0, Default::default());
+    search.prepare(&projection, 0, 1);
+    let area = Rect::new(0, 0, 80, 1);
+    let mut buffer = Buffer::empty(area);
+    search.row(&projection, 0).render(area, &mut buffer);
+    let frame =
+        acyclic_test_support::measure(|| search.row(&projection, 0).render(area, &mut buffer));
+    assert_eq!((frame.count_total, frame.bytes_total), (0, 0));
+}
