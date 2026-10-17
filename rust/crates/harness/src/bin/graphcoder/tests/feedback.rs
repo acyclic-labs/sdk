@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{TaskFileViews, CommandFileRoot, CommandSession, handle_tui_input},
+    client::{CommandFileRoot, CommandSession, TaskFileViews, handle_tui_input},
     task_volume::{FileKey, Query, TaskFile, TaskVolume},
     tui::{
         ClientRenderer, InputEffect, PromptInput, Viewport,
@@ -10,10 +10,10 @@ use acyclic_harness::{
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::sync::Arc;
 
-struct NoFiles;
+pub(super) struct NoFiles;
 impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
 
-async fn volume() -> Arc<TaskVolume<MemoryStream>> {
+pub(super) async fn volume() -> Arc<TaskVolume<MemoryStream>> {
     Arc::new(
         TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -23,7 +23,10 @@ async fn volume() -> Arc<TaskVolume<MemoryStream>> {
         .unwrap(),
     )
 }
-async fn session(volume: Arc<TaskVolume<MemoryStream>>, id: u8) -> CommandSession<MemoryStream> {
+pub(super) async fn session(
+    volume: Arc<TaskVolume<MemoryStream>>,
+    id: u8,
+) -> CommandSession<MemoryStream> {
     CommandSession::open(
         volume,
         OperationId::from_bytes([id; 16])
@@ -36,14 +39,17 @@ async fn session(volume: Arc<TaskVolume<MemoryStream>>, id: u8) -> CommandSessio
     .await
     .unwrap()
 }
-fn submit(text: &str) -> InputEffect {
+pub(super) fn submit(text: &str) -> InputEffect {
     InputEffect::Submit {
         text: text.into(),
         queued: false,
         edit: None,
     }
 }
-fn painted(renderer: &mut ClientRenderer, files: &CommandSession<MemoryStream>) -> String {
+pub(super) fn painted(
+    renderer: &mut ClientRenderer,
+    files: &CommandSession<MemoryStream>,
+) -> String {
     let screen = renderer.screen_for(files).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     terminal
@@ -246,9 +252,7 @@ async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt()
     handle_tui_input(&mut files, &NoFiles, submit("/find"))
         .await
         .unwrap();
-    for name in [
-        "find", "theme", "feedback", "bug", "report", "tree", "terminal",
-    ] {
+    for name in ["find", "theme", "tree", "terminal"] {
         assert!(
             !files
                 .catalog()

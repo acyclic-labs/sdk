@@ -92,7 +92,7 @@
   {
     "section": "1. Slash commands",
     "row": "/feedback",
-    "status": "Deferred follow-up; omitted from ratatui catalog"
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
   },
   {
     "section": "1. Slash commands",
@@ -512,7 +512,7 @@
   {
     "section": "3. TUI polish",
     "row": "Feedback overlay",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
   },
   {
     "section": "3. TUI polish",

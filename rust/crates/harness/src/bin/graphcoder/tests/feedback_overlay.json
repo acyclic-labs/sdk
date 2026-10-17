@@ -1,0 +1,8 @@
+[
+  {"command":"/feedback","cancel":false},
+  {"command":"/report","cancel":false},
+  {"command":"/bug","cancel":false},
+  {"command":"/feedback","cancel":true},
+  {"command":"/report","cancel":true},
+  {"command":"/bug","cancel":true}
+]
