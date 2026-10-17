@@ -8,7 +8,9 @@ use bytes::Bytes;
 use futures::TryStreamExt as _;
 
 mod tool_arguments;
+mod turn_text;
 pub use tool_arguments::assert_tool_arguments;
+use turn_text::text_matches;
 
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
@@ -547,20 +549,25 @@ pub fn assert_turns(input: &[u8]) {
     );
 }
 
-/// Turns repair must leave unchanged: non-empty, alternating, already
-/// satisfying every repair rule, and with no blank Anthropic text block.
+/// Turns repair must leave unchanged: envelopes holding only the role and
+/// parts that replay represents, non-empty, alternating, already satisfying
+/// every repair rule, and with no blank Anthropic text block.
 pub(crate) fn canonical_turns(adapter: Adapter, messages: &[serde_json::Value]) -> bool {
     let field = turn_field(adapter);
     messages.iter().all(|message| {
-        message[field].as_array().is_some_and(|parts| {
-            !parts.is_empty()
-                && (adapter == Adapter::Gemini
-                    || parts.iter().all(|part| {
-                        part["text"]
-                            .as_str()
-                            .is_none_or(|text| !text.trim().is_empty())
-                    }))
-        })
+        message
+            .as_object()
+            .is_some_and(|envelope| envelope.len() == 2)
+            && message["role"].is_string()
+            && message[field].as_array().is_some_and(|parts| {
+                !parts.is_empty()
+                    && (adapter == Adapter::Gemini
+                        || parts.iter().all(|part| {
+                            part["text"]
+                                .as_str()
+                                .is_none_or(|text| !text.trim().is_empty())
+                        }))
+            })
     }) && turn_repair_violation(adapter, messages, messages).is_none()
 }
 
@@ -591,42 +598,6 @@ fn blocks<'a>(
                 part.get("functionCall").is_none() && part.get("functionResponse").is_some()
             }
         })
-}
-
-/// All text in order. Repair inserts whole `(continue)` turns at either end;
-/// Anthropic also drops whitespace-only runs, so only its visible text counts.
-fn text_matches(
-    adapter: Adapter,
-    input: &[serde_json::Value],
-    output: &[serde_json::Value],
-) -> bool {
-    let text = |messages: &[serde_json::Value]| -> String {
-        let all: String = messages
-            .iter()
-            .filter_map(|message| message[turn_field(adapter)].as_array())
-            .flatten()
-            .filter_map(|part| part["text"].as_str())
-            .collect();
-        if adapter == Adapter::Anthropic {
-            all.chars().filter(|char| !char.is_whitespace()).collect()
-        } else {
-            all
-        }
-    };
-    let continuation = |message: Option<&serde_json::Value>| {
-        message.is_some_and(|message| {
-            message["role"] == "user"
-                && message[turn_field(adapter)]
-                    .as_array()
-                    .is_some_and(|parts| parts.len() == 1 && parts[0]["text"] == "(continue)")
-        })
-    };
-    let expected = text(input);
-    let first = usize::from(continuation(output.first()));
-    let last = usize::from(output.len() > first && continuation(output.last()));
-    [(0, 0), (first, 0), (0, last), (first, last)]
-        .into_iter()
-        .any(|(head, tail)| text(&output[head..output.len() - tail]) == expected)
 }
 
 /// The structured detector shared by the turn oracle and its negative controls.
