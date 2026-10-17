@@ -378,75 +378,80 @@ fn journal_accounting_admits_the_original_frames() {
             .enable_all()
             .build()
             .unwrap();
-        let journal = runtime.block_on(fixture()).unwrap();
         let operation = OperationId::from_bytes([4; 16]);
         let event = ExecutionEvent::Started {
             request_digest: [9; 32],
         };
-        let file = runtime
-            .block_on(prepare(&journal, operation, &event, b"payload"))
-            .unwrap();
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let io = PreparationIo::from_budget(
-            acyclic_fs::performance::work_budget(1_000_000, 1 << 24),
-            &cancellation,
-        )
-        .unwrap();
+        let initialize = || {
+            runtime
+                .block_on(async {
+                    let fixture = crate::durable_host::tests::fixture::Fixture::new(
+                        Arc::new(acyclic_stream::MemoryStream::default()),
+                        acyclic_fs::Fs::memory(),
+                        serde_json::json!({"type":"integer"}),
+                        None,
+                        &[],
+                    )
+                    .await?;
+                    let journal = fixture.execution(fixture.running(80).await?, operation)?;
+                    let file = prepare(&journal, operation, &event, b"payload").await?;
+                    Ok::<_, Error>((journal, file))
+                })
+                .unwrap()
+        };
+        let (journal, file) = initialize();
         for mode in 0..5 {
-            let frame = acyclic_test_support::measure(|| {
-                construct(&journal, mode, true, operation, &event, &file, &io).unwrap();
-            })
-            .bytes_total;
-            for maximum in [frame.saturating_sub(1), frame, frame + 1] {
-                for native in [false, true] {
-                    let [before, after] = differential::pair(
-                        || {
-                            let journal = runtime.block_on(fixture()).unwrap();
-                            let file = runtime
-                                .block_on(prepare(&journal, operation, &event, b"payload"))
-                                .unwrap();
-                            (journal, file)
-                        },
-                        |(journal, file), old| {
+            for native in [false, true] {
+                // Measure the real admission peak with this ledger, including
+                // native ledger storage and staging's owner/grant checks.
+                let measured = differential::accounted(native, 1 << 24, false, |io| {
+                    construct(&journal, mode, true, operation, &event, &file, io)
+                })
+                .unwrap();
+                measured.0.unwrap();
+                let boundary = if native { measured.3 } else { measured.1 }.peak_allocation_bytes;
+                let ledger = if native {
+                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                } else {
+                    0
+                };
+                assert!(boundary > ledger, "factory frame was not admitted");
+                for maximum in [boundary - 1, boundary, boundary + 1] {
+                    let [before, after] =
+                        differential::pair(&initialize, |(journal, file), old| {
                             differential::accounted(native, maximum, cancelled, |io| {
                                 construct(&journal, mode, old, operation, &event, &file, io)
                                     .map_err(|e| e.to_string())
                             })
-                        },
-                    );
+                        });
                     let held = before.0.as_ref().unwrap();
+                    assert_eq!(
+                        held.0.is_ok(),
+                        !cancelled && maximum >= boundary,
+                        "method {mode}, native {native}, limit {maximum}, boundary {boundary}"
+                    );
                     assert_eq!(held.2, 0, "factory retained custody after drop");
-                    let ledger = if native {
-                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-                    } else {
-                        0
-                    };
                     assert_eq!(
                         held.5, ledger,
                         "only the original ledger may survive IO drop"
                     );
+                    if !cancelled && maximum >= boundary {
+                        let receipt = if native { held.3 } else { held.1 };
+                        assert_eq!(receipt.peak_allocation_bytes, boundary);
+                    }
                     assert_eq!(before, after, "method {mode}, native {native}");
                 }
             }
         }
         for native in [false, true] {
-            let [before, after] = differential::pair(
-                || {
-                    let journal = runtime.block_on(fixture()).unwrap();
-                    let file = runtime
-                        .block_on(prepare(&journal, operation, &event, b"payload"))
-                        .unwrap();
-                    (journal, file)
-                },
-                |(journal, file), old| {
-                    differential::accounted(native, 1 << 24, cancelled, |io| {
-                        runtime
-                            .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
-                            .map(|bytes| bytes.as_ref().to_vec())
-                            .map_err(|e| e.to_string())
-                    })
-                },
-            );
+            let [before, after] = differential::pair(&initialize, |(journal, file), old| {
+                differential::accounted(native, 1 << 24, cancelled, |io| {
+                    runtime
+                        .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
+                        .map(|bytes| bytes.as_ref().to_vec())
+                        .map_err(|e| e.to_string())
+                })
+            });
             assert_eq!(before.0.as_ref().unwrap().0.is_ok(), !cancelled);
             assert_eq!(before, after, "polled load, native {native}");
         }
