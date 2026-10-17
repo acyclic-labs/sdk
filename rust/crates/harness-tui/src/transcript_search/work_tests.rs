@@ -315,3 +315,98 @@ proptest! {
         stable_selection_model::<true>(size,first,delta);
     }
 }
+
+fn mixed_navigation_model<const LOCAL_WRAP: bool>(size: usize, gap: usize, events: &[(i8, u8)]) {
+    let text = format!("needle{}\n", "日x".repeat(gap)).repeat(size);
+    let projection = projection(&text);
+    let reference = crate::transcript_matches(&text, "needle");
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "needle", 0, Style::default());
+    search.prepare(&projection, 40, 10);
+    let mut expected = reference
+        .iter()
+        .position(|r| Some(r) == search.selected.as_ref())
+        .unwrap() as i64;
+    let mut index = 0;
+    for &(direction, frames) in events {
+        index += i64::from(direction);
+        expected = (expected + i64::from(direction)).rem_euclid(reference.len() as i64);
+        if LOCAL_WRAP && direction != 0 {
+            let rank = search
+                .local
+                .iter()
+                .position(|r| Some(r) == search.selected.as_ref())
+                .unwrap_or(0);
+            let rank =
+                (rank as i64 + i64::from(direction)).rem_euclid(search.local.len() as i64) as usize;
+            search.selected = Some(search.local[rank].clone());
+            search.index = index;
+        }
+        search.update(&projection, "needle", index, Style::default());
+        for _ in 0..=frames {
+            let row = search.selected_row(&projection, index);
+            search.prepare(&projection, row, 10);
+            WORK.with(|w| w.set((0, 0)));
+            search.advance(&projection, 64);
+            let (front, back) = WORK.with(|w| w.get());
+            assert!(
+                front + back <= 6 * 64 + 128,
+                "directional slice must stay bounded"
+            );
+            if search.steps == 0 {
+                assert_eq!(
+                    search.selected.as_ref(),
+                    Some(&reference[expected as usize]),
+                    "mixed navigation must follow source identity, not viewport wrapping"
+                );
+            }
+        }
+    }
+    finish(&mut search, &projection);
+    assert_eq!(
+        search.selected.as_ref(),
+        Some(&reference[expected as usize]),
+        "mixed navigation must follow source identity, not viewport wrapping"
+    );
+}
+
+#[test]
+fn backwards_after_viewport_handoff_returns_to_the_previous_source_match() {
+    mixed_navigation_model::<false>(8192, 0, &[(1, 2), (-1, 2), (-1, 0), (1, 3)]);
+}
+
+#[test]
+#[should_panic(expected = "mixed navigation must follow source identity")]
+fn partial_viewport_wrap_negative_control() {
+    mixed_navigation_model::<true>(8192, 0, &[(1, 2), (-1, 2)]);
+}
+
+#[test]
+fn directional_lookup_wraps_only_after_reaching_the_transcript_boundary() {
+    let projection = projection(&format!("needle{}needle", "x".repeat(12000)));
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "needle", 0, Style::default());
+    search.prepare(&projection, 0, 1);
+    search.update(&projection, "needle", -1, Style::default());
+    assert_eq!(
+        search.selected,
+        Some(0..6),
+        "a viewport edge is not a wrap boundary"
+    );
+    finish(&mut search, &projection);
+    assert_eq!(search.selected, Some(12006..12012));
+    search.update(&projection, "needle", 0, Style::default());
+    assert_eq!(search.selected, Some(0..6));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn mixed_navigation_and_background_frames_property(
+        size in 800usize..2000,
+        gap in 0usize..32,
+        events in prop::collection::vec((-1i8..=1, 0u8..4), 1..64),
+    ) {
+        mixed_navigation_model::<false>(size,gap,&events);
+    }
+}

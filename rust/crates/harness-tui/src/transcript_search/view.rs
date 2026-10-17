@@ -40,6 +40,8 @@ pub struct TranscriptSearch {
     index: i64,
     selected: Option<Range<usize>>,
     selected_rank: Option<usize>,
+    steps: i64,
+    navigation: Option<navigation::Probe>,
     style: Style,
 }
 
@@ -71,11 +73,9 @@ impl TranscriptSearch {
         charge(query.len(), false);
         if query.chars().default_case_fold().eq(self.needle.chars()) {
             if index != self.index {
-                let rank = self.position(index).checked_sub(1);
-                if let Some(selected) = rank.and_then(|rank| self.active().get(rank)).cloned() {
-                    self.selected = Some(selected);
-                    self.selected_rank = self.complete.then_some(rank).flatten();
-                }
+                self.steps = self.steps.saturating_add(index.saturating_sub(self.index));
+                self.navigation = None;
+                self.navigate(projection, 256);
                 self.index = index;
             }
             return;
@@ -112,6 +112,8 @@ impl TranscriptSearch {
         self.cursor = 0;
         self.selected = None;
         self.selected_rank = None;
+        self.steps = 0;
+        self.navigation = None;
         self.refine = refine;
         self.complete = self.needle.is_empty();
         self.generation = self.generation.wrapping_add(1);
@@ -170,8 +172,10 @@ impl TranscriptSearch {
     /// One cooperative background slice. Call between frames, after input wins.
     pub fn advance(&mut self, projection: &WrappedLines, budget: usize) -> bool {
         if self.complete {
+            self.navigate(projection, budget);
             return false;
         }
+        self.navigate(projection, budget);
         let budget = budget.max(self.needle.len()).max(1);
         if self.local.is_empty() && self.nearest.is_none() {
             if let Some(probe) = &mut self.probe {
@@ -262,6 +266,14 @@ impl TranscriptSearch {
                 self.selected_rank =
                     Some(self.index.rem_euclid(self.matches.len() as i64) as usize);
             }
+            if let Some(rank) = self.selected_rank {
+                self.selected_rank = Some(
+                    (rank as i64 + self.steps.rem_euclid(self.matches.len() as i64))
+                        .rem_euclid(self.matches.len() as i64) as usize,
+                );
+                self.steps = 0;
+                self.navigation = None;
+            }
             self.selected = self
                 .selected_rank
                 .and_then(|rank| self.matches.get(rank))
@@ -336,7 +348,9 @@ impl TranscriptSearch {
                     .ok()
             })
         };
-        let offset = if self.selected.is_some() {
+        let offset = if !self.complete {
+            0
+        } else if self.selected.is_some() {
             index.saturating_sub(self.index)
         } else {
             index
@@ -440,3 +454,5 @@ impl Widget for SearchRow<'_> {
 #[cfg(test)]
 #[path = "work_tests.rs"]
 mod tests;
+
+mod navigation;

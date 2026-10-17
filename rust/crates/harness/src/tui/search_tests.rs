@@ -327,5 +327,21 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
         renderer.search_progress().await;
         assert!(renderer.search.pending());
     }
+    for effect in input.key(KeyEvent::new(KeyCode::Enter, M::SHIFT), 1, 78) {
+        file_tui_input(&mut files, &NoFiles, effect, 20, 0)
+            .await
+            .unwrap();
+    }
+    for _ in 0..4 {
+        paint_frame(&mut renderer, &files, &input, 80);
+        renderer.search_progress().await;
+        assert_eq!(
+            renderer
+                .search
+                .selected_row(&renderer.wrapped_transcript, 0),
+            expected - 1,
+            "Shift+Enter must return to the source match before the rebuilt viewport"
+        );
+    }
     assert!(files.take_request().is_none());
 }
