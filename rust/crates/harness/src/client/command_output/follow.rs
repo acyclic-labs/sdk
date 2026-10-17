@@ -5,21 +5,30 @@ use crate::task_volume::{Error, Result};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// The session's encoded-file admission limit, independent of retained display.
+#[derive(Clone, Copy)]
+pub(in crate::client) struct PerFileByteLimit(pub u64);
+
+/// Total retained answer selection, supplied by the renderer rather than the writer.
+#[derive(Clone, Copy)]
+pub(in crate::client) struct DisplayWindowBudget {
+    pub files: usize,
+    pub bytes: usize,
+}
+
 struct Window {
-    files: BTreeMap<FileKey, (usize, Option<u64>)>,
+    files: BTreeMap<FileKey, (usize, u64)>,
     order: BTreeSet<(u64, FileKey)>,
     bytes: usize,
-    maximum_files: usize,
-    maximum_bytes: usize,
+    per_file: PerFileByteLimit,
+    total: DisplayWindowBudget,
     recent: usize,
 }
 impl Window {
     fn remove(&mut self, key: &FileKey) {
         if let Some((bytes, sequence)) = self.files.remove(key) {
             self.bytes -= bytes;
-            if let Some(sequence) = sequence {
-                self.order.remove(&(sequence, key.clone()));
-            }
+            self.order.remove(&(sequence, key.clone()));
         }
     }
     fn include(&mut self, file: &FileValue) -> Result<bool> {
@@ -35,15 +44,13 @@ impl Window {
                 let Some(metadata) = Metadata::from_file(file) else {
                     return Ok(false);
                 };
-                Some(metadata.sequence)
+                metadata.sequence
             }
-            FileKey::Task { .. } | FileKey::Session { .. } => return Ok(false),
-            FileKey::Ui { directory, .. } if directory.as_str().starts_with("task-") => {
-                return Ok(false);
-            }
-            _ => None,
+            // Drafts, history, catalogs and UI state have their own live queries.
+            // They can neither consume answer capacity nor be evicted as answers.
+            _ => return Ok(false),
         };
-        if file.bytes.len() > self.maximum_bytes {
+        if file.bytes.len() as u64 > self.per_file.0 {
             return Err(Error::LimitExceeded);
         }
         self.remove(&file.key);
@@ -53,9 +60,7 @@ impl Window {
             .ok_or(Error::LimitExceeded)?;
         self.files
             .insert(file.key.clone(), (file.bytes.len(), sequence));
-        if let Some(sequence) = sequence {
-            self.order.insert((sequence, file.key.clone()));
-        }
+        self.order.insert((sequence, file.key.clone()));
         Ok(true)
     }
     fn trim<const TRIM: bool>(&mut self, removed: &mut Vec<FileKey>) -> Result<()> {
@@ -63,8 +68,8 @@ impl Window {
             return Ok(());
         }
         while self.order.len() > self.recent
-            || self.files.len() > self.maximum_files
-            || self.bytes > self.maximum_bytes
+            || self.files.len() > self.total.files
+            || self.bytes > self.total.bytes
         {
             let key = self
                 .order
@@ -77,9 +82,11 @@ impl Window {
         Ok(())
     }
     fn apply<const TRIM: bool>(&mut self, change: &mut Change) -> Result<()> {
-        for key in &change.removed {
+        change.removed.retain(|key| {
+            let retained = self.files.contains_key(key);
             self.remove(key);
-        }
+            retained
+        });
         let mut added = BTreeSet::new();
         if let Some(file) = &change.file {
             if !self.files.contains_key(&file.key) {
@@ -119,8 +126,8 @@ impl Window {
 pub(in crate::client) fn observe(
     mut observation: Observation,
     recent: usize,
-    maximum_files: usize,
-    maximum_bytes: usize,
+    per_file: PerFileByteLimit,
+    total: DisplayWindowBudget,
 ) -> Result<Observation> {
     let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
     let mut window = Window {
@@ -128,8 +135,8 @@ pub(in crate::client) fn observe(
         order: BTreeSet::new(),
         bytes: 0,
         recent,
-        maximum_files,
-        maximum_bytes,
+        per_file,
+        total,
     };
     let mut files = Vec::new();
     for file in snapshot.files.drain(..) {

@@ -1,5 +1,7 @@
 //! Native task and UI files use the same disposable ClientViews as WASM.
-use super::{ClientViewLimits, ClientViews, QueryViewLimits};
+use super::{
+    ClientViewLimits, ClientViews, QueryViewLimits, command_output::follow::DisplayWindowBudget,
+};
 use crate::{
     Error, Result,
     task_volume::{Change, ChangeStream, FileQuerySource, Query},
@@ -16,7 +18,7 @@ pub struct TaskFileClient {
     command_selection: Option<([u8; 32], [u8; 32])>,
     task_selection: ([u8; 32], [u8; 32]),
     selected: Option<crate::TaskId>,
-    bounds: (usize, usize),
+    bounds: DisplayWindowBudget,
     presentation_revision: u64,
 }
 impl TaskFileClient {
@@ -67,7 +69,10 @@ impl TaskFileClient {
             command_selection: None,
             task_selection,
             selected: None,
-            bounds: (maximum_files, maximum_bytes),
+            bounds: DisplayWindowBudget {
+                files: maximum_files,
+                bytes: maximum_bytes,
+            },
             presentation_revision: 0,
         })
     }
@@ -110,14 +115,14 @@ impl TaskFileClient {
         }
         let query = Self::task_query(task)?;
         let observed = files
-            .observe_files(query.clone(), None, self.bounds.0, self.bounds.1)
+            .observe_files(query.clone(), None, self.bounds.files, self.bounds.bytes)
             .await?;
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("task snapshot missing".into()))?;
         let identity = (snapshot.cursor.volume, snapshot.cursor.query);
         self.views
-            .query_snapshot(query, snapshot, self.bounds.0, self.bounds.1)?;
+            .query_snapshot(query, snapshot, self.bounds.files, self.bounds.bytes)?;
         if self.task_selection != identity {
             self.views.remove_selection(&self.task_selection);
         }
@@ -127,18 +132,18 @@ impl TaskFileClient {
         self.advance_presentation();
         Ok(())
     }
-    /// Follow the existing UI session's files, including its retained outcomes.
+    /// Follow only the UI session's bounded command outcomes; UI files stay separate.
     pub async fn follow_commands<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         files: &super::CommandSession<P>,
     ) -> Result<()> {
-        let (query, observed) = files.observe_view().await?;
+        let (query, observed) = files.observe_view(self.bounds).await?;
         let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("command snapshot missing".into()))?;
         let identity = (snapshot.cursor.volume, snapshot.cursor.query);
-        let (count, bytes) = files.view_bounds();
-        self.views.query_snapshot(query, snapshot, count, bytes)?;
+        self.views
+            .query_snapshot(query, snapshot, self.bounds.files, self.bounds.bytes)?;
         if let Some(previous) = self.command_selection {
             if previous != identity {
                 self.views.remove_selection(&previous);

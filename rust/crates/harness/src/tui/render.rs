@@ -227,12 +227,17 @@ impl ClientRenderer {
             })
             .transpose()?
             .unwrap_or(false);
-        if self.tool_details != details {
+        // Layout is followed by CommandSession, outside the answer selection.
+        let after = files
+            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout["history_after"].as_u64())
+            .unwrap_or(0);
+        if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
             self.task = task::TaskRows::default();
             self.transcript.clear();
             self.transcript_changed = 0;
-            self.archive = archive::Archive::default();
+            self.archive = archive::Archive::new(after);
             self.update(views, authority);
         }
         self.busy = files.pending_execution()? || self.task.busy();

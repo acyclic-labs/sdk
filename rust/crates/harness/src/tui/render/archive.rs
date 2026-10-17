@@ -15,6 +15,12 @@ pub(super) struct Archive {
     rows: Vec<Line<'static>>,
 }
 impl Archive {
+    pub(super) fn new(after: u64) -> Self {
+        Self {
+            after,
+            ..Self::default()
+        }
+    }
     pub(super) fn after(&self) -> u64 {
         self.after
     }
@@ -28,35 +34,17 @@ impl Archive {
     pub(super) fn update(&mut self, source: Option<(&FileQueryView, OutputOwner)>) -> usize {
         let Some((files, owner)) = source else {
             if self.source.is_some() {
-                *self = Self::default();
+                *self = Self::new(self.after);
                 return 0;
             }
             return self.rows.len();
         };
-        let after = match &owner {
-            OutputOwner::Session(session) => {
-                let key = FileKey::parse(&format!(".ui/session-{}/layout.json", session.as_str()))
-                    .expect("canonical session");
-                files
-                    .files()
-                    .get(&key)
-                    .and_then(|file| {
-                        let [bytes] = file.segments.as_slice() else {
-                            return None;
-                        };
-                        serde_json::from_slice::<serde_json::Value>(bytes).ok()?["history_after"]
-                            .as_u64()
-                    })
-                    .unwrap_or(0)
-            }
-            OutputOwner::Task(_) => 0,
-        };
+        let after = self.after;
         let mut changed = self.rows.len();
         if !self
             .source
             .as_ref()
             .is_some_and(|source| Arc::ptr_eq(source, files.source()))
-            || self.after != after
             || self
                 .first
                 .as_ref()

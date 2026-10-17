@@ -3,6 +3,7 @@ use super::*;
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     pub(in crate::client) async fn observe_view(
         &self,
+        total: crate::client::command_output::follow::DisplayWindowBudget,
     ) -> Result<(files::Query, files::Observation)> {
         let query = files::Query::CommandSession {
             session: component(self.session.to_string())?,
@@ -16,8 +17,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         let observed = crate::client::command_output::follow::observe(
             observed,
             (self.maximum_files / 4).max(1),
-            self.maximum_files,
-            self.maximum_bytes as usize,
+            crate::client::command_output::follow::PerFileByteLimit(self.maximum_bytes),
+            total,
         )?;
         Ok((query, observed))
     }

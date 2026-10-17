@@ -27,15 +27,19 @@ fn check(
         files: BTreeMap::new(),
         order: BTreeSet::new(),
         bytes: 0,
-        maximum_files,
-        maximum_bytes,
+        per_file: PerFileByteLimit(2048),
+        total: DisplayWindowBudget {
+            files: maximum_files,
+            bytes: maximum_bytes,
+        },
         recent,
     };
     let mut expected: BTreeMap<FileKey, FileValue> = BTreeMap::new();
     let mut delivered = BTreeMap::new();
     for (index, (id, kind, text)) in operations.iter().enumerate() {
-        let path = match kind % 3 {
-            0 => format!(".sessions/s/executions/{id}/result.json"),
+        let remove = kind % 5 >= 3;
+        let path = match kind % 5 {
+            0 | 4 => format!(".sessions/s/executions/{id}/result.json"),
             1 => format!(".sessions/s/requests/{id}.json"),
             _ => ".ui/session-s/layout.json".into(),
         };
@@ -44,11 +48,13 @@ fn check(
             serde_json::to_vec(&serde_json::json!({"sequence":index+1,"ok":{"text":text}}))
                 .unwrap(),
         );
-        if kind % 3 != 1 {
+        if remove {
+            expected.remove(&file.key);
+        } else if kind % 5 == 0 {
             expected.insert(file.key.clone(), file.clone());
         }
-        // Independent file-state selection. Completed inbox records never enter
-        // this display; only the latest two outcomes and current layout remain.
+        // Independent file-state selection. Inbox and UI files never enter this
+        // display; retention applies only to outcomes, with a separate file bound.
         loop {
             let mut outcomes: Vec<_> = expected
                 .iter()
@@ -73,9 +79,13 @@ fn check(
         cursor.durable = cursor.position;
         let mut change = Change {
             cursor: cursor.clone(),
-            file: Some(file),
+            removed: if remove {
+                vec![file.key.clone()]
+            } else {
+                vec![]
+            },
+            file: (!remove).then_some(file),
             files: vec![],
-            removed: vec![],
         };
         if broken {
             actual.apply::<false>(&mut change).unwrap()
@@ -112,8 +122,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn command_display_retention_matches_immutable_files(operations in prop::collection::vec(
-        (0u8..8,0u8..3,"[a-z]{0,1900}"),0..24)) {
-        for (recent, files, bytes) in [(2,4,16_384),(8,2,16_384),(8,16,2048)] {
+        (0u8..8,0u8..5,"[a-z]{0,1900}"),0..24)) {
+        for (recent, files, bytes) in [(2,4,16_384),(8,2,16_384),(8,16,2048),(8,16,512)] {
             check(&operations, recent, files, bytes, false);
         }
     }
@@ -127,4 +137,94 @@ fn retaining_finished_inbox_history_negative_control() {
         check(&rows, recent, files, bytes, false);
         assert!(std::panic::catch_unwind(|| check(&rows, recent, files, bytes, true)).is_err());
     }
+}
+
+fn prompt_budget_property(history: usize, draft: usize, shared_budget: bool) {
+    let mut window = Window {
+        files: BTreeMap::new(),
+        order: BTreeSet::new(),
+        bytes: 0,
+        per_file: PerFileByteLimit(65_536),
+        total: DisplayWindowBudget {
+            files: 16,
+            bytes: 512,
+        },
+        recent: 4,
+    };
+    let answer = FileValue::new(
+        FileKey::parse(".sessions/s/executions/1/result.json").unwrap(),
+        br#"{"sequence":1,"ok":{"text":"answer"}}"#.to_vec(),
+    );
+    assert!(window.include(&answer).unwrap());
+    let prompt = [
+        (
+            ".ui/config/history.json",
+            serde_json::json!(["h".repeat(history)]),
+        ),
+        (
+            ".ui/session-s/draft.json",
+            serde_json::json!("d".repeat(draft)),
+        ),
+        (
+            ".ui/session-s/layout.json",
+            serde_json::json!({"open_view":"history"}),
+        ),
+    ];
+    for (path, value) in prompt {
+        let file = FileValue::new(
+            FileKey::parse(path).unwrap(),
+            serde_json::to_vec(&value).unwrap(),
+        );
+        assert!(file.bytes.len() as u64 <= window.per_file.0);
+        if shared_budget {
+            // Restore the defect: untrimmable UI entries share the session's
+            // per-file bound with answers. The same property must reject it.
+            window.total.bytes = window.per_file.0 as usize;
+            window.bytes += file.bytes.len();
+            window.files.insert(file.key, (file.bytes.len(), 0));
+        } else {
+            assert!(!window.include(&file).unwrap());
+        }
+        window
+            .trim::<true>(&mut Vec::new())
+            .expect("prompt files must not exhaust answer capacity");
+    }
+    assert_eq!(window.files.len(), 1);
+    assert!(window.files.contains_key(&answer.key));
+    assert_eq!(window.bytes, answer.bytes.len());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn independently_bounded_prompt_files_leave_answer_capacity_unchanged(history in 60_000usize..65_501, draft in 6000usize..16_384) {
+        prompt_budget_property(history, draft, false);
+    }
+}
+
+#[test]
+#[should_panic(expected = "prompt files must not exhaust answer capacity")]
+fn shared_prompt_and_answer_budget_negative_control() {
+    prompt_budget_property(65_500, 8192, true);
+}
+
+#[test]
+fn oversized_answer_uses_the_per_file_limit_even_with_display_capacity() {
+    let mut window = Window {
+        files: BTreeMap::new(),
+        order: BTreeSet::new(),
+        bytes: 0,
+        per_file: PerFileByteLimit(16),
+        total: DisplayWindowBudget {
+            files: 16,
+            bytes: 65_536,
+        },
+        recent: 4,
+    };
+    let answer = FileValue::new(
+        FileKey::parse(".sessions/s/executions/1/result.json").unwrap(),
+        br#"{"sequence":1,"ok":{"text":"answer"}}"#.to_vec(),
+    );
+    assert!(matches!(window.include(&answer), Err(Error::LimitExceeded)));
+    assert!(window.files.is_empty());
 }
