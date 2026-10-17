@@ -552,6 +552,14 @@ proptest! {
                     b"{\"after\":0}", "application/json", "mailbox receive", None)?
                     .await?;
                 let old = local.files.resolve(&reference, None).await?.generation;
+                // Recovery must retain the original stage_once fingerprint checks.
+                let operation = OperationId::new();
+                let bad = format!("{{\"after\":{turns}}}");
+                publisher.stage_once(super::super::turn::receive_operation(operation),
+                    &format!("inputs/{operation}.receive.json"), bad.as_bytes(),
+                    "application/json", "mailbox receive", None)?.await?;
+                assert!(matches!(local.finish_turn_inputs(operation,
+                    model.payload.clone(), publisher.as_ref()).await, Err(Error::Conflict(_))));
                 Ok::<_, Error>((before, after, old))
             }).unwrap();
         same_generation(&before, &after)?;

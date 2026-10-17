@@ -215,7 +215,22 @@ impl LocalHarness {
             .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
             .await?;
         let payload = match retained {
-            Some(payload) => payload,
+            Some(payload) => {
+                let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                    b"{\"after\":0}",
+                    "application/json",
+                    &mut None,
+                )?;
+                if payload.path() != format!("inputs/{operation}.receive.json")
+                    || payload.descriptor() != &descriptor
+                    || payload.display_name() != "mailbox receive"
+                {
+                    return Err(Error::Conflict(
+                        "retained receive input has another identity".into(),
+                    ));
+                }
+                payload
+            }
             None => {
                 let mut hash = blake3::Hasher::new();
                 hash.update(b"acyclic.local.mail-receive-input/v1\0");
@@ -377,7 +392,7 @@ impl LocalHarness {
     }
 }
 
-fn receive_operation(operation: OperationId) -> OperationId {
+pub(super) fn receive_operation(operation: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.mail-receive/v1\0");
     hash.update(&operation.into_bytes());
