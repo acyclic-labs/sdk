@@ -388,6 +388,10 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    # Production-only reduced sets must not inherit test/dev features. Keep
+    # these with the lane feature-set checks, outside the tiny SDK Static job.
+    # Focused bb1 gate: Q:/lanes/bs.ps1 bash scripts/check-storage-feature-sets.sh
+    bash scripts/check-storage-feature-sets.sh
     node scripts/clippy-feature-sets.mjs 2
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \

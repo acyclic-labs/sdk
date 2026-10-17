@@ -49,5 +49,3 @@ jobs:
           persist-credentials: false
       - name: Type-check native host crates for aarch64 Linux
         run: cargo check --locked -p acyclic-fs --lib --features s3-http
-      - name: Type-check storage libraries without optional native features
-        run: bash scripts/check-storage-feature-sets.sh
