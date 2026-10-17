@@ -2,10 +2,7 @@ use crate::invalid;
 use acyclic_harness::{
     Error, Result,
     conversation::{ContentResidencyVerifier, FileRef, Limits, verified_content_bytes},
-    model::{
-        FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ModelRequest,
-        ToolResultContent,
-    },
+    model::{FileProjectionPolicy, ModelContent, ModelRequest},
 };
 use std::sync::Arc;
 
@@ -47,28 +44,6 @@ impl FileText {
     }
 }
 
-fn parts(content: &ModelContent) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
-    content.parts().iter().flat_map(|part| {
-        let direct = match part {
-            ModelContentPart::File { file, policy } => Some((file, policy)),
-            _ => None,
-        };
-        let result = match part {
-            ModelContentPart::ToolResult {
-                content: ToolResultContent::Parts { parts },
-                ..
-            } => parts.as_slice(),
-            _ => &[],
-        };
-        direct
-            .into_iter()
-            .chain(result.iter().filter_map(|part| match part {
-                ModelDataPart::File { file, policy } => Some((file, policy)),
-                _ => None,
-            }))
-    })
-}
-
 fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Result<()> {
     match policy {
         FileProjectionPolicy::Reference => Ok(()),
@@ -99,7 +74,7 @@ fn projected_bytes(file: &FileRef, policy: &FileProjectionPolicy) -> Result<u64>
 
 pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize> {
     let mut extra = 0usize;
-    for (file, policy) in parts(content) {
+    for (file, policy) in content.file_parts() {
         validate(file, policy, maximum)?;
         if matches!(
             policy,
@@ -127,7 +102,7 @@ pub(crate) async fn resolve(
     // Reject the entire unsupported request before invoking any owner reader.
     let mut remaining = files.maximum_bytes;
     for message in &request.messages {
-        for (file, policy) in parts(&message.content) {
+        for (file, policy) in message.content.file_parts() {
             validate(file, policy, files.maximum_bytes)?;
             if !matches!(policy, FileProjectionPolicy::Reference) {
                 remaining = remaining
@@ -139,7 +114,7 @@ pub(crate) async fn resolve(
     let mut remaining = files.maximum_bytes;
     let mut text = Vec::new();
     for message in &request.messages {
-        for (file, policy) in parts(&message.content) {
+        for (file, policy) in message.content.file_parts() {
             if !matches!(
                 policy,
                 FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_)

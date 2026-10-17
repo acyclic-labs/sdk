@@ -127,12 +127,11 @@ pub(crate) fn reserve_instruction_bodies(
     remaining: &mut u64,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    for part in messages.iter().flat_map(|message| message.content.parts()) {
-        if let ModelContentPart::File {
-            file,
-            policy: FileProjectionPolicy::ProjectInstructions(source),
-        } = part
-        {
+    for (file, policy) in messages
+        .iter()
+        .flat_map(|message| message.content.file_parts())
+    {
+        if let FileProjectionPolicy::ProjectInstructions(source) = policy {
             InstructionSource::with_identity(file, source).reserve(remaining, io)?;
         }
     }
@@ -211,5 +210,126 @@ impl super::instruction_sources::InstructionSources<'_> {
             file.source().reserve(&mut remaining, io)?;
         }
         Ok(maximum - remaining)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn fixture(lengths: [usize; 2], nested: [bool; 2]) -> (Vec<ModelMessage>, u64) {
+        let mut messages = Vec::new();
+        let mut total = 0;
+        for (index, (length, nested)) in lengths.into_iter().zip(nested).enumerate() {
+            let name = if index == 0 { "AGENTS.md" } else { "CLAUDE.md" };
+            let body = "x".repeat(length);
+            let frame =
+                format!("# {name} instructions for .\n\n<INSTRUCTIONS>\n{body}\n</INSTRUCTIONS>");
+            total += frame.len() as u64;
+            let file = super::super::instruction_tests::file(name, &body, "rules");
+            let projected = project_instruction(&file.into(), None).unwrap();
+            if nested {
+                let ModelContent::Part(ModelContentPart::File { file, policy }) = projected.content
+                else {
+                    unreachable!()
+                };
+                messages.push(ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
+                        format!("read-{index}"),
+                        "read".into(),
+                        serde_json::json!({}),
+                    ))),
+                });
+                messages.push(ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: format!("read-{index}"),
+                        name: "read".into(),
+                        content: ToolResultContent::Parts {
+                            parts: vec![ModelDataPart::File { file, policy }],
+                        },
+                    }),
+                });
+            } else {
+                messages.push(projected);
+            }
+        }
+        (messages, total)
+    }
+    // Deliberately restore the reviewed top-level-only traversal.
+    fn top_level_only(messages: &[ModelMessage], remaining: &mut u64) -> Result<()> {
+        for part in messages.iter().flat_map(|message| message.content.parts()) {
+            if let ModelContentPart::File {
+                file,
+                policy: FileProjectionPolicy::ProjectInstructions(source),
+            } = part
+            {
+                InstructionSource::with_identity(file, source).reserve(remaining, None)?;
+            }
+        }
+        Ok(())
+    }
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(16))]
+        #[test]
+        fn aggregate_budget_covers_direct_and_nested_instruction_files(left in 1usize..7000,right in 1usize..7000) {
+            for nested in [[false,false],[true,true],[false,true],[true,false]] {
+                let (messages,total)=fixture([left,right],nested);
+                for budget in [0,total-1,total,total+1] {
+                    let mut remaining=budget;
+                    let result=reserve_instruction_bodies(&messages,&mut remaining,None);
+                    prop_assert_eq!(result.is_ok(),budget>=total);
+                    if result.is_ok() {prop_assert_eq!(remaining,budget-total);}
+                }
+                if nested.iter().any(|nested|*nested) {
+                    let mut remaining=total-1;
+                    prop_assert!(top_level_only(&messages,&mut remaining).is_ok(),"top-level-only negative must miss the nested aggregate");
+                }
+            }
+        }
+    }
+    #[test]
+    fn prepared_request_rejects_two_nested_six_thousand_byte_instructions_before_dispatch() {
+        let (messages, total) = fixture([6000, 6000], [true, true]);
+        assert!(total > 10_000);
+        let request = ModelRequest {
+            model: Model::new(
+                "synthetic".into(),
+                "budget".into(),
+                "1".into(),
+                serde_json::json!({}),
+            )
+            .unwrap(),
+            messages,
+            tools: vec![crate::tool::ToolDefinition {
+                name: "read".into(),
+                revision: "1".into(),
+                description: "Read".into(),
+                input_schema: serde_json::json!({"type":"object"}),
+                output_schema: serde_json::json!({}),
+                projection_schema: serde_json::json!({}),
+            }],
+            max_output_tokens: Some(32),
+        };
+        assert!(top_level_only(&request.messages, &mut 10_000).is_ok());
+        PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
+        let Err(error) = PreparedModelRequest::prepare(
+            request,
+            Limits {
+                render_bytes: 10_000,
+                ..Limits::default()
+            },
+            None,
+        ) else {
+            panic!("nested aggregate was admitted")
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("project instructions exceed render bound"),
+            "{error}"
+        );
     }
 }

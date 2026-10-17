@@ -227,7 +227,8 @@ impl ModelContent {
         }
         Ok(())
     }
-    fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
+    /// Direct files and files nested in paired tool-result data, in wire order.
+    pub fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
         self.parts().iter().flat_map(|part| {
             let direct = match part {
                 ModelContentPart::File { file, policy } => Some((file, policy)),
