@@ -104,18 +104,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         if claimed && matches!(&result, Err(Error::Indeterminate(_))) {
             return result.map(Some);
         }
+        let result_key = key(files::TaskFile::ExecutionResult(id.clone()));
+        let result_budget = self.publication_byte_limit(result_key.clone())? as u64;
         loop {
             let previous = self.generation;
             let sequence = self.generation.position;
-            let bytes = archive::output_bytes(sequence, &result, self.maximum_bytes)?;
-            match self
-                .publish(
-                    key(files::TaskFile::ExecutionResult(id.clone())),
-                    bytes,
-                    true,
-                )
-                .await
-            {
+            let bytes = archive::output_bytes(sequence, &result, result_budget)?;
+            match self.publish(result_key.clone(), bytes, true).await {
                 Ok(()) => break,
                 // The effect has already finished. Only retry its outcome file,
                 // after following the competing publication; never run it again.
@@ -135,3 +130,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         result.map(Some)
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+#[path = "session_consume/tests.rs"]
+mod tests;

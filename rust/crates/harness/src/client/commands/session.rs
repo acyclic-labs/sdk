@@ -319,11 +319,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Payload space in an ordinary UI file, after its exact record framing.
     pub fn state_byte_limit(&self, root: CommandFileRoot, name: &str) -> Result<usize> {
-        let file = files::FileValue::new(self.state_key(root, name)?, Vec::new());
-        let framing = files::record_bytes(&file)?;
-        Ok(usize::try_from(self.maximum_bytes)
-            .unwrap_or(usize::MAX)
-            .min(acyclic_stream::MAX_RECORD_BYTES.saturating_sub(framing)))
+        self.publication_byte_limit(self.state_key(root, name)?)
     }
 
     /// Publish an ordinary UI/config file, then follow its accepted cut.

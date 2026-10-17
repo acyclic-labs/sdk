@@ -266,7 +266,7 @@ async fn task_files_share_the_snapshot_follow_and_reopen_cut() -> Result<()> {
 }
 
 #[tokio::test]
-async fn restored_jsonl_validates_a_scheduled_first_line_before_settling() -> Result<()> {
+async fn restored_jsonl_checks_ready_input_without_waiting_for_a_scheduled_frame() -> Result<()> {
     let (_directory, harness, provider) = local().await?;
     let operation = OperationId::new();
     let (mut client, target) = connect_local(harness.clone(), operation).await?;
@@ -278,17 +278,23 @@ async fn restored_jsonl_validates_a_scheduled_first_line_before_settling() -> Re
     )
     .await?;
     drop(client);
-    let (mut client, target) = connect_local(harness.clone(), operation).await?;
-    let input = Box::pin(futures::stream::once(async {
-        tokio::task::yield_now().await;
-        Ok("not JSON".to_owned())
-    }));
-    assert!(matches!(
-        run_jsonl(&mut client, target, input, &mut Vec::new()).await,
-        Err(Error::Invalid(_))
-    ));
-    assert_eq!(provider.requests().len(), 1);
-    drop(client);
+    for ready in [false, true] {
+        let (mut client, target) = connect_local(harness.clone(), operation).await?;
+        let input = Box::pin(futures::stream::once(async move {
+            if !ready {
+                tokio::task::yield_now().await;
+            }
+            Ok("not JSON".to_owned())
+        }));
+        let outcome = run_jsonl(&mut client, target, input, &mut Vec::new()).await;
+        if ready {
+            assert!(matches!(outcome, Err(Error::Invalid(_))));
+        } else {
+            assert_eq!(outcome?, HeadlessOutcome::Completed);
+        }
+        assert_eq!(provider.requests().len(), 1);
+        drop(client);
+    }
     close(harness).await
 }
 

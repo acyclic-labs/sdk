@@ -65,42 +65,98 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
     Ok(())
 }
 
+fn task_session_selection<const FILTER: bool>(selected: &str, session: &str, turn: u64) {
+    use crate::task_volume::{TaskFile, ToolFile};
+    let task = Component::new(selected).unwrap();
+    let session = Component::new(session).unwrap();
+    let query = Query::TaskSession {
+        task: task.clone(),
+        session: session.clone(),
+    };
+    let restored: Query = serde_json::from_slice(&serde_json::to_vec(&query).unwrap()).unwrap();
+    assert_eq!(query, restored);
+    let mut index = BTreeMap::new();
+    for owner in [
+        task.clone(),
+        Component::new(format!("{selected}-foreign")).unwrap(),
+    ] {
+        for file in [
+            TaskFile::Request(Component::new("r").unwrap()),
+            TaskFile::Chunk {
+                turn,
+                sequence: u64::MAX,
+            },
+            TaskFile::Tool {
+                turn,
+                call: Component::new("call").unwrap(),
+                file: ToolFile::Result,
+            },
+            TaskFile::Context(Component::new("context").unwrap()),
+        ] {
+            index.insert(
+                FileKey::Task {
+                    task: owner.clone(),
+                    file,
+                },
+                (),
+            );
+        }
+    }
+    for owner in [
+        session.clone(),
+        Component::new(format!("{}-foreign", session.as_str())).unwrap(),
+    ] {
+        for file in [
+            TaskFile::Request(Component::new("r").unwrap()),
+            TaskFile::ExecutionResult(Component::new("r").unwrap()),
+        ] {
+            index.insert(
+                FileKey::Session {
+                    session: owner.clone(),
+                    file,
+                },
+                (),
+            );
+        }
+    }
+    let ranges = query.ranges();
+    assert_eq!(ranges.len(), 2);
+    let candidates: Vec<_> = ranges
+        .into_iter()
+        .flat_map(|range| index.range(range).map(|(key, ())| key))
+        .collect();
+    let namespace: Vec<_> = index
+        .keys()
+        .filter(|key| {
+            matches!(key,FileKey::Task {task:owner,..} if owner==&task)
+                || matches!(key,FileKey::Session {session:owner,..} if owner==&session)
+        })
+        .collect();
+    assert_eq!(candidates, namespace);
+    assert_eq!(candidates.len(), 6);
+    let expected: Vec<_> = index.keys().filter(|key| matches!(key,FileKey::Task {task:owner,file:TaskFile::Chunk {..}|TaskFile::Tool {..}} if owner==&task)
+        || matches!(key,FileKey::Session {session:owner,..} if owner==&session)).collect();
+    let display: Vec<_> = candidates
+        .into_iter()
+        .filter(|key| !FILTER || restored.matches(key))
+        .collect();
+    assert_eq!(
+        display, expected,
+        "display selection must exclude non-display task files"
+    );
+    assert_eq!(display.len(), 4);
+}
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // The candidates themselves equal the selected namespace union: unrelated
-    // history is never scanned and serialized selection preserves authority.
+    // Broad ranges cover only the selected namespaces; the display predicate
+    // excludes archived task requests/context while retaining session records.
     #[test]
-    fn task_session_ranges_are_exact(
+    fn task_session_ranges_cover_namespaces_and_filter_display_files(
         selected in "[a-z]{1,16}", session in "[a-z]{1,16}", turn in proptest::prelude::any::<u64>(),
-    ) {
-        use crate::task_volume::{TaskFile, ToolFile};
-        let task = Component::new(&selected).unwrap();
-        let session = Component::new(session).unwrap();
-        let query = Query::TaskSession { task: task.clone(), session: session.clone() };
-        let restored: Query = serde_json::from_slice(&serde_json::to_vec(&query).unwrap()).unwrap();
-        proptest::prop_assert_eq!(&query, &restored);
-        let mut index = BTreeMap::new();
-        for owner in [task.clone(), Component::new(format!("{selected}-foreign")).unwrap()] {
-            for file in [
-                TaskFile::Request(Component::new("r").unwrap()),
-                TaskFile::Chunk { turn, sequence: u64::MAX },
-                TaskFile::Tool { turn, call: Component::new("call").unwrap(), file: ToolFile::Result },
-                TaskFile::Context(Component::new("context").unwrap()),
-            ] { index.insert(FileKey::Task { task: owner.clone(), file }, ()); }
-        }
-        for owner in [session.clone(), Component::new(format!("{}-foreign", session.as_str())).unwrap()] {
-            for file in [TaskFile::Request(Component::new("r").unwrap()), TaskFile::ExecutionResult(Component::new("r").unwrap())] {
-                index.insert(FileKey::Session { session: owner.clone(), file }, ());
-            }
-        }
-        let ranges = query.ranges();
-        proptest::prop_assert_eq!(ranges.len(), 2);
-        let candidates: Vec<_> = ranges.into_iter().flat_map(|range| index.range(range).map(|(key, ())| key)).collect();
-        let expected: Vec<_> = index.keys().filter(|key| matches!(key,
-            FileKey::Task { task: owner, .. } if owner == &task
-        ) || matches!(key, FileKey::Session { session: owner, .. } if owner == &session)).collect();
-        proptest::prop_assert_eq!(&candidates, &expected);
-        proptest::prop_assert_eq!(candidates.len(), 6);
-        proptest::prop_assert!(candidates.iter().all(|key| restored.matches(key)));
-    }
+    ) { task_session_selection::<true>(&selected,&session,turn); }
+}
+#[test]
+#[should_panic(expected = "display selection must exclude non-display task files")]
+fn treating_range_candidates_as_display_is_detected_negative_control() {
+    task_session_selection::<false>("task", "session", 0);
 }

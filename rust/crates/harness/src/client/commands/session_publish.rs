@@ -3,6 +3,13 @@ use super::*;
 pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(super) fn publication_byte_limit(&self, key: files::FileKey) -> Result<usize> {
+        let framing = files::record_bytes(&files::FileValue::new(key, Vec::new()))?;
+        Ok(usize::try_from(self.maximum_bytes)
+            .unwrap_or(usize::MAX)
+            .min(acyclic_stream::MAX_RECORD_BYTES.saturating_sub(framing)))
+    }
+
     pub(super) async fn publish(
         &mut self,
         key: files::FileKey,
