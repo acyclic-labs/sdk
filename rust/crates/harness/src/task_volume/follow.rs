@@ -112,6 +112,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     // Exact files and a follow cursor share one index observation. The index is
     // a leaf lock; provider IO is always outside it.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn snapshot_files(
         &self,
         keys: &[super::FileKey],
