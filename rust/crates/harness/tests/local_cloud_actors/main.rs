@@ -1,7 +1,7 @@
 //! SDK Actors operations against the real local-cloud service.
 use acyclic_actors::{grpc, wire};
 use acyclic_objects::v1::{ObjectsProvider as _, grpc::GrpcObjects, wire as objects};
-use acyclic_stream::{AppendRequest, StreamPath, StreamProvider as _};
+use acyclic_stream::{AppendOutcome, AppendRequest, StreamPath, StreamProvider as _};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
@@ -225,7 +225,7 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
         ca,
     )
     .await?;
-    streams
+    let appended = streams
         .append(AppendRequest {
             path: StreamPath::new(EVENTS)?,
             records: vec![acyclic_stream::OwnedBytes::from_static(
@@ -235,6 +235,10 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
             idempotency_key: None,
         })
         .await?;
+    let AppendOutcome::Committed(receipt) = appended else {
+        return Err("the pre-subscription record was not committed".into());
+    };
+    let start = receipt.end;
     let add = wire::AddSubscriptionRequest {
         actor_id: ACTOR.into(),
         idempotency_key: "sdk-add".into(),
@@ -258,6 +262,13 @@ async fn actors_lifecycle_matches_the_counter_oracle() -> TestResult {
     assert_eq!(added.subscriptions.len(), 1);
     assert_eq!(added.subscriptions[0].subscription_id, "events");
     assert_eq!(added.subscriptions[0].stream_path, EVENTS);
+    assert_eq!(
+        added.subscriptions[0].state,
+        wire::SubscriptionState::Active as i32
+    );
+    assert_eq!(added.subscriptions[0].delivered_cursor, start);
+    assert_eq!(added.subscriptions[0].completed_cursor, start);
+    assert_eq!(added.subscriptions[0].recoverable_cursor, start);
     assert_eq!(
         observation(actors.add_subscription(add).await?.into_inner().actor, 2)?,
         added
