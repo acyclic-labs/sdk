@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) fn object_key(object_id: ObjectId) -> String {
     format!(
         "fs/v1/{}/{}",

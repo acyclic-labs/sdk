@@ -242,6 +242,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     Ok(false)
 }
 
+#[cfg(any(windows, test, feature = "local"))]
 pub(crate) fn truncate_file<W: NativeHostWork>(
     file: &File,
     length: u64,

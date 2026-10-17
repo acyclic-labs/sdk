@@ -8,7 +8,7 @@ use crate::foundation::{
 };
 use crate::kernel::volume_authority_id;
 use crate::performance::{WorkBudget, WorkCounters};
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 use crate::storage::ObjectId;
 use crate::storage::{
     AppendOutcome as FsAppendOutcome, AuthorityStoreError, CreateAuthorityOutcome, FenceOutcome,
@@ -83,7 +83,7 @@ mod records;
 mod reservations;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) use records::object_id_from_key;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
 pub(crate) use records::object_key;
 use records::*;
 pub(crate) fn authority_records_path(
