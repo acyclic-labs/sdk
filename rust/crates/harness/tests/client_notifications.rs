@@ -4,9 +4,11 @@ use acyclic_harness::{
     Result,
     client::{
         AttentionEvent, AttentionNotification, NotificationMode, NotificationView,
-        TerminalNotificationProtocol, terminal_notification,
+        TerminalNotificationProtocol,
     },
 };
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::client::terminal_notification;
 
 fn notice(sequence: u64, event: AttentionEvent) -> AttentionNotification {
     AttentionNotification {
