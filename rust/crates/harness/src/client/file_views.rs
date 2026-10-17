@@ -112,18 +112,6 @@ impl FileViews {
                 return Err(Error::InvalidSegment);
             }
             view.segments = segments;
-            for (key, count) in evictions {
-                let head = view.files.get_mut(&key).expect("prepared retained head");
-                let removed = head
-                    .segments
-                    .drain(..count)
-                    .map(|bytes| bytes.len() as u64)
-                    .sum::<u64>();
-                head.length -= removed;
-                if head.segments.is_empty() {
-                    view.files.remove(&key);
-                }
-            }
             view.bytes = bytes;
         }
         Ok(view)
@@ -321,7 +309,10 @@ impl FileViews {
                 }
             }
             for (key, count) in evictions {
-                let head = view.files.get_mut(&key).expect("prepared retained head");
+                let Entry::Occupied(mut entry) = view.files.entry(key) else {
+                    unreachable!("prepared retained head")
+                };
+                let head = entry.get_mut();
                 let removed = head
                     .segments
                     .drain(..count)
@@ -329,7 +320,7 @@ impl FileViews {
                     .sum::<u64>();
                 head.length -= removed;
                 if head.segments.is_empty() {
-                    view.files.remove(&key);
+                    entry.remove();
                 }
             }
             view.bytes = bytes;
