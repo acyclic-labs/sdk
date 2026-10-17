@@ -447,6 +447,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 }
 
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
+    /// Reads and hashes content exactly as staging does, writing no object.
+    pub(crate) async fn content_root_with_accounting<R: AsyncBlobSource>(
+        &self,
+        source: &mut R,
+        maximum_source_bytes: u64,
+        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<StagedContent, FsError> {
+        content_for_volume(
+            &self.volume,
+            source,
+            maximum_source_bytes,
+            false,
+            accounting,
+            cancellation,
+        )
+        .await
+    }
+}
+
 pub(crate) async fn stage_content_for_volume_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -455,6 +476,25 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
     volume: &Volume<A, O>,
     source: &mut R,
     maximum_source_bytes: u64,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<StagedContent, FsError> {
+    content_for_volume(
+        volume,
+        source,
+        maximum_source_bytes,
+        true,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+async fn content_for_volume<A: AsyncAuthorityStore, O: AsyncObjectStore, R: AsyncBlobSource>(
+    volume: &Volume<A, O>,
+    source: &mut R,
+    maximum_source_bytes: u64,
+    persist: bool,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<StagedContent, FsError> {
@@ -471,19 +511,26 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
     let page_bytes = u32::try_from(volume.config.limits.maximum_object_bytes)
         .unwrap_or(u32::MAX)
         .max(1);
-    let blob = crate::kernel::build_blob_with_accounting(
-        &volume.fs.inner.objects,
-        source,
-        BlobBuildOptions {
-            chunk_bytes,
-            page_items: volume.config.limits.maximum_directory_page_entries,
-            page_bytes,
-            maximum_blob_bytes: maximum_source_bytes,
-        },
-        accounting,
-        cancellation,
-    )
-    .await?;
+    let options = BlobBuildOptions {
+        chunk_bytes,
+        page_items: volume.config.limits.maximum_directory_page_entries,
+        page_bytes,
+        maximum_blob_bytes: maximum_source_bytes,
+    };
+    let objects = &volume.fs.inner.objects;
+    let blob = if persist {
+        crate::kernel::build_blob_with_accounting(
+            objects,
+            source,
+            options,
+            accounting,
+            cancellation,
+        )
+        .await?
+    } else {
+        crate::kernel::blob_root_with_accounting(objects, source, options, accounting, cancellation)
+            .await?
+    };
     Ok(StagedContent {
         root: blob.root,
         logical_bytes: blob.logical_bytes,

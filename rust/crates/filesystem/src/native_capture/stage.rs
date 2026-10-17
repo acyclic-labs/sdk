@@ -13,6 +13,31 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+    let mut persist = true;
+    read_regular_body(
+        stager,
+        source_root,
+        host_path,
+        snapshot,
+        (maximum_extent_spans, &mut persist),
+        meter,
+        staged_file_bytes,
+    )
+    .await
+}
+
+/// Reads every byte of the observed node; `persist` false authenticates its
+/// content roots without writing objects, for comparison with a prior record.
+/// Sparse layouts set `persist` true before reading, reporting persisted roots.
+pub(super) async fn read_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    (maximum_extent_spans, persist): (u32, &mut bool),
+    meter: &NativeMaterializationWork,
+    staged_file_bytes: &mut u64,
+) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     meter.cancellation().check()?;
     #[cfg(unix)]
     let file = source_root
@@ -50,6 +75,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     #[cfg(all(test, feature = "memory"))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
     if skip_import {
+        *persist = true;
         let staged = capture_vec(0, meter)?;
         finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
         let bytes = ranges.as_ref().map_or(0, vector_bytes);
@@ -73,6 +99,13 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         length: metadata.len(),
     }];
     let data_ranges = ranges.as_deref().unwrap_or(&full);
+    // Reuse can compare only a single full-file root. Decide while holding
+    // the opened file, before reading: layouts that cannot be reused must
+    // persist their objects on this pass rather than read them twice.
+    let dense = data_ranges == full;
+    #[cfg(test)]
+    let dense = dense || super::verified_reuse_tests::force_sparse_verification();
+    *persist |= !dense;
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
@@ -81,14 +114,25 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             range.length,
         );
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
-        let content = stager
-            .stage_content_with_accounting(
-                &mut bounded,
-                range.length,
-                &mut accounting,
-                meter.cancellation(),
-            )
-            .await;
+        let content = if *persist {
+            stager
+                .stage_content_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        } else {
+            stager
+                .content_root_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        };
         drop(bounded);
 
         let content = content?;
@@ -97,7 +141,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         }
         *staged_file_bytes = staged_file_bytes
             .checked_add(range.length)
-            .ok_or(CaptureError::from(WorkError::Overflow))?;
+            .ok_or(WorkError::Overflow)?;
         staged.push((*range, content));
     }
     finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
@@ -115,6 +159,18 @@ pub(super) fn finish_regular_capture(
     file: &std::fs::File,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if snapshot.len() > 65_536 {
+        match super::verified_reuse_tests::mode() {
+            super::verified_reuse_tests::Reuse::OmitLargeValidation => return Ok(()),
+            super::verified_reuse_tests::Reuse::RedundantLargeStat => {
+                source_root
+                    .stat_file_metadata(file, &mut meter.clone())
+                    .map_err(capture_demand_error)?;
+            }
+            _ => (),
+        }
+    }
     #[cfg(all(test, feature = "memory"))]
     if super::empty_stage_tests::omit_finish() {
         return Ok(());

@@ -46,15 +46,61 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, FsError> {
     accounting.check()?;
+    let chunk_capacity = validate_blob_options(options)?;
+    let batching = BlobBatchStore::new(store, accounting)?;
+    build_blob_through(
+        batching,
+        chunk_capacity,
+        source,
+        options,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+/// Computes the authenticated root a build would publish, retaining no object.
+///
+/// Every source byte is still read and hashed; only the store writes are omitted.
+pub(crate) async fn blob_root_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
+    store: &S,
+    source: &mut R,
+    options: BlobBuildOptions,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<BlobBuild, FsError> {
+    accounting.check()?;
+    let chunk_capacity = validate_blob_options(options)?;
+    let batching = BlobBatchStore::verifying(store);
+    build_blob_through(
+        batching,
+        chunk_capacity,
+        source,
+        options,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+fn validate_blob_options(options: BlobBuildOptions) -> Result<usize, FsError> {
     if options.chunk_bytes == 0
         || effective_page_width(options).is_none()
         || options.maximum_blob_bytes == 0
     {
         return Err(BlobBuildError::InvalidOptions.into());
     }
-    let chunk_capacity =
-        usize::try_from(options.chunk_bytes).map_err(|_| BlobBuildError::InvalidOptions)?;
-    let mut batching = BlobBatchStore::new(store, accounting)?;
+    Ok(usize::try_from(options.chunk_bytes).map_err(|_| BlobBuildError::InvalidOptions)?)
+}
+
+async fn build_blob_through<S: AsyncObjectStore, R: AsyncBlobSource>(
+    mut batching: BlobBatchStore<'_, S>,
+    chunk_capacity: usize,
+    source: &mut R,
+    options: BlobBuildOptions,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<BlobBuild, FsError> {
     let mut index = BlobIndexBuilder::new(options);
     let result = async {
         let mut logical_bytes = 0_u64;
@@ -333,6 +379,8 @@ pub(super) struct BlobBatchStore<'a, S> {
     inner: &'a S,
     writes: ReadOwned<Vec<HashedObject>>,
     bytes: u64,
+    /// False when only the root is wanted: objects are hashed, then dropped.
+    persist: bool,
 }
 
 impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
@@ -349,7 +397,17 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             inner,
             writes,
             bytes: 0,
+            persist: true,
         })
+    }
+
+    pub(super) fn verifying(inner: &'a S) -> Self {
+        Self {
+            inner,
+            writes: empty_blob_vec(),
+            bytes: 0,
+            persist: false,
+        }
     }
 
     pub(super) async fn flush(
@@ -419,6 +477,10 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
+        if !self.persist {
+            drop(object);
+            return release_blob_bytes(retained, accounting);
+        }
         self.bytes = self
             .bytes
             .checked_add(retained)

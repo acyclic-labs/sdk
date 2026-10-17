@@ -56,7 +56,7 @@ impl Drop for OldOwner {
 }
 
 // Warm one-byte staging with live shared health: these counts exclude fixture setup.
-const OWNER_FREE_ALLOCATIONS: u64 = if cfg!(windows) { 43 } else { 46 };
+const OWNER_FREE_ALLOCATIONS: u64 = if cfg!(windows) { 42 } else { 45 };
 
 fn no_owner_allocation(measured: AllocationInfo) -> Result<(), String> {
     let ceiling = OWNER_FREE_ALLOCATIONS;
