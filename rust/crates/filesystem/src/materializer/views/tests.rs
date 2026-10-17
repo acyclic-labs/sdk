@@ -168,10 +168,19 @@ fn independent_ceiling_case(
         measured(|| view(&scoped, authority))
     });
     let admitted = result.is_ok();
+    let live_with_owner = work.live_allocation_bytes();
     drop(result);
     assert_eq!(admitted, expected, "ceiling admission");
     assert_eq!(observed.count_total, u64::from(expected));
     assert_eq!(observed.bytes_total, if expected { required } else { 0 });
+    assert_eq!(
+        observed.bytes_current,
+        if expected { required as i64 } else { 0 }
+    );
+    assert_eq!(
+        live_with_owner,
+        baseline + if expected { required } else { 0 }
+    );
     assert_eq!(work.live_allocation_bytes(), baseline);
     if expected {
         assert_eq!(
