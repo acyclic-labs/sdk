@@ -109,7 +109,7 @@ pub fn observe<E>(
 }
 
 pub fn check(input: &CommandResolution) {
-    observe(
+    observe::<std::convert::Infallible>(
         input,
         |_, _| {},
         |event| {
@@ -121,5 +121,5 @@ pub fn check(input: &CommandResolution) {
             Ok(())
         },
     )
-    .unwrap_or_else(|_| panic!("conversion observation stopped"));
+    .unwrap_or_else(|never| match never {});
 }
