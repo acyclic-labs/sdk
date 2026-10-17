@@ -434,13 +434,19 @@ fn modelled_lengths(
     let mut queue = faults.iter().copied();
     let mut consumed = 0;
     let mut lengths = Vec::new();
-    let mut start = 0;
-    while start < ranges.len() {
-        let mut end = start + 1;
-        while end < ranges.len() && ranges[end].0 == ranges[end - 1].0 + ranges[end - 1].1 as u64 {
-            end += 1;
-        }
-        let run = &ranges[start..end];
+    let mut rest = ranges;
+    while let Some(&(first, _)) = rest.first() {
+        // Each run is a maximal prefix whose requests abut end to start.
+        let joined = rest
+            .windows(2)
+            .take_while(
+                |pair| matches!(pair, [(at, length), (next, _)] if *next == at + *length as u64),
+            )
+            .count();
+        let Some((run, tail)) = rest.split_at_checked(joined + 1) else {
+            break;
+        };
+        rest = tail;
         let total: usize = run.iter().map(|range| range.1).sum();
         let mut moved = 0;
         while moved < total {
@@ -455,7 +461,7 @@ fn modelled_lengths(
                     })
                     .unwrap_or(0)
             };
-            let at = run[0].0 + moved as u64;
+            let at = first + moved as u64;
             let available = usize::try_from(file_length.saturating_sub(at)).unwrap_or(usize::MAX);
             let count = loop {
                 let fault = queue.next();
@@ -478,7 +484,6 @@ fn modelled_lengths(
             lengths.push(take);
             left -= take;
         }
-        start = end;
     }
     (lengths, consumed)
 }
@@ -685,7 +690,9 @@ fn a_scalar_zero_after_progress_is_write_zero() {
     assert_eq!(consumed, 2);
     assert_eq!(trace, [("pwrite", 0, 3), ("pwrite", 3, 4)]);
     let mut expected: Vec<u8> = (0..FILE).map(content).collect();
-    expected[..3].copy_from_slice(b"abc");
+    for (slot, byte) in expected.iter_mut().zip(b"abc") {
+        *slot = *byte;
+    }
     assert_eq!(new_bytes, expected);
     assert_eq!(write_oracle(&writes, None, &faults, Mutation::None), Ok(()));
 }
@@ -814,7 +821,7 @@ fn assert_contents(results: &[Bytes], requests: &[OwnedRead], bytes: &[u8]) {
     for (result, read) in results.iter().zip(requests) {
         let start = usize::try_from(read.offset).unwrap();
         let end = (start + read.length).min(bytes.len());
-        assert_eq!(result[..], bytes[start..end]);
+        assert_eq!(result.get(..), bytes.get(start..end));
     }
 }
 
@@ -891,13 +898,16 @@ fn a_reused_buffer_exposes_only_the_bytes_of_its_new_read() {
             .spawn(|| {
                 Shard::isolate();
                 let first = read_batch_with(&file, &full, None).unwrap();
-                let storage = first[0].as_ptr();
+                let storage = first.first().unwrap().as_ptr();
                 drop(first);
                 // The same buffer comes back, filled only to end of file.
                 let short = read_batch_with(&file, &tail, None).unwrap();
-                assert_eq!(short[0].as_ptr(), storage);
+                let [reused] = short.as_slice() else {
+                    panic!("one read yields one buffer");
+                };
+                assert_eq!(reused.as_ptr(), storage);
+                assert_eq!(reused.len(), 100);
                 assert_contents(&short, &tail, &bytes);
-                assert_eq!(short[0].len(), 100);
             })
             .join()
             .unwrap();

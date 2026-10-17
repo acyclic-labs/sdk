@@ -605,9 +605,9 @@ fn group_snapshot_has_no_live_members(
     let mut members = [0_i32; 2];
     let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
     let id = u32::try_from(group).map_err(io::Error::other)?;
-    // SAFETY: thread-local errno and a writable, correctly sized PID array.
     // libproc returns zero both for an empty list and for an errno failure.
     let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        // SAFETY: thread-local errno and a writable, correctly sized PID array.
         Ok(unsafe {
             *libc::__error() = 0;
             libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
