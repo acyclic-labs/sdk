@@ -7,93 +7,13 @@ use acyclic_harness::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+mod tool_arguments;
+pub use tool_arguments::assert_tool_arguments;
+
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
 }
 
-/// Tool-call arguments from raw bytes, through the real Chat stream. A call is
-/// emitted exactly when its arguments are a JSON object that the independent
-/// recording reference admits, and then unchanged; anything else fails the
-/// whole stream rather than failing later when the executor records the call.
-pub fn assert_tool_arguments(input: &[u8]) {
-    let Ok(text) = std::str::from_utf8(input) else {
-        return;
-    };
-    let calls =
-        serde_json::json!([{"index":0,"id":"call","function":{"name":"echo","arguments":text}}]);
-    let sse = format!(
-        "data: {}\n\ndata: [DONE]\n\n",
-        serde_json::json!({"choices":[{"delta":{"tool_calls":calls}}]})
-    );
-    let body = Box::pin(futures::stream::iter([Ok(Bytes::from(sse))]));
-    let dispatch = ModelDispatch {
-        operation_id: OperationId::from_bytes([1; 16]),
-        step: 0,
-        request_digest: [0; 32],
-    };
-    let events: Result<Vec<_>, _> = futures::executor::block_on(
-        stream::events(Adapter::Chat, body, 1 << 20, dispatch).try_collect(),
-    );
-    let emitted = events.ok().and_then(|events| {
-        events.into_iter().find_map(|event| match event {
-            ModelEvent::ToolCall(call) => Some(call),
-            _ => None,
-        })
-    });
-    // Shallow values only, so serde's own recursion limit is never the cause.
-    let literal = crate::projection::arguments::literal(input)
-        .ok()
-        .filter(|value| depth(value) <= 64);
-    match (emitted, literal) {
-        (Some(call), literal) => {
-            assert!(
-                call.arguments.is_object() && portable(&call.arguments),
-                "the stream emitted arguments the recording rule rejects"
-            );
-            if let Some(literal) = literal {
-                assert_eq!(call.arguments, literal);
-            }
-        }
-        (None, Some(literal)) => assert!(
-            !(literal.is_object() && portable(&literal)),
-            "the stream rejected portable object arguments"
-        ),
-        (None, None) => {}
-    }
-}
-
-fn depth(value: &serde_json::Value) -> usize {
-    match value {
-        serde_json::Value::Array(values) => 1 + values.iter().map(depth).max().unwrap_or(0),
-        serde_json::Value::Object(values) => 1 + values.values().map(depth).max().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-/// Independent reference for the recording rule, deliberately not
-/// `acyclic_harness::conversation`: no private serde marker key, and every
-/// number round-trips through a JavaScript Number exactly.
-pub(crate) fn portable(value: &serde_json::Value) -> bool {
-    const SAFE: u64 = (1 << 53) - 1;
-    match value {
-        serde_json::Value::Number(number) => match (number.as_i64(), number.as_u64()) {
-            (Some(integer), _) => integer.unsigned_abs() <= SAFE,
-            (None, Some(integer)) => integer <= SAFE,
-            (None, None) => number.as_f64().is_some_and(|float| {
-                float.is_finite()
-                    && float.to_bits() != (-0.0f64).to_bits()
-                    && (float.fract() != 0.0 || float.abs() <= SAFE as f64)
-            }),
-        },
-        serde_json::Value::Array(values) => values.iter().all(portable),
-        serde_json::Value::Object(values) => values.iter().all(|(key, value)| {
-            key != "$serde_json::private::RawValue"
-                && key != "$serde_json::private::Number"
-                && portable(value)
-        }),
-        _ => true,
-    }
-}
 /// Accepted alloy manifests preserve policy and deterministic selection through JSON.
 pub fn assert_alloy_invariants(input: &[u8]) {
     if let Ok(spec) = serde_json::from_slice::<crate::AlloySpec>(input) {
@@ -378,22 +298,6 @@ mod properties {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn tool_arguments_are_admitted_by_the_recording_rule(
-            entries in prop::collection::vec((0usize..4, prop::collection::vec(0usize..8, 1..3), any::<bool>()), 0..5),
-            wrapped in any::<bool>(),
-        ) {
-            const KEYS: [&str; 4] = ["a", "$serde_json::private::RawValue", "$serde_json::private::Number", "$serde_json::private"];
-            const NUMBERS: [&str; 8] = ["0", "-0.0", "-0.5", "9007199254740991", "-9007199254740991", "9007199254740992", "1e16", "18446744073709551615"];
-            let fields: Vec<String> = entries.iter().map(|(key, numbers, array)| {
-                let numbers: Vec<_> = numbers.iter().map(|number| NUMBERS[*number]).collect();
-                let value = if *array { format!("[{}]", numbers.join(",")) } else { numbers[0].to_owned() };
-                format!("{}:{value}", json!(KEYS[*key]))
-            }).collect();
-            let object = format!("{{{}}}", fields.join(","));
-            let text = if wrapped { format!("[{object}]") } else { object };
-            assert_tool_arguments(text.as_bytes());
-        }
-        #[test]
         fn arbitrary_bytes_have_chunk_invariant_stream_results(input in prop::collection::vec(any::<u8>(), 0..2048)) {
             assert_stream_invariants(&input);
         }
@@ -633,11 +537,96 @@ pub fn assert_turns(input: &[u8]) {
         return;
     };
     assert_eq!(turn_repair_violation(adapter, &messages, &output), None);
+    if errors.is_empty() && canonical_turns(adapter, &messages) {
+        assert_eq!(output, messages, "valid canonical turns were changed");
+    }
     assert_eq!(
         replay(adapter, &output).as_ref(),
         Some(&output),
         "turn repair is not idempotent"
     );
+}
+
+/// Turns repair must leave unchanged: non-empty, alternating, already
+/// satisfying every repair rule, and with no blank Anthropic text block.
+pub(crate) fn canonical_turns(adapter: Adapter, messages: &[serde_json::Value]) -> bool {
+    let field = turn_field(adapter);
+    messages.iter().all(|message| {
+        message[field].as_array().is_some_and(|parts| {
+            !parts.is_empty()
+                && (adapter == Adapter::Gemini
+                    || parts.iter().all(|part| {
+                        part["text"]
+                            .as_str()
+                            .is_none_or(|text| !text.trim().is_empty())
+                    }))
+        })
+    }) && turn_repair_violation(adapter, messages, messages).is_none()
+}
+
+fn turn_field(adapter: Adapter) -> &'static str {
+    if adapter == Adapter::Anthropic {
+        "content"
+    } else {
+        "parts"
+    }
+}
+
+/// Every non-text block in order, split into the groups repair may move
+/// relative to each other: results (whose Gemini order follows the calls) and
+/// everything else.
+fn blocks<'a>(
+    adapter: Adapter,
+    messages: &'a [serde_json::Value],
+) -> (Vec<&'a serde_json::Value>, Vec<&'a serde_json::Value>) {
+    messages
+        .iter()
+        .filter_map(|message| message[turn_field(adapter)].as_array())
+        .flatten()
+        .filter(|part| !part["text"].is_string())
+        .partition(|part| {
+            if adapter == Adapter::Anthropic {
+                part["type"].as_str() == Some("tool_result")
+            } else {
+                part.get("functionCall").is_none() && part.get("functionResponse").is_some()
+            }
+        })
+}
+
+/// All text in order. Repair inserts whole `(continue)` turns at either end;
+/// Anthropic also drops whitespace-only runs, so only its visible text counts.
+fn text_matches(
+    adapter: Adapter,
+    input: &[serde_json::Value],
+    output: &[serde_json::Value],
+) -> bool {
+    let text = |messages: &[serde_json::Value]| -> String {
+        let all: String = messages
+            .iter()
+            .filter_map(|message| message[turn_field(adapter)].as_array())
+            .flatten()
+            .filter_map(|part| part["text"].as_str())
+            .collect();
+        if adapter == Adapter::Anthropic {
+            all.chars().filter(|char| !char.is_whitespace()).collect()
+        } else {
+            all
+        }
+    };
+    let continuation = |message: Option<&serde_json::Value>| {
+        message.is_some_and(|message| {
+            message["role"] == "user"
+                && message[turn_field(adapter)]
+                    .as_array()
+                    .is_some_and(|parts| parts.len() == 1 && parts[0]["text"] == "(continue)")
+        })
+    };
+    let expected = text(input);
+    let first = usize::from(continuation(output.first()));
+    let last = usize::from(output.len() > first && continuation(output.last()));
+    [(0, 0), (first, 0), (0, last), (first, last)]
+        .into_iter()
+        .any(|(head, tail)| text(&output[head..output.len() - tail]) == expected)
 }
 
 /// The structured detector shared by the turn oracle and its negative controls.
@@ -658,11 +647,7 @@ pub(crate) fn turn_repair_violation(
     {
         return Some("alternation");
     }
-    let field = if adapter == Adapter::Anthropic {
-        "content"
-    } else {
-        "parts"
-    };
+    let field = turn_field(adapter);
     // Text runs are normalized; every other part survives exactly once.
     let kept = |messages: &[serde_json::Value]| {
         let mut parts: Vec<_> = messages
@@ -677,6 +662,15 @@ pub(crate) fn turn_repair_violation(
     };
     if kept(input) != kept(output) {
         return Some("lost part");
+    }
+    // Within each group, blocks keep their order; Gemini results are ordered
+    // by their calls instead, which `unordered` checks below.
+    let ((results, others), (moved, rest)) = (blocks(adapter, input), blocks(adapter, output));
+    if others != rest || (adapter == Adapter::Anthropic && results != moved) {
+        return Some("reordered parts");
+    }
+    if !text_matches(adapter, input, output) {
+        return Some("changed text");
     }
     // A canonical text run has no blank fragment beside another text part.
     let blank = |part: &serde_json::Value| part["text"].as_str().map(|text| text.trim().is_empty());
@@ -789,48 +783,4 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
             == 1
     });
     !calls.is_empty() && distinct && complete && leading != calls
-}
-
-#[cfg(test)]
-mod tool_arguments {
-    use super::{assert_tool_arguments, portable};
-    use serde_json::json;
-
-    #[test]
-    fn checked_in_byte_corpus() {
-        for bytes in [
-            include_bytes!("../fuzz/corpus/tool_arguments/portable-boundaries").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/negative-zero").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/unsafe-integer").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/raw-value-marker").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/number-marker-nested").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/non-object").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/duplicate-keys").as_slice(),
-            include_bytes!("../fuzz/corpus/tool_arguments/lone-surrogate").as_slice(),
-        ] {
-            assert_tool_arguments(bytes);
-        }
-    }
-
-    #[test]
-    fn negative_control_reference_rejects_what_the_old_stream_rule_admitted() {
-        // The deleted stream rule checked only magnitude, so it admitted both.
-        for value in [
-            json!({"value":-0.0}),
-            json!({"$serde_json::private::RawValue":"null"}),
-            json!({"n":[{"$serde_json::private::Number":"1"}]}),
-        ] {
-            assert!(!portable(&value), "{value}");
-            assert!(acyclic_harness::conversation::validate_portable_json(&value).is_err());
-        }
-        for value in [
-            json!({"value":9_007_199_254_740_992_u64}),
-            json!({"value":1e16}),
-        ] {
-            assert!(!portable(&value), "{value}");
-        }
-        assert!(portable(
-            &json!({"max":9_007_199_254_740_991_u64, "half":-0.5, "$serde_json::private":1})
-        ));
-    }
 }

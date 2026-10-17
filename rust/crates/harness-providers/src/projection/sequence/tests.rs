@@ -73,10 +73,11 @@ fn checked_in_byte_corpus() {
 }
 
 mod turns {
+    use super::super::super::wire::Item;
     use super::super::super::wire::replay_turns_with;
     use super::super::{RULES, Rules};
     use crate::Adapter;
-    use crate::fuzzing::{assert_turns, turn_repair_violation};
+    use crate::fuzzing::{assert_turns, canonical_turns, turn_repair_violation};
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
@@ -263,6 +264,60 @@ mod turns {
         }
     }
 
+    #[test]
+    fn negative_controls_fault_exact_preservation() {
+        let anthropic = [
+            json!({"role":"user","content":[{"type":"text","text":"q"}]}),
+            json!({"role":"assistant","content":[
+                {"type":"tool_use","id":"a","name":"f","input":{}},
+                {"type":"tool_use","id":"b","name":"f","input":{}}]}),
+            json!({"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"a","content":"ok"},
+                {"type":"tool_result","tool_use_id":"b","content":"ok"}]}),
+        ];
+        let gemini = [
+            json!({"role":"user","parts":[{"text":"q"}]}),
+            json!({"role":"model","parts":[{"text":"answer"}]}),
+            json!({"role":"user","parts":[{"text":"more"}]}),
+        ];
+        let reversed = Rules {
+            normalize: |_, parts| parts.reverse(),
+            ..RULES
+        };
+        let replaced = Rules {
+            normalize: |_, parts| {
+                for part in parts {
+                    if let Item::Json(value) = part
+                        && value["text"].is_string()
+                    {
+                        value["text"] = json!("x");
+                    }
+                }
+            },
+            ..RULES
+        };
+        for (adapter, messages, broken, violation) in [
+            (
+                Adapter::Anthropic,
+                &anthropic[..],
+                reversed,
+                "reordered parts",
+            ),
+            (Adapter::Gemini, &gemini[..], replaced, "changed text"),
+        ] {
+            // Valid canonical input passes through repair unchanged...
+            assert!(canonical_turns(adapter, messages));
+            let healthy = replay_turns_with(adapter, messages, RULES).unwrap();
+            assert_eq!(healthy, messages);
+            // ...and an idempotent fault that rewrites it is named.
+            let faulty = replay_turns_with(adapter, messages, broken).unwrap();
+            assert_ne!(faulty, messages);
+            assert_eq!(
+                turn_repair_violation(adapter, messages, &faulty),
+                Some(violation)
+            );
+        }
+    }
     #[test]
     fn checked_in_byte_corpus() {
         for bytes in [
