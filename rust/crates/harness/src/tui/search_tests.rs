@@ -151,7 +151,7 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
     let text = paint(&mut renderer, &files, &input, 80);
     assert!(
         text.contains("2/2 matches"),
-        "Unicode matches must reach the composed status"
+        "Unicode matches must reach the composed status: {text}"
     );
     assert!(text.contains("STRASSE"), "next match must scroll into view");
     // Changing only the resolved theme must invalidate cached search styles.

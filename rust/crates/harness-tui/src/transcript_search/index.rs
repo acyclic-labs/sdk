@@ -7,6 +7,7 @@ pub(crate) struct Index {
     pub text: String,
     pub revision: u64,
     origins: Vec<Range<usize>>,
+    source_len: usize,
 }
 
 impl Index {
@@ -15,6 +16,8 @@ impl Index {
             .revision
             .checked_add(1)
             .expect("search index revision overflow");
+        let at = at.min(self.source_len);
+        self.source_len = source.len();
         let cut = self.origins.partition_point(|origin| origin.end <= at);
         self.text.truncate(cut);
         self.origins.truncate(cut);

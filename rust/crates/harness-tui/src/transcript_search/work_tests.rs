@@ -200,3 +200,14 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
     assert_eq!(search.generation, generation);
     assert_eq!(search.viewport.unwrap().1, projection.revision());
 }
+
+#[test]
+fn appended_sources_index_the_preceding_separator() {
+    let mut projection = projection("first");
+    projection.update(&[Line::raw("first"), Line::raw("second")], 1, 80);
+    assert_eq!(projection.index.text, "first\nsecond");
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "first\nsecond", 0, Style::default());
+    finish(&mut search, &projection);
+    assert_eq!(search.matches, [0..12]);
+}
