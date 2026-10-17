@@ -362,6 +362,9 @@ proptest! {
     }
 }
 
+/// Windows meters each overlapped read's issue and its completion retrieval.
+const OPERATIONS_PER_READ: u64 = if cfg!(windows) { 2 } else { 1 };
+
 #[test]
 fn segment_reads_do_exact_uninitialized_work() {
     // A large first body: the old path read 41 KB of it as "prefix".
@@ -397,7 +400,7 @@ fn segment_reads_do_exact_uninitialized_work() {
                             ("read", at, selected),
                         ],
                         Counts {
-                            read_operations: 2,
+                            read_operations: 2 * OPERATIONS_PER_READ,
                             read_bytes: prefix + selected,
                         },
                     )
@@ -411,7 +414,7 @@ fn segment_reads_do_exact_uninitialized_work() {
                             ("read", *offset, length),
                         ],
                         Counts {
-                            read_operations: 1,
+                            read_operations: OPERATIONS_PER_READ,
                             read_bytes: length,
                         },
                     )
