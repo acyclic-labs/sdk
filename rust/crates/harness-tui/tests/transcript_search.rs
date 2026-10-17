@@ -71,7 +71,7 @@ fn undoable_chat_replacement_negative_control() {
     round_trip::<false>(&"folded\n".repeat(20), "needle", 0, false);
 }
 
-fn allocation_model<const PER_GRAPHEME: bool>() {
+fn allocation_model<const PER_GRAPHEME: bool, const QUERY_GRAPHEME: bool>() {
     let selected = acyclic_harness_tui::config::default_style(
         acyclic_harness_tui::config::ThemeRole::Selection,
     )
@@ -82,7 +82,17 @@ fn allocation_model<const PER_GRAPHEME: bool>() {
         let mut projection = WrappedLines::default();
         projection.update(&[Line::raw(text.clone())], 0, 80);
         let mut search = acyclic_harness_tui::TranscriptSearch::default();
-        search.update(&projection, "a", 0, selected);
+        let query = acyclic_test_support::measure(|| {
+            search.update(&projection, "a", 0, selected);
+            if QUERY_GRAPHEME {
+                let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
+                std::hint::black_box(spans);
+            }
+        });
+        assert!(
+            query.count_total <= 64,
+            "query metadata must not allocate per grapheme"
+        );
         // Independently initialized fixed-width baseline for the same viewport.
         let mut baseline = Vec::with_capacity(visible);
         let reference = acyclic_test_support::measure(|| {
@@ -128,13 +138,13 @@ fn allocation_model<const PER_GRAPHEME: bool>() {
 
 #[test]
 fn highlights_allocate_exactly_one_owned_span_per_uniform_row() {
-    allocation_model::<false>();
+    allocation_model::<false, false>();
 }
 
 #[test]
 #[should_panic(expected = "highlight allocation count must equal coalesced rows")]
 fn per_grapheme_spans_negative_control() {
-    allocation_model::<true>();
+    allocation_model::<true, false>();
 }
 
 #[test]
@@ -153,4 +163,10 @@ fn physical_find_shortcut_preserves_the_open_undo_group() {
     input.set_transcript_search(Some("needle"));
     input.set_transcript_search(None);
     assert_eq!(format!("{:?}", input.editor), before);
+}
+
+#[test]
+#[should_panic(expected = "query metadata must not allocate per grapheme")]
+fn query_per_grapheme_spans_negative_control() {
+    allocation_model::<false, true>();
 }
