@@ -92,6 +92,10 @@ async fn scenario<const BOUND: bool>(query: &str) {
     let mut prompt = PromptFiles::default();
     prompt.refresh(&files, &mut input).unwrap();
     input.editor.set_text("unsent draft", 1);
+    input.editor.paste(&"folded paste\n".repeat(20), 2);
+    input.editor.set_cursor(0, false);
+    assert!(!input.editor.collapsed_pastes().is_empty());
+    let draft = format!("{:?}", input.editor);
     prompt.save(&mut files, &mut input).await.unwrap();
     let effects = input.key(KeyEvent::new(KeyCode::Char('f'), M::CONTROL), 2, 78);
     assert_eq!(
@@ -104,12 +108,12 @@ async fn scenario<const BOUND: bool>(query: &str) {
             .unwrap();
     }
     prompt.refresh(&files, &mut input).unwrap();
-    assert!(input.transcript_search, "search form must own the input");
+    assert!(input.transcript_search(), "search form must own the input");
     input.paste(query, 2);
     prompt.save(&mut files, &mut input).await.unwrap();
     prompt.refresh(&files, &mut input).unwrap();
     if !BOUND {
-        input.transcript_search = false;
+        input.set_transcript_search(None);
     }
     let effects = input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 3, 78);
     assert!(
@@ -160,8 +164,12 @@ async fn scenario<const BOUND: bool>(query: &str) {
     }
     prompt.save(&mut files, &mut input).await.unwrap();
     prompt.refresh(&files, &mut input).unwrap();
-    assert!(!input.transcript_search);
-    assert_eq!(input.editor.text(), "unsent draft");
+    assert!(!input.transcript_search());
+    assert_eq!(
+        format!("{:?}", input.editor),
+        draft,
+        "complete chat editor must survive file-backed search"
+    );
     for effect in input.key(KeyEvent::new(KeyCode::Enter, M::NONE), 6, 78) {
         file_tui_input(&mut files, &NoFiles, effect, 20, 0)
             .await

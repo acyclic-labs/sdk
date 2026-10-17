@@ -357,11 +357,13 @@ impl ClientRenderer {
             let query = layout["search_query"].as_str().unwrap_or("").to_owned();
             let cut = (query, width, self.transcript.len());
             if search_changed || self.search_cut.as_ref() != Some(&cut) {
-                self.search.update(&self.transcript, &cut.0, width);
+                self.search.update(&mut self.wrapped_transcript, &cut.0);
                 self.search_cut = Some(cut);
             }
         } else {
-            self.search_cut = None;
+            if self.search_cut.take().is_some() {
+                self.wrapped_transcript.highlight(&[]);
+            }
         }
         Ok(())
     }
@@ -452,7 +454,7 @@ impl ClientRenderer {
                     .as_ref()
                     .and_then(|value| value["search_index"].as_i64())
                     .unwrap_or(0);
-                screen.transcript = self.search.rows();
+                screen.transcript = self.wrapped_transcript.rows();
                 screen.reasoning = &[];
                 screen.search_row =
                     (self.search.count() != 0).then(|| self.search.selected_row(index));

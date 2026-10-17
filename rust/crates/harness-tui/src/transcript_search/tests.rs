@@ -58,13 +58,15 @@ proptest! {
         let at = text.char_indices().nth(split).map_or(text.len(), |(at,_)|at);
         let source = [Line::from(vec![Span::raw(text[..at].to_owned()),Span::raw(text[at..].to_owned())])];
         let mut view = TranscriptSearch::default();
-        view.update(&source,&query,width);
+        let mut wrapped=crate::WrappedLines::default();
+        wrapped.update(&source,0,width);
+        view.update(&mut wrapped,&query);
         prop_assert_eq!(view.count(),reference(&text,&query).len());
-        let actual: String=view.rows().iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
+        let actual: String=wrapped.rows().iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
         let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
         let expected: String=layout.rows.iter().flat_map(|row| &row.cells).map(|cell|cell.symbol.as_str()).collect();
         prop_assert_eq!(actual,expected);
-        if view.count()!=0 {prop_assert!(view.selected_row(-1)<view.rows().len());}
+        if view.count()!=0 {prop_assert!(view.selected_row(-1)<wrapped.rows().len());}
     }
 }
 
@@ -96,24 +98,28 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
         ]),
         Line::raw("STRASSE"),
     ];
-    view.update(&source, "strasse", 80);
+    let mut wrapped = crate::WrappedLines::default();
+    wrapped.update(&source, 0, 80);
+    view.update(&mut wrapped, "strasse");
     assert_eq!(view.count(), 2);
     assert_eq!(view.selected_row(-1), 1);
     assert_eq!(view.selected_row(2), 0);
     assert!(
-        view.rows()[0].spans[0]
+        wrapped.rows()[0].spans[0]
             .style
             .add_modifier
             .contains(Modifier::BOLD | Modifier::UNDERLINED)
     );
     assert!(
-        view.rows()
+        wrapped
+            .rows()
             .iter()
             .flat_map(|line| &line.spans)
             .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
     );
     assert_eq!(
-        view.rows()
+        wrapped
+            .rows()
             .iter()
             .map(|line| line
                 .spans
@@ -123,7 +129,8 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
             .collect::<Vec<_>>(),
         ["Straße", "STRASSE"]
     );
-    view.update(&source, "strasse", 3);
+    wrapped.update(&source, 0, 3);
+    view.update(&mut wrapped, "strasse");
     assert_eq!(view.count(), 2, "wrapping must not split the search needle");
     assert!(view.selected_row(1) > 0);
 }
@@ -161,4 +168,24 @@ fn rescanning_prefixes_is_detected_negative_control() {
         work <= 3 * (text.len() + query.len()),
         "search must have linear work"
     );
+}
+
+#[test]
+fn clearing_highlights_restores_the_same_wrapped_rows() {
+    use ratatui::{
+        style::{Modifier, Style},
+        text::{Line, Span},
+    };
+    let source = [Line::from(vec![
+        Span::styled("Straße\t", Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("STRASSE\nend"),
+    ])];
+    let mut wrapped = crate::WrappedLines::default();
+    wrapped.update(&source, 0, 5);
+    let ordinary = wrapped.rows().to_vec();
+    let mut search = TranscriptSearch::default();
+    search.update(&mut wrapped, "strasse");
+    assert_eq!(search.count(), 2);
+    wrapped.highlight(&[]);
+    assert_eq!(wrapped.rows(), ordinary);
 }

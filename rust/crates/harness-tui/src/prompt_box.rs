@@ -55,7 +55,7 @@ impl StatefulWidget for PromptBox<'_> {
 
     fn render(self, area: Rect, buffer: &mut Buffer, viewport: &mut Viewport) {
         let mut labels = vec![];
-        if self.input.transcript_search {
+        if self.input.transcript_search() {
             labels.push("Find · Enter next · Shift+Enter previous · Escape closes".to_owned());
         }
         if self.input.editing_message().is_some() {

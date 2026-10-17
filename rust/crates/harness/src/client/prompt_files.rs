@@ -68,7 +68,7 @@ impl PromptFiles {
             .state(CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
         let search = layout["open_view"] == "find" && layout["view_input"] == "find";
-        let mode_changed = input.transcript_search != search;
+        let mode_changed = input.transcript_search() != search;
         let query = if search {
             layout
                 .get("search_query")
@@ -101,12 +101,10 @@ impl PromptFiles {
             })
             .transpose()?
             .unwrap_or_default();
-        if search && (mode_changed || input.editor.text() != query) {
-            input.editor.set_text(query, 0);
-        } else if !search && (draft_changed || mode_changed) {
-            input.editor.set_text(decoded.editor.text(), 0);
+        if draft_changed {
+            input.set_chat_draft(decoded.editor.text());
         }
-        input.transcript_search = search;
+        input.set_transcript_search(search.then_some(query));
         if history_changed {
             input.replace_history(history(entries)?);
         }
@@ -129,7 +127,7 @@ impl PromptFiles {
         files: &mut CommandSession<P>,
         input: &mut PromptInput,
     ) -> Result<()> {
-        if input.transcript_search {
+        if input.transcript_search() {
             let mut layout = files
                 .state(CommandFileRoot::Session, "layout.json")?
                 .unwrap_or_default();
