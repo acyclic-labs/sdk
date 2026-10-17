@@ -165,21 +165,123 @@ fn physical_find_shortcut_preserves_the_open_undo_group() {
     assert_eq!(format!("{:?}", input.editor), before);
 }
 
-#[test]
-fn unchanged_unicode_cells_allocate_zero() {
+fn terminal_unicode_model<const DISCARD: bool>(marks: usize, emoji: bool) {
     use acyclic_harness_tui::{
         TranscriptSearch,
-        ratatui::{buffer::Buffer, layout::Rect, widgets::Widget},
+        ratatui::{Terminal, backend::TestBackend, buffer::Cell},
     };
+    let text = format!(
+        "x{} {}",
+        "\u{301}".repeat(marks),
+        if emoji {
+            "👨‍👩‍👧‍👦"
+        } else {
+            ""
+        }
+    );
     let mut projection = WrappedLines::default();
-    projection.update(&[Line::raw(format!("x{} 👨‍👩‍👧‍👦", "\u{301}".repeat(40)))], 0, 80);
+    projection.update(&[Line::raw(text)], 0, 80);
     let mut search = TranscriptSearch::default();
     search.update(&projection, "x", 0, Default::default());
     search.prepare(&projection, 0, 1);
-    let area = Rect::new(0, 0, 80, 1);
-    let mut buffer = Buffer::empty(area);
-    search.row(&projection, 0).render(area, &mut buffer);
-    let frame =
-        acyclic_test_support::measure(|| search.row(&projection, 0).render(area, &mut buffer));
-    assert_eq!((frame.count_total, frame.bytes_total), (0, 0));
+    let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+    // Warm BOTH alternating buffers. The terminal resets a buffer after each draw.
+    for _ in 0..2 {
+        terminal
+            .draw(|frame| frame.render_widget(search.row(&projection, 0), frame.area()))
+            .unwrap();
+    }
+    for _ in 0..3 {
+        let frame = acyclic_test_support::measure(|| {
+            terminal
+                .draw(|frame| {
+                    if DISCARD {
+                        // Restore the old reset lifecycle, dropping retained symbol storage.
+                        for cell in &mut frame.buffer_mut().content {
+                            *cell = Cell::EMPTY;
+                        }
+                    }
+                    frame.render_widget(search.row(&projection, 0), frame.area());
+                })
+                .unwrap();
+        });
+        assert_eq!(
+            frame.count_total, 0,
+            "unchanged terminal frame must allocate zero times"
+        );
+        assert_eq!(
+            frame.bytes_total, 0,
+            "unchanged terminal frame must allocate zero bytes"
+        );
+    }
+    assert!(
+        terminal.backend().buffer()[(0, 0)]
+            .symbol()
+            .starts_with('x')
+    );
+}
+
+#[test]
+fn unchanged_unicode_terminal_draws_allocate_zero() {
+    terminal_unicode_model::<false>(40, true);
+}
+
+#[test]
+#[should_panic(expected = "unchanged terminal frame must allocate zero times")]
+fn discarded_terminal_symbol_storage_negative_control() {
+    terminal_unicode_model::<true>(40, true);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn unchanged_unicode_terminal_draw_property(marks in 0usize..80, emoji in any::<bool>()) {
+        terminal_unicode_model::<false>(marks, emoji);
+    }
+}
+
+#[test]
+fn terminal_reset_keeps_empty_semantics_and_symbol_changes() {
+    use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, text::Span};
+    let mut terminal = Terminal::new(TestBackend::new(80, 1)).unwrap();
+    for text in [
+        format!("x{} 👨‍👩‍👧‍👦", "\u{301}".repeat(40)),
+        String::new(),
+        "日".to_owned(),
+        String::new(),
+    ] {
+        terminal
+            .draw(|frame| frame.render_widget(Span::raw(&text), frame.area()))
+            .unwrap();
+        let symbol = terminal.backend().buffer()[(0, 0)].symbol();
+        assert_eq!(
+            symbol,
+            if text.is_empty() {
+                " "
+            } else {
+                unicode_segmentation::UnicodeSegmentation::graphemes(text.as_str(), true)
+                    .next()
+                    .unwrap()
+            }
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn retained_terminal_cells_equal_fresh_reset_baseline(frames in prop::collection::vec("[x日€ \u{301}👨‍👩‍👧‍👦]{0,40}", 1..16)) {
+        use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, buffer::Cell, text::Span};
+        let mut candidate = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        let mut baseline = Terminal::new(TestBackend::new(80, 1)).unwrap();
+        for text in frames {
+            let actual = candidate.draw(|frame| frame.render_widget(Span::raw(&text), frame.area())).map(|_| ());
+            let expected = baseline.draw(|frame| {
+                for cell in &mut frame.buffer_mut().content { *cell = Cell::EMPTY; }
+                frame.render_widget(Span::raw(&text), frame.area());
+            }).map(|_| ());
+            prop_assert_eq!(actual.map_err(|error| error.to_string()), expected.map_err(|error| error.to_string()));
+            prop_assert_eq!(candidate.backend().buffer(), baseline.backend().buffer());
+        }
+    }
 }

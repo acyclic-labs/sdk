@@ -242,8 +242,13 @@ impl TranscriptSearch {
         }
         if self.complete {
             if let Some(selected) = selected {
-                charge(self.matches.len(), true);
-                if let Some(position) = self.matches.iter().position(|range| *range == selected) {
+                if let Ok(position) = self.matches.binary_search_by(|range| {
+                    charge(1, true);
+                    range
+                        .start
+                        .cmp(&selected.start)
+                        .then(range.end.cmp(&selected.end))
+                }) {
                     self.base = position as i64 - self.index.rem_euclid(self.matches.len() as i64);
                 }
             }

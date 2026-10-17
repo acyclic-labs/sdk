@@ -215,3 +215,50 @@ fn appended_sources_index_the_preceding_separator() {
     finish(&mut search, &projection);
     assert_eq!(search.matches, [0..12]);
 }
+
+fn slice_model<const LINEAR: bool>(size: usize, budget: usize, index: i64) {
+    let projection = projection(&"a".repeat(size));
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "a", index, Style::default());
+    search.prepare(&projection, projection.rows().len().saturating_sub(2), 1);
+    let selected = search.active()[search.position(index) - 1].clone();
+    while search.pending() {
+        WORK.with(|work| work.set((0, 0)));
+        search.advance(&projection, budget);
+        if LINEAR && !search.pending() {
+            charge(search.matches.len(), true);
+            std::hint::black_box(search.matches.iter().position(|range| *range == selected));
+        }
+        let work = WORK.with(|work| work.get().1);
+        // One count pass, at most one nearest-direction probe, and indexed
+        // selection lookup bounded by the machine word size, on EVERY slice.
+        assert!(
+            work <= 2 * budget + usize::BITS as usize,
+            "every cooperative slice must be bounded: {work}"
+        );
+    }
+    assert_eq!(search.active()[search.position(index) - 1], selected);
+    assert_eq!(search.count(), size);
+}
+
+#[test]
+fn completion_selection_lookup_stays_inside_every_slice_bound() {
+    for size in [8192, 16384] {
+        slice_model::<false>(size, 256, 0);
+    }
+}
+
+#[test]
+#[should_panic(expected = "every cooperative slice must be bounded")]
+fn linear_completion_selection_negative_control() {
+    slice_model::<true>(8192, 256, 0);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    #[test]
+    fn every_count_slice_is_bounded_property(size in 4096usize..20000, budget in 64usize..512, index in -10i64..10) {
+        slice_model::<false>(size,budget,index);
+        slice_model::<false>(2*size,budget,index);
+    }
+}
