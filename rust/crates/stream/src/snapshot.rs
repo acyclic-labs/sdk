@@ -13,10 +13,10 @@ pub(crate) trait Snapshot: Send + 'static {
     fn read(&mut self) -> impl Future<Output = Self::Output> + Send;
 }
 
-pub(crate) async fn read<S: Snapshot>(
+pub(crate) fn read<S: Snapshot>(
     state: S,
     #[cfg(acyclic_loom)] retain_pending: bool,
-) -> (S, S::Output) {
+) -> impl Future<Output = (S, S::Output)> + Send {
     let read = read_owned(
         state,
         #[cfg(acyclic_loom)]
@@ -25,10 +25,12 @@ pub(crate) async fn read<S: Snapshot>(
     // Observation can pause after a read completes. Keep it outside the
     // cancellable probe so a cursor is never advanced and then retried.
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
-    if S::OBSERVE {
-        return acyclic_native_runtime::testing::observe_read(read).await;
-    }
-    read.await
+    let read = if S::OBSERVE {
+        futures::future::Either::Left(acyclic_native_runtime::testing::observe_read(read))
+    } else {
+        futures::future::Either::Right(read)
+    };
+    read
 }
 
 async fn read_owned<S: Snapshot>(
