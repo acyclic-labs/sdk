@@ -50,6 +50,123 @@ fn redundant_copy(paths: &[(NamespacePath, bool)]) -> (u64, u64, u64) {
     )
 }
 
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std::error::Error>> {
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let source = tempfile::tempdir()?;
+    for name in ["f", "d/long-λ", "d/sub/file"] {
+        let host = source.path().join(name);
+        std::fs::create_dir_all(host.parent().unwrap())?;
+        std::fs::write(host, b"x")?;
+    }
+    std::fs::hard_link(source.path().join("f"), source.path().join("alias"))?;
+    let setup = work(WorkBudget::UNBOUNDED);
+    let mut checkout = runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?;
+    let limits = checkout.volume_config().limits;
+    let profile = checkout.volume_config().profile;
+    let root = HostRoot::open(source.path(), &mut &setup)
+        .map_err(|error| std::io::Error::other(format!("{error:?}")))?;
+    let options = CaptureOptions {
+        source_root: source.path().to_owned(),
+        expected_root_identity: root.identity(),
+        maximum_paths: 8,
+        maximum_extent_spans: 8,
+    };
+    let policy = CapturePolicy::default();
+    runtime.block_on(capture_subtrees_with_native_work(
+        &mut checkout,
+        &[path("/")],
+        &options,
+        &policy,
+        setup.cancellation(),
+        None,
+        &setup,
+    ))?;
+    // Directory proofs stay cached on the checkout's original allocation ledger.
+    let warm = CaptureWorkScope::new(&setup)?;
+    let mut warmed = Vec::new();
+    runtime.block_on(collect_checkout_subtree_paths(
+        &mut checkout,
+        limits,
+        path("/"),
+        &policy,
+        8,
+        &mut warmed,
+        &warm.native,
+    ))?;
+    drop(warmed);
+    drop(warm);
+    for host in [true, false] {
+        let mut run = |old| {
+            let _copy = CopyLeaves(CLONE_LEAVES.replace(old));
+            let live_before = setup.live_allocation_bytes();
+            let scope = CaptureWorkScope::new(&setup).unwrap();
+            let start = path("/");
+            let mut paths = Vec::new();
+            let mut result = None;
+            let measured = acyclic_test_support::measure(|| {
+                result = Some(if host {
+                    collect_host_walk_measured(
+                        &root,
+                        profile,
+                        limits,
+                        start,
+                        &policy,
+                        &scope.native,
+                        |p, _, meter| append_scanned_path(&mut paths, p, 8, meter),
+                    )
+                } else {
+                    runtime.block_on(collect_checkout_subtree_paths(
+                        &mut checkout,
+                        limits,
+                        start,
+                        &policy,
+                        8,
+                        &mut paths,
+                        &scope.native,
+                    ))
+                });
+            });
+            result.unwrap().unwrap();
+            assert_eq!(paths.len(), 6);
+            drop(paths);
+            drop(scope);
+            assert_eq!(setup.live_allocation_bytes(), live_before);
+            measured
+        };
+        // Warm the host adapter, executor and authenticated checkout records.
+        run(false);
+        run(true);
+        let moved = run(false);
+        let copied = run(true);
+        let repeated = run(false);
+        eprintln!("LEAF_HEAP host={host} moved={moved:?} copied={copied:?} repeated={repeated:?}");
+        // Fixed warm six-path heap counts, independent of receipts or controls.
+        let expected = match (host, cfg!(windows)) {
+            (true, true) => 55,
+            (true, false) => 58,
+            (false, _) => 211,
+        };
+        let no_copy = |allocations| {
+            if allocations == expected {
+                Ok(())
+            } else {
+                Err((expected, allocations))
+            }
+        };
+        no_copy(moved.count_total).unwrap();
+        no_copy(repeated.count_total).unwrap();
+        assert!(no_copy(copied.count_total).is_err());
+        assert!(copied.count_total > moved.count_total);
+    }
+    Ok(())
+}
+
 #[test]
 fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
 -> Result<(), Box<dyn std::error::Error>> {
