@@ -1,6 +1,6 @@
 //! SDK Actors operations against the real local-cloud service.
 use acyclic_actors::{grpc, wire};
-use acyclic_objects::v1::{GrpcObjects, ObjectsProvider as _, wire as objects};
+use acyclic_objects::v1::{ObjectsProvider as _, grpc::GrpcObjects, wire as objects};
 use acyclic_stream::{AppendRequest, StreamPath, StreamProvider as _};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
