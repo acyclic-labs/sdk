@@ -75,7 +75,10 @@ proptest! {
         let projection=projection(&text);
         let mut search=TranscriptSearch::default();
         search.update(&projection,&query,0,Style::default());
+        search.prepare(&projection,0,1);
+        WORK.with(|work|work.set((0,0)));
         while search.pending() {search.advance(&projection,budget);}
+        prop_assert!(WORK.with(|work|work.get().1)<=10*(projection.index.text.len()+search.needle.len()));
         prop_assert_eq!(&search.matches,&crate::transcript_matches(&text,&query));
         let refined=format!("{query}s");
         search.update(&projection,&refined,0,Style::default());
@@ -163,4 +166,18 @@ fn indexed_navigation_covers_line_terminators_and_changed_suffixes() {
     search.update(&projection, "\n", 0, Style::default());
     finish(&mut search, &projection);
     assert_eq!(search.selected_row(&projection, 2), 2);
+}
+
+#[test]
+#[should_panic(expected = "background must not rescan prefixes")]
+fn background_prefix_rescan_negative_control() {
+    let projection = projection(&"a".repeat(4096));
+    WORK.with(|work| work.set((0, 0)));
+    for end in (32..=4096).step_by(32) {
+        scan(&projection, "b", &[0], 0..end, true, |_| {});
+    }
+    assert!(
+        WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
+        "background must not rescan prefixes"
+    );
 }
