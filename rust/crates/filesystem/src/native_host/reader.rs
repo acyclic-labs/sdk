@@ -26,6 +26,14 @@ impl HostStatReader {
         &mut self,
         work: &mut W,
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
+        #[cfg(all(test, windows))]
+        if super::stat_probe::old() {
+            return self.next(work);
+        }
+        #[cfg(all(test, any(target_os = "linux", windows)))]
+        if super::stat_probe::restore_walk() {
+            return self.next(work);
+        }
         #[cfg(target_os = "linux")]
         {
             self.next_with_handle::<W, false>(work)
@@ -124,6 +132,8 @@ impl HostStatReader {
             Storage::FileSystem::{FileIdExtdDirectoryInfo, GetFileInformationByHandleEx},
         };
         // SAFETY: the held directory and aligned owned buffer outlive this synchronous query.
+        #[cfg(test)]
+        super::stat_probe::event("GetFileInformationByHandleEx");
         let result = unsafe {
             GetFileInformationByHandleEx(
                 HANDLE(self.directory.as_raw_handle()),
@@ -143,6 +153,8 @@ impl HostStatReader {
     }
     #[cfg(target_os = "linux")]
     fn refill(&mut self) -> io::Result<usize> {
+        #[cfg(test)]
+        super::stat_probe::event("getdents64");
         // SAFETY: getdents64 writes at most BUFFER_BYTES into the aligned owned buffer.
         let count = unsafe {
             libc::syscall(

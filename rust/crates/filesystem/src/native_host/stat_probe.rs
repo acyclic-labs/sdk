@@ -1,3 +1,4 @@
+#[cfg(target_os = "linux")]
 use super::*;
 use std::cell::{Cell, RefCell};
 
@@ -5,15 +6,38 @@ type Edit = (u64, Box<dyn FnOnce()>);
 thread_local! {
     static STATE: Cell<Option<(bool, u64, u64)>> = const { Cell::new(None) };
     static EDIT: RefCell<Option<Edit>> = const { RefCell::new(None) };
+    static EVENTS: RefCell<Option<(usize, [&'static str; 512])>> = const { RefCell::new(None) };
+    static DUPLICATE: Cell<bool> = const { Cell::new(false) };
+    static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
 }
 
 pub(crate) struct Probe;
 impl Probe {
+    pub(crate) fn rescan(old: bool) -> Self {
+        let probe = Self::new(old, None);
+        EVENTS.set(Some((0, [""; 512])));
+        probe
+    }
+    pub(crate) fn publish(&self) {
+        EVENTS.with_borrow(|events| {
+            let (length, events) = events.as_ref().unwrap();
+            for event in &events[..*length] {
+                acyclic_test_support::differential::record(*event);
+            }
+        });
+    }
+    pub(crate) fn duplicate_queries(&self) {
+        DUPLICATE.set(true);
+    }
+    pub(crate) fn restore_enumeration(&self) {
+        RESTORE_WALK.set(true);
+    }
     pub(crate) fn new(old: bool, edit: Option<Edit>) -> Self {
         assert!(STATE.replace(Some((old, 1, 0))).is_none());
         EDIT.set(edit);
         Self
     }
+    #[cfg(target_os = "linux")]
     pub(crate) fn trace(&self) -> u64 {
         STATE.get().unwrap().1
     }
@@ -22,12 +46,26 @@ impl Drop for Probe {
     fn drop(&mut self) {
         STATE.set(None);
         EDIT.set(None);
+        EVENTS.set(None);
+        DUPLICATE.set(false);
+        RESTORE_WALK.set(false);
     }
 }
 pub(crate) fn old() -> bool {
     STATE.get().is_some_and(|(old, _, _)| old)
 }
+pub(crate) fn duplicate() -> bool {
+    DUPLICATE.get()
+}
+pub(crate) fn restore_walk() -> bool {
+    RESTORE_WALK.get()
+}
+#[cfg(target_os = "linux")]
 pub(super) fn query(handle: bool) {
+    event(if handle { "handle" } else { "statx" });
+    if EVENTS.with_borrow(Option::is_some) {
+        return;
+    }
     if let Some((old, bits, count)) = STATE.get() {
         let count = count + u64::from(!handle);
         STATE.set(Some((
@@ -40,6 +78,15 @@ pub(super) fn query(handle: bool) {
         }
     }
 }
+pub(crate) fn event(event: &'static str) {
+    EVENTS.with_borrow_mut(|events| {
+        if let Some((length, events)) = events {
+            events[*length] = event;
+            *length += 1;
+        }
+    });
+}
+#[cfg(target_os = "linux")]
 fn edit_at(point: u64) {
     let edit = EDIT.with_borrow_mut(|edit| {
         if edit.as_ref().is_some_and(|(at, _)| *at == point) {
@@ -52,15 +99,18 @@ fn edit_at(point: u64) {
         edit();
     }
 }
+#[cfg(target_os = "linux")]
 pub(crate) fn after_ranges() {
     edit_at(0);
 }
 
 // Frozen descriptor query before metadata-only capture; never calls statx_at.
+#[cfg(target_os = "linux")]
 pub(crate) fn baseline<W: NativeHostWork>(file: &File, work: &mut W) -> Result<HostStat, W::Error> {
     baseline_at(file.as_raw_fd(), c"", work)
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn baseline_at<W: NativeHostWork>(
     fd: i32,
     name: &std::ffi::CStr,

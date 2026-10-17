@@ -1,0 +1,364 @@
+use super::*;
+use crate::native_host::stat_probe::Probe;
+use acyclic_test_support::{AllocationInfo, differential, measure};
+
+struct Fixture {
+    source: tempfile::TempDir,
+    checkout: crate::facade::MemoryCheckout,
+    setup: NativeMaterializationWork,
+    options: CaptureOptions,
+    paths: Vec<NamespacePath>,
+    _health: acyclic_native_runtime::NativeFile,
+}
+
+fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
+    let source = tempfile::tempdir().unwrap();
+    std::fs::create_dir(source.path().join("d")).unwrap();
+    std::fs::write(source.path().join("empty"), []).unwrap();
+    std::fs::write(source.path().join("d/body"), [0x5a; 96]).unwrap();
+    let setup =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let mut checkout = runtime
+        .block_on(super::capture_policy_tests::native_checkout(&setup))
+        .unwrap();
+    let limits = checkout.volume_config().limits;
+    let paths = ["/empty", "/d/body"]
+        .map(|text| {
+            NamespacePath::from_portable(
+                &crate::path::PortablePath::parse(text, limits).unwrap(),
+                limits,
+            )
+            .unwrap()
+        })
+        .to_vec();
+    let options = CaptureOptions {
+        source_root: source.path().to_owned(),
+        expected_root_identity: capture_root_identity(source.path()).unwrap(),
+        maximum_paths: 8,
+        maximum_extent_spans: 8,
+    };
+    let health = acyclic_native_runtime::NativeFile::from_file(
+        std::fs::File::open(source.path().join("d/body")).unwrap(),
+        None,
+    )
+    .map_err(|(error, _)| error)
+    .unwrap();
+    for _ in 0..2 {
+        runtime
+            .block_on(capture_subtrees_with_native_work(
+                &mut checkout,
+                &[NamespacePath::new(Vec::new(), limits).unwrap()],
+                &options,
+                &CapturePolicy::default(),
+                setup.cancellation(),
+                None,
+                &setup,
+            ))
+            .unwrap();
+    }
+    Fixture {
+        source,
+        checkout,
+        setup,
+        options,
+        paths,
+        _health: health,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Output {
+    result: Result<CaptureReceipt, String>,
+    bytes: Vec<Vec<u8>>,
+    unchanged_root: bool,
+    work: serde_json::Value,
+    health_items: u64,
+    live_before: u64,
+    live_after: u64,
+}
+
+#[cfg(target_os = "linux")]
+const RESCAN_CALLS: &[&str] = &[
+    "openat",
+    "fstat",
+    "statx",
+    "openat",
+    "getdents64",
+    "statx",
+    "statx",
+    "getdents64",
+    "openat",
+    "openat",
+    "getdents64",
+    "statx",
+    "getdents64",
+    "openat",
+    "statx",
+    "statx",
+    "statx",
+    "openat",
+    "openat",
+    "statx",
+    "statx",
+    "openat",
+    "statx",
+];
+
+// One oracle for the candidate and every restored-work control. Literal heap
+// counts include the complete production rescan, excluding fixture construction
+// and trace publication. They are independent of work receipts and the baseline.
+#[cfg(windows)]
+const RESCAN_CALLS: &[&str] = &[
+    "GetFullPathNameW",
+    "GetFullPathNameW",
+    "CreateFileW",
+    "GetFileInformationByHandle",
+    "NtQueryInformationFile",
+    "GetFileInformationByHandle",
+    "NtCreateFile",
+    "GetFileInformationByHandleEx",
+    "NtQueryInformationByName",
+    "NtQueryInformationByName",
+    "GetFileInformationByHandleEx",
+    "NtCreateFile",
+    "GetFileInformationByHandle",
+    "GetFileInformationByHandle",
+    "NtCreateFile",
+    "GetFileInformationByHandleEx",
+    "NtQueryInformationByName",
+    "GetFileInformationByHandleEx",
+    "NtCreateFile",
+    "NtQueryInformationFile",
+    "NtQueryInformationFile",
+    "NtQueryInformationByName",
+    "NtCreateFile",
+    "GetFileInformationByHandle",
+    "NtCreateFile",
+    "NtQueryInformationFile",
+    "NtQueryInformationFile",
+    "NtCreateFile",
+    "GetFileInformationByHandle",
+    "NtQueryInformationByName",
+];
+
+fn minimal_rescan(heap: AllocationInfo, trace: &[&str]) -> bool {
+    heap.count_total == if cfg!(windows) { 330 } else { 337 } && trace == RESCAN_CALLS
+}
+
+fn run(
+    runtime: &tokio::runtime::Runtime,
+    mut fixture: Fixture,
+    old: bool,
+    fault: u8,
+    limit: u64,
+    cancelled: bool,
+) -> (Output, AllocationInfo) {
+    // The process-global, unchanged weak health registry has an input-dependent
+    // binary-search depth. Measure that separate admission before the rescan;
+    // all remaining capture work is compared exactly, including allocation work.
+    let calibration =
+        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
+    let calibrated = acyclic_native_runtime::NativeFile::from_file(
+        std::fs::File::open(fixture.source.path().join("d/body")).unwrap(),
+        Some(acyclic_native_runtime::NativeFileMeter::Owned(
+            calibration.runtime_meter(),
+        )),
+    )
+    .map_err(|(error, _)| error)
+    .unwrap();
+    drop(calibrated);
+    let health_items = calibration.receipt().items_examined;
+    let (work, cancellation) = fixture
+        .setup
+        .native_volume_work(WorkBudget {
+            backend_read_operations: limit,
+            ..WorkBudget::UNBOUNDED
+        })
+        .unwrap()
+        .invocation_view()
+        .unwrap();
+    let root = fixture.checkout.root().clone();
+    let path = NamespacePath::new(Vec::new(), fixture.checkout.volume_config().limits).unwrap();
+    let baseline = NativeViewBaseline::new(fixture.options.expected_root_identity, true);
+    if cancelled {
+        cancellation.cancel();
+    }
+    let live_before = work.live_allocation_bytes();
+    let before = work.receipt();
+    let probe = Probe::rescan(old);
+    if fault == 1 {
+        probe.restore_enumeration();
+    }
+    if fault == 2 {
+        probe.duplicate_queries();
+    }
+    let _owner = (fault == 3).then(super::owner_allocation_tests::restore_owner);
+    let mut result = None;
+    let roots = [path];
+    let policy = CapturePolicy::default();
+    let heap = {
+        let mut future = std::pin::pin!(capture_subtrees_with_native_work(
+            &mut fixture.checkout,
+            &roots,
+            &fixture.options,
+            &policy,
+            &cancellation,
+            Some(&baseline),
+            &work,
+        ));
+        measure(|| result = Some(runtime.block_on(future.as_mut())))
+    };
+    probe.publish();
+    drop(probe);
+    let result = result
+        .unwrap()
+        .map(|receipt| receipt.value)
+        .map_err(|failure| format!("{:?}", failure.error));
+    let mut receipt = serde_json::to_value(work.receipt()).unwrap();
+    let before = serde_json::to_value(before).unwrap();
+    for (name, value) in receipt.as_object_mut().unwrap() {
+        // The original ledger includes fixture work. For its monotone peak this
+        // is the increase over the prior peak; physical peak storage is also
+        // compared independently by measure().
+        *value = serde_json::json!(value.as_u64().unwrap() - before[name].as_u64().unwrap());
+    }
+    let live_after = work.live_allocation_bytes();
+    let unchanged_root = fixture.checkout.root() == &root;
+    let bytes = fixture
+        .paths
+        .iter()
+        .zip([0, 96])
+        .map(|(path, length)| {
+            runtime
+                .block_on(fixture.checkout.read_file_range(
+                    path,
+                    crate::ByteRange { offset: 0, length },
+                    &fixture.setup,
+                    fixture.setup.cancellation(),
+                ))
+                .unwrap()
+                .bytes
+                .as_ref()
+                .to_vec()
+        })
+        .collect();
+    (
+        Output {
+            result,
+            bytes,
+            unchanged_root,
+            work: receipt,
+            health_items,
+            live_before,
+            live_after,
+        },
+        heap,
+    )
+}
+
+#[test]
+fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    for (limit, cancelled) in [(u64::MAX, false), (0, false), (4, false), (u64::MAX, true)] {
+        // Separate host roots, stores, caches, checkouts, cancellations and ledgers.
+        let paired = differential::pair::<_, _, &'static str>(
+            || fixture(&runtime),
+            |state, old| run(&runtime, state, old, 0, limit, cancelled),
+        );
+        for ((output, heap), trace) in &paired {
+            assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
+            assert!(output.unchanged_root);
+            assert_eq!(output.result.is_ok(), limit == u64::MAX && !cancelled);
+            assert_eq!(output.live_after, output.live_before);
+            eprintln!(
+                "RESCAN limit={limit} cancel={cancelled} heap={heap:?} work={:?} health={} trace={trace:?}",
+                output.work, output.health_items
+            );
+        }
+        let [
+            ((mut before, before_heap), old_trace),
+            ((mut after, after_heap), trace),
+        ] = paired;
+        if before.result.is_ok() {
+            before.work["itemsExamined"] = serde_json::json!(
+                before.work["itemsExamined"].as_u64().unwrap() - before.health_items
+            );
+            after.work["itemsExamined"] = serde_json::json!(
+                after.work["itemsExamined"].as_u64().unwrap() - after.health_items
+            );
+        }
+        assert_eq!(before.result, after.result);
+        assert_eq!(before.work, after.work);
+        assert_eq!(before_heap, after_heap);
+        #[cfg(windows)]
+        if limit == u64::MAX && !cancelled {
+            assert!(minimal_rescan(after_heap, &trace));
+            assert!(minimal_rescan(before_heap, &old_trace));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if limit == u64::MAX && !cancelled {
+                assert!(minimal_rescan(after_heap, &trace));
+                assert!(!minimal_rescan(before_heap, &old_trace));
+                assert_eq!(
+                    old_trace.iter().filter(|event| **event == "handle").count(),
+                    10
+                );
+                assert_eq!(after.work["backendReadOperations"], 42);
+            } else if !cancelled {
+                assert_eq!(after_heap.count_total, if limit == 0 { 11 } else { 15 });
+                assert_eq!(
+                    trace,
+                    if limit == 0 {
+                        vec![]
+                    } else {
+                        vec!["openat", "fstat", "statx"]
+                    }
+                );
+            }
+        }
+        assert_eq!(
+            old_trace
+                .iter()
+                .filter(|event| **event != "handle")
+                .collect::<Vec<_>>(),
+            trace.iter().collect::<Vec<_>>()
+        );
+        if limit == u64::MAX && !cancelled {
+            for fault in [1, 2, 3] {
+                if cfg!(windows) && fault == 1 {
+                    continue; // next_metadata already forwards to next on Windows.
+                }
+                let [_, ((broken, broken_heap), broken_trace)] =
+                    differential::pair::<_, _, &'static str>(
+                        || fixture(&runtime),
+                        |state, old| {
+                            run(
+                                &runtime,
+                                state,
+                                old,
+                                if old { 0 } else { fault },
+                                limit,
+                                false,
+                            )
+                        },
+                    );
+                assert_eq!(broken.bytes, after.bytes);
+                assert_eq!(broken.result, after.result);
+                if (cfg!(target_os = "linux") && fault == 1) || fault == 2 {
+                    assert_ne!(broken_trace, trace);
+                }
+                if fault == 3 {
+                    assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+                }
+                assert!(!minimal_rescan(broken_heap, &broken_trace));
+            }
+        }
+    }
+    Ok(())
+}
