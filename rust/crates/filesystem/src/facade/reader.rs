@@ -138,21 +138,22 @@ impl<A, O> PinnedReader<A, O> {
     }
 
     /// Checks retained original custody without admitting work or granting rights.
-    #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-mount")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn validate_native_work(
         &self,
-        work: &NativeMaterializationWork,
+        _work: &NativeMaterializationWork,
     ) -> Result<(), FsError> {
-        let PinnedReaderRoot::NativeCheckout(carrier) = &self.root else {
-            return Err(FsError::NativeKernel(
+        match &self.root {
+            #[cfg(any(test, feature = "native-mount"))]
+            PinnedReaderRoot::NativeCheckout(carrier)
+                if carrier.1.work().shares_ledger(_work)
+                    && carrier.0.same_original_scope(&_work.state) =>
+            {
+                Ok(())
+            }
+            _ => Err(FsError::NativeKernel(
                 NativeTreeMaterializationError::InvalidLayout,
-            ));
-        };
-        if !carrier.1.work().shares_ledger(work) || !carrier.0.same_original_scope(&work.state) {
-            return Err(FsError::NativeKernel(
-                NativeTreeMaterializationError::InvalidLayout,
-            ));
+            )),
         }
-        Ok(())
     }
 }

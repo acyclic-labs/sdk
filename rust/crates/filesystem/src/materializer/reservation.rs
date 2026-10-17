@@ -1,5 +1,6 @@
 use super::*;
 use crate::{DemandError, WorkCounters};
+#[cfg(any(test, feature = "native-watch"))]
 use std::sync::Arc;
 
 /// Completion work withheld from its original SDK ledger.

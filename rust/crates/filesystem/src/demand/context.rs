@@ -3,6 +3,7 @@ use crate::sync::{
     Mutex,
     atomic::{AtomicU64, Ordering},
 };
+#[cfg(any(test, feature = "native-watch"))]
 use std::sync::Arc;
 
 // Lock order: observer registry (35), source cursors (40), original leaf (50),

@@ -52,9 +52,7 @@ use record::sync_held_descriptor_once;
 use record::windows_name_packet;
 mod work;
 pub(crate) use work::*;
-#[cfg(any(windows, test, feature = "native-watch"))]
 mod cwd;
-#[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use cwd::*;
 #[cfg(unix)]
 mod unix_path;
@@ -82,7 +80,9 @@ mod unix_metadata;
 pub(crate) use unix_metadata::*;
 mod links;
 mod unix_stat;
-pub(crate) use unix_stat::*;
+#[cfg(any(test, feature = "native-watch"))]
+pub(crate) use unix_stat::root_path_identity;
+use unix_stat::*;
 #[cfg(windows)]
 mod root_path;
 #[cfg(windows)]
