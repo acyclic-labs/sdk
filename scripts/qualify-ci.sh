@@ -389,21 +389,26 @@ case "$lane" in
     }
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
-        harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
+        RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+        harness_tests --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
-      harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
-        --test client_public_consumer identical_public_harness_trace
-    harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
-    harness_tests --features wasm --target wasm32-unknown-unknown --test client-goal-views
+      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      harness_tests --features browser,test-support --target wasm32-unknown-unknown \
+        --test main client_public_consumer::identical_public_harness_trace
+    harness_tests --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-goal-views
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
-      cargo test -p acyclic-harness-providers --features browser \
+      cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \
       --target wasm32-unknown-unknown --lib --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
-      cargo test -p acyclic-harness --features wasm,filesystem --target wasm32-unknown-unknown \
-        --test native_media_boundary --locked
+      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      harness_tests --features browser,test-support --target wasm32-unknown-unknown \
+        --test main native_media_boundary::
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     # The shipped browser package end to end in headless Chrome: one tab, then
