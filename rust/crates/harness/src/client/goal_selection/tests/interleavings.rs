@@ -199,7 +199,10 @@ fn repeated_interleavings(
         // Broken hash matching accepts either blocked publication as the same
         // acknowledgement. These bytes and hashes are identical; their IDs differ.
         let observed = selected.files().get(&FileKey::Goal).unwrap();
-        assert_eq!(Sha256::digest(&observed.bytes), Sha256::digest(repeated));
+        assert_eq!(
+            Sha256::digest(&observed.segments[0]),
+            Sha256::digest(repeated)
+        );
         let mut hash_only = view;
         hash_only.progress = views
             .selections()

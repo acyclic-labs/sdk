@@ -175,7 +175,7 @@ impl PlanQuery {
                 let change = changes.next().await.ok_or("follow ended")??;
                 let cursor = change.cursor.clone();
                 let modified = client.query_change(change)?;
-                let view = &client.selection(&identity).unwrap();
+                let view = client.selection(&identity).unwrap();
                 if view.cursor() != &cursor {
                     return Err("client cursor did not advance".into());
                 }
@@ -206,7 +206,7 @@ impl PlanQuery {
                 .map(|(key, value)| {
                     (
                         key.path(),
-                        String::from_utf8_lossy(&value.bytes).into_owned(),
+                        String::from_utf8_lossy(&value.segments[0]).into_owned(),
                     )
                 })
                 .collect();

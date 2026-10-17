@@ -132,7 +132,20 @@ fn empty_stem_publications_preserve_live_and_snapshot_plan_views()
                 .ok_or("latest snapshot missing")?;
             assert_eq!(view.cursor(), &latest.cursor);
             assert_eq!(latest.files, expected);
-            assert_eq!(view.files().values().cloned().collect::<Vec<_>>(), expected);
+            let actual = view
+                .files()
+                .values()
+                .map(|file| {
+                    assert_eq!(file.segments.len(), 1);
+                    acyclic_harness::task_volume::FileValue {
+                        key: file.key.clone(),
+                        channel: file.channel,
+                        publication: file.publication,
+                        bytes: file.segments[0].clone(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected);
             Ok(())
         });
         result.map_err(|error| TestCaseError::fail(error.to_string()))

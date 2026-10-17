@@ -166,7 +166,7 @@ async fn render_case(case: Case, repeat: bool) -> Result<()> {
             .unwrap()
             .files()
             .get(&FileKey::RequestHead)
-            .and_then(|file| crate::goal::request_head::decode(&file.bytes).ok())
+            .and_then(|file| crate::goal::request_head::decode(&file.segments[0]).ok())
             .map(|turn| turn.automatic_turns)
     };
     assert_eq!(

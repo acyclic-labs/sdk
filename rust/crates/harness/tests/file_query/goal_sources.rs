@@ -45,7 +45,7 @@ async fn request_head_follows_creation_replacement_removal_and_recreation()
         assert_eq!(
             view.files()
                 .get(&FileKey::RequestHead)
-                .map(|file| file.bytes.as_ref()),
+                .map(|file| file.segments[0].as_ref()),
             value.as_deref()
         );
     }
