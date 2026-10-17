@@ -1033,9 +1033,64 @@ fn advising_allocates_nothing() {
 }
 
 #[test]
-fn the_page_cache_verdict_is_a_threshold_on_elapsed_time() {
-    let now = Instant::now();
-    assert!(!exceeds(now, UNCACHED));
-    let earlier = now.checked_sub(UNCACHED).unwrap();
-    assert!(exceeds(earlier, UNCACHED));
+fn the_page_cache_verdict_scales_with_the_bytes_transferred() {
+    let micros = Duration::from_micros;
+    // A cached 4 KiB run copies in about a microsecond; a device read takes
+    // 100 µs or more.
+    assert!(!uncached(micros(2), 4096));
+    assert!(uncached(micros(100), 4096));
+    // A warm 4 MiB run takes about 110 µs on an M4, well over the latency
+    // floor alone, but under the floor plus a cached copy of 4 MiB.
+    assert!(!uncached(micros(110), 4 << 20));
+    assert!(uncached(
+        micros(40) + Duration::from_nanos((4 << 20) / 2),
+        4 << 20
+    ));
+    // An absurd size saturates instead of overflowing.
+    assert!(!uncached(Duration::from_secs(1), usize::MAX));
+}
+
+/// A warm run's I/O time: about a microsecond per 4 KiB at the measured
+/// 38 bytes per nanosecond, plus a microsecond of call overhead.
+fn warm(bytes: usize) -> Duration {
+    Duration::from_micros(1) + Duration::from_nanos(bytes as u64 / 38)
+}
+
+/// A cold run's I/O time: a device read of at least 120 µs.
+fn cold(bytes: usize) -> Duration {
+    Duration::from_micros(120) + Duration::from_nanos(bytes as u64 / 4)
+}
+
+/// A 4 MiB run followed by 64 scattered 4 KiB-scale runs, with each timed run
+/// taking `elapsed(bytes)` of I/O time; returns the number of advice calls.
+fn mixed_batch_advice(elapsed: fn(usize) -> Duration, mutation: Mutation) -> usize {
+    let mut ranges = vec![(0, 4 << 20)];
+    ranges.extend((0..64).map(|index| (index * 150, 100)));
+    let requests = reads(&ranges);
+    let ([(old, _), (new, trace)], _) = faulted(
+        &[],
+        mutation,
+        |file| outcome(baseline_read(file, &requests)),
+        |file| {
+            super::faults::force_elapsed(elapsed);
+            outcome(read_batch_with(file, &requests, vectored(Direction::Read)))
+        },
+    );
+    assert_eq!(new, old);
+    trace
+        .iter()
+        .filter(|(call, _, _)| *call == "rdadvise")
+        .count()
+}
+
+#[test]
+fn a_warm_large_run_before_scattered_reads_issues_no_advice() {
+    // Every run warm: the 4 MiB run's copy time is not mistaken for a device read.
+    assert_eq!(mixed_batch_advice(warm, Mutation::None), 0);
+    // Negative control: judging the 4 MiB run by the latency floor alone
+    // advises all 64 later runs.
+    assert_eq!(mixed_batch_advice(warm, Mutation::FixedThreshold), 64);
+    // Cold, the 4 MiB run's time fits a cached copy, so the next timed run
+    // (the first scattered one) proves uncached and advises the other 63.
+    assert_eq!(mixed_batch_advice(cold, Mutation::None), 63);
 }

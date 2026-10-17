@@ -32,12 +32,14 @@ pub(super) enum Mutation {
     AdviseAlways,
     /// Times every run instead of a logarithmic sample.
     TimeEveryRun,
+    /// Judges every run against the latency floor alone, ignoring its size.
+    FixedThreshold,
 }
 
 thread_local! {
     static FAULTS: RefCell<VecDeque<Fault>> = const { RefCell::new(VecDeque::new()) };
     static MUTATION: Cell<Mutation> = const { Cell::new(Mutation::None) };
-    static UNCACHED: Cell<bool> = const { Cell::new(false) };
+    static ELAPSED: Cell<fn(usize) -> std::time::Duration> = const { Cell::new(cached) };
     static TIMED: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -46,17 +48,30 @@ pub(super) fn timed_runs() -> usize {
     TIMED.replace(0)
 }
 
-/// Makes every timed run on this thread look uncached (or cached, the
-/// default), so traces stay exact however loaded the test machine is.
-pub(super) fn force_uncached(uncached: bool) {
-    UNCACHED.set(uncached);
+fn cached(_bytes: usize) -> std::time::Duration {
+    std::time::Duration::ZERO
 }
 
-/// The test build's page-cache verdict: the forced value, unless the
-/// `AdviseAlways` mutation claims every run was uncached.
-pub(super) fn uncached(_started: std::time::Instant) -> bool {
+fn device(_bytes: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+
+/// Makes every timed run on this thread take a device read's time (or no
+/// time, the default), so traces stay exact however loaded the machine is.
+pub(super) fn force_uncached(uncached: bool) {
+    ELAPSED.set(if uncached { device } else { cached });
+}
+
+/// Makes each timed run on this thread take `elapsed(bytes)` of I/O time,
+/// where `bytes` is what that run requested.
+pub(super) fn force_elapsed(elapsed: fn(usize) -> std::time::Duration) {
+    ELAPSED.set(elapsed);
+}
+
+/// The test build's forced I/O time for a timed run of `bytes`.
+pub(super) fn elapsed(bytes: usize) -> std::time::Duration {
     TIMED.set(TIMED.get() + 1);
-    UNCACHED.get() || mutated(Mutation::AdviseAlways)
+    ELAPSED.get()(bytes)
 }
 
 /// Queues faults for this thread's next raw attempts and sets the mutation.
@@ -71,7 +86,7 @@ pub(super) fn arm(faults: &[Fault], mutation: Mutation) {
 /// Clears this thread's faults and mutation, returning how many faults were consumed.
 pub(super) fn disarm(armed: usize) -> usize {
     MUTATION.set(Mutation::None);
-    UNCACHED.set(false);
+    ELAPSED.set(cached);
     armed - FAULTS.with_borrow_mut(std::mem::take).len()
 }
 

@@ -31,10 +31,17 @@ use std::time::{Duration, Instant};
 const IOV_MAX_FALLBACK: usize = 1024;
 /// Darwin rejects a single transfer of more than `INT_MAX` bytes.
 const MAX_TRANSFER: usize = i32::MAX as usize;
-/// A run that takes longer than this was not served from the page cache:
-/// cached reads finish in single-digit microseconds, device reads take tens
-/// to hundreds.
-const UNCACHED: Duration = Duration::from_micros(40);
+/// A run was not served from the page cache when its I/O takes longer than
+/// this latency plus its bytes at `CACHED_BYTES_PER_NANO`. A device read adds
+/// tens to hundreds of microseconds of latency; a cached run costs only its
+/// copy, which grows with its size.
+const UNCACHED_LATENCY: Duration = Duration::from_micros(40);
+/// A floor on page-cache copy throughput. One warm 4 MiB `preadv` copies at
+/// about 38 bytes per nanosecond on an M4, but concurrent copies share memory
+/// bandwidth: at 4 and 16 concurrent batches a floor of 8 still misjudged warm
+/// 4 MiB runs, while 2 did not. A 4 KiB device read (100 µs or more) stays
+/// uncached at any floor.
+const CACHED_BYTES_PER_NANO: u64 = 2;
 
 type Vectored = unsafe extern "C" fn(c_int, *const libc::iovec, c_int, libc::off_t) -> isize;
 
@@ -535,6 +542,8 @@ fn read_batch_with(
                 Segments::new(&mut scratch.segments, limit),
                 vectored,
             )?;
+            // Only the transfer is timed, before any result conversion.
+            let elapsed = started.map(|started| elapsed(started, run));
             results.extend(
                 scratch
                     .buffers
@@ -542,7 +551,7 @@ fn read_batch_with(
                     .zip(run)
                     .map(|(buffer, read)| read_result(buffer, read.length, shard)),
             );
-            if started.is_some_and(uncached) {
+            if elapsed.is_some_and(|elapsed| uncached(elapsed, transferred(run))) {
                 advise(file.as_raw_fd(), next, limit);
                 advised = true;
             }
@@ -561,16 +570,42 @@ fn sampled(index: usize) -> bool {
     index.is_power_of_two()
 }
 
-/// Whether the run that began at `started` had to wait for the device.
-fn uncached(started: Instant) -> bool {
+/// The I/O time of `run`, which began at `started`.
+fn elapsed(started: Instant, run: &[OwnedRead]) -> Duration {
     #[cfg(test)]
-    return faults::uncached(started);
+    {
+        let _ = started;
+        faults::elapsed(transferred(run))
+    }
     #[cfg(not(test))]
-    exceeds(started, UNCACHED)
+    {
+        let _ = run;
+        started.elapsed()
+    }
 }
 
-fn exceeds(started: Instant, threshold: Duration) -> bool {
-    started.elapsed() >= threshold
+/// The bytes a run asked to transfer.
+fn transferred(run: &[OwnedRead]) -> usize {
+    run.iter()
+        .fold(0_usize, |total, read| total.saturating_add(read.length))
+}
+
+/// Whether a run of `bytes` that took `elapsed` had to wait for the device:
+/// longer than the device latency floor plus a cached copy of its bytes.
+fn uncached(elapsed: Duration, bytes: usize) -> bool {
+    #[cfg(test)]
+    if faults::mutated(faults::Mutation::AdviseAlways) {
+        return true;
+    }
+    #[cfg(test)]
+    let bytes = if faults::mutated(faults::Mutation::FixedThreshold) {
+        0
+    } else {
+        bytes
+    };
+    let copy =
+        Duration::from_nanos(u64::try_from(bytes).unwrap_or(u64::MAX) / CACHED_BYTES_PER_NANO);
+    elapsed >= UNCACHED_LATENCY.saturating_add(copy)
 }
 
 /// Asks the kernel to start reading every run of `reads` now. `F_RDADVISE`
@@ -585,9 +620,7 @@ fn advise(fd: RawFd, reads: &[OwnedRead], limit: usize) {
         let Some(first) = run.first() else {
             continue;
         };
-        let bytes = run
-            .iter()
-            .fold(0_usize, |total, read| total.saturating_add(read.length));
+        let bytes = transferred(run);
         let (Ok(count), Ok(offset)) = (
             c_int::try_from(bytes.min(MAX_TRANSFER)),
             position(first.offset),
