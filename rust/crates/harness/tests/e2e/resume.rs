@@ -8,7 +8,7 @@
 use super::TestResult;
 use acyclic_harness::{
     AgentId, Capabilities, ConversationId, IdempotencyKey, OperationId,
-    context::ContextPipeline,
+    context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry},
     executor::{ExecutionEvent, ExecutionJournal, Executor, StockExecutor, TurnInput},
@@ -267,9 +267,21 @@ fn full_journal_oracle_rejects_missing_completion_metadata_changes_and_reorderin
 struct PausedPrefix {
     journal: Arc<dyn ExecutionJournal>,
     operation: OperationId,
+    accounting: ScriptedModelProvider,
 }
 
 impl ModelProvider for PausedPrefix {
+    fn context_capacity(&self, model: &Model) -> acyclic_harness::Result<ModelContextCapacity> {
+        self.accounting.context_capacity(model)
+    }
+
+    fn count_tokens<'a>(
+        &'a self,
+        request: &'a PreparedModelRequest,
+    ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ModelTokenCount>> {
+        self.accounting.count_tokens(request)
+    }
+
     fn generate<'a>(
         &'a self,
         _: PreparedModelRequest,
@@ -319,6 +331,7 @@ async fn child() -> TestResult {
     executor(Arc::new(PausedPrefix {
         journal: journal.clone(),
         operation: identity.operation,
+        accounting: ScriptedModelProvider::new([]),
     }))?
     .execute(identity.input(), journal.as_ref())
     .await?;
