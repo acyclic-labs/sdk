@@ -24,9 +24,14 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = Arc::clone(context);
+        let context = if io.is_none() && context.owned_mailbox.is_none() {
+            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
+        } else {
+            Arc::clone(context)
+        };
         let turn = workflow.operation_id;
-        let stock = admission.task.name == "acyclic.stock_turn";
+        let stock = admission.task.name == "acyclic.stock_turn"
+            || super::super::child_agent::is_child(admission);
         let mut command: ModelTaskCommand = mail::decode_command(payload, io)?;
         let binding = self.model.as_ref().ok_or_else(|| {
             boundary(
@@ -42,16 +47,9 @@ where
         };
         let steering = if stock || command.mailbox_operation.is_some() {
             BoundedContentFuture::new(io, || async {
-                let journal = 'journal: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-                        break 'journal self
-                            .runtime
-                            .workflow_journal_with_native_work(task, fence, work)
-                            .await?;
-                    }
-                    self.runtime.workflow_journal(task, fence.clone()).await?
-                };
+                let journal = self
+                    .command_workflow_journal(&context, task, fence, io)
+                    .await?;
                 let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
                     boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")
                 })?;
@@ -120,6 +118,29 @@ where
             )
             .await?
         {
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            if io.is_none()
+                && let Some(executor) = &context.harness.workspace_tools
+            {
+                // Hook dispatch precedes provider dispatch. Cancellation must
+                // retain a claimed hook even when no model request was sent.
+                let issued = ToolContext::new(
+                    Arc::new(self.runtime.task_context(task, fence.clone()).await?),
+                    operation,
+                    "session-start",
+                    None,
+                )?;
+                executor
+                    .run_hooks(
+                        (&crate::hooks::Hooks::default(), [0; 32]),
+                        crate::hooks::HookEvent::SessionStart,
+                        Value::Null,
+                        &crate::tool::ToolRegistry::default(),
+                        issued,
+                        true,
+                    )
+                    .await?;
+            }
             return mail::reconciled(io);
         }
         if let Some(steering) = steering {
@@ -141,6 +162,8 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let manifest_digest = *command.context_manifest.descriptor().sha256();
         let (pipeline, tools) = BoundedContentFuture::new(io, || async {
             if command.summary_source.is_some() {
                 Ok((
@@ -153,6 +176,21 @@ where
             }
         })?
         .await?;
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let pipeline = if command.summary_source.is_none() {
+            BoundedContentFuture::new(io, || {
+                self.session_start(
+                    pipeline,
+                    &tools,
+                    Arc::clone(&context),
+                    (fence, operation, reconciliation_only, manifest_digest),
+                    io,
+                )
+            })?
+            .await?
+        } else {
+            pipeline
+        };
         let input = TurnInput {
             operation_id: operation,
             input: command.input,
@@ -213,8 +251,8 @@ where
         BoundedContentFuture::new(io, || async {
             let execution = self
                 .runtime
-                .stock_execution(
-                    task,
+                .stock_execution_with_context(
+                    Arc::clone(&context),
                     fence.clone(),
                     turn,
                     binding.model.clone(),
@@ -256,7 +294,9 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<TaskCommandProgress> {
         match result {
-            Ok(()) | Err(Error::Indeterminate(_)) => {}
+            Ok(())
+            | Err(Error::Indeterminate(_))
+            | Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled)) => {}
             Err(error) => return Err(error),
         }
         if journal.is_quiescent(io).await? {
@@ -305,13 +345,7 @@ where
             ));
         };
         drop(latest);
-        let ordinary;
-        let reader = if io.is_some() {
-            context
-        } else {
-            ordinary = self.runtime.task_context(task, fence.clone()).await?;
-            &ordinary
-        };
+        let reader = context;
         // The durable reader authenticates the committed receive, cursor and original parcel.
         let bytes = reader
             .read_received_mail(

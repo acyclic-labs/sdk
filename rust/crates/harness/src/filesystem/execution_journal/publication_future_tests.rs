@@ -206,6 +206,59 @@ async fn persisted(journal: &Journal, operation: OperationId) -> Result<[Vec<Vec
     Ok(result)
 }
 
+async fn fixture_state(
+    journal: &Journal,
+    operation: OperationId,
+    volume: &VolumeRef,
+) -> Result<(crate::resources::GenerationRef, [Vec<Vec<u8>>; 2])> {
+    let workspace = crate::resources::WorkspaceRef::new(
+        volume.provider().clone(),
+        volume.storage_name(&mut None)?.into_bytes(),
+        None,
+    )?;
+    Ok((
+        journal.host.resolve(&workspace, None).await?.generation,
+        persisted(journal, operation).await?,
+    ))
+}
+
+#[tokio::test]
+async fn journal_fixture_state_detects_mutation() -> Result<()> {
+    let journal = fixture().await?;
+    let operation = OperationId::from_bytes([4; 16]);
+    let before = fixture_state(&journal, operation, &journal.volume).await?;
+    assert_eq!(
+        before,
+        fixture_state(&journal, operation, &journal.volume).await?
+    );
+    journal
+        .stage(operation, "mutation", b"mutation", "text/plain", None)?
+        .await?;
+    let staged = fixture_state(&journal, operation, &journal.volume).await?;
+    assert_ne!(
+        before.0, staged.0,
+        "filesystem mutation escaped the state check"
+    );
+    assert_eq!(before.1, staged.1);
+    journal
+        .append(
+            operation,
+            "mutation",
+            &ExecutionEvent::Started {
+                request_digest: [9; 32],
+            },
+            None,
+        )?
+        .await?;
+    let appended = fixture_state(&journal, operation, &journal.volume).await?;
+    assert_eq!(staged.0, appended.0);
+    assert_ne!(
+        staged.1, appended.1,
+        "journal mutation escaped the state check"
+    );
+    Ok(())
+}
+
 async fn turn(
     journal: &Journal,
     old: bool,
@@ -414,9 +467,9 @@ proptest! {
         }
         let mut missing = actual;
         missing.0[2].pop();
-        prop_assert_ne!(missing, expected);
-        let [expected, broken] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
-            |journal, old| runtime.block_on(turn(&journal, old, &prompt, deltas, !old, None)).unwrap());
+        prop_assert_ne!(&missing, &expected);
+        let broken = differential::observe::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
+            |journal| runtime.block_on(turn(&journal, false, &prompt, deltas, true, None)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
     }
@@ -430,29 +483,38 @@ proptest! {
         digest[0] |= 1;
         let event = ExecutionEvent::Started { request_digest: digest };
         let oversized = vec![0;4097];
-        for mode in 0..5 {
-            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(|| {
-                let mut journal = runtime.block_on(fixture()).unwrap();
-                let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
-                journal.execution = Some((OperationId::from_bytes([5;16]), operation));
-                journal.volume = VolumeRef::new(journal.volume.provider().clone(), "foreign".into(),
-                    VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
-                (journal, file)
-            }, |(journal, file), old| {
-                let mut outcome = None;
-                let allocation = acyclic_test_support::measure(|| {
-                    outcome = Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
-                        (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()));
+        let initializations = std::cell::Cell::new(0);
+        let [before, after] = [true, false].map(|old| {
+            initializations.set(initializations.get() + 1);
+            let mut journal = runtime.block_on(fixture()).unwrap();
+            let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
+            journal.execution = Some((OperationId::from_bytes([5;16]), operation));
+            journal.volume = VolumeRef::new(journal.volume.provider().clone(), "foreign".into(),
+                VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
+            let state = runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap();
+            [0u8,1,2,3,4].map(|mode| {
+                let observed = differential::observe::<_, _, (&'static str, u64)>(|| (), |()| {
+                    let mut outcome = None;
+                    let allocation = acyclic_test_support::measure(|| {
+                        outcome = Some(runtime.block_on(run(&Choice(&journal, old), mode, 0,
+                            (operation, "key", &event), &file, &oversized).unwrap()).map_err(|e| e.to_string()));
+                    });
+                    (outcome.unwrap(), allocation)
                 });
-                (outcome.unwrap(), allocation)
-            });
+                assert_eq!(&state, &runtime.block_on(fixture_state(&journal, operation, file.volume())).unwrap());
+                assert!(observed.1.is_empty(), "factory error reached storage work");
+                observed
+            })
+        });
+        prop_assert_eq!(initializations.get(), 2);
+        for (mode, (before, after)) in before.into_iter().zip(after).enumerate() {
             prop_assert!(after.0.0.is_err());
             prop_assert_eq!(&before.0.0, &after.0.0);
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
             // Main added chunk publication to the accounted append frame (+64 bytes).
-            let saved = [21200, 21024, 14304, 11840, 14192][mode as usize];
+            let saved = [21200, 21024, 14304, 11840, 14192][mode];
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
@@ -475,7 +537,9 @@ fn journal_accounting_admits_the_original_frames() {
         let event = ExecutionEvent::Started {
             request_digest: [9; 32],
         };
+        let initializations = std::cell::Cell::new(0);
         let initialize = || {
+            initializations.set(initializations.get() + 1);
             runtime
                 .block_on(async {
                     let fixture = crate::durable_host::tests::fixture::Fixture::new(
@@ -492,81 +556,129 @@ fn journal_accounting_admits_the_original_frames() {
                 })
                 .unwrap()
         };
-        let (journal, file) = initialize();
-        for mode in 0..5 {
-            for native in [false, true] {
-                // Measure the real admission peak with this ledger, including
-                // native ledger storage and staging's owner/grant checks.
-                let measured = accounted(native, 1 << 24, false, |io| {
-                    construct(&journal, mode, true, operation, &event, &file, io)
-                })
+        let observations = [true, false].map(|old| {
+            let (journal, file) = initialize();
+            let state = runtime
+                .block_on(fixture_state(&journal, operation, &journal.volume))
                 .unwrap();
-                measured.0.unwrap();
-                let boundary = if native { measured.3 } else { measured.1 }.peak_allocation_bytes;
-                let ledger = if native {
-                    acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
-                } else {
-                    0
-                };
-                assert!(boundary > ledger, "factory frame was not admitted");
-                for maximum in [boundary - 1, boundary, boundary + 1] {
-                    let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
-                        &initialize,
-                        |(journal, file), old| {
-                            accounted(native, maximum, cancelled, |io| {
-                                construct(&journal, mode, old, operation, &event, &file, io)
-                                    .map_err(|e| e.to_string())
-                            })
-                        },
-                    );
-                    let held = before.0.as_ref().unwrap();
-                    assert_eq!(
-                        held.0.is_ok(),
-                        !cancelled && maximum >= boundary,
-                        "method {mode}, native {native}, limit {maximum}, boundary {boundary}"
-                    );
-                    // Native stage constructs the capability label before
-                    // admitting its frame; that label stays owned by the IO.
-                    let grant_bytes = if native && mode == 4 && !cancelled {
-                        journal
-                            .volume
-                            .capability(VolumeOperation::Write, &mut None)
-                            .unwrap()
-                            .len() as u64
+            // Constructors are never polled. Keep independent stores per side,
+            // with a fresh ledger for every original boundary/cancellation case.
+            let mut cases = Vec::with_capacity(30);
+            for mode in 0..5 {
+                for native in [false, true] {
+                    let measured = accounted(native, 1 << 24, false, |io| {
+                        construct(&journal, mode, true, operation, &event, &file, io)
+                    })
+                    .unwrap();
+                    measured.0.unwrap();
+                    let boundary =
+                        if native { measured.3 } else { measured.1 }.peak_allocation_bytes;
+                    let ledger = if native {
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
                     } else {
                         0
                     };
-                    assert_eq!(
-                        held.2, grant_bytes,
-                        "factory retained frame custody after drop"
-                    );
-                    assert_eq!(held.4, ledger + grant_bytes, "native frame custody leaked");
-                    assert_eq!(
-                        held.5, ledger,
-                        "only the original ledger may survive IO drop"
-                    );
-                    if !cancelled && maximum >= boundary {
-                        let receipt = if native { held.3 } else { held.1 };
-                        assert_eq!(receipt.peak_allocation_bytes, boundary);
+                    assert!(boundary > ledger, "factory frame was not admitted");
+                    for maximum in [boundary - 1, boundary, boundary + 1] {
+                        let observed = differential::observe::<_, _, (&'static str, u64)>(
+                            || (),
+                            |()| {
+                                accounted(native, maximum, cancelled, |io| {
+                                    construct(&journal, mode, old, operation, &event, &file, io)
+                                        .map_err(|e| e.to_string())
+                                })
+                            },
+                        );
+                        assert_eq!(
+                            &state,
+                            &runtime
+                                .block_on(fixture_state(&journal, operation, &journal.volume))
+                                .unwrap()
+                        );
+                        let held = observed.0.as_ref().unwrap();
+                        assert_eq!(
+                            held.0.is_ok(),
+                            !cancelled && maximum >= boundary,
+                            "method {mode}, native {native}, limit {maximum}, boundary {boundary}"
+                        );
+                        let grant_bytes = if native && mode == 4 && !cancelled {
+                            journal
+                                .volume
+                                .capability(VolumeOperation::Write, &mut None)
+                                .unwrap()
+                                .len() as u64
+                        } else {
+                            0
+                        };
+                        assert_eq!(
+                            held.2, grant_bytes,
+                            "factory retained frame custody after drop"
+                        );
+                        assert_eq!(held.4, ledger + grant_bytes, "native frame custody leaked");
+                        assert_eq!(
+                            held.5, ledger,
+                            "only the original ledger may survive IO drop"
+                        );
+                        if !cancelled && maximum >= boundary {
+                            assert_eq!(
+                                if native { held.3 } else { held.1 }.peak_allocation_bytes,
+                                boundary
+                            );
+                        }
+                        cases.push((mode, native, maximum, observed));
                     }
-                    assert_eq!(before, after, "method {mode}, native {native}");
                 }
             }
-        }
-        for native in [false, true] {
-            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
-                &initialize,
-                |(journal, file), old| {
-                    accounted(native, 1 << 24, cancelled, |io| {
-                        runtime
-                            .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
-                            .map(|bytes| bytes.as_ref().to_vec())
-                            .map_err(|e| e.to_string())
-                    })
-                },
+            let loads = [false, true].map(|native| {
+                let observed = differential::observe::<_, _, (&'static str, u64)>(
+                    || (),
+                    |()| {
+                        accounted(native, 1 << 24, cancelled, |io| {
+                            runtime
+                                .block_on(async {
+                                    Choice(&journal, old).load(&file, Some(io))?.await
+                                })
+                                .map(|bytes| bytes.as_ref().to_vec())
+                                .map_err(|e| e.to_string())
+                        })
+                    },
+                );
+                assert_eq!(
+                    &state,
+                    &runtime
+                        .block_on(fixture_state(&journal, operation, &journal.volume))
+                        .unwrap()
+                );
+                assert_eq!(observed.0.as_ref().unwrap().0.is_ok(), !cancelled);
+                observed
+            });
+            (cases, loads)
+        });
+        assert_eq!(initializations.get(), 2);
+        assert_eq!(observations[0], observations[1]);
+        // Cancelled operations can return before emitting any trace event.
+        // Use the successful cases (including actual reads) for the transfer control.
+        if !cancelled {
+            // Moving an event between adjacent cases preserves the aggregate but
+            // must fail the very same per-case trace comparison.
+            let traces: Vec<_> = observations[1]
+                .0
+                .iter()
+                .map(|case| case.3.1.clone())
+                .chain(observations[1].1.iter().map(|load| load.1.clone()))
+                .collect();
+            let mut moved = traces.clone();
+            let case = moved[..moved.len() - 1]
+                .iter()
+                .position(|trace| !trace.is_empty())
+                .unwrap();
+            let event = moved[case].pop().unwrap();
+            moved[case + 1].insert(0, event);
+            assert_eq!(traces.concat(), moved.concat());
+            assert_ne!(
+                traces, moved,
+                "case-to-case trace transfer was not detected"
             );
-            assert_eq!(before.0.as_ref().unwrap().0.is_ok(), !cancelled);
-            assert_eq!(before, after, "polled load, native {native}");
         }
     }
 }

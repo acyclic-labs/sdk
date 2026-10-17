@@ -91,6 +91,82 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Whether an observed request for this session or selected task lacks its
     /// immutable outcome. Taking a request or losing a dispatch does not clear it.
     pub fn pending_execution(&self) -> Result<bool> {
+        let selected = self.selected_task()?;
+        Ok(self.pending_session != 0
+            || selected.is_some_and(|task| self.pending_tasks.contains_key(&task.to_string())))
+    }
+
+    pub(super) fn fold_pending_execution(&mut self, key: &files::FileKey) {
+        if self.files.contains_key(key) {
+            return;
+        }
+        let (request, added) = match key {
+            files::FileKey::Session {
+                file: files::TaskFile::Request(_),
+                ..
+            }
+            | files::FileKey::Task {
+                file: files::TaskFile::Request(_),
+                ..
+            } => {
+                let Some(outcome) = related(key, files::TaskFile::ExecutionResult) else {
+                    return;
+                };
+                if self.files.contains_key(&outcome) {
+                    return;
+                }
+                (key.clone(), true)
+            }
+            files::FileKey::Session {
+                file: files::TaskFile::ExecutionResult(_),
+                ..
+            }
+            | files::FileKey::Task {
+                file: files::TaskFile::ExecutionResult(_),
+                ..
+            } => {
+                let Some(request) = related(key, files::TaskFile::Request) else {
+                    return;
+                };
+                if !self.files.contains_key(&request) {
+                    return;
+                }
+                (request, false)
+            }
+            _ => return,
+        };
+        match request {
+            files::FileKey::Session { .. } => {
+                if added {
+                    self.pending_session += 1;
+                } else {
+                    self.pending_session -= 1;
+                }
+            }
+            files::FileKey::Task { task, .. } => {
+                if added {
+                    *self
+                        .pending_tasks
+                        .entry(task.as_str().to_owned())
+                        .or_default() += 1;
+                } else {
+                    let count = self
+                        .pending_tasks
+                        .get_mut(task.as_str())
+                        .expect("observed unsettled request");
+                    *count -= 1;
+                    if *count == 0 {
+                        self.pending_tasks.remove(task.as_str());
+                    }
+                }
+            }
+            _ => unreachable!("request target"),
+        }
+    }
+
+    // Deliberately restore the old frame-time scan for the complete-frame control.
+    #[cfg(test)]
+    pub(crate) fn pending_execution_scan_control(&self) -> Result<bool> {
         let selected = self.selected_task()?.map(|task| task.to_string());
         Ok(self.files.keys().any(|key| {
             let own = match key {
@@ -109,3 +185,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }))
     }
 }
+
+#[cfg(test)]
+#[path = "session_activity_tests.rs"]
+mod tests;

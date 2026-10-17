@@ -1,5 +1,6 @@
 use super::*;
 use crate::{DemandError, WorkCounters};
+#[cfg(any(test, feature = "native-watch"))]
 use std::sync::Arc;
 
 /// Completion work withheld from its original SDK ledger.
@@ -146,6 +147,7 @@ impl NativeWorkReservation {
             }
         }
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn started_drop_io(&self, actual: WorkCounters) {
         self.begin_drop(&mut self.state.lock(), actual);
     }
@@ -172,6 +174,7 @@ impl NativeWorkReservation {
             recorded
         })
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn partition_work(
         &self,
         maximum: WorkCounters,
@@ -190,6 +193,7 @@ impl NativeWorkReservation {
         state.remaining = maximum.remaining(state.remaining)?;
         Ok(Self::new(self.meter.clone(), maximum))
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn absorb(
         &mut self,
         other: &mut Self,
@@ -208,6 +212,7 @@ impl NativeWorkReservation {
         *incoming = WorkCounters::UNCHARGED;
         Ok(())
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn check_wait(
         &self,
         wait: Option<&crate::CancellationToken>,
@@ -217,6 +222,7 @@ impl NativeWorkReservation {
                 .map_err(|_| NativeTreeMaterializationError::Cancelled)
         })
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn started_io(
         &self,
         actual: WorkCounters,

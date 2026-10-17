@@ -64,6 +64,7 @@ pub struct FileQueryView {
     rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
     goal_revision: Option<crate::OperationId>,
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
@@ -139,6 +140,7 @@ impl FileQueryView {
             .collect();
         let goal = GoalFileView::from_file(files.get(&FileKey::Goal), maximum_bytes);
         let goal_revision = goal_revision(files.get(&FileKey::Goal));
+        #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
         let goal_line_starts = goal_line_starts(&goal);
         Ok(Self {
             query,
@@ -147,6 +149,7 @@ impl FileQueryView {
             rejected_models,
             goal,
             goal_revision,
+            #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
@@ -198,6 +201,7 @@ impl FileQueryView {
         &self.goal
     }
 
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     pub(in crate::client) fn goal_line_starts(&self) -> &Arc<[usize]> {
         &self.goal_line_starts
     }
@@ -316,7 +320,10 @@ impl FileQueryView {
             if key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
                 self.goal_revision = None;
-                self.goal_line_starts = Arc::default();
+                #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+                {
+                    self.goal_line_starts = Arc::default();
+                }
             }
             if key == FileKey::RequestHead {
                 self.progress = None;
@@ -341,7 +348,10 @@ impl FileQueryView {
             if file.key == FileKey::Goal && self.files.get(&file.key) != Some(&file) {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
                 self.goal_revision = goal_revision(Some(&file));
-                self.goal_line_starts = goal_line_starts(&self.goal);
+                #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+                {
+                    self.goal_line_starts = goal_line_starts(&self.goal);
+                }
             }
             if matches!(file.key, FileKey::Plan(_)) && self.files.get(&file.key) != Some(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
@@ -364,6 +374,7 @@ fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {
     file.bytes.len() > maximum_bytes && super::model_view::turn_request(&file.key).is_some()
 }
 
+#[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
 pub(in crate::client) fn goal_line_starts(goal: &GoalFileView) -> Arc<[usize]> {
     let GoalFileView::Present { goal } = goal else {
         return Arc::default();

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 mod arrivals;
 
-const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk"];
+const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system", ".volumes"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -77,7 +77,10 @@ impl CheckoutTools {
         operation: OperationId,
         phase: u8,
         permit: PublicationPermit,
-        owner: Option<Arc<dyn crate::runtime::OwnedTaskMailbox>>,
+        owner: Option<(
+            Arc<crate::durable_host::TaskJournalOwner<LocalStream>>,
+            bool,
+        )>,
     ) -> Result<()> {
         let (physical, view) = selected;
         if let Some(mount) = &physical.mounted {
@@ -85,8 +88,8 @@ impl CheckoutTools {
                 .sync_with_permit(permit, &mount.native_work()?, move |_| {
                     let owner = owner.clone();
                     async move {
-                        if let Some(owner) = owner {
-                            owner.verify_owner(None)?.await?;
+                        if let Some((owner, settlement)) = owner {
+                            owner.verify(settlement, &mut None).await?;
                         }
                         Ok::<(), Error>(())
                     }

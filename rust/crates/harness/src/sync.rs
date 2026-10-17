@@ -4,9 +4,32 @@ pub(crate) use acyclic_stream::query_sync::Mutex;
 #[cfg(not(acyclic_loom))]
 pub(crate) use tokio::sync::Mutex;
 
-#[path = "sync/primitives.rs"]
-mod primitives;
-pub(crate) use primitives::{Arc, Mutex as SyncMutex, atomic};
+#[path = "sync/mutex.rs"]
+mod mutex;
+#[cfg(any(
+    test,
+    all(feature = "wasm", target_arch = "wasm32"),
+    acyclic_harness_loom,
+    all(
+        not(target_arch = "wasm32"),
+        any(
+            feature = "filesystem-local",
+            feature = "mcp-stdio",
+            feature = "mcp-http"
+        )
+    )
+))]
+include!("sync/arc.rs");
+pub(crate) use mutex::Mutex as SyncMutex;
+#[cfg(any(
+    test,
+    acyclic_harness_loom,
+    all(
+        not(target_arch = "wasm32"),
+        any(feature = "mcp-stdio", feature = "mcp-http")
+    )
+))]
+include!("sync/atomic.rs");
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]

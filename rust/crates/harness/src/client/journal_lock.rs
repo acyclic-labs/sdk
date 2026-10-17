@@ -26,7 +26,7 @@ fn validate(file: &File) -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(acyclic_harness_loom, test))]
+#[cfg(acyclic_harness_loom)]
 pub(super) use modeled::disable_exclusion;
 #[cfg(acyclic_harness_loom)]
 pub(super) use modeled::{WriterLock, acquire};
@@ -91,7 +91,6 @@ mod modeled {
     }
 
     // Negative control, absent from normal builds: bypass the actual acquisition path.
-    #[cfg(test)]
     pub(crate) fn disable_exclusion() {
         if let Ok(mut locks) = LOCKS.lock() {
             locks.enforce = false;

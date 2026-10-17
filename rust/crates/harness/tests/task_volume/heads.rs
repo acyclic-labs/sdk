@@ -1,12 +1,12 @@
 use super::*;
 
 fn chunk(sequence: u64, channel: Channel, bytes: Vec<u8>) -> Result<Write> {
-    Ok(Write {
-        key: FileKey::parse(&format!(".tasks/t/turns/0/chunks/{sequence}"))?,
-        channel: Some(channel),
-        publication: None,
-        bytes: bytes.into(),
-    })
+    let mut file = Write::new(
+        FileKey::parse(&format!(".tasks/t/turns/0/chunks/{sequence}"))?,
+        bytes,
+    );
+    file.channel = Some(channel);
+    Ok(file)
 }
 
 #[tokio::test]

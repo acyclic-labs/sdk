@@ -30,15 +30,14 @@ use acyclic_fs::{
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::MemoryStream;
+use acyclic_stream::{MemoryStream, StreamProvider};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
-type MemoryJournal =
-    FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
+type MemoryJournal<P> = FilesystemExecutionJournal<P, MemoryAuthorityBackend, MemoryObjectBackend>;
 
 #[cfg(test)]
 thread_local! {
@@ -90,9 +89,12 @@ async fn new_memory_content(
     Ok((host, volume, memory_store))
 }
 
-/// A fully bound in-process journal and owner-private file volume.
-pub struct MemoryHarnessStorage {
-    journal: Arc<MemoryJournal>,
+/// A fully bound journal and in-process owner-private file volume.
+///
+/// The journal runs on any [`StreamProvider`]: [`MemoryStream`] by default, or a
+/// remote Streams service through [`MemoryHarnessStorage::with_stream`].
+pub struct MemoryHarnessStorage<P = MemoryStream> {
+    journal: Arc<MemoryJournal<P>>,
     content_verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
     publisher: Arc<MemoryContentPublisher>,
     host: Arc<MemoryHost>,
@@ -101,7 +103,7 @@ pub struct MemoryHarnessStorage {
     write_capability: String,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: Arc<MemoryStream>,
+    stream: Arc<P>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -113,6 +115,22 @@ use listing::LocalListFilesTool;
 use publisher::MemoryContentPublisher;
 
 impl MemoryHarnessStorage {
+    /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
+    pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
+        Self::with_stream(agent, maximum_file_bytes, Arc::new(MemoryStream::default())).await
+    }
+}
+
+impl<P: StreamProvider> MemoryHarnessStorage<P> {
+    /// Binds the journal and conversation to `stream`; files stay in process.
+    pub async fn with_stream(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        stream: Arc<P>,
+    ) -> Result<Self> {
+        Self::from_providers(agent, maximum_file_bytes, Fs::memory(), stream).await
+    }
+
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
@@ -173,22 +191,11 @@ impl MemoryHarnessStorage {
         })
     }
 
-    /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
-    pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        Self::from_providers(
-            agent,
-            maximum_file_bytes,
-            Fs::memory(),
-            Arc::new(MemoryStream::default()),
-        )
-        .await
-    }
-
     async fn from_providers(
         agent: AgentId,
         maximum_file_bytes: u64,
         filesystem: Fs<MemoryAuthorityBackend, MemoryObjectBackend>,
-        stream: Arc<MemoryStream>,
+        stream: Arc<P>,
     ) -> Result<Self> {
         let (host, volume, memory_store) =
             new_memory_content(agent, maximum_file_bytes, filesystem).await?;
@@ -549,7 +556,7 @@ impl MemoryHarnessStorage {
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &Arc<MemoryStream> {
+    pub fn stream(&self) -> &Arc<P> {
         &self.stream
     }
 

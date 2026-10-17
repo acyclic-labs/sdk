@@ -67,6 +67,31 @@ impl acyclic_fs::AuthorityGuard for &TaskResourcePreparation {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
+    pub(crate) async fn project_creation_operation(
+        &self,
+        request: &ForkRequest,
+        preparation: &Arc<TaskResourcePreparation>,
+        io: &PreparationIo,
+    ) -> Result<acyclic_fs::OperationId> {
+        let attempt = self.task_attempt(preparation, request, Some(io))?;
+        attempt.verify_task_lease(false).await?;
+        let digest = blake3::Hash::from(record_digest(
+            request,
+            attempt.journal_limit(MAX_REQUEST_BYTES),
+            Some(io),
+        )?);
+        let text = with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(
+                format_args!("fork:{}:{digest}:project", request.operation_id),
+                work,
+            )
+        })?;
+        let key = IdempotencyKey::new(text)?;
+        Ok(acyclic_fs::OperationId::from_bytes(
+            super::bounded_io::operation_key(&key, Some(io))?.into_bytes(),
+        ))
+    }
+
     pub(super) fn preparation_io(
         &self,
         task: Option<&Arc<TaskResourcePreparation>>,
@@ -224,6 +249,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         })
     }
     pub(super) async fn verify_task_lease(&self, settlement: bool) -> Result<()> {
+        if self.preparer.parent.authority().kind == crate::core::AggregateKind::Task
+            && self.task_preparation.is_none()
+        {
+            return Err(stock_boundary(
+                self.io,
+                crate::wire::ErrorCode::Unauthorized,
+                "task fork requires its original preparation lease",
+            ));
+        }
         if let Some(task) = self.task_preparation {
             task.verify(settlement, self.io)?.await?;
         }

@@ -214,7 +214,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
         let mut parsed = crate::kernel::Owned::allocate(paths.len(), accounting)?;
         for path in paths {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             let absolute =
                 restore_absolute_path(path.trim_start_matches('/'), accounting, cancellation)?;
             let path = self.mutation_path(&absolute.value, accounting, cancellation)?;
@@ -229,7 +229,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let records = crate::kernel::Owned::new(records, allocation, bytes);
         let mut removals = crate::kernel::Owned::allocate(0, accounting)?;
         for (path, entry) in parsed.value.iter().zip(&records.value.entries) {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             if entry.record.is_some() {
                 continue;
             }
@@ -270,7 +270,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .zip(parsed.value.drain(..))
             .zip(&records.value.entries)
         {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             let bytes = path.retained_bytes();
             let allocation = crate::kernel::split_allocation(&mut parsed.allocation, bytes)?;
             parsed.bytes = parsed

@@ -11,6 +11,7 @@ dependencies = [
  "caseless",
  "crossterm",
  "image",
+ "memchr",
  "ratatui",
  "serde",
  "rustix 1.1.5",

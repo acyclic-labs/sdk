@@ -59,7 +59,7 @@ proptest! {
         limits in prop::array::uniform24(amount(64)),
         deltas in prop::collection::vec(prop::array::uniform24(amount(8)), 0..12),
         bounded in any::<bool>(), depth in 0_u8..3, invocation in any::<bool>(),
-        recheck in any::<bool>(), stop_at in 0_usize..12, failure in 0_u8..6,
+        recheck in any::<bool>(), stop_at in 0_usize..12, failure in 0_u8..6, scalar in any::<bool>(),
         resource_limits in prop::array::uniform2(prop::array::uniform3(amount(64))),
     ) {
         let root_cancel = [crate::CancellationToken::new(), crate::CancellationToken::new()];
@@ -94,6 +94,7 @@ proptest! {
             let _ = original.record_admitted(counters(prior));
         }
         for (step, delta) in deltas.into_iter().map(counters).enumerate() {
+            let delta = if scalar { WorkCounters { items_examined: delta.items_examined, ..WorkCounters::UNCHARGED } } else { delta };
             if step == stop_at {
                 for i in [0,1] {
                     match failure {
@@ -108,7 +109,10 @@ proptest! {
             }
             let (old, old_heap) = measured(|| KernelAccounting::native(&work[0], &caller_cancel[0]).check()
                 .and_then(|()| work[0].charge(delta).map_err(Into::into)));
-            let (new, new_heap) = measured(|| KernelAccounting::native(&work[1], &caller_cancel[1]).charge(delta));
+            let (new, new_heap) = measured(|| {
+                let mut accounting = KernelAccounting::native(&work[1], &caller_cancel[1]);
+                if scalar { accounting.charge_items(delta.items_examined) } else { accounting.charge(delta) }
+            });
             prop_assert_eq!(no_heap_work(old_heap), Ok(()));
             prop_assert_eq!(no_heap_work(new_heap), Ok(()));
             prop_assert_eq!(status(new), status(old));
@@ -180,23 +184,32 @@ fn each_kernel_charge_visits_the_original_leaf_once() {
                 } else {
                     work
                 };
-                let delta = WorkCounters {
-                    items_examined: 1,
-                    bytes_copied: 1,
-                    ..WorkCounters::UNCHARGED
-                };
-                let mut accounting = KernelAccounting::native(&work, &caller_cancel);
-                let (result, locks) = root.state.count_locks(|| accounting.charge(delta));
-                result.unwrap();
-                exactly_one(locks).unwrap();
-                // A discarded, uncharged preflight still visits the real
-                // mutex and must be detected even though its receipt is zero.
-                let (result, locks) = root.state.count_locks(|| {
-                    accounting.check()?;
-                    accounting.charge(delta)
-                });
-                result.unwrap();
-                assert!(exactly_one(locks).is_err());
+                for scalar in [false, true] {
+                    let delta = WorkCounters {
+                        items_examined: 1,
+                        bytes_copied: 1,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    let mut accounting = KernelAccounting::native(&work, &caller_cancel);
+                    let charge = |accounting: &mut KernelAccounting<'_>| {
+                        if scalar {
+                            accounting.charge_items(delta.items_examined)
+                        } else {
+                            accounting.charge(delta)
+                        }
+                    };
+                    let (result, locks) = root.state.count_locks(|| charge(&mut accounting));
+                    result.unwrap();
+                    exactly_one(locks).unwrap();
+                    // A discarded, uncharged preflight still visits the real
+                    // mutex and must be detected even though its receipt is zero.
+                    let (result, locks) = root.state.count_locks(|| {
+                        accounting.check()?;
+                        charge(&mut accounting)
+                    });
+                    result.unwrap();
+                    assert!(exactly_one(locks).is_err());
+                }
             }
         }
     }

@@ -36,7 +36,10 @@ struct Root {
 }
 
 impl Discovery {
-    pub(super) async fn stage(&self, storage: &MemoryHarnessStorage) -> Result<SourceStage> {
+    pub(super) async fn stage<P: acyclic_stream::StreamProvider>(
+        &self,
+        storage: &MemoryHarnessStorage<P>,
+    ) -> Result<SourceStage> {
         let root = |directory: &str| ContextRoot {
             volume: storage.volume().clone(),
             directory: directory.into(),

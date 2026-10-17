@@ -37,6 +37,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         root: PathBuf::new(),
         torn_tail: None,
         _ownership_anchor: None,
+        #[cfg(feature = "test-support")]
+        flushed: 0,
     };
     let clock: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
     let commit_clock = Arc::new(PinnedCommitClock {
@@ -59,6 +61,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
             revision: watch::channel(0).0,
             omit_follow_wake,
             durable_tails: Mutex::new(Default::default()),
+            #[cfg(feature = "test-support")]
+            persistence_cut: Default::default(),
         }),
         work: None,
     })

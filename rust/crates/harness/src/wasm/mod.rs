@@ -46,6 +46,7 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod admission;
+mod bytes;
 use admission::*;
 mod content;
 use content::*;

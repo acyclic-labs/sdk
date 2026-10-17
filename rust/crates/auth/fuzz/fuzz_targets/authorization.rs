@@ -6,7 +6,7 @@ use syn::parse::Parser;
 fuzz_target!(|text: &str| {
     let mut result = None;
     let parser = syn::meta::parser(|meta| {
-        result = Some(authorization::fields(meta)?);
+        result = Some(authorization::fields(&meta)?);
         Ok(())
     });
     if parser.parse_str(text).is_ok() {

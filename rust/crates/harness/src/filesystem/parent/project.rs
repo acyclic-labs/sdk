@@ -613,4 +613,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::executor::stock_boundary;

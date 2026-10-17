@@ -109,12 +109,14 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct WorkflowReleaseWitness<'a> {
     binding: (crate::TaskId, &'a crate::scheduler::LeaseFence),
     path: &'a str,
     tail: u64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WorkflowReleaseWitness<'_> {
     pub(crate) fn condition(
         &self,
@@ -129,6 +131,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn require_execution_owner(
         &self,
         execution_owner: &TaskJournalOwner<P>,

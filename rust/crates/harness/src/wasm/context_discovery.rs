@@ -104,10 +104,14 @@ impl BrowserReader {
         let bytes: Uint8Array = value
             .dyn_into()
             .map_err(|_| Error::Storage("context reader requires Uint8Array".into()))?;
-        if u64::from(bytes.length()) > maximum_bytes {
-            return Err(Error::Storage("context reader exceeded byte bound".into()));
-        }
-        Ok(bytes.to_vec())
+        let (bytes, ()) = super::bytes::snapshot(&bytes, |length| {
+            if length > maximum_bytes {
+                return Err(JsValue::from_str("context reader exceeded byte bound"));
+            }
+            Ok(())
+        })
+        .map_err(|_| Error::Storage("context reader exceeded byte bound".into()))?;
+        Ok(bytes)
     }
 }
 

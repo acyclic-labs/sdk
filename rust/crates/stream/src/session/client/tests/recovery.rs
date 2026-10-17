@@ -32,7 +32,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
     let client = Client::with_transport(
         std::sync::Arc::new(Outage {
             endpoint: native::endpoint(
-                fixture.channel.clone(),
+                fixture._channel.clone(),
                 Some("Bearer fixture".parse()?),
                 None,
             ),

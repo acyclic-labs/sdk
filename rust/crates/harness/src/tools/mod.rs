@@ -1,14 +1,24 @@
 //! Standard coding tools and shared host executors.
+pub(crate) mod children;
+pub use children::{ArchiveInput, SendInput, SpawnInput, WaitInput, WaitMode};
+mod agent_files;
 mod bash;
 pub use bash::BashInput;
 mod defaults;
 pub use defaults::defaults;
 pub(crate) mod catalog;
 pub use catalog::{ToolBinding, ToolSpec, catalog};
-mod workspace_executor;
 mod command;
+mod fs_command;
+mod workspace_executor;
 pub use command::parse_command;
-pub(crate) use command::{FsCommand, parse_fs_command};
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub(crate) use fs_command::FsCommand;
+pub(crate) use fs_command::parse_fs_command;
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",
@@ -17,3 +27,6 @@ pub(crate) use command::{FsCommand, parse_fs_command};
 pub mod git;
 
 pub(crate) use defaults::bind_defaults;
+
+#[cfg(all(test, acyclic_harness_loom))]
+pub(crate) use children::cancellable as cancellable_child_wait;

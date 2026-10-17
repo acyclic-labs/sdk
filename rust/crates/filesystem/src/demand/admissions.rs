@@ -1,21 +1,23 @@
 use super::ownership::accounting as mount_accounting;
 use super::*;
+#[cfg(any(test, feature = "native-mount"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
-use crate::kernel::{
-    ProofDataCustody,
-    allocation::{AllocationLedger, LogicalVecCapacity},
-};
+#[cfg(any(test, feature = "native-watch"))]
+use crate::kernel::allocation::AllocationLedger;
+use crate::kernel::{ProofDataCustody, allocation::LogicalVecCapacity};
 use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::Arc;
 
 #[path = "admissions_accounting.rs"]
 mod accounting;
 pub(crate) use accounting::NativeProofAccounting;
+#[cfg(any(test, feature = "native-watch"))]
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
 };
 
+#[cfg(any(test, feature = "native-watch"))]
 pub(super) fn insert<T>(
     (values, capacity): &mut (Vec<T>, LogicalVecCapacity),
     value: T,
@@ -108,6 +110,7 @@ impl Admissions {
     }
 }
 impl DemandWork {
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn admissions<T>(
         &mut self,
         select: fn(&mut Admissions) -> &mut T,
@@ -301,6 +304,7 @@ impl DemandWork {
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
@@ -308,6 +312,7 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         token.prepare_cancelled_measured(&mut self.allocations, &mut self.work, self.budget)
     }
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn finish_cancelled(
         &mut self,
         prepared: Cancelled<'static>,

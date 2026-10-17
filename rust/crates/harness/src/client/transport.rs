@@ -198,10 +198,6 @@ impl<S: ClientStateStore> HarnessClient<S> {
         }
     }
 
-    pub(super) fn has_buffered_delivery(&self) -> bool {
-        self.buffered_delivery.is_some()
-    }
-
     pub(super) async fn read_delivery(&mut self) -> Result<Option<wire::Delivery>> {
         if let Some(delivery) = self.buffered_delivery.take() {
             return Ok(Some(delivery));

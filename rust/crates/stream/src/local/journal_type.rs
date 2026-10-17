@@ -19,6 +19,10 @@ struct Journal {
     syncing: bool,
     root: PathBuf,
     torn_tail: Option<u64>,
+    /// While a persistence cut is installed: the length of this epoch's
+    /// journal known flushed. It lives beside `epoch`, and `restart` resets it.
+    #[cfg(feature = "test-support")]
+    flushed: u64,
     _ownership_anchor: Option<OwnershipAnchor>,
 }
 

@@ -4,8 +4,10 @@
 
 pub use acyclic_harness::{Error, Result};
 
-#[path = "../src/sync/primitives.rs"]
-pub(crate) mod sync;
+pub(crate) mod sync {
+    include!("../src/sync/arc.rs");
+    include!("../src/sync/atomic.rs");
+}
 mod mcp {
     pub(crate) use crate::sync;
 }

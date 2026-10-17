@@ -6,6 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+#[cfg(test)]
+thread_local! { static ROW_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Borrowed presentation of followed files and client views. The caller owns
 /// the live query; rendering never reads files or mutates durable UI state.
 #[derive(Default)]
@@ -14,6 +17,8 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Search decoration over the existing wrapping projection; only visible rows are painted.
+    pub transcript_search: Option<(&'a crate::WrappedLines, &'a crate::TranscriptSearch)>,
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -32,6 +37,8 @@ pub struct Screen<'a> {
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
     pub feedback: bool,
+    /// Search selection overrides follow-tail while its file-backed form is open.
+    pub search_row: Option<usize>,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -39,6 +46,8 @@ pub struct Screen<'a> {
 /// Areas shared by rendering and mouse routing, in absolute terminal cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScreenAreas {
+    /// Whether the painted activity label needs another animation frame.
+    pub animation: bool,
     /// Agent breadcrumb.
     pub header: Rect,
     /// Transcript viewport.
@@ -72,7 +81,8 @@ impl Screen<'_> {
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
-            (self.reasoning.len() + self.transcript.len()).saturating_sub(usize::from(height))
+            (self.reasoning.len() + self.transcript.len() + usize::from(input.busy))
+                .saturating_sub(usize::from(height))
         } else {
             self.overlay
                 .len()
@@ -147,6 +157,7 @@ impl Screen<'_> {
             Rect::new(prompt.x, prompt.y, 0, 0)
         };
         ScreenAreas {
+            animation: false,
             header,
             transcript: remaining,
             terminal,
@@ -156,6 +167,41 @@ impl Screen<'_> {
             completions,
             status,
         }
+    }
+
+    /// Construct activity spans only when their row is inside the painted viewport.
+    pub fn thinking_line(
+        &self,
+        input: &PromptInput,
+        areas: &ScreenAreas,
+        scroll: usize,
+        now_ms: u64,
+    ) -> Option<Line<'static>> {
+        let area = areas.transcript;
+        let row = self.reasoning.len() + self.transcript.len();
+        if !input.busy
+            || self.feedback
+            || !self.overlay.is_empty()
+            || area.width == 0
+            || row < scroll
+            || row - scroll >= usize::from(area.height)
+        {
+            return None;
+        }
+        let label = Rect::new(
+            area.x,
+            area.y + (row - scroll) as u16,
+            area.width.min(crate::Thinking::WIDTH),
+            1,
+        );
+        if areas.completions.intersection(label) == label {
+            return None;
+        }
+        Some(
+            crate::Thinking::new(&input.theme, now_ms)
+                .reduced_motion(input.editor.settings().reduced_motion)
+                .line(),
+        )
     }
 
     /// Compose shared widgets without cloning TaskFileViews or their transcript.
@@ -168,28 +214,44 @@ impl Screen<'_> {
         transcript_scroll: usize,
         now_ms: u64,
     ) -> ScreenAreas {
-        let areas = self.areas(frame.area(), input);
+        let mut areas = self.areas(frame.area(), input);
+        let transcript_scroll = self.search_row.map_or(transcript_scroll, |row| {
+            row.min(
+                self.transcript
+                    .len()
+                    .saturating_sub(usize::from(areas.transcript.height)),
+            )
+        });
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
+        let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
+        areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
-            for (row, line) in self
-                .reasoning
-                .iter()
-                .chain(self.transcript)
-                .skip(transcript_scroll)
-                .take(usize::from(areas.transcript.height))
-                .enumerate()
-            {
-                frame.render_widget(
-                    line,
-                    Rect::new(
-                        areas.transcript.x,
-                        areas.transcript.y + row as u16,
-                        areas.transcript.width,
-                        1,
-                    ),
+            let count = self.reasoning.len() + self.transcript.len() + usize::from(input.busy);
+            let end =
+                count.min(transcript_scroll.saturating_add(usize::from(areas.transcript.height)));
+            for (row, index) in (transcript_scroll..end).enumerate() {
+                #[cfg(test)]
+                ROW_WORK.with(|work| work.set(work.get() + 1));
+                let area = Rect::new(
+                    areas.transcript.x,
+                    areas.transcript.y + row as u16,
+                    areas.transcript.width,
+                    1,
                 );
+                if index < self.reasoning.len() {
+                    frame.render_widget(&self.reasoning[index], area);
+                } else if index < self.reasoning.len() + self.transcript.len() {
+                    let index = index - self.reasoning.len();
+                    if let Some((projection, search)) = self.transcript_search {
+                        frame.render_widget(search.row(projection, index), area);
+                    } else {
+                        frame.render_widget(&self.transcript[index], area);
+                    }
+                } else if let Some(line) = thinking.as_ref() {
+                    frame.render_widget(line, area);
+                }
             }
         } else {
             let block = Block::default()
@@ -247,3 +309,7 @@ fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: usize) {
         frame.render_widget(line, Rect::new(area.x, area.y + row as u16, area.width, 1));
     }
 }
+
+#[cfg(test)]
+#[path = "screen/tests.rs"]
+mod tests;

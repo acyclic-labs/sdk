@@ -21,6 +21,7 @@ pub use accounting::*;
 mod selection;
 pub use selection::*;
 mod discovery;
+pub(crate) use discovery::frontmatter_end;
 pub use discovery::*;
 mod compaction;
 pub(crate) use compaction::clone_context;

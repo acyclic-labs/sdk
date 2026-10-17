@@ -172,9 +172,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.root_scope
             .narrow(request.scope.grants().clone(), request.scope.limits())?
             .with_run_limits(request.scope.run_limits(), &mut None)?;
-        if request.parent.is_some() {
-            require_descendant_grant(request.scope.grants(), &request.task)?;
-        }
         if request.scope.extensions() != self.root_scope.extensions() {
             return Err(Error::Conflict(
                 "batch extensions differ from owner bindings".into(),

@@ -9,11 +9,11 @@ use crate::{
 };
 use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
+use pending::PendingRequests;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{HashSet, VecDeque},
-    sync::Arc,
-};
+use std::sync::Arc;
+
+mod pending;
 
 type Result<T> = std::result::Result<T, FileClientError>;
 
@@ -63,11 +63,6 @@ struct Checkpoint {
     cursor: Cursor,
 }
 
-struct Pending {
-    cursor: Cursor,
-    write: Write,
-}
-
 /// Single-writer client over private outbox and task volumes. Both are ordinary
 /// platform files; no harness journal, transport, socket or timer is involved.
 pub struct FileClient<P: ?Sized, T: ?Sized> {
@@ -80,9 +75,7 @@ pub struct FileClient<P: ?Sized, T: ?Sized> {
     scanned: Cursor,
     changes: ChangeStream,
     buffered: Option<Change>,
-    pending: VecDeque<Pending>,
-    keys: HashSet<FileKey>,
-    bytes: u64,
+    pending: PendingRequests,
     limits: FileClientLimits,
 }
 
@@ -168,9 +161,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             cursor,
             changes,
             buffered: None,
-            pending: VecDeque::new(),
-            keys: HashSet::new(),
-            bytes: 0,
+            pending: PendingRequests::new(limits),
             limits,
         };
         client.catch_up().await?;
@@ -218,35 +209,12 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 {
                     return Err(Error::Invalid("outbox contains a non-request file".into()).into());
                 }
-                if self.keys.contains(&write.key) {
-                    return Err(Error::Conflict("outbox request identity conflict".into()).into());
-                }
-                let bytes = self.capacity(write.bytes.len() as u64)?;
-                self.keys.insert(write.key.clone());
-                self.bytes = bytes;
-                self.pending.push_back(Pending {
-                    cursor: change.cursor.clone(),
-                    write: write.clone(),
-                });
+                self.pending.admit(change.cursor.clone(), write.clone())?;
             }
             self.scanned = change.cursor.clone();
             self.buffered = None;
         }
         Ok(())
-    }
-
-    fn capacity(&self, bytes: u64) -> Result<u64> {
-        if self.pending.len() >= self.limits.commands {
-            return Err(FileClientError::CommandQuota {
-                limit: self.limits.commands,
-            });
-        }
-        self.bytes
-            .checked_add(bytes)
-            .filter(|bytes| *bytes <= self.limits.bytes)
-            .ok_or(FileClientError::ByteQuota {
-                limit: self.limits.bytes,
-            })
     }
 
     /// Publishes one immutable request before attempting any target operation.
@@ -286,7 +254,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 Err(Error::Conflict("outbox request identity conflict".into()).into())
             };
         }
-        self.capacity(length)?;
+        self.pending.check(length)?;
         let bytes = produce()?;
         if bytes.len() as u64 != length {
             return Err(
@@ -406,10 +374,8 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             }
             let done = self
                 .pending
-                .pop_front()
+                .retire_front()
                 .expect("front retained across publication");
-            self.bytes -= done.write.bytes.len() as u64;
-            self.keys.remove(&done.write.key);
             self.cursor = done.cursor;
             if let Some(reason) = rejected {
                 return Err(FileClientError::Rejected {

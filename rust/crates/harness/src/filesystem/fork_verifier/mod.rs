@@ -252,7 +252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
 
     fn read_manifest<'a, 'w: 'a>(
         &'a self,
-        seed: &'a ForkSeed,
+        _native_seed: &'a ForkSeed,
         file: &'a FileRef,
         work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>>
@@ -262,7 +262,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
             let result = async {
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.original_native_work().is_some() {
-                    self.require_seed_file(seed, file, &io).await?;
+                    self.require_seed_file(_native_seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
                     return Err(crate::executor::stock_boundary(
@@ -300,7 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
 
     fn verify_file<'a, 'w: 'a>(
         &'a self,
-        seed: &'a ForkSeed,
+        _native_seed: &'a ForkSeed,
         file: &'a FileRef,
         work: &'a mut Option<&'w mut dyn crate::store::HistoryIo>,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
@@ -309,7 +309,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ForkSeedVe
             let result = async {
                 #[cfg(not(target_arch = "wasm32"))]
                 if io.original_native_work().is_some() {
-                    self.require_seed_file(seed, file, &io).await?;
+                    self.require_seed_file(_native_seed, file, &io).await?;
                 }
                 if file.volume().provider() != &self.host.provider {
                     return Err(crate::executor::stock_boundary(

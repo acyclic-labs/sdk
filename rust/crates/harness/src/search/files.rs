@@ -9,6 +9,13 @@ use std::sync::Arc;
 
 const PUBLICATION_ATTEMPTS: usize = 4;
 
+#[cfg(test)]
+thread_local! {
+    /// Fault switch: restore the old order, where a replacement owner judged
+    /// the claim before consulting the retained response receipt.
+    static FENCE_BEFORE_RECEIPT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn attempt(work: NativeWork<'_>) -> Result<()> {
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
@@ -281,7 +288,15 @@ where
                     ..Default::default()
                 })?;
             }
-            if claim.bytes == encode(fence, work)? {
+            // The retained response is the authoritative receipt of the one
+            // dispatch. Any owner materializes it; only its absence leaves the
+            // claimant's request uncertain.
+            #[cfg(test)]
+            let fence_first = FENCE_BEFORE_RECEIPT.with(std::cell::Cell::get);
+            #[cfg(not(test))]
+            let fence_first = false;
+            let claimant = claim.bytes == encode(fence, work)?;
+            if !fence_first || claimant {
                 let retained = volume
                     .snapshot(&Query::File(ready(task, id)), 1)
                     .await
@@ -298,17 +313,19 @@ where
                 } else {
                     retained
                 };
-                let Some(response) = retained.files.first() else {
-                    return Err(Error::SearchPublicationDeferred);
-                };
-                if let Some(work) = work {
-                    work.charge(acyclic_fs::WorkCounters {
-                        source_bytes_read: response.bytes.len() as u64,
-                        items_examined: 1,
-                        ..Default::default()
-                    })?;
+                if let Some(response) = retained.files.first() {
+                    if let Some(work) = work {
+                        work.charge(acyclic_fs::WorkCounters {
+                            source_bytes_read: response.bytes.len() as u64,
+                            items_examined: 1,
+                            ..Default::default()
+                        })?;
+                    }
+                    return finish(volume, result, response.bytes.clone(), authorize, work).await;
                 }
-                return finish(volume, result, response.bytes.clone(), authorize, work).await;
+                if claimant {
+                    return Err(Error::SearchPublicationDeferred);
+                }
             }
             break (SearchOutcome::Indeterminate, false);
         }
@@ -575,6 +592,8 @@ pub async fn drive_for_test<P: StreamProvider>(
     Ok(())
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod crash_cut_tests;
 #[cfg(all(test, acyclic_loom))]
 mod model;
 #[cfg(test)]

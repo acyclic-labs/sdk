@@ -1,5 +1,6 @@
 //! Created authority extends the existing runtime scope after receipt verification.
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::Capabilities;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {

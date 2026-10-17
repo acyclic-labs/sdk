@@ -27,6 +27,9 @@ mod windows;
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
 use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
+#[cfg(target_vendor = "apple")]
+#[path = "apple_terminal.rs"]
+pub mod terminal;
 #[cfg(windows)]
 pub use windows::terminal;
 #[cfg(windows)]
@@ -78,11 +81,11 @@ pub use meter::{
 mod blocking;
 #[cfg(feature = "test-support")]
 pub mod testing;
+pub use blocking::{InlineBlocking, run_blocking_io};
 pub(crate) use blocking::{
-    BlockingWaitWake, inline_blocking_allowed, measured_completion_meter, task_completion,
+    PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
 };
-pub use blocking::{InlineBlocking, run_blocking_io};
 mod completion;
 pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]

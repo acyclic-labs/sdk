@@ -140,7 +140,7 @@ impl<'a> AuthorityWork<'a> {
                     .with_backend(work, standing)
                     .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
                 if result.is_ok() {
-                    work.verify(self.budget)
+                    work.verify_within(&self.budget)
                         .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
                 }
             }
@@ -162,7 +162,7 @@ impl<'a> AuthorityWork<'a> {
         if let Some(original) = self.original {
             return original.admit(delta).map_err(Into::into);
         }
-        self.work.verify(self.budget)?;
+        self.work.verify_within(&self.budget)?;
         delta.peak_allocation_bytes = delta
             .peak_allocation_bytes
             .max(self.allocations.live_bytes());
@@ -340,7 +340,7 @@ where
         let result = self(work.remaining()?).await;
         work.accept(result).map_err(AuthorityError::Owner)?;
         work.work
-            .verify(work.budget)
+            .verify_within(&work.budget)
             .map_err(AuthorityStoreError::from)?;
         Ok(())
     }

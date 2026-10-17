@@ -60,6 +60,7 @@ where
     pub(super) async fn mail_command(
         &self,
         CommandInvocation {
+            context,
             admission,
             fence,
             command,
@@ -92,7 +93,13 @@ where
             return reconciled(io);
         }
         let input: MailReceiveTaskCommand = decode_command(payload, io)?;
-        match self.inbox(task, input.after, io).await?.into_iter().next() {
+        let after = if super::super::child_agent::is_child(admission) {
+            self.child_mail_after(context, task, fence, command, io)
+                .await?
+        } else {
+            input.after
+        };
+        match self.inbox(task, after, io).await?.into_iter().next() {
             Some(item) => ready(Outcome::Succeeded(item), io),
             None if select_only => ready(Outcome::Succeeded(Value::Null), io),
             None => Ok(TaskCommandProgress::Pending),
@@ -117,18 +124,18 @@ where
         &self,
         task: TaskId,
         after: u64,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<Vec<crate::scheduler::InboxItem>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
+        if let Some(_native_io) = _native_io
+            && let Some(work) = _native_io.original_native_work()
         {
             let (items, custody) = self
                 .runtime
                 .task_host()
                 .inbox_with_native_work(task, after, 1, work)
                 .await?;
-            io.absorb_native_custody(custody)?;
+            _native_io.absorb_native_custody(custody)?;
             return Ok(items);
         }
         self.runtime.task_host().inbox(task, after, 1).await

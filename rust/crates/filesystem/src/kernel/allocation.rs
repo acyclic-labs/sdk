@@ -44,6 +44,7 @@ enum LogicalVecAllocationStep {
 
 impl LogicalVecCapacity {
     #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn ensure_for_push<T>(
         &mut self,
         values: &mut Vec<T>,
@@ -569,6 +570,7 @@ pub(crate) enum AllocationError {
     CapacityExceeded,
     #[error("bounded logical allocation failed")]
     #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, feature = "native-watch"))]
     AllocationFailed,
     #[error(transparent)]
     Work(#[from] WorkError),

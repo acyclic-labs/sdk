@@ -2,10 +2,32 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("hook qualification builds real synchronization once and rejects either missing model", () => {
+  for (const missing of [null, 1, 2]) {
+    let models = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } }) };
+      }
+      assert.ok(args[0].includes(models === 0 ? "competing_dispatches_claim_once" : "cancellation_keeps_hook_workers"));
+      assert.equal(args[1], "--exact");
+      assert.equal(options.timeout, 9500);
+      models++;
+      return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
+    };
+    if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 2); }
+    else assert.throws(() => qualifyHookLifecycleLoom(undefined, run), /requires a nonzero/);
+  }
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --hook-lifecycle/);
+});
 
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
   const calls = [];
