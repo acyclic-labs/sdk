@@ -133,8 +133,29 @@ impl TaskFileClient {
 
     /// Apply a separate authorized document query.
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        let document = |key: &crate::task_volume::FileKey| {
+            matches!(
+                key,
+                crate::task_volume::FileKey::Goal | crate::task_volume::FileKey::Plan(_)
+            )
+        };
+        let visible = match &update {
+            super::ViewUpdate::DocumentFile { file, .. } => document(&file.key),
+            super::ViewUpdate::DocumentChange { change, .. } => {
+                change
+                    .file
+                    .iter()
+                    .chain(&change.files)
+                    .any(|file| document(&file.key))
+                    || change.removed.iter().any(document)
+            }
+            super::ViewUpdate::File(change) => has_payload(change),
+            _ => true,
+        };
         self.session.apply_update(update)?;
-        self.advance_presentation();
+        if visible {
+            self.advance_presentation();
+        }
         Ok(())
     }
     /// Read the next push publication; no local polling or execution host.
@@ -144,12 +165,17 @@ impl TaskFileClient {
             .next()
             .await
             .ok_or_else(|| Error::Conflict("task follow ended; reopen snapshot".into()))??;
-        if self.session.query_change(change)? {
+        let visible = has_payload(&change);
+        if self.session.query_change(change)? && visible {
             self.commands_dirty = true;
             self.advance_presentation();
         }
         Ok(())
     }
+}
+
+fn has_payload(change: &crate::task_volume::Change) -> bool {
+    change.file.is_some() || !change.files.is_empty() || !change.removed.is_empty()
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
