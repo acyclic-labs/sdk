@@ -531,6 +531,8 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
     }
 }
 
+// Avoid materializing a full record at an out-of-line return boundary.
+#[inline(always)]
 fn decode_record<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
