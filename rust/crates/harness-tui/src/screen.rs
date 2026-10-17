@@ -6,6 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
+#[cfg(test)]
+thread_local! { static ROW_WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Borrowed presentation of followed files and client views. The caller owns
 /// the live query; rendering never reads files or mutates durable UI state.
 #[derive(Default)]
@@ -201,24 +204,30 @@ impl Screen<'_> {
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
-            for (row, line) in self
-                .reasoning
-                .iter()
-                .chain(self.transcript)
-                .chain(thinking.iter())
-                .skip(transcript_scroll)
-                .take(usize::from(areas.transcript.height))
-                .enumerate()
-            {
-                frame.render_widget(
-                    line,
-                    Rect::new(
-                        areas.transcript.x,
-                        areas.transcript.y + row as u16,
-                        areas.transcript.width,
-                        1,
-                    ),
-                );
+            let count = self.reasoning.len() + self.transcript.len() + usize::from(input.busy);
+            let end =
+                count.min(transcript_scroll.saturating_add(usize::from(areas.transcript.height)));
+            for (row, index) in (transcript_scroll..end).enumerate() {
+                #[cfg(test)]
+                ROW_WORK.with(|work| work.set(work.get() + 1));
+                let line = if index < self.reasoning.len() {
+                    Some(&self.reasoning[index])
+                } else if index < self.reasoning.len() + self.transcript.len() {
+                    Some(&self.transcript[index - self.reasoning.len()])
+                } else {
+                    thinking.as_ref()
+                };
+                if let Some(line) = line {
+                    frame.render_widget(
+                        line,
+                        Rect::new(
+                            areas.transcript.x,
+                            areas.transcript.y + row as u16,
+                            areas.transcript.width,
+                            1,
+                        ),
+                    );
+                }
             }
         } else {
             let block = Block::default()
@@ -276,3 +285,7 @@ fn rows(frame: &mut Frame<'_>, lines: &[Line<'_>], area: Rect, scroll: usize) {
         frame.render_widget(line, Rect::new(area.x, area.y + row as u16, area.width, 1));
     }
 }
+
+#[cfg(test)]
+#[path = "screen/tests.rs"]
+mod tests;

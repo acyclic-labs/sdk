@@ -7,6 +7,9 @@ use ratatui::{
     widgets::Widget,
 };
 
+#[cfg(test)]
+thread_local! { pub(crate) static WORK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Ephemeral animation over the followed task's busy state.
 pub struct Thinking<'a> {
     theme: &'a ThemeStyles,
@@ -35,6 +38,8 @@ impl<'a> Thinking<'a> {
 
     /// A stable label with a moving themed highlight, including monochrome.
     pub fn line(&self) -> Line<'static> {
+        #[cfg(test)]
+        WORK.with(|work| work.set(work.get() + 1));
         if self.reduced_motion {
             return Line::styled("Thinking…", self.theme.style(ThemeRole::Placeholder));
         }
