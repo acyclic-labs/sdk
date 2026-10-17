@@ -60,7 +60,7 @@ async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
         kind: wire::AggregateKind::Task as i32,
         id: "owner".into(),
     };
-    let views = TaskFileViews::default();
+    let views = crate::test_support::empty_client_views();
     let mut renderer = ClientRenderer::default();
     renderer.update(&views, &owner);
     renderer.configure(&views, &owner, &files).unwrap();

@@ -17,11 +17,12 @@ use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
 use sequences::{Parsed, Stage};
 use serde_json::json;
+#[cfg(test)]
 #[path = "support/config_sequences.rs"]
 mod sequences;
 
 fn apply(view: &ConfigView, input: &mut PromptInput) {
-    view.apply(input, &Capabilities::default()).unwrap();
+    assert!(view.apply(input, &Capabilities::default()).is_ok());
 }
 
 #[test]
@@ -383,11 +384,11 @@ fn parsers_round_trip_and_reject_unknown_keys() {
             schema.check(&(file, bytes.clone()));
         }
     });
-    proptest!(ProptestConfig::with_cases(64), |(tab in 1usize..17, wrap in any::<bool>(), rgb in any::<[u8; 3]>(), bold in any::<bool>(), index in 0..ACTIONS.len(), f in 1u8..25)| {
+    proptest!(ProptestConfig::with_cases(64), |(tab in 1usize..17, wrap in any::<bool>(), rgb in any::<[u8; 3]>(), bold in any::<bool>(), action in prop::sample::select(ACTIONS), f in 1u8..25)| {
         let settings = json!({"tab_width": tab, "wrap": wrap});
         let color = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
         let theme = json!({"text": {"foreground": color, "bold": bold}});
-        let keymap = json!({"bindings": {format!("Ctrl+F{f}"): ACTIONS[index].chord}});
+        let keymap = json!({"bindings": {format!("Ctrl+F{f}"): action.chord}});
         for (file, value) in [(ConfigFile::Settings, settings), (ConfigFile::Theme, theme), (ConfigFile::Keymap, keymap)] {
             schema.check(&(file, value.to_string().into_bytes()));
         }
@@ -445,7 +446,12 @@ fn preferences_drive_tab_height_paste_and_image_behavior() {
     input.editor.set_text("", 2);
     input.editor.paste("abcdef", 3);
     assert!(
-        input.editor.layout(80).rows[0]
+        input
+            .editor
+            .layout(80)
+            .rows
+            .first()
+            .unwrap()
             .cells
             .iter()
             .any(|c| c.symbol.contains("Pasted"))
@@ -476,157 +482,170 @@ fn duplicate_keys_and_uncommitted_changes_are_not_silent() {
         r#"{"bindings":{"F1":"undo","F1":"redo"}}"#,
     )
     .unwrap_err();
-    assert_eq!(errors[0].kind, DiagnosticKind::Conflict);
+    assert_eq!(errors.first().unwrap().kind, DiagnosticKind::Conflict);
     let view = ConfigView::default();
     let bytes = view
         .edit(Scope::User, ConfigFile::Settings, &json!({"wrap":false}))
         .unwrap();
     assert!(view.settings().unwrap().wrap);
-    let mut followed = view.clone();
+    let mut followed = view;
     followed.set_bytes(Scope::User, ConfigFile::Settings, &bytes);
     assert!(!followed.settings().unwrap().wrap);
 }
 
 // Independent fixed terminal palette, separate from production's palette builder.
+const SIXTEEN: [[u8; 3]; 16] = [
+    [0, 0, 0],
+    [128, 0, 0],
+    [0, 128, 0],
+    [128, 128, 0],
+    [0, 0, 128],
+    [128, 0, 128],
+    [0, 128, 128],
+    [192, 192, 192],
+    [128, 128, 128],
+    [255, 0, 0],
+    [0, 255, 0],
+    [255, 255, 0],
+    [0, 0, 255],
+    [255, 0, 255],
+    [0, 255, 255],
+    [255, 255, 255],
+];
+const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
 fn palette_oracle(index: usize) -> [u8; 3] {
-    let levels = [0, 95, 135, 175, 215, 255];
-    if index < 16 {
-        [
-            [0, 0, 0],
-            [128, 0, 0],
-            [0, 128, 0],
-            [128, 128, 0],
-            [0, 0, 128],
-            [128, 0, 128],
-            [0, 128, 128],
-            [192, 192, 192],
-            [128, 128, 128],
-            [255, 0, 0],
-            [0, 255, 0],
-            [255, 255, 0],
-            [0, 0, 255],
-            [255, 0, 255],
-            [0, 255, 255],
-            [255, 255, 255],
-        ][index]
+    let level = |digit: usize| LEVELS.get(digit % 6).copied().unwrap_or_default();
+    if let Some(color) = SIXTEEN.get(index) {
+        *color
     } else if index < 232 {
         let n = index - 16;
-        [levels[n / 36], levels[n / 6 % 6], levels[n % 6]]
+        [level(n / 36), level(n / 6), level(n)]
     } else {
-        [(8 + (index - 232) * 10) as u8; 3]
+        [u8::try_from(8 + (index - 232) * 10).unwrap_or(u8::MAX); 3]
     }
 }
 
-/// What the configuration view projected.
-#[derive(Debug)]
-enum Projected {
-    /// The indexed colour chosen for a true-colour foreground.
-    Fallback { rgb: [u8; 3], index: usize },
-    /// Parser work while reading the parsed source 64 times.
-    Source { reparses: u64 },
-}
-
-#[derive(Debug)]
-enum Projection {
-    Fallback([u8; 3]),
-    Source,
-}
-
-#[derive(Debug)]
-enum ProjectionFault {
-    /// The fallback always picks palette entry 0.
-    FirstIndex,
-    /// Each source read also reparses the effective file.
-    Reparsed,
-}
-
-fn fallback(rgb: [u8; 3], fault: Option<&ProjectionFault>) -> usize {
-    let mut view = ConfigView::default();
-    let text = json!({"text":{"foreground":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}})
-        .to_string();
-    view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
-    let theme = view
-        .theme(&Capabilities {
-            colour: ColourDepth::Indexed256,
-            ..Default::default()
-        })
-        .unwrap();
-    let Some(Color::Indexed(index)) = theme.style(ThemeRole::Text).fg else {
-        panic!("indexed palette required")
-    };
-    match fault {
-        Some(ProjectionFault::FirstIndex) => 0,
-        _ => usize::from(index),
+#[cfg(test)]
+mod projection {
+    use super::*;
+    /// What the configuration view projected.
+    #[derive(Debug)]
+    enum Projected {
+        /// The indexed colour chosen for a true-colour foreground.
+        Fallback { rgb: [u8; 3], index: usize },
+        /// Parser work while reading the parsed source 64 times.
+        Source { reparses: u64 },
     }
-}
 
-fn source_reparses(fault: Option<&ProjectionFault>) -> u64 {
-    let mut view = ConfigView::default();
-    view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
-    let work = acyclic_test_support::measure(|| {
-        for _ in 0..64 {
-            let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
-            assert_eq!(source["wrap"], false);
-            if matches!(fault, Some(ProjectionFault::Reparsed)) {
-                std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
-            }
-        }
-    });
-    work.count_total
-}
+    #[derive(Debug)]
+    enum Projection {
+        Fallback([u8; 3]),
+        Source,
+    }
 
-fn projection_oracle() -> Oracle<Projection, ProjectionFault, Projected> {
-    Oracle::declare(
-        |input: &Projection, fault: Option<&ProjectionFault>, see: &mut Observer<'_, Projected>| {
-            see.see(match input {
-                Projection::Fallback(rgb) => Projected::Fallback {
-                    rgb: *rgb,
-                    index: fallback(*rgb, fault),
-                },
-                Projection::Source => Projected::Source {
-                    reparses: source_reparses(fault),
-                },
+    #[derive(Debug)]
+    enum ProjectionFault {
+        /// The fallback always picks palette entry 0.
+        FirstIndex,
+        /// Each source read also reparses the effective file.
+        Reparsed,
+    }
+
+    fn fallback(rgb: [u8; 3], fault: Option<&ProjectionFault>) -> usize {
+        let mut view = ConfigView::default();
+        let text =
+            json!({"text":{"foreground":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}})
+                .to_string();
+        view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
+        let theme = view
+            .theme(&Capabilities {
+                colour: ColourDepth::Indexed256,
+                ..Default::default()
             })
-        },
-    )
-    .invariant("nearest", |seen| match seen {
-        Projected::Fallback { rgb, index } => {
-            let error = |color: [u8; 3]| -> i64 {
-                (0..3)
-                    .map(|i| (i64::from(rgb[i]) - i64::from(color[i])).pow(2))
-                    .sum()
-            };
-            match (0..256)
-                .find(|other| error(palette_oracle(*other)) < error(palette_oracle(*index)))
-            {
-                Some(closer) => Err(format!("fallback {index} for {rgb:?}; {closer} is closer")),
-                None => Ok(()),
-            }
+            .unwrap();
+        let Some(Color::Indexed(index)) = theme.style(ThemeRole::Text).fg else {
+            panic!("indexed palette required")
+        };
+        match fault {
+            Some(ProjectionFault::FirstIndex) => 0,
+            _ => usize::from(index),
         }
-        Projected::Source { .. } => Ok(()),
-    })
-    .invariant("reuse", |seen| match seen {
-        Projected::Source { reparses } if *reparses != 0 => Err(format!(
-            "source projection reparsed with {reparses} allocations"
-        )),
-        _ => Ok(()),
-    })
-    .control(
-        "nearest",
-        Projection::Fallback([255, 255, 255]),
-        ProjectionFault::FirstIndex,
-    )
-    .control("reuse", Projection::Source, ProjectionFault::Reparsed)
-    .build()
-}
+    }
 
-#[test]
-fn indexed_fallback_minimizes_independent_palette_error_and_sources_reuse_parses() {
-    let projection = projection_oracle();
-    projection.check(&Projection::Source);
-    proptest!(ProptestConfig::with_cases(64), |(rgb in any::<[u8; 3]>())| {
-        projection.check(&Projection::Fallback(rgb));
-    });
+    fn source_reparses(fault: Option<&ProjectionFault>) -> u64 {
+        let mut view = ConfigView::default();
+        view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
+        let work = acyclic_test_support::measure(|| {
+            for _ in 0..64 {
+                let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
+                assert_eq!(source["wrap"], false);
+                if matches!(fault, Some(ProjectionFault::Reparsed)) {
+                    std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
+                }
+            }
+        });
+        work.count_total
+    }
+
+    fn projection_oracle() -> Oracle<Projection, ProjectionFault, Projected> {
+        Oracle::declare(
+            |input: &Projection,
+             fault: Option<&ProjectionFault>,
+             see: &mut Observer<'_, Projected>| {
+                see.see(match input {
+                    Projection::Fallback(rgb) => Projected::Fallback {
+                        rgb: *rgb,
+                        index: fallback(*rgb, fault),
+                    },
+                    Projection::Source => Projected::Source {
+                        reparses: source_reparses(fault),
+                    },
+                })
+            },
+        )
+        .invariant("nearest", |seen| match seen {
+            Projected::Fallback { rgb, index } => {
+                let error = |color: [u8; 3]| -> i64 {
+                    rgb.iter()
+                        .zip(color)
+                        .map(|(&want, got)| (i64::from(want) - i64::from(got)).pow(2))
+                        .sum()
+                };
+                match (0..256)
+                    .find(|other| error(palette_oracle(*other)) < error(palette_oracle(*index)))
+                {
+                    Some(closer) => {
+                        Err(format!("fallback {index} for {rgb:?}; {closer} is closer"))
+                    }
+                    None => Ok(()),
+                }
+            }
+            Projected::Source { .. } => Ok(()),
+        })
+        .invariant("reuse", |seen| match seen {
+            Projected::Source { reparses } if *reparses != 0 => Err(format!(
+                "source projection reparsed with {reparses} allocations"
+            )),
+            _ => Ok(()),
+        })
+        .control(
+            "nearest",
+            Projection::Fallback([255, 255, 255]),
+            ProjectionFault::FirstIndex,
+        )
+        .control("reuse", Projection::Source, ProjectionFault::Reparsed)
+        .build()
+    }
+
+    #[test]
+    fn indexed_fallback_minimizes_independent_palette_error_and_sources_reuse_parses() {
+        let projection = projection_oracle();
+        projection.check(&Projection::Source);
+        proptest!(ProptestConfig::with_cases(64), |(rgb in any::<[u8; 3]>())| {
+            projection.check(&Projection::Fallback(rgb));
+        });
+    }
 }
 
 proptest! {
@@ -695,7 +714,7 @@ fn no_wrap_clips_collapsed_paste_marker_by_visible_graphemes() {
                 PromptWidget::new(&input.editor),
                 frame.area(),
                 &mut viewport,
-            )
+            );
         })
         .unwrap();
     let text: String = terminal
@@ -771,10 +790,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
     #[test]
     fn saved_keymap_loads_and_live_file_projection_agree(
-        action in 0usize..ACTIONS.len(), disabled in any::<bool>(), key in 1u8..25,
+        action in prop::sample::select(ACTIONS), disabled in any::<bool>(), key in 1u8..25,
     ) {
         let chord = format!("F{key}");
-        let target = if disabled { serde_json::Value::Null } else { ACTIONS[action].chord.into() };
+        let target = if disabled { serde_json::Value::Null } else { action.chord.into() };
         let text = json!({"bindings":{chord.clone():target}}).to_string();
         let map = acyclic_harness_tui::InputKeymap::parse(&text).unwrap();
         let directory = tempfile::tempdir().unwrap();
@@ -789,7 +808,8 @@ proptest! {
         let mut input = PromptInput::default();
         apply(&view, &mut input);
         prop_assert_eq!(input.keymap.resolve(&chord).map(|b| b.action), map.resolve(&chord).map(|b| b.action));
-        prop_assert_eq!(parse(ConfigFile::Keymap, Scope::User, &saved).unwrap()["bindings"][&chord].clone(), target);
+        let parsed = parse(ConfigFile::Keymap, Scope::User, &saved).unwrap();
+        prop_assert_eq!(parsed.get("bindings").and_then(|bindings| bindings.get(&chord)).cloned().unwrap_or_default(), target);
     }
 }
 

@@ -1,6 +1,5 @@
 //! Data-driven composer cases against the production filesystem reader.
 
-#[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness::Error;
 use acyclic_harness::{
     Result,

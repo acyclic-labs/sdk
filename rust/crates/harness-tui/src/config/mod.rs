@@ -159,14 +159,47 @@ pub fn parse_bytes(file: ConfigFile, scope: Scope, bytes: &[u8]) -> Result<Value
 /// Disposable snapshot/follow fold. No watcher, background task or independent store.
 #[derive(Clone, Debug, Default)]
 pub struct ConfigView {
-    layers: [[Option<Value>; 3]; 2],
-    errors: [[Vec<Diagnostic>; 3]; 2],
+    layers: Table<Option<Value>>,
+    errors: Table<Vec<Diagnostic>>,
+}
+
+/// One value per scope and configuration file, addressed exhaustively.
+#[derive(Clone, Debug, Default)]
+struct Table<T>([[T; 3]; 2]);
+impl<T> Table<T> {
+    fn get(&self, scope: Scope, file: ConfigFile) -> &T {
+        let [user, workspace] = &self.0;
+        let [settings, keymap, theme] = match scope {
+            Scope::User => user,
+            Scope::Workspace => workspace,
+        };
+        match file {
+            ConfigFile::Settings => settings,
+            ConfigFile::Keymap => keymap,
+            ConfigFile::Theme => theme,
+        }
+    }
+    fn get_mut(&mut self, scope: Scope, file: ConfigFile) -> &mut T {
+        let [user, workspace] = &mut self.0;
+        let [settings, keymap, theme] = match scope {
+            Scope::User => user,
+            Scope::Workspace => workspace,
+        };
+        match file {
+            ConfigFile::Settings => settings,
+            ConfigFile::Keymap => keymap,
+            ConfigFile::Theme => theme,
+        }
+    }
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter().flatten()
+    }
 }
 impl ConfigView {
     /// Fold one file write, including malformed replacements. None is a deletion.
     pub fn set_file(&mut self, scope: Scope, file: ConfigFile, text: Option<&str>) {
-        let slot = &mut self.layers[scope.index()][file.index()];
-        let errors = &mut self.errors[scope.index()][file.index()];
+        let slot = self.layers.get_mut(scope, file);
+        let errors = self.errors.get_mut(scope, file);
         errors.clear();
         match text.map(|text| parse(file, scope, text)) {
             Some(Ok(value)) => *slot = Some(value),
@@ -182,8 +215,8 @@ impl ConfigView {
         match std::str::from_utf8(bytes) {
             Ok(text) => self.set_file(scope, file, Some(text)),
             Err(error) => {
-                self.layers[scope.index()][file.index()] = None;
-                self.errors[scope.index()][file.index()] = vec![Diagnostic {
+                *self.layers.get_mut(scope, file) = None;
+                *self.errors.get_mut(scope, file) = vec![Diagnostic {
                     file,
                     scope,
                     path: "$".into(),
@@ -195,12 +228,12 @@ impl ConfigView {
     }
     /// Diagnostics from the current file cut.
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
-        self.errors.iter().flatten().flatten()
+        self.errors.iter().flatten()
     }
     /// Validated source-file projection before defaults or higher scopes are merged.
     /// Borrowing a source never reparses its JSON or schema.
     pub fn source(&self, scope: Scope, file: ConfigFile) -> Option<&Value> {
-        self.layers[scope.index()][file.index()].as_ref()
+        self.layers.get(scope, file).as_ref()
     }
 
     /// Effective file value; defaults are also declarative files.
@@ -208,8 +241,8 @@ impl ConfigView {
         let defaults = parse(file, Scope::User, file.defaults())?;
         Ok(fold(
             &defaults,
-            self.layers[0][file.index()].as_ref(),
-            self.layers[1][file.index()].as_ref(),
+            self.layers.get(Scope::User, file).as_ref(),
+            self.layers.get(Scope::Workspace, file).as_ref(),
         ))
     }
     /// Typed effective preferences.
@@ -232,7 +265,9 @@ impl ConfigView {
         file: ConfigFile,
         patch: &Value,
     ) -> Result<Vec<u8>, Vec<Diagnostic>> {
-        let old = self.layers[scope.index()][file.index()]
+        let old = self
+            .layers
+            .get(scope, file)
             .as_ref()
             .cloned()
             .unwrap_or_else(|| serde_json::json!({}));

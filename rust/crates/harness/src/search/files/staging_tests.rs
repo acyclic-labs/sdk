@@ -68,6 +68,39 @@ impl StreamProvider for Interleaved {
         self.inner.read_commit(id).await
     }
     async fn commit(&self, request: CommitRequest) -> Storage<CommitOutcome> {
+        if let Some(counter) = self.counter(&request) {
+            // Advance until this append is stale, or all four writes have landed.
+            // A request-scoped staging append has no condition on the parent tail.
+            let conditioned = request.conditions.iter().any(|condition| {
+                matches!(condition,
+                CommitCondition::Head { path, .. } | CommitCondition::Tail { path, .. }
+                    if path == &self.parent)
+            });
+            loop {
+                let next = {
+                    let mut count = counter.lock().await;
+                    if *count == 4 {
+                        break;
+                    }
+                    *count += 1;
+                    *count
+                };
+                // This commit already runs beneath the whole publication path.
+                heap(|| self.peer_write(next)).await;
+                if conditioned {
+                    break;
+                }
+            }
+        }
+        self.inner.commit(request).await
+    }
+}
+
+impl Interleaved {
+    /// The counter `request` advances: request staging or result publication.
+    /// Not inlined, so decoding never widens the polling frame of `commit`.
+    #[inline(never)]
+    fn counter(&self, request: &CommitRequest) -> Option<&Mutex<usize>> {
         let write = request.mutations.iter().find_map(|mutation| {
             let CommitMutation::Append { records, .. } = mutation else {
                 return None;
@@ -81,56 +114,47 @@ impl StreamProvider for Interleaved {
             })
             .ok()
             .flatten()
-        });
-        let counter = match write.as_ref().map(|write| &write.key) {
-            Some(FileKey::Task {
+        })?;
+        match write.key {
+            FileKey::Task {
                 file: TaskFile::RequestReady(_),
                 ..
-            }) => Some(&self.staged),
-            Some(FileKey::Task {
+            } => Some(&self.staged),
+            FileKey::Task {
                 file: TaskFile::RequestResult(_),
                 ..
-            }) => Some(&self.published),
+            } => Some(&self.published),
             _ => None,
-        };
-        if let Some(counter) = counter {
-            // Advance until this append is stale, or all four writes have landed.
-            // A request-scoped staging append has no condition on the parent tail.
-            loop {
-                let next = {
-                    let mut count = counter.lock().await;
-                    if *count == 4 {
-                        break;
-                    }
-                    *count += 1;
-                    *count
-                };
-                let peer = TaskVolume::open(self.inner.clone(), self.parent.clone())
-                    .await
-                    .unwrap();
-                let generation = peer
-                    .snapshot(&Query::File(FileKey::Goal), 1)
-                    .await
-                    .unwrap()
-                    .generation;
-                let published = *self.published.lock().await;
-                peer.append(
-                    generation,
-                    &FileValue::new(FileKey::Goal, format!("{next}-{published}").into_bytes()),
-                )
-                .await
-                .unwrap();
-                if request.conditions.iter().any(|condition| {
-                    matches!(condition,
-                    CommitCondition::Head { path, .. } | CommitCondition::Tail { path, .. }
-                        if path == &self.parent)
-                }) {
-                    break;
-                }
-            }
         }
-        self.inner.commit(request).await
     }
+
+    /// One peer write to the parent volume, landing between this commit's
+    /// read and its append.
+    async fn peer_write(&self, next: usize) {
+        let peer = TaskVolume::open(self.inner.clone(), self.parent.clone())
+            .await
+            .unwrap();
+        let generation = peer
+            .snapshot(&Query::File(FileKey::Goal), 1)
+            .await
+            .unwrap()
+            .generation;
+        let published = *self.published.lock().await;
+        peer.append(
+            generation,
+            &FileValue::new(FileKey::Goal, format!("{next}-{published}").into_bytes()),
+        )
+        .await
+        .unwrap();
+    }
+}
+
+/// Builds `future` on the heap from its own frame. Loom polls every model on
+/// a small coroutine stack, so the awaiting frame keeps only the pointer; a
+/// `Box::pin` at the await would build the future in that frame first.
+#[inline(never)]
+fn heap<F: std::future::Future>(build: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(build())
 }
 
 pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) -> Result<()> {
@@ -141,7 +165,7 @@ pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) ->
         published: Mutex::new(0),
         fail_open: Mutex::new(false),
     });
-    let volume = TaskVolume::open(stream.clone(), stream.parent.clone())
+    let volume = heap(|| TaskVolume::open(stream.clone(), stream.parent.clone()))
         .await
         .map_err(storage)?;
     let task = Component::new("staging").unwrap();
@@ -162,9 +186,11 @@ pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) ->
         .await
         .map_err(storage)?
         .generation;
-    volume.append(generation, &write).await.map_err(storage)?;
-    let completion = volume
-        .file_volume(&ready(&task, &id))
+    heap(|| volume.append(generation, &write))
+        .await
+        .map_err(storage)?;
+    let ready_key = ready(&task, &id);
+    let completion = heap(|| volume.file_volume(&ready_key))
         .await
         .map_err(storage)?;
     let bytes = encode(
@@ -174,22 +200,14 @@ pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) ->
         None,
     )?;
     let authorize = |_| std::future::ready(Ok(vec![]));
+    let mut resolve = || Ok(Some(provider.clone()));
     let result = if broken {
         // Restore staging on the shared parent generation: four conflicts lose it.
-        retain_response(&volume, ready(&task, &id), bytes.clone(), None)
+        heap(|| retain_response(&volume, ready(&task, &id), bytes.clone(), None))
             .await
             .map(|_| ())
     } else {
-        settle(
-            &volume,
-            &task,
-            &id,
-            &fence,
-            &mut || Ok(Some(provider.clone())),
-            &authorize,
-            None,
-        )
-        .await
+        heap(|| settle(&volume, &task, &id, &fence, &mut resolve, &authorize, None)).await
     };
     assert!(
         matches!(result, Err(Error::SearchPublicationDeferred)),
@@ -203,18 +221,21 @@ pub(super) async fn schedule(provider: Arc<dyn SearchProvider>, broken: bool) ->
     assert_eq!(saved.files.len(), 1);
     assert_eq!(saved.files[0].bytes, bytes);
     assert_eq!(*stream.published.lock().await, 4);
-    let reopened = TaskVolume::open(stream.clone(), stream.parent.clone())
+    let reopened = heap(|| TaskVolume::open(stream.clone(), stream.parent.clone()))
         .await
         .map_err(storage)?;
-    settle(
-        &reopened,
-        &task,
-        &id,
-        &fence,
-        &mut || panic!("resume redispatched the provider"),
-        &authorize,
-        None,
-    )
+    let mut redispatch = || panic!("resume redispatched the provider");
+    heap(|| {
+        settle(
+            &reopened,
+            &task,
+            &id,
+            &fence,
+            &mut redispatch,
+            &authorize,
+            None,
+        )
+    })
     .await?;
     let result = reopened
         .snapshot(&Query::File(file(&task, &id, true)), 1)
@@ -263,7 +284,7 @@ pub(super) async fn failed_open_retry(
         published: Mutex::new(4),
         fail_open: Mutex::new(true),
     });
-    let volume = TaskVolume::open(stream.clone(), stream.parent.clone())
+    let volume = heap(|| TaskVolume::open(stream.clone(), stream.parent.clone()))
         .await
         .map_err(storage)?;
     let task = Component::new("task").unwrap();
@@ -277,39 +298,36 @@ pub(super) async fn failed_open_retry(
         .await
         .map_err(storage)?
         .generation;
-    let generation = volume
-        .append(
-            generation,
-            &FileValue::new(
-                FileKey::Task {
-                    task: task.clone(),
-                    file: TaskFile::Request(id.clone()),
-                },
-                br#"{"query":"model"}"#.as_slice(),
-            ),
-        )
+    let request = FileValue::new(
+        FileKey::Task {
+            task: task.clone(),
+            file: TaskFile::Request(id.clone()),
+        },
+        br#"{"query":"model"}"#.as_slice(),
+    );
+    let generation = heap(|| volume.append(generation, &request))
         .await
         .map_err(storage)?;
     if broken {
         // Restore the rejected ordering: make the claim irreversible before open.
-        volume
-            .append(
-                generation,
-                &FileValue::new(file(&task, &id, false), encode(&fence, None)?),
-            )
+        let claim = FileValue::new(file(&task, &id, false), encode(&fence, None)?);
+        heap(|| volume.append(generation, &claim))
             .await
             .map_err(storage)?;
     }
     let authorize = |_| std::future::ready(Ok(vec![]));
-    let first = settle(
-        &volume,
-        &task,
-        &id,
-        &fence,
-        &mut || panic!("failed open resolved credentials"),
-        &authorize,
-        None,
-    )
+    let mut unresolved = || panic!("failed open resolved credentials");
+    let first = heap(|| {
+        settle(
+            &volume,
+            &task,
+            &id,
+            &fence,
+            &mut unresolved,
+            &authorize,
+            None,
+        )
+    })
     .await;
     assert!(
         matches!(
@@ -326,18 +344,21 @@ pub(super) async fn failed_open_retry(
         .await
         .map_err(storage)?;
     assert!(claim.files.is_empty(), "failed open committed a claim");
-    let reopened = TaskVolume::open(stream.clone(), stream.parent.clone())
+    let reopened = heap(|| TaskVolume::open(stream.clone(), stream.parent.clone()))
         .await
         .map_err(storage)?;
-    settle(
-        &reopened,
-        &task,
-        &id,
-        &fence,
-        &mut || Ok(Some(provider.clone())),
-        &authorize,
-        None,
-    )
+    let mut resolve = || Ok(Some(provider.clone()));
+    heap(|| {
+        settle(
+            &reopened,
+            &task,
+            &id,
+            &fence,
+            &mut resolve,
+            &authorize,
+            None,
+        )
+    })
     .await?;
     let terminal = reopened
         .snapshot(&Query::File(file(&task, &id, true)), 1)

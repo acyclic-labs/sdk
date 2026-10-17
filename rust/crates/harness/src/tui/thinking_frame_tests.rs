@@ -77,13 +77,13 @@ async fn frame_allocations<const SCAN: bool>(completed: u8) -> (u64, u64) {
     let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 4096, 4 * 1024 * 1024)
         .await
         .unwrap();
+    client.follow_commands(&files).await.unwrap();
     let mut renderer = ClientRenderer::default();
     let mut input = PromptInput::default();
     let mut prompt = crate::client::PromptFiles::default();
     let mut viewport = Viewport::default();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     let mut frame = |now| {
-        client.project_commands(&files, &owner).unwrap();
         renderer.update_files(&client, &owner);
         renderer.configure(client.views(), &owner, &files).unwrap();
         if SCAN {

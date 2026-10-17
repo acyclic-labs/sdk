@@ -1,4 +1,5 @@
 use super::*;
+use crate::WrappedLines;
 use acyclic_test_support::measure;
 use proptest::prelude::*;
 use ratatui::text::{Line, Span};

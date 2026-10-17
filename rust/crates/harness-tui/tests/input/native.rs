@@ -42,7 +42,7 @@ fn draft_history_and_keymap_views_follow_their_injected_files()
     );
     let keymap_path = directory.path().join("config/keymap.json");
     InputKeymap::parse(r#"{"bindings":{"Ctrl+l":"cursor.line-start"}}"#)
-        .unwrap()
+        .map_err(|errors| format!("{errors:?}"))?
         .save(&keymap_path)?;
     assert!(
         InputKeymap::load(&keymap_path)?
