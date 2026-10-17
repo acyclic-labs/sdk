@@ -6,6 +6,10 @@ pub(crate) struct CompletionState<T> {
     pub(crate) panic: Option<Box<dyn std::any::Any + Send>>,
     pub(crate) waker: Option<Waker>,
     pub(crate) _allocation: Option<ReadAllocation>,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_wake: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    pub(crate) broken_accounting: bool,
 }
 
 impl<T> Default for CompletionState<T> {
@@ -16,6 +20,10 @@ impl<T> Default for CompletionState<T> {
             panic: None,
             waker: None,
             _allocation: None,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_wake: false,
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            broken_accounting: false,
         }
     }
 }
@@ -45,7 +53,8 @@ pub(crate) trait TaskTerminal: Send + Sync {
     fn publish(&self) -> Option<Waker>;
 }
 
-impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
+// Sole completion lock; no queue lock, callback, or wake is held under it.
+impl<T: Send> TaskTerminal for CompletionMutex<CompletionState<T>> {
     #[cfg(feature = "test-support")]
     fn test_poll_completion(&self, waker: &Waker) -> Poll<()> {
         let mut state = self
@@ -68,7 +77,15 @@ impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
         let mut state = self
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if state.broken_accounting {
+            return state.waker.take();
+        }
         state.task_pending = false;
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if state.broken_wake {
+            state.waker = None;
+        }
         state.waker.take()
     }
 }

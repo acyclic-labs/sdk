@@ -9,6 +9,12 @@ impl StockExecution<'_> {
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
         self.validate_turn_input(journal, input).await?;
+        if let Some(source) = self.stock.summary_source.as_deref() {
+            return crate::conversation::BoundedContentFuture::new(self.io, || {
+                self.summarize_file(journal, input, source)
+            })?
+            .await;
+        }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
         let mut text = String::new();

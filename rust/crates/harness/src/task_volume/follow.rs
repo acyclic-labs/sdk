@@ -110,6 +110,30 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         })
     }
 
+    // Exact files and a follow cursor share one index observation. The index is
+    // a leaf lock; provider IO is always outside it.
+    pub(crate) async fn snapshot_files(
+        &self,
+        keys: &[super::FileKey],
+        query: &Query,
+    ) -> Result<Snapshot> {
+        self.refresh().await?;
+        let index = self.index.lock().await;
+        let files = keys
+            .iter()
+            .filter_map(|key| index.files.get(key))
+            .map(|stored| stored.file.clone())
+            .collect();
+        let generation = self.generation(&index);
+        drop(index);
+        let watermarks = self.provider.watermarks(self.path.clone()).await?;
+        Ok(Snapshot {
+            files,
+            cursor: self.cursor(query, generation, watermarks)?,
+            generation,
+        })
+    }
+
     /// Captures a finite snapshot and cursor under one publication cut.
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
         self.refresh().await?;

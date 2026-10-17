@@ -52,6 +52,13 @@ mod attachments;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "client_mention_provider.rs"]
 mod mention_provider;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "test-support"
+))]
+#[path = "support/client_local.rs"]
+mod client_local;
 
 impl Fixture {
     async fn catalog(

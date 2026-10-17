@@ -14,7 +14,7 @@ impl ContentResidencyVerifier for NoReads {}
 async fn descendant_named_volume_survives_branch_switch_and_routes_bash_cwd() -> Result<()> {
     use acyclic_harness::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
     use acyclic_harness::test_support::ScriptedEvent;
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let calls = [
         (
             "bash",
@@ -101,7 +101,7 @@ async fn descendant_named_volume_survives_branch_switch_and_routes_bash_cwd() ->
 async fn child_restore_is_visible_to_the_next_model_bash_without_a_branch_switch() -> Result<()> {
     use acyclic_harness::model::{ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
     use acyclic_harness::test_support::ScriptedEvent;
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider(
         [
             ("bash", "printf original > marker"),
@@ -220,12 +220,9 @@ async fn local_with_limits(
         .await?;
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     LocalHarness::open(
-        acyclic_harness::test_support::local_harness_config(
-            directory.join("filesystem"),
-            (model, provider),
-        )?
-        .volume(volume)
-        .limits(limits),
+        crate::client_local::config(directory.join("filesystem"), (model, provider))?
+            .volume(volume)
+            .limits(limits),
     )
     .await
 }
@@ -256,7 +253,7 @@ async fn selected(
 }
 #[tokio::test]
 async fn production_pause_stop_resume_commands_gate_real_owner_dispatch_and_reopen() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider([ScriptedTurn::Text("continued".into())]);
     let local = local(directory.path(), provider.clone()).await?;
     let Admission::Accepted(RuntimeTask::Durable { task_id, .. }) =
@@ -299,7 +296,7 @@ async fn production_pause_stop_resume_commands_gate_real_owner_dispatch_and_reop
 }
 #[tokio::test]
 async fn production_compact_and_export_requests_have_durable_effects() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider([
         ScriptedTurn::Text("remember the invariant".into()),
         ScriptedTurn::Text("continued".into()),
@@ -314,7 +311,14 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
     let compact = send(&local, &mut client, "/compact keep decisions").await?;
     assert_eq!(compact["summary"], "remember the invariant");
     let requests = provider.requests();
-    assert!(requests[0].messages.iter().any(|message| matches!(&message.content, acyclic_harness::model::ModelContent::Text(text) if text.contains("original prompt") && text.contains("keep decisions"))), "compaction omitted the actual admitted prompt");
+    for required in ["original prompt", "keep decisions"] {
+        assert!(requests[0].messages.iter().any(|message| matches!(&message.content, acyclic_harness::model::ModelContent::Text(text) if text.contains(required))), "compaction omitted {required}");
+    }
+    assert!(
+        requests[0].tools.is_empty(),
+        "manual compaction exposed coding tools"
+    );
+    assert!(requests[0].max_output_tokens.is_some());
     let queued = send(&local, &mut client, "continue").await?;
     let task = TaskId::parse(queued["task"].as_str().unwrap())?;
     assert_eq!(local.resume(task).await?.text, "continued");
@@ -346,7 +350,7 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
 #[cfg(all(feature = "native-execution", unix))]
 #[tokio::test]
 async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     std::fs::create_dir(directory.path().join(".git")).unwrap();
     std::fs::write(directory.path().join("marker"), "parent").unwrap();
     let provider = provider([
@@ -369,7 +373,7 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
         ScriptedTurn::Text("done".into()),
     ]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
-    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+    let local = LocalHarness::open(crate::client_local::config(
         directory.path(),
         (model, provider.clone()),
     )?)
@@ -433,7 +437,7 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
 
 #[tokio::test]
 async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider([
         ScriptedTurn::Text("first".into()),
         ScriptedTurn::Text("child".into()),
@@ -457,7 +461,7 @@ async fn followed_model_selection_reaches_the_provider_for_new_and_child_turns()
 
 #[tokio::test]
 async fn confirmed_delete_keeps_its_target_and_clear_cancels_conversations() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider([]);
     let local = local(directory.path(), provider.clone()).await?;
     let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
@@ -547,15 +551,11 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
         executor: Arc::new(Web),
         projection: Arc::new(JsonToolProjection),
     };
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider([]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
     let local = LocalHarness::open(
-        acyclic_harness::test_support::local_harness_config(
-            directory.path(),
-            (model, provider.clone()),
-        )?
-        .tool(web),
+        crate::client_local::config(directory.path(), (model, provider.clone()))?.tool(web),
     )
     .await?;
     let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 256).await?;
@@ -573,7 +573,7 @@ async fn search_and_fetch_use_the_registered_web_executor_without_model_dispatch
 
 #[tokio::test]
 async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let local = local_with_limits(
         directory.path(),
         provider([]),
@@ -640,7 +640,7 @@ async fn clear_all_pages_an_archive_larger_than_its_enumeration_bound() -> Resul
 }
 
 async fn clear_direct_admissions(completed: usize, page: usize) -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let provider = provider((0..completed).map(|_| ScriptedTurn::Text("done".into())));
     let local = local_with_limits(
         directory.path(),
@@ -729,7 +729,7 @@ proptest::proptest! {
     fn root_exports_never_embed_earlier_exports(repetitions in 2usize..5) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
             .block_on(async {
-                let directory = tempfile::tempdir().unwrap();
+                let directory = crate::client_local::Directory::new().unwrap();
                 let local = local(directory.path(), provider([])).await?;
                 let mut client = CommandSession::open_local(&local, uuid::Uuid::new_v4(), 65_536, 128).await?;
                 for _ in 0..repetitions {
@@ -752,7 +752,7 @@ proptest::proptest! {
 async fn command_observers_share_the_authorized_task_volume_without_exposing_host_writes()
 -> Result<()> {
     use acyclic_harness::task_volume::{Component, TaskFile};
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let local = local(directory.path(), provider([])).await?;
     let session = uuid::Uuid::new_v4();
     let mut client = CommandSession::open_local(&local, session, 65_536, 128).await?;
@@ -791,7 +791,7 @@ async fn command_observers_share_the_authorized_task_volume_without_exposing_hos
 
 #[tokio::test]
 async fn settled_owner_tasks_publish_attention_for_live_clients() -> Result<()> {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     let local = local(
         directory.path(),
         provider([ScriptedTurn::Text("finished".into())]),
@@ -834,7 +834,7 @@ async fn settled_owner_tasks_publish_attention_for_live_clients() -> Result<()> 
 async fn descendants_inherit_selected_branches_and_reopen_their_original_forks() -> Result<()> {
     use acyclic_harness::model::{ModelEvent, ToolCall};
     use acyclic_harness::test_support::ScriptedEvent;
-    let directory = tempfile::tempdir().unwrap();
+    let directory = crate::client_local::Directory::new().unwrap();
     std::fs::create_dir(directory.path().join(".git")).unwrap();
     std::fs::write(directory.path().join("marker"), "original").unwrap();
     let call = |id: &str, name: &str, command: &str| {
@@ -861,7 +861,7 @@ async fn descendants_inherit_selected_branches_and_reopen_their_original_forks()
         ScriptedTurn::Text("later ready".into()),
     ]);
     let model = Model::new("scripted".into(), "test".into(), "1".into(), Value::Null)?;
-    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+    let local = LocalHarness::open(crate::client_local::config(
         directory.path(),
         (model.clone(), provider.clone()),
     )?)
@@ -912,7 +912,7 @@ async fn descendants_inherit_selected_branches_and_reopen_their_original_forks()
     );
     drop(client);
     drop(local);
-    let local = LocalHarness::open(acyclic_harness::test_support::local_harness_config(
+    let local = LocalHarness::open(crate::client_local::config(
         directory.path(),
         (model, provider),
     )?)

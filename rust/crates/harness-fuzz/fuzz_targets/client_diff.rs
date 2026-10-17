@@ -6,6 +6,14 @@ use libfuzzer_sys::fuzz_target;
 mod diff_case;
 #[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
+#[path = "../../harness/tests/e2e/local_tool_files.rs"]
+mod local_tool_files;
+#[path = "../../harness/tests/e2e/local_tool_files_tests.rs"]
+mod local_tool_files_tests;
+#[path = "../../harness/tests/support/quiescent.rs"]
+mod quiescent;
+
+pub type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 // Compile the production pure module without pulling in unrelated providers.
 #[path = "../../harness/src/client/diff/compute.rs"]
@@ -39,6 +47,41 @@ fn check(before: Option<&[u8]>, after: Option<&[u8]>, render: usize, work: usize
 }
 
 fuzz_target!(|input: &[u8]| {
+    let task = acyclic_harness::TaskId::from_bytes([0; 16]);
+    let operation = acyclic_harness::OperationId::from_bytes([1; 16]);
+    let (mut files, calls, results) =
+        local_tool_files_tests::fixture(task, operation, "output", "error").unwrap();
+    local_tool_files::check(&files, task, operation, &calls, &results).unwrap();
+    if let Some(first) = input.first() {
+        let key = files
+            .keys()
+            .nth(usize::from(*first) % files.len())
+            .unwrap()
+            .clone();
+        let original = files[&key].bytes.clone();
+        files.get_mut(&key).unwrap().bytes = input.to_vec().into();
+        // Arbitrary request/result/output bytes may be invalid, but must never
+        // panic or manufacture a different expected identity or terminal value.
+        if local_tool_files::check(&files, task, operation, &calls, &results).is_ok() {
+            use acyclic_harness::task_volume::{FileKey, TaskFile, ToolFile};
+            match key {
+                FileKey::Task {
+                    file:
+                        TaskFile::Tool {
+                            file: ToolFile::Request | ToolFile::Result,
+                            ..
+                        },
+                    ..
+                } => {
+                    assert_eq!(
+                        serde_json::from_slice::<serde_json::Value>(input).unwrap(),
+                        serde_json::from_slice::<serde_json::Value>(&original).unwrap()
+                    );
+                }
+                _ => assert_eq!(input, original.as_ref()),
+            }
+        }
+    }
     if let Ok(case) = serde_json::from_slice::<local_case::LocalCase>(input) {
         let encoded = serde_json::to_vec(&case).expect("encode local case");
         let decoded: local_case::LocalCase =

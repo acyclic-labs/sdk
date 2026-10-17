@@ -57,10 +57,9 @@ struct Fixture {
 impl Fixture {
     async fn new(scenario: Scenario, seed: Option<&Seed>) -> Result<Self> {
         let (schedule, events) = Schedule::new();
-        let directory = if cfg!(target_os = "linux") {
-            temporary_directory(Path::new("/dev/shm"))
-        } else {
-            tempfile::tempdir()
+        let directory = match seed {
+            Some(seed) => temporary_directory(&seed.parent),
+            None => fixture_directory(),
         }
         .map_err(storage)?;
         let reference =
@@ -143,9 +142,11 @@ impl Fixture {
     async fn open(&self) -> Result<Harness> {
         // Reconstruct the host and discard all filesystem/runtime caches. Only
         // the two provider states and the external effect receipts survive.
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:begin");
         let fs = Fs::local(LocalOptions::new(self.directory.path().join("filesystem")))
             .await
             .map_err(storage)?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:filesystem");
         let stream = Arc::new(
             LocalStream::open_with_clock(
                 self.directory.path().join("tasks"),
@@ -155,6 +156,7 @@ impl Fixture {
             .await
             .map_err(storage)?,
         );
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:stream");
         let files = FilesystemHost::new(fs, self.volumes[0].provider(), None)?;
         let verifier = self.issuer.verifier(&mut None)?;
         let mut tools = ToolRegistry::default();
@@ -213,6 +215,7 @@ impl Fixture {
             clock: Arc::new(Clock),
         })
         .await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "open:runtime");
         let compact = matches!(self.scenario, Scenario::Compaction);
         Ok(LocalHarness {
             task_files,
@@ -333,10 +336,9 @@ async fn case(
     baseline: &[&'static str],
     seed: Option<&Seed>,
 ) -> Result<Coverage> {
-    // Every caller uses a current-thread runtime. Outside the controlled run,
-    // execute physical host I/O on that same replay worker rather than handing
-    // each metadata read to the shared blocking pool. The scoped test adapter
-    // intercepts submissions first, so all cancellation barriers remain intact.
+    let profile = read_profile::start();
+    // Each worker reuses its current-thread runtime. Bootstrap/recovery closures
+    // use the shared host queue; the scoped adapter retains the original gates.
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let owned_seed = if seed.is_none() {
         Some(Seed::new(scenario).await?)
@@ -344,8 +346,9 @@ async fn case(
         None
     };
     let seed = seed.or(owned_seed.as_ref());
+    let restore_started = profile.map(|_| std::time::Instant::now());
     let fixture = Fixture::new(scenario, seed).await?;
-    let _reads = read_profile::install(&fixture.schedule);
+    let _reads = read_profile::install(&fixture.schedule, profile, restore_started);
     let result: Result<Coverage> = Box::pin(async {
         let harness = fixture.open().await?;
         let schedule = &fixture.schedule;
@@ -422,15 +425,18 @@ async fn case(
             )
         };
         assert_eq!(output.text, "done");
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:recovered");
         fixture.assert_effects();
         for _ in 0..2 {
             assert_eq!(reopened.resume(root).await?.text, "done");
             fixture.assert_effects();
         }
         drop(reopened);
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:repeated-resume");
         let reopened = fixture.open().await?;
         assert_eq!(reopened.resume(root).await?.text, "done");
         fixture.assert_effects();
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:cold-resume");
         if matches!(scenario, Scenario::Compaction) {
             let admission = reopened.runtime.task_host().observe_admission(root).await?;
             assert!(
@@ -462,7 +468,9 @@ async fn case(
             assert_eq!(reader.read(summary, 32, None)?.await?.as_ref(), b"summary");
         }
         let observations = invariants::observe(&reopened, &fixture, root).await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:observed");
         requests::check(&reopened, &fixture).await?;
+        tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:audited");
         observations
             .check(scenario)
             .map_err(|reason| Error::Invalid(reason.into()))?;
@@ -476,11 +484,26 @@ async fn case(
         })
     })
     .await;
-    result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())))
+    let result = result.map_err(|error| Error::Storage(format!("{scenario:?} cut {cut:?}, in-flight boundary {:?}, accepted model effects {} and tool effects {}: {error:?}", fixture.schedule.failure(), fixture.provider.accepted(), fixture.effect.calls.lock().unwrap().len())));
+    drop(fixture);
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "case:cleanup");
+    result
 }
 
 fn temporary_directory(preferred: &Path) -> std::io::Result<tempfile::TempDir> {
     tempfile::tempdir_in(preferred).or_else(|_| tempfile::tempdir())
+}
+
+fn fixture_directory() -> std::io::Result<tempfile::TempDir> {
+    if cfg!(target_os = "linux") {
+        return temporary_directory(Path::new("/dev/shm"));
+    }
+    // Keep native I/O on the build volume (including Windows Dev Drives), not
+    // on an unrelated system-temp filesystem. No durability setting changes.
+    match std::env::current_exe()?.parent() {
+        Some(parent) => temporary_directory(parent),
+        None => tempfile::tempdir(),
+    }
 }
 
 #[test]
@@ -546,7 +569,13 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
             .min(cuts.len()))
             .map(|_| {
                 scope.spawn(|| -> Result<()> {
+                    let io_threads = Arc::new(AtomicUsize::new(0));
+                    let started_io = io_threads.clone();
                     let runtime = tokio::runtime::Builder::new_current_thread()
+                        .max_blocking_threads(1)
+                        .on_thread_start(move || {
+                            started_io.fetch_add(1, Ordering::Relaxed);
+                        })
                         .enable_all()
                         .build()
                         .map_err(storage)?;
@@ -556,6 +585,11 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                         }
                         let index = next.fetch_add(1, Ordering::Relaxed);
                         let Some(&(scenario, baseline, seed, cut)) = cuts.get(index) else {
+                            assert_eq!(
+                                io_threads.load(Ordering::Relaxed),
+                                0,
+                                "replay opened a private Tokio I/O pool"
+                            );
                             return Ok(());
                         };
                         let coverage = runtime
@@ -608,17 +642,13 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         .enable_all()
         .build()
         .map_err(storage)?;
-    let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
+    let seed = runtime.block_on(Seed::new(Scenario::Text))?;
+    let observed = runtime.block_on(case(Scenario::Text, None, &[], Some(&seed)))?;
     let baseline = observed.points;
     coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
-    let cut: usize = serde_json::from_slice(
-        &std::fs::read(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/local/admission/poll_sweep/coverage/admission_cut.json"),
-        )
-        .map_err(storage)?,
-    )
-    .map_err(storage)?;
+    let cut: usize =
+        serde_json::from_slice(include_bytes!("poll_sweep/coverage/admission_cut.json"))
+            .map_err(storage)?;
     assert_eq!(
         observed.admission_submission,
         Some(cut),
@@ -629,7 +659,7 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
         "task:submitted",
         "named admission cut moved"
     );
-    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, None))?;
+    let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
     assert_eq!(recovered.points.len(), cut);
     assert!(
         recovered.admission_committed,

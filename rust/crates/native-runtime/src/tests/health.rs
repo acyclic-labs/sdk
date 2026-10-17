@@ -33,7 +33,7 @@ fn independently_opened_aliases_share_fencing_and_uncertainty() -> io::Result<()
     let second = bounded_write_file(&alias, true)?;
     #[cfg(target_os = "linux")]
     FileCompletion::new(
-        Arc::new(Mutex::new(CompletionState::<()>::default())),
+        Arc::new(CompletionMutex::new(CompletionState::<()>::default())),
         Some(Arc::new(OperationFence::default())),
         Some(first.health.clone()),
         Some(first.file.clone()),
