@@ -180,7 +180,7 @@ pub(super) fn capture_reserve<T>(
     let wanted = values
         .len()
         .checked_add(additional)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     if wanted <= values.capacity() {
         return Ok(());
     }
@@ -188,11 +188,11 @@ pub(super) fn capture_reserve<T>(
     let old = values
         .capacity()
         .checked_mul(size)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     let copied = values
         .len()
         .checked_mul(size)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     let grown = wanted.max(values.capacity().saturating_mul(2).max(4));
     let capacity = match grown.checked_mul(size) {
         Some(bytes)

@@ -158,9 +158,9 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         );
         // Fixed warm six-path heap counts, independent of receipts or controls.
         let expected = match (host, cfg!(windows)) {
-            (true, true) => 49,
-            (true, false) => 52,
-            (false, _) => 205,
+            (true, true) => 37,
+            (true, false) => 40,
+            (false, _) => 193,
         };
         let no_copy = |allocations| {
             if allocations == expected {

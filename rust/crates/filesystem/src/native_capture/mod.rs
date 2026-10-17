@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 mod accounting;
+#[cfg(all(test, feature = "memory"))]
+mod reserve_tests;
 #[cfg(test)]
 mod capture_policy_tests;
 mod entry;
