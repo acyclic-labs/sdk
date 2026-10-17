@@ -137,8 +137,7 @@ impl Budget {
                     .ok_or_else(exceeded)?;
             }
             let input = match plan.input {
-                Some(raw) => {
-                    let size = raw.get().len() as u64;
+                Some((_, size)) => {
                     next = (next - *replacement)
                         .checked_add(size)
                         .ok_or_else(exceeded)?;
@@ -268,7 +267,7 @@ impl Reservation<'_> {
         for text in plan.context.into_iter().flatten() {
             output.additional_context.push(text.into_string(&self)?);
         }
-        if let Some(raw) = plan.input {
+        if let Some((raw, _)) = plan.input {
             output.updated_input = Some(
                 serde_json::from_str(raw.get())
                     .map_err(|_| Error::Invalid("invalid hook arguments".into()))?,

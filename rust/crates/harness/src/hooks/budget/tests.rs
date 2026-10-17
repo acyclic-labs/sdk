@@ -299,3 +299,27 @@ fn exhaustion_applies_only_the_policy_of_failed_or_unretainable_commands() -> Re
     }
     Ok(())
 }
+
+proptest! {
+    // Property: reservations use canonical encoded size, not wire spelling.
+    // The broken variant restores the raw-byte charge; the SAME outcome-bound
+    // detector rejects it for every generated expanding-number collection.
+    #[test]
+    fn replacement_reservations_cover_numeric_expansion(count in 40usize..100, digit in 1u8..10) {
+        let numbers = vec![format!("{digit}e6");count].join(",");
+        let input = format!(r#"{{"numbers":[{numbers}]}}"#);
+        let bytes = format!(r#"{{"hookSpecificOutput":{{"updatedInput":{input}}}}}"#).into_bytes();
+        let maximum = serde_json::to_vec(&HookOutput::default())?.len() as u64 - 4 + input.len() as u64;
+        for raw_charge in [false,true] {
+            let mut output = HookOutput::default();
+            let mut budget = Budget::new(maximum)?;
+            let mut plan = Plan::inspect(&output, HookEvent::PreToolUse, Some(0), &bytes,b"").unwrap();
+            if raw_charge { plan.input.as_mut().unwrap().1 = input.len() as u64; }
+            budget.fold(&mut output,plan,false);
+            let fits_during_merge = serde_json::to_vec(&output)?.len() as u64 <= maximum;
+            budget.finish(&mut output);
+            prop_assert_eq!(fits_during_merge && serde_json::to_vec(&output)?.len() as u64 <= maximum, !raw_charge,
+                "canonical-size detector must reject the raw-byte reservation");
+        }
+    }
+}

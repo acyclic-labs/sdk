@@ -82,7 +82,7 @@ pub(super) struct Plan<'a> {
     pub(super) blocked: Option<Text<'a>>,
     pub(super) approval: Option<Text<'a>>,
     pub(super) context: [Option<Text<'a>>; 2],
-    pub(super) input: Option<&'a RawValue>,
+    pub(super) input: Option<(&'a RawValue, u64)>,
     pub(super) failure: Option<(ProcessError<Text<'a>>, bool)>,
 }
 
@@ -207,11 +207,16 @@ impl<'a> Plan<'a> {
             return Err("hook output names another event");
         }
         let permission = choice(specific[1], &["allow", "ask", "deny"])?;
-        if let Some(raw) = specific[4] {
-            if !raw.get().starts_with('{') || !valid_value(raw) {
-                return Err("hook updatedInput must be an object");
-            }
-        }
+        let input = specific[4]
+            .map(|raw| {
+                if !raw.get().starts_with('{') {
+                    return Err("hook updatedInput must be an object");
+                }
+                canonical_size(raw)
+                    .map(|size| (raw, size))
+                    .ok_or("invalid hook updatedInput")
+            })
+            .transpose()?;
         if output.blocked.is_none() {
             if continues == Some(false) {
                 plan.blocked = Some(
@@ -242,7 +247,7 @@ impl<'a> Plan<'a> {
         }
         plan.context[1] = specific[3].map(Text::Json);
         if event == HookEvent::PreToolUse {
-            plan.input = specific[4];
+            plan.input = input;
         }
         Ok(plan)
     }
@@ -364,54 +369,80 @@ fn fields<'de, const N: usize>(
     Ok(fields)
 }
 
-// Unlike RawValue's grammar scan, this also checks Unicode escapes and numeric
-// ranges before commit decodes a selected string or argument. No maps, lists or
-// strings are owned. Serde bounds recursion and reuses capture-bounded scratch.
-fn valid_value(raw: &RawValue) -> bool {
-    struct Valid;
-    impl<'de> serde::Deserialize<'de> for Valid {
+// Raw spelling is not a size bound: 1e6 becomes 1000000.0. Inspect canonical
+// scalar sizes and container punctuation without owning maps/lists/strings.
+// Duplicate object keys overcount safely; serde's parser bounds recursion.
+fn canonical_size(raw: &RawValue) -> Option<u64> {
+    struct Size(u64);
+    impl Size {
+        fn scalar<E: serde::de::Error>(value: &impl Serialize) -> std::result::Result<Self, E> {
+            super::budget::encoded_size(value, u64::MAX)
+                .map(Self)
+                .map_err(|_| E::custom("invalid hook value"))
+        }
+        fn add<E: serde::de::Error>(&mut self, bytes: u64) -> std::result::Result<(), E> {
+            self.0 = self
+                .0
+                .checked_add(bytes)
+                .ok_or_else(|| E::custom("hook value size overflow"))?;
+            Ok(())
+        }
+    }
+    impl<'de> serde::Deserialize<'de> for Size {
         fn deserialize<D: serde::Deserializer<'de>>(
             decoder: D,
         ) -> std::result::Result<Self, D::Error> {
-            decoder.deserialize_any(Self)
+            decoder.deserialize_any(Self(0))
         }
     }
-    impl<'de> Visitor<'de> for Valid {
+    impl<'de> Visitor<'de> for Size {
         type Value = Self;
         fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
             out.write_str("a JSON value")
         }
         fn visit_unit<E>(self) -> std::result::Result<Self, E> {
-            Ok(self)
+            Ok(Self(4))
         }
-        fn visit_bool<E>(self, _: bool) -> std::result::Result<Self, E> {
-            Ok(self)
+        fn visit_bool<E>(self, value: bool) -> std::result::Result<Self, E> {
+            Ok(Self(if value { 4 } else { 5 }))
         }
-        fn visit_i64<E>(self, _: i64) -> std::result::Result<Self, E> {
-            Ok(self)
+        fn visit_i64<E: serde::de::Error>(self, value: i64) -> std::result::Result<Self, E> {
+            Self::scalar(&value)
         }
-        fn visit_u64<E>(self, _: u64) -> std::result::Result<Self, E> {
-            Ok(self)
+        fn visit_u64<E: serde::de::Error>(self, value: u64) -> std::result::Result<Self, E> {
+            Self::scalar(&value)
         }
-        fn visit_f64<E>(self, _: f64) -> std::result::Result<Self, E> {
-            Ok(self)
+        fn visit_f64<E: serde::de::Error>(self, value: f64) -> std::result::Result<Self, E> {
+            Self::scalar(&value)
         }
-        fn visit_str<E>(self, _: &str) -> std::result::Result<Self, E> {
-            Ok(self)
+        fn visit_str<E: serde::de::Error>(self, value: &str) -> std::result::Result<Self, E> {
+            Self::scalar(&value)
         }
         fn visit_seq<A: serde::de::SeqAccess<'de>>(
             self,
             mut seq: A,
         ) -> std::result::Result<Self, A::Error> {
-            while seq.next_element::<Valid>()?.is_some() {}
-            Ok(self)
+            let mut size = Self(2);
+            let mut comma = 0;
+            while let Some(item) = seq.next_element::<Size>()? {
+                size.add(item.0 + comma)?;
+                comma = 1;
+            }
+            Ok(size)
         }
         fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> std::result::Result<Self, A::Error> {
-            while map.next_entry::<Valid, Valid>()?.is_some() {}
-            Ok(self)
+            let mut size = Self(2);
+            let mut comma = 0;
+            while let Some((key, value)) = map.next_entry::<Size, Size>()? {
+                size.add(key.0 + value.0 + 1 + comma)?;
+                comma = 1;
+            }
+            Ok(size)
         }
     }
-    serde_json::from_str::<Valid>(raw.get()).is_ok()
+    serde_json::from_str::<Size>(raw.get())
+        .ok()
+        .map(|size| size.0)
 }
 
 // RawValue validates JSON escape syntax, but permits unpaired Unicode
