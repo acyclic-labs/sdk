@@ -13,7 +13,9 @@ use acyclic_harness_tui::{
     key_event::{KeyCode, KeyEvent, KeyModifiers as M},
     term::{Capabilities, ColourDepth},
 };
+use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
+use sequences::{Parsed, Stage};
 use serde_json::json;
 #[path = "support/config_sequences.rs"]
 mod sequences;
@@ -27,8 +29,9 @@ fn all_defaults_validate_and_all_actions_bind_by_name() {
     let mut view = ConfigView::default();
     let mut input = PromptInput::default();
     assert_eq!(view.settings().unwrap(), *input.editor.settings());
+    let schema = schema_oracle();
     for file in ConfigFile::ALL {
-        sequences::exercise(file, file.defaults().as_bytes());
+        schema.check(&(file, file.defaults().as_bytes().to_vec()));
         assert!(parse(file, Scope::User, file.defaults()).is_ok());
     }
     for binding in ACTIONS {
@@ -239,40 +242,156 @@ proptest! {
         prop_assert_eq!(first.settings().unwrap(), second.settings().unwrap());
         prop_assert_eq!(first.settings().unwrap().tab_width, workspace);
     }
-    #[test]
-    fn all_parser_roundtrips(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
-        for file in ConfigFile::ALL { sequences::exercise(file, &bytes); }
-    }
-    #[test]
-    fn settings_parser_roundtrip(tab in 1usize..17, wrap in any::<bool>()) {
-        sequences::exercise(ConfigFile::Settings, json!({"tab_width":tab,"wrap":wrap}).to_string().as_bytes());
-    }
-    #[test]
-    fn theme_parser_roundtrip(rgb in any::<[u8;3]>(), bold in any::<bool>()) {
-        let color = format!("#{:02x}{:02x}{:02x}", rgb[0],rgb[1],rgb[2]);
-        sequences::exercise(ConfigFile::Theme, json!({"text":{"foreground":color,"bold":bold}}).to_string().as_bytes());
-    }
-    #[test]
-    fn keymap_parser_roundtrip(index in 0..ACTIONS.len(), f in 1u8..25) {
-        let chord = format!("Ctrl+F{f}");
-        sequences::exercise(ConfigFile::Keymap, json!({"bindings":{chord:ACTIONS[index].chord}}).to_string().as_bytes());
+}
+
+#[derive(Debug)]
+enum SchemaFault {
+    /// The encoded file parses back as something else.
+    Reencoded,
+    /// A canonical keymap parses back as something else.
+    Recanonicalized,
+    /// The schema accepts an unknown key.
+    AcceptedUnknown,
+}
+
+type Schema = (ConfigFile, Vec<u8>);
+
+fn schema_oracle() -> Oracle<Schema, SchemaFault, sequences::Seen> {
+    let declared = Oracle::declare(
+        |(file, bytes): &Schema,
+         fault: Option<&SchemaFault>,
+         see: &mut Observer<'_, sequences::Seen>| {
+            let tamper: sequences::Tamper = match fault {
+                None => |_, _| {},
+                Some(SchemaFault::Reencoded) => |stage, parsed: &mut Parsed| {
+                    if stage == Stage::Reparsed {
+                        *parsed = Ok(serde_json::Value::Null);
+                    }
+                },
+                Some(SchemaFault::Recanonicalized) => |stage, parsed: &mut Parsed| {
+                    if stage == Stage::Canonical {
+                        *parsed = Ok(serde_json::Value::Null);
+                    }
+                },
+                Some(SchemaFault::AcceptedUnknown) => |stage, parsed: &mut Parsed| {
+                    if stage == Stage::Unknown {
+                        *parsed = Ok(serde_json::Value::Null);
+                    }
+                },
+            };
+            sequences::observe(*file, bytes, tamper, &mut |seen| see.see(seen))
+        },
+    );
+    let defaults = |file: ConfigFile| (file, file.defaults().as_bytes().to_vec());
+    sequences::INVARIANTS
+        .into_iter()
+        .fold(declared, |oracle, (name, check)| {
+            oracle.invariant(name, check)
+        })
+        .control(
+            "roundtrip",
+            defaults(ConfigFile::Settings),
+            SchemaFault::Reencoded,
+        )
+        .control(
+            "canonical",
+            defaults(ConfigFile::Keymap),
+            SchemaFault::Recanonicalized,
+        )
+        .control(
+            "unknown",
+            defaults(ConfigFile::Settings),
+            SchemaFault::AcceptedUnknown,
+        )
+        .control(
+            "unknown",
+            defaults(ConfigFile::Keymap),
+            SchemaFault::AcceptedUnknown,
+        )
+        .control(
+            "unknown",
+            defaults(ConfigFile::Theme),
+            SchemaFault::AcceptedUnknown,
+        )
+        .build()
+}
+
+#[test]
+fn config_seed_corpus() {
+    let schema = schema_oracle();
+    for (file, data) in [
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/aliases").as_slice(),
+        ),
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/chord"),
+        ),
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/defaults"),
+        ),
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/duplicate"),
+        ),
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/syntax"),
+        ),
+        (
+            ConfigFile::Keymap,
+            include_bytes!("../fuzz/corpus/config_keymap/unknown"),
+        ),
+        (
+            ConfigFile::Settings,
+            include_bytes!("../fuzz/corpus/config_settings/defaults"),
+        ),
+        (
+            ConfigFile::Theme,
+            include_bytes!("../fuzz/corpus/config_theme/defaults"),
+        ),
+        (
+            ConfigFile::Theme,
+            include_bytes!("../fuzz/corpus/config_theme/invalid-rgb"),
+        ),
+        (
+            ConfigFile::Theme,
+            include_bytes!("../fuzz/corpus/config_theme/rgb"),
+        ),
+        (
+            ConfigFile::Theme,
+            include_bytes!("../fuzz/corpus/config_theme/syntax"),
+        ),
+        (
+            ConfigFile::Theme,
+            include_bytes!("../fuzz/corpus/config_theme/unknown"),
+        ),
+    ] {
+        // The fuzz entry itself, then the judged observations.
+        sequences::exercise(file, data);
+        schema.check(&(file, data.to_vec()));
     }
 }
 
 #[test]
-#[should_panic(expected = "schema must reject unknown keys")]
-fn settings_negative_control() {
-    sequences::unknown_key_control(ConfigFile::Settings, true);
-}
-#[test]
-#[should_panic(expected = "schema must reject unknown keys")]
-fn keymap_negative_control() {
-    sequences::unknown_key_control(ConfigFile::Keymap, true);
-}
-#[test]
-#[should_panic(expected = "schema must reject unknown keys")]
-fn theme_negative_control() {
-    sequences::unknown_key_control(ConfigFile::Theme, true);
+fn parsers_round_trip_and_reject_unknown_keys() {
+    let schema = schema_oracle();
+    proptest!(ProptestConfig::with_cases(64), |(bytes in prop::collection::vec(any::<u8>(), 0..512))| {
+        for file in ConfigFile::ALL {
+            schema.check(&(file, bytes.clone()));
+        }
+    });
+    proptest!(ProptestConfig::with_cases(64), |(tab in 1usize..17, wrap in any::<bool>(), rgb in any::<[u8; 3]>(), bold in any::<bool>(), index in 0..ACTIONS.len(), f in 1u8..25)| {
+        let settings = json!({"tab_width": tab, "wrap": wrap});
+        let color = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+        let theme = json!({"text": {"foreground": color, "bold": bold}});
+        let keymap = json!({"bindings": {format!("Ctrl+F{f}"): ACTIONS[index].chord}});
+        for (file, value) in [(ConfigFile::Settings, settings), (ConfigFile::Theme, theme), (ConfigFile::Keymap, keymap)] {
+            schema.check(&(file, value.to_string().into_bytes()));
+        }
+    });
 }
 
 #[test]
@@ -397,28 +516,121 @@ fn palette_oracle(index: usize) -> [u8; 3] {
         [(8 + (index - 232) * 10) as u8; 3]
     }
 }
-fn assert_nearest(rgb: [u8; 3], index: usize, count: usize) {
-    let error = |color: [u8; 3]| -> i64 {
-        (0..3)
-            .map(|i| (i64::from(rgb[i]) - i64::from(color[i])).pow(2))
-            .sum()
-    };
-    assert!(
-        (0..count).all(|other| error(palette_oracle(index)) <= error(palette_oracle(other))),
-        "fallback must minimize color error"
-    );
+
+/// What the configuration view projected.
+#[derive(Debug)]
+enum Projected {
+    /// The indexed colour chosen for a true-colour foreground.
+    Fallback { rgb: [u8; 3], index: usize },
+    /// Parser work while reading the parsed source 64 times.
+    Source { reparses: u64 },
 }
+
+#[derive(Debug)]
+enum Projection {
+    Fallback([u8; 3]),
+    Source,
+}
+
+#[derive(Debug)]
+enum ProjectionFault {
+    /// The fallback always picks palette entry 0.
+    FirstIndex,
+    /// Each source read also reparses the effective file.
+    Reparsed,
+}
+
+fn fallback(rgb: [u8; 3], fault: Option<&ProjectionFault>) -> usize {
+    let mut view = ConfigView::default();
+    let text = json!({"text":{"foreground":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}})
+        .to_string();
+    view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
+    let theme = view
+        .theme(&Capabilities {
+            colour: ColourDepth::Indexed256,
+            ..Default::default()
+        })
+        .unwrap();
+    let Some(Color::Indexed(index)) = theme.style(ThemeRole::Text).fg else {
+        panic!("indexed palette required")
+    };
+    match fault {
+        Some(ProjectionFault::FirstIndex) => 0,
+        _ => usize::from(index),
+    }
+}
+
+fn source_reparses(fault: Option<&ProjectionFault>) -> u64 {
+    let mut view = ConfigView::default();
+    view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
+    let work = acyclic_test_support::measure(|| {
+        for _ in 0..64 {
+            let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
+            assert_eq!(source["wrap"], false);
+            if matches!(fault, Some(ProjectionFault::Reparsed)) {
+                std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
+            }
+        }
+    });
+    work.count_total
+}
+
+fn projection_oracle() -> Oracle<Projection, ProjectionFault, Projected> {
+    Oracle::declare(
+        |input: &Projection, fault: Option<&ProjectionFault>, see: &mut Observer<'_, Projected>| {
+            see.see(match input {
+                Projection::Fallback(rgb) => Projected::Fallback {
+                    rgb: *rgb,
+                    index: fallback(*rgb, fault),
+                },
+                Projection::Source => Projected::Source {
+                    reparses: source_reparses(fault),
+                },
+            })
+        },
+    )
+    .invariant("nearest", |seen| match seen {
+        Projected::Fallback { rgb, index } => {
+            let error = |color: [u8; 3]| -> i64 {
+                (0..3)
+                    .map(|i| (i64::from(rgb[i]) - i64::from(color[i])).pow(2))
+                    .sum()
+            };
+            match (0..256)
+                .find(|other| error(palette_oracle(*other)) < error(palette_oracle(*index)))
+            {
+                Some(closer) => Err(format!("fallback {index} for {rgb:?}; {closer} is closer")),
+                None => Ok(()),
+            }
+        }
+        Projected::Source { .. } => Ok(()),
+    })
+    .invariant("reuse", |seen| match seen {
+        Projected::Source { reparses } if *reparses != 0 => Err(format!(
+            "source projection reparsed with {reparses} allocations"
+        )),
+        _ => Ok(()),
+    })
+    .control(
+        "nearest",
+        Projection::Fallback([255, 255, 255]),
+        ProjectionFault::FirstIndex,
+    )
+    .control("reuse", Projection::Source, ProjectionFault::Reparsed)
+    .build()
+}
+
+#[test]
+fn indexed_fallback_minimizes_independent_palette_error_and_sources_reuse_parses() {
+    let projection = projection_oracle();
+    projection.check(&Projection::Source);
+    proptest!(ProptestConfig::with_cases(64), |(rgb in any::<[u8; 3]>())| {
+        projection.check(&Projection::Fallback(rgb));
+    });
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
-    #[test]
-    fn indexed_fallback_minimizes_independent_palette_error(rgb in any::<[u8;3]>()) {
-        let mut view = ConfigView::default();
-        let text = json!({"text":{"foreground":format!("#{:02x}{:02x}{:02x}",rgb[0],rgb[1],rgb[2])}}).to_string();
-        view.set_file(Scope::User, ConfigFile::Theme, Some(&text));
-        let theme = view.theme(&Capabilities {colour:ColourDepth::Indexed256, ..Default::default()}).unwrap();
-        let Some(Color::Indexed(index)) = theme.style(ThemeRole::Text).fg else { panic!("indexed palette required") };
-        assert_nearest(rgb, usize::from(index), 256);
-    }
     #[test]
     fn scrollback_is_a_bounded_tail(lines in prop::collection::vec(any::<u8>(), 0..100), keep in 1usize..100) {
         let mut settings = acyclic_harness_tui::DEFAULT_SETTINGS;
@@ -427,11 +639,6 @@ proptest! {
         prop_assert_eq!(visible.len(), keep.min(lines.len()));
         prop_assert!(lines.ends_with(visible));
     }
-}
-#[test]
-#[should_panic(expected = "fallback must minimize color error")]
-fn palette_negative_control() {
-    assert_nearest([255, 255, 255], 0, 256);
 }
 
 #[test]
@@ -595,30 +802,6 @@ fn obsolete_flat_and_chord_target_formats_are_rejected() {
     ] {
         assert!(acyclic_harness_tui::InputKeymap::parse(text).is_err());
     }
-}
-
-fn source_reuses_parsed_file(broken: bool) {
-    let mut view = ConfigView::default();
-    view.set_file(Scope::User, ConfigFile::Settings, Some(r#"{"wrap":false}"#));
-    let work = acyclic_test_support::measure(|| {
-        for _ in 0..64 {
-            let source = view.source(Scope::User, ConfigFile::Settings).unwrap();
-            assert_eq!(source["wrap"], false);
-            if broken {
-                std::hint::black_box(view.effective(ConfigFile::Settings).unwrap());
-            }
-        }
-    });
-    assert_eq!(work.count_total, 0, "source projection must not reparse");
-}
-#[test]
-fn source_reads_reuse_the_parsed_projection() {
-    source_reuses_parsed_file(false);
-}
-#[test]
-#[should_panic(expected = "source projection must not reparse")]
-fn source_work_negative_control_detects_reparsing() {
-    source_reuses_parsed_file(true);
 }
 
 proptest! {

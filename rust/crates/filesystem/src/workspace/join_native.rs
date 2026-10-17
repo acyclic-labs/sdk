@@ -151,9 +151,7 @@ fn validate_join_side_selections(
         let mut keys = selections.keys();
         loop {
             let key = keys.next().ok_or(DrivenJoinError::StaleCandidate)?;
-            accounting
-                .charge_items(1)
-                .map_err(WorkspaceError::from)?;
+            accounting.charge_items(1).map_err(WorkspaceError::from)?;
             match key.cmp(conflict) {
                 std::cmp::Ordering::Less => {}
                 std::cmp::Ordering::Equal => break,

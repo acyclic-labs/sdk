@@ -3,6 +3,8 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::Editor;
+#[cfg(test)]
+thread_local! { pub(crate) static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// One displayed grapheme, expanded tab cell, or collapsed paste marker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,8 @@ impl Layout {
     /// Wrap without splitting a grapheme. Oversized glyphs become a one-cell
     /// replacement glyph; the original text and hit-test range are preserved.
     pub fn new(editor: &Editor, width: usize) -> Self {
+        #[cfg(test)]
+        BUILDS.with(|builds| builds.set(builds.get() + 1));
         let width = width.max(1);
         let mut rows = vec![];
         let mut row = Row::default();
