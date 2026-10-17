@@ -26,12 +26,11 @@ fuzz_target!(|bytes: &[u8]| {
         for path in &paths {
             assert_eq!(path.parent(), destination.parent());
         }
-        let restored: std::path::PathBuf =
-            serde_json::from_slice(&serde_json::to_vec(destination).unwrap()).unwrap();
-        assert_eq!(
-            acyclic_fs::native_mount_control_paths(&restored).ok(),
-            Some(paths)
-        );
+        let restored = serde_json::to_vec(destination)
+            .ok()
+            .and_then(|wire| serde_json::from_slice::<std::path::PathBuf>(&wire).ok())
+            .and_then(|path| acyclic_fs::native_mount_control_paths(&path).ok());
+        assert_eq!(restored, Some(paths));
     }
     if let Ok(parsed) = path::workspace_path_argument(root, argument) {
         assert!(!parsed.contains('\0'));

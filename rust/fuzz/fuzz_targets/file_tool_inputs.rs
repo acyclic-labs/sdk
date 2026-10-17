@@ -18,12 +18,12 @@ fuzz_target!(|bytes: &[u8]| {
             .and_then(|encoded| serde_json::from_slice::<ReadFileInput>(&encoded).ok());
         assert_eq!(restored.as_ref(), Some(&input));
     }
-    if let Ok(metadata) = serde_json::from_slice::<FileRef>(bytes) {
-        if metadata.validate(&mut None).is_ok() {
-            let restored = serde_json::to_vec(&metadata)
-                .ok()
-                .and_then(|encoded| serde_json::from_slice::<FileRef>(&encoded).ok());
-            assert_eq!(restored.as_ref(), Some(&metadata));
-        }
+    if let Ok(metadata) = serde_json::from_slice::<FileRef>(bytes)
+        && metadata.validate(&mut None).is_ok()
+    {
+        let restored = serde_json::to_vec(&metadata)
+            .ok()
+            .and_then(|encoded| serde_json::from_slice::<FileRef>(&encoded).ok());
+        assert_eq!(restored.as_ref(), Some(&metadata));
     }
 });
