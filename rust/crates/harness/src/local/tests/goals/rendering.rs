@@ -62,15 +62,15 @@ async fn render_case(case: Case, repeat: bool) -> Result<()> {
         .select_goal_view(&goal_source, &head_source, 65536)
         .await?;
     let goal_cursor = client
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &goal_query)
         .unwrap()
         .cursor();
     let goal_id = (goal_cursor.volume, goal_cursor.query);
     let head_cursor = client
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &head_query)
         .unwrap()
         .cursor();
@@ -129,8 +129,8 @@ async fn render_case(case: Case, repeat: bool) -> Result<()> {
         .unwrap()
         .cursor;
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
-        while client.queries[&goal_id].cursor().position != goal_final.position
-            || client.queries[&head_id].cursor().position != head_final.position
+        while client.selection(&goal_id).unwrap().cursor().position != goal_final.position
+            || client.selection(&head_id).unwrap().cursor().position != head_final.position
         {
             let change = changes
                 .next()
@@ -151,11 +151,19 @@ async fn render_case(case: Case, repeat: bool) -> Result<()> {
     })
     .await
     .expect("publication follows stalled")?;
-    assert_eq!(client.queries[&goal_id].cursor().commit, goal_final.commit);
-    assert_eq!(client.queries[&head_id].cursor().commit, head_final.commit);
+    assert_eq!(
+        client.selection(&goal_id).unwrap().cursor().commit,
+        goal_final.commit
+    );
+    assert_eq!(
+        client.selection(&head_id).unwrap().cursor().commit,
+        head_final.commit
+    );
     let view = client.goal_view(goal_id.0, goal_id.1).unwrap();
     let observed_count = |views: &crate::client::ClientViews| {
-        views.queries[&head_id]
+        views
+            .selection(&head_id)
+            .unwrap()
             .files()
             .get(&FileKey::RequestHead)
             .and_then(|file| crate::goal::request_head::decode(&file.bytes).ok())

@@ -1,5 +1,5 @@
 //! The production swarm reducer over the shared Rust pool and real memory host.
-use super::{path, runtime};
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error,
     client::{SwarmChange, SwarmClientLimits},
@@ -35,6 +35,9 @@ async fn chunk(volume: &TaskVolume<MemoryStream>, sequence: u64, bytes: &[u8]) {
 
 async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+        .await
+        .unwrap();
     let config = TaskVolume::open(provider.clone(), path("config/files"))
         .await
         .unwrap();
@@ -52,6 +55,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
         .await
         .unwrap();
     chunk(&files, 1, before).await;
+    status::member(&parent, "a").await;
     provider
         .append(AppendRequest {
             path: path("swarm/a/status"),
@@ -128,6 +132,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
     let delivered = RefCell::new(Vec::new());
     let consume = client.follow(
         &config,
+        &parent,
         &session,
         |_, maximum| {
             let files = &files;

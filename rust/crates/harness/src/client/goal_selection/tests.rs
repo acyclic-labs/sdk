@@ -159,7 +159,7 @@ proptest! {
             let head = Source::head(count).acknowledging(1);
             let goal = Source::goal(&text);
             let _follow = views.select_goal_view(&goal, &head, 4096).await.unwrap();
-            let identity = views.queries.iter().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
+            let identity = views.selections().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
             let selected = views.goal_view(identity.0, identity.1).unwrap();
             assert_eq!(selected.progress.unwrap().continuations, count);
             assert!(matches!(selected.goal, super::super::GoalFileView::Present { goal }

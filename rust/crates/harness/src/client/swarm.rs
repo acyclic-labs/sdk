@@ -33,6 +33,11 @@ pub struct SwarmClientLimits {
 
 /// Inputs for the shared ClientViews fold; no renderer or second wire schema.
 pub enum SwarmUpdate {
+    /// Authoritative membership retired this agent after settling its effects.
+    Retired {
+        /// Canonical former member; its volume history remains readable.
+        agent: StreamPath,
+    },
     /// An agent discovered by the root's snapshot or live children follow.
     Agent {
         /// Canonical child path, even before its first status publication.

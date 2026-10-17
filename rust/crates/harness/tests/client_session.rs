@@ -81,8 +81,8 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         let cursor = change.cursor.clone();
         let payload = file.bytes.as_ptr();
         assert!(client.query_change(change).unwrap());
-        let view = &client.queries[&identity];
-        assert_eq!(view.files()[&file.key].bytes.as_ptr(), payload);
+        let view = &client.selection(&identity).unwrap();
+        assert_eq!(view.files()[&file.key].segments[0].as_ptr(), payload);
         assert_eq!(
             view.plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
@@ -169,7 +169,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         let result = client.query_change(change);
         if path == "plans/second.md" {
             assert!(result.unwrap());
-            assert_eq!(client.queries[&identity].files().len(), 2);
+            assert_eq!(client.selection(&identity).unwrap().files().len(), 2);
         } else {
             assert!(result.is_err());
             assert_eq!(&client, &before);
@@ -210,7 +210,11 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
         .select_file_view(query, &source, 2, 128)
         .await
         .unwrap();
-    let identity = *client.queries.keys().next().unwrap();
+    let identity = *client
+        .selections()
+        .map(|(identity, _)| identity)
+        .next()
+        .unwrap();
     for text in ["- [ ] Build", "* [~] Build", "1. [x] Build"] {
         storage
             .stage(
@@ -229,7 +233,7 @@ async fn plan_command_selects_the_ordinary_filesystem_follow() {
             .unwrap();
         assert!(client.query_change(change).unwrap());
         assert_eq!(
-            client.queries[&identity].plan_lines(),
+            client.selection(&identity).unwrap().plan_lines(),
             ["plans/release.md", &text[text.find('[').unwrap()..]]
         );
     }

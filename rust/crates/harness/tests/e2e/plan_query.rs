@@ -170,11 +170,12 @@ impl PlanQuery {
                 .await?
                 .snapshot
                 .ok_or("snapshot missing")?;
-            while client.queries[&identity].cursor().position < snapshot.cursor.position {
+            while client.selection(&identity).unwrap().cursor().position < snapshot.cursor.position
+            {
                 let change = changes.next().await.ok_or("follow ended")??;
                 let cursor = change.cursor.clone();
                 let modified = client.query_change(change)?;
-                let view = &client.queries[&identity];
+                let view = &client.selection(&identity).unwrap();
                 if view.cursor() != &cursor {
                     return Err("client cursor did not advance".into());
                 }
@@ -182,19 +183,18 @@ impl PlanQuery {
                     views.push(view.clone());
                 }
             }
-            let view = client.queries.get(&identity).ok_or("file query missing")?;
+            let view = client.selection(&identity).ok_or("file query missing")?;
             views.push(view.clone());
 
             // A new client reconstructs exactly the accepted file view at each cut.
             let mut reopened = new_views()?;
-            if !reopened.queries.is_empty() {
+            if !reopened.selections().next().is_none() {
                 return Err("file payloads leaked into recovery metadata".into());
             }
             reopened.query_snapshot(Query::Plans, snapshot, 32, 65_536)?;
             views.push(
                 reopened
-                    .queries
-                    .get(&identity)
+                    .selection(&identity)
                     .ok_or("snapshot missing")?
                     .clone(),
             );

@@ -12,6 +12,7 @@ use acyclic_stream::{StreamPath, StreamProvider, wire};
 use futures::FutureExt as _;
 use std::future::Future;
 mod follows;
+mod membership;
 mod snapshots;
 
 /// Client orchestration, using only the filesystem reader and Stream provider.
@@ -61,15 +62,17 @@ impl SwarmClient {
     /// Status stays subscribed for every agent. Selected content starts from the
     /// complete checked cursor returned by `heads`, and promotion retains it.
     /// A fatal source or renderer error ends this cache; reset from fresh queries.
-    pub async fn follow<P, Q, QFut, F>(
+    pub async fn follow<P, M, Q, QFut, F>(
         self,
         files: &TaskVolume<P>,
+        parent: &TaskVolume<M>,
         session: &acyclic_stream::session::Client,
         mut heads: Q,
         mut changed: F,
     ) -> Result<()>
     where
         P: StreamProvider + ?Sized,
+        M: StreamProvider + ?Sized,
         Q: FnMut(StreamPath, usize) -> QFut,
         QFut: Future<Output = crate::task_volume::Result<HeadSnapshot>>,
         F: AsyncFnMut(SwarmChange) -> Result<()>,
@@ -94,6 +97,8 @@ impl SwarmClient {
             })
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut membership =
+            membership::Membership::observe(parent, self.root.clone(), self.limits.agents).await?;
         let mut follows = follows::Follows::new(session.clone(), discovery);
         let mut demand = ClientInterests::from_layout(self.root.clone(), [], [], 0)?;
         let mut snapshots = snapshots::Snapshots::new(self.limits.selected);
@@ -107,6 +112,22 @@ impl SwarmClient {
         .await?;
         loop {
             futures::select! {
+                member = membership.next().fuse() => {
+                    if let Some((agent, active)) = member? {
+                        if active {
+                            if follows.discover(&demand, agent.clone(), self.limits.agents)? {
+                                publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
+                                if demand.tier(&agent).is_some_and(|tier| tier != crate::client::InterestTier::Overview) {
+                                    snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
+                                }
+                            }
+                        } else {
+                            snapshots.retire(&agent)?;
+                            follows.retire(&agent);
+                            publish(SwarmUpdate::Retired { agent }).await?;
+                        }
+                    }
+                },
                 next = files.next().fuse() => {
                     let Some(next) = next? else { continue; };
                     let diff = next.changes(&demand)?;
@@ -116,9 +137,7 @@ impl SwarmClient {
                     publish(SwarmUpdate::Layout(next.clone())).await?;
                     demand = next;
                     for agent in added {
-                        if follows.discover(&demand, agent.clone(), self.limits.agents)? {
-                            publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
-                        }
+                        if !follows.contains(&agent) { continue; }
                         let pending = heads(agent.clone(), self.limits.snapshot_files);
                         snapshots.start(agent, pending)?;
                     }
@@ -139,8 +158,10 @@ impl SwarmClient {
                                 return Err(Error::Invalid("discovery received non-child data".into()));
                             };
                             let agent = StreamPath::new(child.path).map_err(|error| Error::Invalid(error.to_string()))?;
-                            if follows.discover(&demand, agent.clone(), self.limits.agents)? {
-                                publish(SwarmUpdate::Agent { agent }).await?;
+                            // Stream subtrees retain archived history. Only the
+                            // parent membership files can admit or retire a row.
+                            if demand.tier(&agent).is_none() {
+                                return Err(Error::Invalid("discovered agent lies outside swarm".into()));
                             }
                         }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {

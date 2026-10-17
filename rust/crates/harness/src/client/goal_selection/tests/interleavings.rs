@@ -52,8 +52,7 @@ fn check_interleavings(
     cap: u32,
 ) -> (usize, usize) {
     let (identity, _) = views
-        .queries
-        .iter()
+        .selections()
         .find(|(_, view)| view.query() == &Query::File(FileKey::Goal))
         .unwrap();
     let view = views.goal_view(identity.0, identity.1).unwrap();
@@ -61,8 +60,8 @@ fn check_interleavings(
         matches!(view.goal, GoalFileView::Present { goal } if goal.status == GoalStatus::Blocked);
     let rendered = rows(view.clone());
     let retained = views
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &Query::File(FileKey::RequestHead))
         .unwrap()
         .progress()
@@ -166,8 +165,8 @@ fn repeated_interleavings(
 ) -> usize {
     use sha2::{Digest as _, Sha256};
     let selected = views
-        .queries
-        .values()
+        .selections()
+        .map(|(_, files)| files)
         .find(|view| view.query() == &Query::File(FileKey::Goal))
         .unwrap();
     let cursor = selected.cursor();
@@ -203,8 +202,8 @@ fn repeated_interleavings(
         assert_eq!(Sha256::digest(&observed.bytes), Sha256::digest(repeated));
         let mut hash_only = view;
         hash_only.progress = views
-            .queries
-            .values()
+            .selections()
+            .map(|(_, files)| files)
             .find(|view| view.query() == &Query::File(FileKey::RequestHead))
             .unwrap()
             .progress();

@@ -25,6 +25,7 @@ pub(super) async fn run_with_fault(
 ) -> TestResult<serde_json::Value> {
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), publish::path("swarm/files")).await?;
     let config = Arc::new(TaskVolume::open(provider.clone(), publish::path("config/files")).await?);
     publish::layout(&config, &case.layouts[0]).await?;
     let mut volumes = Vec::with_capacity(case.agents);
@@ -38,6 +39,23 @@ pub(super) async fn run_with_fault(
         );
         publish::chunk(&volume, 1, &case.turns[0][0]).await?;
         publish::publish_status(&provider, id, publish::status(0, "idle", 1), false).await?;
+        let status = acyclic_harness::task_volume::ChildStatus {
+            task: acyclic_harness::TaskId::from_bytes([1; 16]),
+            state: acyclic_harness::task_volume::ChildState::Running,
+            settled: false,
+            inputs: 1,
+        };
+        parent
+            .append(
+                parent.head().await?,
+                &acyclic_harness::task_volume::Write::new(
+                    acyclic_harness::task_volume::FileKey::parse(&format!(
+                        "agents/a{id:05}/status.json"
+                    ))?,
+                    serde_json::to_vec(&status)?,
+                ),
+            )
+            .await?;
         volumes.push(volume);
     }
     let Wire {
@@ -88,6 +106,7 @@ pub(super) async fn run_with_fault(
     let views = client.views();
     let consume = client.follow(
         &config,
+        &parent,
         &session,
         |agent, maximum| {
             let id = publish::id(&agent).expect("generated agent");

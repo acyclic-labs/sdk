@@ -2,7 +2,9 @@
 #[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod retention;
 
-use super::{ClientInterests, FileViews, InterestTier, QueryViewLimits, SwarmUpdate, query_error};
+use super::{
+    ClientInterests, FileQueryView, InterestTier, QueryViewLimits, SwarmUpdate, query_error,
+};
 use crate::{
     Error, Result,
     task_volume::{Cursor, FileKey, FileValue, HeadFile, Query},
@@ -75,11 +77,16 @@ impl StatusView {
 #[derive(Clone, Debug, Default, PartialEq)]
 struct AgentViews {
     status: StatusView,
-    files: Option<FileViews>,
+    files: BTreeMap<([u8; 32], [u8; 32]), FileQueryView>,
 }
 
 /// Renderer hints contain the actual file delta, never another event schema.
 pub enum SwarmChange {
+    /// Membership, overview, selected content and accounting were retired together.
+    Retired {
+        /// Former member, whose history remains in the volume.
+        agent: StreamPath,
+    },
     /// A child is known, independently of its first status record.
     Agent {
         /// Canonical discovered path.
@@ -144,8 +151,6 @@ impl ClientViewHandle {
 /// Cache only. Layout, content and status remain authoritative in followed files.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClientViews {
-    /// Ordinary filesystem query projections, keyed by volume and selection.
-    pub queries: BTreeMap<([u8; 32], [u8; 32]), super::FileQueryView>,
     pub(super) goal_sources: BTreeMap<([u8; 32], [u8; 32]), ([u8; 32], [u8; 32])>,
     layout: ClientInterests,
     query: [u8; 32],
@@ -159,7 +164,6 @@ impl ClientViews {
     /// Starts a subscription cache with overview interest for the whole root.
     pub fn new(root: StreamPath, limits: ClientViewLimits) -> Result<Self> {
         Ok(Self {
-            queries: BTreeMap::new(),
             goal_sources: BTreeMap::new(),
             layout: ClientInterests::from_layout(root, [], [], 0)?,
             query: crate::task_volume::query_id(&Query::Root).map_err(query_error)?,
@@ -187,20 +191,65 @@ impl ClientViews {
         self.agents
             .get(agent)?
             .files
-            .as_ref()
-            .map(FileViews::cursor)
+            .values()
+            .find(|file| file.cursor().query == self.query)
+            .map(FileQueryView::cursor)
     }
     /// Borrows one logical file without joining or copying its segments.
     pub fn file(&self, agent: &StreamPath, key: &FileKey) -> Option<&HeadFile> {
-        self.agents.get(agent)?.files.as_ref()?.file(key)
+        self.agents
+            .get(agent)?
+            .files
+            .values()
+            .find_map(|files| files.head(key))
     }
     /// Visits only the requested agent's selected content.
     pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
         self.agents
             .get(agent)
-            .and_then(|a| a.files.as_ref())
             .into_iter()
-            .flat_map(FileViews::files)
+            .flat_map(|a| a.files.values())
+            .flat_map(FileQueryView::heads)
+    }
+
+    /// Cached plan rows for the requested agent, from its followed files.
+    pub fn plans<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a str> {
+        self.agents
+            .get(agent)
+            .into_iter()
+            .flat_map(|a| a.files.values())
+            .flat_map(FileQueryView::plan_rows)
+    }
+    /// Goal projections at the same cuts as the followed files.
+    pub fn goals(&self) -> impl Iterator<Item = super::GoalQueryView<'_>> {
+        self.selections()
+            .filter_map(|((volume, query), _)| self.goal_view(*volume, *query))
+    }
+
+    /// All followed file selections, including ordinary private-file queries.
+    pub fn selections(&self) -> impl Iterator<Item = (&([u8; 32], [u8; 32]), &FileQueryView)> {
+        self.agents.values().flat_map(|agent| agent.files.iter())
+    }
+    pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
+        self.agents
+            .values()
+            .find_map(|agent| agent.files.get(identity))
+    }
+    pub(super) fn selection_mut(
+        &mut self,
+        identity: &([u8; 32], [u8; 32]),
+    ) -> Option<&mut FileQueryView> {
+        self.agents
+            .values_mut()
+            .find_map(|agent| agent.files.get_mut(identity))
+    }
+    pub(super) fn install_selection(&mut self, files: FileQueryView) {
+        let cursor = files.cursor();
+        self.agents
+            .entry(self.layout.root().clone())
+            .or_default()
+            .files
+            .insert((cursor.volume, cursor.query), files);
     }
 
     fn admit_agent(&self, agent: &StreamPath) -> Result<()> {
@@ -219,6 +268,23 @@ impl ClientViews {
     /// and cursor; demotion releases only content while retaining overview status.
     pub fn apply(&mut self, update: SwarmUpdate) -> Result<SwarmChange> {
         match update {
+            SwarmUpdate::Retired { agent } => {
+                if let Some(retired) = self.agents.remove(&agent) {
+                    self.overview_values -= retired.status.values.len();
+                    self.overview_bytes -= retired
+                        .status
+                        .values
+                        .values()
+                        .map(|v| {
+                            (v.value.key.len() + v.value.value.len() + v.after.opaque.len()) as u64
+                        })
+                        .sum::<u64>();
+                    self.goal_sources.retain(|goal, request| {
+                        !retired.files.contains_key(goal) && !retired.files.contains_key(request)
+                    });
+                }
+                Ok(SwarmChange::Retired { agent })
+            }
             SwarmUpdate::Agent { agent } => {
                 self.admit_agent(&agent)?;
                 self.agents.entry(agent.clone()).or_default();
@@ -234,7 +300,7 @@ impl ClientViews {
                 }
                 for removed in layout.changes(&self.layout)?.unsubscribe() {
                     if let Some(agent) = self.agents.get_mut(removed) {
-                        agent.files = None;
+                        agent.files.clear();
                     }
                 }
                 self.layout = layout;
@@ -250,13 +316,16 @@ impl ClientViews {
                 if self.layout.tier(&agent) == Some(InterestTier::Overview) {
                     return Err(Error::Invalid("unselected agent received content".into()));
                 }
-                if self.agents.get(&agent).is_some_and(|a| a.files.is_some()) {
+                if self.agents.get(&agent).is_some_and(|a| !a.files.is_empty()) {
                     return Err(Error::Conflict("content snapshot already installed".into()));
                 }
-                let files =
-                    FileViews::snapshot(snapshot, self.limits.query).map_err(query_error)?;
+                let files = FileQueryView::from_heads(snapshot, self.limits.query)?;
                 let cursor = files.cursor().clone();
-                self.agents.entry(agent.clone()).or_default().files = Some(files);
+                self.agents
+                    .entry(agent.clone())
+                    .or_default()
+                    .files
+                    .insert((cursor.volume, cursor.query), files);
                 Ok(SwarmChange::Snapshot { agent, cursor })
             }
             SwarmUpdate::Data {
@@ -267,10 +336,13 @@ impl ClientViews {
                 let files = self
                     .agents
                     .get_mut(&agent)
-                    .and_then(|a| a.files.as_mut())
+                    .and_then(|a| {
+                        a.files
+                            .values_mut()
+                            .find(|files| files.cursor().query == self.query)
+                    })
                     .ok_or_else(|| Error::Conflict("content arrived before its snapshot".into()))?;
-                let change = files.session_change(&data).map_err(query_error)?;
-                files.prepare(&change).map_err(query_error)?(files).map_err(query_error)?;
+                let change = files.session_change(&data)?;
                 Ok(SwarmChange::Data {
                     agent,
                     overview: false,
@@ -299,11 +371,15 @@ impl ClientViews {
                 let files = self
                     .agents
                     .get_mut(&agent)
-                    .and_then(|a| a.files.as_mut())
+                    .and_then(|a| {
+                        a.files
+                            .values_mut()
+                            .find(|files| files.cursor().query == self.query)
+                    })
                     .ok_or_else(|| {
                         Error::Conflict("content watermark arrived before its snapshot".into())
                     })?;
-                files.session_watermark(watermark).map_err(query_error)?;
+                files.session_watermark(watermark)?;
                 Ok(SwarmChange::Watermark {
                     agent,
                     overview: false,

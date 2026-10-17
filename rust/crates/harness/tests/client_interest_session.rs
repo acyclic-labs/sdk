@@ -1,5 +1,5 @@
 //! Snapshot-plus-follow layout properties over the production Streams session.
-use super::{path, runtime};
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error, Result,
     client::{SwarmChange, SwarmClientLimits},
@@ -44,12 +44,16 @@ async fn check_snapshot_follow(
 ) {
     use acyclic_harness::client::InterestDocument;
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+        .await
+        .unwrap();
     let config = TaskVolume::open(provider.clone(), path("client/files"))
         .await
         .unwrap();
     let mut agents = std::collections::BTreeMap::new();
     for id in 0..4 {
-        runtime::status(&provider, &format!("swarm/{id}"), false).await;
+        status::status(&provider, &format!("swarm/{id}"), false).await;
+        status::member(&parent, &format!("{id}")).await;
         let volume = TaskVolume::open(provider.clone(), path(&format!("swarm/{id}/files")))
             .await
             .unwrap();
@@ -95,6 +99,7 @@ async fn check_snapshot_follow(
     let (layouts, mut rendered) = mpsc::unbounded();
     let consumer = client.follow(
         &config,
+        &parent,
         &session,
         |agent, maximum| agents[&agent].heads(&Query::Root, None, maximum),
         async |update| {

@@ -55,3 +55,37 @@ fn negative_control_omitting_a_swarm_bound_is_rejected() {
 
 #[path = "client_swarm_views_files.rs"]
 mod files;
+
+#[path = "support/swarm_status.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod status;
+
+#[path = "client_swarm_membership.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod membership;
+
+#[path = "../../harness-fuzz/support/swarm_membership.rs"]
+mod membership_codec;
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn membership_status_and_paths_round_trip(task in proptest::array::uniform16(proptest::num::u8::ANY), selected in proptest::num::u8::ANY, inputs in proptest::num::u64::ANY, settled in proptest::bool::ANY, bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..512)) {
+        membership_codec::check(membership_codec::encoded(task,selected,inputs,settled), false);
+        membership_codec::exercise(&bytes);
+    }
+}
+#[test]
+fn membership_ignoring_archive_mutant_is_rejected() {
+    let archived = membership_codec::encoded([1; 16], 4, 1, true);
+    assert!(std::panic::catch_unwind(|| membership_codec::check(archived, true)).is_err());
+}
+#[test]
+fn membership_status_checked_seed_round_trips() {
+    let bytes = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/settled-archive");
+    assert!(
+        !acyclic_harness::task_volume::ChildStatus::parse(bytes)
+            .unwrap()
+            .active()
+    );
+    membership_codec::exercise(bytes);
+}

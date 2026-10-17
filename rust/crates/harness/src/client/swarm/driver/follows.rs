@@ -6,11 +6,7 @@ use futures::{
     StreamExt as _, TryStreamExt as _,
     stream::{self, AbortHandle, Abortable, SelectAll},
 };
-use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
 type Frames = BoxProviderStream<'static, std::result::Result<wire::SessionFrame, StreamError>>;
 struct Content {
@@ -25,7 +21,7 @@ pub(super) struct Routed {
 
 pub(super) struct Follows {
     session: Client,
-    agents: BTreeSet<StreamPath>,
+    agents: BTreeMap<StreamPath, Content>,
     content: BTreeMap<StreamPath, Content>,
     sources: SelectAll<futures::stream::LocalBoxStream<'static, Routed>>,
 }
@@ -34,7 +30,7 @@ impl Follows {
     pub fn new(session: Client, discovery: Frames) -> Self {
         let mut follows = Self {
             session,
-            agents: BTreeSet::new(),
+            agents: BTreeMap::new(),
             content: BTreeMap::new(),
             sources: SelectAll::new(),
         };
@@ -69,13 +65,13 @@ impl Follows {
         agent: StreamPath,
         overview: bool,
         subscription: wire::SessionSubscription,
-    ) -> AbortHandle {
+    ) -> Content {
         let session = self.session.clone();
         // All newly discovered agents register concurrently as the follow is
         // driven, without serial network round trips or another queue/pool.
         let frames =
             stream::once(async move { session.subscribe(subscription).await }).try_flatten();
-        self.source(Some(agent), overview, Box::pin(frames))
+        self.owned(agent, overview, Box::pin(frames))
     }
 
     pub fn discover(
@@ -87,15 +83,15 @@ impl Follows {
         if demand.tier(&agent).is_none() || &agent == demand.root() {
             return Err(Error::Invalid("discovered agent lies outside swarm".into()));
         }
-        if self.agents.contains(&agent) {
+        if self.agents.contains_key(&agent) {
             return Ok(false);
         }
         if self.agents.len() >= maximum {
             return Err(Error::Invalid("swarm agent bound reached".into()));
         }
         let subscription = follow(&agent, "status", wire::SessionDelivery::Latest, None)?;
-        self.subscribe(agent.clone(), true, subscription);
-        self.agents.insert(agent);
+        let status = self.subscribe(agent.clone(), true, subscription);
+        self.agents.insert(agent, status);
         Ok(true)
     }
 
@@ -105,7 +101,14 @@ impl Follows {
         let frames: Frames = Box::pin(
             stream::once(async move { session.subscribe(subscription).await }).try_flatten(),
         );
-        // Only selected sources need a removable owner. Taking it drops the
+        self.remove(&agent);
+        let content = self.owned(agent.clone(), false, frames);
+        self.content.insert(agent, content);
+        Ok(())
+    }
+
+    fn owned(&mut self, agent: StreamPath, overview: bool, frames: Frames) -> Content {
+        // Each source has a removable owner. Taking it drops the
         // pool cursor immediately, before any replacement can register. The
         // wrapper and this map are polled exclusively by this event loop.
         let frames = Rc::new(RefCell::new(Some(frames)));
@@ -114,17 +117,20 @@ impl Follows {
             Some(frames) => frames.as_mut().poll_next(cx),
             None => std::task::Poll::Ready(None),
         });
-        self.remove(&agent);
-        let abort = self.source(Some(agent.clone()), false, Box::pin(source));
-        self.content.insert(agent, Content { frames, abort });
-        Ok(())
+        let abort = self.source(Some(agent), overview, Box::pin(source));
+        Content { frames, abort }
     }
 
     pub fn remove(&mut self, agent: &StreamPath) {
-        if let Some(content) = self.content.remove(agent) {
-            content.frames.borrow_mut().take();
-            content.abort.abort();
-        }
+        self.content.remove(agent);
+    }
+
+    pub fn retire(&mut self, agent: &StreamPath) {
+        self.remove(agent);
+        self.agents.remove(agent);
+    }
+    pub fn contains(&self, agent: &StreamPath) -> bool {
+        self.agents.contains_key(agent)
     }
 
     pub async fn next(&mut self) -> Option<Routed> {
@@ -157,3 +163,14 @@ fn follow(
         )),
     })
 }
+
+impl Drop for Content {
+    fn drop(&mut self) {
+        // Owner-thread only: release the pool cursor before admitting a replacement.
+        self.frames.borrow_mut().take();
+        self.abort.abort();
+    }
+}
+
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod tests;

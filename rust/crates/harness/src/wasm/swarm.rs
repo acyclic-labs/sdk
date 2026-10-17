@@ -27,6 +27,9 @@ fn error(value: impl std::fmt::Display) -> JsValue {
 #[serde(tag = "kind", rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
 enum SwarmDelivery<'a> {
+    Retired {
+        agent: &'a str,
+    },
     Agent {
         agent: &'a str,
     },
@@ -50,6 +53,9 @@ enum SwarmDelivery<'a> {
 }
 fn delivery(change: &SwarmChange) -> Result<JsValue, JsValue> {
     to_js(&match change {
+        SwarmChange::Retired { agent } => SwarmDelivery::Retired {
+            agent: agent.as_str(),
+        },
         SwarmChange::Agent { agent } => SwarmDelivery::Agent {
             agent: agent.as_str(),
         },
@@ -185,6 +191,29 @@ impl WasmClientViews {
             })
             .map_err(error)?
     }
+    /// Model choices from the same followed per-agent files.
+    #[wasm_bindgen(unchecked_return_type = "ModelQueryView[]")]
+    pub fn models(&self) -> Result<JsValue, JsValue> {
+        self.views
+            .read(|views| to_js(&views.models().collect::<Vec<_>>()))
+            .map_err(error)?
+    }
+    /// Goals and request progress from the same followed files and cursors.
+    #[wasm_bindgen(unchecked_return_type = "GoalQueryView[]")]
+    pub fn goals(&self) -> Result<JsValue, JsValue> {
+        self.views
+            .read(|views| to_js(&views.goals().collect::<Vec<_>>()))
+            .map_err(error)?
+    }
+    /// Cached plan rows of one followed agent; redraw never reparses Markdown.
+    #[wasm_bindgen(unchecked_return_type = "string[]")]
+    pub fn plans(&self, agent: &str) -> Result<JsValue, JsValue> {
+        let agent = StreamPath::new(agent).map_err(error)?;
+        self.views
+            .read(|views| to_js(&views.plans(&agent).collect::<Vec<_>>()))
+            .map_err(error)?
+    }
+
     /// Ordered immutable segments, without joining accumulated text.
     #[wasm_bindgen(unchecked_return_type = "Uint8Array[] | null")]
     pub fn segments(
@@ -236,6 +265,7 @@ impl WasmSwarmClient {
     pub async fn follow(
         &self,
         config: &WasmTaskVolume,
+        parent: &WasmTaskVolume,
         stream: &WasmStream,
         #[wasm_bindgen(unchecked_param_type = "(change: SwarmDelivery) => void | Promise<void>")]
         changed: Function,
@@ -254,6 +284,7 @@ impl WasmSwarmClient {
         let followed = client
             .follow(
                 config.volume.as_ref(),
+                parent.volume.as_ref(),
                 &session,
                 move |agent, maximum| {
                     let provider = provider.clone();

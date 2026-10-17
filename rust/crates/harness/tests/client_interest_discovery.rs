@@ -1,5 +1,5 @@
 //! Complete discovery and fail-closed lifecycle through the shared platform pool.
-use super::{path, runtime};
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error,
     client::{SwarmChange, SwarmClientLimits},
@@ -58,20 +58,28 @@ async fn discover_with_creation(
     new_child: Option<usize>,
 ) -> Vec<wire::SessionInterest> {
     let provider = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+        .await
+        .unwrap();
     let config = TaskVolume::open(provider.clone(), path("config/files"))
         .await
         .unwrap();
     for id in 0..count {
-        runtime::status(&provider, &format!("swarm/a{id:05}"), false).await;
+        status::status(&provider, &format!("swarm/a{id:05}"), false).await;
+        status::member(&parent, &format!("a{id:05}")).await;
     }
+    let parent = Arc::new(parent);
+    let live_parent = parent.clone();
     let injected = provider.clone();
     let requests: runtime::RequestMap = Arc::new(move |source| {
         let provider = injected.clone();
+        let parent = live_parent.clone();
         Box::pin(source.scan(false, move |created, frame| {
             let create = !*created && new_child.is_some() && matches!(&frame.body,
                 Some(wire::session_frame::Body::Interest(update)) if update.upsert.iter().any(|sub| matches!(sub.kind, Some(wire::session_subscription::Kind::Follow(_)))));
             *created |= create;
             let provider = provider.clone();
+            let parent = parent.clone();
             async move {
                 if create {
                     let name = match new_child.unwrap() {
@@ -80,7 +88,8 @@ async fn discover_with_creation(
                         id => format!("swarm/a{id:05}"),
                     };
                     // Creation while the initial children snapshot is being consumed.
-                    runtime::status(&provider, &name, false).await;
+                    status::status(&provider, &name, false).await;
+                    if let Some(reference) = name.strip_prefix("swarm/") { status::member(&parent, reference).await; }
                 }
                 Some(frame)
             }
@@ -93,6 +102,7 @@ async fn discover_with_creation(
     .unwrap();
     let mut consumer = Box::pin(client.follow(
         &config,
+        &parent,
         &session,
         |_, _| futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath)),
         async |_| Ok(()),
@@ -170,13 +180,17 @@ enum Closed {
 fn config_capacity_is_independent_and_closed_active_channels_fail() {
     futures::executor::block_on(async {
         let provider = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let config = TaskVolume::open(provider.clone(), path("config/files"))
             .await
             .unwrap();
         let agent = TaskVolume::open(provider.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        runtime::status(&provider, "swarm/a", false).await;
+        status::status(&provider, "swarm/a", false).await;
+        status::member(&parent, "a").await;
         write(
             &config,
             "workspace/layout.json",
@@ -239,6 +253,7 @@ fn config_capacity_is_independent_and_closed_active_channels_fail() {
             let views = client.views();
             let mut consumer = Box::pin(client.follow(
                 &config,
+                &parent,
                 &session,
                 |_, maximum| {
                     let agent = &agent;

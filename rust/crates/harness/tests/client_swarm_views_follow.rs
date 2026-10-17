@@ -49,6 +49,9 @@ fn view_file_writes_update_subscriptions_and_the_same_file_fold() {
 }
 async fn exercise() -> Result<()> {
     let streams = Arc::new(MemoryStream::default());
+    let parent = TaskVolume::open(streams.clone(), path("swarm/files"))
+        .await
+        .unwrap();
     let a = Rc::new(
         TaskVolume::open(streams.clone(), path("swarm/a/files"))
             .await
@@ -59,8 +62,10 @@ async fn exercise() -> Result<()> {
             .await
             .unwrap(),
     );
-    super::runtime::status(&streams, "swarm/a", false).await;
-    super::runtime::status(&streams, "swarm/b", false).await;
+    super::status::status(&streams, "swarm/a", false).await;
+    super::status::member(&parent, "a").await;
+    super::status::status(&streams, "swarm/b", false).await;
+    super::status::member(&parent, "b").await;
     let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config"))
         .await
         .unwrap();
@@ -97,13 +102,14 @@ async fn exercise() -> Result<()> {
     let (notices, mut changed) = mpsc::unbounded();
     let (b_seen, b_ready) = oneshot::channel();
     let mut b_seen = Some(b_seen);
-    let consumer = client.follow(&config, &session,
+    let consumer = client.follow(&config, &parent, &session,
         |agent, maximum| { let volume = if agent == path("swarm/a") { a.clone() } else { assert_eq!(agent, path("swarm/b")); b.clone() };
             async move { volume.heads(&Query::Root, None, maximum).await } },
         async |change| {
             views.read(|v| v.layout().visible().count())?;
             let kind = match change {
                 SwarmChange::Agent { .. } => "agent",
+                SwarmChange::Retired { .. } => "retired",
                 SwarmChange::Layout => "layout",
                 SwarmChange::Snapshot { .. } => "snapshot",
                 SwarmChange::Data { overview: false, .. } => "file",
@@ -121,7 +127,7 @@ async fn exercise() -> Result<()> {
     let writer = async {
         let selected_a = selected(&mut sent, "swarm/a").await;
         notice(&mut changed, "snapshot").await;
-        super::runtime::status(&streams, "swarm/b", true).await;
+        super::status::status(&streams, "swarm/b", true).await;
         b_ready.await.unwrap();
         views.read(|v| {
             assert_eq!(
@@ -221,13 +227,18 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
             }
         }
         let streams = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(streams.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let a = Rc::new(
             TaskVolume::open(streams.clone(), path("swarm/a/files"))
                 .await
                 .unwrap(),
         );
-        super::runtime::status(&streams, "swarm/a", false).await;
-        super::runtime::status(&streams, "swarm/b", false).await;
+        super::status::status(&streams, "swarm/a", false).await;
+        super::status::member(&parent, "a").await;
+        super::status::status(&streams, "swarm/b", false).await;
+        super::status::member(&parent, "b").await;
         let config = TaskVolume::open(Arc::new(MemoryStream::default()), path("client/config"))
             .await
             .unwrap();
@@ -267,7 +278,7 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
         let mut started = Some(started);
         let dropped = Rc::new(Cell::new(false));
         let cancelled = dropped.clone();
-        let consumer = client.follow(&config, &session, |agent, maximum| {
+        let consumer = client.follow(&config, &parent, &session, |agent, maximum| {
             let a = a.clone();
             let started = if agent == path("swarm/b") { started.take() } else { None };
             let dropped = dropped.clone();
@@ -307,7 +318,7 @@ fn pending_snapshot_cannot_stall_unfollow_status_or_cancellation() {
                 }
             }
             assert!(cancelled.get(), "obsolete snapshot I/O remained retained");
-            super::runtime::status(&streams, "swarm/b", true).await;
+            super::status::status(&streams, "swarm/b", true).await;
             notice(&mut changed, "attention").await;
             views.read(|v| {
                 assert_eq!(v.layout().full_fidelity().count(), 0);

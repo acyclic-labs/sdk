@@ -15,6 +15,7 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   await initializeClientQueries();
   const configStream = new WasmStream();
   const config = await TaskVolume.create(configStream, "client/config");
+  const parent = await TaskVolume.create(stream, "swarm/files");
   const a = await TaskVolume.create(stream, "swarm/a/files"), b = await TaskVolume.create(stream, "swarm/b/files");
   const put = async (volume: TaskVolume, sequence: bigint, value: string) => volume.write(await volume.head(), chunk(sequence), encode.encode(value), "Text");
   const layout = async (file: string, value: unknown) => config.write(await config.head(), { Input: `workspace/${file}.json` }, encode.encode(JSON.stringify(value)), null);
@@ -22,6 +23,11 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     const value = toBinary(SessionLatestValueSchema, create(SessionLatestValueSchema, { key: encode.encode("status"), value: encode.encode("running"), attention }));
     await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: `${agent}/status`, records: [value] })));
   };
+  for (const reference of ["a", "b"]) {
+    await parent.write(await parent.head(), { Child: { reference, file: "Status" } }, encode.encode(JSON.stringify({
+      task: "01010101-0101-0101-0101-010101010101", state: "Running", settled: false, inputs: 1,
+    })), null);
+  }
   await put(a, 1n, "before"); await put(b, 1n, "other");
   await status("swarm/a", false); await status("swarm/b", false);
   await layout("layout", { prefetch: ["swarm/a"] });
@@ -32,7 +38,7 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
   let snapshots = 0;
   const deltas: string[] = [];
   const segments = (agent: string) => views.segments(agent, text)?.map(bytes => decode.decode(bytes));
-  const running = client.follow(config, stream, change => {
+  const running = client.follow(config, parent, stream, change => {
     // A callback can read the same views without retaining a Rust borrow across JS.
     if (change.kind === "snapshot") { snapshots++; notify(`snapshot:${change.agent}`); }
     if (change.kind === "data" && !change.overview && change.file) {
@@ -73,6 +79,6 @@ export async function exerciseSwarm(stream: WasmStream, recover?: () => Promise<
     return { agents: views.agents().length, snapshots, textDeltas: deltas.length, recovered: !!recover };
   } finally {
     stop.resolve(); await running.catch(() => {});
-    views.free(); client.free(); a.free(); b.free(); config.free(); configStream.free();
+    views.free(); client.free(); a.free(); b.free(); parent.free(); config.free(); configStream.free();
   }
 }

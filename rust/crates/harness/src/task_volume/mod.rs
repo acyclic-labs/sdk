@@ -1,4 +1,6 @@
 //! Logical task files over single-event appends and immutable segment views.
+mod child;
+pub use child::{ChildFile, ChildState, ChildStatus};
 
 pub(crate) mod command_query;
 mod durability;
@@ -486,6 +488,15 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 }
 
 fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
+    if matches!(
+        file.key,
+        FileKey::Child {
+            file: ChildFile::Status,
+            ..
+        }
+    ) {
+        ChildStatus::parse(&file.bytes)?;
+    }
     file.validate()?;
     if !file.key.mutable()
         && index

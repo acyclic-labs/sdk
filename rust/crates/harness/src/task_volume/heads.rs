@@ -11,6 +11,8 @@ use std::collections::BTreeMap;
 pub struct HeadFile {
     /// Status, tool, plan, or derived `turns/<n>/{text,reasoning}.md` location.
     pub key: FileKey,
+    /// Original write identity for goal acknowledgements and derived projections.
+    pub publication: Option<crate::OperationId>,
     /// File content in order, without copying or reserializing accumulated text.
     pub segments: Vec<OwnedBytes>,
     /// Total logical file length.
@@ -62,6 +64,7 @@ impl Snapshot {
             let (key, sequence) = file.head_key()?;
             let head = heads.entry(key.clone()).or_insert_with(|| HeadFile {
                 key,
+                publication: file.publication,
                 segments: Vec::new(),
                 length: 0,
                 through_sequence: None,
@@ -170,7 +173,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 for (_, file) in index
                     .files
                     .range(range)
-                    .filter(|(_, f)| query.matches_file(&f.file))
+                    .filter(|(_, f)| query.snapshot_matches_file(&f.file))
                 {
                     if files.len() == maximum_files {
                         return Err(Error::LimitExceeded);

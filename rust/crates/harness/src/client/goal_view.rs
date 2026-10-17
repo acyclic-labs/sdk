@@ -7,6 +7,8 @@ use serde::Serialize;
 
 /// Read-only progress derived from the existing retained request head.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct GoalProgress {
     /// Admitted or staged task occupying the ordinary request head.
     pub operation: OperationId,
@@ -32,6 +34,8 @@ impl GoalProgress {
 
 /// One goal rendering over two independent, accepted filesystem cuts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct GoalQueryView<'a> {
     /// Current GOAL.md publication cursor.
     pub cursor: &'a Cursor,
@@ -78,21 +82,16 @@ impl ClientViews {
         request: ([u8; 32], [u8; 32]),
     ) -> Result<()> {
         if !self
-            .queries
-            .get(&goal)
+            .selection(&goal)
             .is_some_and(|view| view.query().matches(&FileKey::Goal))
             || !self
-                .queries
-                .get(&request)
+                .selection(&request)
                 .is_some_and(|view| view.query() == &Query::File(FileKey::RequestHead))
         {
             return Err(Error::Invalid(
                 "goal sources require observed goal and request-head queries".into(),
             ));
         }
-        self.goal_sources.retain(|goal, request| {
-            self.queries.contains_key(goal) && self.queries.contains_key(request)
-        });
         self.goal_sources.insert(goal, request);
         Ok(())
     }
@@ -100,14 +99,15 @@ impl ClientViews {
     /// Re-derives the rendering from current source cuts; arrival order adds no state.
     pub fn goal_view(&self, volume: [u8; 32], query: [u8; 32]) -> Option<GoalQueryView<'_>> {
         let identity = (volume, query);
-        let file = self.queries.get(&identity)?;
+        let file = self.selection(&identity)?;
         if !file.query().matches(&FileKey::Goal) {
             return None;
         }
         let request = self
             .goal_sources
             .get(&identity)
-            .and_then(|key| self.queries.get(key));
+            .and_then(|key| self.selection(key))
+            .or_else(|| file.query().matches(&FileKey::RequestHead).then_some(file));
         Some(GoalQueryView {
             cursor: file.cursor(),
             request_cursor: request.map(|view| view.cursor()),
@@ -133,9 +133,8 @@ impl Serialize for Goals<'_> {
     ) -> std::result::Result<S::Ok, S::Error> {
         serializer.collect_seq(
             self.0
-                .queries
-                .keys()
-                .filter_map(|(volume, query)| self.0.goal_view(*volume, *query)),
+                .selections()
+                .filter_map(|((volume, query), _)| self.0.goal_view(*volume, *query)),
         )
     }
 }

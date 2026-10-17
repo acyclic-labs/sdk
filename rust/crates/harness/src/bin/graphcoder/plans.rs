@@ -86,8 +86,8 @@ impl Plans {
     pub(super) fn render(&self, output: &mut impl Write) -> Result<()> {
         let view = self
             .views
-            .queries
-            .values()
+            .selections()
+            .map(|(_, files)| files)
             .find(|view| view.query() == &Query::Plans)
             .ok_or_else(|| Error::Conflict("plan snapshot is missing".into()))?;
         let area = Rect::new(0, 0, 80, 20);

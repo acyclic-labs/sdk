@@ -26,8 +26,8 @@ pub struct QueryViewLimits {
 /// One query's materialized files; snapshots and deltas never concatenate text.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileViews {
-    cursor: Cursor,
-    files: Files,
+    pub(super) cursor: Cursor,
+    pub(super) files: Files,
     limits: QueryViewLimits,
     segments: usize,
     bytes: u64,
@@ -129,6 +129,41 @@ impl FileViews {
     /// Materialized files in canonical key order.
     pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
         self.files.values()
+    }
+
+    pub(super) fn replace(
+        &mut self,
+        change: &Change,
+        rejected: &std::collections::BTreeSet<FileKey>,
+    ) {
+        for key in change
+            .removed
+            .iter()
+            .chain(change.file.iter().chain(&change.files).map(|f| &f.key))
+        {
+            if let Some(old) = self.files.remove(key) {
+                self.bytes -= old.length;
+                self.segments -= old.segments.len();
+            }
+        }
+        for file in change.file.iter().chain(&change.files) {
+            if rejected.contains(&file.key) {
+                continue;
+            }
+            self.bytes += file.bytes.len() as u64;
+            self.segments += 1;
+            self.files.insert(
+                file.key.clone(),
+                HeadFile {
+                    key: file.key.clone(),
+                    publication: file.publication,
+                    segments: vec![file.bytes.clone()],
+                    length: file.bytes.len() as u64,
+                    through_sequence: None,
+                },
+            );
+        }
+        self.cursor = change.cursor.clone();
     }
 
     /// Prepares one change without altering or borrowing the fold across I/O.
@@ -248,10 +283,12 @@ impl FileViews {
                             head.segments = vec![file.bytes.clone()];
                         }
                         head.length = length;
+                        head.publication = file.publication;
                     }
                     Entry::Vacant(entry) => {
                         entry.insert(HeadFile {
                             key,
+                            publication: file.publication,
                             segments: vec![file.bytes.clone()],
                             length,
                             through_sequence: sequence,

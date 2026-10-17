@@ -56,6 +56,18 @@ impl<'a> Snapshots<'a> {
             .collect();
         Ok(())
     }
+    pub fn retire(&mut self, agent: &StreamPath) -> Result<()> {
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("snapshot generation overflow".into()))?;
+        self.active.remove(agent);
+        self.futures = std::mem::take(&mut self.futures)
+            .into_iter()
+            .filter(|pending| &pending.agent != agent)
+            .collect();
+        Ok(())
+    }
     pub fn start<F>(&mut self, agent: StreamPath, future: F) -> Result<()>
     where
         F: Future<Output = crate::task_volume::Result<HeadSnapshot>> + 'a,

@@ -259,3 +259,7 @@ proptest::proptest! {
         proptest::prop_assert!(check_changes(&before, &after, &ids(changes.subscribe()), &ids(changes.unsubscribe())));
     }
 }
+
+#[path = "support/swarm_status.rs"]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+mod status;

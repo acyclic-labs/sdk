@@ -9,28 +9,7 @@ use acyclic_stream::{
     wire,
 };
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc, stream::FuturesUnordered};
-use prost::Message as _;
 use std::{future::Future, pin::Pin, sync::Arc};
-
-pub async fn status(provider: &acyclic_stream::MemoryStream, agent: &str, attention: bool) {
-    provider
-        .append(acyclic_stream::AppendRequest {
-            path: acyclic_stream::StreamPath::new(format!("{agent}/status")).unwrap(),
-            records: vec![
-                wire::SessionLatestValue {
-                    key: b"status".to_vec().into(),
-                    value: b"running".to_vec().into(),
-                    attention,
-                }
-                .encode_to_vec()
-                .into(),
-            ],
-            if_tail: None,
-            idempotency_key: None,
-        })
-        .await
-        .unwrap();
-}
 
 pub type RequestMap = Arc<dyn Fn(Requests) -> Requests + Send + Sync>;
 pub type ResponseMap = Arc<dyn Fn(Responses) -> Responses + Send + Sync>;

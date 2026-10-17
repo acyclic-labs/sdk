@@ -124,7 +124,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 for (_, file) in index
                     .files
                     .range(range)
-                    .filter(|(_, file)| query.matches_file(&file.file))
+                    .filter(|(_, file)| query.snapshot_matches_file(&file.file))
                 {
                     if files.len() == maximum_files {
                         return Err(Error::LimitExceeded);

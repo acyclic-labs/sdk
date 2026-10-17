@@ -59,7 +59,11 @@ struct StatusValue {
     value: Vec<u8>,
     attention: bool,
 }
-fn same(native: &ClientViewHandle, browser: &WasmClientViews) -> Result<(), String> {
+fn same(
+    native: &ClientViewHandle,
+    browser: &WasmClientViews,
+    drop_projection: bool,
+) -> Result<(), String> {
     let agents: Vec<String> = serde_wasm_bindgen::from_value(browser.agents().unwrap()).unwrap();
     let expected = native
         .read(|v| {
@@ -70,6 +74,27 @@ fn same(native: &ClientViewHandle, browser: &WasmClientViews) -> Result<(), Stri
         .unwrap();
     if agents != expected {
         return Err("view parity: discovered agents differ".into());
+    }
+    let models: serde_json::Value =
+        serde_wasm_bindgen::from_value(browser.models().unwrap()).unwrap();
+    let actual_models = if drop_projection {
+        serde_json::json!([])
+    } else {
+        models
+    };
+    let expected_models = native
+        .read(|v| serde_json::to_value(v.models().collect::<Vec<_>>()).unwrap())
+        .unwrap();
+    if actual_models != expected_models {
+        return Err("view parity: model projections differ".into());
+    }
+    let actual_goals: serde_json::Value =
+        serde_wasm_bindgen::from_value(browser.goals().unwrap()).unwrap();
+    let expected_goals = native
+        .read(|v| serde_json::to_value(v.goals().collect::<Vec<_>>()).unwrap())
+        .unwrap();
+    if actual_goals != expected_goals {
+        return Err("view parity: goal projections differ".into());
     }
     for agent in expected {
         let path = path(&agent);
@@ -100,6 +125,14 @@ fn same(native: &ClientViewHandle, browser: &WasmClientViews) -> Result<(), Stri
         let expected = native.read(|v| v.cursor(&path).cloned()).unwrap();
         if actual != expected {
             return Err("view parity: cursors differ".into());
+        }
+        let actual_plans: Vec<String> =
+            serde_wasm_bindgen::from_value(browser.plans(&agent).unwrap()).unwrap();
+        let expected_plans = native
+            .read(|v| v.plans(&path).map(str::to_owned).collect::<Vec<_>>())
+            .unwrap();
+        if actual_plans != expected_plans {
+            return Err("view parity: plan projections differ".into());
         }
         let keys = native
             .read(|v| v.files(&path).map(|f| f.key.clone()).collect::<Vec<_>>())
@@ -142,11 +175,38 @@ fn same(native: &ClientViewHandle, browser: &WasmClientViews) -> Result<(), Stri
     }
     Ok(())
 }
-async fn exercise(wrong_handle: bool) -> Result<(), String> {
+async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), String> {
     let provider = Arc::new(MemoryStream::default());
     let volume = TaskVolume::open(provider.clone(), path("swarm/a/files"))
         .await
         .unwrap();
+    let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+        .await
+        .unwrap();
+    let member = acyclic_harness::task_volume::ChildStatus {
+        task: acyclic_harness::TaskId::from_bytes([1; 16]),
+        state: acyclic_harness::task_volume::ChildState::Running,
+        settled: false,
+        inputs: 1,
+    };
+    parent
+        .append(
+            parent.head().await.unwrap(),
+            &Write::new(
+                FileKey::parse("agents/a/status.json").unwrap(),
+                serde_json::to_vec(&member).unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    put(&volume, "GOAL.md", b"initial goal").await;
+    put(&volume, "plans/main.md", b"- [ ] initial plan").await;
+    put(
+        &volume,
+        ".tasks/t/turns/9007199254740993/request.json",
+        &request("initial"),
+    )
+    .await;
     let mut chunk = Write::new(
         FileKey::parse(".tasks/t/turns/9007199254740993/chunks/1").unwrap(),
         "\u{8abf}\u{67fb}".as_bytes(),
@@ -196,9 +256,11 @@ async fn exercise(wrong_handle: bool) -> Result<(), String> {
     let session = Client::in_process(provider, Arc::new(PlatformExecutor));
     let (done, completed) = oneshot::channel();
     let mut done = Some(done);
+    let target = std::cell::Cell::new(None);
     let followed = client
         .follow(
             &config,
+            &parent,
             &session,
             |agent, maximum| {
                 let volume = &volume;
@@ -207,15 +269,29 @@ async fn exercise(wrong_handle: bool) -> Result<(), String> {
                     volume.heads(&Query::Root, None, maximum).await
                 }
             },
-            async |_| {
-                same(&native, &browser).map_err(acyclic_harness::Error::Invalid)?;
+            async |change| {
+                if matches!(change, acyclic_harness::client::SwarmChange::Snapshot { .. }) {
+                    put(&volume, "GOAL.md", b"---\nstatus: done\n---\nfinal goal").await;
+                    put(&volume, "plans/main.md", b"- [x] final plan").await;
+                    put(&volume, ".tasks/t/turns/9007199254740994/request.json", &request("final")).await;
+                    target.set(Some(volume.head().await.unwrap().position));
+                }
+                same(&native, &browser, drop_projection).map_err(acyclic_harness::Error::Invalid)?;
                 let ready = native
                     .read(|v| {
-                        v.cursor(&path("swarm/a")).is_some()
+                        target.get().is_some_and(|target| v.cursor(&path("swarm/a")).is_some_and(|c| c.position == target))
                             && v.status(&path("swarm/a"))
                                 .is_some_and(|s| s.values().any(|v| v.attention))
                     })
                     .unwrap();
+                if ready {
+                    native.read(|v| {
+                        assert_eq!(v.models().count(), 2, "followed requests must project model identities");
+                        assert!(v.models().any(|m| matches!(m.model, acyclic_harness::client::ModelFileView::Selected { name, .. } if name == "final")));
+                        assert!(v.goals().any(|g| matches!(g.goal, acyclic_harness::client::GoalFileView::Present { goal } if goal.status == acyclic_harness::goal::GoalStatus::Done && goal.markdown == "final goal")));
+                        assert!(v.plans(&path("swarm/a")).any(|line| line.contains("final plan")));
+                    }).unwrap();
+                }
                 if ready && let Some(done) = done.take() {
                     let _ = done.send(());
                 }
@@ -229,9 +305,52 @@ async fn exercise(wrong_handle: bool) -> Result<(), String> {
 }
 #[wasm_bindgen_test]
 async fn native_and_wasm_render_the_same_followed_files_and_full_width_cursor() {
-    exercise(false).await.unwrap();
+    exercise(false, false).await.unwrap();
 }
 #[wasm_bindgen_test]
 async fn negative_control_separate_browser_reducer_is_detected() {
-    assert!(exercise(true).await.unwrap_err().contains("view parity"));
+    assert!(
+        exercise(true, false)
+            .await
+            .unwrap_err()
+            .contains("view parity")
+    );
+}
+
+#[wasm_bindgen_test]
+async fn negative_control_omitting_followed_model_projections_is_detected() {
+    assert!(
+        exercise(false, true)
+            .await
+            .unwrap_err()
+            .contains("model projections")
+    );
+}
+async fn put(volume: &TaskVolume<MemoryStream>, path: &str, bytes: &[u8]) {
+    volume
+        .append(
+            volume.head().await.unwrap(),
+            &Write::new(FileKey::parse(path).unwrap(), bytes.to_vec()),
+        )
+        .await
+        .unwrap();
+}
+fn request(name: &str) -> Vec<u8> {
+    use acyclic_harness::model::{Model, ModelContent, ModelMessage, ModelRequest, ModelRole};
+    serde_json::to_vec(&ModelRequest {
+        model: Model::new(
+            "scripted".into(),
+            name.into(),
+            "1".into(),
+            serde_json::json!({}),
+        )
+        .unwrap(),
+        messages: vec![ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("work".into()),
+        }],
+        tools: vec![],
+        max_output_tokens: Some(32),
+    })
+    .unwrap()
 }

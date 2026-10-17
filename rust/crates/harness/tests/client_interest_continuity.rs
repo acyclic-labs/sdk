@@ -1,5 +1,5 @@
 //! Snapshot anchors and standalone durability updates in the production driver.
-use super::{path, runtime};
+use super::{path, runtime, status};
 use acyclic_harness::{
     Error,
     client::{SwarmChange, SwarmClientLimits},
@@ -62,6 +62,9 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
     futures::executor::block_on(async {
         let original = Arc::new(MemoryStream::default());
         let replacement = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(replacement.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let config = TaskVolume::open(original.clone(), path("config/files"))
             .await
             .unwrap();
@@ -77,7 +80,8 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         let recovered = TaskVolume::open(replacement.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        runtime::status(&replacement, "swarm/a", false).await;
+        status::status(&replacement, "swarm/a", false).await;
+        status::member(&parent, "a").await;
         put(&old, ".tasks/t/status.json", b"old").await;
         put(&recovered, ".tasks/t/status.json", b"replaced").await;
         let cut = old.heads(&Query::Root, None, 2).await.unwrap().cursor;
@@ -107,6 +111,7 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         let views = client.views();
         let mut consumer = Box::pin(client.follow(
             &config,
+            &parent,
             &session,
             |_, maximum| old.heads(&Query::Root, None, maximum),
             async |change| {
@@ -147,6 +152,9 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
 fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
     futures::executor::block_on(async {
         let provider = Arc::new(MemoryStream::default());
+        let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+            .await
+            .unwrap();
         let config = TaskVolume::open(provider.clone(), path("config/files"))
             .await
             .unwrap();
@@ -160,7 +168,8 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
             .await
             .unwrap();
         put(&agent, "GOAL.md", b"before").await;
-        runtime::status(&provider, "swarm/a", false).await;
+        status::status(&provider, "swarm/a", false).await;
+        status::member(&parent, "a").await;
         let responses: runtime::ResponseMap = Arc::new(|source| {
             Box::pin(source.flat_map(|item| {
             let watermark = match &item {
@@ -180,6 +189,7 @@ fn standalone_watermarks_reach_status_and_content_without_another_data_frame() {
         let views = client.views();
         let mut consumer = Box::pin(client.follow(
             &config,
+            &parent,
             &session,
             |_, maximum| {
                 let agent = &agent;

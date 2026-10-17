@@ -79,7 +79,7 @@ impl<'a> State<'a> {
         views: &ClientViewHandle,
     ) -> acyclic_harness::Result<Action> {
         let action = match update {
-            SwarmChange::Agent { .. } => Action::None,
+            SwarmChange::Agent { .. } | SwarmChange::Retired { .. } => Action::None,
             SwarmChange::Snapshot { agent, cursor } => {
                 // Independent oracle uses the same canonical file fold. Only
                 // segment handles are cloned; production has a single cache.
@@ -87,6 +87,7 @@ impl<'a> State<'a> {
                     files: view
                         .files(&agent)
                         .map(|file| HeadFile {
+                            publication: file.publication,
                             key: file.key.clone(),
                             segments: file.segments.clone(),
                             length: file.length,
