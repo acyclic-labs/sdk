@@ -1,5 +1,7 @@
 //! Reproducers for aliases, live session updates and transcript checkpoint growth.
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::client::FileClientState;
 use acyclic_harness::{
     AgentId,
     conversation::{
@@ -8,8 +10,6 @@ use acyclic_harness::{
     },
     resources::ProviderRef,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness::client::FileClientState;
 use prost::Message;
 
 #[cfg(unix)]

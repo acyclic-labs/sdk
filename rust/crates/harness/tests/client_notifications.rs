@@ -1,5 +1,7 @@
 //! Table-driven attention mapping, cursor replay and terminal frames.
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::client::terminal_notification;
 use acyclic_harness::{
     Result,
     client::{
@@ -7,8 +9,6 @@ use acyclic_harness::{
         TerminalNotificationProtocol,
     },
 };
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness::client::terminal_notification;
 
 fn notice(sequence: u64, event: AttentionEvent) -> AttentionNotification {
     AttentionNotification {
