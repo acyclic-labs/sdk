@@ -15,7 +15,7 @@ pub(in crate::native_mount) struct FuseSession {
 pub(super) struct FuseSessionState {
     pub(super) path: FuseOwned<Vec<u8>>,
     pub(super) before: Option<(u64, u64)>,
-    pub(super) unmounter: Option<fuser::SessionUnmounter>,
+    pub(super) mount: super::mount::Mount,
     pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     pub(super) device: Option<OwnedFd>,
     pub(super) notifier: Option<Notifier>,
@@ -29,6 +29,7 @@ pub(super) struct FuseSessionState {
 impl FuseSessionState {
     pub(super) fn is_retired(&self) -> bool {
         self.worker.is_none()
+            && !self.mount.pending()
             && self.before.is_none()
             && self
                 .retirement
@@ -52,23 +53,16 @@ impl FuseSessionState {
             }
             Ok(())
         };
-        if let Some(unmounter) = self.unmounter.as_mut() {
+        if self.mount.pending() {
             started(WriteOperations.delta(1))?;
             core.stop();
-            unmounter.unmount()?;
+            let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
+                .map_err(|_| NativeMountError::FuseShutdownFailed)?;
+            self.mount.stop(path, self.device.as_ref())?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
-            let mut poll = libc::pollfd {
-                fd: device.as_raw_fd(),
-                events: 0,
-                revents: 0,
-            };
-            // SAFETY: poll owns one initialized descriptor record.
-            if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
-            if poll.revents & libc::POLLERR == 0 {
+            if !self.mount.device_detached(device)? {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         } else if let Some(before) = self.before {
@@ -84,7 +78,6 @@ impl FuseSessionState {
                 return Err(NativeMountError::FuseShutdownFailed);
             }
         }
-        self.unmounter.take();
         self.device.take();
         self.before.take();
         if self.worker.is_some() {
@@ -172,7 +165,7 @@ impl FuseSession {
         let state = Arc::new(Mutex::new(FuseSessionState {
             path,
             before: Some((metadata.st_dev, metadata.st_ino)),
-            unmounter: None,
+            mount: super::mount::Mount::default(),
             worker: None,
             device: None,
             notifier: None,
@@ -213,15 +206,25 @@ impl FuseSession {
                 core: Arc::clone(&core),
                 skips_opendir: false,
             };
-            let mut session = fuser::Session::new(filesystem, &request.destination, &config)
-                .map_err(|error| {
+            let FuseSessionState { mount, device, .. } = &mut *started;
+            mount.open_into(
+                &request.destination,
+                request.writable,
+                || super::lifecycle::fuse_recovery_helper(work),
+                device,
+            )?;
+            let descriptor = device
+                .as_ref()
+                .ok_or(NativeMountError::FuseShutdownFailed)?
+                .try_clone()?;
+            let session =
+                fuser::Session::from_fd(filesystem, descriptor, fuser::SessionACL::Owner, config)
+                    .map_err(|error| {
                     core.take_handler_failure()
                         .map_or_else(|| error.into(), |failure| failure.0)
                 })?;
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
-            started.unmounter = Some(session.unmount_callable());
-            started.device = Some(std::os::fd::AsFd::as_fd(&session).try_clone_to_owned()?);
             // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
             started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
             let (directory, identity) =

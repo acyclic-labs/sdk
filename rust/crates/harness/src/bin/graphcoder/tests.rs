@@ -622,3 +622,6 @@ mod execution_feedback;
 
 #[path = "tests/feedback_overlay.rs"]
 mod feedback_overlay;
+
+#[path = "tests/perf.rs"]
+mod perf;

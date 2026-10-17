@@ -61,6 +61,7 @@ fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
             continue;
         }
         let file = FileValue {
+            requester: None,
             publication: None,
             key: FileKey::Task {
                 task: Component::new(task.to_string()).unwrap(),

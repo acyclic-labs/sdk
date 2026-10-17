@@ -1,0 +1,90 @@
+{
+  "driver": "agents",
+  "prompt": "Delegate with read-only tools",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "Answer with attenuated tools",
+            "name": "reader",
+            "grants": [
+              "model:generate",
+              "mail:read",
+              "tool:call:read",
+              "tool:call:send",
+              "tool:call:wait",
+              "tool:call:archive"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "reader"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "reader": [
+      "reader finished"
+    ]
+  },
+  "routes": {
+    "Answer with attenuated tools": "reader"
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 3,
+      "reader": 1
+    },
+    "task_files": {
+      "agents/reader/results/1.json": {
+        "outcome": {
+          "Succeeded": {
+            "text": "reader finished"
+          }
+        }
+      }
+    },
+    "toolsets": {
+      "parent": [
+        "bash",
+        "fs",
+        "read",
+        "write",
+        "edit",
+        "spawn",
+        "send",
+        "wait",
+        "archive"
+      ],
+      "reader": [
+        "read"
+      ]
+    }
+  }
+}

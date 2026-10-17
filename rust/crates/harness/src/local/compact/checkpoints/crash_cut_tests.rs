@@ -156,7 +156,8 @@ async fn cuts() -> (FileKey, Vec<(Option<Cut>, Recovered)>) {
         },
         |stream| recover(stream, next.borrow().clone().unwrap()),
     )
-    .await;
+    .await
+    .expect("every crash is simulated faithfully");
     // The checkpoint file, then its selection.
     assert_eq!(found.writes, 2, "publication durable boundaries changed");
     let expected = key(next.borrow().as_ref().unwrap());
@@ -170,14 +171,21 @@ async fn cuts() -> (FileKey, Vec<(Option<Cut>, Recovered)>) {
 async fn every_durable_cut_replays_to_one_selected_checkpoint() {
     let (expected, cuts) = cuts().await;
     for (cut, observed) in &cuts {
-        assert_eq!(violation(&expected, observed), None, "{cut:?}: {observed:?}");
+        assert_eq!(
+            violation(&expected, observed),
+            None,
+            "{cut:?}: {observed:?}"
+        );
     }
     let states: std::collections::BTreeSet<_> = cuts
         .iter()
         .map(|(_, seen)| (seen.retained, seen.selected_before))
         .collect();
     for state in [(false, false), (true, false), (true, true)] {
-        assert!(states.contains(&state), "no cut reached {state:?}: {states:?}");
+        assert!(
+            states.contains(&state),
+            "no cut reached {state:?}: {states:?}"
+        );
     }
 }
 

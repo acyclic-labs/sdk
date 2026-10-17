@@ -595,7 +595,7 @@ pub(super) fn last_facade_drop_retires_the_original_source_after_cancellation()
     let state = Arc::new(Mutex::new(FuseSessionState {
         path: super::super::FuseOwned::empty(Vec::new()),
         before: None,
-        unmounter: None,
+        mount: super::super::mount::Mount::default(),
         worker: None,
         device: None,
         notifier: None,

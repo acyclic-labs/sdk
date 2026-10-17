@@ -9,8 +9,8 @@ use crate::{
 };
 use acyclic_stream::StreamProvider;
 use futures::StreamExt as _;
-use serde::{Deserialize, Serialize};
 use pending::PendingRequests;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod pending;

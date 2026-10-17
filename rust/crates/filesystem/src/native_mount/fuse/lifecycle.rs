@@ -268,7 +268,7 @@ fn fuse_recovery_needs_detach(
     }
 }
 
-fn fuse_recovery_helper(
+pub(super) fn fuse_recovery_helper(
     work: &NativeMaterializationWork,
 ) -> Result<&'static CStr, NativeMountError> {
     for candidate in [

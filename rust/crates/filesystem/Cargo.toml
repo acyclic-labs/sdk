@@ -171,7 +171,8 @@ tempfile = { version = "3.27.0", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 fuser = { version = "=0.18.0", default-features = false, optional = true }
-rustix = { workspace = true, features = ["fs"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs", "user", "mount"], optional = true }
+rustix = { workspace = true, features = ["fs", "net"] }
 
 [target.'cfg(target_os = "macos")'.build-dependencies]
 cc = "1.2.56"
@@ -228,7 +229,7 @@ default = ["local", "memory", "native-watch", "native-mount"]
 local = ["distributed", "acyclic-objects/local", "acyclic-stream/local", "dep:fs2", "dep:tempfile"]
 memory = ["distributed"]
 native-watch = ["dep:notify"]
-native-mount = ["native-watch", "dep:fs2", "dep:fuser"]
+native-mount = ["native-watch", "dep:fs2", "dep:fuser", "dep:nix"]
 s3-http = ["distributed", "dep:base64", "dep:crc-fast", "dep:s3s", "dep:serde_urlencoded", "dep:subtle", "dep:sync_wrapper", "dep:time", "dep:urlencoding"]
 distributed = ["dep:acyclic-objects"]
 browser = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]

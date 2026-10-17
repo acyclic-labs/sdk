@@ -27,6 +27,9 @@ mod windows;
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
 use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
+#[cfg(target_vendor = "apple")]
+#[path = "apple_terminal.rs"]
+pub mod terminal;
 #[cfg(windows)]
 pub use windows::terminal;
 #[cfg(windows)]

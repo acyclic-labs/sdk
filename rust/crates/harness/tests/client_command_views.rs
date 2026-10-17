@@ -431,7 +431,11 @@ proptest! {
             let volume=volume().await;
             let task=Component::new("00000000-0000-0000-0000-000000000001").unwrap();
             let query=Query::TaskView { task:task.clone(), recent, reasoning:false,details:false,terminal:false };
-            let add=|sequence| FileValue { key:FileKey::Task { task:task.clone(), file:TaskFile::Chunk { turn:0,sequence } }, channel:Some(acyclic_harness::task_volume::Channel::Text),publication:None,bytes:vec![b'x'; 8].into() };
+            let add=|sequence| {
+                let mut file = FileValue::new(FileKey::Task { task:task.clone(), file:TaskFile::Chunk { turn:0,sequence } }, vec![b'x'; 8]);
+                file.channel = Some(acyclic_harness::task_volume::Channel::Text);
+                file
+            };
             for sequence in 0..count as u64 {
                 let file=add(sequence);
                 let cut=volume.snapshot(&Query::File(file.key.clone()),1).await.unwrap().generation;

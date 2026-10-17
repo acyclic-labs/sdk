@@ -196,6 +196,7 @@ dependencies = [
  "loom",
  "napi",
  "napi-derive",
+ "nix 0.31.3",
  "notify",
  "parking_lot",
  "proptest",
@@ -241,8 +242,10 @@ dependencies = [
  "acyclic-fs",
  "libfuzzer-sys",
  "loom",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -458,6 +461,8 @@ dependencies = [
  "crossterm 0.28.1",
  "image",
  "loom",
+ "memchr",
+ "nix 0.31.3",
  "proptest",
  "ratatui",
  "rustix 1.1.5",
@@ -663,6 +668,7 @@ dependencies = [
  "rustls-platform-verifier",
  "ruzstd",
  "serde_json",
+ "syn 3.0.6",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -2888,6 +2894,7 @@ dependencies = [
  "acyclic-harness-providers",
  "acyclic-native-runtime",
  "acyclic-stream",
+ "acyclic-test-support",
  "axum",
  "clap",
  "futures",

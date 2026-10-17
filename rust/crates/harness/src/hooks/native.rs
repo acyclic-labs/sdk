@@ -115,11 +115,10 @@ pub(super) async fn run_hook(
                     None,
                 )
                 .map_err(|failure| {
-                    let mut error = Error::process_io(failure.error);
-                    if let Error::Process(cause) = &mut error {
-                        cause.set_exit_code(failure.status.and_then(|status| status.code()));
-                    }
-                    error
+                    Error::process_exit(
+                        failure.error,
+                        failure.status.and_then(|status| status.code()),
+                    )
                 })?;
             Ok((output.status.code(), output.stdout, output.stderr))
         },

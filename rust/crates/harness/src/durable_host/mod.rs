@@ -166,7 +166,10 @@ fn operation_io(
 /// specialized wait, mail, interaction, and effect providers can be composed
 /// around this boundary without giving callers a coordinator handle.
 pub struct CoordinatorTaskHost<P> {
-    coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
+    // Lock order: root binding (when held) -> coordinator -> provider
+    // visibility/publication -> provider state.
+    // A query must keep driving any sibling which owns this gate across IO.
+    coordinator: Arc<crate::sync::Mutex<DistributedCoordinator<P>>>,
     stream: Arc<P>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
@@ -239,7 +242,6 @@ mod readonly;
 mod received_mail;
 #[cfg(feature = "filesystem")]
 #[cfg(not(target_arch = "wasm32"))]
-#[cfg(not(target_arch = "wasm32"))]
 mod release;
 #[cfg(feature = "filesystem")]
 mod source_graph;
@@ -252,5 +254,5 @@ pub use readonly::TaskAdmissionReadonlyWitness;
 mod workflow;
 pub use volumes::TaskVolumeSnapshot;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem"))]
 pub(crate) mod tests;

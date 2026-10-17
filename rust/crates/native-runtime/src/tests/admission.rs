@@ -235,6 +235,7 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
     workers
         .sender
@@ -318,6 +319,7 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
             .is_pending()
     );
     assert_eq!(observer.memory.load(Ordering::Acquire), prepared);
+    // SAFETY: F_GETFD only queries the descriptor table entry.
     assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
     release.send(()).map_err(io::Error::other)?;
     worker
@@ -352,6 +354,7 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
     let job = || run_blocking_io(|| (), None).map(|mut task| task.pending.take().unwrap());
     workers

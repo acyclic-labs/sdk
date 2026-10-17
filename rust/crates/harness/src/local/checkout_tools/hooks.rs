@@ -120,7 +120,10 @@ impl CheckoutTools {
                     context.operation_id(),
                     0,
                     PublicationPermit::Unrestricted,
-                    Some(Arc::clone(owner)),
+                    Some((
+                        context.task().ordinary_journal_owner::<LocalStream>()?,
+                        false,
+                    )),
                 )
                 .await?;
             }
@@ -171,7 +174,10 @@ impl CheckoutTools {
                 context.operation_id(),
                 1,
                 PublicationPermit::Unrestricted,
-                Some(Arc::clone(owner)),
+                Some((
+                    context.task().ordinary_journal_owner::<LocalStream>()?,
+                    true,
+                )),
             )
             .await?;
             owner.verify_owner(None)?.await?;

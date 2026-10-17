@@ -1,0 +1,140 @@
+{
+  "driver": "agents",
+  "prompt": "delegate shell work and merge its published result",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "seed-private",
+          "name": "bash",
+          "arguments": {
+            "command": "printf parent-private > .volumes/scratch/parent-secret"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "run shell in the prepared fork",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "merge",
+          "name": "fs",
+          "arguments": {
+            "command": "merge agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "child-shell",
+          "name": "bash",
+          "arguments": {
+            "command": "test ! -e .volumes/scratch/parent-secret && printf child-private > .volumes/scratch/parent-secret && printf shell-result > child.txt && printf child-shell-ok"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 5,
+      "worker": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "model_requests": {
+      "worker": [
+        {},
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "child-shell",
+                "name": "bash",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "success": true,
+                    "stdout": "child-shell-ok"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "files": {
+      "child.txt": "shell-result",
+      ".volumes/scratch/parent-secret": "parent-private"
+    }
+  },
+  "routes": {
+    "run shell in the prepared fork": "worker"
+  }
+}

@@ -39,7 +39,10 @@ impl TraceMeter {
         meter
     }
     fn push(&self, call: Call) -> io::Result<()> {
-        let mut calls = self.calls.lock().unwrap();
+        let mut calls = self
+            .calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             calls.len() < calls.capacity(),
             "trace storage must not grow"
@@ -290,20 +293,20 @@ fn run(
         } else {
             state.registry.admit(identity, Some(&state.meter))
         };
-        let outcome = match result {
-            Ok(owner) => match state
-                .owners
-                .iter()
-                .position(|held| held.as_ref().is_some_and(|held| Arc::ptr_eq(held, &owner)))
-            {
-                Some(position) => Outcome::Existing(position),
-                None => {
-                    state.owners.push(Some(owner));
-                    Outcome::Fresh
+        let outcome =
+            match result {
+                Ok(owner) => {
+                    if let Some(position) = state.owners.iter().position(|held| {
+                        held.as_ref().is_some_and(|held| Arc::ptr_eq(held, &owner))
+                    }) {
+                        Outcome::Existing(position)
+                    } else {
+                        state.owners.push(Some(owner));
+                        Outcome::Fresh
+                    }
                 }
-            },
-            Err(error) => Outcome::Failed(error.kind(), error.to_string()),
-        };
+                Err(error) => Outcome::Failed(error.kind(), error.to_string()),
+            };
         state.outcomes.push(outcome);
     };
     let (observed, mut traces) = differential::observe(initialize, |mut state: Run| {
@@ -383,11 +386,12 @@ fn extra_calls(previous: &[Call], current: &[Call]) -> Option<Vec<Call>> {
 }
 
 fn rescan_steps(files: u64, rounds: usize) -> Vec<Step> {
+    let count = usize::try_from(files).unwrap();
     let mut steps = Vec::new();
     for round in 0..=rounds {
-        let base = round * files as usize;
+        let base = round * count;
         steps.extend((0..files).map(Step::Admit));
-        steps.extend((0..files as usize).map(|slot| Step::Drop(base + slot)));
+        steps.extend((0..count).map(|slot| Step::Drop(base + slot)));
     }
     steps
 }

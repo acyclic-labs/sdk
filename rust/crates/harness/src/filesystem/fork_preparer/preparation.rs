@@ -118,7 +118,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 task,
             )
             .await?;
-        let controller = preparer.controller(io)?;
+        let controller = (request.parent.kind == crate::core::AggregateKind::Conversation)
+            .then(|| preparer.controller(io))
+            .transpose()?;
         let project_key = key("project")?;
         self.verify_task_lease(false).await?;
         let child_project = (host)
@@ -163,6 +165,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             mut reference_grants,
             attachment_manifests,
         ) = if let Some(context_key) = &context_key {
+            let controller = controller
+                .as_ref()
+                .ok_or_else(|| invalid("task fork cannot inherit a conversation"))?;
             let mut continuation_keys = Vec::new();
             if policy.summary.is_some() {
                 let keys = crate::filesystem::summary_fork::summary_keys(context_key, io)?;
@@ -209,6 +214,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             )
         };
         let summary = if policy.summary.is_some() {
+            let controller = controller
+                .as_ref()
+                .ok_or_else(|| invalid("task fork cannot summarize a conversation"))?;
             let bound = preparer
                 .summary
                 .as_ref()

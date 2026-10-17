@@ -24,7 +24,7 @@ impl LocalHarness {
                 .snapshot(&Query::File(key.clone()), 1)
                 .await
                 .map_err(storage)?;
-            let mut state = match self.runtime.task_host().outcome(task).await? {
+            let mut state = match self.runtime.task_host().terminal_status(task).await? {
                 Some(Outcome::Succeeded(_)) => "completed",
                 Some(Outcome::Failed { .. }) => "failed",
                 Some(Outcome::Cancelled) => "cancelled",

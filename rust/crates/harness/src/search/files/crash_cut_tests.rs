@@ -78,18 +78,36 @@ async fn exists<P: StreamProvider>(volume: &TaskVolume<P>, key: FileKey) -> Opti
     None
 }
 
-async fn ready_bytes<P: StreamProvider>(volume: &TaskVolume<P>) -> Option<Vec<u8>> {
+/// Observes the receipt without creating its completion volume: a missing
+/// volume holds no receipt, and recovery must find it missing too.
+async fn ready_bytes(
+    stream: &Arc<LocalStream>,
+    volume: &TaskVolume<LocalStream>,
+) -> Option<Vec<u8>> {
     if let Some(bytes) = exists(volume, ready(&task(), &id())).await {
         return Some(bytes);
     }
-    let completion = volume.file_volume(&ready(&task(), &id())).await.unwrap();
+    let path = volume
+        .file_volume_path(&ready(&task(), &id()))
+        .await
+        .unwrap();
+    match stream.watermarks(path.clone()).await {
+        Err(acyclic_stream::StreamError::NotFound) => return None,
+        Ok(watermarks) if watermarks.accepted == 0 => return None,
+        found => {
+            found.unwrap();
+        }
+    }
+    let completion = TaskVolume::open_existing(stream.clone(), path)
+        .await
+        .unwrap();
     exists(&completion, ready(&task(), &id())).await
 }
 
 async fn recover(stream: Arc<LocalStream>, dispatched: usize) -> Recovered {
-    let volume = TaskVolume::open(stream, path()).await.unwrap();
+    let volume = TaskVolume::open(stream.clone(), path()).await.unwrap();
     let claim = exists(&volume, file(&task(), &id(), false)).await.is_some();
-    let ready = ready_bytes(&volume).await;
+    let ready = ready_bytes(&stream, &volume).await;
     let result_before = exists(&volume, file(&task(), &id(), true)).await.is_some();
     let replacement = provider();
     let recovery = run_settle(&volume, "replacement", &replacement)
@@ -183,7 +201,8 @@ async fn cuts() -> Vec<(Option<Cut>, Recovered)> {
         },
         |stream| recover(stream, dispatched.get()),
     )
-    .await;
+    .await
+    .expect("every crash is simulated faithfully");
     // Completion volume, claim, retained response, result.
     assert_eq!(found.writes, 4, "settlement durable boundaries changed");
     std::iter::once((None, found.clean))

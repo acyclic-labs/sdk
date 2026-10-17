@@ -294,8 +294,7 @@ pub(super) unsafe fn notification(
                 defer_host_capture(operation_failures.as_ref(), path.clone());
                 return Ok(());
             };
-            let host =
-                probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
+            let host = probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
             if baseline.identity != host.identity
                 || baseline.links != host.links
                 || baseline.size != host.size
@@ -308,8 +307,7 @@ pub(super) unsafe fn notification(
             if metadata_changed {
                 *retry_path.borrow_mut() = Some(path.clone());
             }
-            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path)
-            {
+            if !metadata_changed && !has_pending_capture(operation_failures.as_ref(), &path) {
                 match crate::native_mount::cached_binding::cached_binding_matches(
                     projection,
                     |bindings| {
@@ -324,11 +322,9 @@ pub(super) unsafe fn notification(
                             && ReadBasis::sample(source.as_ref()) == Some(binding.basis)
                     },
                     |binding| {
-                        binding.basis.still_describes(
-                            source.as_ref(),
-                            &path,
-                            Some(binding.file_id),
-                        )
+                        binding
+                            .basis
+                            .still_describes(source.as_ref(), &path, Some(binding.file_id))
                     },
                 ) {
                     Ok(true) => return Ok(()),
