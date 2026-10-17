@@ -476,7 +476,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let future = if io.is_none() {
+        // Keep the Result temporary across await for the original admitted caller frame.
+        (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || async move {
                 if reference.volume().provider() != &self.provider
                     || reference.descriptor().byte_length() > maximum_bytes
@@ -494,7 +495,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await?;
                 reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes)
-            })?
+            })
         } else {
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -595,9 +596,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 drop(generation);
                 drop(generation_hold);
                 Ok(bytes)
-            })?
-        };
-        future.await
+            })
+        })?
+        .await
     }
 
     async fn retain_file_generation(&self, file: &FileRef) -> Result<()> {
