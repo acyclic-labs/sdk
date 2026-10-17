@@ -1,5 +1,5 @@
 //! Incremental folds over immutable task segments and their sequence cursors.
-use super::{ClientViews, FileQueryView};
+use super::{TaskFileViews, TaskFileQueryView};
 use crate::task_volume::{Channel, FileKey, FileValue, TaskFile, ToolFile};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,7 +59,7 @@ fn owner(task: &crate::task_volume::Component) -> String {
     format!("AGGREGATE_KIND_TASK:{}", task.as_str())
 }
 
-pub(super) fn snapshot(views: &mut ClientViews, files: &FileQueryView) {
+pub(super) fn snapshot(views: &mut TaskFileViews, files: &TaskFileQueryView) {
     let previous = views
         .queries
         .get(&(files.cursor().volume, files.cursor().query));
@@ -123,7 +123,7 @@ pub(super) fn projected_task(key: &FileKey) -> Option<crate::task_volume::Compon
 // Eviction is a bounded query-window replacement, not another text delta.
 // Rebuild only affected tasks, visiting their retained segments once.
 pub(super) fn replace_tasks(
-    views: &mut ClientViews,
+    views: &mut TaskFileViews,
     tasks: BTreeSet<crate::task_volume::Component>,
     mut files: Vec<FileValue>,
 ) {
@@ -141,7 +141,7 @@ pub(super) fn replace_tasks(
     }
 }
 
-pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
+pub(super) fn append(views: &mut TaskFileViews, file: &FileValue) -> usize {
     let FileKey::Task { task, file: kind } = &file.key else {
         return 0;
     };

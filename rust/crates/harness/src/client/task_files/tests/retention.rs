@@ -3,7 +3,7 @@ use crate::tui::{
     ClientRenderer, PromptInput, Viewport,
     ratatui::{Terminal, backend::TestBackend},
 };
-fn picture(renderer: &mut ClientRenderer, views: &ClientViews, owner: &wire::Authority) -> String {
+fn picture(renderer: &mut ClientRenderer, views: &TaskFileViews, owner: &wire::Authority) -> String {
     renderer.update(views, owner);
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     terminal
@@ -120,9 +120,9 @@ proptest! {
             let mut client = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 2, 512).await.unwrap();
             let frozen_query = Query::Task(Component::new(frozen_task.to_string()).unwrap());
             client.session.query_snapshot(frozen_query.clone(), volume.snapshot(&frozen_query, 32).await.unwrap(), 32, 512).unwrap();
-            let frozen_key = crate::client::views::authority_key(&authority(frozen_task));
+            let frozen_key = crate::client::task_compat::views::authority_key(&authority(frozen_task));
             let frozen = client.views().transcripts[&frozen_key].clone();
-            let key = crate::client::views::authority_key(&owner);
+            let key = crate::client::task_compat::views::authority_key(&owner);
             let mut renderer = ClientRenderer::default();
             for (index, text) in pieces.iter().enumerate() {
                 generation = volume.append(generation, &chunk(task, index as u64, text.as_bytes())).await.unwrap();
@@ -202,7 +202,7 @@ async fn outcome_shaped_chunk_bytes_stay_text_during_window_rebuild() {
         client.next_change().await.unwrap();
     }
     let expected = format!("{}new", std::str::from_utf8(json).unwrap());
-    let key = crate::client::views::authority_key(&owner);
+    let key = crate::client::task_compat::views::authority_key(&owner);
     assert_eq!(client.views().transcripts[&key].streaming_text, expected);
     let reopened = TaskFileClient::observe_query(&volume, &owner, selected, 2, 512)
         .await

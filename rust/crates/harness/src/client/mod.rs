@@ -21,6 +21,7 @@ pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
 mod session;
+mod session_progress;
 pub use session::{
     ClientSession, ClientStateStore, MemoryClientState, SessionCheckpoint, SessionRecord,
 };
@@ -32,8 +33,17 @@ mod documents;
 pub use document_files::document_files;
 pub use documents::DocumentViews;
 mod usage;
-pub(crate) mod views;
-pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
+mod views;
+pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
+mod task_compat;
+pub use task_compat::{
+    ClientViews as TaskFileViews, FileQueryView as TaskFileQueryView,
+    GoalFileView as TaskGoalFileView, GoalProgress as TaskGoalProgress,
+    GoalQueryView as TaskGoalQueryView, ModelFileView as TaskModelFileView,
+    ModelQueryView as TaskModelQueryView, TaskView, ToolCallView, TranscriptView, ViewUpdate,
+};
+#[cfg(feature = "tui")]
+pub use task_compat::{GoalPanel as TaskGoalPanel, PlanPanel as TaskPlanPanel};
 #[cfg(not(target_arch = "wasm32"))]
 mod journal;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,6 +90,7 @@ pub use interest_files::InterestDocument;
 mod swarm;
 pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
 mod file_views;
+mod session_views;
 pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;

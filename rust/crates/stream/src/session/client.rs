@@ -40,6 +40,8 @@ pub use pool::model::{
 };
 #[cfg(acyclic_stream_loom)]
 pub use pool::retry_model::verify_initial_retry_yield;
+#[cfg(acyclic_stream_loom)]
+pub use pool::discovery_model::verify_discovery_admission;
 mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]

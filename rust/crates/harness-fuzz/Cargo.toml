@@ -296,3 +296,11 @@ required-features = ["runtime"]
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "client_swarm_views"
+path = "fuzz_targets/client_swarm_views.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false

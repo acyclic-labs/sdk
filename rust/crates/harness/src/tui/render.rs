@@ -6,7 +6,7 @@ use super::{
     },
 };
 use crate::{
-    client::ClientViews,
+    client::TaskFileViews,
     model::{ModelDataPart, ToolResultContent},
     wire,
 };
@@ -76,7 +76,7 @@ impl StreamText {
     }
 }
 
-/// Disposable incremental render cache. Authoritative state is always ClientViews
+/// Disposable incremental render cache. Authoritative state is always TaskFileViews
 /// and the followed files; this cache is never serialized or written back.
 #[derive(Default)]
 pub struct ClientRenderer {
@@ -130,8 +130,8 @@ impl ClientRenderer {
     }
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
-    pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
-        let key = crate::client::views::authority_key(authority);
+    pub fn update(&mut self, views: &TaskFileViews, authority: &wire::Authority) {
+        let key = crate::client::task_compat::views::authority_key(authority);
         if self.key != key {
             *self = Self {
                 key: key.clone(),
@@ -281,7 +281,7 @@ impl ClientRenderer {
     /// when this preference changes. The file remains the authoritative setting.
     pub fn configure<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
-        views: &ClientViews,
+        views: &TaskFileViews,
         authority: &wire::Authority,
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<()> {
@@ -443,7 +443,7 @@ impl ClientRenderer {
         Ok(screen)
     }
 
-    /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
+    /// Borrow cached rows for layout; no TaskFileViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.

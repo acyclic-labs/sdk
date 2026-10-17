@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{ClientViews, CommandFileRoot, CommandSession},
+    client::{TaskFileViews, CommandFileRoot, CommandSession},
     model::ModelEvent,
     task_volume::TaskVolume,
     tui::{
@@ -40,7 +40,7 @@ async fn followed_presentation_rows_are_declarative_and_live() {
         id: "task".into(),
     };
     let turn = OperationId::from_bytes([13; 16]);
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     views
         .model_event(
             &owner,
@@ -225,7 +225,7 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     let mut live = ClientRenderer::default();
     for width in [12, 20, 12] {
         views
@@ -271,7 +271,7 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
         }
         assert_eq!(pictures[0], pictures[1]);
     }
-    live.update(&ClientViews::default(), &owner);
+    live.update(&TaskFileViews::default(), &owner);
     live.layout(&files, &PromptInput::default(), 12, 12)
         .unwrap();
     assert!(live.screen().transcript.is_empty());
@@ -280,7 +280,7 @@ async fn wrapped_transcript_follows_tail_across_chunks_resize_and_reset() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
     // Property: streamed reasoning and live visibility changes paint the same
-    // cells as reopening the current ClientViews and settings-file snapshot.
+    // cells as reopening the current TaskFileViews and settings-file snapshot.
     #[test]
     fn reasoning_visibility_and_chunking_are_replay_equivalent(chunks in proptest::collection::vec((".{0,12}", proptest::bool::ANY), 1..6)) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -289,7 +289,7 @@ proptest::proptest! {
             let mut files = CommandSession::open(volume, OperationId::from_bytes([12;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
             let turn = OperationId::from_bytes([13;16]);
-            let mut views = ClientViews::default();
+            let mut views = TaskFileViews::default();
             views.model_event(&owner, turn, ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new("call".into(), "read".into(), Default::default()))).unwrap();
             let mut live = ClientRenderer::default();
             for (chunk, visible) in chunks {

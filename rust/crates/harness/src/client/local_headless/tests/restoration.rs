@@ -40,7 +40,7 @@ async fn restored<const GATE_INPUT: bool>(completed: bool) {
     if completed {
         files.inner.append(cut, &result).await.unwrap();
     }
-    let mut client = LocalFileClient::open(local.clone(), operation)
+    let mut client = Box::pin(LocalFileClient::open(local.clone(), operation))
         .await
         .unwrap();
     if !completed {
@@ -57,16 +57,16 @@ async fn restored<const GATE_INPUT: bool>(completed: bool) {
         if GATE_INPUT {
             futures::stream::pending::<Result<String>>().next().await;
         }
-        client
-            .input(operation, futures::stream::pending(), &mut output)
-            .await
+        Box::pin(client.input(operation, futures::stream::pending(), &mut output)).await
     })
     .await;
     assert!(
         matches!(outcome, Ok(Ok(HeadlessOutcome::Completed))),
         "restored operation waited for stdin"
     );
-    client.finish(Ok(HeadlessOutcome::Completed)).await.unwrap();
+    Box::pin(client.finish(Ok(HeadlessOutcome::Completed)))
+        .await
+        .unwrap();
     drop(files);
     drop(local);
 }
@@ -97,11 +97,10 @@ impl std::io::Write for Sink {
 async fn teardown<const JOIN: bool>(output_failure: bool) {
     let (_directory, local) = Box::pin(local()).await;
     let operation = OperationId::new();
-    let mut client = LocalFileClient::open(local.clone(), operation)
+    let mut client = Box::pin(LocalFileClient::open(local.clone(), operation))
         .await
         .unwrap();
-    client
-        .submit(&prepare_local_prompt(operation, "active").unwrap())
+    Box::pin(client.submit(&prepare_local_prompt(operation, "active").unwrap()))
         .await
         .unwrap();
     let joined = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -114,17 +113,16 @@ async fn teardown<const JOIN: bool>(output_failure: bool) {
         Ok(())
     });
     assert!(client.host.as_mut().now_or_never().is_none());
-    let failure = client
-        .input(
-            operation,
-            futures::stream::iter([Ok("invalid second frame".into())]),
-            &mut Sink(output_failure),
-        )
-        .await;
+    let failure = Box::pin(client.input(
+        operation,
+        futures::stream::iter([Ok("invalid second frame".into())]),
+        &mut Sink(output_failure),
+    ))
+    .await;
     assert!(failure.is_err());
     release.send(()).unwrap();
     if JOIN {
-        assert!(client.finish(failure).await.is_err());
+        assert!(Box::pin(client.finish(failure)).await.is_err());
     } else {
         drop(client);
         super::super::super::disconnect_local(local.clone())

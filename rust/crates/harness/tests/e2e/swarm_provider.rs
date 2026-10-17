@@ -36,11 +36,12 @@ impl Observed {
         // Instrumentation has one lock; it is never nested or held over a poll.
         let mut counts = self.counts.lock().unwrap_or_else(|p| p.into_inner());
         counts.server_follows += 1;
-        let lease = path.as_str().ends_with("/files").then(|| {
-            counts.live_full += 1;
-            counts.peak_full = counts.peak_full.max(counts.live_full);
-            Lease(self.counts.clone())
-        });
+        let lease =
+            (path.as_str().ends_with("/files") && path.as_str() != "swarm/files").then(|| {
+                counts.live_full += 1;
+                counts.peak_full = counts.peak_full.max(counts.live_full);
+                Lease(self.counts.clone())
+            });
         drop(counts);
         let counts = self.counts.clone();
         futures::stream::unfold(

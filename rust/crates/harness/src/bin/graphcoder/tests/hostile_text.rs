@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::ClientViews,
+    client::TaskFileViews,
     model::ModelEvent,
     tui::{ClientRenderer, ratatui::style::Modifier},
     wire,
@@ -24,7 +24,7 @@ fn hostile_text_rows_preserve_markdown_style_without_hidden_controls() {
         id: "text".into(),
     };
     for scenario in scenarios {
-        let mut views = ClientViews::default();
+        let mut views = TaskFileViews::default();
         views
             .model_event(
                 &owner,

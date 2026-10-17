@@ -1,5 +1,5 @@
 //! Disposable client views over the authorized task-volume snapshot and follow.
-use super::{ClientSession, ClientViews, MemoryClientState};
+use super::{ClientSession, TaskFileViews, MemoryClientState};
 use crate::{
     Error, Result,
     task_volume::{ChangeStream, FileQuerySource, Query},
@@ -97,7 +97,7 @@ impl TaskFileClient {
     }
 
     /// Presentation state reconstructed from the followed files.
-    pub fn views(&self) -> &ClientViews {
+    pub fn views(&self) -> &TaskFileViews {
         self.session.views()
     }
     /// Project this UI session's completed commands into its shared transcript.

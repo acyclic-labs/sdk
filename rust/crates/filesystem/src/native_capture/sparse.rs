@@ -51,7 +51,7 @@ pub(super) fn regular_data_ranges(
 
 /// Settles sparse allocation reports against bounded reads of their content.
 pub(super) async fn settled_sparse_ranges(
-    native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
+    native: &acyclic_native_runtime::NativeFile,
     metadata: &HostStat,
     reported: Vec<HostDataRange>,
     maximum_ranges: u32,
@@ -65,11 +65,8 @@ pub(super) async fn settled_sparse_ranges(
     }
     let mut settled: Vec<HostDataRange> = Vec::new();
     for range in &reported {
-        let mut reader = acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(native),
-            range.offset,
-            range.length,
-        );
+        let mut reader =
+            acyclic_native_runtime::AsyncRangeReader::new(native, range.offset, range.length);
         let end = range
             .offset
             .checked_add(range.length)

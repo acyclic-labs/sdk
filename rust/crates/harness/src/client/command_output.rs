@@ -99,7 +99,7 @@ impl Projection {
         files: &super::CommandSession<P>,
         owner: &crate::wire::Authority,
     ) -> Result<bool> {
-        let key = super::views::authority_key(owner);
+        let key = super::task_compat::views::authority_key(owner);
         let history_after = files
             .state(super::CommandFileRoot::Session, "layout.json")?
             .and_then(|value| value["history_after"].as_u64())
@@ -134,7 +134,7 @@ impl Projection {
 
     pub(super) fn apply(
         &mut self,
-        views: &mut super::ClientViews,
+        views: &mut super::TaskFileViews,
         active: Option<crate::TaskId>,
     ) -> usize {
         let reset = self.applied_revision != self.revision;

@@ -63,6 +63,11 @@ fn retry_after(
 async fn publications(
     volume: &WasmTaskVolume,
 ) -> Result<BoxProviderStream<'static, Result<(), StreamError>>, JsValue> {
+    // Local providers also expose sessions for rendering. They have no remote
+    // recovery to drive: their file clients retain explicit-flush semantics.
+    let Some(connections) = volume.connections.clone() else {
+        return Ok(Box::pin(futures::stream::pending()));
+    };
     let frames: BoxProviderStream<'static, Result<(), StreamError>> =
         if let Some(session) = &volume.session {
             let cursor = volume.volume.cut(&Query::Root).await.map_err(error)?;
@@ -92,18 +97,11 @@ async fn publications(
         } else {
             Box::pin(futures::stream::pending())
         };
-    let recovered: BoxProviderStream<'static, Result<(), StreamError>> =
-        if let Some(connections) = volume.connections.clone() {
-            Box::pin(futures::stream::try_unfold(
-                (connections, 0),
-                |(connections, generation)| async move {
-                    let next = connections.changed(generation).await?;
-                    Ok(Some(((), (connections, next))))
-                },
-            ))
-        } else {
-            Box::pin(futures::stream::pending())
-        };
+    let recovered =
+        futures::stream::try_unfold((connections, 0), |(connections, generation)| async move {
+            let next = connections.changed(generation).await?;
+            Ok(Some(((), (connections, next))))
+        });
     Ok(Box::pin(futures::stream::select(frames, recovered)))
 }
 

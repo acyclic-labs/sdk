@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn streaming_views_share_tool_identity_and_keep_provider_usage() {
-    use acyclic_harness::{client::ClientViews, model::ModelEvent};
-    let mut views = ClientViews::default();
+    use acyclic_harness::{client::TaskFileViews, model::ModelEvent};
+    let mut views = TaskFileViews::default();
     views
         .model_event(
             &owner(),

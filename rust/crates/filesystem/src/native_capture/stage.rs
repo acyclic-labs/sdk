@@ -58,10 +58,9 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         meter.clone().release(bytes).map_err(capture_demand_error)?;
         return Ok(staged);
     }
-    let positional = native_positional_file(file, meter)?;
-    let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
-    capture_allocate(meter, native_bytes)?;
-    let native = std::sync::Arc::new(positional);
+    let native = native_positional_file(file, meter)?;
+    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+    let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {
         Some(ranges) => Some(
@@ -77,7 +76,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(&native),
+            std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
             range.offset,
             range.length,
         );
@@ -102,11 +101,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         staged.push((*range, content));
     }
     finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
-    let bytes = ranges
-        .as_ref()
-        .map_or(0, vector_bytes)
-        .checked_add(native_bytes)
-        .ok_or(WorkError::Overflow)?;
+    let bytes = ranges.as_ref().map_or(0, vector_bytes);
     drop(ranges);
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
@@ -170,7 +165,9 @@ pub(super) fn native_positional_file(
     })
 }
 
-impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader {
+impl<F: std::borrow::Borrow<acyclic_native_runtime::NativeFile>> crate::kernel::AsyncBlobSource
+    for acyclic_native_runtime::AsyncRangeReader<F>
+{
     async fn read_owned_with_native_work(
         &mut self,
         maximum: usize,

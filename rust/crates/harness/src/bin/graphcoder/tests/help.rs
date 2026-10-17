@@ -1,7 +1,7 @@
 use acyclic_harness::{
     OperationId,
     client::{
-        ClientViews, CommandFileRoot, CommandSession, DEFAULT_COMMANDS_JSON, handle_tui_input,
+        TaskFileViews, CommandFileRoot, CommandSession, DEFAULT_COMMANDS_JSON, handle_tui_input,
     },
     task_volume::TaskVolume,
     tui::{
@@ -48,7 +48,7 @@ proptest::proptest! {
             let volume = Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("help").unwrap()).await.unwrap());
             let mut files = CommandSession::open(volume, OperationId::from_bytes([3;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
-            let mut views = ClientViews::default();
+            let mut views = TaskFileViews::default();
             views.model_event(&owner, OperationId::from_bytes([2;16]), acyclic_harness::model::ModelEvent::Content { delta: "Original transcript".into() }).unwrap();
             let mut live = ClientRenderer::default();
             live.update(&views, &owner);

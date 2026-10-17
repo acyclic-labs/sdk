@@ -1,9 +1,9 @@
 //! Durable outbox and replay reducer. A record is committed before publication.
 
 use super::{
-    ClientViews,
+    TaskFileViews,
     content::MessageContent,
-    views::{authority_key, payload},
+    task_compat::views::{authority_key, payload},
 };
 use crate::{
     Error, Result, wire,
@@ -79,7 +79,7 @@ pub struct ClientSession<S> {
     pending: Vec<Option<wire::CommandEnvelope>>,
     operations: HashMap<String, usize>,
     idempotency: HashSet<(String, String)>,
-    views: ClientViews,
+    views: TaskFileViews,
     view_revisions: BTreeMap<String, u64>,
     tail_records: usize,
 }
@@ -95,7 +95,7 @@ impl<S: ClientStateStore> ClientSession<S> {
             pending: Vec::new(),
             operations: HashMap::new(),
             idempotency: HashSet::new(),
-            views: ClientViews::default(),
+            views: TaskFileViews::default(),
             view_revisions: BTreeMap::new(),
             tail_records: 0,
         };
@@ -421,7 +421,7 @@ impl<S: ClientStateStore> ClientSession<S> {
 
     /// State shared by every renderer.
     #[must_use]
-    pub fn views(&self) -> &ClientViews {
+    pub fn views(&self) -> &TaskFileViews {
         &self.views
     }
 
@@ -591,7 +591,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending = checkpoint.pending.into_iter().map(Some).collect();
         self.operations = operations;
         self.idempotency = idempotency;
-        self.views = ClientViews::default();
+        self.views = TaskFileViews::default();
         self.view_revisions.clear();
         self.tail_records = 0;
         Ok(())

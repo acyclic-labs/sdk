@@ -375,7 +375,7 @@ fuzz_target!(|data: &[u8]| {
             assert_eq!(
                 renderer
                     .configure(
-                        &acyclic_harness::client::ClientViews::default(),
+                        &acyclic_harness::client::TaskFileViews::default(),
                         &owner,
                         &files
                     )

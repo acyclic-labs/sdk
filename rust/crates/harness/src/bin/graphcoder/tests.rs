@@ -1,7 +1,7 @@
-//! Executable composition uses the real shared ClientViews and Markdown renderer.
+//! Executable composition uses the real shared TaskFileViews and Markdown renderer.
 use acyclic_harness::{
     OperationId,
-    client::ClientViews,
+    client::TaskFileViews,
     model::ModelEvent,
     tui::{
         ClientRenderer, PromptInput, Viewport,
@@ -51,7 +51,7 @@ fn shared_markdown_is_visible_and_snapshot_reset_removes_old_text() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     let mut renderer = ClientRenderer::default();
     views
         .model_event(
@@ -67,19 +67,19 @@ fn shared_markdown_is_visible_and_snapshot_reset_removes_old_text() {
     assert!(visible.contains("Heading"));
     assert!(visible.contains("streamed answer"));
     assert!(!visible.contains("**streamed"));
-    renderer.update(&ClientViews::default(), &owner);
+    renderer.update(&TaskFileViews::default(), &owner);
     assert!(!picture(&renderer).contains("streamed answer"));
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // Property: the composed cells after arbitrary Unicode delta boundaries
-    // equal the cells obtained by projecting the same complete ClientViews text.
+    // equal the cells obtained by projecting the same complete TaskFileViews text.
     #[test]
     fn composed_markdown_is_independent_of_chunking(chunks in proptest::collection::vec(".{0,12}", 0..6)) {
         let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
         let operation = OperationId::from_bytes([1;16]);
-        let mut views = ClientViews::default();
+        let mut views = TaskFileViews::default();
         let mut live = ClientRenderer::default();
         live.update(&views, &owner);
         for chunk in &chunks {
@@ -166,7 +166,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
             b"**Compose widgets**".to_vec(),
         ))
         .unwrap();
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     views.documents.insert(key.clone(), documents);
     views.tasks.insert(
         key,
@@ -190,7 +190,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
     ] {
         assert!(visible.contains(text), "missing {text}");
     }
-    renderer.update(&ClientViews::default(), &owner);
+    renderer.update(&TaskFileViews::default(), &owner);
     let visible = picture(&renderer);
     for text in ["Finish rewrite", "Compose widgets", "owner feedback"] {
         assert!(!visible.contains(text), "stale {text}");
@@ -204,7 +204,7 @@ async fn tool_output_deltas_repaint_without_a_new_committed_message() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     views
         .model_event(
             &owner,
@@ -555,7 +555,7 @@ proptest::proptest! {
         runtime.block_on(async {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
             let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
-            let mut views = ClientViews::default();
+            let mut views = TaskFileViews::default();
             let mut documents = DocumentViews { goal: Some("Goal contents".into()), ..DocumentViews::default() };
             documents.plans.insert(PlanName::new("layout").unwrap(), "Plan contents".into());
             views.documents.insert(key, documents);

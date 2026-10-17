@@ -336,8 +336,7 @@ impl HeadlessClient for LocalFileClient {
         validate(&command, operation)?;
         self.initial(output)?;
         self.submit(&command).await?;
-        self.run(operation, futures::stream::empty(), false, output)
-            .await
+        Box::pin(self.run(operation, futures::stream::empty(), false, output)).await
     }
     async fn input<W: Write>(
         &mut self,
@@ -345,7 +344,7 @@ impl HeadlessClient for LocalFileClient {
         input: impl Stream<Item = Result<String>> + Unpin,
         output: &mut W,
     ) -> Result<HeadlessOutcome> {
-        self.run(operation, input, true, output).await
+        Box::pin(self.run(operation, input, true, output)).await
     }
 }
 

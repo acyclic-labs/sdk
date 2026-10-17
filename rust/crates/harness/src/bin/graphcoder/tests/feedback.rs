@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{ClientViews, CommandFileRoot, CommandSession, handle_tui_input},
+    client::{TaskFileViews, CommandFileRoot, CommandSession, handle_tui_input},
     task_volume::{FileKey, Query, TaskFile, TaskVolume},
     tui::{
         ClientRenderer, InputEffect, PromptInput, Viewport,
@@ -72,7 +72,7 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
         kind: acyclic_harness::wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     views.tasks.insert(
         format!(
             "{}:{}",

@@ -154,7 +154,7 @@ impl Screen<'_> {
         }
     }
 
-    /// Compose shared widgets without cloning ClientViews or their transcript.
+    /// Compose shared widgets without cloning TaskFileViews or their transcript.
     /// Scroll and open panels are supplied from the user's followed layout file.
     pub fn render(
         &self,

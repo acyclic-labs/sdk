@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: StreamProvider> Session<P> {
+impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn interest(&mut self, interest: wire::SessionInterest) -> Result<(), StreamError> {
         if interest.revision <= self.revision {
             return Err(StreamError::InvalidArgument);
@@ -84,6 +84,7 @@ impl<P: StreamProvider> Session<P> {
                     resume.next,
                     preceding,
                     identity,
+                    self.executor.clone(),
                 );
                 (latest, source)
             }
@@ -140,15 +141,17 @@ impl<P: StreamProvider> Session<P> {
 }
 
 // Provider opens run independently so a remote owner never stalls other follows.
-fn follow_source<P: StreamProvider>(
+fn follow_source<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
     path: StreamPath,
     from: u64,
     preceding: Option<crate::CommitId>,
     identity: wire::SessionChannel,
+    executor: Arc<dyn runtime::Executor>,
 ) -> Source {
     let state = (
         provider,
+        executor,
         path,
         from,
         preceding,
@@ -156,57 +159,74 @@ fn follow_source<P: StreamProvider>(
         false,
         0_u8,
     );
-    stream::try_unfold(
-        state,
-        |(provider, path, mut next, mut preceding, mut records, mut opened, mut ended)| async move {
-            loop {
-                if records.is_none() {
-                    records = Some(match preceding {
-                        Some(anchor) => provider.follow_checked(path.clone(), next, anchor).await?,
-                        None => provider.follow(path.clone(), next).await?,
-                    });
-                    if !opened {
-                        opened = true;
+    Box::pin(
+        stream::try_unfold(
+            state,
+            |(
+                provider,
+                executor,
+                path,
+                mut next,
+                mut preceding,
+                mut records,
+                mut opened,
+                mut ended,
+            )| async move {
+                loop {
+                    if records.is_none() {
+                        records = Some(match preceding {
+                            Some(anchor) => {
+                                provider.follow_checked(path.clone(), next, anchor).await?
+                            }
+                            None => provider.follow(path.clone(), next).await?,
+                        });
+                        if !opened {
+                            opened = true;
+                            return Ok(Some((
+                                Event::Opened(preceding),
+                                (
+                                    provider, executor, path, next, preceding, records, opened,
+                                    ended,
+                                ),
+                            )));
+                        }
+                    }
+                    if let Some(record) = records
+                        .as_mut()
+                        .ok_or(StreamError::Unavailable)?
+                        .next()
+                        .await
+                        .transpose()?
+                    {
+                        next = record
+                            .sequence
+                            .checked_add(1)
+                            .ok_or(StreamError::OutOfRange)?;
+                        ended = 0;
+                        preceding = preceding.map(|_| record.commit_id);
                         return Ok(Some((
-                            Event::Opened(preceding),
-                            (provider, path, next, preceding, records, opened, ended),
+                            Event::Record(record),
+                            (
+                                provider, executor, path, next, preceding, records, opened, ended,
+                            ),
                         )));
+                    } else {
+                        // EOF is transport recovery, never an idle record wakeup.
+                        // Keep already queued records on this generation intact.
+                        records = None;
+                        ended += 1;
+                        if ended >= 3 {
+                            return Err(StreamError::Unavailable);
+                        }
+                        if ended > 1 {
+                            executor.sleep(10).await;
+                        }
                     }
                 }
-                if let Some(record) = records
-                    .as_mut()
-                    .ok_or(StreamError::Unavailable)?
-                    .next()
-                    .await
-                    .transpose()?
-                {
-                    next = record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(StreamError::OutOfRange)?;
-                    ended = 0;
-                    preceding = preceding.map(|_| record.commit_id);
-                    return Ok(Some((
-                        Event::Record(record),
-                        (provider, path, next, preceding, records, opened, ended),
-                    )));
-                } else {
-                    // EOF is transport recovery, never an idle record wakeup.
-                    // Keep already queued records on this generation intact.
-                    records = None;
-                    ended += 1;
-                    if ended >= 3 {
-                        return Err(StreamError::Unavailable);
-                    }
-                    if ended > 1 {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                }
-            }
-        },
+            },
+        )
+        .map(move |event| (identity, event)),
     )
-    .map(move |event| (identity, event))
-    .boxed()
 }
 
 fn unique(ids: &mut BTreeSet<u64>, channel: wire::SessionChannel) -> Result<(), StreamError> {

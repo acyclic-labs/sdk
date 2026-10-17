@@ -153,13 +153,13 @@ proptest! {
         count in any::<u32>(), status in 0usize..3, fault in 0u8..8,
     ) {
         futures::executor::block_on(async {
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let statuses = [("active", GoalStatus::Active), ("done", GoalStatus::Done), ("blocked", GoalStatus::Blocked)];
             let text = format!("---\nstatus: {}\nreason: waiting\n---\nold", statuses[status].0);
             let head = Source::head(count).acknowledging(1);
             let goal = Source::goal(&text);
             let _follow = views.select_goal_view(&goal, &head, 4096).await.unwrap();
-            let identity = views.queries.iter().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
+            let identity = views.selections().find(|(_, view)| view.query() == &Query::File(FileKey::Goal)).unwrap().0;
             let selected = views.goal_view(identity.0, identity.1).unwrap();
             assert_eq!(selected.progress.unwrap().continuations, count);
             assert!(matches!(selected.goal, super::super::GoalFileView::Present { goal }
@@ -182,7 +182,7 @@ mod interleavings;
 
 #[test]
 fn cancellation_before_both_cuts_are_ready_keeps_the_previous_view() {
-    let mut views = ClientViews::default();
+    let mut views = new_views();
     let before = views.clone();
     let mut head = Source::head(2);
     head.pending = true;
@@ -199,7 +199,7 @@ fn cancellation_before_both_cuts_are_ready_keeps_the_previous_view() {
 fn either_required_follow_ending_demands_a_reset() {
     for head_ends in [false, true] {
         futures::executor::block_on(async {
-            let mut views = ClientViews::default();
+            let mut views = new_views();
             let mut goal = Source::goal("new");
             let mut head = Source::head(2);
             goal.closed = !head_ends;
@@ -211,4 +211,22 @@ fn either_required_follow_ending_demands_a_reset() {
             ));
         });
     }
+}
+
+fn new_views() -> ClientViews {
+    ClientViews::new(
+        acyclic_stream::StreamPath::new("swarm").unwrap(),
+        crate::client::ClientViewLimits {
+            agents: 0,
+            selected: 0,
+            overview_values: 0,
+            overview_bytes: 0,
+            query: crate::client::QueryViewLimits {
+                files: 0,
+                segments: 0,
+                bytes: 0,
+            },
+        },
+    )
+    .unwrap()
 }

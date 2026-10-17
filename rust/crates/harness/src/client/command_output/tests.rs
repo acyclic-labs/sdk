@@ -8,7 +8,7 @@ proptest! {
     fn live_updates_copy_only_the_new_suffix(prefix in "[a-z]{32,256}", count in 8usize..32) {
         let task = crate::TaskId::new();
         let key = format!("AGGREGATE_KIND_TASK:{task}");
-        let mut views = super::super::ClientViews::default();
+        let mut views = super::super::TaskFileViews::default();
         let mut projection = Projection { owner: "owner".into(), after: 1,
             revision: 1, segments: vec![std::sync::Arc::from(prefix.as_str())], ..Default::default() };
         let mut actual = 0;
@@ -29,7 +29,7 @@ proptest! {
 #[cfg(all(feature = "tui", feature = "terminal"))]
 fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
     use crate::{
-        client::{ClientViews, task_projection},
+        client::{TaskFileViews, task_projection},
         task_volume::{Channel, Component, FileKey, TaskFile},
         tui::ClientRenderer,
         wire,
@@ -39,7 +39,7 @@ fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
         kind: wire::AggregateKind::Task as i32,
         id: "composed".into(),
     };
-    let mut views = ClientViews::default();
+    let mut views = TaskFileViews::default();
     let mut projection = Projection {
         owner: "AGGREGATE_KIND_TASK:composed".into(),
         after: u64::from(!prefix.is_empty()),
@@ -88,7 +88,7 @@ fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
         start = end;
         chunks += 1;
     }
-    let mut unsplit = ClientViews::default();
+    let mut unsplit = TaskFileViews::default();
     let transcript = unsplit
         .transcripts
         .entry("AGGREGATE_KIND_TASK:composed".into())

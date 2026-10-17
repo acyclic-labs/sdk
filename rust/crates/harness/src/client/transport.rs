@@ -295,7 +295,7 @@ impl<S: ClientStateStore> HarnessClient<S> {
         self.session.tool_output(authority, call_id, delta)
     }
 
-    /// Fold one platform file/model update through the same tracked ClientViews.
+    /// Fold one platform file/model update through the same tracked TaskFileViews.
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
         self.session.apply_update(update)
     }

@@ -19,7 +19,7 @@ proptest! {
     fn appended_segments_have_linear_work_and_completed_tasks_are_frozen(
         pieces in prop::collection::vec("[a-z]{8,16}", 8..32),
     ) {
-        let mut views = ClientViews::default();
+        let mut views = TaskFileViews::default();
         let mut work = 0;
         let mut broken = 0;
         let mut bytes = 0;
@@ -29,7 +29,7 @@ proptest! {
             bytes += text.len();
             prop_assert_eq!(work, bytes);
             prop_assert_eq!(append(&mut views, &file), 0, "cursor must reject replay");
-            let mut reopened = ClientViews::default();
+            let mut reopened = TaskFileViews::default();
             for (sequence, prior) in pieces[..=index].iter().enumerate() {
                 broken += append(&mut reopened, &chunk("active", sequence as u64, prior.as_bytes()));
             }
@@ -73,13 +73,13 @@ fn tool_channels_keep_utf8_boundaries_independent_of_interleaving() {
         )
     })
     .collect();
-    let mut live = ClientViews::default();
+    let mut live = TaskFileViews::default();
     for file in &values {
         append(&mut live, file);
     }
     let mut sorted = values.clone();
     sorted.sort_by(|a, b| a.key.cmp(&b.key));
-    let mut reopened = ClientViews::default();
+    let mut reopened = TaskFileViews::default();
     for file in &sorted {
         append(&mut reopened, file);
     }
@@ -121,11 +121,11 @@ fn older_completion_does_not_commit_the_current_turns_provisional_suffix() {
     for channel in [Channel::Text, Channel::Reasoning] {
         first.channel = Some(channel);
         next.channel = Some(channel);
-        let mut live = ClientViews::default();
+        let mut live = TaskFileViews::default();
         for file in [&first, &completion, &next] {
             append(&mut live, file);
         }
-        let mut reopened = ClientViews::default();
+        let mut reopened = TaskFileViews::default();
         for file in [&first, &next, &completion] {
             append(&mut reopened, file);
         }

@@ -362,6 +362,8 @@ impl LocalHarness {
             self.limits.file_bytes,
         )
         .await?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        tests::compaction_race::after_capture(task).await?;
         if let Some(mut selected) = selected {
             if value["model"].is_null() {
                 value["model"] = json!(
@@ -373,8 +375,23 @@ impl LocalHarness {
             }
             selected.through.get_or_insert(cut.cursor);
             value["summary"] = serde_json::to_value(selected).map_err(storage)?;
-        } else if let Some(summary) = self.own_value(task, "summary").await? {
-            value["summary"] = json!(summary);
+            return Ok(value);
+        }
+        let context_key = key(task, "context")?;
+        if let Some(file) = cut.files.iter().find(|file| file.key == context_key) {
+            // The legacy inline fallback belongs to this observation too. A fresh
+            // read could resolve a first checkpoint published after capture.
+            let mut context = decode(&file.bytes, self.limits.file_bytes)?;
+            let context = context
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("context must be an object".into()))?;
+            let summary = context
+                .remove("summary")
+                .ok_or_else(|| Error::Invalid("compacted context missing summary".into()))?;
+            if !summary.is_string() {
+                return Err(Error::Invalid("summary must be text".into()));
+            }
+            value["summary"] = summary;
         }
         Ok(value)
     }

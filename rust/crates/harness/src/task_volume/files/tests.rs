@@ -341,7 +341,7 @@ async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
     // Property: authorized GOAL/plans snapshots plus push changes equal reopening
-    // at the final cut, in both ClientViews and the composed TestBackend cells.
+    // at the final cut, in both TaskFileViews and the composed TestBackend cells.
     #[test]
     fn document_binding_snapshot_follow_equals_reopen(events in prop::collection::vec((0u8..2, ".{0,20}"), 1..7), cut in 0usize..7) {
         use crate::{client::{ClientSession, MemoryClientState, document_files}, wire};
