@@ -72,79 +72,58 @@ fn undoable_chat_replacement_negative_control() {
 }
 
 fn allocation_model<const PER_GRAPHEME: bool>() {
-    let text = "a".repeat(8192);
-    let source = [Line::raw(text.clone())];
-    let mut projection = WrappedLines::default();
-    projection.update(&source, 0, 80);
-    let rows = 8192usize.div_ceil(80);
     let selected = acyclic_harness_tui::config::default_style(
         acyclic_harness_tui::config::ThemeRole::Selection,
     )
     .add_modifier(Modifier::UNDERLINED);
-    // Independent fixed-width ASCII baseline; no candidate layout or state.
-    let mut baseline = Vec::with_capacity(rows);
-    let reference = acyclic_test_support::measure(|| {
-        for chunk in text.as_bytes().chunks(80) {
-            baseline.push(Line::from(vec![Span::styled(
-                String::from_utf8(chunk.to_vec()).unwrap(),
-                selected,
-            )]));
-        }
-    });
-    let candidate = acyclic_test_support::measure(|| {
-        projection.highlight(&[0..8192], None, selected);
-        if PER_GRAPHEME {
-            let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
-            std::hint::black_box(spans);
-        }
-    });
-    assert_eq!(reference.count_total, (2 * rows) as u64);
-    assert_eq!(
-        reference.bytes_total,
-        (8192 + rows * std::mem::size_of::<Span<'static>>()) as u64
-    );
-    assert_eq!(
-        candidate.count_total, reference.count_total,
-        "highlight allocation count must equal coalesced rows"
-    );
-    assert_eq!(
-        candidate.bytes_total, reference.bytes_total,
-        "highlight allocation bytes must equal coalesced rows"
-    );
-    assert_eq!(
-        projection
-            .rows()
-            .iter()
-            .map(|row| row.spans.len())
-            .sum::<usize>(),
-        rows
-    );
-    assert_eq!(projection.rows(), baseline);
-    // The complete public query path also has an exact budget: matcher buffers,
-    // 8192 retained match locations, and one extra span for the selected byte.
-    let mut search = acyclic_harness_tui::TranscriptSearch::default();
-    let query = acyclic_test_support::measure(|| search.update(&mut projection, "a", 0, selected));
-    assert_eq!(search.count(), 8192);
-    assert_eq!(
-        query.count_total,
-        (2 * rows + 18) as u64,
-        "full query allocation count"
-    );
-    assert_eq!(
-        query.bytes_total,
-        (8192 + (rows + 4) * std::mem::size_of::<Span<'static>>() + 327672) as u64,
-        "full query allocation bytes"
-    );
-
-    assert_eq!(
-        projection
-            .rows()
-            .iter()
-            .flat_map(|row| &row.spans)
-            .map(|span| span.content.as_ref())
-            .collect::<String>(),
-        text
-    );
+    let visible = 10;
+    for length in [8192, 81920] {
+        let text = "a".repeat(length);
+        let mut projection = WrappedLines::default();
+        projection.update(&[Line::raw(text.clone())], 0, 80);
+        let mut search = acyclic_harness_tui::TranscriptSearch::default();
+        search.update(&projection, "a", 0, selected);
+        // Independently initialized fixed-width baseline for the same viewport.
+        let mut baseline = Vec::with_capacity(visible);
+        let reference = acyclic_test_support::measure(|| {
+            for chunk in text.as_bytes().chunks(80).skip(10).take(visible) {
+                baseline.push(Line::from(vec![Span::styled(
+                    String::from_utf8(chunk.to_vec()).unwrap(),
+                    selected,
+                )]));
+            }
+        });
+        let mut frame = Vec::with_capacity(visible);
+        let candidate = acyclic_test_support::measure(|| {
+            // Navigation and unchanged-query checks are part of frame work.
+            search.update(&projection, "a", 1, selected);
+            for row in 10..10 + visible {
+                frame.push(search.row(&projection, row));
+            }
+            if PER_GRAPHEME {
+                let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
+                std::hint::black_box(spans);
+            }
+        });
+        assert_eq!(reference.count_total, (2 * visible) as u64);
+        assert_eq!(
+            reference.bytes_total,
+            ((80 + std::mem::size_of::<Span<'static>>()) * visible) as u64
+        );
+        assert_eq!(
+            candidate.count_total, reference.count_total,
+            "highlight allocation count must equal coalesced rows"
+        );
+        assert_eq!(
+            candidate.bytes_total, reference.bytes_total,
+            "highlight allocation bytes must equal coalesced rows"
+        );
+        assert_eq!(frame, baseline);
+        assert_eq!(
+            frame.iter().map(|row| row.spans.len()).sum::<usize>(),
+            visible
+        );
+    }
 }
 
 #[test]

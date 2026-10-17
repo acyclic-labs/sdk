@@ -1,5 +1,13 @@
 use super::*;
 use proptest::prelude::*;
+fn painted(
+    view: &TranscriptSearch,
+    wrapped: &crate::WrappedLines,
+) -> Vec<ratatui::text::Line<'static>> {
+    (0..wrapped.rows().len())
+        .map(|row| view.row(wrapped, row))
+        .collect()
+}
 fn selection() -> ratatui::style::Style {
     crate::config::default_style(crate::config::ThemeRole::Selection)
 }
@@ -65,7 +73,7 @@ proptest! {
         wrapped.update(&source,0,width);
         view.update(&mut wrapped,&query,0,selection());
         prop_assert_eq!(view.count(),reference(&text,&query).len());
-        let actual: String=wrapped.rows().iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
+        let actual: String=painted(&view,&wrapped).iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
         let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
         let expected: String=layout.rows.iter().flat_map(|row| &row.cells).map(|cell|cell.symbol.as_str()).collect();
         prop_assert_eq!(actual,expected);
@@ -104,25 +112,24 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
     view.update(&mut wrapped, "strasse", 0, selection());
+    let painted_rows = painted(&view, &wrapped);
     assert_eq!(view.count(), 2);
     assert_eq!(view.selected_row(-1), 1);
     assert_eq!(view.selected_row(2), 0);
     assert!(
-        wrapped.rows()[0].spans[0]
+        painted_rows[0].spans[0]
             .style
             .add_modifier
             .contains(Modifier::BOLD | Modifier::UNDERLINED)
     );
     assert!(
-        wrapped
-            .rows()
+        painted_rows
             .iter()
             .flat_map(|line| &line.spans)
             .all(|span| span.style.add_modifier.contains(Modifier::UNDERLINED))
     );
     assert_eq!(
-        wrapped
-            .rows()
+        painted_rows
             .iter()
             .map(|line| line
                 .spans
@@ -189,7 +196,7 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     let mut search = TranscriptSearch::default();
     search.update(&mut wrapped, "strasse", 0, selection());
     assert_eq!(search.count(), 2);
-    wrapped.highlight(&[], None, selection());
+    assert_ne!(painted(&search, &wrapped), ordinary);
     assert_eq!(wrapped.rows(), ordinary);
 }
 
@@ -209,7 +216,8 @@ fn partial_matches_preserve_every_style_boundary() {
     wrapped.update(&source, 0, 80);
     let mut search = TranscriptSearch::default();
     search.update(&mut wrapped, "bc", 0, selection());
-    let spans = &wrapped.rows()[0].spans;
+    let rows = painted(&search, &wrapped);
+    let spans = &rows[0].spans;
     assert_eq!(
         spans
             .iter()
@@ -245,21 +253,21 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     search.update(&mut wrapped, "one", 0, red);
     assert_eq!(search.position(0), 1);
     assert!(
-        wrapped.rows()[0].spans[0]
+        painted(&search, &wrapped)[0].spans[0]
             .style
             .add_modifier
             .contains(Modifier::REVERSED)
     );
     search.update(&mut wrapped, "one", if INDEX { 1 } else { 0 }, red);
     assert!(
-        !wrapped.rows()[0].spans[0]
+        !painted(&search, &wrapped)[0].spans[0]
             .style
             .add_modifier
             .contains(Modifier::REVERSED),
         "selected occurrence must change within the same row"
     );
     assert!(
-        wrapped.rows()[0]
+        painted(&search, &wrapped)[0]
             .spans
             .last()
             .unwrap()
@@ -272,12 +280,12 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     let blue = Style::default().fg(Color::Blue).bg(Color::Yellow);
     search.update(&mut wrapped, "one", 1, if THEME { blue } else { red });
     assert_eq!(
-        wrapped.rows()[0].spans[0].style.fg,
+        painted(&search, &wrapped)[0].spans[0].style.fg,
         Some(Color::Blue),
         "resolved selection color must change"
     );
     assert_eq!(
-        wrapped.rows()[0].spans.last().unwrap().style.bg,
+        painted(&search, &wrapped)[0].spans.last().unwrap().style.bg,
         Some(Color::Yellow)
     );
 }

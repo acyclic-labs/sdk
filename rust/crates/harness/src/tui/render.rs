@@ -368,10 +368,7 @@ impl ClientRenderer {
                 self.search_cut = Some(cut);
             }
         } else {
-            if self.search_cut.take().is_some() {
-                self.wrapped_transcript
-                    .highlight(&[], None, Style::default());
-            }
+            self.search_cut = None;
         }
         Ok(())
     }
@@ -463,6 +460,8 @@ impl ClientRenderer {
                     .and_then(|value| value["search_index"].as_i64())
                     .unwrap_or(0);
                 screen.transcript = self.wrapped_transcript.rows();
+                screen.transcript_search =
+                    (self.search.count() != 0).then_some((&self.wrapped_transcript, &self.search));
                 screen.reasoning = &[];
                 screen.search_row =
                     (self.search.count() != 0).then(|| self.search.selected_row(index));

@@ -14,6 +14,8 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Search decoration over the existing wrapping projection; only visible rows are painted.
+    pub transcript_search: Option<(&'a crate::WrappedLines, &'a crate::TranscriptSearch)>,
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -182,23 +184,25 @@ impl Screen<'_> {
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
-            for (row, line) in self
-                .reasoning
-                .iter()
-                .chain(self.transcript)
-                .skip(transcript_scroll)
-                .take(usize::from(areas.transcript.height))
-                .enumerate()
-            {
-                frame.render_widget(
-                    line,
-                    Rect::new(
-                        areas.transcript.x,
-                        areas.transcript.y + row as u16,
-                        areas.transcript.width,
-                        1,
-                    ),
+            let end = (self.reasoning.len() + self.transcript.len())
+                .min(transcript_scroll.saturating_add(usize::from(areas.transcript.height)));
+            for (row, index) in (transcript_scroll..end).enumerate() {
+                let area = Rect::new(
+                    areas.transcript.x,
+                    areas.transcript.y + row as u16,
+                    areas.transcript.width,
+                    1,
                 );
+                if index < self.reasoning.len() {
+                    frame.render_widget(&self.reasoning[index], area);
+                } else {
+                    let index = index - self.reasoning.len();
+                    if let Some((projection, search)) = self.transcript_search {
+                        frame.render_widget(search.row(projection, index), area);
+                    } else {
+                        frame.render_widget(&self.transcript[index], area);
+                    }
+                }
             }
         } else {
             let block = Block::default()
