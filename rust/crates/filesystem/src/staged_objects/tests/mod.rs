@@ -128,6 +128,7 @@ async fn spill_fixture(
     Ok((id, bytes))
 }
 
+mod native_batch;
 mod native_read;
 mod native_write;
 mod ordinary;
