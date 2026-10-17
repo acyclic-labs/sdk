@@ -7,13 +7,16 @@ mod oracle;
 
 fn caller(value: &str, field: usize, expiry: u64) -> Result<AdmittedCaller, GuestMetadataError> {
     let mut fields = ["a", "o", "p", "c", "i"];
-    fields[field] = value;
+    *fields
+        .get_mut(field)
+        .ok_or(GuestMetadataError("caller field"))? = value;
+    let [account, org, principal, credential, actor] = fields;
     AdmittedCaller::new(
-        fields[0].into(),
-        fields[1].into(),
-        fields[2].into(),
-        fields[3].into(),
-        fields[4].into(),
+        account.into(),
+        org.into(),
+        principal.into(),
+        credential.into(),
+        actor.into(),
         expiry,
     )
 }
@@ -29,7 +32,7 @@ proptest! {
         } else {
             json!({"accountId":"a","orgId":"o","principal":principal,"credentialId":"c","actorId":"i","expiresAtMs":expiry.to_string(),"capability":cap})
         };
-        let key = if positional { &raw[5] } else { &raw["expiresAtMs"] };
+        let key = if positional { raw.get(5) } else { raw.get("expiresAtMs") }.ok_or_else(|| TestCaseError::fail("expiry field"))?;
         let original = key.as_str().ok_or_else(|| TestCaseError::fail("expiry string"))?.as_ptr();
         let bytes = serde_json::to_vec(&raw)?;
         let mut decoded = None;
@@ -75,7 +78,8 @@ proptest! {
         oracle::check(&serde_json::to_vec(&positional)?);
         let names = ["accountId","orgId","principal","credentialId","actorId"];
         let mut raw = json!({"accountId":"a","orgId":"o","principal":"p","credentialId":"c","actorId":"i","expiresAtMs":"1","capability":null,"future":true});
-        raw[names[field]] = text.clone().into();
+        let name = names.get(field).ok_or_else(|| TestCaseError::fail("caller field"))?;
+        *raw.get_mut(*name).ok_or_else(|| TestCaseError::fail("metadata field"))? = text.clone().into();
         prop_assert_eq!(caller(&text, field, 1).is_ok(), valid);
         let decoded = serde_json::from_value::<AdmittedCaller>(raw.clone());
         prop_assert_eq!(decoded.is_ok(), valid);
@@ -83,7 +87,9 @@ proptest! {
             prop_assert_eq!(serde_json::from_slice::<AdmittedCaller>(&serde_json::to_vec(&decoded)?)?, decoded);
         }
         oracle::check(&serde_json::to_vec(&raw)?);
-        let positional = json!([raw["accountId"], raw["orgId"], raw["principal"], raw["credentialId"], raw["actorId"], "1", null]);
+        let fields = ["accountId", "orgId", "principal", "credentialId", "actorId"].map(|name| raw.get(name));
+        let [Some(account), Some(org), Some(principal), Some(credential), Some(actor)] = fields else { return Err(TestCaseError::fail("metadata fields")); };
+        let positional = json!([account, org, principal, credential, actor, "1", null]);
         prop_assert_eq!(serde_json::from_value::<AdmittedCaller>(positional.clone()).is_ok(), valid);
         oracle::check(&serde_json::to_vec(&positional)?);
     }
@@ -171,7 +177,8 @@ fn rejected_metadata_never_enters_context() -> Result<(), Box<dyn std::error::Er
         .build();
     assert_eq!(context.admitted_identity.as_ref(), Some(&caller));
     let mut raw = serde_json::to_value(&caller)?;
-    raw["capability"]["version"] = 0.into();
+    *raw.pointer_mut("/capability/version")
+        .ok_or("capability version")? = 0.into();
     assert!(serde_json::from_value::<AdmittedCaller>(raw).is_err());
     Ok(())
 }

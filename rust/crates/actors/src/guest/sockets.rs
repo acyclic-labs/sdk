@@ -50,7 +50,7 @@ pub enum SocketTransport {
 )]
 #[non_exhaustive]
 pub enum GuestSocketEvent {
-    /// Open is a request; answer with SocketAccept or SocketReject.
+    /// Open is a request; answer with `SocketAccept` or `SocketReject`.
     Open {
         /// Target actor; connection identity is on the enclosing socket event.
         actor_id: String,
@@ -121,7 +121,7 @@ pub enum GuestEventResult {
         #[ts(type = "Uint8Array")]
         payload: Bytes,
     },
-    /// Admit the pending SocketOpen with bounded attachment and tags.
+    /// Admit the pending `SocketOpen` with bounded attachment and tags.
     SocketAccept {
         /// Selected offered subprotocol.
         subprotocol: Option<String>,
@@ -131,7 +131,7 @@ pub enum GuestEventResult {
         /// Checkpointed broadcast tags (at most eight, each at most 64 UTF-8 bytes).
         tags: Vec<String>,
     },
-    /// Reject the pending SocketOpen without installing a connection.
+    /// Reject the pending `SocketOpen` without installing a connection.
     SocketReject {
         /// HTTP rejection status.
         status: u16,
