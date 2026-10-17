@@ -67,12 +67,16 @@ impl Destination for Pinned {
     fn detach(&self, _fence: Self::Fence<'_>) -> Result<(), NativeMountError> {
         let mut namespace = self.kernel.namespace.lock().unwrap();
         assert!(namespace.recovering);
-        // This is an fd-bound unmount, never an unmount of the current path.
-        if namespace.current == Some(self.mount) {
-            assert_eq!(self.mount, 0, "detached a live remount");
-            namespace.current = None;
-            namespace.detached += 1;
-        }
+        // The helper's no-follow leaf still names the pinned mount: the same
+        // physical parent's fence spans the ID check and the entire detach.
+        assert_eq!(
+            namespace.current,
+            Some(self.mount),
+            "detached a live remount"
+        );
+        assert_eq!(self.mount, 0, "detached a live remount");
+        namespace.current = None;
+        namespace.detached += 1;
         Ok(())
     }
 }

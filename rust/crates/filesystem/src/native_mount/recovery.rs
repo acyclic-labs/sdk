@@ -281,6 +281,7 @@ impl NativeMountRecoveryOwner {
     pub(super) fn detach_pinned(
         &mut self,
         file: File,
+        parent: File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         {
@@ -294,6 +295,7 @@ impl NativeMountRecoveryOwner {
                 .ok_or(NativeMountError::ControlPending)?
                 .control;
             control.pinned = Some(file);
+            control.pinned_parent = Some(parent);
         }
         self.finish(false, work)
     }

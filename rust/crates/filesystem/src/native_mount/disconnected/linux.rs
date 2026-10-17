@@ -101,9 +101,10 @@ impl Destination for Pinned {
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeMountError::from(error))?;
-        work.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(1))?;
+        work.charge(crate::materializer::NativeResourceCredit::ReadOperations.delta(2))?;
         let file = self.file.try_clone()?;
-        match fence.detach_pinned(file.into(), &work) {
+        let parent = self.parent.try_clone()?;
+        match fence.detach_pinned(file.into(), parent.into(), &work) {
             Ok(_) => Ok(()),
             Err(error) => {
                 fence.mark_failed();

@@ -11,6 +11,7 @@ pub(in crate::native_mount) struct FuseRecoveryControl {
     pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
     pub(super) detached: bool,
     pub(in crate::native_mount) pinned: Option<std::fs::File>,
+    pub(in crate::native_mount) pinned_parent: Option<std::fs::File>,
 }
 
 impl FuseRecoveryControl {
@@ -39,7 +40,7 @@ impl FuseRecoveryControl {
     ) -> Result<(), NativeMountError> {
         work.admit(WorkCounters::UNCHARGED)?;
         if self.pinned.is_some() {
-            return self.recover_pinned(work);
+            return self.recover_pinned(destination, work);
         }
         self.detached = !fuse_recovery_is_mounted(destination, work)?;
         self.retire_controls(work)?;
@@ -107,7 +108,11 @@ impl FuseRecoveryControl {
         Ok(status)
     }
 
-    fn recover_pinned(&mut self, work: &NativeMaterializationWork) -> Result<(), NativeMountError> {
+    fn recover_pinned(
+        &mut self,
+        destination: &Path,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         use std::io::Write as _;
         use std::os::fd::AsRawFd as _;
         let fd = self
@@ -141,6 +146,31 @@ impl FuseRecoveryControl {
         if error.raw_os_error() != Some(libc::EPERM) {
             return Err(error.into());
         }
+        // fusermount deliberately refuses a final magic link. Its unmount uses
+        // UMOUNT_NOFOLLOW on the leaf; resolve only our held physical parent.
+        // The destination fence remains held from the mount-ID recheck through
+        // helper exit, so another fenced opener cannot replace this mount.
+        let parent = self
+            .pinned_parent
+            .as_ref()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_raw_fd();
+        let leaf = destination
+            .file_name()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_encoded_bytes();
+        let mut buffer = [0u8; libc::NAME_MAX as usize + 64];
+        work.admit(Copy.delta(buffer.len() as u64))?;
+        let length = {
+            let mut output = std::io::Cursor::new(buffer.as_mut_slice());
+            write!(output, "/proc/{}/fd/{parent}/", std::process::id())?;
+            output.write_all(leaf)?;
+            output.write_all(&[0])?;
+            output.position() as usize
+        };
+        work.charge(Copy.delta(length as u64))?;
+        let path = CStr::from_bytes_with_nul(&buffer[..length])
+            .map_err(|_| NativeMountError::InvalidDestination)?;
         let program = fuse_recovery_helper(work)?;
         acyclic_native_runtime::ProcessTree::spawn_closed_measured(
             program,
