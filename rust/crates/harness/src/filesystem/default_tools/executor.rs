@@ -51,9 +51,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ToolResult>> {
-        cancellation
-            .check()
-            .map_err(|error| Error::Storage(error.to_string()))?;
+        cancellation.check()?;
         self.check_authority(context, invocation, io)?;
         crate::executor::with_history_io(io, |work| {
             crate::executor::validate_json_schema_value(

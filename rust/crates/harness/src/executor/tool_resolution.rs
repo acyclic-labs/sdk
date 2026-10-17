@@ -101,10 +101,8 @@ impl StockExecution<'_> {
                 crate::wire::ErrorCode::Invalid,
                 reason.message(),
             )),
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                Err(Error::Indeterminate(operation_id))
-            }
-            Err(error) => Err(error),
+            Err(error) if !error.leaves_effect_uncertain() => Err(error),
+            Ok(false) | Err(_) => Err(Error::Indeterminate(operation_id)),
         }
     }
 
@@ -123,9 +121,7 @@ impl StockExecution<'_> {
         match stage_json(journal, operation, &key, value, self.io).await {
             Ok(reference) => Ok(reference),
             Err(error) if error.is_native_failure() => Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                Err(Error::Indeterminate(operation))
-            }
+            Err(error) if error.leaves_effect_uncertain() => Err(Error::Indeterminate(operation)),
             Err(error) => {
                 self.reject_tool_call(
                     journal,

@@ -268,10 +268,10 @@ impl StockExecution<'_> {
         {
             Ok(true) => {}
             Err(error) if stock_is_native(io) => return Err(error),
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+            Ok(false) | Err(_) => {
                 return Err(Error::Indeterminate(input.operation_id));
             }
-            Err(error) => return Err(error),
         }
         Ok(())
     }

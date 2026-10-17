@@ -171,9 +171,7 @@ where
                 .map(|_| ())?;
             }
             let generation = self.project_generation(&chosen.project, io).await?;
-            cancellation
-                .check()
-                .map_err(|error| Error::Storage(error.to_string()))?;
+            cancellation.check()?;
             let owner = self
                 .source_owner(context.task(), cancellation, None)
                 .await?;

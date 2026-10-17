@@ -290,7 +290,7 @@ impl StockExecution<'_> {
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
-            Err(error @ Error::Storage(_)) => {
+            Err(error) if error.leaves_effect_uncertain() => {
                 tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(Error::Indeterminate(operation_id));
             }
@@ -391,10 +391,10 @@ impl StockExecution<'_> {
                     }
                     true
                 }
-                Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+                Ok(false) | Err(_) => {
                     return Err(Error::Indeterminate(operation_id));
                 }
-                Err(error) => return Err(error),
             }
         };
         Ok(claimed)
@@ -497,10 +497,10 @@ impl StockExecution<'_> {
             .await
         {
             Ok(true) => {}
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+            Ok(false) | Err(_) => {
                 return Err(Error::Indeterminate(operation_id));
             }
-            Err(error) => return Err(error),
         }
         Ok(())
     }

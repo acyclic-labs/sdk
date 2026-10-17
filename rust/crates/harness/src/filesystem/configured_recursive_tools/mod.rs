@@ -327,6 +327,6 @@ fn check_cancellation(
         {
             return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
         }
-        Error::Storage(error.to_string())
+        Error::from(error)
     })
 }

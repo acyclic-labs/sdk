@@ -35,9 +35,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    cancellation
-        .check()
-        .map_err(|error| Error::Storage(error.to_string()))?;
+    cancellation.check()?;
     let caller = context
         .durable_task_id()
         .ok_or_else(|| Error::Unauthorized("fork has no admitted caller".into()))?;
@@ -168,12 +166,12 @@ where
         .cloned();
     let io = parent.1.as_ref();
     let check = || {
-        cancellation.check().map_err(|_| {
+        cancellation.check().map_err(|cause| {
             #[cfg(not(target_arch = "wasm32"))]
             if work.is_some() {
                 return Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled);
             }
-            Error::Storage("fork source operation cancelled".into())
+            Error::from(cause)
         })?;
         io.map_or(Ok(()), PreparationIo::check_cancellation)
     };

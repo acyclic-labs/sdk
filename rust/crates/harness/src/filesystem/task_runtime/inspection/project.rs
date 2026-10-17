@@ -187,13 +187,9 @@ where
             }
             return Ok(());
         }
-        io.cancellation()
-            .check()
-            .map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        io.cancellation().check()?;
         owner.verify(false, &mut None).await?;
-        io.cancellation()
-            .check()
-            .map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        io.cancellation().check().map_err(Error::from)
     }
 
     fn path(

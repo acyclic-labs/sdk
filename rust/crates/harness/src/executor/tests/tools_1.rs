@@ -16,6 +16,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     assert_ne!(original.id(), replacement.id());
     let tool = Arc::new(ContextOnlyTool {
         admission: original.id(),
+        lost_response: || Error::Storage("response lost after effect".into()),
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
     });
@@ -1006,5 +1007,63 @@ async fn stock_tool_validation_failure_replays_as_terminal_without_redispatch() 
             Err(Error::Invalid(message)) if message == expected.message()));
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not() -> Result<()> {
+    let outcome = async |lost_response: fn() -> Error| -> Result<(Result<_>, usize)> {
+        let scope = RuntimeScope::new(
+            crate::Capabilities::new(["model:generate", "tool:call:example.echo"]),
+            Limits::default(),
+        )?;
+        let original = capture_admitted_context(scope.clone()).await?;
+        let tool = Arc::new(ContextOnlyTool {
+            admission: original.id(),
+            lost_response,
+            calls: AtomicUsize::new(0),
+            reconciles: AtomicUsize::new(0),
+        });
+        let tools = echo_tools(
+            tool.clone(),
+            json!({"type":"object"}),
+            json!({"type":"object"}),
+            crate::tool::json_projection_schema(json!({"type":"object"})),
+        )?;
+        let model = Arc::new(
+            ScriptedModelProvider::new([
+                tool_turn([ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "call-1".into(),
+                    "example.echo".into(),
+                    json!({"value":"hello"}),
+                ))]),
+                done_turn(),
+            ])
+            .with_token_counter(fixture_token_count),
+        );
+        let operation = OperationId::new();
+        let executor = StockExecutor::new(
+            Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(scope, None)?
+        .with_task_context(&original, operation)?;
+        let input = TurnInput {
+            operation_id: operation,
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let result = executor.execute(input, &Journal::default()).await;
+        Ok((result, tool.calls.load(Ordering::SeqCst)))
+    };
+    let (cancelled, calls) = outcome(|| Error::Cancelled).await?;
+    assert_eq!(calls, 1);
+    assert!(matches!(cancelled, Err(Error::Indeterminate(_))));
+    let (rejected, calls) = outcome(|| Error::Invalid("tool refused".into())).await?;
+    assert_eq!(calls, 1);
+    assert!(!matches!(rejected, Err(Error::Indeterminate(_))));
     Ok(())
 }
