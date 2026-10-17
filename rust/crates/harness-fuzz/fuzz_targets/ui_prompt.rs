@@ -249,6 +249,21 @@ fuzz_target!(|data: &[u8]| {
             let selection = documents.selections().next().unwrap().1;
             assert_eq!(selection.files()[&FileKey::Goal].segments[0].as_ref(), data);
             assert!(!selection.files().contains_key(&plan));
+            // Result metadata is untrusted; it may describe status but must
+            // never copy the result's output into the transcript a second time.
+            file_views::tool(&mut documents, &owner.id, "bash", "");
+            file_views::put(
+                &mut documents,
+                FileKey::parse(&format!(
+                    ".tasks/{}/turns/0/tools/call/result.json",
+                    owner.id
+                ))
+                .unwrap(),
+                data.to_vec(),
+                None,
+            );
+            renderer.update(&documents, &owner);
+            assert_eq!(renderer.screen().transcript.len(), 1);
             let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             let mut writes = vec![
                 (format!(".ui/session-{session}/draft.json"), draft),
@@ -278,6 +293,17 @@ fuzz_target!(|data: &[u8]| {
             else {
                 return;
             };
+            files
+                .write_state(
+                    CommandFileRoot::Config,
+                    "settings.json",
+                    &serde_json::json!({"tool_details":true}),
+                )
+                .await
+                .unwrap();
+            renderer.update(&documents, &owner);
+            renderer.configure(&documents, &owner, &files).unwrap();
+            assert!(renderer.screen().transcript.len() <= 21);
             if let Some(bytes) = layout {
                 let expected = serde_json::from_slice::<serde_json::Value>(bytes)
                     .ok()

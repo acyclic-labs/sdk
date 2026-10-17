@@ -5,17 +5,14 @@ use super::{
         text::{Line, Span},
     },
 };
-use crate::{
-    client::ClientViews,
-    model::{ModelDataPart, ToolResultContent},
-    wire,
-};
+use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
 mod archive;
 mod selection;
 mod stream_text;
 mod task;
+mod tool;
 use stream_text::StreamText;
 
 /// Disposable incremental render cache. Authoritative state is always ClientViews
@@ -374,12 +371,6 @@ impl ClientRenderer {
     }
 }
 
-fn markdown(text: &str) -> Vec<Line<'static>> {
-    let mut markdown = Markdown::default();
-    markdown.push(text);
-    markdown.lines().iter().map(line).collect()
-}
-
 fn line(line: &acyclic_markdown::Line) -> Line<'static> {
     Line::from(
         line.spans
@@ -405,37 +396,6 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
             })
             .collect::<Vec<_>>(),
     )
-}
-
-fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<'static>> {
-    // TODO(#548): use specialized per-tool renderers when their API lands.
-    let mut rows = vec![Line::styled(
-        name.escape_debug().to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
-    if !details {
-        return rows;
-    }
-    let text = match output {
-        ToolResultContent::Json { value } => value
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string()),
-        ToolResultContent::Parts { parts } => parts
-            .iter()
-            .map(|part| match part {
-                ModelDataPart::Text { text } => text.as_str(),
-                ModelDataPart::File { .. } => "[attachment]",
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    };
-    if text.is_empty() {
-        return rows;
-    }
-    let bounded = text.lines().take(20).collect::<Vec<_>>().join("\n");
-    rows.extend(markdown(&bounded).into_iter().take(20));
-    rows
 }
 
 #[cfg(test)]

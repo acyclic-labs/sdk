@@ -1,4 +1,4 @@
-use super::{Line, StreamText, archive::Archive, tool_rows};
+use super::{Line, StreamText, archive::Archive, tool};
 use crate::{
     client::TaskQueryView,
     task_volume::{Channel, Component, FileKey, HeadFile, Query, TaskFile},
@@ -9,7 +9,6 @@ use std::{collections::BTreeMap, sync::Arc};
 struct ToolRows {
     request: Option<HeadFile>,
     result: Option<HeadFile>,
-    name: String,
     stdout: StreamText,
     stderr: StreamText,
     out: Vec<Line<'static>>,
@@ -32,6 +31,7 @@ pub(super) struct TaskRows {
     completions: Vec<HeadFile>,
     usage: serde_json::Value,
     hidden: bool,
+    details: bool,
 }
 fn metadata(file: &HeadFile) -> Option<serde_json::Value> {
     let [bytes] = file.segments.as_slice() else {
@@ -100,6 +100,8 @@ impl TaskRows {
             self.hidden = hidden;
             changed = 0;
         }
+        let details_changed = self.details != details;
+        self.details = details;
         let text_changed = self.stream.update(&task, Channel::Text);
         self.text.truncate(text_changed);
         self.text.extend(self.stream.rows(text_changed));
@@ -145,8 +147,10 @@ impl TaskRows {
                 .update_tool(&tool, true, 20 - cached.stdout.tool_lines());
             let request = tool.request();
             let result = tool.result();
-            if cached.request.as_ref() != request
-                || cached.result.as_ref() != result
+            let metadata_changed =
+                cached.request.as_ref() != request || cached.result.as_ref() != result;
+            if metadata_changed
+                || details_changed
                 || stdout < cached.out.len()
                 || cached.stdout.len() != cached.out.len()
                 || stderr < cached.err.len()
@@ -157,19 +161,20 @@ impl TaskRows {
                 cached.out.extend(cached.stdout.rows(stdout));
                 cached.err.truncate(stderr);
                 cached.err.extend(cached.stderr.rows(stderr));
-                cached.name = request
-                    .and_then(metadata)
-                    .and_then(|value| value["name"].as_str().map(str::to_owned))
-                    .unwrap_or_else(|| tool.call.as_str().to_owned());
-                let output = result
-                    .and_then(metadata)
-                    .map(|value| crate::model::ToolResultContent::Json { value })
-                    .unwrap_or(crate::model::ToolResultContent::Parts { parts: Vec::new() });
-                cached.rows = tool_rows(&cached.name, &output, details);
+                if metadata_changed || cached.rows.is_empty() {
+                    cached.rows.clear();
+                    cached.rows.push(tool::heading(request, result, tool.call));
+                } else {
+                    cached.rows.truncate(1);
+                }
                 if details {
-                    cached
-                        .rows
-                        .extend(cached.out.iter().chain(&cached.err).take(20).cloned());
+                    if tool.stdout().next().is_some() || tool.stderr().next().is_some() {
+                        cached
+                            .rows
+                            .extend(cached.out.iter().chain(&cached.err).take(20).cloned());
+                    } else {
+                        cached.rows.extend(tool::result_rows(result));
+                    }
                 }
                 cached.request = request.cloned();
                 cached.result = result.cloned();

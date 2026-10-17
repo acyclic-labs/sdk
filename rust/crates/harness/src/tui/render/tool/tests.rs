@@ -1,0 +1,135 @@
+use super::*;
+use crate::{
+    client::ClientViews,
+    task_volume::{Change, FileKey, FileValue, TaskFile, ToolFile},
+    tui::render::{line, task::TaskRows},
+};
+use acyclic_markdown::Markdown;
+use proptest::prelude::*;
+
+fn put(views: &mut ClientViews, file: ToolFile, bytes: Vec<u8>) {
+    let mut cursor = views.selections().next().unwrap().1.cursor().clone();
+    cursor.position += 1;
+    cursor.accepted = cursor.position;
+    cursor.durable = cursor.position;
+    views
+        .query_change(Change {
+            cursor,
+            file: Some(FileValue::new(
+                FileKey::Task {
+                    task: Component::new("task").unwrap(),
+                    file: TaskFile::Tool {
+                        turn: 0,
+                        call: Component::new("call").unwrap(),
+                        file,
+                    },
+                },
+                bytes,
+            )),
+            files: Vec::new(),
+            removed: Vec::new(),
+        })
+        .unwrap();
+}
+
+fn expected(text: &str, limit: usize) -> Vec<Line<'static>> {
+    let mut parser = Markdown::default();
+    parser.push(&text.lines().take(limit).collect::<Vec<_>>().join("\n"));
+    parser.lines().iter().map(line).collect()
+}
+
+fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: bool) {
+    let stdout = (0..out)
+        .map(|n| format!("out{n:02}日\n"))
+        .collect::<String>();
+    let stderr = (0..err)
+        .map(|n| format!("err{n:02}日\n"))
+        .collect::<String>();
+    let mut views = crate::test_support::empty_client_views();
+    put(
+        &mut views,
+        ToolFile::Request,
+        br#"{"name":"bash","arguments":{}}"#.to_vec(),
+    );
+    for (index, bytes) in stdout.as_bytes().chunks(chunk).enumerate() {
+        put(&mut views, ToolFile::Stdout(index as u64), bytes.to_vec());
+    }
+    for (index, bytes) in stderr.as_bytes().chunks(chunk).enumerate() {
+        put(&mut views, ToolFile::Stderr(index as u64), bytes.to_vec());
+    }
+    let task = Component::new("task").unwrap();
+    let mut live = TaskRows::default();
+    let project = |views: &ClientViews, renderer: &mut TaskRows, details| {
+        renderer.update(
+            Some(views.selections().next().unwrap().1.task(&task)),
+            details,
+            false,
+        );
+    };
+    project(&views, &mut live, true);
+    let mut oracle = expected(&stdout, 20);
+    oracle.extend(expected(&stderr, 20 - out.min(20)));
+    oracle.truncate(20);
+    assert_eq!(&live.rows()[1..], oracle);
+    let result = serde_json::json!({"success":success,"exit_code":if success {0} else {7},"stdout":stdout,"stderr":stderr});
+    put(
+        &mut views,
+        ToolFile::Result,
+        serde_json::to_vec(&result).unwrap(),
+    );
+    project(&views, &mut live, true);
+    let mut actual = live.rows().to_vec();
+    if duplicate {
+        // Former renderer: echo the result JSON, then append the streamed files.
+        actual.insert(1, Line::raw(result.to_string()));
+    }
+    assert_eq!(
+        &actual[1..],
+        oracle,
+        "one source-line budget across both channels"
+    );
+    let title = actual[0].to_string();
+    assert!(title.contains(if success { "completed" } else { "failed" }));
+    assert!(title.contains(if success { "exit 0" } else { "exit 7" }));
+    let mut replay = TaskRows::default();
+    project(&views, &mut replay, true);
+    assert_eq!(live.rows(), replay.rows());
+    project(&views, &mut live, false);
+    assert_eq!(live.rows().len(), 1);
+    project(&views, &mut live, true);
+    assert_eq!(live.rows(), replay.rows());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Completing/replaying a tool changes status, never duplicates output or
+    // lets escaped JSON newlines bypass the shared stdout/stderr source limit.
+    #[test]
+    fn result_status_preserves_one_bounded_output(out in 0usize..35, err in 0usize..35, chunk in 1usize..24, success in any::<bool>()) {
+        completed(out,err,chunk,success,false);
+    }
+
+    // The metadata codec preserves every supported status value exactly.
+    #[test]
+    fn status_metadata_round_trips(success in proptest::option::of(any::<bool>()), exit_code in proptest::option::of(any::<i32>())) {
+        let value = Status {success,exit_code};
+        let encoded = serde_json::to_vec(&value).unwrap();
+        prop_assert_eq!(serde_json::from_slice::<Status>(&encoded).unwrap(),value);
+    }
+
+    // A nonstreaming tool keeps its canonical result, through the same source cap.
+    #[test]
+    fn nonstreaming_text_results_are_bounded(lines in 0usize..40) {
+        let text = (0..lines).map(|n|format!("data{n:02}\n")).collect::<String>();
+        let bytes=serde_json::to_vec(&text).unwrap();
+        let file = HeadFile {key:FileKey::parse(".tasks/task/turns/0/tools/call/result.json").unwrap(),
+            segments:vec![bytes.clone().into()],channel:None,publication:None,length:bytes.len() as u64,through_sequence:None};
+        prop_assert_eq!(result_rows(Some(&file)),expected(&text,20));
+    }
+}
+
+#[test]
+fn result_echo_negative_control() {
+    completed(21, 7, 3, false, false);
+    assert!(std::panic::catch_unwind(|| completed(21, 7, 3, false, true)).is_err());
+}
