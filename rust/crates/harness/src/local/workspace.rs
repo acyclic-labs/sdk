@@ -5,6 +5,8 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod performance_tests;
 
 mod mounts;
 pub(super) mod volumes;
@@ -201,6 +203,7 @@ pub(super) async fn open(
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = std::fs::canonicalize(path).map_err(storage)?;
     let cancellation = acyclic_fs::CancellationToken::new();
@@ -212,7 +215,6 @@ pub(super) async fn open(
     };
     let name = volume.storage_name(&mut None)?;
     let id = filesystem.workspace_id(&name).map_err(storage)?;
-    let store = LocalCoreStateStore::new(directory.join("workspace"));
     let original = store
         .load_lazy_workspace(id, &mut accounting)
         .await
@@ -331,6 +333,7 @@ pub(super) async fn open_volume(
     directory: &Path,
     operation: acyclic_fs::OperationId,
     native_mounts: bool,
+    store: LocalCoreStateStore,
 ) -> Result<LocalWorkspace> {
     let path = directory.join("project");
     if !path.try_exists().map_err(storage)? {
@@ -385,6 +388,7 @@ pub(super) async fn open_volume(
         operation,
         true,
         native_mounts,
+        store,
     )
     .await
 }

@@ -213,6 +213,12 @@ impl LocalHarness {
             files.create_volume(&task_volume).await?;
             files.create_volume(&scratch).await?;
             files.create_volume(&journal).await?;
+            // This standalone composition owns its private companion namespace.
+            // Retain the existing owned WAL instead of reopening/checkpointing it
+            // for every transaction. Embedded bind() retains shared-store semantics.
+            #[cfg(feature = "native-execution")]
+            let store = acyclic_fs::LocalCoreStateStore::open_shared_owner(directory.join("workspace"))
+                .map_err(storage)?;
             #[cfg(feature = "native-execution")]
             let workspace = match &config.project {
                 LocalProject::Workspace(path) => Some(
@@ -226,6 +232,7 @@ impl LocalHarness {
                         workspace::attach_operation(owner.task),
                         false,
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),
@@ -237,6 +244,7 @@ impl LocalHarness {
                         &directory,
                         workspace::attach_operation(owner.task),
                         native_mounts,
+                        store,
                     )
                     .await?,
                 ),

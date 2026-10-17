@@ -575,9 +575,16 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
+    // Default workspace tools expose their declared scratch volume. It is the
+    // only checkout entry; authority and owner state still live outside it.
+    assert!(checkout.join(".volumes/scratch").is_dir());
     assert_eq!(
-        std::fs::read_dir(checkout).map_err(super::storage)?.count(),
-        0
+        std::fs::read_dir(checkout)
+            .map_err(super::storage)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<std::collections::BTreeSet<_>>>()
+            .map_err(super::storage)?,
+        std::collections::BTreeSet::from([std::ffi::OsString::from(".volumes")])
     );
     #[cfg(unix)]
     {
@@ -768,10 +775,10 @@ async fn resume_preserves_a_retained_failure_without_dispatching_the_model() -> 
     Ok(())
 }
 
-#[cfg(feature = "native-execution")]
-mod checked_commands;
 #[cfg(all(feature = "native-execution", windows))]
 mod bash_environment;
+#[cfg(feature = "native-execution")]
+mod checked_commands;
 #[cfg(all(feature = "native-execution", unix))]
 mod checkout;
 

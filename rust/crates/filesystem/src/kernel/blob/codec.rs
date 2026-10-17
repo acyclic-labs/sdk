@@ -202,16 +202,7 @@ pub(crate) fn encode_blob_page_with_accounting(
         encode_blob_page(
             page,
             maximum_items,
-            |step| {
-                let step = match step {
-                    crate::kernel::codec::EncodeWorkStep::Completed(mut work) => {
-                        work.page_writes = 1;
-                        crate::kernel::codec::EncodeWorkStep::Completed(work)
-                    }
-                    step => step,
-                };
-                observe(step)
-            },
+            |step| observe(page_write_step(step)),
             |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)),
         )
     })
@@ -232,4 +223,21 @@ pub(super) fn capacity(value: u32) -> Result<usize, CanonicalDecodeError> {
 
 pub(super) fn invariant(message: &'static str) -> CanonicalDecodeError {
     CanonicalDecodeError::Invariant(crate::kernel::codec::CanonicalInvariant::Static(message))
+}
+
+pub(crate) fn page_write_step(
+    step: crate::kernel::codec::EncodeWorkStep,
+) -> crate::kernel::codec::EncodeWorkStep {
+    use crate::kernel::codec::EncodeWorkStep;
+    match step {
+        EncodeWorkStep::Admit(mut work) => {
+            work.page_writes = 1;
+            EncodeWorkStep::Admit(work)
+        }
+        EncodeWorkStep::Completed(mut work) => {
+            work.page_writes = 1;
+            EncodeWorkStep::Completed(work)
+        }
+        step => step,
+    }
 }

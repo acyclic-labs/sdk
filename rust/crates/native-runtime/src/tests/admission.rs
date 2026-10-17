@@ -231,10 +231,10 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     let mut task = prepared_metadata_task(file, observed.clone())?;
     let prepared_bytes = observed.memory.load(Ordering::Acquire);
     observed.deny_allocations.store(true, Ordering::Release);
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
     let workers = NativeWorkers {
         sender,
-        admission: Arc::new(Mutex::new(AdmissionState::new())),
+        admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
     };
     workers
         .sender
@@ -348,10 +348,10 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
         }
     }
 
-    let (sender, receiver) = mpsc::sync_channel(1);
+    let (sender, receiver) = crate::sync::mpsc::sync_channel(1);
     let workers = NativeWorkers {
         sender,
-        admission: Arc::new(Mutex::new(AdmissionState::new())),
+        admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
     };
     let job = || run_blocking_io(|| (), None).map(|mut task| task.pending.take().unwrap());
     workers

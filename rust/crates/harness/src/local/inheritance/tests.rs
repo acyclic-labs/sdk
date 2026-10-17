@@ -512,3 +512,91 @@ async fn legacy_retry_cannot_publish_a_parent_that_disagrees_with_owner_admissio
     .await;
     Ok(())
 }
+
+fn same_generation(
+    before: &crate::resources::GenerationRef,
+    after: &crate::resources::GenerationRef,
+) -> proptest::test_runner::TestCaseResult {
+    prop_assert_eq!(
+        before,
+        after,
+        "unchanged receive input published another generation"
+    );
+    Ok(())
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(4))]
+    #[test]
+    fn constant_receive_inputs_do_not_publish_per_turn(turns in 2usize..9) {
+        let (before, after, old) = tokio::runtime::Builder::new_current_thread().enable_all()
+            .build().unwrap().block_on(async {
+                let directory = tempfile::tempdir().map_err(storage)?;
+                let local = open(directory.path()).await?;
+                let (receive, model) = local.stage_turn(OperationId::new(), "input").await?;
+                let publisher = local.input_publisher()?;
+                let reference = crate::filesystem::workspace_ref(
+                    local.journal.provider().clone(), &local.journal.storage_name(&mut None)?,
+                )?;
+                let before = local.files.resolve(&reference, None).await?.generation;
+                let mut identities = HashSet::new();
+                for _ in 0..turns {
+                    let (next, _) = local.finish_turn_inputs(OperationId::new(),
+                        model.payload.clone(), publisher.as_ref()).await?;
+                    assert_eq!(next.payload, receive.payload);
+                    assert!(identities.insert(next.operation_id));
+                }
+                let after = local.files.resolve(&reference, None).await?.generation;
+                // The previous production path publishes the same bytes again
+                // under each command identity. It must fail the same assertion.
+                publisher.stage_once(OperationId::new(), "inputs/old.receive.json",
+                    b"{\"after\":0}", "application/json", "mailbox receive", None)?
+                    .await?;
+                let old = local.files.resolve(&reference, None).await?.generation;
+                // Recovery must retain the original stage_once fingerprint checks.
+                let operation = OperationId::new();
+                let bad = format!("{{\"after\":{turns}}}");
+                publisher.stage_once(super::super::turn::receive_operation(operation),
+                    &format!("inputs/{operation}.receive.json"), bad.as_bytes(),
+                    "application/json", "mailbox receive", None)?.await?;
+                assert!(matches!(local.finish_turn_inputs(operation,
+                    model.payload.clone(), publisher.as_ref()).await, Err(Error::Conflict(_))));
+                Ok::<_, Error>((before, after, old))
+            }).unwrap();
+        same_generation(&before, &after)?;
+        prop_assert!(same_generation(&before, &old).is_err());
+    }
+}
+
+#[tokio::test]
+async fn legacy_receive_input_keeps_its_original_reference_on_retry_and_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let local = open(directory.path()).await?;
+    let operation = OperationId::new();
+    let (receive, model) = local.stage_turn(operation, "input").await?;
+    let publisher = local.input_publisher()?;
+    let legacy = publisher
+        .stage_once(
+            receive.operation_id,
+            &format!("inputs/{operation}.receive.json"),
+            b"{\"after\":0}",
+            "application/json",
+            "mailbox receive",
+            None,
+        )?
+        .await?
+        .0;
+    let (retried, _) = local
+        .finish_turn_inputs(operation, model.payload.clone(), publisher.as_ref())
+        .await?;
+    assert_eq!(retried.payload, legacy);
+    assert_eq!(retried.operation_id, receive.operation_id);
+    drop(publisher);
+    drop(local);
+    let local = open(directory.path()).await?;
+    let (retried, _) = local
+        .finish_turn_inputs(operation, model.payload, local.input_publisher()?.as_ref())
+        .await?;
+    assert_eq!(retried.payload, legacy);
+    assert_eq!(retried.operation_id, receive.operation_id);
+    Ok(())
+}
