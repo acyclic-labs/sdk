@@ -98,3 +98,53 @@ fn markdown_row_cap_negative_control() {
     bounded_tool(21, 3, false);
     assert!(std::panic::catch_unwind(|| bounded_tool(21, 3, true)).is_err());
 }
+
+fn separate_entries(entries: &[String], broken: bool) {
+    let mut actual = StreamText::default();
+    let mut rows = Vec::new();
+    let mut expected = Vec::new();
+    let mut bytes = 0;
+    for text in entries {
+        bytes += text.len();
+        let changed = if broken {
+            if bytes == text.len() {
+                actual.len()
+            } else {
+                actual.push(b"\n\n")
+            }
+        } else {
+            actual.boundary()
+        };
+        let changed = changed.min(actual.push(text.as_bytes()));
+        rows.truncate(changed);
+        rows.extend(actual.rows(changed));
+        // The former per-message renderer, initialized independently. A code
+        // fence, emphasis or reference definition cannot capture another turn.
+        let mut old = Markdown::default();
+        old.push(text);
+        let old: Vec<_> = old.lines().iter().map(line).collect();
+        if !old.is_empty() {
+            if !expected.is_empty() {
+                expected.push(Line::default());
+            }
+            expected.extend(old);
+        }
+        assert_eq!(rows, expected);
+        assert_eq!(actual.work, bytes);
+    }
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn markdown_turns_have_independent_block_state(entries in prop::collection::vec(
+        prop_oneof![Just("```rust\nlet a = 1;".to_owned()),Just("next answer".to_owned()),
+            Just("[ref]: /a\n\n[ref]".to_owned()),"[a-z日*# ]{1,16}"],1..8)) {
+        separate_entries(&entries,false);
+    }
+}
+#[test]
+fn open_fence_cannot_capture_the_next_turn_negative_control() {
+    let entries = vec!["```rust\nlet a = 1;".into(), "next answer".into()];
+    separate_entries(&entries, false);
+    assert!(std::panic::catch_unwind(|| separate_entries(&entries, true)).is_err());
+}

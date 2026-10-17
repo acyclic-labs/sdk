@@ -10,6 +10,7 @@ use std::sync::Arc;
 #[derive(Default)]
 pub(super) struct StreamText {
     markdown: Markdown,
+    stable: Vec<Line<'static>>,
     pending: [u8; 4],
     pending_len: usize,
     provisional_row: Option<usize>,
@@ -27,8 +28,15 @@ pub(super) struct StreamText {
     pub(super) work: usize,
 }
 impl StreamText {
+    fn offset(&self) -> usize {
+        self.stable.len()
+            + usize::from(
+                !self.stable.is_empty()
+                    && (!self.markdown.lines().is_empty() || self.pending_len != 0),
+            )
+    }
     pub(super) fn len(&self) -> usize {
-        self.markdown.lines().len()
+        self.offset() + self.markdown.lines().len()
     }
     fn valid(&mut self, text: &str) -> usize {
         #[cfg(test)]
@@ -38,7 +46,9 @@ impl StreamText {
         if !text.is_empty() {
             self.newline = text.ends_with('\n');
         }
-        self.markdown.push(text)
+        let before = self.len();
+        let changed = self.markdown.push(text);
+        before.min(self.offset() + changed)
     }
     fn decode(&mut self, mut bytes: &[u8]) -> usize {
         let mut changed = self.len();
@@ -119,7 +129,7 @@ impl StreamText {
                 return self.update(task, channel);
             }
             if self.turn != Some(text.turn) && self.first.is_some() {
-                changed = changed.min(self.push(b"\n\n"));
+                changed = changed.min(self.boundary());
             }
             self.turn = Some(text.turn);
             for (index, segment) in text.file.segments.iter().enumerate().skip(start) {
@@ -204,14 +214,36 @@ impl StreamText {
         }
         changed
     }
+    /// Markdown blocks cannot extend across distinct model turns or outcomes.
+    pub(super) fn boundary(&mut self) -> usize {
+        let changed = self.provisional_row.take().unwrap_or_else(|| self.len());
+        if self.pending_len != 0 {
+            self.pending_len = 0;
+            self.valid("\u{fffd}");
+        }
+        if !self.markdown.lines().is_empty() {
+            if !self.stable.is_empty() {
+                self.stable.push(Line::default());
+            }
+            self.stable.extend(self.markdown.lines().iter().map(line));
+        }
+        self.markdown = Markdown::default();
+        self.newline = false;
+        changed
+    }
     pub(super) fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
-        let mut rows: Vec<_> = self
-            .markdown
-            .lines()
-            .iter()
-            .skip(changed)
-            .map(line)
-            .collect();
+        let mut rows: Vec<_> = self.stable.iter().skip(changed).cloned().collect();
+        let offset = self.offset();
+        if offset > self.stable.len() && changed <= self.stable.len() {
+            rows.push(Line::default());
+        }
+        rows.extend(
+            self.markdown
+                .lines()
+                .iter()
+                .skip(changed.saturating_sub(offset))
+                .map(line),
+        );
         if self.pending_len != 0 {
             if rows.is_empty() || self.newline {
                 rows.push(Line::default());

@@ -13,7 +13,6 @@ pub(super) struct Archive {
     after: u64,
     stream: StreamText,
     rows: Vec<Line<'static>>,
-    entries: usize,
 }
 impl Archive {
     pub(super) fn after(&self) -> u64 {
@@ -90,11 +89,8 @@ impl Archive {
             let Some(text) = &row.text else {
                 continue;
             };
-            if self.entries != 0 {
-                changed = changed.min(self.stream.push(b"\n\n"));
-            }
+            changed = changed.min(self.stream.boundary());
             changed = changed.min(self.stream.push(text.as_bytes()));
-            self.entries += 1;
         }
         self.rows.truncate(changed);
         self.rows.extend(self.stream.rows(changed));
