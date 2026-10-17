@@ -9,10 +9,13 @@ pub(super) struct WasmToolDefinitionInput {
     revision: String,
     description: String,
     #[tsify(type = "WasmToolJsonSchema")]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     input_schema: serde_json::Value,
     #[tsify(type = "WasmToolJsonSchema")]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     output_schema: serde_json::Value,
     #[tsify(type = "WasmToolJsonSchema")]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     projection_schema: serde_json::Value,
 }
 
@@ -34,11 +37,13 @@ impl From<WasmToolDefinitionInput> for ToolDefinition {
 pub(super) struct WasmToolInvocationInput {
     call_id: String,
     name: String,
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     arguments: serde_json::Value,
 }
 
 #[derive(Deserialize)]
 pub(super) struct WasmToolResultInput {
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     value: serde_json::Value,
 }
 
@@ -93,7 +98,7 @@ pub fn validate_tool_projection(
 ) -> Result<(), JsValue> {
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate(&mut None).map_err(js_error)?;
-    let projection: serde_json::Value = from_js(projection)?;
+    let projection = js_json_value(&projection)?;
     let limits: Limits = from_js(limits)?;
     definition
         .validate_projection(&projection, limits, None)
@@ -106,7 +111,7 @@ pub fn validate_tool_projection(
 pub fn json_tool_projection_schema(
     #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
+    let schema = crate::tool::json_projection_schema(js_json_value(&value_schema)?);
     crate::executor::compile_json_schema(&schema, "tool projection", &mut None)
         .map_err(js_error)?;
     schema

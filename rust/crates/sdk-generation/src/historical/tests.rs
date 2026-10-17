@@ -1,4 +1,16 @@
 // Controlled protocol bytes exercise the production reader; this is not a parser model.
+fn registry_owner_source_inner(
+    repository: &Path,
+    root: &Path,
+    revision: &str,
+    cargo: &Path,
+    capture: bool,
+    authority: Option<&BTreeSet<String>>,
+) -> Result<RegistryOwnerSource, String> {
+    let (source, _) = registry_source(repository, root, revision, capture)?;
+    discover_owner(root, cargo, source, authority)
+}
+
 fn batch_protocol_fixture(
     response: &[u8],
     hold: bool,
@@ -370,31 +382,23 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
             current.clone()
         ])
     );
-    let authority = original_frontier_authority(&repository, &revisions).unwrap();
+    let (sources, authority) = original_sources(&repository, &fixture.0, &revisions, true).unwrap();
     assert_eq!(
         authority,
         BTreeSet::from(["current-owner".into(), "retired-owner".into()])
     );
-    for revision in &revisions {
-        let export = fixture.0.join(revision);
-        fs::create_dir(&export).unwrap();
-        let captured = registry_owner_source_inner(
-            &repository,
-            &export,
-            revision,
-            &cargo(),
-            true,
-            Some(&authority),
-        )
-        .unwrap();
-        assert_eq!(captured.uses_frontier_authority, *revision == before_index);
+    for source in sources {
+        let revision = source.revision.clone();
+        let export = fixture.0.join(&revision);
+        let captured = discover_owner(&export, &cargo(), source, Some(&authority)).unwrap();
+        assert_eq!(captured.uses_frontier_authority, revision == before_index);
         assert_eq!(
             captured.owners.contains("retired-owner"),
-            *revision == before_index || *revision == public_again
+            revision == before_index || revision == public_again
         );
         assert_eq!(
             captured.absent_authority_members.contains("retired-owner"),
-            *revision == current
+            revision == current
         );
         assert_eq!(
             fs::read(export.join("original.bin")).unwrap(),
@@ -404,7 +408,7 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
             registry_owner_source_inner(
                 &repository,
                 &export,
-                revision,
+                &revision,
                 &cargo(),
                 false,
                 Some(&authority),

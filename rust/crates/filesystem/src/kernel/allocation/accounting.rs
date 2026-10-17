@@ -62,6 +62,7 @@ impl<'a> KernelAccounting<'a> {
     }
 
     /// Borrows standalone allocation and work state.
+    #[inline]
     pub fn standalone_parts(
         &mut self,
     ) -> Option<(

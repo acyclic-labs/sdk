@@ -144,25 +144,27 @@ pub(super) fn normalize_generated_logical_path(path: &Path) -> Result<String, Er
 }
 
 pub(super) fn normalized_rustdoc_digest_bytes(
-    bytes: &[u8],
+    bytes: &std::rc::Rc<[u8]>,
     repository_root: &Path,
-) -> Result<Vec<u8>, Error> {
-    let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
-    normalize_rustdoc_filenames(&mut value, repository_root);
-    // External-crate load paths describe the physical Cargo output, not API
-    // content. Omit only these paths from the digest copy; retain the original
-    // typed Rustdoc JSON and receipts for artifact/provenance verification.
-    if let Some(crates) = value
-        .get_mut("external_crates")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        for external in crates.values_mut() {
-            if let Some(record) = external.as_object_mut() {
-                record.remove("path");
+) -> Result<std::rc::Rc<[u8]>, Error> {
+    crate::render_cache::normalized(bytes, repository_root, || {
+        let mut value = (*crate::render_cache::json(bytes)?).clone();
+        normalize_rustdoc_filenames(&mut value, repository_root);
+        // External-crate load paths describe the physical Cargo output, not API
+        // content. Omit only these paths from the digest copy; retain the original
+        // typed Rustdoc JSON and receipts for artifact/provenance verification.
+        if let Some(crates) = value
+            .get_mut("external_crates")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for external in crates.values_mut() {
+                if let Some(record) = external.as_object_mut() {
+                    record.remove("path");
+                }
             }
         }
-    }
-    Ok(serde_json::to_vec(&value)?)
+        Ok(serde_json::to_vec(&value)?)
+    })
 }
 
 pub(super) fn normalize_rustdoc_filenames(value: &mut serde_json::Value, repository_root: &Path) {
@@ -188,19 +190,7 @@ pub(super) fn normalize_rustdoc_filenames(value: &mut serde_json::Value, reposit
 }
 
 pub(super) fn stable_rustdoc_filename(filename: &str, repository_root: &Path) -> String {
-    let path = PathBuf::from(filename);
-    if !path.is_absolute() {
-        return filename.replace('\\', "/");
-    }
-    if let Ok(canonical) = path.canonicalize() {
-        if let Ok(relative) = canonical.strip_prefix(repository_root) {
-            return format!("<root>/{}", normalize_path(relative));
-        }
-    }
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| format!("<external>/{name}"))
-        .unwrap_or_else(|| "<external>/generated-source".into())
+    crate::path_identity::stable_filename(filename, &repository_root.to_string_lossy())
 }
 
 pub(super) fn validate_generated_sha256(value: &str) -> Result<(), Error> {
@@ -220,6 +210,69 @@ pub(super) fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
         .eq_ignore_ascii_case(&sha256_hex(bytes))
 }
 
+// Scoped to one family projection. Resolve each filename once, then repeat
+// every check before returning the family; no filesystem result survives it.
+// Keep raw spellings: Path equality aliases file.rs and file.rs/, unlike I/O.
+pub(super) fn cached_source_span(
+    repository_root: &Path,
+    rustdoc_source_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    paths: &mut HashMap<std::ffi::OsString, String>,
+    span: &rustdoc_types::Span,
+) -> Result<SourceSpan, Error> {
+    let path = match paths.get(span.filename.as_os_str()) {
+        Some(path) => path.clone(),
+        None => {
+            let resolved = source_span_from_base(
+                repository_root,
+                rustdoc_source_root,
+                generated_sources,
+                span,
+            )?;
+            paths.insert(span.filename.as_os_str().to_owned(), resolved.path.clone());
+            resolved.path
+        }
+    };
+    Ok(SourceSpan {
+        path,
+        begin_line: span.begin.0,
+        begin_column: span.begin.1,
+        end_line: span.end.0,
+        end_column: span.end.1,
+    })
+}
+
+pub(super) fn validate_source_paths(
+    repository_root: &Path,
+    rustdoc_source_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    paths: &HashMap<std::ffi::OsString, String>,
+) -> Result<(), Error> {
+    for (filename, expected) in paths {
+        let span = rustdoc_types::Span {
+            filename: PathBuf::from(filename),
+            begin: (0, 0),
+            end: (0, 0),
+        };
+        let actual = source_span_from_base(
+            repository_root,
+            rustdoc_source_root,
+            generated_sources,
+            &span,
+        )?;
+        if actual.path != *expected {
+            return Err(Error::Invalid(format!(
+                "Rustdoc source mapping changed during projection: {}",
+                Path::new(filename).display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static SOURCE_PATH_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 pub(super) fn source_span_from_base(
     repository_root: &Path,
     rustdoc_source_root: &Path,
@@ -238,6 +291,8 @@ pub(super) fn source_span_at_root(
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     span: &rustdoc_types::Span,
 ) -> Result<SourceSpan, Error> {
+    #[cfg(test)]
+    SOURCE_PATH_CHECKS.set(SOURCE_PATH_CHECKS.get() + 1);
     let source_path = if span.filename.is_absolute() {
         span.filename.clone()
     } else {
@@ -308,3 +363,7 @@ pub(super) fn item_name(item: &Item) -> Option<String> {
         _ => None,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/source_paths.rs"]
+mod tests;

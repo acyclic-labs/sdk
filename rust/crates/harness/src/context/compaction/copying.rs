@@ -88,8 +88,14 @@ pub(crate) fn clone_messages(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Vec<crate::model::ModelMessage>, u64)> {
     use crate::model::{ModelMessage, ModelRole};
+    let count = first
+        .len()
+        .checked_add(second.len())
+        .and_then(|n| n.checked_add(usize::from(user.is_some())))
+        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))?;
     if work.is_none() {
-        let mut result = first.to_vec();
+        let mut result = Vec::with_capacity(count);
+        result.extend_from_slice(first);
         if let Some(content) = user {
             result.push(ModelMessage {
                 role: ModelRole::User,
@@ -99,11 +105,6 @@ pub(crate) fn clone_messages(
         result.extend_from_slice(second);
         return Ok((result, 0));
     }
-    let count = first
-        .len()
-        .checked_add(second.len())
-        .and_then(|n| n.checked_add(usize::from(user.is_some())))
-        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))?;
     let bytes = count
         .checked_mul(std::mem::size_of::<ModelMessage>())
         .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))?

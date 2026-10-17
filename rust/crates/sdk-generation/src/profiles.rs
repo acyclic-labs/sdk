@@ -33,9 +33,8 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
     }
     .configure_metadata(&mut command)
     .map_err(profile_error)?;
-    let resolved = command
-        .manifest_path(root.join("Cargo.toml"))
-        .exec()
+    command.manifest_path(root.join("Cargo.toml"));
+    let resolved = sdk_docs::execute_metadata(&command)
         .map_err(|error| CliError(format!("published owner metadata failed: {error}")))?;
     let canonical_root = root.canonicalize().map_err(io_error)?;
     for name in missing {
@@ -66,11 +65,7 @@ pub(super) fn load_metadata(root: &Path, cargo_path: Option<&Path>) -> Result<Me
 
 pub(super) fn documentation_cargo(root: &Path, historical: bool) -> Result<PathBuf, CliError> {
     if historical {
-        let generator_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .ok_or_else(|| CliError("generator has no source toolchain root".into()))?;
-        pinned_cargo(generator_root)
+        maintained_cargo(root)
     } else {
         pinned_cargo(root)
     }
@@ -175,14 +170,127 @@ pub(super) fn execute_historical_profiles(
     metadata: &Metadata,
     source_sha256: &str,
     cargo: &Path,
-    plan: &historical::Plan,
+    plan: &crate::parallel::Arc<historical::Plan>,
+) -> Result<Vec<ExecutedProfile>, CliError> {
+    // Default receipts use Cargo target names. Preserve sequential behavior
+    // when owners collide, including Windows case aliases.
+    let disjoint = distinct_receipt_names(
+        plan.released_packages
+            .iter()
+            .filter_map(|release| {
+                metadata
+                    .packages
+                    .iter()
+                    .find(|package| release.package == package.name.as_ref())
+            })
+            .flat_map(historical_targets)
+            .map(|(target, _)| target.name.as_str()),
+    );
+    let executed = if plan.released_packages.len() < 2 || !disjoint {
+        compile_historical_profiles(
+            root,
+            output,
+            rustdoc_dir,
+            metadata,
+            cargo,
+            (plan, &plan.released_packages),
+        )?
+    } else {
+        let jobs = plan.released_packages.clone();
+        let plan = crate::parallel::Arc::clone(plan);
+        let (root, output, rustdoc_dir, cargo) = (
+            root.to_owned(),
+            output.to_owned(),
+            rustdoc_dir.to_owned(),
+            cargo.to_owned(),
+        );
+        let metadata = metadata.clone();
+        rustc_host()?;
+        crate::parallel::map(
+            jobs,
+            sdk_docs::rustdoc_worker(move |release| {
+                compile_historical_profiles(
+                    &root,
+                    &output,
+                    &rustdoc_dir,
+                    &metadata,
+                    &cargo,
+                    (&plan, std::slice::from_ref(&release)),
+                )
+            }),
+        )
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect()
+    };
+    // Retained aliases form one shared inventory, so publish them serially
+    // after every compiler has finished and before admitting any manifest.
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
+}
+
+fn distinct_receipt_names<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = BTreeSet::new();
+    names
+        .into_iter()
+        .all(|name| seen.insert(name.replace('-', "_").to_ascii_lowercase()))
+}
+
+fn historical_targets(
+    package: &Package,
+) -> Vec<(
+    &cargo_metadata::Target,
+    sdk_docs::rustdoc_profiles::RustdocTarget,
+)> {
+    use sdk_docs::rustdoc_profiles::RustdocTarget;
+    let library = package.targets.iter().find(|target| {
+        target.kind.iter().any(|kind| {
+            matches!(
+                kind,
+                TargetKind::ProcMacro
+                    | TargetKind::Lib
+                    | TargetKind::RLib
+                    | TargetKind::CDyLib
+                    | TargetKind::StaticLib
+                    | TargetKind::DyLib
+            )
+        })
+    });
+    if let Some(target) = library {
+        vec![(target, RustdocTarget::Library)]
+    } else {
+        package
+            .targets
+            .iter()
+            .filter(|target| target.kind.contains(&TargetKind::Bin))
+            .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
+            .collect()
+    }
+}
+
+fn compile_historical_profiles(
+    root: &Path,
+    output: &Path,
+    rustdoc_dir: &Path,
+    metadata: &Metadata,
+    cargo: &Path,
+    (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
     let host = rustc_host()?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
-    for release in &plan.released_packages {
+    for release in releases {
         let execution_metadata = plan
             .owner_metadata
             .get(&release.package)
@@ -192,29 +300,7 @@ pub(super) fn execute_historical_profiles(
             .iter()
             .find(|package| package.name.as_ref() == release.package)
             .ok_or_else(|| CliError("released Cargo owner is absent".into()))?;
-        let library = package.targets.iter().find(|target| {
-            target.kind.iter().any(|kind| {
-                matches!(
-                    kind,
-                    TargetKind::ProcMacro
-                        | TargetKind::Lib
-                        | TargetKind::RLib
-                        | TargetKind::CDyLib
-                        | TargetKind::StaticLib
-                        | TargetKind::DyLib
-                )
-            })
-        });
-        let targets = if let Some(target) = library {
-            vec![(target, RustdocTarget::Library)]
-        } else {
-            package
-                .targets
-                .iter()
-                .filter(|target| target.kind.contains(&TargetKind::Bin))
-                .map(|target| (target, RustdocTarget::Binary(target.name.clone())))
-                .collect()
-        };
+        let targets = historical_targets(package);
         if targets.is_empty() {
             return Err(CliError(
                 "released Cargo package has no native Rustdoc target".into(),
@@ -282,7 +368,10 @@ pub(super) fn execute_historical_profiles(
                         execution_metadata,
                         &spec,
                         &available,
-                        output.join(".profile-build"),
+                        output.join(".profile-build").join(
+                            crate::sha256_bytes(release.package.as_bytes())
+                                .trim_start_matches("sha256:"),
+                        ),
                         &receipt,
                         CargoExecutionContext {
                             cargo_path: Some(cargo),
@@ -299,9 +388,6 @@ pub(super) fn execute_historical_profiles(
                         compiled.insert(key, receipt.clone());
                     }
                 }
-                retain_profile_generated_sources(root, &receipt)?;
-                fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                    .map_err(io_error)?;
                 executed.push(ExecutedProfile {
                     target: rustdoc_target.clone(),
                     receipt,
@@ -321,8 +407,28 @@ pub(super) fn execute_default_profiles(
     source_sha256: &str,
     cargo_path: &Path,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
+    let executed = compile_default_profiles(root, output, rustdoc_dir, metadata, cargo_path)?;
+    for profile in &executed {
+        retain_profile_generated_sources(root, &profile.receipt)?;
+        fs::write(
+            profile.receipt.with_extension("source.sha256"),
+            source_sha256,
+        )
+        .map_err(io_error)?;
+    }
+    Ok(executed)
+}
+
+fn compile_default_profiles(
+    root: &Path,
+    output: &Path,
+    rustdoc_dir: &Path,
+    metadata: &Metadata,
+    cargo_path: &Path,
+) -> Result<Vec<ExecutedProfile>, CliError> {
     let host = rustc_host()?;
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
+    // Share Cargo's validated compiler/dependency cache across current owners.
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
     let installed_targets = rustup_targets()?;
@@ -409,9 +515,6 @@ pub(super) fn execute_default_profiles(
                     &rustdoc_target,
                 )
                 .map_err(profile_error)?;
-                retain_profile_generated_sources(root, &receipt)?;
-                fs::write(receipt.with_extension("source.sha256"), source_sha256)
-                    .map_err(io_error)?;
                 executed.push(ExecutedProfile {
                     target: rustdoc_target,
                     receipt,
@@ -500,8 +603,6 @@ pub(super) fn execute_default_profiles(
                     compiled.insert(key, receipt.clone());
                 }
             }
-            retain_profile_generated_sources(root, &receipt)?;
-            fs::write(receipt.with_extension("source.sha256"), source_sha256).map_err(io_error)?;
             executed.push(ExecutedProfile {
                 target: sdk_docs::rustdoc_profiles::RustdocTarget::Library,
                 receipt,
@@ -554,13 +655,7 @@ pub(super) fn retain_profile_generated_sources(
     root: &Path,
     receipt: &Path,
 ) -> Result<(), CliError> {
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(receipt).map_err(io_error)?)
-        .map_err(|error| {
-            CliError(format!(
-                "invalid Rustdoc JSON {}: {error}",
-                receipt.display()
-            ))
-        })?;
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
     let mut filenames = BTreeSet::new();
     collect_span_filenames(&value, &mut filenames);
     let retained_root = root.join("target/sdk-generation-generated-sources/retained");
@@ -612,6 +707,20 @@ pub(super) fn retain_profile_generated_sources(
     )
     .map_err(io_error)?;
     Ok(())
+}
+
+pub(super) fn profile_generated_sources(
+    sources: &[GeneratedSource],
+    receipt: &Path,
+) -> Result<Vec<GeneratedSource>, CliError> {
+    let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
+    let mut filenames = BTreeSet::new();
+    collect_span_filenames(&value, &mut filenames);
+    Ok(crate::source_selection::referenced(
+        sources,
+        &filenames,
+        cfg!(windows),
+    ))
 }
 
 #[cfg(test)]

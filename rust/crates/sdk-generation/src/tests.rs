@@ -1,3 +1,6 @@
+#[cfg(windows)]
+use std::process::Command;
+
 #[test]
 fn registry_frontier_cli_requires_paired_authority_inputs() {
     let base: Vec<String> = [
@@ -93,6 +96,14 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     let output = root.join("output");
     write(&output, "sdk-docs-data.v1.json", b"docs");
     write(&output, ".profile-build/debug/cache.bin", b"cache-v1");
+    write(&output, ".sdk-docs-versions.v1.lock", b"coordination");
+    write(&output, "assets/.sdk-docs-versions.v1.lock", b"published");
+    let lock = fs::File::options()
+        .read(true)
+        .write(true)
+        .open(output.join(".sdk-docs-versions.v1.lock"))
+        .unwrap();
+    lock.lock().unwrap();
     write(
         &output,
         "assets/.profile-build/qualified-example.txt",
@@ -100,11 +111,14 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
     );
     let before = artifact_hashes(&output).expect("artifact inventory should build");
     assert!(before.contains_key("sdk-docs-data.v1.json"));
-    assert!(
-        !before
-            .keys()
-            .any(|path| path.starts_with(".profile-build/"))
+    assert!(!before.contains_key(".sdk-docs-versions.v1.lock"));
+    assert_eq!(
+        before["assets/.sdk-docs-versions.v1.lock"],
+        sha256_bytes(b"published")
     );
+    assert!(!before
+        .keys()
+        .any(|path| path.starts_with(".profile-build/")));
     assert_eq!(
         before.get("assets/.profile-build/qualified-example.txt"),
         Some(&sha256_bytes(b"published")),
@@ -117,7 +131,23 @@ fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
         before, after,
         "internal cache mutation must not alter artifacts"
     );
+    drop(lock);
     let _ = fs::remove_dir_all(root);
+}
+
+proptest::proptest! {
+    #[test]
+    fn mutable_catalog_files_are_excluded_only_at_the_output_root(
+        parents in proptest::collection::vec("[a-z]{1,8}", 0..6),
+    ) {
+        let output = Path::new("output");
+        let mut directory = output.to_owned();
+        for parent in &parents { directory.push(parent); }
+        for name in [".sdk-docs-versions.v1.lock", "sdk-docs-versions.v1.json"] {
+            proptest::prop_assert_eq!(is_immutable_artifact(output, &directory.join(name)), !parents.is_empty());
+        }
+        proptest::prop_assert!(is_immutable_artifact(output, &directory.join("published.json")));
+    }
 }
 
 #[test]
@@ -362,6 +392,26 @@ fn ambiguous_external_rustdoc_span_is_rejected() {
 }
 
 #[test]
+fn missing_owned_generated_source_is_restored_across_root_spellings() {
+    let root = test_root("restore-generated-span");
+    let bytes = b"pub struct Restored;\n";
+    write(&root, "target/one/wire.rs", bytes);
+    // Keep this ordinary spelling. materialize_generated_sources canonicalizes
+    // its root to a verbatim path on Windows before checking ownership.
+    let missing = root.join("target/producer/wire.rs");
+    let receipt = root.join("receipt.json");
+    fs::write(&receipt, serde_json::to_vec(&serde_json::json!({
+        "span": { "filename": missing.to_string_lossy() }
+    })).unwrap()).unwrap();
+    let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(fs::read(&missing).unwrap(), bytes);
+    assert_eq!(sources[0].physical_path, missing.canonicalize().unwrap());
+    assert_eq!(sources[0].sha256, sha256_file(&missing).unwrap());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn restoration_rejects_arbitrary_paths_and_parent_traversal() {
     let root = test_root("restoration-boundary");
     for path in [
@@ -563,6 +613,7 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
     let check = |bytes: &[u8]| {
         fs::write(&path, bytes).unwrap();
         prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
+        prop_assert_eq!(sha256_bytes(bytes), format!("sha256:{:x}", Sha256::digest(bytes)));
         Ok(())
     };
     proptest::test_runner::TestRunner::default()
@@ -577,4 +628,47 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
         check(&bytes).unwrap();
     }
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn regular_sources_ignore_root_alias_spelling() {
+    use proptest::prelude::*;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let source = root.join("src/lib.rs");
+    fs::write(&source, b"pub struct Regular;\n").unwrap();
+    let physical = source.canonicalize().unwrap();
+    let receipt = root.join("receipt.json");
+    fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({"span":{"filename":physical}})).unwrap(),
+    )
+    .unwrap();
+    sdk_docs::with_rustdoc_cache(|| {
+        proptest::test_runner::TestRunner::default()
+            .run(
+                &(any::<bool>(), prop::collection::vec(any::<bool>(), 0..8)),
+                |(canonical, aliases)| {
+                    let mut alias = if canonical {
+                        root.canonicalize().unwrap()
+                    } else {
+                        root.to_owned()
+                    };
+                    for dot in aliases {
+                        alias.push(if dot { "." } else { "src/.." });
+                    }
+                    prop_assert!(materialize_generated_sources(
+                        &alias,
+                        std::slice::from_ref(&receipt)
+                    )
+                    .unwrap()
+                    .is_empty());
+                    Ok(())
+                },
+            )
+            .unwrap();
+    });
+    // The old raw-prefix comparison misclassifies this in-root source on every host.
+    assert!(!physical.starts_with(root.join("src/..")));
 }

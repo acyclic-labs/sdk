@@ -3,7 +3,7 @@ mod budget;
 mod chat;
 mod error;
 mod gemini;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod limits_tests;
 mod reasoning;
 mod responses;

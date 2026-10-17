@@ -105,7 +105,7 @@ pub(super) fn build_data_inner(
         input_digest.update(&[0]);
         input_digest.update(metadata.version.as_bytes());
         input_digest.update(&[0]);
-        let bytes = fs::read(path)?;
+        let bytes = read_rustdoc(path)?;
         // Rustdoc embeds absolute source filenames in spans.  Those paths are
         // producer-local metadata, so normalize them before deriving the
         // input identity; the parsed receipt remains untouched for source
@@ -116,7 +116,7 @@ pub(super) fn build_data_inner(
         }
         input_digest.update(&[0]);
         input_digest.update(&digest_bytes);
-        let krate = public_api::decode::from_slice(&bytes).map_err(|e| {
+        let krate = render_cache::decode(std::rc::Rc::clone(&bytes)).map_err(|e| {
             Error::Invalid(format!(
                 "{} is not valid typed rustdoc JSON: {e}",
                 path.display()

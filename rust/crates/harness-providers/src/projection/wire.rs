@@ -43,16 +43,34 @@ pub(crate) struct Body<'a> {
 }
 impl Serialize for Body<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.fields.len() + 1))?;
+        self.serialize_fields(serializer, None, None)
+    }
+}
+
+impl Body<'_> {
+    pub(crate) fn serialize_fields<S: serde::Serializer>(
+        &self,
+        serializer: S,
+        include: Option<&[&str]>,
+        model: Option<&str>,
+    ) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
         for (name, value) in &self.fields {
-            map.serialize_entry(name, value)?;
+            if include.is_none_or(|fields| fields.contains(&name.as_str()))
+                && !(name == "model" && model.is_some())
+            {
+                map.serialize_entry(name, value)?;
+            }
+        }
+        if let Some(model) = model {
+            map.serialize_entry("model", model)?;
         }
         map.serialize_entry(self.messages_field, &self.messages)?;
         map.end()
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 impl<'a> Body<'a> {
     pub(crate) fn fixture(mut value: Value, field: &'static str) -> Self {
         let mut fields = std::mem::take(value.as_object_mut().unwrap());

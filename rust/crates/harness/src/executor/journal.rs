@@ -143,7 +143,8 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         crate::conversation::BoundedContentFuture::new(io, || async { Ok(false) })
     }
 
-    /// Verifies the selection against the committed conversation and original work.
+    /// Authenticates selected files and their projection against the committed
+    /// conversation under the original authority and work.
     fn verify_selected_context<'a>(
         &'a self,
         _operation: OperationId,

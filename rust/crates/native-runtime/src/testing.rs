@@ -12,6 +12,8 @@ use loom::sync::Mutex;
 use std::sync::Mutex;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
+#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+mod queue;
 
 tokio::task_local! { static CURRENT: Option<Context>; }
 
@@ -238,26 +240,52 @@ where
     }))
 }
 
-pub(crate) fn submit(job: crate::NativeJob) -> oneshot::Receiver<()> {
+pub(crate) fn submit(
+    job: crate::NativeJob,
+    pool: &'static std::sync::LazyLock<std::io::Result<crate::NativeWorkers>>,
+) -> oneshot::Receiver<std::io::Result<()>> {
     let context = Context::current().expect("explicit test scope");
     let active = context.accept("native");
     let owned = active.0.clone();
-    let terminal = job.test_terminal();
+    let completion = match &job {
+        crate::NativeJob::Read { completion, .. }
+        | crate::NativeJob::Write { completion, .. }
+        | crate::NativeJob::Task { completion, .. } => completion.clone(),
+    };
     let (done, waiting) = oneshot::channel();
     tokio::spawn(CURRENT.scope(Some(owned.clone()), async move {
         let _active = active;
         owned.pause("native:submitted").await;
-        CURRENT.sync_scope(None, || {
-            let _inline = crate::InlineBlocking::enter();
-            if let Some(waker) = job.run() {
-                waker.wake();
-            }
-        });
-        std::future::poll_fn(|cx| terminal.test_poll_completion(cx.waker())).await;
+        let result = match crate::workers(pool, job.meter().is_some()) {
+            Ok(workers) => queued(job, workers).await,
+            Err(error) => Err(error),
+        };
+        if result.is_err()
+            && let Some(completion) = completion
+        {
+            // The caller may already be gone; failure must retire its fence too.
+            completion.complete();
+        }
         owned.pause("native:completed").await;
-        let _ = done.send(());
+        let _ = done.send(result);
     }));
     waiting
+}
+
+// Keep the original queue admission, capacity wake, worker handoff and physical
+// terminal. Only the caller's acknowledgement is held at the surrounding gates.
+async fn queued(job: crate::NativeJob, workers: &crate::NativeWorkers) -> std::io::Result<()> {
+    let terminal = job.test_terminal();
+    let mut pending = Some(job);
+    let mut waiter = None;
+    let result = std::future::poll_fn(|cx| {
+        crate::workers::poll_submission_with(workers, &mut pending, &mut waiter, cx)
+    })
+    .await;
+    crate::remove_capacity_waiter(workers, waiter);
+    result?;
+    std::future::poll_fn(|cx| terminal.test_poll_completion(cx.waker())).await;
+    Ok(())
 }
 
 /// Observes actual blocking reads; an immediately ready read is one atomic poll.

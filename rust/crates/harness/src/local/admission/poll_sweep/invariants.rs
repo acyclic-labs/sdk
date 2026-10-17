@@ -60,6 +60,7 @@ impl Observations {
         let (tasks, models, tools) = match scenario {
             Scenario::Text => (1, 1, 0),
             Scenario::EffectAndContinuation => (2, 3, 1),
+            Scenario::Compaction => (1, 2, 0),
         };
         if self.admissions.len() != tasks
             || self
@@ -100,7 +101,11 @@ fn unique<T: PartialEq>(values: &[T]) -> bool {
 
 #[tokio::test]
 async fn broken_recovery_records_are_rejected_by_the_actual_sweep_checks() -> Result<()> {
-    for scenario in [Scenario::Text, Scenario::EffectAndContinuation] {
+    for scenario in [
+        Scenario::Text,
+        Scenario::EffectAndContinuation,
+        Scenario::Compaction,
+    ] {
         let good = case(scenario, None, &[], None).await?.observations;
         good.check(scenario).expect("actual recovery must pass");
         let mut duplicate_admission = good.clone();

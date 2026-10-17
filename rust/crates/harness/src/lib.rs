@@ -33,6 +33,7 @@ pub mod bundle;
 pub mod client;
 pub mod context;
 mod contract;
+mod json_literal;
 pub mod conversation;
 pub mod core;
 pub mod distributed;
@@ -96,6 +97,8 @@ pub mod tui_files;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::BrowserContentReader;
 pub mod wire_api;
 pub mod wire_codec;
 pub mod workspace;
@@ -161,6 +164,7 @@ pub use crate::executor::json::{
     json_typed_diagnostic_owned_bytes, json_value_bounded, json_value_decode_owned_bytes,
     preparation_serde_diagnostic_label_bytes, sdk_json_diagnostic_bytes,
 };
+pub use json_literal::deserialize as deserialize_json_value;
 pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
 pub use contract::{
     Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,

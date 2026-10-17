@@ -4,14 +4,14 @@ pub(super) fn registry_response(path: &str) -> Result<Option<Vec<u8>>, String> {
     let url = format!("https://crates.io/api/v1/crates/{path}");
     // Resolve PATH explicitly: Windows otherwise searches System32 before PATH,
     // bypassing the caller's selected registry transport executable.
-    let executable = std::env::var_os("PATH")
+    let executable = crate::command_var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
                 .map(|path| path.join(if cfg!(windows) { "curl.exe" } else { "curl" }))
                 .find(|path| path.is_file())
         })
         .ok_or("registry transport curl is absent from PATH")?;
-    let bytes = command_output(Command::new(executable).args([
+    let bytes = command_output(sdk_docs::command(executable).args([
         "--silent",
         "--show-error",
         "--location",

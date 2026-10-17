@@ -35,7 +35,10 @@ pub fn verify_source_wakes(omit_signal: bool) {
             sources.poll((true, true, true), &mut cx),
             Poll::Ready(Ok(Some(_)))
         ));
+        sources.mode(1, None);
         let writer = loom::thread::spawn(move || published.set(true).unwrap());
+        sources.mode(1, Some(ALL));
+        sources.mode(1, Some(ALL));
         let first = sources.poll((true, true, true), &mut cx);
         let result = if first.is_pending() {
             // Consume the cooperative yield before checking the parked wakeup.
@@ -104,6 +107,10 @@ pub fn verify_source_recheck(fault: u8) {
             Wake::wake_by_ref(&wake);
             Wake::wake_by_ref(&wake);
         });
+        // Admission updates and their no-op fast path race provider wakes too.
+        sources.mode(1, None);
+        sources.mode(1, Some(ALL));
+        sources.mode(1, Some(ALL));
         // Drain old hints and recheck while publication is racing the drain.
         assert!(sources.poll((true, true, true), &mut cx).is_pending());
         writer.join().unwrap();

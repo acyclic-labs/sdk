@@ -29,7 +29,7 @@ fn protocol_identity_cost() {
         let mut expected = None;
         for _ in 0..64 {
             let started = std::time::Instant::now();
-            let allocation = allocation_counter::measure(|| {
+            let allocation = acyclic_test_support::measure(|| {
                 for _ in 0..128 {
                     std::hint::black_box(protocol_identity());
                 }
@@ -105,7 +105,7 @@ fn event_identity_cost(observing: bool, accounted: bool) -> Result<()> {
         let mut work: Option<&mut dyn HistoryIo> = accounted.then_some(&mut io);
         let mut result = None;
         let started = std::time::Instant::now();
-        let allocation = allocation_counter::measure(|| {
+        let allocation = acyclic_test_support::measure(|| {
             result = Some(encode_event_envelope(&authority, &event, &mut work));
         });
         samples.push(started.elapsed());

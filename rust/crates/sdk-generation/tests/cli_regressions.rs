@@ -59,8 +59,12 @@ fn source_digest(files: &BTreeMap<String, String>) -> String {
 }
 
 fn git(root: &Path, args: &[&str]) {
-    let output = Command::new("git")
+    let output = Command::new(runtime::git())
         .current_dir(root)
+        // Identical fixture branches must not create extra frontier revisions
+        // merely because setup crossed a wall-clock second.
+        .env("GIT_AUTHOR_DATE", "2000-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z")
         .args(args)
         .output()
         .unwrap();
@@ -72,16 +76,54 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 fn init_git(root: &Path, message: &str) {
-    git(root, &["init", "--quiet"]);
+    git(
+        root,
+        &[
+            "init",
+            "--quiet",
+            "--template=",
+            "--initial-branch=sdk-fixture",
+        ],
+    );
     use std::io::Write;
     fs::OpenOptions::new().append(true).open(root.join(".git/config")).unwrap()
-        .write_all(b"\n[user]\nname = sdk-generation-test\nemail = sdk-generation-test@example.invalid\n[core]\nautocrlf = false\nexcludesFile =\n").unwrap();
+        .write_all(b"\n[user]\nname = sdk-generation-test\nemail = sdk-generation-test@example.invalid\n[core]\nautocrlf = false\nexcludesFile =\n[commit]\ngpgSign = false\n[maintenance]\nauto = false\n").unwrap();
     git(root, &["add", "."]);
     git(root, &["commit", "--quiet", "-m", message]);
 }
 
 fn fixture(include_plugin: bool) -> Fixture {
-    let root = std::env::temp_dir().join(format!(
+    copy_fixture(&runtime::fixture(u8::from(include_plugin)))
+}
+
+fn copy_fixture(template: &Fixture) -> Fixture {
+    let suffix = format!("copy-{}", NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed));
+    let root = template.root.with_extension(&suffix);
+    replay::copy_tree(&template.root, &root);
+    assert_ne!(
+        sdk_file_identity::stamp(&template.root.join(".git/config")).unwrap(),
+        sdk_file_identity::stamp(&root.join(".git/config")).unwrap(),
+        "mutable Git configuration must remain private to each control"
+    );
+    let output = template
+        .output
+        .strip_prefix(&template.root)
+        .map(|path| root.join(path))
+        .unwrap_or_else(|_| template.output.with_extension(suffix));
+    let rustdoc = template
+        .rustdoc
+        .strip_prefix(&template.root)
+        .map(|path| root.join(path))
+        .unwrap_or_else(|_| output.join(template.rustdoc.strip_prefix(&template.output).unwrap()));
+    Fixture {
+        rustdoc,
+        output,
+        root,
+    }
+}
+
+fn build_fixture(include_plugin: bool) -> Fixture {
+    let root = runtime::temp_dir().join(format!(
         "sdk-generation-cli-regression-{}-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
@@ -149,13 +191,11 @@ fn fixture(include_plugin: bool) -> Fixture {
 /// source and receipt identities; silently dropping it would make the sidecar
 /// claim coverage for an item that no catalog row can represent.
 fn feature_profile_fixture() -> Fixture {
-    let fixture = feature_profile_source();
-    init_git(&fixture.root, "feature profile fixture");
-    fixture
+    copy_fixture(&runtime::fixture(2))
 }
 
 fn feature_profile_source() -> Fixture {
-    let root = std::env::temp_dir().join(format!(
+    let root = runtime::temp_dir().join(format!(
         "sdk-generation-feature-profile-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
@@ -191,7 +231,7 @@ fn feature_profile_source() -> Fixture {
         "version = 3\n\n[[package]]\nname = \"demo\"\nversion = \"1.0.0\"\n",
     )
     .unwrap();
-    let output = std::env::temp_dir().join(format!(
+    let output = runtime::temp_dir().join(format!(
         "sdk-generation-feature-profile-output-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
@@ -268,7 +308,15 @@ fn manifest(root: &Path, include_plugin: bool, source_state: &str) -> Value {
 }
 
 fn git_revision(root: &Path) -> String {
-    let output = Command::new("git")
+    if let (Ok(head), Ok(revision)) = (
+        fs::read(root.join(".git/HEAD")),
+        fs::read(root.join(".git/refs/heads/sdk-fixture")),
+    ) {
+        if let Some(revision) = paths::fixed_revision(&head, &revision) {
+            return revision.to_owned();
+        }
+    }
+    let output = Command::new(runtime::git())
         .current_dir(root)
         .args(["rev-parse", "HEAD"])
         .output()
@@ -289,25 +337,25 @@ fn write_manifest(output: &Path, value: &Value) {
 }
 
 fn invoke(command: &mut Command) -> std::process::Output {
-    let env = command.get_envs().collect::<Vec<_>>();
-    let cargo_home = match env.as_slice() {
-        [(key, Some(home))] if *key == "CARGO_HOME" => Some(Path::new(home)),
-        _ => None,
-    };
-    if (cargo_home.is_none() && !env.is_empty()) || command.get_current_dir().is_some() {
-        return command.output().unwrap();
+    runtime::configure(command);
+    command.env("RUSTC", runtime::rustc());
+    if !command
+        .get_envs()
+        .any(|(key, _)| key.as_encoded_bytes().eq_ignore_ascii_case(b"PATH"))
+    {
+        command.env("PATH", runtime::path());
     }
-    let run = || {
-        sdk_generation::run(
-            command
-                .get_args()
-                .map(|arg| arg.to_str().unwrap().to_owned()),
-        )
-    };
-    let result = match cargo_home {
-        Some(home) => sdk_docs::with_cargo_home(home, run),
-        None => run(),
-    };
+    let mut stdout = Vec::new();
+    let result = commands::execute(|| {
+        sdk_docs::with_command_environment(command, || {
+            sdk_generation::run(
+                command
+                    .get_args()
+                    .map(|arg| arg.to_str().unwrap().to_owned()),
+                &mut stdout,
+            )
+        })
+    });
     #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
     #[cfg(windows)]
@@ -320,7 +368,7 @@ fn invoke(command: &mut Command) -> std::process::Output {
         } else {
             1
         }),
-        stdout: Vec::new(),
+        stdout,
         stderr: result
             .err()
             .map(|error| format!("sdk-generation: {error}\n").into_bytes())
@@ -329,7 +377,7 @@ fn invoke(command: &mut Command) -> std::process::Output {
 }
 
 fn drift_command(fixture: &Fixture) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
     command.args([
         "drift",
         "--root",
@@ -349,17 +397,21 @@ fn run_drift(fixture: &Fixture) -> std::process::Output {
 fn fixture_path(support: &Path) -> std::ffi::OsString {
     std::env::join_paths(
         std::iter::once(support.to_owned())
+            .chain(std::iter::once(
+                runtime::cargo().parent().unwrap().to_owned(),
+            ))
+            .chain(std::iter::once(runtime::git().parent().unwrap().to_owned()))
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap()
 }
 
 fn run_historical_drift(fixture: &Fixture, support: &Path) -> std::process::Output {
-    drift_command(fixture)
-        .env("PATH", fixture_path(support))
-        .env("CARGO_HOME", fixture_cargo_home(fixture))
-        .output()
-        .unwrap()
+    invoke(
+        drift_command(fixture)
+            .env("PATH", fixture_path(support))
+            .env("CARGO_HOME", fixture_cargo_home(fixture)),
+    )
 }
 
 fn generate_command(
@@ -370,7 +422,10 @@ fn generate_command(
     channel: &str,
     skip_scenarios: bool,
 ) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
+    runtime::configure(&mut command);
+    command.env("PATH", runtime::path());
+    command.env("RUSTC", runtime::rustc());
     command.args([
         "generate",
         "--root",
@@ -424,13 +479,13 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
     });
     fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
 
-    let second_root = std::env::temp_dir().join(format!(
+    let second_root = runtime::temp_dir().join(format!(
         "sdk-generation-relocated-{}-{}",
         std::process::id(),
         NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
     ));
     let _ = fs::remove_dir_all(&second_root);
-    let clone = Command::new("git")
+    let clone = Command::new(runtime::git())
         .args([
             "clone",
             "--quiet",
@@ -481,6 +536,7 @@ fn generated_span_fixture_pair() -> (Fixture, Fixture) {
 
 #[test]
 fn relocated_checkouts_produce_identical_artifacts_and_source_digest() {
+    runtime::time_control();
     let (first, second) = generated_span_fixture_pair();
     for fixture in [&first, &second] {
         let result = run_generate(
@@ -532,7 +588,7 @@ fn fixture_cargo_home(fixture: &Fixture) -> PathBuf {
 
 fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        Command::new(runtime::binary("sdk-generation"))
             .args([
                 "generate",
                 "--root",
@@ -552,7 +608,7 @@ fn run_generate_execute_profiles(fixture: &Fixture) -> std::process::Output {
 
 fn run_drift_execute_profiles(fixture: &Fixture) -> std::process::Output {
     invoke(
-        Command::new(env!("CARGO_BIN_EXE_sdk-generation"))
+        Command::new(runtime::binary("sdk-generation"))
             .args([
                 "drift",
                 "--root",
@@ -730,7 +786,7 @@ fn run_historical_generate_mode_with_authority(
     automatic_config: Option<(&Path, bool)>,
 ) -> std::process::Output {
     let path = fixture_path(support);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    let mut command = Command::new(runtime::binary("sdk-generation"));
     command
         .env("PATH", path)
         .env("CARGO_HOME", fixture_cargo_home(fixture))
@@ -773,7 +829,7 @@ fn run_historical_generate_mode_with_authority(
             command.current_dir(directory);
         }
     }
-    let result = command.output().unwrap();
+    let result = invoke(&mut command);
     let version = fixture.output.join("releases/1.0.0");
     if result.status.success() || version.join("sdk-docs-rustdoc-profiles.v1.json").is_file() {
         let releases: Value = serde_json::from_slice(
@@ -920,3 +976,9 @@ mod paths;
 mod package_manifest;
 #[path = "cli_regressions/packaging.rs"]
 mod packaging;
+
+#[path = "cli_regressions/runtime.rs"]
+mod runtime;
+
+#[path = "cli_regressions/commands.rs"]
+mod commands;

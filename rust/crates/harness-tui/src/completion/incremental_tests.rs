@@ -10,7 +10,7 @@ fn unchanged_work(count: usize, repeats: usize, broken: bool) {
     }
     menu.refresh(&editor);
     let before = menu.work;
-    let allocations = allocation_counter::measure(|| {
+    let allocations = acyclic_test_support::measure(|| {
         for _ in 0..repeats {
             if broken {
                 menu.version = None;

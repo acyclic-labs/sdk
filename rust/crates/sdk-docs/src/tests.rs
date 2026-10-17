@@ -12,7 +12,7 @@ fn rustdoc_digest_omits_only_external_crate_load_paths() {
         "index": {"0": {"path": "demo::Witness", "filename": "src/lib.rs"}}
     });
     let digest = |value: &serde_json::Value| {
-        normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap(), Path::new("."))
+        normalized_rustdoc_digest_bytes(&serde_json::to_vec(value).unwrap().into(), Path::new("."))
             .unwrap()
     };
     let mut relocated = original.clone();
@@ -758,7 +758,10 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
         generated_sources: Vec::new(),
         mark_latest: false,
     };
+    source::SOURCE_PATH_CHECKS.set(0);
     let data = build_data(&input, &[]).expect("inherited local trait fixture should build");
+    assert_eq!(source::SOURCE_PATH_CHECKS.get(), 2,
+        "one shared source file is validated at both ends, regardless of aliases");
     let family = &data.families[0];
     let inherited = family
         .items
@@ -807,4 +810,5 @@ mod projection;
 mod publication;
 mod scratch;
 
+mod identity;
 mod rustdoc_adapter;

@@ -2,6 +2,48 @@ use super::*;
 
 #[cfg(feature = "filesystem")]
 impl AgentHarness {
+    pub(crate) fn bind_private_output(
+        &mut self,
+        writer: Arc<dyn ContentPublisher>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let reader = self
+            .content
+            .as_ref()
+            .ok_or_else(|| {
+                content_error(
+                    io,
+                    ErrorCode::Unsupported,
+                    "root content reader is not bound",
+                )
+            })?
+            .reader
+            .clone();
+        let binding = ContentBindings {
+            reader,
+            writer: Some(writer),
+        };
+        let volume = bound_content_writer(Some(&binding), &self.scope, io)?.volume();
+        crate::executor::with_history_io(io, |work| {
+            if contains_content_grant_with_work(
+                self.scope.grants(),
+                volume,
+                VolumeOperation::Read.capability_prefix(),
+                work,
+            )? {
+                Ok(())
+            } else {
+                Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task scope cannot read private content",
+                ))
+            }
+        })?;
+        self.artifacts = Some(binding);
+        Ok(())
+    }
+
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) fn output_destination<'a>(
         &'a self,
@@ -43,6 +85,46 @@ pub(super) enum ContentPublication<'a> {
 }
 
 impl TaskContext {
+    pub(crate) async fn stage_private_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        io: Option<&ContentIo>,
+    ) -> Result<FileRef> {
+        let binding = self
+            .scope
+            .created_private_content()
+            .or(self.harness.artifacts.as_ref())
+            .or_else(|| self.content_binding(None));
+        let writer = bound_content_writer(binding, &self.scope, io)?;
+        if writer.volume().class() != crate::conversation::VolumeClass::AgentPrivate
+            || !matches!(
+                writer.volume().owner(),
+                crate::conversation::VolumeOwner::Agent(_)
+            )
+        {
+            return Err(content_error(
+                io,
+                ErrorCode::Unauthorized,
+                "private content requires an agent-owned private volume",
+            ));
+        }
+        self.stage_bound_file(
+            binding,
+            operation_id,
+            path,
+            bytes,
+            "text/plain",
+            "summary.txt",
+            ContentPublication::OperationBound,
+            &self.scope,
+            io,
+        )
+        .await
+        .map(|(file, _)| file)
+    }
+
     /// Stages exact bytes through the authenticated writer.
     pub async fn stage_file(
         &self,

@@ -18,7 +18,7 @@ proptest! {
         }
         if sealed { cap = cap.seal().unwrap(); }
         let mut encoded = None;
-        let measured = allocation_counter::measure(|| { encoded = Some(cap.encode()); });
+        let measured = acyclic_test_support::measure(|| { encoded = Some(cap.encode()); });
         let encoded = encoded.unwrap();
         prop_assert_eq!(measured.count_total, 1);
         prop_assert_eq!(measured.bytes_total, encoded.len() as u64);
@@ -29,7 +29,7 @@ proptest! {
         let round_trip = decoded.encode();
         prop_assert_eq!(round_trip.as_slice(), encoded.as_slice());
         // The former deep-clone encoder must fail the same allocation budget.
-        let broken = allocation_counter::measure(|| {
+        let broken = acyclic_test_support::measure(|| {
             std::hint::black_box(wire.clone().encode_to_vec());
         });
         prop_assert!(broken.count_total > 1);
@@ -265,12 +265,12 @@ proptest! {
         let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
         let usage = limits(None); let request = request("fs:/public", &attributes, &usage);
         let mut admitted = false;
-        let measured = allocation_counter::measure(|| { admitted = capability.authorize(&trust, &request, PolicyDecision::Allow).is_ok(); });
+        let measured = acyclic_test_support::measure(|| { admitted = capability.authorize(&trust, &request, PolicyDecision::Allow).is_ok(); });
         prop_assert!(admitted);
         prop_assert_eq!(measured.count_total, 0);
         // Negative control for the measurement itself: the former resource
         // decoder allocates a discarded component buffer during validation.
-        let broken = allocation_counter::measure(|| { std::hint::black_box(acyclic_auth::decode_component("public").unwrap()); });
+        let broken = acyclic_test_support::measure(|| { std::hint::black_box(acyclic_auth::decode_component("public").unwrap()); });
         prop_assert!(broken.count_total > 0);
     }
     #[test]

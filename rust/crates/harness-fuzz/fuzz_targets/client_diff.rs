@@ -4,7 +4,7 @@ use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/tests/support/file_diff_case.rs"]
 mod diff_case;
-#[path = "../../harness/tests/e2e/diff_case.rs"]
+#[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
 
 // Compile the production pure module without pulling in unrelated providers.
@@ -39,10 +39,23 @@ fn check(before: Option<&[u8]>, after: Option<&[u8]>, render: usize, work: usize
 }
 
 fuzz_target!(|input: &[u8]| {
-    if let Ok(case) = serde_json::from_slice::<local_case::DiffCase>(input) {
+    if let Ok(case) = serde_json::from_slice::<local_case::LocalCase>(input) {
         let encoded = serde_json::to_vec(&case).expect("encode local case");
-        let decoded: local_case::DiffCase =
+        let decoded: local_case::LocalCase =
             serde_json::from_slice(&encoded).expect("decode local case");
+        let references = case
+            .seed
+            .iter()
+            .map(|(path, text)| (path.clone(), serde_json::json!({"path":path,"seed":text})))
+            .collect();
+        if let Ok(bound) = local_case::bind_seed_files(case.turns.clone(), &references) {
+            let repeated = local_case::bind_seed_files(bound.clone(), &references).unwrap();
+            assert_eq!(
+                serde_json::to_value(bound).unwrap(),
+                serde_json::to_value(repeated).unwrap()
+            );
+        }
+
         assert_eq!(
             serde_json::to_value(case).unwrap(),
             serde_json::to_value(decoded).unwrap()

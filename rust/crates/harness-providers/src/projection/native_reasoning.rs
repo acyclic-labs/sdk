@@ -48,7 +48,7 @@ pub(crate) fn validated(adapter: Adapter, bytes: &[u8]) -> Option<&RawValue> {
     accepted.then_some(raw)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use proptest::prelude::*;
@@ -154,7 +154,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod negative_control {
     use super::*;
     #[derive(Deserialize)]

@@ -1,14 +1,15 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
-mod diff_case;
-mod diff_tests;
-mod diff_workspace;
-mod diffs;
 mod discovery;
 mod drivers;
 mod execution;
 mod expectations;
 mod limits_tests;
+mod local_admission;
+mod local_case;
+mod local_execution;
+mod local_tests;
+mod local_workspace;
 mod matchers;
 mod notification_history;
 mod notifications;
@@ -25,8 +26,8 @@ mod scenario;
 mod scenario_data;
 mod swarm;
 mod swarm_case;
-mod swarm_publish;
 mod swarm_provider;
+mod swarm_publish;
 #[path = "../support/swarm_session.rs"]
 mod swarm_runtime;
 mod swarm_scaling;

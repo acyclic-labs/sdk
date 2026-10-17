@@ -1,4 +1,4 @@
-import { syntheticAccounting } from "./support/model-accounting.mjs";
+import { syntheticAccounting, scriptedPreparation } from "./support/model-accounting.mjs";
 import { DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, projectModelFile, verifiedContentResolver } from "../dist/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 
@@ -106,7 +106,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
     const runtime = await Harness.builder(contracts).declaredContext(snapshot).content(content)
       .grant(core.volumeCapability(volume, "read")).model({ provider: "mock", name: "discovery", revision: "1", options: {} }, {
       ...syntheticAccounting(contracts),
-      async *generate(request) {
+      prepare: scriptedPreparation(contracts, async function* (request) {
         dispatches++;
         const admitted = new TextDecoder().decode(request.serializedInput);
         for (const [index, expected] of ["root instruction", "nested instruction"].entries()) {
@@ -119,7 +119,7 @@ export async function exerciseDiscovery(engine, label, reopen) {
         }
         assert(admitted.includes("Inspect old files") && !admitted.includes("SECRET BODY"), "model metadata/body selection changed");
         yield { kind: "completed", metadata: {} };
-      }, async reconcile() { return undefined; },
+      }), async reconcile() { return undefined; },
     }).build();
     await workspace.write("/inspect/SKILL.md", encoder.encode("---\nname: inspect\ndescription: Inspect new files\n---\nNEW BODY"));
     await workspace.write("/AGENTS.md", encoder.encode("changed instruction"));

@@ -7,13 +7,13 @@ pub(crate) mod native_reasoning;
 mod sequence;
 pub(crate) mod text;
 pub(crate) mod wire;
-use crate::{Adapter, ResolvedModel, invalid, registry::validate_url};
+use crate::{Adapter, ResolvedModel, files::FileText, invalid, registry::validate_url};
 use acyclic_harness::{
     Result,
     context::ModelTokenCount,
     model::{
-        FileProjectionPolicy, ModelContent, ModelContentPart, ModelDataPart, ModelMessage,
-        ModelRequest, ModelRole, PreparedModelRequest, ToolResultContent,
+        ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRequest, ModelRole,
+        PreparedModelRequest, ToolResultContent,
     },
 };
 use serde_json::{Value, json};
@@ -60,7 +60,12 @@ pub(crate) fn plan(
         .messages
         .iter()
         .map(|message| {
-            let bytes = encoded_len(message)?;
+            let bytes = encoded_len(message)?
+                .checked_add(crate::files::extra_bytes(
+                    &message.content,
+                    provider.files.maximum_bytes,
+                )?)
+                .ok_or_else(|| invalid("token planning size overflow"))?;
             message_bytes = message_bytes
                 .checked_add(bytes)
                 .ok_or_else(|| invalid("token planning size overflow"))?;
@@ -94,13 +99,23 @@ pub(crate) fn encoded_len<T: serde::Serialize>(value: &T) -> Result<usize> {
     Ok(count.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) fn body(provider: &ResolvedModel, request: &ModelRequest) -> Result<Value> {
+    body_with_files(provider, request, &mut FileText::default())
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn body_with_files(
+    provider: &ResolvedModel,
+    request: &ModelRequest,
+    files: &mut FileText,
+) -> Result<Value> {
     serde_json::to_value(body_named(
         provider,
         request,
         &crate::tool_names::Names::new(request),
         &provider.reasoning_origin(provider.key.as_deref(), None),
+        files,
     )?)
     .map_err(|_| invalid("cannot encode projected request"))
 }
@@ -110,6 +125,7 @@ pub(crate) fn body_named<'a>(
     request: &'a ModelRequest,
     names: &crate::tool_names::Names,
     target: &acyclic_harness::model::ReasoningOrigin,
+    files: &mut FileText,
 ) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
@@ -119,17 +135,23 @@ pub(crate) fn body_named<'a>(
     for message in &request.messages {
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
-            system.push(text_content(&message.content)?);
+            system.push(text_content(&message.content, files)?);
             continue;
         }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
-            system.push(text_content(&message.content)?);
+            system.push(text_content(&message.content, files)?);
         } else {
-            for projected in
-                project_message(adapter, message, names, &call_ids, target, &mut gemini)?
-            {
+            for projected in project_message(
+                adapter,
+                message,
+                names,
+                &call_ids,
+                target,
+                &mut gemini,
+                files,
+            )? {
                 sequence::push(adapter, &mut messages, projected)?;
             }
         }
@@ -249,6 +271,7 @@ fn project_message<'a>(
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
     gemini: &mut gemini::Replay<'a>,
+    files: &mut FileText,
 ) -> Result<Vec<Message<'a>>> {
     let role: &'static str = match message.role {
         ModelRole::System => "system",
@@ -274,7 +297,7 @@ fn project_message<'a>(
                 project_text(
                     adapter,
                     role,
-                    file_text(file, policy)?,
+                    files.project(file, policy)?,
                     &mut texts,
                     &mut ordered,
                 );
@@ -356,7 +379,7 @@ fn project_message<'a>(
             } => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let text = result_text(content)?;
+                let text = result_text(content, files)?;
                 let result = match adapter {
                     Adapter::Anthropic => {
                         json!({"type":"tool_result","tool_use_id":call_id,"content":text})
@@ -458,7 +481,7 @@ fn project_text(
     }
 }
 
-fn result_text(content: &ToolResultContent) -> Result<String> {
+fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
     match content {
         ToolResultContent::Json { value } => {
             serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
@@ -467,14 +490,14 @@ fn result_text(content: &ToolResultContent) -> Result<String> {
             .iter()
             .map(|part| match part {
                 ModelDataPart::Text { text } => Ok(text.clone()),
-                ModelDataPart::File { file, policy } => file_text(file, policy),
+                ModelDataPart::File { file, policy } => files.project(file, policy),
             })
             .collect::<Result<Vec<_>>>()
             .map(|parts| parts.join("\n")),
     }
 }
 
-fn text_content(content: &ModelContent) -> Result<String> {
+fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> {
     if let ModelContent::Text(text) = content {
         return Ok(text.clone());
     }
@@ -483,24 +506,11 @@ fn text_content(content: &ModelContent) -> Result<String> {
         .iter()
         .map(|part| match part {
             ModelContentPart::Text { text } => Ok(text.clone()),
-            ModelContentPart::File { file, policy } => file_text(file, policy),
+            ModelContentPart::File { file, policy } => files.project(file, policy),
             _ => Err(invalid("system messages cannot contain tool exchanges")),
         })
         .collect::<Result<Vec<_>>>()
         .map(|parts| parts.join("\n"))
-}
-
-fn file_text(
-    file: &acyclic_harness::conversation::FileRef,
-    policy: &FileProjectionPolicy,
-) -> Result<String> {
-    if !matches!(policy, FileProjectionPolicy::Reference) {
-        return Err(invalid(
-            "file bytes require an owner-mediated text projection before dispatch",
-        ));
-    }
-    let value = serde_json::to_string(file).map_err(|e| invalid(e.to_string()))?;
-    Ok(format!("[file: {value}]"))
 }
 
 fn foreign_text(origin: &acyclic_harness::model::ReasoningOrigin, text: &str) -> String {

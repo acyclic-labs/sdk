@@ -1,4 +1,17 @@
 use super::*;
+
+proptest::proptest! {
+    #[test]
+    fn owner_receipts_are_disjoint_only_for_distinct_canonical_target_names(
+        names in proptest::collection::vec("[a-zA-Z_-]{1,8}", 0..8),
+    ) {
+        let canonical = names.iter().map(|name| name.replace('-', "_").to_ascii_lowercase()).collect::<BTreeSet<_>>();
+        proptest::prop_assert_eq!(distinct_receipt_names(names.iter().map(String::as_str)), canonical.len() == names.len());
+        for aliases in [["demo", "DEMO"], ["demo-lib", "demo_lib"], ["demo", "demo"]] {
+            proptest::prop_assert!(!distinct_receipt_names(aliases));
+        }
+    }
+}
 use proptest::prelude::*;
 
 proptest! {
@@ -64,4 +77,41 @@ fn absent_default_feature_and_unknown_requests_are_distinct_from_declared_defaul
         ..profile
     };
     assert!(local_feature_configuration(&features, &invalid).is_none());
+}
+
+#[test]
+fn paired_owner_plan_sharing_measurement() {
+    use crate::parallel::Arc;
+    use std::{hint::black_box, time::Instant};
+    let plan = Arc::new(historical::Plan {
+        released_packages: (0..16).map(|index| sdk_docs::historical::ReleasedPackage {
+            package: format!("owner-{index}"), version: "1.0.0".into(), yanked: false,
+            registry_checksum: "0".repeat(64), source_revision: "0".repeat(40), path_in_vcs: String::new(),
+        }).collect(),
+        source_files: (0..4096).map(|index| (format!("source/{index}.rs"), "0".repeat(64))).collect(),
+        archives: Vec::new(), captured_source: None, owner_metadata: BTreeMap::new(),
+    });
+    let started = Instant::now();
+    let old = plan.released_packages.iter().map(|release| {
+        // The previous production transport cloned the complete plan per owner.
+        let mut copy = historical::Plan {
+            released_packages: plan.released_packages.clone(), source_files: plan.source_files.clone(),
+            archives: plan.archives.clone(), captured_source: plan.captured_source.clone(),
+            owner_metadata: plan.owner_metadata.clone(),
+        };
+        copy.released_packages = vec![release.clone()];
+        copy
+    }).collect::<Vec<_>>();
+    black_box(&old);
+    let copied_ns = started.elapsed().as_nanos();
+    let started = Instant::now();
+    let shared = Arc::clone(&plan);
+    let jobs = shared.released_packages.clone();
+    black_box((&shared, &jobs));
+    let shared_ns = started.elapsed().as_nanos();
+    assert!(Arc::ptr_eq(&plan, &shared));
+    assert_eq!(jobs, plan.released_packages);
+    assert_eq!(old.len(), jobs.len());
+    eprintln!("PAIRED owner_plan owners={} source_entries={} copied_entries={} shared_entries=0 copied_ns={} shared_ns={}",
+        jobs.len(), plan.source_files.len(), old.len()*plan.source_files.len(), copied_ns, shared_ns);
 }

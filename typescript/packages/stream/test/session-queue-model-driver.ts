@@ -13,9 +13,9 @@ plugin({ name: "queue-cancellation-model", setup(build) {
       source = source.replace(send, send + " signal = undefined;");
     }
     if (process.env.STREAM_SESSION_FAULT === "order") {
-      const admission = "const value = this.#values.shift()!;\n      this.#wakeWriters();\n      yield value;";
+      const admission = "const value = this.#take();\n      this.#wakeWriters();\n      yield value;";
       if (!source.includes(admission)) throw new Error("queue ordering negative control no longer matches");
-      source = source.replace(admission, "const value = this.#values.shift()!;\n      yield value;\n      this.#wakeWriters();");
+      source = source.replace(admission, "const value = this.#take();\n      yield value;\n      this.#wakeWriters();");
     }
     return { contents: source, loader: "ts" };
   });

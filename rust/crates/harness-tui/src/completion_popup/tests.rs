@@ -20,7 +20,7 @@ fn allocation_bound(bytes: usize, long_label: bool, broken: bool) {
     menu.refresh(&editor);
     let area = Rect::new(0, 0, 12, 3);
     let mut buffer = Buffer::empty(area);
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         if broken {
             // Reproduce whole-row formatting before clipping. The same bound
             // must reject this even though its visible output is identical.
@@ -88,7 +88,7 @@ fn control_sanitizing_and_unbounded_combining_clusters_stay_cell_bounded() {
     assert_eq!(buffer[(2, 0)].symbol(), "�");
     let cluster = format!("a{}", "\u{301}".repeat(1 << 20));
     x = 0;
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         render_part(
             &cluster,
             &mut x,

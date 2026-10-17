@@ -111,13 +111,17 @@ pub(super) fn validate_published_coverage(
 }
 
 pub(super) fn canonical(path: &Path) -> Result<PathBuf, CliError> {
-    path.canonicalize().map_err(io_error)
+    absolute(path)?.canonicalize().map_err(io_error)
 }
 pub(super) fn absolute(path: &Path) -> Result<PathBuf, CliError> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
-        Ok(env::current_dir().map_err(io_error)?.join(path))
+        Ok(sdk_docs::command_directory()
+            .map(Ok)
+            .unwrap_or_else(env::current_dir)
+            .map_err(io_error)?
+            .join(path))
     }
 }
 pub(super) fn path_string(path: &Path) -> String {
@@ -139,20 +143,27 @@ pub(super) fn json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, CliError> {
     serde_json::to_vec_pretty(value).map_err(|e| CliError(format!("JSON error: {e}")))
 }
 pub(super) fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format_digest(ring::digest::digest(&ring::digest::SHA256, bytes).as_ref())
 }
-pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
-    let bytes = fs::read(path).map_err(io_error)?;
-    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+fn format_digest(digest: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut result = String::with_capacity(7 + digest.as_ref().len() * 2);
+    let mut result = String::with_capacity(7 + digest.len() * 2);
     result.push_str("sha256:");
-    for &byte in digest.as_ref() {
+    for &byte in digest {
         result.push(DIGITS[(byte >> 4) as usize] as char);
         result.push(DIGITS[(byte & 0xf) as usize] as char);
     }
-    Ok(result)
+    result
 }
+pub(super) fn sha256_file(path: &Path) -> Result<String, CliError> {
+    let bytes = fs::read(path).map_err(io_error)?;
+    #[cfg(test)]
+    HASH_BYTES.set(HASH_BYTES.get() + bytes.len() as u64);
+    Ok(sha256_bytes(&bytes))
+}
+
+#[cfg(test)]
+thread_local! { pub(super) static HASH_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 
 pub(super) fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {
     let sidecar = path.with_extension("source.sha256");
@@ -183,12 +194,11 @@ pub fn materialize_generated_sources(
     root: &Path,
     rustdoc_files: &[PathBuf],
 ) -> Result<Vec<GeneratedSource>, CliError> {
+    let root = root.canonicalize().map_err(io_error)?;
+    let root = root.as_path();
     let mut filenames = BTreeSet::new();
     for receipt in rustdoc_files {
-        let value: serde_json::Value =
-            serde_json::from_slice(&fs::read(receipt).map_err(io_error)?).map_err(|e| {
-                CliError(format!("invalid Rustdoc JSON {}: {e}", receipt.display()))
-            })?;
+        let value = sdk_docs::read_rustdoc_json(receipt).map_err(docs_error)?;
         collect_span_filenames(&value, &mut filenames);
     }
     let mut candidates = BTreeMap::<String, Vec<PathBuf>>::new();
@@ -223,7 +233,9 @@ pub fn materialize_generated_sources(
         }
         if !physical.is_file() {
             validate_restore_path(root, rustdoc_files, &physical)?;
-            if !physical.starts_with(root) && !retained_aliases.contains_key(&filename) {
+            if !comparable_path(&physical).starts_with(comparable_path(root))
+                && !retained_aliases.contains_key(&filename)
+            {
                 return Err(CliError(format!(
                     "external Rustdoc restoration requires a captured source alias: {filename}"
                 )));
@@ -340,26 +352,9 @@ pub(super) fn validate_restore_path(
             }
         }
     }
-    let comparable = |path: &Path| -> PathBuf {
-        #[cfg(windows)]
-        {
-            let text = path
-                .to_string_lossy()
-                .replace('/', "\\")
-                .to_ascii_lowercase();
-            let text = if let Some(unc) = text.strip_prefix("\\\\?\\unc\\") {
-                format!("\\\\{unc}")
-            } else {
-                text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
-            };
-            PathBuf::from(text)
-        }
-        #[cfg(not(windows))]
-        path.to_path_buf()
-    };
     if !owned
         .iter()
-        .any(|directory| comparable(path).starts_with(comparable(directory)))
+        .any(|directory| comparable_path(path).starts_with(comparable_path(directory)))
     {
         return Err(CliError(format!(
             "Rustdoc restoration is outside owned build directories: {}",
@@ -387,6 +382,24 @@ pub(super) fn validate_restore_path(
         }
     }
     Ok(())
+}
+
+fn comparable_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let text = if let Some(unc) = text.strip_prefix("\\\\?\\unc\\") {
+            format!("\\\\{unc}")
+        } else {
+            text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
+        };
+        PathBuf::from(text)
+    }
+    #[cfg(not(windows))]
+    path.to_path_buf()
 }
 
 pub(super) fn collect_span_filenames(value: &serde_json::Value, output: &mut BTreeSet<String>) {
@@ -473,18 +486,25 @@ pub(super) fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>,
     files.sort();
     let mut result = BTreeMap::new();
     for path in files {
-        if path.file_name() == Some(OsStr::new("generation-manifest.v1.json"))
-            || path.file_name() == Some(OsStr::new("generation-manifest.v1.sha256"))
-            // The catalog changes as qualified versions are admitted; it is
-            // not an immutable artifact belonging to one generation.
-            || path == output.join("sdk-docs-versions.v1.json")
-        {
+        if !is_immutable_artifact(output, &path) {
             continue;
         }
         let relative = path.strip_prefix(output).unwrap_or(&path);
-        result.insert(path_string(relative), sha256_file(&path)?);
+        result.insert(
+            path_string(relative),
+            crate::file_cache::sha256_file(&path)?,
+        );
     }
     Ok(result)
+}
+
+pub(super) fn is_immutable_artifact(output: &Path, path: &Path) -> bool {
+    !matches!(path.file_name().and_then(OsStr::to_str),
+        Some("generation-manifest.v1.json" | "generation-manifest.v1.sha256"))
+        // The changing catalog and its coordination lock are not artifacts.
+        // Windows enforces the lock on reads, including inventory hashing.
+        && path != output.join("sdk-docs-versions.v1.json")
+        && path != output.join(".sdk-docs-versions.v1.lock")
 }
 
 pub(super) fn artifact_hashes_with_scope(
@@ -586,14 +606,14 @@ pub(super) fn imported_source_file_hashes(
 }
 
 pub(super) fn digest_map(files: &BTreeMap<String, String>) -> String {
-    let mut hasher = Sha256::new();
+    let mut hasher = ring::digest::Context::new(&ring::digest::SHA256);
     for (path, digest) in files {
         hasher.update(path.as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
         hasher.update(digest.as_bytes());
-        hasher.update([0]);
+        hasher.update(&[0]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format_digest(hasher.finish().as_ref())
 }
 
 pub(super) fn collect_source_files(
@@ -635,9 +655,9 @@ pub(super) fn collect_source_files_inner(
                     "imported source contains a linked or escaping member".into(),
                 ));
             }
-            if path.is_dir() {
+            if metadata.is_dir() {
                 collect_source_files_inner(root, &path, output, files, true)?;
-            } else if path.is_file() {
+            } else if metadata.is_file() {
                 files.push(path);
             } else {
                 return Err(CliError(
@@ -748,10 +768,10 @@ pub(super) fn collect_source_files_inner(
 }
 
 pub(super) fn git_revision(root: &Path) -> Result<String, CliError> {
-    let output = Command::new("git")
+    let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["rev-parse", "HEAD"])
-        .output()
+        .run_output()
         .map_err(io_error)?;
     if !output.status.success() {
         return Err(CliError("git rev-parse HEAD failed".into()));
@@ -764,10 +784,10 @@ pub(super) fn git_revision(root: &Path) -> Result<String, CliError> {
 }
 
 pub(super) fn git_dirty(root: &Path) -> Result<bool, CliError> {
-    let output = Command::new("git")
+    let output = sdk_docs::command("git")
         .current_dir(root)
         .args(["status", "--porcelain"])
-        .output()
+        .run_output()
         .map_err(io_error)?;
     Ok(!output.status.success() || !output.stdout.is_empty())
 }

@@ -227,6 +227,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
             authentication: Authentication::ApiKeyOrCodexLogin,
             adapter: Adapter::Responses,
             base_url: "https://other.test/v1".into(),
+            headers: BTreeMap::new(),
             models: BTreeMap::from([(
                 "gpt-5".into(),
                 ModelSpec {

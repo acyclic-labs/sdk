@@ -2,6 +2,7 @@ use super::{
     observe_binary_rustdoc, observe_rustdoc, package_by_name, ProfileError, ProfileSpec,
     RustdocObservation,
 };
+use crate::CommandOutput;
 use cargo_metadata::{Metadata, MetadataCommand, TargetKind};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -58,18 +59,26 @@ impl CargoExecutionContext<'_> {
         Ok(vec!["--config".into(), value])
     }
     pub fn configure(self, command: &mut Command) -> Result<(), ProfileError> {
+        crate::child::configure(command);
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-        if let Some(home) = crate::cargo_home::current() {
-            command.env("CARGO_HOME", home);
-        }
         command.args(self.config_options()?);
         Ok(())
     }
 
     pub fn configure_metadata(self, command: &mut MetadataCommand) -> Result<(), ProfileError> {
+        for (key, value) in crate::child::overrides() {
+            match value {
+                Some(value) => {
+                    command.env(key, value);
+                }
+                None => {
+                    command.env_remove(key);
+                }
+            }
+        }
         command.env_remove("CARGO_RESOLVER_LOCKFILE_PATH");
-        if let Some(home) = crate::cargo_home::current() {
-            command.env("CARGO_HOME", home);
+        if let Some(directory) = crate::command_directory() {
+            command.current_dir(directory);
         }
         if let Some(cargo) = self.cargo_path {
             command.cargo_path(cargo);
@@ -88,55 +97,57 @@ pub fn load_metadata(
 ) -> Result<Metadata, ProfileError> {
     let mut command = MetadataCommand::new();
     context.configure_metadata(&mut command)?;
-    command
-        .no_deps()
-        .manifest_path(manifest.as_ref())
-        .exec()
+    command.no_deps().manifest_path(manifest.as_ref());
+    crate::execute_metadata(&command)
         .map_err(|error| ProfileError::InvalidRustdoc(format!("cargo metadata failed: {error}")))
 }
 
 const RUSTDOC_TOOLCHAIN: &str = "nightly-2026-07-01";
 
-struct RustdocProducer {
+#[derive(Clone)]
+pub(crate) struct RustdocProducer {
     cargo: PathBuf,
     targets: BTreeSet<String>,
-    host: String,
+    compiler: Compiler,
 }
 
-// One pinned producer is immutable for the lifetime of this process. The leaf
-// slot lock is released before profile validation or command construction.
-static PRODUCER: crate::sync::Mutex<Option<crate::sync::Arc<RustdocProducer>>> =
-    crate::sync::Mutex::new(None);
-static PLATFORM_CFGS: crate::sync::Mutex<Option<crate::sync::Arc<(String, String)>>> =
-    crate::sync::Mutex::new(None);
+#[derive(Clone)]
+struct Compiler {
+    rustc: PathBuf,
+    host: String,
+    cfgs: (String, String),
+}
+
+// Only concrete compiler output survives an operation, fenced on native file
+// identity. Rustup selection and installed targets belong to the operation.
+static COMPILERS: crate::concrete_versions::Versions<PathBuf, sdk_file_identity::Stamp, Compiler> =
+    crate::concrete_versions::Mutex::new(std::collections::BTreeMap::new());
 #[cfg(test)]
 static PROBES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 #[cfg(test)]
-static LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+thread_local! { static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[cfg(test)]
 pub(super) fn rustup_lookup_count() -> usize {
-    LOOKUPS.load(std::sync::atomic::Ordering::Relaxed)
+    LOOKUPS.get()
 }
 
 fn rustup_lookup(args: &[&str]) -> Result<std::process::Output, ProfileError> {
     #[cfg(test)]
-    LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Command::new("rustup")
+    LOOKUPS.set(LOOKUPS.get() + 1);
+    crate::command("rustup")
+        .env("RUSTUP_AUTO_INSTALL", "0")
         .args(args)
-        .output()
+        .run_output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
 }
 
-fn compiler_probe(cargo: &Path, args: &[&str]) -> Result<String, ProfileError> {
+fn compiler_probe(rustc: &Path, args: &[&str]) -> Result<String, ProfileError> {
     #[cfg(test)]
     PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let bin = cargo
-        .parent()
-        .ok_or_else(|| ProfileError::InvalidRustdoc("pinned Cargo has no directory".into()))?;
-    let output = Command::new(bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }))
+    let output = crate::command(rustc)
         .args(args)
-        .output()
+        .run_output()
         .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
     if !output.status.success() {
         return Err(ProfileError::InvalidRustdoc(format!(
@@ -179,20 +190,55 @@ fn resolve_producer() -> Result<RustdocProducer, ProfileError> {
         String::from_utf8(output.stdout)
             .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?
             .trim(),
-    );
-    let verbose = compiler_probe(&cargo, &["-vV"])?;
-    let host = verbose
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .filter(|host| targets.contains(*host))
-        .ok_or_else(|| {
-            ProfileError::InvalidRustdoc("pinned compiler host target is unavailable".into())
-        })?
-        .to_owned();
+    )
+    .canonicalize()
+    .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+    let rustc = cargo
+        .parent()
+        .ok_or_else(|| ProfileError::InvalidRustdoc("pinned Cargo has no directory".into()))?
+        .join(if cfg!(windows) { "rustc.exe" } else { "rustc" })
+        .canonicalize()
+        .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))?;
+    let compiler = crate::concrete_versions::query(
+        &COMPILERS,
+        rustc.clone(),
+        || {
+            sdk_file_identity::stamp(&rustc)
+                .map_err(|error| ProfileError::InvalidRustdoc(error.to_string()))
+        },
+        || {
+            let verbose = compiler_probe(&rustc, &["-vV"])?;
+            let host = verbose
+                .lines()
+                .find_map(|line| line.strip_prefix("host: "))
+                .ok_or_else(|| {
+                    ProfileError::InvalidRustdoc("pinned compiler host is absent".into())
+                })?
+                .to_owned();
+            let cfgs = (
+                compiler_probe(&rustc, &["--print", "cfg", "--target", &host])?,
+                compiler_probe(
+                    &rustc,
+                    &["--print", "cfg", "--target", "wasm32-unknown-unknown"],
+                )?,
+            );
+            Ok::<_, ProfileError>(Compiler {
+                rustc: rustc.clone(),
+                host,
+                cfgs,
+            })
+        },
+        || ProfileError::InvalidRustdoc("pinned compiler changed during observation".into()),
+    )?;
+    if !targets.contains(&compiler.host) {
+        return Err(ProfileError::InvalidRustdoc(
+            "pinned compiler host target is unavailable".into(),
+        ));
+    }
     Ok(RustdocProducer {
         cargo,
         targets,
-        host,
+        compiler,
     })
 }
 
@@ -200,7 +246,7 @@ fn with_producer<T>(
     required: &[&str],
     use_producer: impl FnOnce(&RustdocProducer) -> T,
 ) -> Result<T, ProfileError> {
-    let producer = crate::sync::get_or_try_init(&PRODUCER, resolve_producer)?;
+    let producer = crate::render_cache::producer(resolve_producer)?;
     for &target in required {
         if !producer.targets.contains(target) {
             return Err(ProfileError::UnsupportedTarget {
@@ -213,26 +259,12 @@ fn with_producer<T>(
 
 /// Returns the host of the compiler that produces the pinned Rustdoc output.
 pub fn rustdoc_host() -> Result<String, ProfileError> {
-    with_producer(&[], |producer| producer.host.clone())
+    with_producer(&[], |producer| producer.compiler.host.clone())
 }
 
 /// Reuses the pinned compiler's host/browser cfg across all profile batches.
 pub fn rustdoc_platform_cfgs() -> Result<(String, String), ProfileError> {
-    // Resolve before acquiring the cfg slot: both slots remain leaf locks.
-    let producer = crate::sync::get_or_try_init(&PRODUCER, resolve_producer)?;
-    let cfgs = crate::sync::get_or_try_init(&PLATFORM_CFGS, || {
-        Ok::<_, ProfileError>((
-            compiler_probe(
-                &producer.cargo,
-                &["--print", "cfg", "--target", &producer.host],
-            )?,
-            compiler_probe(
-                &producer.cargo,
-                &["--print", "cfg", "--target", "wasm32-unknown-unknown"],
-            )?,
-        ))
-    })?;
-    Ok((*cfgs).clone())
+    with_producer(&[], |producer| producer.compiler.cfgs.clone())
 }
 
 /// Queries installed targets and rejects unavailable requirements without provisioning.
@@ -245,13 +277,15 @@ fn nightly_rustdoc_command(target: &str) -> Result<Command, ProfileError> {
         let bin = producer.cargo.parent().ok_or_else(|| {
             ProfileError::InvalidRustdoc("pinned Cargo has no toolchain directory".into())
         })?;
-        let mut command = Command::new(&producer.cargo);
+        let mut command = crate::command(&producer.cargo);
+        // Cargo fingerprints RUSTUP_HOME/toolchains/RUSTUP_TOOLCHAIN/bin/rustc.
+        // An abbreviated nightly name disables its compiler-info cache.
         command
-            .env("RUSTUP_TOOLCHAIN", RUSTDOC_TOOLCHAIN)
             .env(
-                "RUSTC",
-                bin.join(if cfg!(windows) { "rustc.exe" } else { "rustc" }),
+                "RUSTUP_TOOLCHAIN",
+                format!("{RUSTDOC_TOOLCHAIN}-{}", producer.compiler.host),
             )
+            .env("RUSTC", &producer.compiler.rustc)
             .env(
                 "RUSTDOC",
                 bin.join(if cfg!(windows) {
@@ -350,7 +384,7 @@ pub fn execute_profile(
     }
     context.configure(&mut command)?;
     command.args(["--", "-Z", "unstable-options", "--output-format", "json"]);
-    let output = command.output().map_err(|error| {
+    let output = command.run_output().map_err(|error| {
         ProfileError::InvalidRustdoc(format!(
             "could not start Cargo for {}: {error}",
             profile.id().0
@@ -422,31 +456,58 @@ pub fn execute_profile(
 
 #[test]
 fn prepared_rustdoc_producer_is_reused_for_any_profile_order() {
-    let targets = rustdoc_targets(&[])
-        .unwrap()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let cfgs = rustdoc_platform_cfgs().unwrap();
-    let lookups = rustup_lookup_count();
-    let probes = PROBES.load(std::sync::atomic::Ordering::Relaxed);
-    assert_eq!(probes, 3);
-    let profiles = proptest::collection::vec(0..targets.len(), 0..32);
-    proptest::test_runner::TestRunner::default()
-        .run(&profiles, |order| {
-            for index in order {
-                nightly_rustdoc_command(&targets[index]).unwrap();
-            }
-            let unavailable = "sdk-docs-unavailable-target";
-            proptest::prop_assert_eq!(
-                nightly_rustdoc_command(unavailable).unwrap_err(),
-                ProfileError::UnsupportedTarget {
-                    target: unavailable.into()
-                },
-            );
-            proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
-            proptest::prop_assert_eq!(rustdoc_platform_cfgs().unwrap(), cfgs.clone());
-            proptest::prop_assert_eq!(PROBES.load(std::sync::atomic::Ordering::Relaxed), probes);
-            Ok(())
-        })
-        .unwrap();
+    // Isolate the counters from other tests that select different fixture compilers.
+    if std::env::var_os("SDK_DOCS_PREPARED_CHILD").is_none() {
+        let thread = std::thread::current();
+        let output = crate::command(std::env::current_exe().unwrap())
+            .args(["--exact", thread.name().unwrap(), "--nocapture"])
+            .env("SDK_DOCS_PREPARED_CHILD", "1")
+            .run_output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+    crate::with_rustdoc_cache(|| {
+        let targets = rustdoc_targets(&[])
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let cfgs = rustdoc_platform_cfgs().unwrap();
+        let lookups = rustup_lookup_count();
+        assert_eq!(lookups, 2);
+        let probes = PROBES.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(probes, 3);
+        let profiles = proptest::collection::vec(0..targets.len(), 0..32);
+        proptest::test_runner::TestRunner::default()
+            .run(&profiles, |order| {
+                for index in order {
+                    nightly_rustdoc_command(&targets[index]).unwrap();
+                }
+                let unavailable = "sdk-docs-unavailable-target";
+                proptest::prop_assert_eq!(
+                    nightly_rustdoc_command(unavailable).unwrap_err(),
+                    ProfileError::UnsupportedTarget {
+                        target: unavailable.into()
+                    },
+                );
+                proptest::prop_assert_eq!(rustup_lookup_count(), lookups);
+                proptest::prop_assert_eq!(rustdoc_platform_cfgs().unwrap(), cfgs.clone());
+                proptest::prop_assert_eq!(
+                    PROBES.load(std::sync::atomic::Ordering::Relaxed),
+                    probes
+                );
+                Ok(())
+            })
+            .unwrap();
+    });
 }
+
+#[cfg(test)]
+#[path = "execution/tests.rs"]
+mod tests;

@@ -101,6 +101,8 @@ pub(super) struct Sources {
     queues: [Queue; 4],
     signal: Arc<signal::Signal<wire::SessionChannel>>,
     preferred: usize,
+    #[cfg(test)]
+    queue_edits: usize,
 }
 impl Sources {
     pub(super) fn new() -> Self {
@@ -109,6 +111,8 @@ impl Sources {
             queues: Default::default(),
             signal: Arc::new(signal::Signal::new()),
             preferred: 0,
+            #[cfg(test)]
+            queue_edits: 0,
         }
     }
     pub(super) fn is_empty(&self) -> bool {
@@ -146,6 +150,9 @@ impl Sources {
         self.enqueue(identity.channel_id);
     }
     pub(super) fn mode(&mut self, id: u64, mode: Option<usize>) {
+        if self.entries.get(&id).is_none_or(|entry| entry.mode == mode) {
+            return;
+        }
         self.unlink(id);
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.mode = mode;
@@ -160,6 +167,10 @@ impl Sources {
         let Some(links) = self.entries.get_mut(&id).and_then(|e| e.links.take()) else {
             return;
         };
+        #[cfg(test)]
+        {
+            self.queue_edits += 1;
+        }
         if let Some(before) = links.before {
             self.entries
                 .get_mut(&before)
@@ -184,7 +195,7 @@ impl Sources {
         }
     }
     fn enqueue(&mut self, id: u64) {
-        let Some(entry) = self.entries.get(&id) else {
+        let Some(entry) = self.entries.get_mut(&id) else {
             return;
         };
         if !entry.ready || entry.links.is_some() {
@@ -198,6 +209,15 @@ impl Sources {
             return;
         };
         let before = self.queues[class].last;
+        entry.links = Some(Links {
+            class,
+            before,
+            after: None,
+        });
+        #[cfg(test)]
+        {
+            self.queue_edits += 1;
+        }
         if let Some(before) = before {
             self.entries
                 .get_mut(&before)
@@ -210,11 +230,6 @@ impl Sources {
             self.queues[class].first = Some(id);
         }
         self.queues[class].last = Some(id);
-        self.entries.get_mut(&id).unwrap().links = Some(Links {
-            class,
-            before,
-            after: None,
-        });
     }
     fn wake(&mut self, identity: wire::SessionChannel) {
         if let Some(entry) = self.entries.get_mut(&identity.channel_id)

@@ -6,11 +6,11 @@ use std::{future::Future, hint::black_box, task::Poll};
 // and other Tokio tasks cannot execute within this synchronous measurement.
 async fn completion_allocations(
     open: impl Future<Output = Result<RecordStream, StreamError>>,
-) -> Result<allocation_counter::AllocationInfo, StreamError> {
+) -> Result<acyclic_test_support::AllocationInfo, StreamError> {
     let mut open = std::pin::pin!(open);
     let (records, allocation) = future::poll_fn(|cx| {
         let mut outcome = Poll::Pending;
-        let allocation = allocation_counter::measure(|| outcome = open.as_mut().poll(cx));
+        let allocation = acyclic_test_support::measure(|| outcome = open.as_mut().poll(cx));
         match outcome {
             Poll::Pending => Poll::Pending,
             Poll::Ready(result) => Poll::Ready(result.map(|records| (records, allocation))),
@@ -73,7 +73,7 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
     );
     // Keep one interest alive so both arms share one warm physical Session.
     let anchor = client.follow(StreamPath::new("events")?, 1).await?;
-    allocation_counter::measure(|| {});
+    acyclic_test_support::measure(|| {});
     let mut before = (0, 0);
     let mut after = (0, 0);
     for index in 0..FOLLOWS {
@@ -140,7 +140,7 @@ async fn all_poll_allocations(
     let mut open = std::pin::pin!(open);
     future::poll_fn(|cx| {
         let mut outcome = Poll::Pending;
-        let measured = allocation_counter::measure(|| outcome = open.as_mut().poll(cx));
+        let measured = acyclic_test_support::measure(|| outcome = open.as_mut().poll(cx));
         totals.count += measured.count_total;
         totals.bytes += measured.bytes_total;
         if outcome.is_pending() {
@@ -154,7 +154,7 @@ async fn all_poll_allocations(
 fn opening_budget(
     before: &Allocations,
     after: &Allocations,
-    path: allocation_counter::AllocationInfo,
+    path: acyclic_test_support::AllocationInfo,
     follows: u64,
 ) {
     assert_eq!(
@@ -187,7 +187,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     // registration/cache state and one warm physical Session per client.
     let before_anchor = before_client.follow(StreamPath::new("events")?, 1).await?;
     let after_anchor = after_client.follow(StreamPath::new("events")?, 1).await?;
-    let path_copy = allocation_counter::measure(|| {
+    let path_copy = acyclic_test_support::measure(|| {
         drop(black_box(StreamPath::new("events").unwrap()));
     });
     assert!(path_copy.count_total > 0);

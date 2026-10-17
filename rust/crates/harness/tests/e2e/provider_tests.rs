@@ -80,6 +80,19 @@ fn provider_case_rejects_ignored_fields_zero_chunks_and_unused_response_shapes()
             "accepted {key}"
         );
     }
+    for statuses in [
+        serde_json::json!([]),
+        serde_json::json!([{}, {}]),
+        serde_json::json!([{"state":"pending","attention":0},{"state":"completed","attention":true}]),
+    ] {
+        let mut broken = value.clone();
+        broken["expect"]["statuses"] = statuses;
+        assert!(
+            serde_json::from_value::<ProviderCase>(broken)?
+                .validate()
+                .is_err()
+        );
+    }
     Ok(())
 }
 

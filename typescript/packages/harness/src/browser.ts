@@ -15,3 +15,5 @@ export {
   type InboxItem as BrowserInboxItem,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { ensureHarnessWasm as initializeBrowserRuntime } from "./wasm-runtime.js";
+
+export * from "./providers.js";

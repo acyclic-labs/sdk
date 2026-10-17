@@ -324,7 +324,7 @@ mod tests {
                     let command = command(size);
                     let mut result = None;
                     let started = std::time::Instant::now();
-                    let allocation = allocation_counter::measure(|| {
+                    let allocation = acyclic_test_support::measure(|| {
                         result = Some(futures::executor::block_on(
                             service.submit(Request::new(command)),
                         ));

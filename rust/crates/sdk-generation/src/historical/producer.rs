@@ -193,7 +193,7 @@ pub(super) fn verify_producer_metadata(
     }
     // Attest the all-features dependency graph required by the historical planner.
     // Optional captured patches need not participate in the default-feature graph.
-    let mut command = Command::new(cargo);
+    let mut command = sdk_docs::command(cargo);
     command
         .args([
             "metadata",

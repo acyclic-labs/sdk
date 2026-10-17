@@ -78,7 +78,7 @@ fn exercise<T: serde::Serialize + ?Sized>(
     );
     let mut charged = 0;
     let mut result = None;
-    let measured = allocation_counter::measure(|| {
+    let measured = acyclic_test_support::measure(|| {
         result = Some(json_value_bounded(value, bounds, None, &mut |event| {
             let operations = match event {
                 JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),

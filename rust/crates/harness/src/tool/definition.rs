@@ -13,12 +13,15 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema for invocation arguments.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
+    #[serde(deserialize_with = "crate::deserialize_json_value")]
     pub projection_schema: Value,
 }
 

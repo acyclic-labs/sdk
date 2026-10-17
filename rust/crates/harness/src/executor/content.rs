@@ -27,6 +27,7 @@ pub(crate) async fn verify_model_contents_with_summary_authorization<
     io: Option<&PreparationIo>,
     context: Option<&crate::runtime::TaskContext>,
 ) -> Result<()> {
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:begin");
     for content in contents.clone() {
         validate_model_content_limits(content, limits, scope, io)?;
     }
@@ -72,6 +73,7 @@ pub(crate) async fn verify_model_contents_with_summary_authorization<
     if RELEASE && let Some(io) = io {
         io.release(owned)?;
     }
+    tracing::trace!(target: "acyclic_harness::read_profile", phase = "content:end");
     result
 }
 
@@ -191,9 +193,27 @@ impl StockExecution<'_> {
             journal
                 .verify_selected_context(input.operation_id, selected, self.io)?
                 .await?;
+            // Selection authenticates the projected files. Scope/grant checks
+            // above apply to every message; native options additionally require
+            // their original execution binding, not a second plain-file read.
+            for message in &selected.messages {
+                if message.content.native_configurations().next().is_some() {
+                    journal
+                        .verify_model_content(
+                            &message.content,
+                            self.io,
+                            self.original_context(),
+                            &[],
+                        )?
+                        .await?;
+                }
+            }
+        } else {
+            // Selected history already includes this exact input as its final
+            // message, checked by validate_for_input before any journal I/O.
             verify_model_contents_scoped(
                 journal,
-                selected.messages.iter().map(|message| &message.content),
+                std::iter::once(&input.input),
                 self.stock.limits,
                 scope,
                 self.io,
@@ -201,15 +221,6 @@ impl StockExecution<'_> {
             )
             .await?;
         }
-        verify_model_contents_scoped(
-            journal,
-            std::iter::once(&input.input),
-            self.stock.limits,
-            scope,
-            self.io,
-            self.original_context(),
-        )
-        .await?;
         Ok(())
     }
 }

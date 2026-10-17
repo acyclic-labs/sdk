@@ -42,33 +42,46 @@ fn reserve_records(
     Ok(())
 }
 
+#[inline]
+fn contains_path(state: &State, path: &str) -> bool {
+    #[cfg(test)]
+    PATH_LOOKUPS.with(|count| count.set(count.get() + 1));
+    state.paths.contains_key(path)
+}
+#[cfg(test)]
+std::thread_local! { static PATH_LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 fn missing_paths<'a>(
     state: &'a State,
     destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
 ) -> impl Iterator<Item = (&'a StreamPath, usize)> + 'a {
     let mut previous = "";
     let all = destinations.clone();
-    destinations.flat_map(move |destination| {
-        let path = destination.as_str();
-        let before = previous;
-        let all = all.clone();
-        previous = path;
-        path.match_indices('/')
-            .map(|(end, _)| end)
-            .chain(std::iter::once(path.len()))
-            .filter(move |end| {
-                let Some(prefix) = path.get(..*end) else {
-                    return false;
-                };
-                !state.paths.contains_key(prefix)
-                    && before != prefix
-                    && !before
-                        .strip_prefix(prefix)
-                        .is_some_and(|suffix| suffix.starts_with('/'))
-                    && (*end == path.len() || !all.clone().any(|other| other.as_str() == prefix))
-            })
-            .map(move |end| (destination, end))
-    })
+    // Existing destinations imply indexed ancestors; no hierarchy work remains.
+    destinations
+        .filter(|path| !contains_path(state, path.as_str()))
+        .flat_map(move |destination| {
+            let path = destination.as_str();
+            let before = previous;
+            let all = all.clone();
+            previous = path;
+            path.match_indices('/')
+                .map(|(end, _)| end)
+                .chain(std::iter::once(path.len()))
+                .filter(move |end| {
+                    let Some(prefix) = path.get(..*end) else {
+                        return false;
+                    };
+                    !contains_path(state, prefix)
+                        && before != prefix
+                        && !before
+                            .strip_prefix(prefix)
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+                        && (*end == path.len()
+                            || !all.clone().any(|other| other.as_str() == prefix))
+                })
+                .map(move |end| (destination, end))
+        })
 }
 
 fn reserve_paths(

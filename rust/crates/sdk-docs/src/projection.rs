@@ -5,7 +5,7 @@ pub(super) fn build_family(
     rustdoc_source_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     json_path: &Path,
-    raw_json: &[u8],
+    raw_json: &std::rc::Rc<[u8]>,
     krate: &Crate,
 ) -> Result<Family, Error> {
     let root_item = krate.index.get(&krate.root).ok_or_else(|| {
@@ -31,6 +31,7 @@ pub(super) fn build_family(
     let public_occurrence_paths = public_occurrence_paths(&public_items, &crate_name);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
+    let mut source_paths = HashMap::new();
     for public_item in &public_items {
         let id = public_item.id;
         let path = public_item.path.clone();
@@ -115,10 +116,11 @@ pub(super) fn build_family(
                 .span
                 .as_ref()
                 .map(|span| {
-                    source_span_from_base(
+                    cached_source_span(
                         repository_root,
                         rustdoc_source_root,
                         generated_sources,
+                        &mut source_paths,
                         span,
                     )
                 })
@@ -135,6 +137,12 @@ pub(super) fn build_family(
         &public_items,
         &public_occurrence_paths,
         &use_occurrences,
+    )?;
+    validate_source_paths(
+        repository_root,
+        rustdoc_source_root,
+        generated_sources,
+        &source_paths,
     )?;
     Ok(Family {
         slug,

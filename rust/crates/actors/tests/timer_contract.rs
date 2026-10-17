@@ -23,11 +23,11 @@ proptest! {
         let record = timer(task, operation, deadline)?;
         oracle::check(&record);
         let mut checked = None;
-        let allocation = allocation_counter::measure(|| checked = Some(record.validate()));
+        let allocation = acyclic_test_support::measure(|| checked = Some(record.validate()));
         prop_assert_eq!(allocation.count_total, 0, "UUID validation uses stack buffers");
         checked.ok_or_else(|| TestCaseError::fail("validation ran"))??;
         let mut encoded = None;
-        let allocation = allocation_counter::measure(|| encoded = Some(record.encode()));
+        let allocation = acyclic_test_support::measure(|| encoded = Some(record.encode()));
         prop_assert_eq!((allocation.count_total, allocation.bytes_total), (1, MAX_TIMER_RECORD_BYTES as u64));
         let bytes = encoded.ok_or_else(|| TestCaseError::fail("encoding ran"))??;
         prop_assert!(bytes.len() <= MAX_TIMER_RECORD_BYTES);
