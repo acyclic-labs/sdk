@@ -199,8 +199,30 @@ proptest::proptest! {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum Progress {
+    Woken,
+    Started,
+}
+
+struct ProgressWake(std::sync::mpsc::Sender<Progress>);
+
+impl std::task::Wake for ProgressWake {
+    fn wake(self: std::sync::Arc<Self>) {
+        let _ = self.0.send(Progress::Woken);
+    }
+}
+
 #[test]
 fn admitted_work_keeps_observation_after_observer_drop() {
+    // The test fills a process-global pool, so it must not share one.
+    if crate::tests::passed_in_exclusive_process(
+        "obs::tests::admitted_work_keeps_observation_after_observer_drop",
+    )
+    .unwrap()
+    {
+        return;
+    }
     for (native_control, filtered) in [(false, false), (true, false), (false, true), (true, true)] {
         let temporary = tempfile::tempfile().unwrap();
         let native = crate::NativeFile::from_file(temporary.try_clone().unwrap(), None)
@@ -215,7 +237,8 @@ fn admitted_work_keeps_observation_after_observer_drop() {
             )),
         );
         let foreign = tracing::Dispatch::new(tracing_subscriber::registry());
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+        let started_tx = progress_tx.clone();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let mut observer: Box<dyn Future<Output = std::io::Result<()>> + Unpin> =
@@ -223,7 +246,7 @@ fn admitted_work_keeps_observation_after_observer_drop() {
                 tracing::info_span!("test.caller", outcome = "sentinel", error.kind = "sentinel")
                     .in_scope(|| {
                         let work = move || {
-                            started_tx.send(()).unwrap();
+                            started_tx.send(Progress::Started).unwrap();
                             release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
                             drop(tracing::info_span!("test.worker_nested"));
                         };
@@ -255,11 +278,27 @@ fn admitted_work_keeps_observation_after_observer_drop() {
                         }
                     })
             });
+        // Forced order: the pool is full at the first poll, so the work waits
+        // for admission and starts only after the observer is polled again.
+        let saturation = crate::tests::Saturation::new(if native_control {
+            &crate::NATIVE_WORKERS
+        } else {
+            &crate::BLOCKING_WORKERS
+        })
+        .unwrap();
+        let waker = Waker::from(std::sync::Arc::new(ProgressWake(progress_tx)));
         assert!(matches!(
-            Pin::new(&mut observer).poll(&mut Context::from_waker(Waker::noop())),
+            Pin::new(&mut observer).poll(&mut Context::from_waker(&waker)),
             Poll::Pending
         ));
-        started_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(progress_rx.try_recv().is_err());
+        drop(saturation);
+        while progress_rx.recv_timeout(Duration::from_secs(10)).unwrap() == Progress::Woken {
+            assert!(matches!(
+                Pin::new(&mut observer).poll(&mut Context::from_waker(&waker)),
+                Poll::Pending
+            ));
+        }
         drop(observer);
         tracing::dispatcher::with_default(&foreign, || release_tx.send(()).unwrap());
         done_rx.recv_timeout(Duration::from_secs(10)).unwrap();

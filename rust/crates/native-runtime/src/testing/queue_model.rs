@@ -38,6 +38,7 @@ fn capacity(fault: Fault) {
         let workers = NativeWorkers {
             sender,
             admission: Arc::new(Mutex::new(admission)),
+            threads: 1,
         };
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(

@@ -26,6 +26,7 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
     let filler = run_blocking_io(|| (), None)?
         .pending

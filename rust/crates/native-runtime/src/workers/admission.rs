@@ -3,7 +3,8 @@ use crate::*;
 
 // Lock order: queue admission, then channel or waiter nodes. Admission serializes
 // edits to adjacent nodes; release notification holds only one node at a time.
-// Wakes run after every lock is released. The Loom model exercises both orders
+// Wakes run after every lock is released. A notifier may still hold a node
+// while it wakes the owner, so the owner retires the node's charge itself. The Loom model exercises both orders
 // of registration and capacity release on these same locks.
 
 pub(crate) struct AdmissionState {
@@ -19,7 +20,6 @@ pub(crate) struct AdmissionState {
 
 pub(crate) struct CapacityWaiter {
     pub(crate) state: Mutex<CapacityWaiterState>,
-    pub(crate) _allocation: Option<ReadAllocation>,
 }
 
 pub(crate) struct CapacityWaiterState {
@@ -27,6 +27,8 @@ pub(crate) struct CapacityWaiterState {
     pub(crate) next: Option<Arc<CapacityWaiter>>,
     pub(crate) waker: Waker,
     pub(crate) queued: bool,
+    /// The node's own allocation charge, taken back by its owner on retirement.
+    pub(crate) charge: Option<ReadAllocation>,
 }
 
 impl AdmissionState {
@@ -77,7 +79,25 @@ impl AdmissionState {
         self.waiter_count += 1;
     }
 
-    pub(crate) fn retire(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
+    /// Retires the owner's waiter and returns the next waiter's waker with the
+    /// owner's charge, which the caller drops after releasing admission.
+    pub(crate) fn retire_owner(
+        &mut self,
+        node: Arc<CapacityWaiter>,
+    ) -> (Option<Waker>, Option<ReadAllocation>) {
+        let next = self.retire(&node);
+        let charge = node
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .charge
+            .take();
+        // The owner's reference ends here; a notifier may still hold the node.
+        drop(node);
+        (next, charge)
+    }
+
+    fn retire(&mut self, node: &Arc<CapacityWaiter>) -> Option<Waker> {
         let mut state = node
             .state
             .lock()
@@ -133,8 +153,8 @@ pub(crate) fn allocate_capacity_waiter(
             next: None,
             waker: Waker::noop().clone(),
             queued: false,
+            charge: allocation,
         }),
-        _allocation: allocation,
     }))
 }
 
@@ -213,8 +233,11 @@ pub(crate) fn poll_submission_with(
     match workers.sender.try_send(job) {
         Ok(()) => {
             admission.queued_jobs += 1;
-            let next = waiter.take().and_then(|node| admission.retire(&node));
+            let (next, charge) = waiter
+                .take()
+                .map_or((None, None), |node| admission.retire_owner(node));
             drop(admission);
+            drop(charge);
             wake_capacity_waiter(next);
             Poll::Ready(Ok(()))
         }
@@ -237,8 +260,11 @@ pub(crate) fn poll_submission_with(
             Poll::Pending
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
-            let next = waiter.take().and_then(|node| admission.retire(&node));
+            let (next, charge) = waiter
+                .take()
+                .map_or((None, None), |node| admission.retire_owner(node));
             drop(admission);
+            drop(charge);
             wake_capacity_waiter(next);
             Poll::Ready(Err(io::Error::from(io::ErrorKind::BrokenPipe)))
         }
@@ -253,8 +279,9 @@ pub(crate) fn remove_capacity_waiter(workers: &NativeWorkers, waiter: Option<Arc
         .admission
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let next = admission.retire(&waiter);
+    let (next, charge) = admission.retire_owner(waiter);
     drop(admission);
+    drop(charge);
     wake_capacity_waiter(next);
 }
 

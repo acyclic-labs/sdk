@@ -1,6 +1,12 @@
 use super::*;
 use proptest::prelude::*;
 
+type Read<'a> = Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + 'a>>;
+
+fn completed(read: Read<'_>) -> io::Result<Vec<u8>> {
+    complete(read)
+}
+
 fn read_range<F: std::borrow::Borrow<NativeFile>>(
     file: F,
     offset: usize,
@@ -9,9 +15,10 @@ fn read_range<F: std::borrow::Borrow<NativeFile>>(
     api: u8,
     reject: bool,
     meter: Arc<ReadBudgetMeter>,
+    drive: impl FnOnce(Read<'_>) -> io::Result<Vec<u8>>,
 ) -> (Result<Vec<u8>, io::ErrorKind>, u64) {
     let mut range = AsyncRangeReader::new(file, offset as u64, length as u64);
-    let accept = |result: io::Result<(Vec<u8>, usize)>| {
+    let accept = move |result: io::Result<(Vec<u8>, usize)>| {
         let (mut bytes, filled) = result?;
         if reject {
             return Err(io::ErrorKind::Interrupted.into());
@@ -19,17 +26,24 @@ fn read_range<F: std::borrow::Borrow<NativeFile>>(
         bytes.truncate(filled);
         Ok(bytes)
     };
-    let result = match api {
-        0 => complete(range.read_prepared(vec![0x55; maximum], maximum, meter, true, accept)),
-        1 => complete(range.read_spare(
+    let cursor = &mut range;
+    let read: Read<'_> = match api {
+        0 => Box::pin(cursor.read_prepared(vec![0x55; maximum], maximum, meter, true, accept)),
+        1 => Box::pin(cursor.read_spare(
             (Vec::with_capacity(maximum), ()),
             maximum,
             meter,
             true,
-            |result| accept(result.map(|((bytes, ()), filled)| (bytes, filled))),
+            move |result| accept(result.map(|((bytes, ()), filled)| (bytes, filled))),
         )),
-        _ => complete(range.read(maximum, meter, true)).map(|chunk| chunk.0.to_vec()),
+        _ => Box::pin(async move {
+            cursor
+                .read(maximum, meter, true)
+                .await
+                .map(|chunk| chunk.0.to_vec())
+        }),
     };
+    let result = drive(read);
     (result.map_err(|error| error.kind()), range.remaining())
 }
 
@@ -48,6 +62,13 @@ fn cursor_matches(
 #[test]
 fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
 -> Result<(), Box<dyn std::error::Error>> {
+    // Exact charges hold only without other tests' load on the shared pools:
+    // a contended submission also charges its admission waiter (see below).
+    if passed_in_exclusive_process(
+        "tests::range::borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement",
+    )? {
+        return Ok(());
+    }
     initialize_native_io_services()?;
     let _inline = InlineBlocking::enter();
     let temporary = tempfile::tempdir()?;
@@ -87,6 +108,7 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
                     api,
                     reject,
                     owned_meter.clone(),
+                    completed,
                 );
                 let borrowed = read_range(
                     file.as_ref(),
@@ -96,6 +118,7 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
                     api,
                     reject,
                     borrowed_meter.clone(),
+                    completed,
                 );
                 prop_assert_eq!(&borrowed, &owned);
                 cursor_matches(&borrowed.0, borrowed.1, length)?;
@@ -133,5 +156,120 @@ fn borrowed_ranges_match_owned_bytes_cursor_charges_and_retirement()
             Ok(())
         },
     )?;
+    Ok(())
+}
+
+fn counters(meter: &ReadBudgetMeter) -> [u64; 4] {
+    [
+        meter.read.load(Ordering::Acquire),
+        meter.used_operations.load(Ordering::Acquire),
+        meter.used_bytes.load(Ordering::Acquire),
+        meter.used_allocations.load(Ordering::Acquire),
+    ]
+}
+
+/// Wakes the reader, but holds the first waking thread inside `wake` until
+/// released, after reporting that it is there.
+struct HeldWake {
+    reader: std::thread::Thread,
+    entered: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Wake for HeldWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.reader.unpark();
+        let entered = self.entered.lock().unwrap().take();
+        if let Some(entered) = entered {
+            let _ = entered.send(());
+            let (open, changed) = &*self.release;
+            let mut open = open.lock().unwrap();
+            while !*open {
+                open = changed.wait(open).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn a_range_read_that_waits_for_admission_charges_exactly_its_waiter() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::range::a_range_read_that_waits_for_admission_charges_exactly_its_waiter",
+    )? {
+        return Ok(());
+    }
+    initialize_native_io_services()?;
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("contended-range");
+    std::fs::write(&path, [7; 29])?;
+    let file = Arc::new(bounded_write_file(&path, false)?);
+    for api in 0..3 {
+        for (offset, reject) in [(0, false), (56, true)] {
+            let free = Arc::new(ReadBudgetMeter::new(16, 256));
+            let contended = Arc::new(ReadBudgetMeter::new(16, 256));
+            let uncontended = read_range(
+                file.as_ref(),
+                offset,
+                87,
+                29,
+                api,
+                reject,
+                free.clone(),
+                completed,
+            );
+            // Forced order: the pool is full at the first poll, so the read
+            // registers an admission waiter. Freed capacity then makes a
+            // worker wake it, and that worker is held inside the wake, still
+            // holding the waiter node, while the reader is admitted, runs to
+            // completion and has its charges inspected.
+            let saturation = Saturation::new(&NATIVE_WORKERS)?;
+            let mut retained_while_held = None;
+            let waited = read_range(
+                file.as_ref(),
+                offset,
+                87,
+                29,
+                api,
+                reject,
+                contended.clone(),
+                |mut read: Read<'_>| {
+                    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+                    let release =
+                        Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+                    let waker = Waker::from(Arc::new(HeldWake {
+                        reader: std::thread::current(),
+                        entered: std::sync::Mutex::new(Some(entered_tx)),
+                        release: Arc::clone(&release),
+                    }));
+                    assert!(
+                        read.as_mut()
+                            .poll(&mut Context::from_waker(&waker))
+                            .is_pending()
+                    );
+                    drop(saturation);
+                    entered_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(io::Error::other)?;
+                    let result = complete(read);
+                    retained_while_held = Some(contended.memory.load(Ordering::Acquire));
+                    *release.0.lock().unwrap() = true;
+                    release.1.notify_all();
+                    result
+                },
+            );
+            assert_eq!(waited, uncontended);
+            assert_eq!(retained_while_held, Some(0), "api {api} offset {offset}");
+            let [free_read, free_operations, free_bytes, free_allocations] = counters(&free);
+            assert_eq!(
+                counters(&contended),
+                [free_read, free_operations, free_bytes, free_allocations + 1],
+                "api {api} offset {offset}"
+            );
+        }
+    }
     Ok(())
 }
