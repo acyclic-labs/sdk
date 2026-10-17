@@ -43,9 +43,9 @@ fn guard(
         && resume.opaque.is_empty()
         && follow.preceding_commit_id.len() == 32
     {
-        Ok(Some(
-            follow.preceding_commit_id.as_ref().try_into().unwrap(),
-        ))
+        <[u8; 32]>::try_from(follow.preceding_commit_id.as_ref())
+            .map(Some)
+            .map_err(|_| StreamError::InvalidArgument)
     } else {
         Err(StreamError::InvalidArgument)
     };
@@ -106,16 +106,16 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
     require(actual == expected, "snapshot decode bytes")?;
     if let Ok(anchor) = anchor {
         let mut encoded = record_cursor(cursor.next, CommitId::from_bytes(anchor));
-        if let Ok(cursor) = &mut encoded {
-            if matches!(fault, Fault::ReverseEncode | Fault::ReverseBoth) {
-                cursor.opaque = cursor
-                    .opaque
-                    .iter()
-                    .rev()
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .into();
-            }
+        if let Ok(cursor) = &mut encoded
+            && matches!(fault, Fault::ReverseEncode | Fault::ReverseBoth)
+        {
+            cursor.opaque = cursor
+                .opaque
+                .iter()
+                .rev()
+                .copied()
+                .collect::<Vec<_>>()
+                .into();
         }
         let expected = if cursor.next == 0 {
             Err(StreamError::InvalidArgument)

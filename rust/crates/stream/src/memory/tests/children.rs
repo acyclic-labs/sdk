@@ -11,8 +11,8 @@ proptest::proptest! {
             let provider = MemoryStream::default();
             let mut seen = std::collections::BTreeSet::new();
             let mut expected = Vec::new();
-            let split = writes.len() / 2;
-            for &(id, nested) in &writes[..split] {
+            let (early, late) = writes.split_at(writes.len() / 2);
+            for &(id, nested) in early {
                 let child = format!("agents/{id}");
                 let path = if nested { format!("{child}/leaf") } else { child.clone() };
                 append(&provider, &path).await.expect("append");
@@ -24,7 +24,7 @@ proptest::proptest! {
             for path in expected {
                 assert_eq!(children.next().await.expect("ended").expect("child").path.as_str(), path);
             }
-            for &(id, nested) in &writes[split..] {
+            for &(id, nested) in late {
                 let child = format!("agents/{id}");
                 let path = if nested { format!("{child}/leaf") } else { child.clone() };
                 append(&provider, &path).await.expect("append");

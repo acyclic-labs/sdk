@@ -108,7 +108,7 @@ async fn seed(batches: usize) -> MemoryStream {
         provider
             .append(AppendRequest {
                 path: path.clone(),
-                records: vec![Bytes::from(vec![i as u8, 0, 255])],
+                records: vec![Bytes::from(vec![i.to_le_bytes()[0], 0, 255])],
                 if_tail: None,
                 idempotency_key: None,
             })
@@ -293,5 +293,8 @@ fn reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals()
         .iter()
         .position(|event| event.0 == "record_examination" && event.2 != 0)
         .unwrap();
-    assert_eq!(after.3[expected].0, "record_reserved_bytes");
+    assert_eq!(
+        after.3.get(expected).map(|event| event.0),
+        Some("record_reserved_bytes")
+    );
 }

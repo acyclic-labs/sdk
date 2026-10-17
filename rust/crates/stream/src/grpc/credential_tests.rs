@@ -76,7 +76,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                                 assert!(header.is_sensitive());
                                 assert_eq!(
                                     header.to_str().unwrap(),
-                                    format!("Bearer {}", tokens[sent])
+                                    format!("Bearer {}", tokens.get(sent).unwrap())
                                 );
                                 sent += 1;
                                 Box::pin(futures::future::ready(if sent < tokens.len() {

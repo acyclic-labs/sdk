@@ -54,7 +54,8 @@ const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES +
 };
 #[cfg(acyclic_stream_loom)]
 pub use client::verify_latest_progress;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// Finite session admission independent of the number of stored streams.

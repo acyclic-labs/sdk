@@ -1,5 +1,9 @@
 use std::future::Future;
 
+/// One boxed latency measurement: append, delivery and the delivery tick.
+type Measurement<'a, A, D, E> =
+    std::pin::Pin<Box<dyn Future<Output = Result<(A, D, u128), E>> + 'a>>;
+
 pub(crate) async fn sample<A, D, E>(
     append: impl Future<Output = Result<A, E>>,
     delivery: impl Future<Output = Result<D, E>>,
@@ -30,7 +34,7 @@ fn negative_control_timestamps_after_both_futures_complete() {
 }
 
 fn probe(broken: u8) {
-    use std::{cell::Cell, pin::Pin, task::Context};
+    use std::{cell::Cell, task::Context};
     let tick = Cell::new(0);
     let delivered = Cell::new(false);
     let acknowledged = Cell::new(false);
@@ -48,12 +52,11 @@ fn probe(broken: u8) {
         Ok::<_, ()>(7)
     };
     let now = || tick.get();
-    let mut measured: Pin<Box<dyn Future<Output = Result<((), i32, u128), ()>> + '_>> = match broken
-    {
+    let mut measured: Measurement<'_, (), i32, ()> = match broken {
         1 => Box::pin(async {
-            let append = append.await?;
+            append.await?;
             let delivery = delivery.await?;
-            Ok((append, delivery, now()))
+            Ok(((), delivery, now()))
         }),
         2 => Box::pin(async {
             let (append, delivery) = futures::try_join!(append, delivery)?;
@@ -103,17 +106,16 @@ fn failure_probe(broken: bool, append_fails: bool) {
     } else {
         (pending, failed)
     };
-    let mut measured: Pin<Box<dyn Future<Output = Result<((), (), u128), &'static str>>>> =
-        if broken {
-            Box::pin(async {
-                let (append, delivery) = futures::join!(append, delivery);
-                append?;
-                delivery?;
-                Ok(((), (), 0))
-            })
-        } else {
-            Box::pin(sample(append, delivery, || 0))
-        };
+    let mut measured: Measurement<'static, (), (), &'static str> = if broken {
+        Box::pin(async {
+            let (append, delivery) = futures::join!(append, delivery);
+            append?;
+            delivery?;
+            Ok(((), (), 0))
+        })
+    } else {
+        Box::pin(sample(append, delivery, || 0))
+    };
     let mut context = Context::from_waker(futures::task::noop_waker_ref());
     assert_eq!(
         measured.as_mut().poll(&mut context),

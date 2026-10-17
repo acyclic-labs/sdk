@@ -169,6 +169,7 @@ fn opening_budget(
 }
 
 async fn paired_openings(follows: u64, broken: bool) -> TestResult {
+    let follow_count = usize::try_from(follows)?;
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;
     let fixture = Fixture::open(provider, "node").await?;
@@ -193,7 +194,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     assert!(path_copy.count_total > 0);
     let mut before = Allocations::default();
     let mut after = Allocations::default();
-    let mut retained = Vec::with_capacity(2 * follows as usize);
+    let mut retained = Vec::with_capacity(2 * follow_count);
     for index in 0..follows {
         for legacy in if index % 2 == 0 {
             [true, false]
@@ -217,8 +218,8 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
             retained.push(records);
         }
     }
-    assert!(before.pending_polls >= follows as usize);
-    assert!(after.pending_polls >= follows as usize);
+    assert!(before.pending_polls >= follow_count);
+    assert!(after.pending_polls >= follow_count);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
     eprintln!(
         "follow_opening_allocations follows={follows} before_count={} after_count={} before_bytes={} after_bytes={} before_pending={} after_pending={} path_count={} path_bytes={}",

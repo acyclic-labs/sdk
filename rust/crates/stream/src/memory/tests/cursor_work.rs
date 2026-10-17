@@ -118,7 +118,7 @@ async fn seed(
             provider
                 .append(AppendRequest {
                     path: source.clone(),
-                    records: vec![Bytes::from(vec![i as u8, 0, 255])],
+                    records: vec![Bytes::from(vec![i.to_le_bytes()[0], 0, 255])],
                     if_tail: None,
                     idempotency_key: None,
                 })
@@ -213,11 +213,21 @@ fn initial_cursor_visits_each_batch_once_and_rescan_control_fails() {
                     .collect::<Vec<_>>(),
             );
         }
-        assert_eq!(observations[0], observations[1]);
+        let ([old_records, new_records], [old_count, _], [old_heap, new_heap]) = (
+            observations.as_slice(),
+            counts.as_slice(),
+            allocations.as_slice(),
+        ) else {
+            panic!("each cursor runs once");
+        };
+        assert_eq!(old_records, new_records);
         assert_eq!(counts, [2 * batches, batches]);
-        assert_ne!(counts[0], batches, "rescan control escaped the exact bound");
-        assert_eq!(allocations[0].count_total, allocations[1].count_total);
-        assert_eq!(allocations[1].count_total, if batches == 4 { 1 } else { 4 });
+        assert_ne!(
+            *old_count, batches,
+            "rescan control escaped the exact bound"
+        );
+        assert_eq!(old_heap.count_total, new_heap.count_total);
+        assert_eq!(new_heap.count_total, if batches == 4 { 1 } else { 4 });
         println!("cursor batches={batches} visits={counts:?} allocations={allocations:?}");
     }
 }
@@ -268,29 +278,32 @@ fn appended_follow_reuses_the_cursor_queue_without_scratch_allocations() {
                 .collect::<Vec<_>>(),
         );
     }
-    assert_eq!(observations[0], observations[1]);
+    let ([old_records, new_records], [before, after]) =
+        (observations.as_slice(), measured.as_slice())
+    else {
+        panic!("each cursor runs once");
+    };
+    assert_eq!(old_records, new_records);
     assert_eq!(
-        measured[0],
+        *before,
         (2, 1, (4 * std::mem::size_of::<HistoryWindow>()) as u64)
     );
-    assert_eq!(measured[1], (1, 0, 0));
+    assert_eq!(*after, (1, 0, 0));
     assert_ne!(
-        measured[0], measured[1],
+        before, after,
         "old scratch allocation escaped exact work assertions"
     );
-    println!(
-        "appended_follow before={:?} after={:?}",
-        measured[0], measured[1]
-    );
+    println!("appended_follow before={before:?} after={after:?}");
 }
 
 fn record_bytes(record: Record) -> (u64, Vec<u8>, CommitId, u64) {
-    (
-        record.sequence,
-        record.value.to_vec(),
-        record.commit_id,
-        record.committed_at_micros,
-    )
+    let Record {
+        sequence,
+        value,
+        commit_id,
+        committed_at_micros,
+    } = record;
+    (sequence, value.to_vec(), commit_id, committed_at_micros)
 }
 
 #[test]
@@ -316,18 +329,17 @@ fn singleton_reads_retain_the_window_inline_without_allocating() {
                 .collect::<Vec<_>>(),
         );
     }
-    assert_eq!(observations[0], observations[1]);
-    assert_eq!(
-        measurements[0],
-        (1, std::mem::size_of::<HistoryWindow>() as u64)
-    );
-    assert_eq!(measurements[1], (0, 0));
+    let ([old_records, new_records], [before, after]) =
+        (observations.as_slice(), measurements.as_slice())
+    else {
+        panic!("each cursor runs once");
+    };
+    assert_eq!(old_records, new_records);
+    assert_eq!(*before, (1, std::mem::size_of::<HistoryWindow>() as u64));
+    assert_eq!(*after, (0, 0));
     assert_ne!(
-        measurements[0], measurements[1],
+        before, after,
         "old singleton heap queue escaped the exact allocation bound"
     );
-    println!(
-        "singleton cursor before={:?} after={:?}",
-        measurements[0], measurements[1]
-    );
+    println!("singleton cursor before={before:?} after={after:?}");
 }

@@ -3,6 +3,37 @@ use crate::{CommitMutation, Record};
 use std::time::{Duration, Instant};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+/// The compacted snapshot alone restores both appended paths in order.
+async fn assert_snapshot_restores(
+    directory: &std::path::Path,
+    limits: LocalStreamLimits,
+) -> Result {
+    let snapshot = read_snapshot(directory, limits)?.ok_or("snapshot missing")?;
+    let restored = MemoryStream::default();
+    restored.install_state(&snapshot.state).await?;
+    assert_eq!(restored.tail(StreamPath::new("agents/a")?).await?, 2);
+    assert_eq!(restored.tail(StreamPath::new("agents/b")?).await?, 1);
+    let replay = restored
+        .read(ReadRequest {
+            path: StreamPath::new("agents/a")?,
+            from: 0,
+            limit: 2,
+        })
+        .await?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        replay
+            .iter()
+            .map(|record| record.value.as_slice())
+            .collect::<Vec<_>>(),
+        [b"seed".as_slice(), b"accepted".as_slice()]
+    );
+    Ok(())
+}
+
 #[test]
 fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_held() -> Result {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -103,15 +134,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         }
         assert!(was_writing, "compaction completed before the device gate was released");
         assert_eq!(provider.watermarks(path).await?, crate::StreamWatermarks { accepted: 2, durable: 2 });
-        let snapshot = read_snapshot(directory.path(), limits)?.ok_or("snapshot missing")?;
-        let restored = MemoryStream::default();
-        restored.install_state(&snapshot.state).await?;
-        assert_eq!(restored.tail(StreamPath::new("agents/a")?).await?, 2);
-        assert_eq!(restored.tail(StreamPath::new("agents/b")?).await?, 1);
-        let replay = restored.read(ReadRequest { path: StreamPath::new("agents/a")?, from: 0, limit: 2 }).await?
-            .collect::<Vec<_>>().await.into_iter().collect::<std::result::Result<Vec<_>, _>>()?;
-        assert_eq!(replay.iter().map(|record| record.value.as_slice()).collect::<Vec<_>>(), [b"seed".as_slice(), b"accepted".as_slice()]);
-        Ok(())
+        assert_snapshot_restores(directory.path(), limits).await
     })
 }
 #[cfg(feature = "grpc")]
@@ -151,7 +174,10 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
                 writing.await??;
             }
             samples.sort_unstable();
-            eprintln!("compacting_append_to_follower transport={transport} samples=64 p50_ns={} p99_ns={}", samples[32], samples[63]);
+            let (Some(p50), Some(p99)) = (samples.get(32), samples.get(63)) else {
+                return Err("fewer than 64 samples".into());
+            };
+            eprintln!("compacting_append_to_follower transport={transport} samples=64 p50_ns={p50} p99_ns={p99}");
         }
         Ok(())
     })

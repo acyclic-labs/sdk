@@ -116,10 +116,10 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
     let client = fixture.client()?;
     let mut overview = client.follow_data(subscription("status", true), 1).await?;
     let mut full = client.follow(StreamPath::new("events")?, 1).await?;
-    for sequence in 1..=2 {
+    for (sent, sequence) in (1..=2).enumerate() {
         status(&memory, sequence, false).await?;
         fixture
-            .until(|counts| counts.sent.load(Ordering::Relaxed) == sequence as usize)
+            .until(|counts| counts.sent.load(Ordering::Relaxed) == sent + 1)
             .await;
     }
     for sequence in 3..=9 {

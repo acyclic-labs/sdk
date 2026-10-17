@@ -68,9 +68,9 @@ async fn agent(
     id: usize,
     epoch: Instant,
 ) -> TestResult {
-    let own = paths[id].clone();
-    let peer = paths[id ^ 1].clone();
-    let first = id % 2 == 0;
+    let own = paths.get(id).ok_or("agent has no path")?.clone();
+    let peer = paths.get(id ^ 1).ok_or("agent has no peer")?.clone();
+    let first = id.is_multiple_of(2);
     if !first {
         let mut inbox = memory.follow(own.clone(), 1).await?;
         assert_eq!(next(&mut inbox).await?.sequence, 1);
@@ -167,15 +167,24 @@ async fn run_swarm<P: StreamProvider>(
                 .await
                 .ok_or("follow ended before the expected prefix")?;
             let record = record?;
-            assert_eq!(record.sequence, offsets[id]);
-            offsets[id] += 1;
+            let offset = offsets.get_mut(id).ok_or("follower has no offset")?;
+            assert_eq!(record.sequence, *offset);
+            *offset += 1;
             assert_eq!(record.value.len(), 12);
-            let stamp = u64::from_le_bytes(record.value[..8].try_into()?);
-            let sender = u32::from_le_bytes(record.value[8..].try_into()?) as usize;
+            let Some((stamp, sender)) = record.value.split_first_chunk::<8>() else {
+                return Err("record shorter than its stamp".into());
+            };
+            let stamp = u64::from_le_bytes(*stamp);
+            let sender = usize::try_from(u32::from_le_bytes(sender.try_into()?))?;
             assert!(sender == id || sender == id ^ 1);
-            let slot = usize::from(sender != id);
-            assert!(!senders[id][slot]);
-            senders[id][slot] = true;
+            let seen = senders.get_mut(id).ok_or("follower has no senders")?;
+            let seen = if sender == id {
+                &mut seen[0]
+            } else {
+                &mut seen[1]
+            };
+            assert!(!*seen);
+            *seen = true;
             latencies.push(u64::try_from(epoch.elapsed().as_nanos())?.saturating_sub(stamp));
         }
         assert!(offsets.iter().all(|next| *next == 3));
@@ -185,8 +194,10 @@ async fn run_swarm<P: StreamProvider>(
         eprintln!(
             "swarm_delta {label} agents={AGENTS} records={} p50_ns={} p99_ns={}",
             latencies.len(),
-            latencies[latencies.len() / 2],
-            latencies[latencies.len() * 99 / 100]
+            latencies.get(latencies.len() / 2).ok_or("no latencies")?,
+            latencies
+                .get(latencies.len() * 99 / 100)
+                .ok_or("no latencies")?
         );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     };

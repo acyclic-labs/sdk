@@ -52,12 +52,12 @@ proptest! {
         let before = wire::SessionWindow { bytes, frames };
         let mut remaining = before;
         let result = grant_credit(&mut remaining, &wire::SessionWindow { bytes: added_bytes, frames: added_frames });
-        match (bytes.checked_add(added_bytes), frames.checked_add(added_frames)) {
-            (Some(bytes), Some(frames)) => {
-                prop_assert!(result.is_ok());
-                prop_assert_eq!(remaining, wire::SessionWindow { bytes, frames });
-            }
-            _ => { prop_assert!(result.is_err()); prop_assert_eq!(remaining, before); }
+        if let (Some(bytes), Some(frames)) = (bytes.checked_add(added_bytes), frames.checked_add(added_frames)) {
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(remaining, wire::SessionWindow { bytes, frames });
+        } else {
+            prop_assert!(result.is_err());
+            prop_assert_eq!(remaining, before);
         }
     }
 

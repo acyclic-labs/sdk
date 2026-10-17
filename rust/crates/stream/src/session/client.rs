@@ -46,7 +46,8 @@ mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
 pub use progress::verify_latest_progress;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 type Ready = (String, Link, Response);
 type Dial = BoxProviderFuture<'static, (String, u64, Result<Ready, StreamError>)>;
@@ -82,6 +83,43 @@ struct Delivery {
     opaque: Bytes,
     generation: u64,
     credit: Credit,
+}
+impl Delivery {
+    /// Advance `progress` past this delivery; false means a stale generation.
+    fn consume(&self, progress: &Progress) -> Result<bool, StreamError> {
+        match &self.item {
+            Received::Data(data)
+            | Received::Frame(wire::SessionFrame {
+                body: Some(Body::Data(data)),
+                ..
+            }) => match &data.item {
+                Some(Item::Record(record)) => progress.consume_record(
+                    self.generation,
+                    self.sequence,
+                    record
+                        .commit_id
+                        .as_ref()
+                        .try_into()
+                        .map_err(|_| StreamError::Unavailable)?,
+                ),
+                Some(Item::LatestValue(_)) => {
+                    progress.consume_latest(self.generation, self.sequence)
+                }
+                Some(Item::Child(_)) => {
+                    progress.consume_opaque(self.generation, self.sequence, &self.opaque)
+                }
+                _ => Err(StreamError::Unavailable),
+            },
+            Received::Child(_) => {
+                progress.consume_opaque(self.generation, self.sequence, &self.opaque)
+            }
+            Received::Frame(wire::SessionFrame {
+                body: Some(Body::Watermark(_)),
+                ..
+            }) => progress.current(self.generation),
+            _ => Err(StreamError::Unavailable),
+        }
+    }
 }
 enum Received {
     Data(wire::SessionData),
@@ -193,7 +231,7 @@ impl Client {
             reads: FuturesUnordered::new(),
             dials: BTreeMap::new(),
             pending: VecDeque::new(),
-            home_channel: channel.clone(),
+            home_channel: channel,
             next_link: 1,
             active: Arc::clone(&active),
             admissions: Arc::clone(&admissions),
@@ -405,7 +443,7 @@ impl Client {
             }
             _ => None,
         };
-        let progress = Arc::new(Progress::from_cursor(resume, preceding));
+        let progress = Arc::new(Progress::from_cursor(&resume, preceding));
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -459,42 +497,7 @@ impl Client {
                     };
                     // Delivery disposal returns capacity on every exit, including
                     // stale-generation suppression and cancellation of the cursor.
-                    let fresh = match &delivery.item {
-                        Received::Data(data)
-                        | Received::Frame(wire::SessionFrame {
-                            body: Some(Body::Data(data)),
-                            ..
-                        }) => match &data.item {
-                            Some(Item::Record(record)) => cursor.progress.consume_record(
-                                delivery.generation,
-                                delivery.sequence,
-                                record
-                                    .commit_id
-                                    .as_ref()
-                                    .try_into()
-                                    .map_err(|_| StreamError::Unavailable)?,
-                            )?,
-                            Some(Item::LatestValue(_)) => cursor
-                                .progress
-                                .consume_latest(delivery.generation, delivery.sequence)?,
-                            Some(Item::Child(_)) => cursor.progress.consume_opaque(
-                                delivery.generation,
-                                delivery.sequence,
-                                &delivery.opaque,
-                            )?,
-                            _ => return Err(StreamError::Unavailable),
-                        },
-                        Received::Child(_) => cursor.progress.consume_opaque(
-                            delivery.generation,
-                            delivery.sequence,
-                            &delivery.opaque,
-                        )?,
-                        Received::Frame(wire::SessionFrame {
-                            body: Some(Body::Watermark(_)),
-                            ..
-                        }) => cursor.progress.current(delivery.generation)?,
-                        _ => return Err(StreamError::Unavailable),
-                    };
+                    let fresh = delivery.consume(&cursor.progress)?;
                     drop(delivery.credit);
                     if fresh {
                         return Ok(Some((delivery.item, cursor)));

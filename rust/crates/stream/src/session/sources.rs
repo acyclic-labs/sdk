@@ -6,7 +6,8 @@ use std::task::{Context, Poll};
 
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
-#[cfg(all(test, not(acyclic_stream_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_stream_loom))]
 mod tests;
 
 const OPENING: usize = 0;
@@ -171,28 +172,24 @@ impl Sources {
         {
             self.queue_edits += 1;
         }
+        // Queued neighbours always hold links; a class always names a queue.
         if let Some(before) = links.before {
-            self.entries
-                .get_mut(&before)
-                .unwrap()
-                .links
-                .as_mut()
-                .unwrap()
-                .after = links.after;
-        } else {
-            self.queues[links.class].first = links.after;
+            if let Some(neighbour) = self.links(before) {
+                neighbour.after = links.after;
+            }
+        } else if let Some(queue) = self.queues.get_mut(links.class) {
+            queue.first = links.after;
         }
         if let Some(after) = links.after {
-            self.entries
-                .get_mut(&after)
-                .unwrap()
-                .links
-                .as_mut()
-                .unwrap()
-                .before = links.before;
-        } else {
-            self.queues[links.class].last = links.before;
+            if let Some(neighbour) = self.links(after) {
+                neighbour.before = links.before;
+            }
+        } else if let Some(queue) = self.queues.get_mut(links.class) {
+            queue.last = links.before;
         }
+    }
+    fn links(&mut self, id: u64) -> Option<&mut Links> {
+        self.entries.get_mut(&id)?.links.as_mut()
     }
     fn enqueue(&mut self, id: u64) {
         let Some(entry) = self.entries.get_mut(&id) else {
@@ -208,7 +205,9 @@ impl Sources {
         }) else {
             return;
         };
-        let before = self.queues[class].last;
+        let Some(before) = self.queues.get(class).map(|queue| queue.last) else {
+            return;
+        };
         entry.links = Some(Links {
             class,
             before,
@@ -218,18 +217,15 @@ impl Sources {
         {
             self.queue_edits += 1;
         }
-        if let Some(before) = before {
-            self.entries
-                .get_mut(&before)
-                .unwrap()
-                .links
-                .as_mut()
-                .unwrap()
-                .after = Some(id);
-        } else {
-            self.queues[class].first = Some(id);
+        if let Some(neighbour) = before.and_then(|before| self.links(before)) {
+            neighbour.after = Some(id);
         }
-        self.queues[class].last = Some(id);
+        if let Some(queue) = self.queues.get_mut(class) {
+            if before.is_none() {
+                queue.first = Some(id);
+            }
+            queue.last = Some(id);
+        }
     }
     fn wake(&mut self, identity: wire::SessionChannel) {
         if let Some(entry) = self.entries.get_mut(&identity.channel_id)
@@ -244,8 +240,8 @@ impl Sources {
         let enabled = [true, all, room.0, all || room.0];
         for offset in 0..self.queues.len() {
             let class = (self.preferred + offset) % self.queues.len();
-            if enabled[class]
-                && let Some(id) = self.queues[class].first
+            if enabled.get(class) == Some(&true)
+                && let Some(id) = self.queues.get(class).and_then(|queue| queue.first)
             {
                 self.unlink(id);
                 self.preferred = (class + 1) % self.queues.len();
@@ -271,7 +267,10 @@ impl Sources {
                 self.wake(identity);
             }
             if let Some(id) = self.pop(room) {
-                let entry = self.entries.get_mut(&id).unwrap();
+                // A queued id always names a live entry.
+                let Some(entry) = self.entries.get_mut(&id) else {
+                    continue;
+                };
                 entry.ready = false;
                 let waker = futures::task::waker_ref(&entry.wake);
                 match entry.wake.recheck(|| {

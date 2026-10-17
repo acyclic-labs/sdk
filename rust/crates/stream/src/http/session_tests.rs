@@ -38,15 +38,82 @@ async fn append(provider: &MemoryStream, path: &str) -> Result<(), StreamError> 
     Ok(())
 }
 
-#[tokio::test]
-async fn http_follows_and_live_children_share_one_native_session() -> TestResult {
-    let provider = Arc::new(MemoryStream::default());
-    append(&provider, "events").await?;
-    let connections = Arc::new(AtomicUsize::new(0));
-    let sessions = Arc::new(AtomicUsize::new(0));
+/// The open overview keeps the shared native session in use.
+type Overview = futures::stream::BoxStream<'static, Result<wire::SessionData, StreamError>>;
+/// A Latest overview over HTTP yields the attention value with its cut.
+async fn latest_overview(
+    provider: &MemoryStream,
+    client: &HttpStream,
+) -> Result<Overview, Box<dyn std::error::Error + Send + Sync>> {
+    let latest_value = wire::SessionLatestValue {
+        key: Bytes::from_static(b"agent"),
+        value: Bytes::from_static(b"running"),
+        attention: true,
+    };
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("status")?,
+            records: vec![latest_value.encode_to_vec().into()],
+            if_tail: None,
+            idempotency_key: None,
+        })
+        .await?;
+    let mut overview = client
+        .follow_data(
+            wire::SessionFollow {
+                path: "status".into(),
+                delivery: wire::SessionDelivery::Latest as i32,
+                ..Default::default()
+            },
+            0,
+        )
+        .await?;
+    let data = overview.next().await.ok_or("latest ended")??;
+    assert_eq!(
+        data.item,
+        Some(wire::session_data::Item::LatestValue(latest_value))
+    );
+    assert_eq!(data.after.as_ref().map(|cursor| cursor.next), Some(1));
+    assert_eq!((data.accepted, data.durable), (1, 0));
+    Ok(overview)
+}
+
+/// Sample append-to-follow latency on the shared session after a warm-up.
+async fn measure_append_follow(provider: &MemoryStream, measured: &mut RecordStream) -> TestResult {
+    let mut latencies = Vec::new();
+    for index in 0..144 {
+        let started = std::time::Instant::now();
+        let (_, record, elapsed) = crate::test_latency::sample(
+            append(provider, "events"),
+            async { measured.next().await.ok_or(StreamError::Unavailable)? },
+            || started.elapsed().as_nanos(),
+        )
+        .await?;
+        assert_eq!(record.sequence, index + 2);
+        if index >= 16 {
+            latencies.push(elapsed);
+        }
+    }
+    latencies.sort_unstable();
+    println!(
+        "http_session_append_follow samples=128 p50_ns={} p99_ns={}",
+        latencies.get(64).ok_or("p50")?,
+        latencies.get(126).ok_or("p99")?
+    );
+    Ok(())
+}
+
+/// A loopback server task for the unary and session services.
+type Server = tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
+/// Serve both services on loopback, counting accepted connections and sessions.
+async fn serve(
+    provider: &Arc<MemoryStream>,
+    connections: &Arc<AtomicUsize>,
+    sessions: &Arc<AtomicUsize>,
+) -> Result<(String, Server), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
-    let accepted = Arc::clone(&connections);
+    let accepted = Arc::clone(connections);
     let incoming = stream::try_unfold(listener, move |listener| {
         let accepted = Arc::clone(&accepted);
         async move {
@@ -58,52 +125,32 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
     });
     let host = Host {
         service: crate::session::Service::new(
-            Arc::clone(&provider),
+            Arc::clone(provider),
             "node".into(),
             crate::session::Limits::default(),
         ),
-        sessions: Arc::clone(&sessions),
+        sessions: Arc::clone(sessions),
     };
-    let unary = crate::grpc::Service::new(Arc::clone(&provider));
+    let unary = crate::grpc::Service::new(Arc::clone(provider));
     let server = tokio::spawn(
         tonic::transport::Server::builder()
             .add_service(wire::stream_service_server::StreamServiceServer::new(unary))
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming),
     );
+    Ok((endpoint, server))
+}
+
+#[tokio::test]
+async fn http_follows_and_live_children_share_one_native_session() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events").await?;
+    let connections = Arc::new(AtomicUsize::new(0));
+    let sessions = Arc::new(AtomicUsize::new(0));
+    let (endpoint, server) = serve(&provider, &connections, &sessions).await?;
     let result: TestResult = async {
         let client = HttpStream::new(&endpoint, "fixture-token", MAX_COMMAND_BYTES)?;
-        let status_path = StreamPath::new("status")?;
-        let latest_value = wire::SessionLatestValue {
-            key: Bytes::from_static(b"agent"),
-            value: Bytes::from_static(b"running"),
-            attention: true,
-        };
-        provider
-            .append(AppendRequest {
-                path: status_path,
-                records: vec![latest_value.encode_to_vec().into()],
-                if_tail: None,
-                idempotency_key: None,
-            })
-            .await?;
-        let mut overview = client
-            .follow_data(
-                wire::SessionFollow {
-                    path: "status".into(),
-                    delivery: wire::SessionDelivery::Latest as i32,
-                    ..Default::default()
-                },
-                0,
-            )
-            .await?;
-        let data = overview.next().await.ok_or("latest ended")??;
-        assert_eq!(
-            data.item,
-            Some(wire::session_data::Item::LatestValue(latest_value))
-        );
-        assert_eq!(data.after.as_ref().map(|cursor| cursor.next), Some(1));
-        assert_eq!((data.accepted, data.durable), (1, 0));
+        let _overview = latest_overview(&provider, &client).await?;
         let path = StreamPath::new("events")?;
         assert_eq!(
             client.watermarks(path.clone()).await?,
@@ -175,26 +222,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         drop(children);
         let mut measured = follows.pop().ok_or("missing measured follow")?;
         drop(follows);
-        let mut latencies = Vec::new();
-        for index in 0..144 {
-            let started = std::time::Instant::now();
-            let (_, record, elapsed) = crate::test_latency::sample(
-                append(&provider, "events"),
-                async { measured.next().await.ok_or(StreamError::Unavailable)? },
-                || started.elapsed().as_nanos(),
-            )
-            .await?;
-            assert_eq!(record.sequence, index + 2);
-            if index >= 16 {
-                latencies.push(elapsed);
-            }
-        }
-        latencies.sort_unstable();
-        println!(
-            "http_session_append_follow samples=128 p50_ns={} p99_ns={}",
-            latencies.get(64).ok_or("p50")?,
-            latencies.get(126).ok_or("p99")?
-        );
+        measure_append_follow(&provider, &mut measured).await?;
         assert_eq!(connections.load(Ordering::Relaxed), 1);
         assert_eq!(sessions.load(Ordering::Relaxed), 1);
         Ok(())

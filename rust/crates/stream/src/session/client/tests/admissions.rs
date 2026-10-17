@@ -1,6 +1,6 @@
 use super::*;
 
-fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
+fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     let (mut pool, receiver_b) = pool::fixture::fixture(channel);
     pool.links.remove("bad");
     let (records, receiver_a) = mpsc::channel(2);
@@ -19,10 +19,18 @@ fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
         abandoned: Arc::clone(&pool.abandoned),
     };
     let a = client
-        .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)
+        .cursor(
+            1,
+            Arc::clone(&pool.routes.get(&1).unwrap().progress),
+            receiver_a,
+        )
         .unwrap();
     let b = client
-        .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver_b)
+        .cursor(
+            3,
+            Arc::clone(&pool.routes.get(&3).unwrap().progress),
+            receiver_b,
+        )
         .unwrap();
     // Their Open commands have already been dispatched into the fixture routes.
     pool.admissions.remove(1).unwrap();
@@ -46,7 +54,7 @@ fn ended_sibling(channel: TransportChannel) -> (Pool, Cursor, Cursor) {
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(fixture._channel.clone());
+    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel);
     let (release, held) = oneshot::channel::<()>();
     // One fixture lock, never nested and released before the credential await.
     let held = std::sync::Arc::new(Mutex::new(Some(held)));
@@ -95,7 +103,7 @@ async fn terminal_unpolled_cursor_cannot_keep_a_home_reconnect_alive() -> TestRe
 #[tokio::test]
 async fn terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-    let (mut pool, a, _terminal_b) = ended_sibling(fixture._channel.clone());
+    let (mut pool, a, _terminal_b) = ended_sibling(&fixture._channel);
     pool.reconnect("good")?;
     let (node, epoch, ready) = future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))
         .await
@@ -106,7 +114,7 @@ async fn terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect() 
         !pool.node_interested("good"),
         "a terminal cursor is not a pending Open"
     );
-    pool.dial_ready(node, epoch, ready)?;
+    pool.dial_ready(&node, epoch, ready)?;
     assert!(
         pool.links.is_empty(),
         "ownerless completion must not install a Link"

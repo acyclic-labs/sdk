@@ -555,9 +555,11 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
     two?;
     for capture in [first, second] {
         let attempts = capture.all("acyclic.stream.grpc.call");
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(attempts[0].get("attempt").map(String::as_str), Some("1"));
-        assert_eq!(attempts[1].get("attempt").map(String::as_str), Some("2"));
+        let [first, second] = attempts.as_slice() else {
+            panic!("expected two attempts, found {}", attempts.len());
+        };
+        assert_eq!(first.get("attempt").map(String::as_str), Some("1"));
+        assert_eq!(second.get("attempt").map(String::as_str), Some("2"));
     }
     Ok(())
 }
@@ -568,7 +570,9 @@ proptest::proptest! {
         index in 0usize..StreamError::ALL.len(),
         context in ".{0,64}",
     ) {
-        let error = &StreamError::ALL[index];
+        let error = StreamError::ALL
+            .get(index)
+            .ok_or_else(|| proptest::test_runner::TestCaseError::fail("no such error"))?;
         let wire = error_status(error);
         proptest::prop_assert_eq!(status(&wire), error.clone());
         // Only the contract's discriminating messages carry extra meaning.

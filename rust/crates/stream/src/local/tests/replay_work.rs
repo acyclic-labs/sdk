@@ -36,7 +36,7 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
     }
     let after = stream.inner.required().unwrap();
     let mut mismatched = request.clone();
-    if let crate::CommitMutation::Append { records, .. } = &mut mismatched.mutations[0] {
+    if let Some(crate::CommitMutation::Append { records, .. }) = mismatched.mutations.first_mut() {
         records.push(Bytes::from_static(b"different"));
     }
     assert!(matches!(

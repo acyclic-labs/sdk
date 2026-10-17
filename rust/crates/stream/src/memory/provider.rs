@@ -106,7 +106,7 @@ impl StreamProvider for MemoryStream {
         let mut cursor = HistoryCursor::new(path, end, request.from);
         Ok(stream::iter(
             std::iter::from_fn(move || cursor.next_record())
-                .take((end - request.from) as usize)
+                .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
                 .map(Ok),
         )
         .boxed())
@@ -276,23 +276,7 @@ impl StreamProvider for MemoryStream {
             let end = path
                 .tail
                 .min(request.from.saturating_add(u64::from(request.limit)));
-            if let Some(window) = path.prefix_window(request.from, end) {
-                meter.admit_examination(1, 0)?;
-                windows.push(window);
-                meter.record_examination(1, 0)?;
-            } else {
-                let mut history = HistoryWalk::new(path.history.as_ref(), end, request.from);
-                while history.next.is_some() && history.ceiling > request.from {
-                    meter.admit_examination(1, 0)?;
-                    if let Some((History::Batch { records, .. }, ceiling)) = history.next()
-                        && let Some(window) =
-                            history_window(Arc::clone(records), ceiling, request.from)
-                    {
-                        windows.push(window);
-                    }
-                    meter.record_examination(1, 0)?;
-                }
-            }
+            admit_windows(path, request.from, end, &*meter, &mut windows)?;
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
             // A bounded native read never refreshes a history root. Keep only
@@ -565,4 +549,31 @@ impl StreamProvider for MemoryStream {
             work.finish(provider.append_inner(request).await)
         })
     }
+}
+
+/// Admit the history windows that cover `from..end`, newest first.
+#[cfg(not(target_arch = "wasm32"))]
+fn admit_windows(
+    path: &PathState,
+    from: u64,
+    end: u64,
+    meter: &dyn NativeReadMeter,
+    windows: &mut Vec<HistoryWindow>,
+) -> std::io::Result<()> {
+    if let Some(window) = path.prefix_window(from, end) {
+        meter.admit_examination(1, 0)?;
+        windows.push(window);
+        return meter.record_examination(1, 0);
+    }
+    let mut history = HistoryWalk::new(path.history.as_ref(), end, from);
+    while history.next.is_some() && history.ceiling > from {
+        meter.admit_examination(1, 0)?;
+        if let Some((History::Batch { records, .. }, ceiling)) = history.next()
+            && let Some(window) = history_window(Arc::clone(records), ceiling, from)
+        {
+            windows.push(window);
+        }
+        meter.record_examination(1, 0)?;
+    }
+    Ok(())
 }

@@ -27,7 +27,7 @@ pub fn verify_follow_data(broken: u8) {
         );
         assert!(matches!(progress.next().unwrap(), 0 | 5));
 
-        let (mut pool, _old) = fixture(channel.clone());
+        let (mut pool, _old) = fixture(&channel);
         let (records, mut received) = mpsc::channel(3);
         let route = pool.routes.get_mut(&3).unwrap();
         route.records = records;
