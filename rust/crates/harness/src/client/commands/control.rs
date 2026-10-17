@@ -1,6 +1,9 @@
 //! File-backed desired execution state, applied at owner dispatch boundaries.
 use super::*;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "filesystem-local", all(test, acyclic_loom))
+))]
 use crate::task_volume::FileValue;
 use crate::{
     TaskId,
@@ -46,7 +49,7 @@ impl CommandControl {
         }
         Ok(latest.is_some_and(|(_, paused)| paused))
     }
-    #[cfg(any(test, not(target_arch = "wasm32")))]
+    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
     pub(crate) fn set(&mut self, task: Option<TaskId>, revision: u64, paused: bool) {
         if let Some(task) = task {
             self.tasks.insert(task, (revision, paused));
@@ -58,7 +61,10 @@ impl CommandControl {
         FileKey::parse(".ui/config/task-control.json")
             .map_err(|error| Error::Invalid(error.to_string()))
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "filesystem-local", all(test, acyclic_loom))
+    ))]
     pub(crate) async fn change<P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         task: Option<TaskId>,
@@ -75,7 +81,10 @@ impl CommandControl {
         )
         .await
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "filesystem-local", all(test, acyclic_loom))
+    ))]
     pub(crate) async fn change_matching<'a, P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         task: Option<TaskId>,
@@ -111,7 +120,10 @@ impl CommandControl {
         )
         .await
     }
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "filesystem-local", all(test, acyclic_loom))
+    ))]
     async fn publish_matching<'a, P: StreamProvider + ?Sized>(
         volume: &TaskVolume<P>,
         task: Option<TaskId>,

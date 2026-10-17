@@ -74,7 +74,7 @@ where
         Ok(self)
     }
 
-    #[cfg(feature = "native-execution")]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     pub(crate) fn with_content_publisher(
         mut self,
         writer: Arc<dyn crate::conversation::ContentPublisher>,
