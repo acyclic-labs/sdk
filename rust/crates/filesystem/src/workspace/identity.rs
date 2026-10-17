@@ -20,110 +20,52 @@ impl WorkspaceName {
         name: &str,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, WorkspaceError> {
+        Self::with_probe(name, accounting, char::is_ascii, &mut |_, _, _| {})
+    }
+
+    fn with_probe(
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+        ascii: impl Fn(&char) -> bool,
+        probe: &mut impl FnMut(u8, u64, u64),
+    ) -> Result<Self, WorkspaceError> {
         accounting.check()?;
-        let (mut pending, mut maximum_pending, mut maximum_chunk) = (0_u64, 0_u64, 0_u64);
-        for character in name.chars() {
-            accounting.charge_items(1)?;
-            let mut chunk = 0_u64;
-            let mut failure = None;
-            unicode_normalization::char::decompose_canonical(character, |scalar| {
-                if failure.is_some() {
-                    return;
-                }
-                failure = (|| -> Result<(), WorkspaceError> {
-                    accounting.charge_items(1)?;
-                    chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                    if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
-                        pending = 0;
-                    } else {
-                        pending = pending.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-                        maximum_pending = maximum_pending.max(pending);
-                    }
-                    Ok(())
-                })()
-                .err();
-            });
-            if let Some(error) = failure {
-                return Err(error);
-            }
-            maximum_chunk = maximum_chunk.max(chunk);
+        let (all_ascii, invalid_ascii, maximum_pending, maximum_chunk) =
+            plan::inspect(name, accounting, ascii, probe)?;
+        if !all_ascii {
+            return normalize::parse(name, maximum_pending, maximum_chunk, accounting, probe);
         }
-        // NFC's two TinyVec buffers and combining-mark sort scratch are admitted before iteration.
-        let buffer = |count: u64, width: usize| -> Result<u64, WorkspaceError> {
-            if count <= 4 {
-                return Ok(0);
-            }
-            count
-                .checked_next_power_of_two()
-                .and_then(|n| n.checked_mul(2))
-                .and_then(|n| n.checked_mul(width as u64))
-                .ok_or(crate::WorkError::Overflow.into())
-        };
-        let scratch = buffer(
-            maximum_pending
-                .checked_add(maximum_chunk)
-                .ok_or(crate::WorkError::Overflow)?,
-            std::mem::size_of::<(u8, char)>(),
-        )?
-        .checked_add(buffer(maximum_pending, std::mem::size_of::<char>())?)
-        .and_then(|n| {
-            maximum_pending
-                .checked_mul(std::mem::size_of::<(u8, char)>() as u64)
-                .and_then(|sort| n.checked_add(sort))
-        })
-        .ok_or(crate::WorkError::Overflow)?;
-        let live = match accounting {
-            KernelAccounting::Standalone { allocations, .. } => allocations.live_bytes(),
-            KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.live_bytes(),
-            #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work, .. } => work.live_allocation_bytes(),
-        };
-        accounting.admit(crate::WorkCounters {
-            peak_allocation_bytes: live
-                .checked_add(scratch)
-                .ok_or(crate::WorkError::Overflow)?,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let mut output = [0_u8; MAXIMUM_WORKSPACE_NAME_BYTES];
-        let mut length = 0;
-        let mut normalized = name.nfc();
-        loop {
-            accounting.check()?;
-            let Some(character) = normalized.next() else {
-                break;
-            };
-            let end = length + character.len_utf8();
-            let slot = output
-                .get_mut(length..end)
-                .ok_or(WorkspaceNameError::TooLong)?;
-            let copied = copy_work(character.len_utf8() as u64);
-            accounting.admit(copied)?;
-            character.encode_utf8(slot);
-            length = end;
-            accounting.record_completed(copied)?;
+        // No normalization scratch or temporary UTF-8 copy for ASCII. Retain
+        // the zero-work admission before reporting canonical-name errors.
+        normalize::admit_scratch(0, accounting)?;
+        if name.len() > MAXIMUM_WORKSPACE_NAME_BYTES {
+            return Err(WorkspaceNameError::TooLong.into());
         }
-        drop(normalized);
-        let canonical =
-            std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?)
-                .map_err(WorkspaceError::engine)?;
-        if canonical.is_empty() {
+        if name.is_empty() {
             return Err(WorkspaceNameError::Empty.into());
         }
-        if canonical == "." || canonical == ".." {
+        if name == "." || name == ".." {
             return Err(WorkspaceNameError::Reserved.into());
         }
-        for character in canonical.chars() {
-            accounting.check()?;
-            if character.is_control() || matches!(character, '/' | '\\') {
-                return Err(WorkspaceNameError::InvalidCharacter.into());
-            }
+        if invalid_ascii {
+            return Err(WorkspaceNameError::InvalidCharacter.into());
         }
+        Self::retain(name, accounting, probe)
+    }
+
+    fn retain(
+        canonical: &str,
+        accounting: &mut KernelAccounting<'_>,
+        probe: &mut impl FnMut(u8, u64, u64),
+    ) -> Result<Self, WorkspaceError> {
+        let length = canonical.len();
         let copied = copy_work(length as u64);
         accounting.admit(copied)?;
         let mut owned = crate::kernel::Owned::<Vec<u8>>::allocate(length, accounting)?;
-        owned.value.extend_from_slice(canonical.as_bytes());
-        accounting.record_completed(copied)?;
-        let name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
+        // Convert the empty, admitted buffer before copying valid UTF-8; this
+        // keeps String's invariant without validating the copied bytes again.
+        let mut name = String::from_utf8(owned.value).map_err(WorkspaceError::engine)?;
+        append(canonical, &mut name, accounting, probe)?;
         let control = const {
             match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<(
                 String,
@@ -136,7 +78,10 @@ impl WorkspaceName {
         owned
             .allocation
             .absorb(&mut accounting.claim_owned(control, 1)?)?;
-        Ok(Self(Arc::new((name, owned.allocation))))
+        let output = Self(Arc::new((name, owned.allocation)));
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        name_tests::redundant_allocation();
+        Ok(output)
     }
 
     /// Returns the canonical customer spelling.
@@ -282,6 +227,42 @@ impl Default for IdempotencyKey {
     }
 }
 
+#[path = "name_normalize.rs"]
+mod normalize;
+#[path = "name_plan.rs"]
+mod plan;
+
+fn append(
+    canonical: &str,
+    output: &mut String,
+    accounting: &mut KernelAccounting<'_>,
+    probe: &mut impl FnMut(u8, u64, u64),
+) -> Result<(), FsError> {
+    charged(accounting, copy_work(canonical.len() as u64), || {
+        output.push_str(canonical);
+        probe(4, canonical.len() as u64, 0);
+    })
+}
+
+/// Checks and records `delta` in one atomic pass, then runs the infallible
+/// `effect`: concurrent owners cannot spend the same credit, and nothing is
+/// reserved across the effect.
+fn charged<T>(
+    accounting: &mut KernelAccounting<'_>,
+    delta: crate::WorkCounters,
+    effect: impl FnOnce() -> T,
+) -> Result<T, FsError> {
+    #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+    if name_model::check_only() {
+        accounting.admit(delta)?;
+        let output = effect();
+        accounting.record_completed(delta)?;
+        return Ok(output);
+    }
+    accounting.charge(delta)?;
+    Ok(effect())
+}
+
 #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
 #[path = "identity_tests.rs"]
 mod tests;
@@ -289,3 +270,21 @@ mod tests;
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "identity_loom.rs"]
 mod model;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "name_tests.rs"]
+mod name_tests;
+
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[path = "name_reference.rs"]
+mod reference;
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "name_loom.rs"]
+mod name_model;
+
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+#[path = "name_fuzz.rs"]
+mod name_fuzz;
+#[cfg(all(not(acyclic_fs_loom), any(test, feature = "fuzzing")))]
+pub use name_fuzz::check_workspace_name;

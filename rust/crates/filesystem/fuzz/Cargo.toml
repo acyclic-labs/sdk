@@ -64,3 +64,10 @@ path = "fuzz_targets/encoder_work.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "workspace_name"
+path = "fuzz_targets/workspace_name.rs"
+test = false
+doc = false
+bench = false

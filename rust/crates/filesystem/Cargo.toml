@@ -41,6 +41,11 @@ name = "path_properties"
 path = "tests/path_properties.rs"
 
 [[test]]
+name = "workspace_names"
+path = "tests/workspace_names.rs"
+required-features = ["fuzzing"]
+
+[[test]]
 name = "cloud_contract"
 path = "tests/cloud_contract.rs"
 required-features = ["memory"]

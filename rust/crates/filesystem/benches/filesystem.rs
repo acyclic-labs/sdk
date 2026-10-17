@@ -14,6 +14,9 @@ mod read_admission;
 #[path = "support/encoding.rs"]
 mod encoding;
 
+#[path = "support/workspace_names.rs"]
+mod workspace_names;
+
 #[path = "support/extents.rs"]
 mod extents;
 #[path = "support/lazy_nodes.rs"]
