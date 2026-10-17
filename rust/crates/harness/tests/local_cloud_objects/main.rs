@@ -23,7 +23,6 @@ fn memory() -> TestResult<Arc<MemoryObjects>> {
 }
 
 proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(8))]
     #[test]
     fn arbitrary_content_round_trips_and_a_changed_read_is_rejected(
         bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 4..64),
