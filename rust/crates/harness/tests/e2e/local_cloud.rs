@@ -355,14 +355,6 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
     let remote = endpoints.streams.connect().await?;
-    // The provider contract first: a divergence there names the operation.
-    acyclic_stream::conformance::verify(remote.as_ref()).await?;
-    // Pinned, so this fails once the cloud serves what subagents need; the
-    // subagent family then joins the comparison below.
-    let refused = refusals(remote.clone(), &remote, "probe").await?;
-    if refused != cloud_refusals() {
-        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
-    }
     let cases = scenarios()?;
     let executor_cases: Vec<_> = cases
         .iter()
@@ -371,28 +363,54 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     if executor_cases.is_empty() {
         return Err("no executor scenarios discovered".into());
     }
-    // Each case has its own journal identities, so the cases run concurrently.
-    futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
-        let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
-        let remote = remote.clone();
-        async move {
-            let memory = Arc::new(MemoryStream::default());
-            compare(&relative, case, memory, remote, "subagents").await
+    // These phases use disjoint stream paths and journal identities. Join all
+    // results before returning so a failure cannot cancel a child mid-cleanup.
+    let contract = timed("Streams conformance", async {
+        acyclic_stream::conformance::verify(remote.as_ref()).await?;
+        TestResult::Ok(())
+    });
+    let probes = timed(
+        "Session refusals",
+        refusals(remote.clone(), &remote, "probe"),
+    );
+    let compared = timed("executor scenarios", async {
+        futures::future::try_join_all(executor_cases.iter().map(|(path, case)| {
+            let relative = path.strip_prefix(root()).unwrap_or(path).to_owned();
+            let remote = remote.clone();
+            async move {
+                let memory = Arc::new(MemoryStream::default());
+                compare(&relative, case, memory, remote, "subagents").await
+            }
+        }))
+        .await?;
+        TestResult::Ok(())
+    });
+    let resumed = timed("kill, resume and completed reopen", async {
+        let loopback = loopback(Arc::new(MemoryStream::default())).await?;
+        let (cloud, local, unjournaled) = futures::join!(
+            resume::kill_and_resume(&endpoints.streams, remote.clone()),
+            resume::kill_and_resume(&loopback.remote, loopback.client.clone()),
+            resume::resume_unjournaled(remote.clone()),
+        );
+        let (cloud, local) = (cloud?, local?);
+        unjournaled?;
+        if cloud != local {
+            return Err(format!(
+                "resumed journals differ: {cloud:?} on the cloud, {local:?} on loopback"
+            )
+            .into());
         }
-    }))
-    .await?;
-    // A harness process killed mid-turn resumes from the cloud's journal, and
-    // observes what it observes resuming from a loopback journal.
-    let cloud = resume::kill_and_resume(&endpoints.streams, remote.clone()).await?;
-    let loopback = loopback(Arc::new(MemoryStream::default())).await?;
-    let local = resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
-    if cloud != local {
-        return Err(format!(
-            "resumed journals differ: {cloud:?} on the cloud, {local:?} on loopback"
-        )
-        .into());
+        TestResult::Ok(())
+    });
+    let (contract, refused, compared, resumed) =
+        futures::join!(contract, probes, compared, resumed);
+    contract?;
+    let refused = refused?;
+    compared?;
+    resumed?;
+    if refused != cloud_refusals() {
+        return Err(format!("the cloud's Streams now refuse {refused:?}").into());
     }
-    resume::resume_unjournaled(remote.clone()).await?;
     println!(
         "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the subagent family is refused: {refused:?}",
         executor_cases.len()
@@ -400,18 +418,23 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     Ok(())
 }
 
+async fn timed<T>(
+    phase: &str,
+    run: impl std::future::Future<Output = TestResult<T>>,
+) -> TestResult<T> {
+    let started = std::time::Instant::now();
+    let result = run.await;
+    eprintln!(
+        "local cloud phase {phase}: {:.3}s",
+        started.elapsed().as_secs_f64()
+    );
+    result
+}
+
 #[tokio::test]
 async fn killed_turn_resumes_from_a_loopback_journal() -> TestResult {
     let loopback = loopback(Arc::new(MemoryStream::default())).await?;
-    let resumed = resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
-    let model: Vec<_> = resumed
-        .iter()
-        .filter(|event| event["kind"] == "model")
-        .filter_map(|event| event["event"]["delta"].as_str())
-        .collect();
-    if model != ["partial-", "restored"] {
-        return Err(format!("the resumed journal holds {resumed:?}").into());
-    }
+    resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
     // Negative control: without a journaled prefix there is nothing to resume.
     resume::resume_unjournaled(loopback.client.clone()).await
 }

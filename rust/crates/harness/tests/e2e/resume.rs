@@ -16,10 +16,10 @@ use acyclic_harness::{
         FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
         FilesystemJournalBinding,
     },
-    model::{Model, ModelContent, ModelEvent},
+    model::{Model, ModelContent, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
     store::StreamAggregate,
-    test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn},
+    test_support::{ScriptedModelProvider, ScriptedReconciliation},
     tool::ToolRegistry,
 };
 use acyclic_stream::{StreamProvider, grpc::Client};
@@ -182,7 +182,7 @@ async fn journal<P: StreamProvider + 'static>(
     Ok(Arc::new(journal))
 }
 
-fn executor(provider: Arc<ScriptedModelProvider>) -> TestResult<StockExecutor> {
+fn executor(provider: Arc<dyn ModelProvider>) -> TestResult<StockExecutor> {
     Ok(StockExecutor::new(
         Model::new("scripted".into(), "resume".into(), "1".into(), Value::Null)?,
         provider,
@@ -212,13 +212,96 @@ async fn observed(
         for record in records {
             after = record.sequence;
             events.push(match &record.event {
-                ExecutionEvent::Model { event, .. } => json!({
+                ExecutionEvent::Model {
+                    step,
+                    purpose,
+                    event,
+                } => json!({
                     "kind": "model",
+                    "step": step,
+                    "purpose": purpose,
                     "event": serde_json::from_slice::<Value>(&journal.load(event, None)?.await?)?,
                 }),
                 event => json!({"kind": serde_json::to_value(event)?["kind"]}),
             });
         }
+    }
+}
+
+fn expected() -> Vec<Value> {
+    vec![
+        json!({"kind": "started"}),
+        json!({"kind": "context_prepared"}),
+        json!({"kind": "model_started"}),
+        json!({"kind": "model", "step": 0, "purpose": "response",
+            "event": {"kind": "content", "delta": PREFIX}}),
+        json!({"kind": "model", "step": 0, "purpose": "response",
+            "event": {"kind": "content", "delta": REST}}),
+        json!({"kind": "model", "step": 0, "purpose": "response",
+            "event": {"kind": "completed", "metadata": {"finish": "stop"}}}),
+    ]
+}
+
+fn check_resumed(events: &[Value]) -> TestResult {
+    if events != expected() {
+        return Err(format!("the resumed journal holds {events:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn full_journal_oracle_rejects_missing_completion_metadata_changes_and_reordering() {
+    let exact = expected();
+    assert!(check_resumed(&exact).is_ok());
+    let mut dropped = exact.clone();
+    dropped.pop();
+    assert!(check_resumed(&dropped).is_err());
+    let mut changed = exact.clone();
+    changed[5]["event"]["metadata"]["finish"] = json!("length");
+    assert!(check_resumed(&changed).is_err());
+    let mut reordered = exact;
+    reordered.swap(3, 4);
+    assert!(check_resumed(&reordered).is_err());
+}
+
+struct PausedPrefix {
+    journal: Arc<dyn ExecutionJournal>,
+    operation: OperationId,
+}
+
+impl ModelProvider for PausedPrefix {
+    fn generate<'a>(
+        &'a self,
+        _: PreparedModelRequest,
+        _: ModelDispatch,
+    ) -> acyclic_stream::BoxProviderStream<'a, acyclic_harness::Result<ModelEvent>> {
+        Box::pin(futures::stream::unfold(false, |sent| async move {
+            if !sent {
+                return Some((
+                    Ok(ModelEvent::Content {
+                        delta: PREFIX.into(),
+                    }),
+                    true,
+                ));
+            }
+            // StockExecutor awaits the preceding event's successful journal
+            // append before requesting this next item. Verify that prefix once;
+            // a producer prefetched before append must fail, never signal ready.
+            match observed(self.journal.as_ref(), self.operation).await {
+                Ok(events) if events == expected()[..4] => {}
+                result => {
+                    return Some((
+                        Err(acyclic_harness::Error::Storage(format!(
+                            "the prefix was not journaled before the next item: {result:?}"
+                        ))),
+                        true,
+                    ));
+                }
+            }
+            // libtest may have written a test-name prefix without a newline.
+            println!("\n{JOURNALED}");
+            std::future::pending().await
+        }))
     }
 }
 
@@ -233,32 +316,12 @@ async fn child() -> TestResult {
     let identity = Identity::new(config.seed);
     let stream = config.remote.connect().await?;
     let journal = journal(stream, &config.files, &identity, true).await?;
-    let provider = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Events(vec![
-        ScriptedEvent::Event(content(PREFIX)?),
-        ScriptedEvent::Pending {},
-    ])]));
-    let turn = {
-        let (journal, executor) = (journal.clone(), executor(provider)?);
-        let input = identity.input();
-        tokio::spawn(async move { executor.execute(input, journal.as_ref()).await.map(drop) })
-    };
-    let prefix = json!({"kind": "model", "event": {"kind": "content", "delta": PREFIX}});
-    loop {
-        if observed(journal.as_ref(), identity.operation)
-            .await?
-            .contains(&prefix)
-        {
-            break;
-        }
-        if turn.is_finished() {
-            return Err(format!("the turn ended before journaling: {:?}", turn.await).into());
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    // libtest may have written a test-name prefix without a newline.
-    println!("\n{JOURNALED}");
-    turn.await?
-        .map_err(|error| format!("the pending turn failed: {error}"))?;
+    executor(Arc::new(PausedPrefix {
+        journal: journal.clone(),
+        operation: identity.operation,
+    }))?
+    .execute(identity.input(), journal.as_ref())
+    .await?;
     Err("the pending turn finished".into())
 }
 
@@ -297,7 +360,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         return Err(format!("the child exited ({status}) without journaling its prefix").into());
     }
     let identity = Identity::new(seed);
-    let journal = journal(stream, files.path(), &identity, false).await?;
+    let resumed = journal(stream.clone(), files.path(), &identity, false).await?;
     let provider =
         Arc::new(
             ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
@@ -312,7 +375,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
             }]),
         );
     let output = executor(provider.clone())?
-        .execute(identity.input(), journal.as_ref())
+        .execute(identity.input(), resumed.as_ref())
         .await?;
     let (requests, reconciliations) = (provider.requests().len(), provider.reconciliations().len());
     if output.text != format!("{PREFIX}{REST}") || (requests, reconciliations) != (0, 1) {
@@ -322,7 +385,29 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         )
         .into());
     }
-    observed(journal.as_ref(), identity.operation).await
+    let events = observed(resumed.as_ref(), identity.operation).await?;
+    check_resumed(&events)?;
+    drop(resumed);
+    let reopened = journal(stream, files.path(), &identity, false).await?;
+    let provider = Arc::new(ScriptedModelProvider::new([]));
+    let replayed = executor(provider.clone())?
+        .execute(identity.input(), reopened.as_ref())
+        .await?;
+    if replayed != output
+        || !provider.requests().is_empty()
+        || !provider.reconciliations().is_empty()
+    {
+        return Err(format!(
+            "a completed reopen called the provider or changed output: {replayed:?}"
+        )
+        .into());
+    }
+    let replayed = observed(reopened.as_ref(), identity.operation).await?;
+    check_resumed(&replayed)?;
+    if replayed != events {
+        return Err("a completed reopen changed the journal".into());
+    }
+    Ok(events)
 }
 
 /// Negative control: an operation that no killed process journaled cannot be
