@@ -7,6 +7,13 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+name = "effect_certificate"
+path = "fuzz_targets/effect_certificate.rs"
+test = false
+doc = false
+bench = false
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)"] }
 

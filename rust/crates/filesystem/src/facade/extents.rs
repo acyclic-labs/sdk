@@ -17,7 +17,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     /// Plans actual sparse spans, returning the original-owned span vector.
-    pub async fn plan_record_extents<W: FsWork>(
+    async fn plan_record_extents<W: FsWork>(
         &self,
         record: FileRecord,
         range: ByteRange,

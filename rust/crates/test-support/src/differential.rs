@@ -19,38 +19,42 @@ pub fn record<T: 'static>(event: T) {
     drop(pending);
 }
 
-/// Initialize each side separately, then return its result and complete trace.
-/// The callback receives `true` for the baseline and `false` for the candidate.
-/// Captures this thread only; rejects overlapping capture and restores after panic.
+/// Initialize outside capture, then return one run's result and ordered events.
+/// Captures this thread only; rejects overlapping capture and restores on panic.
+pub fn observe<S, R, T: 'static>(
+    initialize: impl FnOnce() -> S,
+    run: impl FnOnce(S) -> R,
+) -> (R, Vec<T>) {
+    TRACE.with_borrow(|trace| assert!(trace.is_none(), "nested differential capture"));
+    let state = initialize();
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            // Event destructors may themselves record operations.
+            drop(TRACE.with_borrow_mut(Option::take));
+        }
+    }
+    TRACE.with_borrow_mut(|trace| *trace = Some(Box::new(Vec::<T>::new())));
+    let _reset = Reset;
+    let result = run(state);
+    (
+        result,
+        TRACE.with_borrow_mut(|trace| {
+            *trace
+                .take()
+                .unwrap()
+                .downcast::<Vec<T>>()
+                .expect("trace event type")
+        }),
+    )
+}
+
+/// Initialize each side separately; `run` receives true for the baseline.
 pub fn pair<S, R, T: 'static>(
     mut initialize: impl FnMut() -> S,
     mut run: impl FnMut(S, bool) -> R,
 ) -> [(R, Vec<T>); 2] {
-    TRACE.with_borrow(|trace| assert!(trace.is_none(), "nested differential capture"));
-    [true, false].map(|old| {
-        let state = initialize();
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                // Drop events after releasing the TLS borrow: their destructors
-                // may themselves record operations.
-                drop(TRACE.with_borrow_mut(Option::take));
-            }
-        }
-        TRACE.with_borrow_mut(|trace| *trace = Some(Box::new(Vec::<T>::new())));
-        let _reset = Reset;
-        let result = run(state, old);
-        (
-            result,
-            TRACE.with_borrow_mut(|trace| {
-                *trace
-                    .take()
-                    .unwrap()
-                    .downcast::<Vec<T>>()
-                    .expect("trace event type")
-            }),
-        )
-    })
+    [true, false].map(|old| observe(&mut initialize, |state| run(state, old)))
 }
 
 #[cfg(test)]

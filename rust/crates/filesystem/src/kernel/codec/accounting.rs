@@ -6,17 +6,19 @@ pub(crate) struct EncodeAccounting<'a, 'root> {
     owned_bytes: u64,
     allocation: Option<allocation::KernelOwnedAllocation>,
     #[cfg(not(target_arch = "wasm32"))]
-    pending: crate::WorkCounters,
+    credit: Option<allocation::effects::EffectCredit<'root>>,
 }
 
 impl<'a, 'root> EncodeAccounting<'a, 'root> {
     pub(crate) fn new(accounting: &'a mut allocation::KernelAccounting<'root>) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        let credit = allocation::effects::EffectCredit::for_accounting(accounting);
         Self {
             accounting,
             owned_bytes: 0,
             allocation: None,
             #[cfg(not(target_arch = "wasm32"))]
-            pending: crate::WorkCounters::UNCHARGED,
+            credit,
         }
     }
 
@@ -75,7 +77,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
         mut self,
         result: Result<Vec<u8>, crate::FsError>,
     ) -> Result<(Vec<u8>, allocation::KernelOwnedAllocation), crate::FsError> {
-        self.refund_pending();
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(self.credit.take());
         match result {
             Ok(bytes) => {
                 if let Err(error) = self.accounting.check() {
@@ -103,9 +106,7 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             return self.accounting.admit(delta);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let allocation::KernelAccounting::NativeOriginal { work, cancellation } =
-            &*self.accounting
-        {
+        if let Some(credit) = &mut self.credit {
             // Canonical writers announce a whole record before its header and
             // fields. Those nested checks cover the same outstanding effects;
             // only the deficit above existing credit needs another reservation.
@@ -113,13 +114,7 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             let reuse = !model_checking::additive_reservation();
             #[cfg(not(all(test, acyclic_fs_loom)))]
             let reuse = true;
-            return allocation::effects::reserve(
-                work,
-                cancellation,
-                &mut self.pending,
-                delta,
-                reuse,
-            );
+            return credit.reserve(delta, reuse);
         }
         self.accounting.admit(delta)
     }
@@ -130,19 +125,10 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
             return self.accounting.record_completed(delta);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let allocation::KernelAccounting::NativeOriginal { work, cancellation } =
-            &*self.accounting
-        {
-            return allocation::effects::complete(work, cancellation, &mut self.pending, delta);
+        if let Some(credit) = &mut self.credit {
+            return credit.complete(delta);
         }
         self.accounting.record_completed(delta)
-    }
-
-    fn refund_pending(&mut self) {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.accounting.native_work() {
-            allocation::effects::refund(work, &mut self.pending);
-        }
     }
 
     fn retire(&mut self) -> Result<(), crate::FsError> {
@@ -175,7 +161,8 @@ impl<'a, 'root> EncodeAccounting<'a, 'root> {
 
 impl Drop for EncodeAccounting<'_, '_> {
     fn drop(&mut self) {
-        self.refund_pending();
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(self.credit.take());
         let retired = self.retire();
         debug_assert!(
             retired.is_ok(),

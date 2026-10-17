@@ -108,3 +108,47 @@ impl<'a> Body<'a> {
         args
     }
 }
+
+/// Replays role-alternating wire messages through the production sequence
+/// fold, as request projection pushes them. `None` when a message has a role
+/// or content shape projection never emits.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub(crate) fn replay_turns(adapter: crate::Adapter, messages: &[Value]) -> Option<Vec<Value>> {
+    replay_turns_with(adapter, messages, super::sequence::RULES)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
+pub(super) fn replay_turns_with(
+    adapter: crate::Adapter,
+    messages: &[Value],
+    rules: super::sequence::Rules,
+) -> Option<Vec<Value>> {
+    use crate::Adapter;
+    let (field, roles) = match adapter {
+        Adapter::Anthropic => ("content", ["user", "assistant"]),
+        Adapter::Gemini => ("parts", ["user", "model"]),
+        Adapter::Responses | Adapter::Chat => return None,
+    };
+    let mut projected = Vec::new();
+    for message in messages {
+        let role = roles.into_iter().find(|role| message["role"] == *role)?;
+        let parts = message[field].as_array()?.iter().cloned().map(Item::Json);
+        let next = if adapter == Adapter::Anthropic {
+            Message::Anthropic {
+                role,
+                content: parts.collect(),
+            }
+        } else {
+            Message::Gemini {
+                role,
+                parts: parts.collect(),
+            }
+        };
+        super::sequence::push(adapter, &mut projected, next).unwrap();
+    }
+    super::sequence::finish_with(adapter, &mut projected, rules);
+    match crate::json(&serde_json::to_vec(&projected).unwrap()).unwrap() {
+        Value::Array(output) => Some(output),
+        _ => unreachable!("a message list encodes as an array"),
+    }
+}

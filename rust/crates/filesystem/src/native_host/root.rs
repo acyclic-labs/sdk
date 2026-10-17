@@ -80,7 +80,7 @@ impl HostRoot {
             }
         })
     }
-    #[cfg(feature = "native-watch")]
+    #[cfg(all(feature = "native-watch", not(target_os = "linux")))]
     pub(crate) fn stat_source<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -126,7 +126,31 @@ impl HostRoot {
             })
         }
     }
-    #[cfg(any(test, feature = "native-mount"))]
+    #[cfg(feature = "native-watch")]
+    pub(crate) fn stat_source_metadata<W: SourceDemandReadWork>(
+        &self,
+        path: &NativePath,
+        work: &mut W,
+    ) -> Result<HostStat, DemandError> {
+        #[cfg(all(test, windows))]
+        if stat_probe::old() {
+            return self.stat_source(path, work);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if path.as_os_str().is_empty() {
+                return stat_at_metadata(self.directory.as_raw_fd(), c"", work);
+            }
+            with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+                stat_at_metadata(parent.as_raw_fd(), leaf, work)
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.stat_source(path, work)
+        }
+    }
+    #[cfg(any(test, feature = "native-mount", not(target_os = "linux")))]
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
@@ -143,6 +167,28 @@ impl HostRoot {
                 u32::try_from(self.identity.device).map_err(|_| W::invalid_request())?,
                 work,
             )
+        }
+    }
+    pub(crate) fn stat_file_metadata<W: NativeHostWork>(
+        &self,
+        file: &File,
+        work: &mut W,
+    ) -> Result<HostStat, W::Error> {
+        #[cfg(all(test, any(target_os = "linux", windows)))]
+        if stat_probe::duplicate() {
+            self.stat_file(file, work)?;
+        }
+        #[cfg(all(test, windows))]
+        if stat_probe::old() {
+            return self.stat_file(file, work);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            super::stat_file_metadata(file, work)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.stat_file(file, work)
         }
     }
     pub(crate) fn open_file<W: NativeHostWork>(

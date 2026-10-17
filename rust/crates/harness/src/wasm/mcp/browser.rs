@@ -113,11 +113,15 @@ impl McpHttpProvider for BrowserProvider {
                 let bytes: Uint8Array = chunk
                     .dyn_into()
                     .map_err(|_| Error::Invalid("MCP browser body needs Uint8Array".into()))?;
-                body.received = body.received.saturating_add(u64::from(bytes.length()));
-                if body.received > u64::from(body.maximum_bytes) {
-                    return Err(Error::Indeterminate(body.operation));
-                }
-                Ok(Some((Bytes::from(bytes.to_vec()), body)))
+                let (bytes, ()) = super::super::bytes::snapshot(&bytes, |length| {
+                    if length > u64::from(body.maximum_bytes).saturating_sub(body.received) {
+                        return Err(js_error(Error::Indeterminate(body.operation)));
+                    }
+                    Ok(())
+                })
+                .map_err(|_| Error::Indeterminate(body.operation))?;
+                body.received += bytes.len() as u64;
+                Ok(Some((Bytes::from(bytes), body)))
             });
             Ok(McpHttpResponse {
                 status: head.status,
@@ -224,10 +228,13 @@ impl WasmMcpHttpTransport {
             .request("POST", Vec::new())
             .map_err(js_error)?
             .maximum_response_bytes;
-        if body.length() > allowance {
-            return Err(js_error(Error::Indeterminate(operation)));
-        }
-        let body = Bytes::from(body.to_vec());
+        let (body, ()) = super::super::bytes::snapshot(&body, |length| {
+            if length > u64::from(allowance) {
+                return Err(js_error(Error::Indeterminate(operation)));
+            }
+            Ok(())
+        })?;
+        let body = Bytes::from(body);
         let head: McpBrowserResponseHead = from_js(head)?;
         let response = McpHttpResponse {
             status: head.status,
