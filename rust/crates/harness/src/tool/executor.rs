@@ -41,6 +41,19 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         Ok(())
     }
 
+    /// The file version a successful durable result of this tool showed the
+    /// model, if it names one. Later calls derive what the model has seen
+    /// from these results alone.
+    fn observed_file(&self, _result: &ToolResult) -> Option<crate::conversation::FileRef> {
+        None
+    }
+
+    /// Whether this tool checks its input against the versions the model
+    /// observed earlier in its turn.
+    fn uses_observed_files(&self) -> bool {
+        false
+    }
+
     /// Executes an already admitted invocation.
     fn execute<'a>(
         &'a self,

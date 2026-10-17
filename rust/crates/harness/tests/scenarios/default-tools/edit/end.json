@@ -1,6 +1,1 @@
-{"seed":{"plans/a.md":"abc def"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit",
-  "arguments":{"file":"plans/a.md","old_text":"def","new_text":"DEF"}},{"type":"event","kind":"completed",
-  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":"abc DEF"},"results":{"call":{"name":"edit",
-  "content":{"kind":"json","value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":7,"sha256":[210,
-  27,23,3,68,133,175,72,72,44,211,241,56,223,4,117,32,7,97,43,163,168,140,4,92,15,53,119,187,22,103,62],
-  "media_type":"text/plain"},"display_name":"a.md"}}}}}}}
+{"seed":{"plans/a.md":"abc def"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit","arguments":{"path":"plans/a.md","old_string":"def","new_string":"DEF"}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":"abc DEF"},"results":{"call":{"name":"edit","content":{"kind":"parts","parts":[{"kind":"text","text":"Updated plans/a.md (7 bytes)."}]}}}}}

@@ -216,6 +216,69 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         })
     }
 
+    fn observe_replacement<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        maximum: u64,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            self.verify_creation(io).await?;
+            let retry = replacement_key(operation, path, io)?;
+            let retry_hold = io
+                .map(|io| io.guard_owned(retry.as_str().len() as u64))
+                .transpose()?;
+            let file = self
+                .host
+                .content_for_operation(
+                    &self.volume,
+                    &self.grant,
+                    &retry,
+                    path,
+                    maximum.min(self.maximum_bytes),
+                    io,
+                )
+                .await?;
+            drop(retry);
+            drop(retry_hold);
+            let hold = file
+                .as_ref()
+                .zip(io)
+                .map(|(file, io)| io.guard_owned(file.logical_owned_bytes()?))
+                .transpose()?;
+            Ok((file, hold))
+        })
+    }
+
+    fn current<'a>(
+        &'a self,
+        _operation: OperationId,
+        path: &'a str,
+        maximum: u64,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        BoundedContentFuture::new(io, || async move {
+            self.verify_creation(io).await?;
+            let (file, bytes) = self
+                .host
+                .current_path(
+                    &self.volume,
+                    &self.grant,
+                    path,
+                    maximum.min(self.maximum_bytes),
+                    io,
+                )
+                .await?;
+            let hold = io
+                .map(|io| io.guard_owned(file.logical_owned_bytes()?))
+                .transpose()?;
+            Ok((file, bytes, hold))
+        })
+    }
+
     fn observe_staged_once<'a>(
         &'a self,
         operation: OperationId,
@@ -516,23 +579,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &self.grant,
                 &upload_key(operation, path, None)?,
                 path,
-                maximum.min(self.maximum_bytes),
-                None,
-            )
-            .await
-    }
-    pub(crate) async fn observe_staged_at(
-        &self,
-        operation: OperationId,
-        source: &FileRef,
-        maximum: u64,
-    ) -> Result<Option<FileRef>> {
-        self.host
-            .content_for_operation(
-                &self.volume,
-                &self.grant,
-                &replacement_key(operation, source.path(), None)?,
-                source.path(),
                 maximum.min(self.maximum_bytes),
                 None,
             )

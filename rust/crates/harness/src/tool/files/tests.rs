@@ -14,10 +14,10 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         arguments: Value::Null,
     };
     for (tool, arguments) in [
-        (read()?, json!({"file":file})),
+        (read()?, json!({"path":file.path()})),
         (
             edit()?,
-            json!({"file":file,"old_text":"exact","new_text":"changed"}),
+            json!({"path":file.path(),"old_string":"exact","new_string":"changed"}),
         ),
         (
             patch_file(4096, 16)?,
@@ -33,21 +33,33 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
             ));
         }
     }
-    invocation.name = "read".into();
-    invocation.arguments = json!({"file":file});
-    let narrow = RuntimeScope::new(
-        grants,
-        Limits {
-            render_bytes: 4,
-            ..Limits::default()
-        },
-    )?;
-    assert!(matches!(
-        read()?
-            .executor
-            .authorize(Some(&narrow), None, &invocation, None),
-        Err(Error::Invalid(_))
-    ));
+    // Malformed path-addressed calls fail in preflight, before the context
+    // gate; the valid control above reaches the gate.
+    for (tool, arguments) in [
+        (read()?, json!({"path":file.path(),"offset":0})),
+        (read()?, json!({"path":file.path(),"limit":0})),
+        (read()?, json!({"path":"../escape.txt"})),
+        (
+            read()?,
+            json!({"path":file.path(),"range":{"start":0,"end":1}}),
+        ),
+        (
+            edit()?,
+            json!({"path":file.path(),"old_string":"","new_string":"changed"}),
+        ),
+        (
+            edit()?,
+            json!({"file":file,"old_text":"exact","new_text":"changed"}),
+        ),
+    ] {
+        invocation.name = tool.definition.name.clone();
+        invocation.arguments = arguments;
+        assert!(matches!(
+            tool.executor
+                .authorize(Some(&granted), None, &invocation, None),
+            Err(Error::Invalid(_))
+        ));
+    }
     Ok(())
 }
 

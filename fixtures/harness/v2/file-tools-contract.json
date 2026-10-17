@@ -1,11 +1,6 @@
 {
   "exact_read": {
-    "canonical": "one\r\n🦀 abaaba\r\n",
-    "full": {
-      "kind": "json",
-      "value": "one\r\n🦀 abaaba\r\n"
-    },
-    "input": {
+    "canonical": {
       "file": {
         "descriptor": {
           "byte_length": 18,
@@ -61,14 +56,28 @@
             "version": "1"
           }
         }
-      }
+      },
+      "offset": 1,
+      "text": "one\r\n🦀 abaaba\r\n"
+    },
+    "full": {
+      "kind": "parts",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "     1\tone\r\n     2\t🦀 abaaba\r"
+        }
+      ]
+    },
+    "input": {
+      "path": "source.txt"
     },
     "reference": {
       "kind": "parts",
       "parts": [
         {
           "kind": "text",
-          "text": "Read 18 UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection."
+          "text": "Read 2 lines from line 1 of source.txt (18 UTF-8 bytes). The text is retained in the canonical tool result and omitted from this model projection."
         },
         {
           "file": {
@@ -193,65 +202,13 @@
       }
     },
     "full": {
-      "kind": "json",
-      "value": {
-        "file": {
-          "descriptor": {
-            "byte_length": 18,
-            "media_type": "text/plain",
-            "sha256": [
-              159,
-              11,
-              173,
-              16,
-              70,
-              100,
-              181,
-              179,
-              188,
-              132,
-              6,
-              49,
-              141,
-              46,
-              22,
-              171,
-              176,
-              2,
-              45,
-              236,
-              231,
-              189,
-              189,
-              66,
-              110,
-              99,
-              139,
-              89,
-              193,
-              36,
-              129,
-              108
-            ]
-          },
-          "display_name": "source.txt",
-          "path": "source.txt",
-          "version": "generation-1",
-          "volume": {
-            "class": "agent_private",
-            "id": "private",
-            "owner": {
-              "id": "33333333-3333-3333-3333-333333333333",
-              "kind": "agent"
-            },
-            "provider": {
-              "family": "filesystem",
-              "namespace": "file-contract",
-              "version": "1"
-            }
-          }
+      "kind": "parts",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Updated source.txt (18 bytes)."
         }
-      }
+      ]
     },
     "reference": {
       "kind": "parts",
@@ -597,12 +554,7 @@
     }
   },
   "range_read": {
-    "canonical": "🦀",
-    "full": {
-      "kind": "json",
-      "value": "🦀"
-    },
-    "input": {
+    "canonical": {
       "file": {
         "descriptor": {
           "byte_length": 18,
@@ -659,17 +611,29 @@
           }
         }
       },
-      "range": {
-        "end": 9,
-        "start": 5
-      }
+      "offset": 2,
+      "text": "🦀 abaaba\r\n"
+    },
+    "full": {
+      "kind": "parts",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "     2\t🦀 abaaba\r"
+        }
+      ]
+    },
+    "input": {
+      "limit": 1,
+      "offset": 2,
+      "path": "source.txt"
     },
     "reference": {
       "kind": "parts",
       "parts": [
         {
           "kind": "text",
-          "text": "Read bytes 5..9; 5 source bytes omitted before and 9 after. Selected text is retained in the canonical tool result and omitted from this model projection."
+          "text": "Read 1 lines from line 2 of source.txt (13 UTF-8 bytes). The text is retained in the canonical tool result and omitted from this model projection."
         },
         {
           "file": {
@@ -796,2146 +760,1833 @@
   "tool_definitions": [
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
-        "input_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Owner-authorized immutable source."
-            },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
-            }
-          },
-          "required": [
-            "file"
-          ],
-          "title": "ReadFileInput",
-          "type": "object"
-        },
-        "name": "read",
-        "output_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
-        },
-        "projection_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "json",
-                  "type": "string"
-                },
-                "value": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "kind",
-                "value"
-              ],
-              "type": "object"
-            }
-          ],
-          "title": "JsonProjection"
-        },
-        "revision": "portable-6"
-      },
-      "definition_digest": [
-        197,
-        213,
-        40,
-        52,
-        3,
-        151,
-        40,
-        87,
-        104,
-        189,
-        35,
-        200,
-        73,
-        31,
-        254,
-        94,
-        39,
-        165,
-        224,
-        1,
-        157,
-        63,
-        61,
-        180,
-        16,
-        76,
-        142,
-        58,
-        36,
-        218,
-        134,
-        226
-      ],
-      "variant": "exact_read_full"
-    },
-    {
-      "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
-        "input_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Owner-authorized immutable source."
-            },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
-            }
-          },
-          "required": [
-            "file"
-          ],
-          "title": "ReadFileInput",
-          "type": "object"
-        },
-        "name": "read",
-        "output_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
-        },
-        "projection_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "ReferencePart": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "kind": {
-                      "const": "text",
-                      "type": "string"
-                    },
-                    "text": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "file": {
-                      "$ref": "#/$defs/FileRef"
-                    },
-                    "kind": {
-                      "const": "file",
-                      "type": "string"
-                    },
-                    "policy": {
-                      "$ref": "#/$defs/ReferencePolicy"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "file",
-                    "policy"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "ReferencePolicy": {
-              "enum": [
-                "reference"
-              ],
-              "type": "string"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/ReferencePart"
-                  },
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
-            }
-          ],
-          "title": "ReferenceProjection"
-        },
-        "revision": "portable-6"
-      },
-      "definition_digest": [
-        64,
-        179,
-        123,
-        125,
-        32,
-        139,
-        24,
-        87,
-        23,
-        62,
-        17,
-        128,
-        233,
-        86,
-        103,
-        14,
-        164,
-        201,
-        214,
-        129,
-        72,
-        29,
-        11,
-        135,
-        231,
-        64,
-        122,
-        175,
-        139,
-        44,
-        0,
-        93
-      ],
-      "variant": "exact_read_reference"
-    },
-    {
-      "definition": {
-        "description": "Write bounded UTF-8 through the original owner-bound content publisher",
+        "description": "Read a UTF-8 text file by workspace-relative path. Returns lines numbered from 1 in cat -n format; offset (one-based line) and limit select a range of a large file. Reads see the current workspace, including changes made by bash",
         "input_schema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Single-operation UTF-8 publication arguments.",
+          "description": "Workspace-relative text read arguments; the host resolves the authenticated file.",
           "properties": {
-            "display_name": {
-              "description": "Human-readable file name.",
-              "type": "string"
+            "limit": {
+              "description": "Maximum number of lines to read; omission reads to the end of the file.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
-            "media_type": {
-              "description": "Stored MIME type.",
-              "type": "string"
+            "offset": {
+              "description": "One-based line number to start reading from; omission starts at line 1.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "path": {
-              "description": "Valid public destination path.",
-              "type": "string"
-            },
-            "text": {
-              "description": "Exact content bytes encoded as UTF-8.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "path",
-            "text",
-            "media_type",
-            "display_name"
-          ],
-          "title": "WriteFileInput",
-          "type": "object"
-        },
-        "name": "write",
-        "output_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
-            }
-          },
-          "required": [
-            "file"
-          ],
-          "title": "FileResult",
-          "type": "object"
-        },
-        "projection_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "FileResult": {
-              "additionalProperties": false,
-              "description": "Canonical successful write/edit result, independent of model projection.",
-              "properties": {
-                "file": {
-                  "$ref": "#/$defs/FileRef",
-                  "description": "Exact retained publication result with workspace and content identity."
-                }
-              },
-              "required": [
-                "file"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "json",
-                  "type": "string"
-                },
-                "value": {
-                  "$ref": "#/$defs/FileResult"
-                }
-              },
-              "required": [
-                "kind",
-                "value"
-              ],
-              "type": "object"
-            }
-          ],
-          "title": "JsonProjection"
-        },
-        "revision": "portable-5"
-      },
-      "definition_digest": [
-        10,
-        121,
-        98,
-        6,
-        227,
-        0,
-        214,
-        56,
-        36,
-        51,
-        243,
-        250,
-        157,
-        95,
-        243,
-        66,
-        9,
-        161,
-        34,
-        82,
-        180,
-        32,
-        11,
-        218,
-        207,
-        115,
-        125,
-        255,
-        235,
-        98,
-        68,
-        195
-      ],
-      "variant": "write_full"
-    },
-    {
-      "definition": {
-        "description": "Write bounded UTF-8 through the original owner-bound content publisher",
-        "input_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Single-operation UTF-8 publication arguments.",
-          "properties": {
-            "display_name": {
-              "description": "Human-readable file name.",
-              "type": "string"
-            },
-            "media_type": {
-              "description": "Stored MIME type.",
-              "type": "string"
-            },
-            "path": {
-              "description": "Valid public destination path.",
-              "type": "string"
-            },
-            "text": {
-              "description": "Exact content bytes encoded as UTF-8.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "path",
-            "text",
-            "media_type",
-            "display_name"
-          ],
-          "title": "WriteFileInput",
-          "type": "object"
-        },
-        "name": "write",
-        "output_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Canonical successful write/edit result, independent of model projection.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Exact retained publication result with workspace and content identity."
-            }
-          },
-          "required": [
-            "file"
-          ],
-          "title": "FileResult",
-          "type": "object"
-        },
-        "projection_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "ReferencePart": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "kind": {
-                      "const": "text",
-                      "type": "string"
-                    },
-                    "text": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "file": {
-                      "$ref": "#/$defs/FileRef"
-                    },
-                    "kind": {
-                      "const": "file",
-                      "type": "string"
-                    },
-                    "policy": {
-                      "$ref": "#/$defs/ReferencePolicy"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "file",
-                    "policy"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "ReferencePolicy": {
-              "enum": [
-                "reference"
-              ],
-              "type": "string"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "parts",
-                  "type": "string"
-                },
-                "parts": {
-                  "items": {
-                    "$ref": "#/$defs/ReferencePart"
-                  },
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "kind",
-                "parts"
-              ],
-              "type": "object"
-            }
-          ],
-          "title": "ReferenceProjection"
-        },
-        "revision": "portable-5"
-      },
-      "definition_digest": [
-        236,
-        80,
-        187,
-        95,
-        245,
-        227,
-        160,
-        192,
-        231,
-        185,
-        210,
-        63,
-        250,
-        9,
-        168,
-        243,
-        185,
-        253,
-        61,
-        45,
-        190,
-        216,
-        103,
-        184,
-        65,
-        137,
-        175,
-        5,
-        12,
-        59,
-        112,
-        39
-      ],
-      "variant": "write_reference"
-    },
-    {
-      "definition": {
-        "description": "Replace one exact UTF-8 match at an authorized pinned source generation",
-        "input_schema": {
-          "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "description": "Project workspace owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "project",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
-            }
-          },
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "additionalProperties": false,
-          "description": "Exact replacement against one pinned file generation.",
-          "properties": {
-            "file": {
-              "$ref": "#/$defs/FileRef",
-              "description": "Owner-authorized immutable source."
-            },
-            "new_text": {
-              "description": "Exact replacement, including an empty deletion.",
-              "type": "string"
-            },
-            "old_text": {
-              "description": "One exact nonempty unambiguous needle.",
+              "description": "File path relative to the task workspace root.",
               "minLength": 1,
               "type": "string"
             }
           },
           "required": [
+            "path"
+          ],
+          "title": "ReadFileInput",
+          "type": "object"
+        },
+        "name": "read",
+        "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Canonical read result: the selected lines and the exact file they came from.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Authenticated file generation that was read."
+            },
+            "offset": {
+              "description": "One-based number of the first selected line.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "Exact selected UTF-8 lines, including their line terminators.",
+              "type": "string"
+            }
+          },
+          "required": [
             "file",
-            "old_text",
-            "new_text"
+            "offset",
+            "text"
+          ],
+          "title": "ReadFileResult",
+          "type": "object"
+        },
+        "projection_schema": {
+          "$defs": {
+            "TextPart": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "description": "Text the model reads verbatim; providers never JSON-quote a parts result.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
+            }
+          ],
+          "title": "TextProjection"
+        },
+        "revision": "portable-7"
+      },
+      "definition_digest": [
+        220,
+        103,
+        79,
+        242,
+        160,
+        169,
+        70,
+        224,
+        189,
+        96,
+        175,
+        222,
+        25,
+        197,
+        76,
+        242,
+        31,
+        191,
+        197,
+        35,
+        126,
+        196,
+        225,
+        126,
+        32,
+        127,
+        235,
+        30,
+        13,
+        186,
+        10,
+        41
+      ],
+      "variant": "exact_read_full"
+    },
+    {
+      "definition": {
+        "description": "Read a UTF-8 text file by workspace-relative path. Returns lines numbered from 1 in cat -n format; offset (one-based line) and limit select a range of a large file. Reads see the current workspace, including changes made by bash",
+        "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Workspace-relative text read arguments; the host resolves the authenticated file.",
+          "properties": {
+            "limit": {
+              "description": "Maximum number of lines to read; omission reads to the end of the file.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "description": "One-based line number to start reading from; omission starts at line 1.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "ReadFileInput",
+          "type": "object"
+        },
+        "name": "read",
+        "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Canonical read result: the selected lines and the exact file they came from.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Authenticated file generation that was read."
+            },
+            "offset": {
+              "description": "One-based number of the first selected line.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "Exact selected UTF-8 lines, including their line terminators.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "file",
+            "offset",
+            "text"
+          ],
+          "title": "ReadFileResult",
+          "type": "object"
+        },
+        "projection_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ReferencePart": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "file": {
+                      "$ref": "#/$defs/FileRef"
+                    },
+                    "kind": {
+                      "const": "file",
+                      "type": "string"
+                    },
+                    "policy": {
+                      "$ref": "#/$defs/ReferencePolicy"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "file",
+                    "policy"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "ReferencePolicy": {
+              "enum": [
+                "reference"
+              ],
+              "type": "string"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/ReferencePart"
+                  },
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
+            }
+          ],
+          "title": "ReferenceProjection"
+        },
+        "revision": "portable-7"
+      },
+      "definition_digest": [
+        248,
+        228,
+        43,
+        149,
+        193,
+        197,
+        144,
+        22,
+        46,
+        69,
+        151,
+        4,
+        125,
+        95,
+        3,
+        179,
+        145,
+        203,
+        178,
+        0,
+        34,
+        137,
+        176,
+        64,
+        121,
+        77,
+        205,
+        58,
+        198,
+        183,
+        90,
+        162
+      ],
+      "variant": "exact_read_reference"
+    },
+    {
+      "definition": {
+        "description": "Create or overwrite a UTF-8 text file at a workspace-relative path",
+        "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Single-operation UTF-8 publication arguments.",
+          "properties": {
+            "display_name": {
+              "description": "Human-readable file name; omission uses the path's final component.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "description": "Stored MIME type; omission stores `text/plain`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Exact content bytes encoded as UTF-8.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ],
+          "title": "WriteFileInput",
+          "type": "object"
+        },
+        "name": "write",
+        "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Canonical successful write/edit result, independent of model projection.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Exact retained publication result with workspace and content identity."
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "title": "FileResult",
+          "type": "object"
+        },
+        "projection_schema": {
+          "$defs": {
+            "TextPart": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "description": "Text the model reads verbatim; providers never JSON-quote a parts result.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
+            }
+          ],
+          "title": "TextProjection"
+        },
+        "revision": "portable-6"
+      },
+      "definition_digest": [
+        254,
+        220,
+        8,
+        42,
+        61,
+        40,
+        250,
+        81,
+        8,
+        183,
+        162,
+        222,
+        118,
+        99,
+        138,
+        69,
+        113,
+        162,
+        170,
+        68,
+        171,
+        63,
+        53,
+        89,
+        32,
+        130,
+        149,
+        12,
+        249,
+        19,
+        56,
+        144
+      ],
+      "variant": "write_full"
+    },
+    {
+      "definition": {
+        "description": "Create or overwrite a UTF-8 text file at a workspace-relative path",
+        "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Single-operation UTF-8 publication arguments.",
+          "properties": {
+            "display_name": {
+              "description": "Human-readable file name; omission uses the path's final component.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "media_type": {
+              "description": "Stored MIME type; omission stores `text/plain`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "type": "string"
+            },
+            "text": {
+              "description": "Exact content bytes encoded as UTF-8.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "text"
+          ],
+          "title": "WriteFileInput",
+          "type": "object"
+        },
+        "name": "write",
+        "output_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Canonical successful write/edit result, independent of model projection.",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileRef",
+              "description": "Exact retained publication result with workspace and content identity."
+            }
+          },
+          "required": [
+            "file"
+          ],
+          "title": "FileResult",
+          "type": "object"
+        },
+        "projection_schema": {
+          "$defs": {
+            "FileDescriptor": {
+              "additionalProperties": false,
+              "description": "Immutable byte descriptor checked before a file is admitted.",
+              "properties": {
+                "byte_length": {
+                  "format": "uint64",
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "media_type": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "items": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "maxItems": 32,
+                  "minItems": 32,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "sha256",
+                "byte_length",
+                "media_type"
+              ],
+              "type": "object"
+            },
+            "FileRef": {
+              "additionalProperties": false,
+              "description": "An immutable version of a file within a scoped volume.",
+              "properties": {
+                "descriptor": {
+                  "$ref": "#/$defs/FileDescriptor"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "volume": {
+                  "$ref": "#/$defs/VolumeRef"
+                }
+              },
+              "required": [
+                "volume",
+                "path",
+                "version",
+                "descriptor",
+                "display_name"
+              ],
+              "type": "object"
+            },
+            "ProviderRef": {
+              "additionalProperties": false,
+              "description": "Stable identity of a replaceable resource provider.",
+              "properties": {
+                "family": {
+                  "description": "Provider family, such as `filesystem` or `machines`.",
+                  "type": "string"
+                },
+                "namespace": {
+                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
+                  "type": "string"
+                },
+                "version": {
+                  "description": "Immutable provider contract version.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "namespace",
+                "family",
+                "version"
+              ],
+              "type": "object"
+            },
+            "ReferencePart": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "file": {
+                      "$ref": "#/$defs/FileRef"
+                    },
+                    "kind": {
+                      "const": "file",
+                      "type": "string"
+                    },
+                    "policy": {
+                      "$ref": "#/$defs/ReferencePolicy"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "file",
+                    "policy"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "ReferencePolicy": {
+              "enum": [
+                "reference"
+              ],
+              "type": "string"
+            },
+            "VolumeClass": {
+              "description": "The three independently governed file namespaces.",
+              "oneOf": [
+                {
+                  "const": "project",
+                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
+                  "type": "string"
+                },
+                {
+                  "const": "agent_private",
+                  "description": "Scratch files owned by exactly one agent.",
+                  "type": "string"
+                },
+                {
+                  "const": "session_shared",
+                  "description": "Files shared through explicit session grants.",
+                  "type": "string"
+                }
+              ]
+            },
+            "VolumeOwner": {
+              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "description": "Project workspace owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "project",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Agent private-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "agent",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "additionalProperties": false,
+                  "description": "Shared session-volume owner.",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "const": "session",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "id"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "VolumeRef": {
+              "additionalProperties": false,
+              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
+              "properties": {
+                "class": {
+                  "$ref": "#/$defs/VolumeClass"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "owner": {
+                  "$ref": "#/$defs/VolumeOwner"
+                },
+                "provider": {
+                  "$ref": "#/$defs/ProviderRef"
+                }
+              },
+              "required": [
+                "provider",
+                "id",
+                "class",
+                "owner"
+              ],
+              "type": "object"
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "parts",
+                  "type": "string"
+                },
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/ReferencePart"
+                  },
+                  "maxItems": 2,
+                  "minItems": 2,
+                  "type": "array"
+                }
+              },
+              "required": [
+                "kind",
+                "parts"
+              ],
+              "type": "object"
+            }
+          ],
+          "title": "ReferenceProjection"
+        },
+        "revision": "portable-6"
+      },
+      "definition_digest": [
+        134,
+        76,
+        49,
+        252,
+        230,
+        52,
+        124,
+        46,
+        179,
+        237,
+        140,
+        91,
+        205,
+        79,
+        182,
+        207,
+        43,
+        100,
+        74,
+        46,
+        128,
+        57,
+        99,
+        148,
+        182,
+        56,
+        16,
+        125,
+        227,
+        177,
+        105,
+        15
+      ],
+      "variant": "write_reference"
+    },
+    {
+      "definition": {
+        "description": "Replace exact text in a workspace-relative UTF-8 file. old_string must match exactly once unless replace_all is set; read the file first and copy old_string without the line-number prefix. Fails without writing if the file changed since it was resolved",
+        "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Exact replacement in the file currently at a workspace-relative path.",
+          "properties": {
+            "new_string": {
+              "description": "Exact replacement, including an empty deletion.",
+              "type": "string"
+            },
+            "old_string": {
+              "description": "Exact nonempty text to replace; it must match exactly once unless `replace_all` is set.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "replace_all": {
+              "description": "Replaces every non-overlapping match instead of requiring a unique one.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "old_string",
+            "new_string"
           ],
           "title": "EditFileInput",
           "type": "object"
@@ -3150,267 +2801,91 @@
         },
         "projection_schema": {
           "$defs": {
-            "FileDescriptor": {
-              "additionalProperties": false,
-              "description": "Immutable byte descriptor checked before a file is admitted.",
-              "properties": {
-                "byte_length": {
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "media_type": {
-                  "type": "string"
-                },
-                "sha256": {
-                  "items": {
-                    "format": "uint8",
-                    "maximum": 255,
-                    "minimum": 0,
-                    "type": "integer"
-                  },
-                  "maxItems": 32,
-                  "minItems": 32,
-                  "type": "array"
-                }
-              },
-              "required": [
-                "sha256",
-                "byte_length",
-                "media_type"
-              ],
-              "type": "object"
-            },
-            "FileRef": {
-              "additionalProperties": false,
-              "description": "An immutable version of a file within a scoped volume.",
-              "properties": {
-                "descriptor": {
-                  "$ref": "#/$defs/FileDescriptor"
-                },
-                "display_name": {
-                  "type": "string"
-                },
-                "path": {
-                  "type": "string"
-                },
-                "version": {
-                  "type": "string"
-                },
-                "volume": {
-                  "$ref": "#/$defs/VolumeRef"
-                }
-              },
-              "required": [
-                "volume",
-                "path",
-                "version",
-                "descriptor",
-                "display_name"
-              ],
-              "type": "object"
-            },
-            "FileResult": {
-              "additionalProperties": false,
-              "description": "Canonical successful write/edit result, independent of model projection.",
-              "properties": {
-                "file": {
-                  "$ref": "#/$defs/FileRef",
-                  "description": "Exact retained publication result with workspace and content identity."
-                }
-              },
-              "required": [
-                "file"
-              ],
-              "type": "object"
-            },
-            "ProviderRef": {
-              "additionalProperties": false,
-              "description": "Stable identity of a replaceable resource provider.",
-              "properties": {
-                "family": {
-                  "description": "Provider family, such as `filesystem` or `machines`.",
-                  "type": "string"
-                },
-                "namespace": {
-                  "description": "Globally unique namespace, such as `acyclic` or a reverse DNS name.",
-                  "type": "string"
-                },
-                "version": {
-                  "description": "Immutable provider contract version.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "namespace",
-                "family",
-                "version"
-              ],
-              "type": "object"
-            },
-            "VolumeClass": {
-              "description": "The three independently governed file namespaces.",
-              "oneOf": [
-                {
-                  "const": "project",
-                  "description": "Consumer's project role. Lineage and merge semantics belong to Filesystem.",
-                  "type": "string"
-                },
-                {
-                  "const": "agent_private",
-                  "description": "Scratch files owned by exactly one agent.",
-                  "type": "string"
-                },
-                {
-                  "const": "session_shared",
-                  "description": "Files shared through explicit session grants.",
-                  "type": "string"
-                }
-              ]
-            },
-            "VolumeOwner": {
-              "description": "Logical owner used for routing; access still requires an authenticated grant.",
+            "TextPart": {
               "oneOf": [
                 {
                   "additionalProperties": false,
-                  "description": "Project workspace owner.",
                   "properties": {
-                    "id": {
+                    "kind": {
+                      "const": "text",
                       "type": "string"
                     },
-                    "kind": {
-                      "const": "project",
+                    "text": {
                       "type": "string"
                     }
                   },
                   "required": [
                     "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Agent private-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "agent",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "description": "Shared session-volume owner.",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "kind": {
-                      "const": "session",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "kind",
-                    "id"
+                    "text"
                   ],
                   "type": "object"
                 }
               ]
-            },
-            "VolumeRef": {
-              "additionalProperties": false,
-              "description": "Globally addressable volume identity with no embedded capability or endpoint.",
-              "properties": {
-                "class": {
-                  "$ref": "#/$defs/VolumeClass"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "owner": {
-                  "$ref": "#/$defs/VolumeOwner"
-                },
-                "provider": {
-                  "$ref": "#/$defs/ProviderRef"
-                }
-              },
-              "required": [
-                "provider",
-                "id",
-                "class",
-                "owner"
-              ],
-              "type": "object"
             }
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "description": "Text the model reads verbatim; providers never JSON-quote a parts result.",
           "oneOf": [
             {
               "additionalProperties": false,
               "properties": {
                 "kind": {
-                  "const": "json",
+                  "const": "parts",
                   "type": "string"
                 },
-                "value": {
-                  "$ref": "#/$defs/FileResult"
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array"
                 }
               },
               "required": [
                 "kind",
-                "value"
+                "parts"
               ],
               "type": "object"
             }
           ],
-          "title": "JsonProjection"
+          "title": "TextProjection"
         },
-        "revision": "portable-5"
+        "revision": "portable-6"
       },
       "definition_digest": [
-        72,
-        3,
-        110,
-        244,
-        208,
-        72,
-        8,
-        86,
-        52,
-        39,
-        144,
-        192,
-        96,
-        203,
-        7,
-        184,
-        117,
-        21,
+        123,
+        90,
         121,
-        227,
-        149,
-        109,
-        27,
-        168,
-        2,
-        234,
-        207,
+        238,
+        172,
+        202,
+        13,
+        151,
+        175,
+        3,
+        19,
+        97,
+        199,
+        211,
+        74,
+        214,
+        245,
+        221,
         146,
-        161,
-        99,
-        43,
-        223
+        205,
+        123,
+        10,
+        18,
+        89,
+        107,
+        253,
+        112,
+        70,
+        200,
+        231,
+        244,
+        97
       ],
       "variant": "exact_edit_full"
     },
@@ -4110,8 +3585,44 @@
     },
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read a UTF-8 text file by workspace-relative path. Returns lines numbered from 1 in cat -n format; offset (one-based line) and limit select a range of a large file. Reads see the current workspace, including changes made by bash",
         "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Workspace-relative text read arguments; the host resolves the authenticated file.",
+          "properties": {
+            "limit": {
+              "description": "Maximum number of lines to read; omission reads to the end of the file.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "description": "One-based line number to start reading from; omission starts at line 1.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "ReadFileInput",
+          "type": "object"
+        },
+        "name": "read",
+        "output_schema": {
           "$defs": {
             "FileDescriptor": {
               "additionalProperties": false,
@@ -4195,31 +3706,6 @@
                 "namespace",
                 "family",
                 "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
               ],
               "type": "object"
             },
@@ -4330,101 +3816,161 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Canonical read result: the selected lines and the exact file they came from.",
           "properties": {
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Owner-authorized immutable source."
+              "description": "Authenticated file generation that was read."
             },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+            "offset": {
+              "description": "One-based number of the first selected line.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "Exact selected UTF-8 lines, including their line terminators.",
+              "type": "string"
             }
           },
           "required": [
-            "file"
+            "file",
+            "offset",
+            "text"
           ],
-          "title": "ReadFileInput",
+          "title": "ReadFileResult",
           "type": "object"
         },
-        "name": "read",
-        "output_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
-        },
         "projection_schema": {
+          "$defs": {
+            "TextPart": {
+              "oneOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "text",
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "text"
+                  ],
+                  "type": "object"
+                }
+              ]
+            }
+          },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "description": "Text the model reads verbatim; providers never JSON-quote a parts result.",
           "oneOf": [
             {
               "additionalProperties": false,
               "properties": {
                 "kind": {
-                  "const": "json",
+                  "const": "parts",
                   "type": "string"
                 },
-                "value": {
-                  "type": "string"
+                "parts": {
+                  "items": {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  "maxItems": 1,
+                  "minItems": 1,
+                  "type": "array"
                 }
               },
               "required": [
                 "kind",
-                "value"
+                "parts"
               ],
               "type": "object"
             }
           ],
-          "title": "JsonProjection"
+          "title": "TextProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-7"
       },
       "definition_digest": [
-        197,
-        213,
-        40,
-        52,
-        3,
-        151,
-        40,
-        87,
-        104,
-        189,
-        35,
-        200,
-        73,
-        31,
-        254,
-        94,
-        39,
-        165,
+        220,
+        103,
+        79,
+        242,
+        160,
+        169,
+        70,
         224,
-        1,
-        157,
-        63,
-        61,
-        180,
-        16,
+        189,
+        96,
+        175,
+        222,
+        25,
+        197,
         76,
-        142,
-        58,
-        36,
-        218,
-        134,
-        226
+        242,
+        31,
+        191,
+        197,
+        35,
+        126,
+        196,
+        225,
+        126,
+        32,
+        127,
+        235,
+        30,
+        13,
+        186,
+        10,
+        41
       ],
       "variant": "range_read_full"
     },
     {
       "definition": {
-        "description": "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+        "description": "Read a UTF-8 text file by workspace-relative path. Returns lines numbered from 1 in cat -n format; offset (one-based line) and limit select a range of a large file. Reads see the current workspace, including changes made by bash",
         "input_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Workspace-relative text read arguments; the host resolves the authenticated file.",
+          "properties": {
+            "limit": {
+              "description": "Maximum number of lines to read; omission reads to the end of the file.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "offset": {
+              "description": "One-based line number to start reading from; omission starts at line 1.",
+              "format": "uint64",
+              "minimum": 1,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "path": {
+              "description": "File path relative to the task workspace root.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "ReadFileInput",
+          "type": "object"
+        },
+        "name": "read",
+        "output_schema": {
           "$defs": {
             "FileDescriptor": {
               "additionalProperties": false,
@@ -4508,31 +4054,6 @@
                 "namespace",
                 "family",
                 "version"
-              ],
-              "type": "object"
-            },
-            "TextRange": {
-              "additionalProperties": false,
-              "description": "Exact UTF-8 byte interval; offsets refer to the original immutable source.",
-              "properties": {
-                "end": {
-                  "description": "Exclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "start": {
-                  "description": "Inclusive byte offset.",
-                  "format": "uint64",
-                  "maximum": 9007199254740991,
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": [
-                "start",
-                "end"
               ],
               "type": "object"
             },
@@ -4643,35 +4164,30 @@
           },
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "additionalProperties": false,
-          "description": "Exact immutable UTF-8 file read arguments.",
+          "description": "Canonical read result: the selected lines and the exact file they came from.",
           "properties": {
             "file": {
               "$ref": "#/$defs/FileRef",
-              "description": "Owner-authorized immutable source."
+              "description": "Authenticated file generation that was read."
             },
-            "range": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/TextRange"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Optional exact UTF-8 byte interval; omission reads the complete file."
+            "offset": {
+              "description": "One-based number of the first selected line.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "description": "Exact selected UTF-8 lines, including their line terminators.",
+              "type": "string"
             }
           },
           "required": [
-            "file"
+            "file",
+            "offset",
+            "text"
           ],
-          "title": "ReadFileInput",
+          "title": "ReadFileResult",
           "type": "object"
-        },
-        "name": "read",
-        "output_schema": {
-          "$schema": "https://json-schema.org/draft/2020-12/schema",
-          "title": "string",
-          "type": "string"
         },
         "projection_schema": {
           "$defs": {
@@ -4940,41 +4456,41 @@
           ],
           "title": "ReferenceProjection"
         },
-        "revision": "portable-6"
+        "revision": "portable-7"
       },
       "definition_digest": [
-        64,
-        179,
-        123,
+        248,
+        228,
+        43,
+        149,
+        193,
+        197,
+        144,
+        22,
+        46,
+        69,
+        151,
+        4,
         125,
-        32,
-        139,
-        24,
-        87,
-        23,
-        62,
-        17,
-        128,
-        233,
-        86,
-        103,
-        14,
-        164,
-        201,
-        214,
-        129,
-        72,
-        29,
-        11,
-        135,
-        231,
-        64,
-        122,
-        175,
-        139,
-        44,
+        95,
+        3,
+        179,
+        145,
+        203,
+        178,
         0,
-        93
+        34,
+        137,
+        176,
+        64,
+        121,
+        77,
+        205,
+        58,
+        198,
+        183,
+        90,
+        162
       ],
       "variant": "range_read_reference"
     },

@@ -214,7 +214,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
             "one.txt",
         )
         .await?;
-    let expected_projection = json!({"kind":"json","value":"pinned text"});
+    let expected_projection =
+        json!({"kind":"parts","parts":[{"kind":"text","text":"     1\tpinned text"}]});
     let render_bytes = serde_json::to_vec(&expected_projection)
         .map_err(|error| Error::Invalid(error.to_string()))?
         .len() as u64;
@@ -231,7 +232,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         operation_id: OperationId::new(),
         call_id: "read-1".into(),
         name: "read".into(),
-        arguments: json!({"file":file}),
+        arguments: json!({"path":"notes/one.txt"}),
     };
     let own_tool = tool.clone();
     let own_invocation = invocation.clone();
@@ -239,6 +240,7 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
         let tool = own_tool.clone();
         let invocation = own_invocation.clone();
         let expected_projection = expected_projection.clone();
+        let file = file.clone();
         async move {
             let context = crate::runtime::ToolContext::new(
                 Arc::new(task.clone()),
@@ -250,7 +252,8 @@ async fn default_read_file_tool_checks_owner_and_render_bound() -> Result<()> {
                 .executor
                 .execute(invocation.clone(), Some(context.clone()))
                 .await?;
-            assert_eq!(result.value, json!("pinned text"));
+            assert_eq!(result.value["text"], json!("pinned text"));
+            assert_eq!(result.value["file"], json!(file));
             let projection = tool.projection.project(&invocation, &result, None)?.0;
             assert_eq!(projection, expected_projection);
             let content = tool
@@ -505,9 +508,9 @@ async fn default_file_tools_require_caller_volume_grants() -> Result<()> {
                 "tool:call:read", "tool:call:write", "tool:call:edit", "tool:call:acyclic.list_files",
             ]), limits)?;
             for (name, arguments) in [
-                ("read", json!({"file":file})),
+                ("read", json!({"path":file.path()})),
                 ("write", json!({"path":"notes/two.txt","text":"two","media_type":"text/plain","display_name":"two.txt"})),
-                ("edit", json!({"file":file,"old_text":"one","new_text":"two"})),
+                ("edit", json!({"path":file.path(),"old_string":"one","new_string":"two"})),
             ] {
                 let invocation = ToolInvocation { operation_id: OperationId::new(), call_id: name.into(), name: name.into(), arguments };
                 let tool = tools.get(name, None, None)?.ok_or_else(|| Error::NotFound(name.into()))?;
@@ -540,7 +543,7 @@ async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()
                 ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
                     "read".into(),
                     "read".into(),
-                    json!({"file": staged}),
+                    json!({"path": staged.path()}),
                 ))),
                 ScriptedEvent::Event(ModelEvent::Completed {
                     metadata: Value::Null,

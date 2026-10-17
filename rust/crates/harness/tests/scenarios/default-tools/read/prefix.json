@@ -1,3 +1,1 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"file":"plans/a.md",
-  "range":{"start":0,"end":4}}},{"type":"event","kind":"completed","metadata":null}],"done"],
-  "expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"αβ"}}}}}
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"plans/a.md","limit":2}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\tone\n     2\ttwo"}]}}}}}

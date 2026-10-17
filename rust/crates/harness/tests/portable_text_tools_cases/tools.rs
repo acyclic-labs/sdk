@@ -85,24 +85,23 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: read_operation,
         call_id: "read".into(),
         name: read_tool.definition.name.clone(),
-        arguments: json!({"file":source}),
+        arguments: json!({"path":"source.txt"}),
     };
-    assert_eq!(
-        read_tool
-            .executor
-            .execute(
-                read_invocation.clone(),
-                Some(ToolContext::new(
-                    task.clone(),
-                    read_operation,
-                    "read",
-                    None
-                )?)
-            )
-            .await?
-            .value,
-        json!("one two")
-    );
+    let first_read = read_tool
+        .executor
+        .execute(
+            read_invocation.clone(),
+            Some(ToolContext::new(
+                task.clone(),
+                read_operation,
+                "read",
+                None,
+            )?),
+        )
+        .await?
+        .value;
+    assert_eq!(first_read["text"], json!("one two"));
+    assert_eq!(first_read["file"], json!(source));
     for wrong_context in [
         ToolContext::new(task.clone(), OperationId::new(), "read", None)?,
         ToolContext::new(task.clone(), read_operation, "another-call", None)?,
@@ -125,7 +124,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         operation_id: operation,
         call_id: "edit".into(),
         name: tool.definition.name.clone(),
-        arguments: json!({"file":source,"old_text":"two","new_text":"three"}),
+        arguments: json!({"path":"source.txt","old_string":"two","new_string":"three"}),
     };
     let context = ToolContext::new(task.clone(), operation, "edit", None)?;
     let first = tool
@@ -163,7 +162,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         tool.executor
             .reconcile(invocation.clone(), Some(context))
             .await?,
-        Some(first)
+        Some(first.clone())
     );
     assert_eq!(
         task.read_file(&user, None).await?.as_ref(),
@@ -302,9 +301,9 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
                 )?)
             )
             .await?
-            .ok_or_else(|| Error::Invalid("pinned read was not reconciled".into()))?
-            .value,
-        json!("one two")
+            .ok_or_else(|| Error::Invalid("path read was not reconciled".into()))?
+            .value["text"],
+        json!("user edit")
     );
     let fresh = OperationId::new();
     let stale = ToolInvocation {
@@ -418,17 +417,40 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         tool.executor.execute(invocation.clone(), None).await,
         Err(Error::Unsupported(_))
     ));
-    let mut changed = invocation;
+    // A path edit's operation identity names its one publication: reconcile
+    // observes it and never re-applies, even against a different head. The
+    // durable runner rejects changed arguments for an admitted operation by
+    // request digest before reconcile is reached.
+    let mut changed = invocation.clone();
     *changed
         .arguments
-        .get_mut("new_text")
+        .get_mut("new_string")
         .ok_or_else(|| Error::Invalid("edit input lacks its replacement".into()))? =
         json!("different");
-    assert!(matches!(
+    assert_eq!(
         tool.executor
             .reconcile(
                 changed,
-                Some(ToolContext::new(task, operation, "edit", None)?)
+                Some(ToolContext::new(task.clone(), operation, "edit", None)?)
+            )
+            .await?,
+        Some(first)
+    );
+    assert_eq!(
+        task.read_file(&user, None).await?.as_ref(),
+        b"user edit".as_ref()
+    );
+    // Negative control: an operation that never published reconciles by
+    // re-running against the current head, where old_string is gone.
+    let unpublished = OperationId::new();
+    assert!(matches!(
+        tool.executor
+            .reconcile(
+                ToolInvocation {
+                    operation_id: unpublished,
+                    ..invocation
+                },
+                Some(ToolContext::new(task, unpublished, "edit", None)?)
             )
             .await,
         Err(Error::Conflict(_))

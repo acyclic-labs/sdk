@@ -85,6 +85,20 @@ impl<T> MountTable<T> {
         }
         Ok(selected)
     }
+    /// Routes a file like [`Self::file`] and admits exactly `action` there,
+    /// so reading needs READ and publishing needs WRITE, never both.
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+    pub(crate) fn admit(
+        &self,
+        volume: Option<&VolumeRef>,
+        path: &str,
+        action: Action,
+        now: u64,
+    ) -> Result<(&Mount<T>, String)> {
+        let (mount, relative) = self.file(volume, path)?;
+        mount.check(action, &relative, now)?;
+        Ok((mount, relative))
+    }
     /// Resolves a qualifier through the visible namespace, never by opening a
     /// model-supplied volume identity.
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]

@@ -1,6 +1,1 @@
-{"seed":{"plans/a.md":"before\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit",
-  "arguments":{"file":"plans/a.md","old_text":"before\n","new_text":""}},{"type":"event","kind":"completed",
-  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":""},"results":{"call":{"name":"edit","content":{"kind":"json",
-  "value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":0,"sha256":[227,176,196,66,152,252,28,
-  20,154,251,244,200,153,111,185,36,39,174,65,228,100,155,147,76,164,149,153,27,120,82,184,85],"media_type":"text/plain"},
-  "display_name":"a.md"}}}}}}}
+{"seed":{"plans/a.md":"before\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit","arguments":{"path":"plans/a.md","old_string":"before\n","new_string":""}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":""},"results":{"call":{"name":"edit","content":{"kind":"parts","parts":[{"kind":"text","text":"Updated plans/a.md (0 bytes)."}]}}}}}

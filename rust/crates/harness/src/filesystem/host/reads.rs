@@ -251,6 +251,55 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Option<crate::OperationId>,
     )> {
         self.require_private_directory(volume, grant, path, io)?;
+        self.resolve_path(
+            volume,
+            PathGrant::Read(grant),
+            path,
+            expected_generation,
+            maximum_bytes,
+            io,
+        )
+        .await
+    }
+
+    /// Resolves the file at a path on the writer's current head. Write
+    /// authority over the volume admits observing the destination it replaces.
+    pub(crate) async fn current_path(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        crate::executor::with_history_io(io, |work| volume.validate(work))?;
+        grant.require(volume, crate::conversation::VolumeOperation::Write, io)?;
+        if volume.provider() != &self.provider || crate::conversation::is_internal_path(path) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "path belongs to another provider or internal storage",
+            ));
+        }
+        let (file, bytes, _) = self
+            .resolve_path(volume, PathGrant::Write, path, None, maximum_bytes, io)
+            .await?;
+        Ok((file, bytes))
+    }
+
+    async fn resolve_path(
+        &self,
+        volume: &VolumeRef,
+        grant: PathGrant<'_>,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
@@ -338,7 +387,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        grant.require_file_read(&reference, Some(io))?;
+        if let PathGrant::Read(grant) = grant {
+            grant.require_file_read(&reference, Some(io))?;
+        }
         if staged.is_some() {
             // Upload metadata carries the publication operation, not a sentinel.
             // Reuse range authentication to bind it to the original atomic write.
@@ -420,7 +471,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(reference_hold);
         Ok(chunk.bytes)
     }
+}
 
+/// Authority under which a path is resolved to its current file.
+#[derive(Clone, Copy)]
+enum PathGrant<'a> {
+    /// A verified directory or volume read grant, checked against the result.
+    Read(&'a ContentGrant),
+    /// The caller verified whole-volume write authority.
+    Write,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn require_private_directory(
         &self,
         volume: &VolumeRef,

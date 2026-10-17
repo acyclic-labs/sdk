@@ -20,21 +20,27 @@ macro_rules! record {
             }
         };
     }
-record!(ReadFileInput, self, self.file.logical_owned_bytes()?);
+record!(ReadFileInput, self, self.path.capacity());
+record!(
+    ReadFileResult,
+    self,
+    self.file.logical_owned_bytes()?,
+    self.text.capacity()
+);
 record!(
     WriteFileInput,
     self,
     self.path.capacity(),
     self.text.capacity(),
-    self.media_type.capacity(),
-    self.display_name.capacity()
+    self.media_type.as_ref().map_or(0, String::capacity),
+    self.display_name.as_ref().map_or(0, String::capacity)
 );
 record!(
     EditFileInput,
     self,
-    self.file.logical_owned_bytes()?,
-    self.old_text.capacity(),
-    self.new_text.capacity()
+    self.path.capacity(),
+    self.old_string.capacity(),
+    self.new_string.capacity()
 );
 record!(
     PatchFileInput,

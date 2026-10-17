@@ -245,6 +245,17 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
     }
+    /// Routes a path to the volume and relative path a READ addresses. Unlike
+    /// [`Self::destination`], it never requires publication admission, so a
+    /// readable but unwritable location still routes.
+    fn locate<'a>(
+        &'a self,
+        _volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
+    }
     /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
     /// Rejects unavailable bounded publication before external side effects.
@@ -301,6 +312,38 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             io,
             crate::wire::ErrorCode::Unsupported,
             "publication observation is unavailable",
+        ))
+    }
+    /// Resolves the file currently at a destination path through this writer's
+    /// task view, so path-addressed tools read and replace what the task sees.
+    fn current<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "path resolution is unavailable",
+        ))
+    }
+    /// Observes the replacement of `path` staged under `operation_id`, if any,
+    /// so a reconciled path-addressed edit never applies twice.
+    fn observe_replacement<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "replacement observation is unavailable",
         ))
     }
     /// Replaces bytes only at the immutable source generation.
