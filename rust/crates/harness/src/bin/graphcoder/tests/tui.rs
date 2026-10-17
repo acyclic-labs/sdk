@@ -24,6 +24,36 @@ struct Screen {
     answered: usize,
 }
 
+/// Kills and reaps the TUI unless it exited on its own, so a failed step never
+/// leaves it holding the terminal.
+struct Running(std::process::Child);
+
+impl Running {
+    /// Waits for the requested exit; the deadline only bounds a quit regression.
+    fn exit(mut self) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            if let Some(status) = self.0.try_wait().unwrap() {
+                return status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "GraphCoder did not exit on Ctrl+D"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 fn find(bytes: &[u8], needle: &str) -> Option<usize> {
     bytes
         .windows(needle.len())
@@ -115,25 +145,27 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
     let controller = File::from(pty.controller);
     let user = File::from(pty.user);
     // `setsid --ctty` makes the pseudo-terminal the child's /dev/tty.
-    let mut child = Command::new("setsid")
-        .arg("--ctty")
-        .arg(env!("CARGO_BIN_EXE_graphcoder"))
-        .arg("--workspace")
-        .arg(&workspace)
-        .arg("--catalog")
-        .arg(&catalog)
-        .arg("--settings-root")
-        .arg(&settings)
-        .args(["--model", "graphcoder-qual/tiny"])
-        .current_dir(&workspace)
-        .env("TERM", "xterm-256color")
-        .env("HOME", &home)
-        .env("XDG_DATA_HOME", home.join("data"))
-        .stdin(Stdio::from(user.try_clone().unwrap()))
-        .stdout(Stdio::from(user.try_clone().unwrap()))
-        .stderr(Stdio::from(user))
-        .spawn()
-        .unwrap();
+    let child = Running(
+        Command::new("setsid")
+            .arg("--ctty")
+            .arg(env!("CARGO_BIN_EXE_graphcoder"))
+            .arg("--workspace")
+            .arg(&workspace)
+            .arg("--catalog")
+            .arg(&catalog)
+            .arg("--settings-root")
+            .arg(&settings)
+            .args(["--model", "graphcoder-qual/tiny"])
+            .current_dir(&workspace)
+            .env("TERM", "xterm-256color")
+            .env("HOME", &home)
+            .env("XDG_DATA_HOME", home.join("data"))
+            .stdin(Stdio::from(user.try_clone().unwrap()))
+            .stdout(Stdio::from(user.try_clone().unwrap()))
+            .stderr(Stdio::from(user))
+            .spawn()
+            .unwrap(),
+    );
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let mut output = controller.try_clone().unwrap();
     let sink = bytes.clone();
@@ -151,6 +183,7 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
         answered: 0,
     };
     let driven = tokio::task::spawn_blocking(move || {
+        let child = child;
         screen.until("composer", |bytes| {
             find(bytes, "GraphCoder").is_some() && find(bytes, "└").is_some()
         });
@@ -172,14 +205,14 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
             });
         }
         screen.input.write_all(b"\x04").unwrap();
-        screen
+        let status = child.exit();
+        drop(screen);
+        status
     })
     .await
     .unwrap();
-    let status = child.wait().unwrap();
-    drop(driven);
     reader.join().unwrap();
-    assert!(status.success(), "{status:?}");
+    assert!(driven.success(), "{driven:?}");
     let bodies = bodies.lock().unwrap();
     assert_eq!(bodies.len(), 3);
     // Each later request carries every earlier prompt and answer.
