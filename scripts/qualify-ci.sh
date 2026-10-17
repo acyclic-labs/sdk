@@ -383,6 +383,14 @@ case "$lane" in
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+    for features in browser wasm; do
+      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+        cargo check --locked -p acyclic-harness --no-default-features \
+          --features "$features" --target wasm32-unknown-unknown --lib
+    done
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      cargo check --locked -p acyclic-harness --no-default-features \
+        --target wasm32-unknown-unknown --lib
     harness_tests() {
       cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
       grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
