@@ -90,7 +90,7 @@ child.stdout.on("data", bytes => {
 });
 child.stderr.on("data", bytes => { output += bytes.toString("utf8"); });
 try {
-  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY ${scenario} terminated by ${signal} (submitted=${submitted}, retried=${retried}, calls=${host.calls()}): ${output}`)) : resolve(code)); });
+  const code = await new Promise((resolve, reject) => { child.on("error", reject); child.on("exit", (code, signal) => signal ? reject(new Error(`PTY ${scenario} terminated by ${signal} (submitted=${submitted}, retried=${retried}, calls=${host.calls()}): ${screenText(screen)}`)) : resolve(code)); });
   assert.equal(code, 0, output);
   assert.ok(submitted, "composed prompt never appeared");
   if (["uncertain", "command-recovery", "typeahead"].includes(scenario)) assert.ok(retried, "command outcome never became visible feedback");
