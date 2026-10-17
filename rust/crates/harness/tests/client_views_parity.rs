@@ -475,5 +475,10 @@ async fn negative_control_omitting_followed_notifications_is_detected() {
 
 #[wasm_bindgen_test]
 async fn negative_control_omitting_followed_task_tools_is_detected() {
-    assert!(exercise(false, false, true, false).await.unwrap_err().contains("task folders differ"));
+    assert!(
+        exercise(false, false, true, false)
+            .await
+            .unwrap_err()
+            .contains("task folders differ")
+    );
 }
