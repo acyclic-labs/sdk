@@ -73,12 +73,12 @@ async fn read(
 
 use crate::test_support::differential;
 
-// Native mount support retains an execution pointer in native custody, which
-// changes the enclosing future even on its unmetered path.
+// (Requested allocation bytes saved, enclosing future bytes). Native mount
+// support retains an execution pointer in the native custody layouts.
 #[cfg(feature = "native-execution")]
-const EXPECTED_FRAME_BYTES: usize = 392;
+const EXPECTED_BYTES: (u64, usize) = (1840, 392);
 #[cfg(not(feature = "native-execution"))]
-const EXPECTED_FRAME_BYTES: usize = 376;
+const EXPECTED_BYTES: (u64, usize) = (1768, 360);
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
@@ -114,10 +114,10 @@ proptest! {
         eprintln!("pinned frame before={} after={} allocations before={:?} after={:?}",
             before.0.2, after.0.2, before.0.1, after.0.1);
         prop_assert_eq!(before.0.1.count_total, after.0.1.count_total);
-        prop_assert_eq!(before.0.1.bytes_total - after.0.1.bytes_total, 1840);
-        prop_assert_eq!((before.0.2, after.0.2), (EXPECTED_FRAME_BYTES, EXPECTED_FRAME_BYTES));
+        prop_assert_eq!(before.0.1.bytes_total - after.0.1.bytes_total, EXPECTED_BYTES.0);
+        prop_assert_eq!((before.0.2, after.0.2), (EXPECTED_BYTES.1, EXPECTED_BYTES.1));
         // The old factory must fail the identical exact storage bound.
-        prop_assert_ne!(before.0.1.bytes_total - before.0.1.bytes_total, 1840);
+        prop_assert_ne!(before.0.1.bytes_total - before.0.1.bytes_total, EXPECTED_BYTES.0);
         for allowance in [budget, 64 * 1024 * 1024] {
             for native in [false, true] {
                 let [before, after] = differential::pair(initialize, |(host, file), old|
