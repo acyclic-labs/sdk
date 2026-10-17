@@ -21,7 +21,7 @@ fn parts(len: usize, chunk: usize) -> (Vec<usize>, Vec<u8>) {
         let mut guard = RestoreGuard::new(&mut device, &synchronized());
         present_parts(&frame, chunk, |part| {
             sizes.push(part.bytes.len());
-            part.apply(&mut guard, false)
+            part.apply(&mut guard, FrameEffects::default())
         })
         .unwrap_or_else(|error| panic!("{error}"));
         assert!(
@@ -99,7 +99,15 @@ fn a_failed_part_is_closed_by_the_abort() {
             fail,
         };
         let mut guard = RestoreGuard::new(device, &synchronized());
-        let result = present_parts(&frame, CHUNK, |part| part.apply(&mut guard, true));
+        let result = present_parts(&frame, CHUNK, |part| {
+            part.apply(
+                &mut guard,
+                FrameEffects {
+                    cursor_hidden: true,
+                    margins: false,
+                },
+            )
+        });
         assert!(result.is_err());
         assert!(
             guard.frame_open(),

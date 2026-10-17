@@ -77,11 +77,11 @@ pub struct Output {
 pub(crate) const CONSOLE_CHUNK: usize = 256 * 1024;
 
 impl super::Present for Output {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+    fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
         let owner = &self.owner;
         let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
             Owner::run(owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
-                part.apply(guard, cursor_hidden)
+                part.apply(guard, effects)
             })
         });
         if presented.is_err() {

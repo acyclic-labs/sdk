@@ -143,7 +143,10 @@ mod poison_tests {
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             active(&state, |guard| -> io::Result<()> {
                 // Journaled before the first byte, as every frame is.
-                guard.begin_frame(true);
+                guard.begin_frame(crate::term::FrameEffects {
+                    cursor_hidden: true,
+                    margins: false,
+                });
                 panic!("injected writer panic");
             })
         }));

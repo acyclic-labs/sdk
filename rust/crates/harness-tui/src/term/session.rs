@@ -34,8 +34,8 @@ impl Write for Output {
     }
 }
 impl super::Present for Output {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
-        lifecycle::active(&self.state, |guard| guard.present(frame, cursor_hidden))
+    fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.present(frame, effects))
     }
 }
 impl Drop for Output {

@@ -14,7 +14,7 @@ use acyclic_harness_tui::ratatui::{
     widgets::Paragraph,
 };
 use acyclic_harness_tui::term::{
-    Capabilities, FrameTerminal, ModeState, Present, RestoreGuard, device_io,
+    Capabilities, FrameEffects, FrameTerminal, ModeState, Present, RestoreGuard, device_io,
 };
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
@@ -261,10 +261,10 @@ impl<W: Write> Write for Calls<W> {
     }
 }
 impl<W: Present> Present for Calls<W> {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
         self.1.set(self.1.get() + 1);
         self.2.set(self.2.get() + frame.len() as u64);
-        self.0.present(frame, cursor_hidden)
+        self.0.present(frame, effects)
     }
 }
 
@@ -395,7 +395,7 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
         }
         let before = device_io();
         let start = std::time::Instant::now();
-        output.present(&mut frame, false)?;
+        output.present(&mut frame, FrameEffects::default())?;
         let elapsed = start.elapsed();
         eprintln!(
             "windows {mib} MiB frame: {:.1} ms, {} console writes",
