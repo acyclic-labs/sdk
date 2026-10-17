@@ -87,19 +87,33 @@ fn text(value: &RawValue) -> Option<Cow<'_, str>> {
         .ok()
         .map(|Text(text)| text)
 }
-fn owners(key: &FileKey) -> [Option<OutputOwner>; 2] {
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum Scope {
+    Owner(OutputOwner),
+    // The existing CommandSession query includes unscoped task commands in
+    // every session. An explicit owner never inherits another session's files.
+    Unscoped,
+}
+fn owners(key: &FileKey) -> [Option<Scope>; 2] {
     match key {
         FileKey::Task {
             task,
             file: TaskFile::ExecutionResult(_),
         } => [
-            Some(OutputOwner::Task(task.clone())),
-            crate::task_volume::command_query::owner(key).map(OutputOwner::Session),
+            Some(Scope::Owner(OutputOwner::Task(task.clone()))),
+            crate::task_volume::command_query::is_result(key).then(|| {
+                crate::task_volume::command_query::owner(key)
+                    .map(|owner| Scope::Owner(OutputOwner::Session(owner)))
+                    .unwrap_or(Scope::Unscoped)
+            }),
         ],
         FileKey::Session {
             session,
             file: TaskFile::ExecutionResult(_),
-        } => [Some(OutputOwner::Session(session.clone())), None],
+        } => [
+            Some(Scope::Owner(OutputOwner::Session(session.clone()))),
+            None,
+        ],
         _ => [None, None],
     }
 }
@@ -156,9 +170,9 @@ impl Metadata {
 /// Ordered selections index metadata once; payloads stay in the canonical files.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(super) struct Outputs {
-    rows: BTreeMap<OutputOwner, BTreeMap<u64, std::collections::BTreeSet<FileKey>>>,
+    rows: BTreeMap<Scope, BTreeMap<u64, std::collections::BTreeSet<FileKey>>>,
     keys: BTreeMap<FileKey, Metadata>,
-    text_tasks: BTreeMap<(OutputOwner, crate::TaskId), BTreeMap<u64, usize>>,
+    text_tasks: BTreeMap<(Scope, crate::TaskId), BTreeMap<u64, usize>>,
 }
 impl Outputs {
     pub(super) fn includes(key: &FileKey) -> bool {
@@ -227,29 +241,33 @@ impl Outputs {
         self.keys.insert(file.key.clone(), value);
     }
     fn has_text(&self, owner: &OutputOwner, task: crate::TaskId, after: u64) -> bool {
-        self.text_tasks
-            .get(&(owner.clone(), task))
-            .and_then(BTreeMap::last_key_value)
-            .is_some_and(|(sequence, _)| *sequence > after)
+        [
+            Some(Scope::Owner(owner.clone())),
+            matches!(owner, OutputOwner::Session(_)).then_some(Scope::Unscoped),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|scope| {
+            self.text_tasks
+                .get(&(scope, task))
+                .and_then(BTreeMap::last_key_value)
+                .is_some_and(|(sequence, _)| *sequence > after)
+        })
     }
-    fn from<'a>(
+    fn from_scope<'a>(
         &'a self,
-        owner: &OutputOwner,
-        after: Option<(u64, &FileKey)>,
+        owner: &Scope,
+        sequence: u64,
+        key: Option<&FileKey>,
     ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
         use std::ops::Bound::{Excluded, Unbounded};
         let rows = self.rows.get(owner);
-        let current = after.and_then(|(sequence, key)| {
+        let current = key.and_then(|key| {
             rows?
                 .get(&sequence)
-                .map(|values| values.range((Excluded(key), Unbounded)))
+                .map(|keys| keys.range((Excluded(key), Unbounded)))
         });
-        let later = rows.map(|rows| {
-            rows.range((
-                Excluded(after.map_or(0, |(sequence, _)| sequence)),
-                Unbounded,
-            ))
-        });
+        let later = rows.map(|rows| rows.range((Excluded(sequence), Unbounded)));
         current
             .into_iter()
             .flatten()
@@ -261,21 +279,46 @@ impl Outputs {
             )
             .map(|key| (key, &self.keys[key]))
     }
+    fn ordered<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        sequence: u64,
+        key: Option<&FileKey>,
+    ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
+        let mut owned = self
+            .from_scope(&Scope::Owner(owner.clone()), sequence, key)
+            .peekable();
+        let mut unscoped = matches!(owner, OutputOwner::Session(_))
+            .then(|| self.from_scope(&Scope::Unscoped, sequence, key))
+            .into_iter()
+            .flatten()
+            .peekable();
+        std::iter::from_fn(move || match (owned.peek(), unscoped.peek()) {
+            (Some((a, x)), Some((b, y))) if (x.sequence, *a) <= (y.sequence, *b) => owned.next(),
+            (_, Some(_)) => unscoped.next(),
+            _ => owned.next(),
+        })
+    }
+    fn from<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        after: Option<(u64, &FileKey)>,
+    ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
+        self.ordered(
+            owner,
+            after.map_or(0, |(sequence, _)| sequence),
+            after.map(|(_, key)| key),
+        )
+    }
     fn after<'a>(
         &'a self,
         owner: &OutputOwner,
         after: u64,
     ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
-        self.rows
-            .get(owner)
-            .into_iter()
-            .flat_map(move |rows| {
-                rows.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
-            })
-            .flat_map(|(_, keys)| keys.iter())
-            .map(|key| (key, &self.keys[key]))
+        self.ordered(owner, after, None)
     }
 }
+
 impl super::FileQueryView {
     fn output<'a>(&'a self, key: &'a FileKey) -> Option<(&'a FileKey, CommandOutputView<'a>)> {
         let file = self.files().get(key)?;

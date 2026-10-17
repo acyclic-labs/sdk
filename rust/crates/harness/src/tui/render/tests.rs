@@ -59,3 +59,78 @@ fn every_partition_repairs_same_length_utf8() {
         partition(&format!("retained archive\n\n{text}"), &cuts);
     }
 }
+
+#[test]
+fn incomplete_utf8_continues_the_current_markdown_row() {
+    partition("a日", &[true, true, true]);
+}
+
+#[test]
+fn archived_query_cannot_steal_the_active_task_selection() {
+    use crate::{
+        client::ClientViews,
+        task_volume::{Component, Query, TaskVolume},
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    use std::sync::Arc;
+    futures::executor::block_on(async {
+        let volume = TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("selection").unwrap(),
+        )
+        .await
+        .unwrap();
+        let owner = wire::Authority {
+            kind: wire::AggregateKind::Task as i32,
+            id: "active".into(),
+        };
+        let mut views = ClientViews::new(
+            StreamPath::new("root").unwrap(),
+            crate::client::ClientViewLimits {
+                agents: 1,
+                selected: 1,
+                overview_values: 16,
+                overview_bytes: 4096,
+                query: crate::client::QueryViewLimits {
+                    files: 16,
+                    segments: 16,
+                    bytes: 4096,
+                },
+            },
+        )
+        .unwrap();
+        // Choose an archived key ordered before the active query in the real
+        // selection index, reproducing the previous first-query implementation.
+        let query = Query::TaskView {
+            task: Component::new("active").unwrap(),
+            recent: 2,
+            reasoning: true,
+            details: true,
+            terminal: true,
+        };
+        let snapshot = volume.snapshot(&query, 16).await.unwrap();
+        let active_digest = snapshot.cursor.query;
+        views.query_snapshot(query, snapshot, 16, 4096).unwrap();
+        let mut inserted = false;
+        for number in 0..32 {
+            let query = Query::Task(Component::new(format!("archived{number}")).unwrap());
+            let snapshot = volume.snapshot(&query, 16).await.unwrap();
+            if snapshot.cursor.query < active_digest {
+                views.query_snapshot(query, snapshot, 16, 4096).unwrap();
+                inserted = true;
+                break;
+            }
+        }
+        assert!(inserted);
+        let check = |chosen: Option<(&crate::client::FileQueryView, &Component)>| {
+            assert_eq!(chosen.unwrap().1.as_str(), "active");
+        };
+        check(selection::selected::<true>(&views, &owner));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(
+                selection::selected::<false>(&views, &owner)
+            )))
+            .is_err()
+        );
+    });
+}

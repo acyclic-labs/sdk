@@ -13,6 +13,7 @@ use crate::{
 use acyclic_markdown::Markdown;
 
 mod archive;
+mod selection;
 mod stream_text;
 mod task;
 use stream_text::StreamText;
@@ -72,31 +73,7 @@ impl ClientRenderer {
         }
         self.wrapped = false;
         self.side_wrapped = false;
-        let selected = views
-            .selections()
-            .find_map(|(_, selection)| match selection.query() {
-                crate::task_volume::Query::TaskView { task, .. }
-                | crate::task_volume::Query::Task(task) => Some((selection, task)),
-                _ => None,
-            });
-        let selected = selected.or_else(|| {
-            views.selections().find_map(|(_, selection)| {
-                if !matches!(
-                    selection.query(),
-                    crate::task_volume::Query::Tasks | crate::task_volume::Query::Root
-                ) {
-                    return None;
-                }
-                selection.files().keys().find_map(|key| match key {
-                    crate::task_volume::FileKey::Task { task, .. }
-                        if task.as_str() == authority.id =>
-                    {
-                        Some((selection, task))
-                    }
-                    _ => None,
-                })
-            })
-        });
+        let selected = selection::selected::<true>(views, authority);
         let archive = views
             .selections()
             .find_map(|(_, selection)| match selection.query() {

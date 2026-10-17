@@ -5,10 +5,14 @@ use serde_json::json;
 fn file(id: u8, sequence: u64, owner: u8, text: &str) -> FileValue {
     let session = uuid::Uuid::from_u128(u128::from(owner % 3) + 1);
     let path = if owner < 3 {
-        format!(".ui/sessions/{session}/executions/{id}/result.json")
+        format!(".sessions/{session}/executions/{id}/result.json")
     } else {
         let operation = uuid::Uuid::from_u128(u128::from(id) + 1);
-        format!(".tasks/t{owner}/executions/command-{session}.{operation}/result.json")
+        if owner < 6 {
+            format!(".tasks/t{owner}/executions/command-{session}.{operation}/result.json")
+        } else {
+            format!(".tasks/t{owner}/executions/{operation}/result.json")
+        }
     };
     FileValue::new(
         FileKey::parse(&path).unwrap(),
@@ -41,21 +45,17 @@ fn check(operations: &[(u8, u64, u8, String, bool)], retain_removed: bool) {
                     // Independent identity extraction for the physical/session
                     // namespaces; do not use the candidate's owner index/parser.
                     let session = match &file.key {
-                        FileKey::Session { session, .. } => session.as_str(),
+                        FileKey::Session { session, .. } => Some(session.as_str()),
                         FileKey::Task {
                             file: TaskFile::ExecutionResult(id),
                             ..
-                        } => {
-                            id.as_str()
-                                .strip_prefix("command-")
-                                .unwrap()
-                                .split_once('.')
-                                .unwrap()
-                                .0
-                        }
+                        } => id
+                            .as_str()
+                            .strip_prefix("command-")
+                            .map(|id| id.split_once('.').unwrap().0),
                         _ => panic!("execution result"),
                     };
-                    if session != expected_owner {
+                    if session.is_some_and(|session| session != expected_owner) {
                         return None;
                     }
                     // Independent decode and validation, never using the candidate parser.
@@ -112,7 +112,7 @@ proptest! {
     // immutable-file state; exact resume never drops another tied outcome.
     #[test]
     fn outcome_indexes_match_files(operations in prop::collection::vec(
-        (0u8..8, 0u64..6, 0u8..6, ".{0,24}", any::<bool>()),0..32)) {
+        (0u8..8, 0u64..6, 0u8..9, ".{0,24}", any::<bool>()),0..32)) {
         check(&operations,false);
     }
     #[test]
@@ -187,6 +187,6 @@ fn task_scoped_commands_are_indexed_by_their_logical_session() {
     let owner = OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap());
     assert_eq!(index.after(&owner, 0).count(), 1);
     // A physical-task-only index is the previous implementation.
-    index.rows.remove(&owner);
+    index.rows.remove(&Scope::Owner(owner));
     assert_ne!(index.after(&owner, 0).count(), 1);
 }

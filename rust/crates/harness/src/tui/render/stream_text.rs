@@ -89,7 +89,11 @@ impl StreamText {
             changed = changed.min(self.decode(&boundary[..pending + take]));
             bytes = &bytes[take..];
         }
-        changed.min(self.decode(bytes))
+        changed = changed.min(self.decode(bytes));
+        if self.pending_len != 0 && !self.newline {
+            changed = changed.min(self.len().saturating_sub(1));
+        }
+        changed
     }
     pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
         if !self

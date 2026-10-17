@@ -113,8 +113,8 @@ proptest! {
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("window-repaint").unwrap()).await.unwrap();
-            let task = crate::TaskId::new(); let owner = authority(task); let selected = query(task, 2);
-            let frozen_task = crate::TaskId::new();
+            let task = crate::TaskId::from_bytes([11;16]); let owner = authority(task); let selected = query(task, 2);
+            let frozen_task = crate::TaskId::from_bytes([12;16]);
             let mut generation = volume.snapshot(&Query::Root, 32).await.unwrap().generation;
             generation = volume.append(generation, &chunk(frozen_task, 0, b"frozen")).await.unwrap();
             let mut client = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 2, 512).await.unwrap();
@@ -156,6 +156,8 @@ async fn removing_the_last_chunk_clears_the_projection() {
     let mut client = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 1, 128)
         .await
         .unwrap();
+    let mut renderer = ClientRenderer::default();
+    assert!(picture(&mut renderer,client.views(),&owner).contains("evicted"));
     let status = FileValue::new(
         FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -169,7 +171,13 @@ async fn removing_the_last_chunk_clears_the_projection() {
         .await
         .unwrap();
     same_files(selection(&client), selection(&reopened));
-    assert!(selection(&client).files().is_empty());
+    let files = selection(&client);
+    assert_eq!(files.files().len(),1);
+    assert!(files.files().contains_key(&FileKey::Task {
+        task: Component::new(task.to_string()).unwrap(), file: TaskFile::Status,
+    }));
+    assert!(files.task(&Component::new(task.to_string()).unwrap()).text().next().is_none());
+    assert!(!picture(&mut renderer,client.views(),&owner).contains("evicted"));
 }
 
 #[tokio::test]

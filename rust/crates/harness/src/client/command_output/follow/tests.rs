@@ -29,8 +29,8 @@ fn check(operations: &[(u8, u8, String)], broken: bool) {
     let mut delivered = BTreeMap::new();
     for (index, (id, kind, text)) in operations.iter().enumerate() {
         let path = match kind % 3 {
-            0 => format!(".ui/sessions/s/executions/{id}/result.json"),
-            1 => format!(".ui/sessions/s/requests/{id}.json"),
+            0 => format!(".sessions/s/executions/{id}/result.json"),
+            1 => format!(".sessions/s/requests/{id}.json"),
             _ => ".ui/session-s/layout.json".into(),
         };
         let file = FileValue::new(
