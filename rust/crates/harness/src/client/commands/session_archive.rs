@@ -22,10 +22,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok((query, observed))
     }
 
-    pub(crate) fn first_output_sequence(&self) -> Option<u64> {
-        self.outputs.keys().next().copied()
-    }
-
     pub(crate) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
     }

@@ -4,7 +4,6 @@ use crate::{
     task_volume::{Channel, Component, FileKey, FileValue, TaskFile, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::FutureExt as _;
 use proptest::prelude::*;
 use std::sync::Arc;
 fn selection(client: &TaskFileClient) -> &super::super::FileQueryView {
