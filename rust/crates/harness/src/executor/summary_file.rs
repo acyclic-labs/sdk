@@ -35,7 +35,7 @@ impl StockExecution<'_> {
         #[cfg(feature = "filesystem")]
         let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
         let source_hold: Option<crate::conversation::ContentHold<'_>>;
-        let captured = match self.io {
+        let captured: crate::context::SummarySource = match self.io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 let (source, hold) = io.decode(
