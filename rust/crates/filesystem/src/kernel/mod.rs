@@ -40,6 +40,8 @@ mod persistent_io;
 mod persistent_pagination;
 mod persistent_point;
 pub use persistent_point::Owned;
+#[cfg(all(test, not(acyclic_fs_loom)))]
+pub(crate) use persistent_point::FAIL_RESERVE;
 mod probe;
 mod publication;
 mod publication_evidence;

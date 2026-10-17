@@ -1,5 +1,20 @@
 use super::*;
 
+fn copy_join_generations<A, O>(
+    source: &Generation<A, O>,
+    target: &Generation<A, O>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(Generation<A, O>, Generation<A, O>), WorkspaceError> {
+    let copied = copy_work((2 * std::mem::size_of::<Generation<A, O>>()) as u64);
+    #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+    tests::before_charge(accounting, copied)?;
+    accounting.charge(copied)?;
+    let result = (source.clone(), target.clone());
+    #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+    tests::observed(0, copied.bytes_copied);
+    Ok(result)
+}
+
 /// How a successful join records immutable ancestry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -239,11 +254,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
                 }
                 head
             };
-            let copied = copy_work((2 * std::mem::size_of::<Generation<A, O>>()) as u64);
-            accounting.admit(copied)?;
-            let source = source.clone();
-            let target = target.clone();
-            accounting.record_completed(copied)?;
+            let (source, target) = copy_join_generations(source, target, &mut accounting)?;
             let plan = self
                 .plan_generations(
                     source,
@@ -261,8 +272,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
 
     pub(crate) async fn plan_generations(
         self,
-        mut source_head: Generation<A, O>,
-        mut target_head: Generation<A, O>,
+        source_head: Generation<A, O>,
+        target_head: Generation<A, O>,
         target_authority_head: crate::Head,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -280,8 +291,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
                 cancellation,
             )
             .await?;
+        self.retain_plan(
+            source_head,
+            target_head,
+            target_authority_head,
+            base,
+            accounting,
+        )
+    }
+
+    fn retain_plan(
+        self,
+        mut source_head: Generation<A, O>,
+        mut target_head: Generation<A, O>,
+        target_authority_head: crate::Head,
+        base: crate::facade::WorkspaceCommonAncestor,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<JoinPlan<A, O>, WorkspaceError> {
         let copied = copy_work(std::mem::size_of::<JoinPlan<A, O>>() as u64);
-        accounting.admit(copied)?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::before_charge(accounting, copied)?;
+        accounting.charge(copied)?;
         source_head.workspace = self.source;
         target_head.workspace = self.target;
         let plan = JoinPlan {
@@ -295,7 +325,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinBuilder<A, O> {
             maximum_changes: self.maximum_changes,
             maximum_conflicts: self.maximum_conflicts,
         };
-        accounting.record_completed(copied)?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::observed(0, copied.bytes_copied);
         Ok(plan)
     }
 }
@@ -348,37 +379,53 @@ impl<A, O> JoinPlan<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<crate::JoinCommitWitness, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = (|| -> Result<_, WorkspaceError> {
-            let examined = item_work(1);
-            accounting.admit(examined)?;
-            let incompatible = application.generation.workspace.id()
-                != self.target_head.workspace.id()
-                || application.generation.id() == self.target_head.id();
-            accounting.record_completed(examined)?;
-            if incompatible {
-                return Err(WorkspaceError::IncompatibleWorkspace);
-            }
-            let copied = copy_work(std::mem::size_of::<crate::JoinCommitWitness>() as u64);
-            accounting.admit(copied)?;
-            let witness = crate::JoinCommitWitness {
-                source_workspace: self.source_head.workspace.id().volume_id(),
-                source_generation: self.source_head.id,
-                target_workspace: self.target_head.workspace.id().volume_id(),
-                expected_target: self.target_head.id,
-                base_workspace: self.base.volume_id,
-                base_generation: self.base.id,
-                history: self.history,
-                maximum_generations: self.maximum_generations,
-                maximum_changes: self.maximum_changes,
-                maximum_conflicts: self.maximum_conflicts,
-                resolutions_digest: application.resolutions_digest,
-                expected_head: self.target_authority_head,
-                operation_id: idempotency_key.operation_id(),
-                result_generation: application.generation.id,
-            };
-            accounting.record_completed(copied)?;
-            Ok(witness)
-        })();
+        let result = self.commit_witness_accounted(application, idempotency_key, &mut accounting);
         work.finish(result, &accounting)
     }
+
+    fn commit_witness_accounted(
+        &self,
+        application: &JoinApplication<A, O>,
+        idempotency_key: IdempotencyKey,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<crate::JoinCommitWitness, WorkspaceError> {
+        let examined = item_work(1);
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::before_charge(accounting, examined)?;
+        accounting.charge(examined)?;
+        let incompatible = application.generation.workspace.id() != self.target_head.workspace.id()
+            || application.generation.id() == self.target_head.id();
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::observed(1, 1);
+        if incompatible {
+            return Err(WorkspaceError::IncompatibleWorkspace);
+        }
+        let copied = copy_work(std::mem::size_of::<crate::JoinCommitWitness>() as u64);
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::before_charge(accounting, copied)?;
+        accounting.charge(copied)?;
+        let witness = crate::JoinCommitWitness {
+            source_workspace: self.source_head.workspace.id().volume_id(),
+            source_generation: self.source_head.id,
+            target_workspace: self.target_head.workspace.id().volume_id(),
+            expected_target: self.target_head.id,
+            base_workspace: self.base.volume_id,
+            base_generation: self.base.id,
+            history: self.history,
+            maximum_generations: self.maximum_generations,
+            maximum_changes: self.maximum_changes,
+            maximum_conflicts: self.maximum_conflicts,
+            resolutions_digest: application.resolutions_digest,
+            expected_head: self.target_authority_head,
+            operation_id: idempotency_key.operation_id(),
+            result_generation: application.generation.id,
+        };
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        tests::observed(0, copied.bytes_copied);
+        Ok(witness)
+    }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "join_tests.rs"]
+mod tests;

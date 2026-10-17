@@ -225,9 +225,28 @@ impl DemandWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<(), DemandError> {
-        let delta = self.item_charge(delta);
         self.reconcile_cancellation_registry()?;
         self.check()?;
+        self.claim_reconciled(bytes, operations, delta)
+    }
+    /// Admits `delta` on every scope without recording it. The caller has
+    /// reconciled and checked this context under the same leaf.
+    pub(crate) fn admit_reconciled(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
+        if let Some(resource) = self.resource() {
+            resource.admit(delta, 0)?;
+        }
+        Ok(self.work.admit(&delta, &self.budget)?)
+    }
+    /// `claim_allocation` for a caller that has reconciled and checked this
+    /// context under the same leaf.
+    pub(crate) fn claim_reconciled(
+        &mut self,
+        bytes: u64,
+        operations: u64,
+        delta: WorkCounters,
+    ) -> Result<(), DemandError> {
+        let delta = self.item_charge(delta);
         self.admission(
             delta.checked_add(WorkCounters {
                 allocation_operations: operations,

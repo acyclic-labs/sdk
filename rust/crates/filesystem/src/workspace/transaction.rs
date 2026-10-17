@@ -81,15 +81,33 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         mut operation: crate::kernel::Owned<T>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), WorkspaceError> {
-        let copied = copy_work(std::mem::size_of::<T>() as u64);
-        accounting.admit(copied)?;
-        operations.allocation.absorb(&mut operation.allocation)?;
-        operations.bytes = operations
+        // Every way the move can fail is checked before the one-pass charge,
+        // so a recorded copy is always followed by the funded push.
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        let checked = !tests::skip_precheck();
+        #[cfg(not(all(test, not(acyclic_fs_loom))))]
+        let checked = true;
+        if checked {
+            operations.allocation.check_absorb(&operation.allocation)?;
+        }
+        let bytes = operations
             .bytes
             .checked_add(operation.bytes)
             .ok_or(crate::WorkError::Overflow)?;
+        let copied = copy_work(std::mem::size_of::<T>() as u64);
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        differential::before_charge(accounting, copied)?;
+        accounting.charge(copied)?;
+        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        if model::skip_funding_transfer() {
+            operations.value.push(operation.value);
+            return Ok(());
+        }
+        operations.allocation.absorb(&mut operation.allocation)?;
+        operations.bytes = bytes;
         operations.value.push(operation.value);
-        accounting.record_completed(copied)?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        differential::observed_copy(copied.bytes_copied);
         Ok(())
     }
 
@@ -150,3 +168,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         work.finish(result, &accounting)
     }
 }
+
+#[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+#[path = "transaction_loom.rs"]
+mod model;
+
+// Same predicate as the precheck hook in `push_mutation`; the native-only
+// tests are gated inside the module.
+#[cfg(all(test, not(acyclic_fs_loom)))]
+#[path = "transaction_tests.rs"]
+mod tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "mutation_differential.rs"]
+mod differential;
