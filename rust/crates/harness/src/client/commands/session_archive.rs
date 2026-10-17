@@ -127,17 +127,38 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     pub(super) async fn load_task_settings(&mut self) -> Result<()> {
-        let Some(task) = self.selected_task()? else {
+        self.load_task_settings_impl::<false>().await
+    }
+
+    async fn load_task_settings_impl<const ALWAYS_SCAN: bool>(&mut self) -> Result<()> {
+        let selected = self.selected_task()?;
+        if !ALWAYS_SCAN && self.loaded_task == Some(selected) {
             return Ok(());
-        };
-        let directory = format!("task-{task}");
-        self.files.retain(|key, _| !matches!(key, files::FileKey::Ui { directory: dir, .. } if dir.as_str().starts_with("task-") && dir.as_str() != directory));
-        let key = ui(&directory, "settings.json")?;
-        if !self.files.contains_key(&key) {
-            if let Some(file) = self.read_file(&key).await? {
-                self.fold(file)?;
+        }
+        if ALWAYS_SCAN {
+            self.files.retain(|key, _| {
+                #[cfg(test)]
+                {
+                    self.settings_visits += 1;
+                }
+                !matches!(key, files::FileKey::Ui { directory, .. }
+                    if directory.as_str().starts_with("task-")
+                    && selected.is_none_or(|task| directory.as_str() != format!("task-{task}")))
+            });
+        }
+        if let Some(Some(previous)) = self.loaded_task {
+            self.files
+                .remove(&ui(&format!("task-{previous}"), "settings.json")?);
+        }
+        if let Some(task) = selected {
+            let key = ui(&format!("task-{task}"), "settings.json")?;
+            if !self.files.contains_key(&key) {
+                if let Some(file) = self.read_file(&key).await? {
+                    self.fold(file)?;
+                }
             }
         }
+        self.loaded_task = Some(selected);
         Ok(())
     }
 
@@ -277,3 +298,7 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
     }
     Ok(output.bytes)
 }
+
+#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[path = "session_settings_tests.rs"]
+mod settings_tests;

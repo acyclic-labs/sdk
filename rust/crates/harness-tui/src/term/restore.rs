@@ -19,7 +19,14 @@ pub struct RestoreGuard<W: Write> {
     undo: Vec<(u16, Cow<'static, [u8]>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
+    /// The mouse protocol selected before ours displaced it, restored with it.
+    displaced_mouse: Option<u16>,
 }
+
+/// Mouse tracking protocols are one selection: setting one replaces another
+/// (click 1000, button-event 1002, any-event 1003), so restoring ours means
+/// selecting the one it displaced, not only resetting ours.
+const MOUSE_PROTOCOLS: [u16; 3] = [1000, 1002, 1003];
 
 impl<W: Write> RestoreGuard<W> {
     /// No terminal changes occur until setup or `enable_mode` is called.
@@ -29,6 +36,7 @@ impl<W: Write> RestoreGuard<W> {
             undo: Vec::new(),
             modes: caps.modes.clone(),
             desired: Vec::new(),
+            displaced_mouse: None,
         }
     }
 
@@ -38,12 +46,52 @@ impl<W: Write> RestoreGuard<W> {
         for mode in [1004, 2004, 2027] {
             self.enable_mode(mode)?;
         }
-        if screen == ScreenMode::Alternate {
-            self.enable_mode(1049)?;
+        if screen == ScreenMode::Alternate
+            && let Some(screen) = self.alternate_screen()?
+        {
+            self.report_wheel(screen)?;
         }
         if let Err(error) = self.writer.flush() {
             let _ = self.restore();
             return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Enter the alternate screen; the proof it is active, only when its
+    /// state is confirmed (set by us, or already set).
+    fn alternate_screen(&mut self) -> io::Result<Option<OnAlternateScreen>> {
+        self.enable_mode(1049)?;
+        Ok(matches!(
+            self.modes.get(&1049),
+            Some(ModeState::Set | ModeState::AlwaysSet)
+        )
+        .then_some(OnAlternateScreen(())))
+    }
+
+    /// The alternate screen has no native scrollback, so it owns the wheel:
+    /// button-event reports (1002), SGR-encoded (1006) because the decoder
+    /// reads only SGR. Encoding first, so no legacy report can precede it;
+    /// neither without the other. Requiring the proof keeps reporting off the
+    /// primary screen, whose own wheel scrolling and selection stay native.
+    fn report_wheel(&mut self, _screen: OnAlternateScreen) -> io::Result<()> {
+        let mutable = |mode| self.modes.get(&mode).is_some_and(|state| state.supported());
+        // Every other protocol's state must be known and changeable, or ours
+        // could displace a selection that restoration cannot select again.
+        let known = |mode| {
+            matches!(
+                self.modes.get(&mode),
+                Some(
+                    ModeState::Set
+                        | ModeState::Reset
+                        | ModeState::Unsupported
+                        | ModeState::AlwaysReset
+                )
+            )
+        };
+        if mutable(1006) && mutable(1002) && known(1000) && known(1003) {
+            self.enable_mode(1006)?;
+            self.enable_mode(1002)?;
         }
         Ok(())
     }
@@ -53,9 +101,24 @@ impl<W: Write> RestoreGuard<W> {
         if self.modes.get(&mode) != Some(&ModeState::Reset) {
             return Ok(());
         }
-        let undo = Cow::Owned(format!("\x1b[?{mode}l").into_bytes());
+        let displaced = MOUSE_PROTOCOLS
+            .contains(&mode)
+            .then(|| {
+                MOUSE_PROTOCOLS
+                    .into_iter()
+                    .find(|other| self.modes.get(other) == Some(&ModeState::Set))
+            })
+            .flatten();
+        let undo = match displaced {
+            Some(previous) => format!("\x1b[?{previous}h"),
+            None => format!("\x1b[?{mode}l"),
+        };
         // Journal before writing: write_all can fail after emitting a prefix.
-        self.undo.push((mode, undo));
+        self.undo.push((mode, Cow::Owned(undo.into_bytes())));
+        if let Some(previous) = displaced {
+            self.modes.insert(previous, ModeState::Reset);
+            self.displaced_mouse = Some(previous);
+        }
         if !self.desired.contains(&mode) {
             self.desired.push(mode);
         }
@@ -104,6 +167,11 @@ impl<W: Write> RestoreGuard<W> {
                 failed.push((mode, undo));
             } else {
                 self.modes.insert(mode, ModeState::Reset);
+                if MOUSE_PROTOCOLS.contains(&mode)
+                    && let Some(previous) = self.displaced_mouse.take()
+                {
+                    self.modes.insert(previous, ModeState::Set);
+                }
             }
         }
         failed.reverse();
@@ -213,6 +281,9 @@ impl<W: Write> super::Present for RestoreGuard<W> {
         }
     }
 }
+
+/// Made only by `RestoreGuard::alternate_screen` on a confirmed alternate screen.
+struct OnAlternateScreen(());
 
 impl<W: Write> Drop for RestoreGuard<W> {
     fn drop(&mut self) {

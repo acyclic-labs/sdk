@@ -222,17 +222,35 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
     page_rows: usize,
     maximum_scroll: usize,
 ) -> Result<()> {
-    if let InputEffect::Host(
-        action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
-    ) = effect
-    {
-        return super::scroll_tui(
-            files,
-            action == crate::tui::Action::TranscriptUp,
-            page_rows,
-            maximum_scroll,
-        )
-        .await;
+    if let Some(rows) = super::transcript_motion(&effect, page_rows) {
+        return super::scroll_tui(files, [rows], maximum_scroll).await;
     }
     handle_tui_input(files, reader, effect).await
+}
+
+/// Publish a burst's effects in order. Each run of view motions folds against
+/// the scroll bounds in memory and publishes once, exactly where publishing
+/// each motion in turn would have ended.
+pub async fn file_tui_inputs<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    reader: &dyn ContentResidencyVerifier,
+    effects: impl IntoIterator<Item = InputEffect>,
+    page_rows: usize,
+    maximum_scroll: usize,
+) -> Result<()> {
+    let mut motions = Vec::new();
+    for effect in effects {
+        if let Some(rows) = super::transcript_motion(&effect, page_rows) {
+            motions.push(rows);
+            continue;
+        }
+        if !motions.is_empty() {
+            super::scroll_tui(files, motions.drain(..), maximum_scroll).await?;
+        }
+        handle_tui_input(files, reader, effect).await?;
+    }
+    if motions.is_empty() {
+        return Ok(());
+    }
+    super::scroll_tui(files, motions, maximum_scroll).await
 }

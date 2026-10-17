@@ -434,3 +434,33 @@ fn history_reload_invalidates_navigation_saved_by_edit_or_search()
     }
     Ok(())
 }
+
+#[test]
+fn wheel_notches_scroll_the_view_and_never_the_editor() {
+    use acyclic_harness_tui::WHEEL_ROWS;
+    let mut input = PromptInput::new(Editor::new("draft"));
+    input.editor.select_all();
+    let mut viewport = Viewport::default();
+    let area = Rect::new(0, 0, 8, 1);
+    let wheel = |kind| {
+        InputEvent::Mouse(MouseEvent {
+            kind,
+            column: 1,
+            row: 0,
+            modifiers: M::NONE,
+        })
+    };
+    let up = wheel(MouseEventKind::ScrollUp);
+    let down = wheel(MouseEventKind::ScrollDown);
+    // A notch over the prompt still moves the view, never the editor.
+    assert_eq!(
+        input.event(up, area, &mut viewport, 0),
+        vec![InputEffect::Scroll(WHEEL_ROWS)]
+    );
+    assert_eq!(
+        input.event(down, area, &mut viewport, 1),
+        vec![InputEffect::Scroll(-WHEEL_ROWS)]
+    );
+    assert_eq!(input.editor.text(), "draft");
+    assert_eq!(input.editor.selected_text(), "draft");
+}

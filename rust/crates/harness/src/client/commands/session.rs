@@ -41,6 +41,9 @@ pub struct CommandSession<P: ?Sized> {
     outputs: BTreeMap<u64, files::FileKey>,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
+    loaded_task: Option<Option<TaskId>>,
+    #[cfg(test)]
+    settings_visits: usize,
     session: uuid::Uuid,
     maximum_bytes: u64,
     maximum_files: usize,
@@ -131,6 +134,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             outputs: BTreeMap::new(),
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
+            loaded_task: None,
+            #[cfg(test)]
+            settings_visits: 0,
             session,
             maximum_bytes,
             maximum_files,
@@ -192,7 +198,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Observe one pushed file publication, including presentation-only changes.
     pub async fn observe_change(&mut self) -> Result<()> {
-        self.advance().await
+        self.advance().await?;
+        self.load_task_settings().await
+    }
+
+    /// Observe one publication and report whether it changes presentation.
+    pub(crate) async fn observe_change_visible(&mut self) -> Result<bool> {
+        let visible = self.advance_visible().await?;
+        self.load_task_settings().await?;
+        Ok(visible)
     }
 
     /// Pending request derived from observed immutable file identities.
@@ -574,6 +588,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     }
 
     async fn advance(&mut self) -> Result<()> {
+        self.advance_visible().await.map(|_| ())
+    }
+
+    async fn advance_visible(&mut self) -> Result<bool> {
         if self.next_change.is_none() {
             self.next_change = Some(
                 self.changes
@@ -594,13 +612,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             .next_change
             .take()
             .ok_or_else(|| Error::Conflict("command change missing".into()))?;
+        let visible = !change.is_checkpoint();
         self.generation = files::Generation {
             volume: change.cursor.volume,
             epoch: change.cursor.epoch,
             position: change.cursor.position,
             commit: change.cursor.commit,
         };
-        Ok(())
+        Ok(visible)
     }
 
     /// Wait on the existing push follow; no timer, watcher or polling loop.

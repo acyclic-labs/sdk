@@ -475,6 +475,10 @@ fn every_frame_is_one_device_write_independent_of_transcript_length() {
         // The removed per-command path is the independent baseline.
         let mut old = Rig::with_output(lines, 100, 40, true);
         let mut new = Rig::with_output(lines, 100, 40, false);
+        // One pass grows the retained frame buffer to the scenario's largest
+        // frame (a full scrolled repaint); the measured pass is steady state.
+        old.measure(mixed);
+        new.measure(mixed);
         let before = old.measure(mixed);
         let after = new.measure(mixed);
         assert_eq!(
