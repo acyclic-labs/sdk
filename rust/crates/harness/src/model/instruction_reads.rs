@@ -1,5 +1,42 @@
 use super::*;
 
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for crate::tool::files::ReadFileInput {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        Ok(Some(
+            (std::mem::size_of::<Self>() as u64)
+                .checked_add(self.file.logical_owned_bytes()?)
+                .ok_or_else(super::inventory::overflow)?,
+        ))
+    }
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn owned_read_input<'a>(
+    arguments: &Value,
+    io: &'a PreparationIo,
+) -> Result<(
+    crate::tool::files::ReadFileInput,
+    crate::filesystem::DecodeReservation<'a>,
+)> {
+    let before = io.owned_bytes()?;
+    let input = {
+        let bytes = io.encode(arguments, io.remaining()?.bytes_encoded, false)?;
+        let _hold = io.guard_bytes(&bytes)?;
+        crate::filesystem::retain_decoded(io.decode(
+            std::marker::PhantomData,
+            &bytes,
+            crate::wire::ErrorCode::Invalid,
+        )?)?
+    };
+    let hold = io.guard_owned(
+        io.owned_bytes()?
+            .checked_sub(before)
+            .ok_or_else(super::inventory::overflow)?,
+    )?;
+    Ok((input, hold))
+}
+
 // The canonical history and tool exchange remain intact. Only a verified repeated
 // body in the transient model request is replaced, using the paired call's source.
 pub(crate) fn deduplicate_reads(
@@ -57,10 +94,23 @@ pub(crate) fn deduplicate_reads(
             let work = io.and_then(PreparationIo::original_native_work);
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let work = None;
-            let input = match crate::tool::decode::<crate::tool::files::ReadFileInput>(
-                &call.arguments,
-                work,
-            ) {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut _owned_hold = None;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let owned = io.filter(|io| io.original_native_work().is_none());
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            let decoded = if let Some(io) = owned {
+                owned_read_input(&call.arguments, io).map(|(input, hold)| {
+                    _owned_hold = Some(hold);
+                    (input, None)
+                })
+            } else {
+                crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work)
+            };
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            let decoded =
+                crate::tool::decode::<crate::tool::files::ReadFileInput>(&call.arguments, work);
+            let input = match decoded {
                 Ok(input) => input,
                 Err(Error::Invalid(_)) => continue,
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
