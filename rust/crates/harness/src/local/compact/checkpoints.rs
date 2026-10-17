@@ -167,6 +167,7 @@ impl LocalHarness {
         value.continuation = Some(crate::context::SummaryContinuation {
             parent,
             through,
+            frozen: value.through.is_some(),
             prompt: prompt.into(),
         });
         value.through = None; // A continuation has its own live history subtree.
@@ -247,10 +248,10 @@ impl LocalHarness {
         selected: &SummarySelection,
     ) -> Result<String> {
         let checkpoint = self.read_checkpoint(&selected.checkpoint).await?;
-        self.retained_text(selected, &checkpoint).await
+        self.retained_text::<true>(selected, &checkpoint).await
     }
 
-    pub(in crate::local) async fn retained_text(
+    pub(in crate::local) async fn retained_text<const FROZEN: bool>(
         &self,
         selected: &SummarySelection,
         checkpoint: &SummaryCheckpoint,
@@ -273,7 +274,7 @@ impl LocalHarness {
                     true,
                 )
                 .await?;
-                if !checkpoint.boundary.outcome_included {
+                if !checkpoint.boundary.outcome_included && (!FROZEN || !turn.frozen) {
                     self.append_completed_outcome(&mut text, turn.parent)
                         .await?;
                 }
@@ -289,17 +290,25 @@ impl LocalHarness {
                 .ok_or_else(|| Error::Invalid("continuation parent has no prompt".into()))?;
             let mut from = original.through.clone();
             from.query = turn.through.query;
-            tails.push((turn.parent, original.prompt.clone(), from, turn.through));
+            tails.push((
+                turn.parent,
+                original.prompt.clone(),
+                from,
+                turn.through,
+                FROZEN && turn.frozen,
+            ));
             current = parent;
         }
-        for (task, prompt, from, through) in tails.into_iter().rev() {
+        for (task, prompt, from, through, frozen) in tails.into_iter().rev() {
             super::append_source(&mut text, &prompt, self.limits)?;
             // The immutable authenticated outcome owns the completed answer;
             // chunks are optional projections and may not yet have arrived.
             // Retain intervening tool results at the admitted volume cut.
-            self.append_turns(&mut text, task, &from, &through, false)
+            self.append_turns(&mut text, task, &from, &through, frozen)
                 .await?;
-            self.append_completed_outcome(&mut text, task).await?;
+            if !frozen {
+                self.append_completed_outcome(&mut text, task).await?;
+            }
         }
         Ok(text)
     }

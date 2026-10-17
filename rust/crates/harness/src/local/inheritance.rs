@@ -5,6 +5,7 @@ use crate::{
     task_volume::{FileKey, FileValue, Query, TaskVolume},
 };
 use acyclic_stream::{BoxProviderFuture, StreamProvider};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -37,9 +38,10 @@ fn decode(bytes: &[u8], maximum: u64) -> Result<Value> {
 }
 fn validate(value: &Value) -> Result<()> {
     if !value.is_object()
-        || ["model", "summary"]
-            .iter()
-            .any(|field| !value[*field].is_null() && !value[*field].is_string())
+        || !value["model"].is_null() && !value["model"].is_string()
+        || !value["summary"].is_null()
+            && !value["summary"].is_string()
+            && crate::context::SummarySelection::deserialize(&value["summary"]).is_err()
     {
         return Err(Error::Invalid(
             "invalid inherited settings or context".into(),
@@ -220,7 +222,7 @@ impl LocalHarness {
                 }
             }),
             async || match parent {
-                Some(parent) => self.resolved_inheritance(parent).await,
+                Some(parent) => self.binding_inheritance(parent).await,
                 None => match self.continuation_selection(task).await? {
                     Some(selected) => {
                         let checkpoint = self.read_checkpoint(&selected.checkpoint).await?;
@@ -265,7 +267,7 @@ impl LocalHarness {
             }
             for candidate in missing.into_iter().rev() {
                 if let Some(parent) = parent {
-                    value = self.apply_own_inheritance(parent, value).await?;
+                    value = self.apply_own_binding(parent, value).await?;
                 }
                 value["parent"] = json!(parent);
                 value = retain_inheritance(
@@ -280,16 +282,36 @@ impl LocalHarness {
             Ok(value)
         })
     }
+    #[cfg(test)]
     pub(super) async fn resolved_inheritance(&self, task: TaskId) -> Result<Value> {
-        self.apply_own_inheritance(task, self.inherited(task).await?)
+        let mut value = self.binding_inheritance(task).await?;
+        if value["summary"].is_object() {
+            value["summary"] = json!(self.resolve_summary(&value["summary"]).await?);
+        }
+        Ok(value)
+    }
+    async fn binding_inheritance(&self, task: TaskId) -> Result<Value> {
+        self.apply_own_binding(task, self.inherited(task).await?)
             .await
+    }
+    async fn resolve_summary(&self, value: &Value) -> Result<Option<String>> {
+        if value.is_object() {
+            let selected = crate::context::SummarySelection::deserialize(value).map_err(storage)?;
+            self.checkpoint_text(&selected).await.map(Some)
+        } else {
+            Ok(value.as_str().map(str::to_owned))
+        }
     }
     pub(super) async fn resolved_value(&self, task: TaskId, field: &str) -> Result<Option<String>> {
         if let Some(value) = self.own_value(task, field).await? {
             return Ok(Some(value));
         }
         let inherited = self.inherited(task).await?;
-        Ok(inherited[field].as_str().map(str::to_owned))
+        if field == "summary" {
+            self.resolve_summary(&inherited[field]).await
+        } else {
+            Ok(inherited[field].as_str().map(str::to_owned))
+        }
     }
     async fn own_value(&self, task: TaskId, field: &str) -> Result<Option<String>> {
         let name = if field == "model" {
@@ -329,12 +351,30 @@ impl LocalHarness {
             None => Err(Error::Invalid("compacted context missing summary".into())),
         }
     }
-    async fn apply_own_inheritance(&self, task: TaskId, mut value: Value) -> Result<Value> {
+    async fn apply_own_binding(&self, task: TaskId, mut value: Value) -> Result<Value> {
         validate(&value)?;
-        for field in ["model", "summary"] {
-            if let Some(own) = self.own_value(task, field).await? {
-                value[field] = json!(own);
+        if let Some(model) = self.own_value(task, "model").await? {
+            value["model"] = json!(model);
+        }
+        let (cut, selected, _) = super::compact::checkpoints::capture_selection(
+            &self.task_files.inner,
+            task,
+            self.limits.file_bytes,
+        )
+        .await?;
+        if let Some(mut selected) = selected {
+            if value["model"].is_null() {
+                value["model"] = json!(
+                    self.read_checkpoint(&selected.checkpoint)
+                        .await?
+                        .boundary
+                        .model
+                );
             }
+            selected.through.get_or_insert(cut.cursor);
+            value["summary"] = serde_json::to_value(selected).map_err(storage)?;
+        } else if let Some(summary) = self.own_value(task, "summary").await? {
+            value["summary"] = json!(summary);
         }
         Ok(value)
     }

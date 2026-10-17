@@ -143,9 +143,14 @@ impl LocalHarness {
                             (selected, through)
                         }
                     };
-                    let (_, checkpoint) = self
+                    let (retained, checkpoint) = self
                         .retain_continuation(task, parent, selected, through, prompt)
                         .await?;
+                    let prompt = &retained
+                        .continuation
+                        .as_ref()
+                        .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
+                        .prompt;
                     self.prepare_inheritance(task, None).await?;
                     let (receive, model) = match self.recover_turn_inputs(operation).await? {
                         Some(inputs) => inputs,

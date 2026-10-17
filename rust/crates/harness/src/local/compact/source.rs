@@ -49,7 +49,9 @@ impl LocalHarness {
         let bytes = owner.read_file(&command.payload, None).await?;
         let input: ModelTaskCommand = serde_json::from_slice(&bytes).map_err(storage)?;
         let prior = match &selected {
-            Some((selection, checkpoint)) => Some(self.retained_text(selection, checkpoint).await?),
+            Some((selection, checkpoint)) => {
+                Some(self.retained_text::<true>(selection, checkpoint).await?)
+            }
             None => self.resolved_value(target, "summary").await?,
         };
         let raw_prompt = selected

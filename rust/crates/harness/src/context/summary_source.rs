@@ -73,6 +73,8 @@ pub struct SummaryContinuation {
     pub parent: TaskId,
     /// Exclusive parent turns cut at admission.
     pub through: Cursor,
+    /// The parent's selection was frozen; later terminal outcomes are excluded.
+    pub frozen: bool,
     /// This continuation's original user prompt, without inherited context.
     pub prompt: String,
 }
@@ -182,6 +184,11 @@ pub(crate) mod tests {
             "/fuzz-context/corpus/context_manifest/summary-selection.json"
         )))
         .unwrap();
+        serde_json::from_slice::<SummarySelection>(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fuzz-context/corpus/context_manifest/summary-selection-live.json"
+        )))
+        .unwrap();
     }
 
     #[cfg(not(acyclic_harness_loom))]
@@ -199,7 +206,7 @@ pub(crate) mod tests {
             cp.boundary.frozen = frozen;
             cp.boundary.model = text.clone();
             let key = FileKey::parse(".tasks/task/context/compaction-test/manifest.json").unwrap();
-            let selected = SummarySelection {continuation:continuation.then(||SummaryContinuation {parent:TaskId::from_bytes([2;16]),through:cursor.clone(),prompt:text.clone()}),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
+            let selected = SummarySelection {continuation:continuation.then(||SummaryContinuation {parent:TaskId::from_bytes([2;16]),through:cursor.clone(),frozen,prompt:text.clone()}),checkpoint:key,selected_at:fence,through:frozen.then_some(cursor)};
             cp.boundary.previous = predecessor.then(||*blake3::hash(&serde_json::to_vec(&selected).unwrap()).as_bytes());
             let mut context = Context::default();
             context.messages.push(crate::model::ModelMessage {role:crate::model::ModelRole::User,
