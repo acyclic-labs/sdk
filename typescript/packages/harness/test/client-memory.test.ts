@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import fc from "fast-check";
 import initialize from "../generated/wasm/acyclic_harness_wasm.js";
-import { HarnessClient, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
+import { HarnessClient, ClientQuery, TaskVolume, WasmStream, initializeClientQueries } from "../src/client.js";
 
 beforeAll(initializeClientQueries);
 
@@ -29,53 +29,50 @@ test("a registered idle wait leaves the only command slot available for flush", 
   }
 });
 
-for (const resizable of [false, true]) {
-test(`waiting quotas bound the backing buffer, including growth: ${resizable}`, async () => {
-  const stream = new WasmStream();
-  const outbox = await TaskVolume.create(stream, "client/files");
-  const target = await TaskVolume.create(stream, "agent/files");
-  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: 3n, durability: "Accepted" });
-  const buffer = resizable ? Reflect.construct(ArrayBuffer, [3, { maxByteLength: 16384 }]) as ArrayBuffer : new ArrayBuffer(16384);
-  const bytes = new Uint8Array(buffer, 0, 3);
-  const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
-  await expect(client.enqueue(key, bytes)).rejects.toEqual({ kind: "ByteQuota", detail: { limit: 3n } });
-  expect(client.pending()).toBe(0);
-  client.free(); outbox.free(); target.free(); stream.free();
-});
-}
-
-test("waiting byte admission ignores shadowed buffer properties across shrinking backing stores", async () => {
-  const stream = new WasmStream();
-  const outbox = await TaskVolume.create(stream, "client/files");
-  const target = await TaskVolume.create(stream, "agent/files");
+test("enqueue snapshots exactly the intrinsic view bytes before yielding, across shrinking backing stores", async () => {
   const payload = new TextEncoder().encode(JSON.stringify({ operationId: "one", authority: { kind: "task", id: "task" }, kind: "task.submit", offlineSafe: true, payload: {} }));
-  const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
   const key = { Task: { task: "task", file: { Request: "one.json" } } } as const;
-  let getterCalls = 0;
-  const hidden = { get: () => { getterCalls++; return 0; } };
-  try {
-    await fc.assert(fc.asyncProperty(
-      fc.integer({ min: payload.length + 1, max: 65536 }),
-      async maximum => {
-        for (const shared of [false, true]) for (const resizable of [false, true]) {
-        const Constructor = shared ? SharedArrayBuffer : ArrayBuffer;
-        const options = { maxByteLength: maximum };
-        const buffer = resizable ? Reflect.construct(Constructor, [payload.length, options])
-          : Reflect.construct(Constructor, [maximum]);
-        const bytes = new Uint8Array(buffer, 0, payload.length);
-        bytes.set(payload);
-        for (const name of ["byteLength", "maxByteLength"]) Object.defineProperty(buffer, name, hidden);
-        // The view can also shadow its backing-buffer accessor.
-        Object.defineProperty(bytes, "buffer", { get: () => { getterCalls++; return new ArrayBuffer(0); } });
-        await expect(client.enqueue(key, bytes)).rejects.toEqual({ kind: "ByteQuota", detail: { limit: BigInt(payload.length) } });
-        expect(client.pending()).toBe(0);
+  await fc.assert(fc.asyncProperty(
+    fc.integer({ min: payload.length + 1, max: 65536 }),
+    async maximum => {
+      for (const shared of [false, true]) for (const resizable of [false, true]) {
+        const stream = new WasmStream();
+        const outbox = await TaskVolume.create(stream, "client/files");
+        const target = await TaskVolume.create(stream, "agent/files");
+        const client = await HarnessClient.open(outbox, target, { commands: 1n, bytes: BigInt(payload.length), durability: "Accepted" });
+        try {
+          const Constructor = shared ? SharedArrayBuffer : ArrayBuffer;
+          const offset = shared || resizable ? 1 : 0;
+          const buffer = resizable ? Reflect.construct(Constructor, [payload.length + offset, { maxByteLength: maximum }])
+            : Reflect.construct(Constructor, [shared ? maximum : payload.length]);
+          const bytes = new Uint8Array(buffer, offset, payload.length);
+          bytes.set(payload);
+          let getterCalls = 0;
+          for (const name of ["byteLength", "maxByteLength"]) Object.defineProperty(buffer, name, { get: () => { getterCalls++; return 0; } });
+          Object.defineProperty(bytes, "buffer", { get: () => { getterCalls++; return new ArrayBuffer(0); } });
+          // The review reproducer: a second shadowable length read asks for 16 MiB.
+          Object.defineProperty(bytes, "length", { get: () => ++getterCalls === 1 ? payload.length : 16 * 1024 * 1024 });
+          Object.defineProperty(bytes, "byteLength", { get: () => { getterCalls++; return 0; } });
+          const enqueued = client.enqueue(key, bytes);
+          // No JS storage may survive the synchronous snapshot, including mutable
+          // contents, an offset view, or future growth of the backing store.
+          bytes.fill(0);
+          if (resizable) Reflect.apply(Reflect.get(buffer, shared ? "grow" : "resize"), buffer, [maximum]);
+          await expect(client.enqueue(key, bytes)).rejects.toEqual({ kind: "ByteQuota", detail: { limit: BigInt(payload.length) } });
+          await enqueued;
+          expect(getterCalls).toBe(0);
+          expect(client.pending()).toBe(1);
+          expect(await client.flush()).toBe(1);
+          const query = await ClientQuery.open(target, { File: key }, null, { files: 1n, segments: 1n, bytes: BigInt(payload.length) });
+          const views = query.views();
+          try { expect(views.segments(key)).toEqual([payload]); }
+          finally { views.free(); query.free(); }
+        } finally {
+          client.close(); client.free(); outbox.free(); target.free(); stream.free();
         }
-      },
-    ), { numRuns: 32 });
-    expect(getterCalls).toBe(0);
-  } finally {
-    client.close(); client.free(); outbox.free(); target.free(); stream.free();
-  }
+      }
+    },
+  ), { numRuns: 32, includeErrorInReport: true });
 });
 
 for (const quota of ["CommandQuota", "ByteQuota"] as const) {
