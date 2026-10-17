@@ -10,6 +10,7 @@ mod durability;
 mod files;
 mod follow;
 mod heads;
+mod listing;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
 mod page;

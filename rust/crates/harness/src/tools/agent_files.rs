@@ -65,18 +65,18 @@ pub(super) async fn inspect(
     };
     let limits = context.effective_scope().limits();
     let files = files(context).await?;
-    let snapshot = files
-        .observe_files(
-            query,
-            None,
-            limits.attachments,
-            usize::try_from(limits.render_bytes).map_err(storage)?,
-        )
-        .await
-        .map_err(storage)?
-        .snapshot
-        .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
     let stdout = if verb == "cat" {
+        let snapshot = files
+            .observe_files(
+                query,
+                None,
+                limits.attachments,
+                usize::try_from(limits.render_bytes).map_err(storage)?,
+            )
+            .await
+            .map_err(storage)?
+            .snapshot
+            .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
         let [file] = snapshot.files.as_slice() else {
             return Err(Error::NotFound(path.clone()));
         };
@@ -84,11 +84,7 @@ pub(super) async fn inspect(
             .map_err(storage)?
             .to_owned()
     } else {
-        snapshot
-            .files
-            .iter()
-            .map(|file| format!(".volumes/{}\n", file.key.path()))
-            .collect()
+        listing(&files.inner, &query, limits.attachments).await?
     };
     if stdout.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid(
@@ -99,6 +95,23 @@ pub(super) async fn inspect(
         value: json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":""}),
     }))
 }
+
+async fn listing<P: StreamProvider + ?Sized>(
+    files: &crate::task_volume::TaskVolume<P>,
+    query: &crate::task_volume::Query,
+    maximum_files: usize,
+) -> Result<String> {
+    Ok(files
+        .list_files(query, maximum_files)
+        .await
+        .map_err(storage)?
+        .iter()
+        .map(|key| format!(".volumes/{}\n", key.path()))
+        .collect())
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod listing_tests;
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
 pub(super) fn status(
