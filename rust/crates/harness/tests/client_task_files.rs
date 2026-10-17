@@ -10,6 +10,13 @@ use futures::StreamExt as _;
 use proptest::prelude::*;
 use std::{collections::BTreeMap, sync::Arc};
 
+#[derive(Clone, Copy)]
+enum Fault {
+    None,
+    Foreign,
+    TextIdentity,
+}
+
 fn client() -> ClientViews {
     ClientViews::new(
         StreamPath::new("swarm").unwrap(),
@@ -76,7 +83,7 @@ fn same(actual: Vec<&HeadFile>, expected: Vec<&HeadFile>) -> bool {
             .zip(expected)
             .all(|(a, e)| std::ptr::eq(*a, e))
 }
-fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, foreign: bool) -> bool {
+fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, fault: Fault) -> bool {
     let expected: Vec<_> = source
         .values()
         .filter(|file| {
@@ -84,12 +91,40 @@ fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, foreign:
         FileKey::Task {task,..} if task == view.task)
         })
         .collect();
-    let actual = if foreign {
+    let actual = if matches!(fault, Fault::Foreign) {
         source.values().collect()
     } else {
         view.files().collect()
     };
     if !same(actual, expected.clone()) {
+        return false;
+    }
+    let actual_text: Vec<_> = view
+        .text()
+        .map(|mut text| {
+            if matches!(fault, Fault::TextIdentity) {
+                text.turn = text.turn.wrapping_add(1);
+            }
+            text
+        })
+        .collect();
+    if actual_text.iter().any(|text| match &text.file.key {
+        FileKey::Task {
+            file: TaskFile::Chunk { turn, .. },
+            ..
+        } => text.turn != *turn || Some(text.channel) != text.file.channel,
+        FileKey::Task {
+            file: TaskFile::TextHead { turn, channel },
+            ..
+        } => text.turn != *turn || text.channel != *channel,
+        _ => true,
+    }) {
+        return false;
+    }
+    if view.completions().any(|(turn, file)| {
+        !matches!(&file.key,
+        FileKey::Task {file:TaskFile::Completion(expected),..} if *expected==turn)
+    }) {
         return false;
     }
     let text: Vec<_> = expected
@@ -105,7 +140,7 @@ fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, foreign:
             )
         })
         .collect();
-    if !same(view.text().map(|v| v.file).collect(), text) {
+    if !same(actual_text.into_iter().map(|v| v.file).collect(), text) {
         return false;
     }
     let completion: Vec<_> = expected
@@ -168,7 +203,7 @@ fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, foreign:
     }
     tools.is_empty()
 }
-async fn exercise(rows: &[(u8, u8, u8, u8)], foreign: bool) -> bool {
+async fn exercise(rows: &[(u8, u8, u8, u8)], fault: Fault) -> bool {
     let provider = Arc::new(MemoryStream::default());
     let volume = TaskVolume::open(provider.clone(), StreamPath::new("tasks/files").unwrap())
         .await
@@ -193,7 +228,7 @@ async fn exercise(rows: &[(u8, u8, u8, u8)], foreign: bool) -> bool {
             .query_change(observation.changes.next().await.unwrap().unwrap())
             .unwrap();
         let (key, files) = views.selections().next().unwrap();
-        if !check(views.task(key, &task).unwrap(), files.files(), foreign) {
+        if !check(views.task(key, &task).unwrap(), files.files(), fault) {
             return false;
         }
     }
@@ -214,7 +249,7 @@ proptest! {
     fn task_folders_preserve_the_exact_file_partition(
         rows in proptest::collection::vec((any::<u8>(),any::<u8>(),any::<u8>(),any::<u8>()),0..32),
     ) {
-        prop_assert!(futures::executor::block_on(exercise(&rows,false)));
+        prop_assert!(futures::executor::block_on(exercise(&rows,Fault::None)));
     }
 }
 #[test]
@@ -241,5 +276,13 @@ fn negative_control_including_another_tasks_files_is_rejected() {
     assert!(!futures::executor::block_on(exercise(
         &[(1, 0, 0, 0), (0, 0, 1, 2)],
         true
+    )));
+}
+
+#[test]
+fn negative_control_changing_text_identity_is_rejected() {
+    assert!(!futures::executor::block_on(exercise(
+        &[(0, 255, 0, 6)],
+        Fault::TextIdentity
     )));
 }
