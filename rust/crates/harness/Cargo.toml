@@ -190,7 +190,7 @@ test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-r
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
+terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "dep:rustix", "tokio/net", "acyclic-native-runtime/async-stdin"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
@@ -275,6 +275,9 @@ keyring = { version = "3.6.3", optional = true, features = ["apple-native", "win
 which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["event", "fs"], optional = true }
+
 [dev-dependencies]
 proptest.workspace = true
 diffy.workspace = true
@@ -290,7 +293,7 @@ serde-saphyr = { version = "=1.3.0", default-features = false, features = ["seri
 acyclic-test-support = { path = "../test-support" }
 shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
-loom = "0.7.2"
+loom = { version = "0.7.2", features = ["futures"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["test-util"] }
@@ -330,3 +333,8 @@ required-features = ["model-checking"]
 name = "query-model"
 path = "tests/query_model.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "stdin-reader-model"
+path = "tests/stdin_reader_model.rs"
+required-features = ["terminal"]

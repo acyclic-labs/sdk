@@ -8,6 +8,7 @@ pub(crate) use tokio::sync::Mutex;
 mod mutex;
 #[cfg(any(
     test,
+    all(feature = "terminal", any(unix, windows)),
     all(feature = "wasm", target_arch = "wasm32"),
     acyclic_harness_loom,
     all(
@@ -30,6 +31,11 @@ pub(crate) use mutex::Mutex as SyncMutex;
     )
 ))]
 include!("sync/atomic.rs");
+#[cfg(all(feature = "terminal", any(unix, windows)))]
+#[path = "sync/reader.rs"]
+mod reader;
+#[cfg(all(feature = "terminal", any(unix, windows)))]
+pub(crate) use reader::{Condvar as SyncCondvar, MutexGuard as SyncGuard};
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[path = "sync/owned.rs"]

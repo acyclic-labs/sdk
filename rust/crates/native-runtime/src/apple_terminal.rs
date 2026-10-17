@@ -6,6 +6,9 @@
 //! [`Writable`] calls the unlimited entry point (what `_DARWIN_UNLIMITED_SELECT`
 //! selects in C) over a descriptor set sized to the descriptor, so no terminal
 //! descriptor lacks a working wait.
+#[cfg(target_os = "macos")]
+pub use crate::apple::controlling_terminal::controlling_device;
+
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd};
 use std::time::Duration;
