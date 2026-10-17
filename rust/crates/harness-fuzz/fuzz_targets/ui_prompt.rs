@@ -273,7 +273,7 @@ fuzz_target!(|data: &[u8]| {
                 // separately; the arbitrary original was already rendered above.
                 file_views::put(
                     &mut documents,
-                    result_key,
+                    result_key.clone(),
                     serde_json::to_vec(&value).unwrap(),
                     None,
                 );
@@ -294,6 +294,9 @@ fuzz_target!(|data: &[u8]| {
                     assert!(title.contains("completed"));
                 }
             }
+            // Details below must exercise the original untrusted bytes, not
+            // only the canonical form used by the independent status oracle.
+            file_views::put(&mut documents, result_key, data.to_vec(), None);
             let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             let mut writes = vec![
                 (format!(".ui/session-{session}/draft.json"), draft),
