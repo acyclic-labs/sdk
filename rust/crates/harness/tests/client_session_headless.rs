@@ -959,18 +959,18 @@ async fn finite_replay_refreshes_when_a_later_status_advances_its_cut() {
             let final_delivery = final_delivery.clone();
             Box::pin(
                 futures::stream::once(async move {
-                host.snapshot_history
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .push(final_delivery);
-                host.through.store(1, Ordering::Relaxed);
-                host.complete(wire::CompletionState::Succeeded);
-                Ok(jsonl::client_frame(&wire::ClientFrame {
-                    frame: Some(wire::client_frame::Frame::Observe(target())),
-                })
-                .unwrap())
+                    host.snapshot_history
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .unwrap()
+                        .push(final_delivery);
+                    host.through.store(1, Ordering::Relaxed);
+                    host.complete(wire::CompletionState::Succeeded);
+                    Ok(jsonl::client_frame(&wire::ClientFrame {
+                        frame: Some(wire::client_frame::Frame::Observe(target())),
+                    })
+                    .unwrap())
                 })
                 .chain(futures::stream::pending()),
             )
