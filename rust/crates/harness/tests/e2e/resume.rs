@@ -255,7 +255,8 @@ async fn child() -> TestResult {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    println!("{JOURNALED}");
+    // libtest may have written a test-name prefix without a newline.
+    println!("\n{JOURNALED}");
     turn.await?
         .map_err(|error| format!("the pending turn failed: {error}"))?;
     Err("the pending turn finished".into())
@@ -278,6 +279,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
     let mut child = std::process::Command::new(std::env::current_exe()?)
         .args(["--exact", "resume::child", "--ignored", "--nocapture"])
         .env(CHILD, config)
+        .env("RUST_TEST_THREADS", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
         .spawn()?;
@@ -329,12 +331,28 @@ pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<
     let files = tempfile::tempdir()?;
     let identity = Identity::new(u128::from_be_bytes(*uuid::Uuid::new_v4().as_bytes()));
     let journal = journal(stream, files.path(), &identity, true).await?;
-    let provider = Arc::new(ScriptedModelProvider::new([]));
-    match executor(provider)?
+    let provider = Arc::new(ScriptedModelProvider::new([]).with_reconciliations([
+        ScriptedReconciliation {
+            orphan: true,
+            observed: vec![],
+            continuation: Some(vec![
+                content(REST)?,
+                serde_json::from_value(
+                    json!({"kind": "completed", "metadata": {"finish": "stop"}}),
+                )?,
+            ]),
+        },
+    ]));
+    let result = executor(provider.clone())?
         .execute(identity.input(), journal.as_ref())
-        .await
+        .await;
+    if !matches!(&result, Err(acyclic_harness::Error::Invalid(message)) if message == "scripted model exhausted")
+        || (provider.requests().len(), provider.reconciliations().len()) != (1, 0)
     {
-        Err(_) => Ok(()),
-        Ok(output) => Err(format!("an unjournaled turn resumed as {:?}", output.text).into()),
+        return Err(format!(
+            "unjournaled turn: {result:?}, {} requests, {} reconciliations",
+            provider.requests().len(), provider.reconciliations().len(),
+        ).into());
     }
+    Ok(())
 }
