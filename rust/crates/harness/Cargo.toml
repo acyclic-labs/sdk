@@ -285,10 +285,10 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
 [dev-dependencies]
 proptest.workspace = true
 diffy.workspace = true
-acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
 tonic.workspace = true
