@@ -210,6 +210,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
     FileValue {
         key,
         channel,
+        requester: None,
         publication: None,
         bytes: vec![index; size].into(),
     }
