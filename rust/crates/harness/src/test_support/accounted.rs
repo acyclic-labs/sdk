@@ -1,41 +1,6 @@
-//! Independent, current-thread differential runs over the real filesystem paths.
+//! Native ledger and custody observations for differential runs.
 use crate::filesystem::PreparationIo;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
-use std::cell::RefCell;
-
-thread_local! {
-    static TRACE: RefCell<Option<Vec<(&'static str, u64)>>> = const { RefCell::new(None) };
-}
-
-pub(crate) fn record(operation: &'static str, amount: u64) {
-    TRACE.with_borrow_mut(|trace| {
-        if let Some(trace) = trace {
-            trace.push((operation, amount));
-        }
-    });
-}
-
-pub(crate) fn pair<S, R>(
-    mut initialize: impl FnMut() -> S,
-    mut run: impl FnMut(S, bool) -> R,
-) -> [(R, Vec<(&'static str, u64)>); 2] {
-    [true, false].map(|old| {
-        let state = initialize();
-        struct Reset;
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                TRACE.with_borrow_mut(|trace| *trace = None);
-            }
-        }
-        TRACE.with_borrow_mut(|trace| {
-            assert!(trace.is_none());
-            *trace = Some(Vec::new());
-        });
-        let _reset = Reset;
-        let result = run(state, old);
-        (result, TRACE.with_borrow_mut(|trace| trace.take().unwrap()))
-    })
-}
 
 // Include the original native ledger and live custody on both sides of IO drop;
 // copying returned bytes in `run` releases their producer custody before sampling.

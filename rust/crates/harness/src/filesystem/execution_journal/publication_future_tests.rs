@@ -1,6 +1,7 @@
 use super::*;
-use crate::test_support::differential;
+use crate::test_support::accounted::accounted;
 use crate::{AgentId, conversation::VolumeOwner, resources::ProviderRef};
+use acyclic_test_support::differential;
 use proptest::prelude::*;
 
 type Journal = FilesystemExecutionJournal<
@@ -289,7 +290,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: if failure == 1 { [0;32] } else { digest } };
         let key = if failure == 2 { "" } else { &key };
         for mode in 0..5 {
-            let observations = differential::pair(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
+            let observations = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(), |journal, old| {
                 let selected = Choice(&journal, old);
                 let file = runtime.block_on(selected.stage(operation, "seed-only", b"seed", "application/octet-stream", None).unwrap()).unwrap();
                 if mode == 2 { runtime.block_on(selected.append(operation, "start", &ExecutionEvent::Started { request_digest: digest }, None).unwrap()).unwrap(); }
@@ -312,7 +313,7 @@ proptest! {
         prompt in ".{1,128}", deltas in 0usize..9,
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let [expected, actual] = differential::pair(|| runtime.block_on(fixture()).unwrap(),
+        let [expected, actual] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
             |journal, old| runtime.block_on(turn(journal, old, &prompt, deltas, false)).unwrap());
         prop_assert_eq!(&actual, &expected);
         for group in 0..3 {
@@ -323,7 +324,7 @@ proptest! {
         let mut missing = actual;
         missing.0[2].pop();
         prop_assert_ne!(missing, expected);
-        let [expected, broken] = differential::pair(|| runtime.block_on(fixture()).unwrap(),
+        let [expected, broken] = differential::pair::<_, _, (&'static str, u64)>(|| runtime.block_on(fixture()).unwrap(),
             |journal, old| runtime.block_on(turn(journal, old, &prompt, deltas, !old)).unwrap());
         prop_assert_eq!(&expected.0, &broken.0);
         prop_assert_ne!(&expected.1, &broken.1, "extra verification was not detected");
@@ -339,7 +340,7 @@ proptest! {
         let event = ExecutionEvent::Started { request_digest: digest };
         let oversized = vec![0;4097];
         for mode in 0..5 {
-            let [before, after] = differential::pair(|| {
+            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(|| {
                 let mut journal = runtime.block_on(fixture()).unwrap();
                 let file = runtime.block_on(prepare(&journal, operation, &event, b"payload")).unwrap();
                 journal.execution = Some((OperationId::from_bytes([5;16]), operation));
@@ -404,7 +405,7 @@ fn journal_accounting_admits_the_original_frames() {
             for native in [false, true] {
                 // Measure the real admission peak with this ledger, including
                 // native ledger storage and staging's owner/grant checks.
-                let measured = differential::accounted(native, 1 << 24, false, |io| {
+                let measured = accounted(native, 1 << 24, false, |io| {
                     construct(&journal, mode, true, operation, &event, &file, io)
                 })
                 .unwrap();
@@ -417,13 +418,15 @@ fn journal_accounting_admits_the_original_frames() {
                 };
                 assert!(boundary > ledger, "factory frame was not admitted");
                 for maximum in [boundary - 1, boundary, boundary + 1] {
-                    let [before, after] =
-                        differential::pair(&initialize, |(journal, file), old| {
-                            differential::accounted(native, maximum, cancelled, |io| {
+                    let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
+                        &initialize,
+                        |(journal, file), old| {
+                            accounted(native, maximum, cancelled, |io| {
                                 construct(&journal, mode, old, operation, &event, &file, io)
                                     .map_err(|e| e.to_string())
                             })
-                        });
+                        },
+                    );
                     let held = before.0.as_ref().unwrap();
                     assert_eq!(
                         held.0.is_ok(),
@@ -459,14 +462,17 @@ fn journal_accounting_admits_the_original_frames() {
             }
         }
         for native in [false, true] {
-            let [before, after] = differential::pair(&initialize, |(journal, file), old| {
-                differential::accounted(native, 1 << 24, cancelled, |io| {
-                    runtime
-                        .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
-                        .map(|bytes| bytes.as_ref().to_vec())
-                        .map_err(|e| e.to_string())
-                })
-            });
+            let [before, after] = differential::pair::<_, _, (&'static str, u64)>(
+                &initialize,
+                |(journal, file), old| {
+                    accounted(native, 1 << 24, cancelled, |io| {
+                        runtime
+                            .block_on(async { Choice(&journal, old).load(&file, Some(io))?.await })
+                            .map(|bytes| bytes.as_ref().to_vec())
+                            .map_err(|e| e.to_string())
+                    })
+                },
+            );
             assert_eq!(before.0.as_ref().unwrap().0.is_ok(), !cancelled);
             assert_eq!(before, after, "polled load, native {native}");
         }
