@@ -1,6 +1,8 @@
 use super::*;
 use proptest::prelude::*;
 
+mod reference;
+
 #[derive(Clone, Debug, PartialEq)]
 enum Failure {
     Decode(CanonicalDecodeError),
@@ -45,20 +47,13 @@ fn observed<const ORDER: bool, const LEGACY: bool>(
             Ok(())
         }
     };
-    let result = if ORDER {
+    let result = if LEGACY {
+        reference::decode(bytes, limits, &mut observe)
+    } else if ORDER {
         decode_file_table_page(bytes, limits, &mut observe)
     } else {
         decode_page::<false, Failure>(bytes, limits, &mut observe)
     };
-    let result = result.and_then(|page| {
-        if LEGACY {
-            // Before the optimization, this complete semantic validation ran
-            // after decoding, including every record already validated there.
-            page.validate(limits.maximum_page_items)
-                .map_err(invariant)?;
-        }
-        Ok(page)
-    });
     (result, events)
 }
 
@@ -238,4 +233,55 @@ fn oracle_detects_missing_order_check_and_keeps_error_precedence() {
         observed::<true, false>(&trailing, limits, usize::MAX).0,
         Err(Failure::Decode(CanonicalDecodeError::TrailingBytes))
     ));
+}
+
+#[test]
+fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix() {
+    let bytes = encode(&FileTablePage::Leaf(vec![record(6), record(13)]));
+    let mut cases = Vec::new();
+    // Version, page tag, leaf kind, zero links and payload tag failures.
+    for (offset, value) in [(8, 255), (10, 255), (31, 255), (72, 255), (31, 1)] {
+        let mut malformed = bytes.clone();
+        malformed[offset] = value;
+        cases.push(malformed);
+    }
+    let mut no_links = bytes.clone();
+    no_links[32..40].fill(0);
+    cases.push(no_links);
+    let mut excessive = bytes.clone();
+    excessive[11..15].copy_from_slice(&u32::MAX.to_le_bytes());
+    cases.push(excessive);
+    let mut duplicate = bytes.clone();
+    duplicate[73..89].copy_from_slice(&bytes[15..31]);
+    cases.push(duplicate);
+    let mut empty_internal = bytes[..15].to_vec();
+    empty_internal[10] = 2;
+    empty_internal[11..15].fill(0);
+    cases.push(empty_internal);
+    let inline = encode(&FileTablePage::Leaf(vec![record(5)]));
+    let mut large_inline = inline.clone();
+    large_inline[73] = 65;
+    cases.push(large_inline);
+    let internal = encode(&FileTablePage::Internal(vec![
+        Child {
+            first: FileId::from_bytes([1; 16]),
+            page: digest_object(ObjectKind::FileTablePage, [1; 32]),
+        },
+        Child {
+            first: FileId::from_bytes([2; 16]),
+            page: digest_object(ObjectKind::FileTablePage, [2; 32]),
+        },
+    ]));
+    let mut unordered_internal = internal.clone();
+    unordered_internal[63..79].copy_from_slice(&internal[15..31]);
+    cases.push(unordered_internal);
+    cases.extend([bytes, inline, internal]);
+    for bytes in cases {
+        for length in 0..=bytes.len() {
+            compare::<true>(&bytes[..length], DecodeLimits::default()).unwrap();
+        }
+        let mut trailing = bytes;
+        trailing.push(0);
+        compare::<true>(&trailing, DecodeLimits::default()).unwrap();
+    }
 }

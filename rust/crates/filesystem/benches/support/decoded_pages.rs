@@ -109,6 +109,20 @@ fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
         .unwrap_or_else(fail);
     let receipt = operation(if cold { &receipt_store } else { &store });
     assert!(receipt.value.is_some());
+    let expected_items = match count {
+        1 => 3,
+        8 => 12,
+        64 => 71,
+        _ => fail("unqualified file-table fixture"),
+    };
+    assert_eq!(receipt.work.items_examined, expected_items);
+    assert_eq!(receipt.work.allocation_operations, 7);
+    assert_eq!(receipt.work.bytes_copied, 79);
+    assert_eq!(receipt.work.object_probes, 1);
+    assert_eq!(receipt.work.backend_read_operations, 1);
+    assert_eq!(receipt.work.page_reads, 1);
+    assert_eq!(receipt.work.object_bytes_read, maximum);
+    assert_eq!(receipt.work.bytes_hashed, maximum);
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!("decoded_page_{name} count={count} work={:?}", receipt.work);
     }
