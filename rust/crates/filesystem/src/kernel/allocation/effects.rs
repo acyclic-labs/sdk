@@ -11,7 +11,71 @@ pub(crate) fn broken_reservation() -> bool {
     OMIT_RESERVATION.with(std::cell::Cell::get)
 }
 
-pub(crate) fn reserve(
+// Owns withheld credit on its exact original ledger. No leaf/resource lock is
+// retained between calls: state() acquires the existing leaf -> ancestor order.
+// Completion and Drop enter that same checked order, including during unwind.
+#[must_use]
+pub(crate) struct EffectCredit<'a> {
+    work: &'a NativeMaterializationWork,
+    cancellation: &'a CancellationToken,
+    pending: WorkCounters,
+}
+
+impl<'a> EffectCredit<'a> {
+    fn new(work: &'a NativeMaterializationWork, cancellation: &'a CancellationToken) -> Self {
+        Self {
+            work,
+            cancellation,
+            pending: WorkCounters::UNCHARGED,
+        }
+    }
+
+    pub(crate) fn for_accounting(accounting: &super::KernelAccounting<'a>) -> Option<Self> {
+        match accounting {
+            super::KernelAccounting::NativeOriginal { work, cancellation } => {
+                Some(Self::new(work, cancellation))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn reserve(&mut self, delta: WorkCounters, reuse: bool) -> Result<(), FsError> {
+        reserve(
+            self.work,
+            self.cancellation,
+            &mut self.pending,
+            delta,
+            reuse,
+        )
+    }
+
+    pub(crate) fn complete(&mut self, actual: WorkCounters) -> Result<(), FsError> {
+        complete(self.work, self.cancellation, &mut self.pending, actual)
+    }
+}
+
+impl Drop for EffectCredit<'_> {
+    fn drop(&mut self) {
+        refund(self.work, &mut self.pending);
+    }
+}
+
+pub(crate) fn perform<T>(
+    work: &NativeMaterializationWork,
+    cancellation: &CancellationToken,
+    delta: WorkCounters,
+    effect: impl FnOnce() -> T,
+) -> Result<T, FsError> {
+    let mut reserved = EffectCredit::new(work, cancellation);
+    reserved.reserve(delta, false)?;
+    // The effect runs outside the original leaf and ancestor resource locks.
+    // A panic returns unused credit; completion stays charged if cancelled.
+    let output = effect();
+    reserved.complete(delta)?;
+    Ok(output)
+}
+
+fn reserve(
     work: &NativeMaterializationWork,
     cancellation: &CancellationToken,
     pending: &mut WorkCounters,
@@ -54,7 +118,7 @@ pub(crate) fn reserve(
     })
 }
 
-pub(crate) fn complete(
+fn complete(
     work: &NativeMaterializationWork,
     cancellation: &CancellationToken,
     pending: &mut WorkCounters,
@@ -73,7 +137,7 @@ pub(crate) fn complete(
     })
 }
 
-pub(crate) fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
+fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounters) {
     if *pending == WorkCounters::UNCHARGED {
         return;
     }
@@ -89,3 +153,6 @@ pub(crate) fn refund(work: &NativeMaterializationWork, pending: &mut WorkCounter
         }
     });
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod tests;

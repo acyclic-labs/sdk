@@ -9,6 +9,10 @@ mod completion_popup;
 pub mod config;
 #[cfg(feature = "tui")]
 mod display_text;
+#[cfg(feature = "tui")]
+mod feedback;
+#[cfg(feature = "tui")]
+pub use feedback::Feedback;
 mod editor;
 #[cfg(feature = "tui")]
 pub use display_text::display_text;

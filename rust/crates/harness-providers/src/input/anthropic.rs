@@ -1,5 +1,5 @@
 use super::{check, id, name, text};
-use crate::protocol::shape;
+use crate::protocol::{sequence::user_boundary, shape};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -11,16 +11,16 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     check(!messages.is_empty(), "ANT-SEQ-09", errors);
     check(messages.len() <= 100_000, "ANT-SEQ-05", errors);
     check(
-        messages
-            .first()
-            .is_some_and(|message| message["role"] == "user"),
+        user_boundary(
+            messages
+                .first()
+                .and_then(|message| message["role"].as_str()),
+        ),
         "ANT-SEQ-04",
         errors,
     );
     check(
-        messages
-            .last()
-            .is_some_and(|message| message["role"] == "user"),
+        user_boundary(messages.last().and_then(|message| message["role"].as_str())),
         "ANT-SEQ-06",
         errors,
     );

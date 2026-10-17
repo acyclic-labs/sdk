@@ -18,6 +18,7 @@ const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\
 #[derive(Clone, Copy)]
 enum Mode {
     Prompt,
+    Instructions,
     Jsonl,
     OpenJsonl,
     Dumb,
@@ -30,7 +31,7 @@ async fn execute(
     operation: OperationId,
     mode: Mode,
 ) -> Vec<u8> {
-    let jsonl = !matches!(mode, Mode::Prompt);
+    let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
@@ -110,6 +111,7 @@ async fn execute(
 }
 
 async fn scenario(mode: Mode) {
+    let instructions = matches!(mode, Mode::Instructions);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -131,6 +133,18 @@ async fn scenario(mode: Mode) {
                 let requests = requests.clone();
                 async move {
                     assert!(body.to_string().contains("hello"));
+                    if instructions {
+                        assert_eq!(body["input"], json!([
+                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep the current goal in GOAL.md in the agent private volume; use active, blocked or done frontmatter status."}]},
+                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep each Markdown plan in plans/<id>.md beside GOAL.md in the agent private volume; use ordinary file tools and - [ ], - [~], - [x] task lists."}]},
+                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
+                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Reply using the workspace instructions. λ"}]},
+                            {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
+                        ]));
+                        assert_eq!(body["store"], false);
+                        assert_eq!(body["stream"], true);
+                        assert!(body.get("instructions").is_none());
+                    }
                     requests.send("model").unwrap();
                     ([("content-type", "text/event-stream")], ANSWER)
                 }
@@ -150,6 +164,13 @@ async fn scenario(mode: Mode) {
     let settings = directory.path().join("settings");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
+    if instructions {
+        std::fs::write(
+            workspace.join("AGENTS.md"),
+            "Reply using the workspace instructions. λ",
+        )
+        .unwrap();
+    }
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
@@ -200,6 +221,11 @@ async fn scenario(mode: Mode) {
 #[tokio::test]
 async fn prompt_argv_uses_the_real_registry_and_file_client() {
     scenario(Mode::Prompt).await;
+}
+
+#[tokio::test]
+async fn fix_live_instructions_reach_the_loopback_responses_request_and_survive_reopen() {
+    scenario(Mode::Instructions).await;
 }
 
 #[tokio::test]

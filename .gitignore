@@ -1,6 +1,13 @@
 /target/
 # Acyclic's runtime state never belongs to a repository.
 .acyclic/
+# Lane output belongs in the external lane root; CI also rejects forced adds.
+/scratch/
+/scratch-notes/
+/lane-logs/
+/lane-artifacts/
+/study-classes-evidence/
+/rev-*-verdict*
 /target-*/
 /.tools/
 node_modules/

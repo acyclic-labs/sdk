@@ -30,6 +30,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     &json!({"operation":operation,"text":input}),
                 )
                 .await?;
+                if form == "feedback"
+                    && self
+                        .state(CommandFileRoot::Config, "settings.json")?
+                        .is_some_and(|settings| settings["renderer"] == "ratatui")
+                {
+                    layout["open_view"] = Value::Null;
+                }
             }
             "theme" => {
                 let name = self

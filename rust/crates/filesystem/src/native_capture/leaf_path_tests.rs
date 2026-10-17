@@ -101,9 +101,15 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
     ))?;
     drop(warmed);
     drop(warm);
+    let mut expected_paths: Vec<_> = ["/alias", "/f", "/d", "/d/long-λ", "/d/sub", "/d/sub/file"]
+        .map(|p| (path(p), ()))
+        .into_iter()
+        .collect();
+    expected_paths.sort();
     for host in [true, false] {
-        let mut run = |old| {
+        let mut run = |old, old_append: bool| {
             let _copy = CopyLeaves(CLONE_LEAVES.replace(old));
+            let _append = old_append.then(super::path_error_tests::OldAppend::enter);
             let live_before = setup.live_allocation_bytes();
             let scope = CaptureWorkScope::new(&setup).unwrap();
             let start = path("/");
@@ -134,23 +140,27 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
             });
             result.unwrap().unwrap();
             assert_eq!(paths.len(), 6);
+            assert_eq!(paths, expected_paths);
             drop(paths);
             drop(scope);
             assert_eq!(setup.live_allocation_bytes(), live_before);
             measured
         };
         // Warm the host adapter, executor and authenticated checkout records.
-        run(false);
-        run(true);
-        let moved = run(false);
-        let copied = run(true);
-        let repeated = run(false);
-        eprintln!("LEAF_HEAP host={host} moved={moved:?} copied={copied:?} repeated={repeated:?}");
+        run(false, false);
+        run(true, false);
+        let moved = run(false, false);
+        let copied = run(true, false);
+        let repeated = run(false, false);
+        let old_append = run(false, true);
+        eprintln!(
+            "LEAF_HEAP host={host} moved={moved:?} copied={copied:?} repeated={repeated:?} old_append={old_append:?}"
+        );
         // Fixed warm six-path heap counts, independent of receipts or controls.
         let expected = match (host, cfg!(windows)) {
-            (true, true) => 43,
-            (true, false) => 46,
-            (false, _) => 199,
+            (true, true) => 37,
+            (true, false) => 40,
+            (false, _) => 193,
         };
         let no_copy = |allocations| {
             if allocations == expected {
@@ -163,6 +173,9 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         no_copy(repeated.count_total).unwrap();
         assert!(no_copy(copied.count_total).is_err());
         assert!(copied.count_total > moved.count_total);
+        assert_eq!(copied.count_total, expected + 15);
+        assert_eq!(old_append.count_total, expected + 6);
+        assert!(no_copy(old_append.count_total).is_err());
     }
     Ok(())
 }

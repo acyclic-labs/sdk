@@ -1,4 +1,5 @@
 use super::{check, name, text};
+use crate::protocol::sequence::{GeminiPart, answered, exchange, user_boundary};
 use serde_json::Value;
 
 pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
@@ -8,12 +9,11 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     };
     check(!contents.is_empty(), "GEM-SEQ-03", errors);
     check(
-        contents
-            .first()
-            .is_some_and(|content| content["role"] == "user")
-            && contents
-                .last()
-                .is_some_and(|content| content["role"] == "user"),
+        user_boundary(
+            contents
+                .first()
+                .and_then(|content| content["role"].as_str()),
+        ) && user_boundary(contents.last().and_then(|content| content["role"].as_str())),
         "GEM-SEQ-05",
         errors,
     );
@@ -31,39 +31,42 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         let mut calls = Vec::new();
         let mut results = Vec::new();
         for part in parts {
-            if let Some(call) = part.get("functionCall") {
-                check(role == "model", "GEM-TOOL-06", errors);
-                check(
-                    name(&call["name"], 128, true, b"_.:-"),
-                    "GEM-TOOL-01",
-                    errors,
-                );
-                check(
-                    call.get("args").is_none_or(Value::is_object),
-                    "GEM-TOOL-03",
-                    errors,
-                );
-                calls.push((call["name"].as_str(), call["id"].as_str()));
-            } else if let Some(result) = part.get("functionResponse") {
-                check(role == "user", "GEM-TOOL-06", errors);
-                check(result["response"].is_object(), "GEM-TOOL-03", errors);
-                results.push((result["name"].as_str(), result["id"].as_str()));
-            } else if part.get("text").is_some() {
-                check(
-                    part["text"].as_str().is_some_and(|text| !text.is_empty())
-                        || part["thoughtSignature"].is_string(),
-                    "GEM-SEQ-03",
-                    errors,
-                );
-            } else {
-                check(
+            match GeminiPart::of(part) {
+                GeminiPart::Call(call) => {
+                    check(role == "model", "GEM-TOOL-06", errors);
+                    check(
+                        name(&call["name"], 128, true, b"_.:-"),
+                        "GEM-TOOL-01",
+                        errors,
+                    );
+                    check(
+                        call.get("args").is_none_or(Value::is_object),
+                        "GEM-TOOL-03",
+                        errors,
+                    );
+                    calls.push(exchange(call));
+                }
+                GeminiPart::Response(result) => {
+                    check(role == "user", "GEM-TOOL-06", errors);
+                    check(result["response"].is_object(), "GEM-TOOL-03", errors);
+                    results.push(exchange(result));
+                }
+                GeminiPart::Other if part.get("text").is_some() => {
+                    check(
+                        part["text"].as_str().is_some_and(|text| !text.is_empty())
+                            || part["thoughtSignature"].is_string(),
+                        "GEM-SEQ-03",
+                        errors,
+                    );
+                }
+                GeminiPart::Other => check(
                     part.get("inlineData").is_some() || part.get("fileData").is_some(),
                     "GEM-SEQ-03",
                     errors,
-                );
+                ),
             }
         }
-        check(results == pending, "GEM-TOOL-05", errors);
+        check(answered(pending, results), "GEM-TOOL-05", errors);
         pending = calls;
         previous = role;
     }

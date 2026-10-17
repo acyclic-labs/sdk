@@ -179,6 +179,10 @@ pub(super) fn append_path_measured(
     limits: crate::model::VolumeLimits,
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
+    #[cfg(all(test, feature = "memory"))]
+    if super::path_error_tests::restore_old_append() {
+        return super::path_error_tests::old_append(parent, name, limits, meter);
+    }
     meter.clone().check().map_err(capture_demand_error)?;
     NamespacePath::validate_component_lengths(
         parent
@@ -189,10 +193,7 @@ pub(super) fn append_path_measured(
         limits,
     )
     .map_err(CaptureError::from)?;
-    let depth = parent
-        .depth()
-        .checked_add(1)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+    let depth = parent.depth().checked_add(1).ok_or(WorkError::Overflow)?;
     capture_charge(
         meter,
         WorkCounters {

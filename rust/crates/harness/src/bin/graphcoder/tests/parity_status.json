@@ -92,7 +92,7 @@
   {
     "section": "1. Slash commands",
     "row": "/feedback",
-    "status": "Deferred follow-up; omitted from ratatui catalog"
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
   },
   {
     "section": "1. Slash commands",
@@ -387,12 +387,12 @@
   {
     "section": "3. TUI polish",
     "row": "Reasoning toggle",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Implemented on hf/gc-graphcoder-shortcuts: declared shortcuts resolve enabled catalog actions; file-backed TestBackend remap/rename/removal property and missing-binding control"
   },
   {
     "section": "3. TUI polish",
     "row": "Tool details toggle; subagent messages collapsed",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Details shortcut bound on hf/gc-graphcoder-shortcuts with file-backed TestBackend/control; subagent message grouping remains deferred"
   },
   {
     "section": "3. TUI polish",
@@ -507,12 +507,12 @@
   {
     "section": "3. TUI polish",
     "row": "Help overlay (generated from the keymap; must not drift)",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Implemented on hf/gc-graphcoder-shortcuts: declared shortcuts resolve enabled catalog actions; file-backed TestBackend remap/rename/removal property and missing-binding control"
   },
   {
     "section": "3. TUI polish",
     "row": "Feedback overlay",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Implemented on hf/gc-graphcoder-feedback: local file-backed form; feedback_overlay TestBackend alias/save/cancel/replay/resize property and missing-binding control"
   },
   {
     "section": "3. TUI polish",

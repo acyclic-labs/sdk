@@ -119,10 +119,11 @@ proptest! {
             .and_then(|()| work.admit(delta).map_err(FsError::from));
         let expected = expected.map_err(|error| format!("{error:?}"));
         let before = original.receipt();
+        let before_budget = work.state(|state| state.budget);
         let preflight = observed.observe(super::super::super::codec::ReadAllocationStep::CheckCopy(amount));
         prop_assert_eq!(preflight.map_err(|error| format!("{error:?}")), expected.clone());
         prop_assert_eq!(original.receipt(), before);
-        prop_assert_eq!(observed.pending, WorkCounters::UNCHARGED);
+        prop_assert_eq!(work.state(|state| state.budget), before_budget);
         let actual = observed.admit(delta);
         prop_assert_eq!(actual.map_err(|error| format!("{error:?}")), expected);
     }
