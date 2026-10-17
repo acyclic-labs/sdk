@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn patch_rewrite_preserves_line_endings() {
+    let fixture = Fixture::new();
+    let child = fixture.directory("workspace");
+    let target = child.join("src/new.rs").display().to_string();
+    for patch in [
+        "*** Begin Patch\r\n*** Add File: src/new.rs\r\n+one\r\n+two\r\n*** End Patch\r\n",
+        "*** Begin Patch\n*** Add File: src/new.rs\n+one\r\n+two\r\n*** End Patch\n",
+        "*** Begin Patch\n*** Add File: src/new.rs\n+one\n\n+two\n*** End Patch",
+    ] {
+        let rewritten = rewrite_tool_input(
+            "apply_patch",
+            json!({ "command": patch }),
+            &fixture.root,
+            &child,
+        )
+        .unwrap();
+        assert_eq!(
+            rewritten["command"].as_str().unwrap(),
+            patch.replace("src/new.rs", &target)
+        );
+    }
+}
+
+#[test]
 fn patch_paths_are_routed_and_cannot_escape() {
     let fixture = Fixture::new();
     let child = fixture.directory("workspace");

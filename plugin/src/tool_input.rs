@@ -55,11 +55,21 @@ pub(crate) fn rewrite_tool_input(
             .and_then(Value::as_str)
             .ok_or_else(|| "apply_patch lacks a command string".to_owned())?
             .to_owned();
-        let rewritten = command
-            .lines()
-            .map(|line| rewrite_patch_header(line, child))
-            .collect::<Result<Vec<_>, _>>()?
-            .join("\n");
+        // Rewrite header paths in place: a patch carries file content, so every
+        // line ending, including the final one, must reach the tool unchanged.
+        let mut rewritten = String::with_capacity(command.len());
+        for segment in command.split_inclusive('\n') {
+            let body = segment.strip_suffix('\n').unwrap_or(segment);
+            let (body, carriage) = match body.strip_suffix('\r') {
+                Some(body) if segment.ends_with('\n') => (body, "\r"),
+                _ => (body, ""),
+            };
+            rewritten.push_str(&rewrite_patch_header(body, child)?);
+            rewritten.push_str(carriage);
+            if segment.ends_with('\n') {
+                rewritten.push('\n');
+            }
+        }
         input
             .as_object_mut()
             .ok_or_else(|| "apply_patch input must be an object".to_owned())?
