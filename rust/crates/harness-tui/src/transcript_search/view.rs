@@ -265,6 +265,8 @@ impl TranscriptSearch {
             if self.selected_rank.is_none() && !self.matches.is_empty() {
                 self.selected_rank =
                     Some(self.index.rem_euclid(self.matches.len() as i64) as usize);
+                // Without an anchor, index already includes all queued navigation.
+                self.steps = 0;
             }
             if let Some(rank) = self.selected_rank {
                 self.selected_rank = Some(

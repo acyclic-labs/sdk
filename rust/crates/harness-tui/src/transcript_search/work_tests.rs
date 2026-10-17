@@ -403,10 +403,27 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn mixed_navigation_and_background_frames_property(
-        size in 800usize..2000,
-        gap in 0usize..32,
+        size in 256usize..800,
+        gap in 0usize..160,
         events in prop::collection::vec((-1i8..=1, 0u8..4), 1..64),
     ) {
         mixed_navigation_model::<false>(size,gap,&events);
     }
+}
+
+#[test]
+fn navigation_before_the_first_known_match_is_applied_once() {
+    let projection = projection(&format!("needle needle needle{}", "x".repeat(12000)));
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "needle", 0, Style::default());
+    search.prepare(&projection, 100, 1);
+    assert!(search.selected.is_none());
+    search.update(&projection, "needle", 1, Style::default());
+    finish(&mut search, &projection);
+    assert_eq!(search.selected, Some(7..13));
+}
+
+#[test]
+fn reversing_navigation_cancels_a_probe_between_sparse_matches() {
+    mixed_navigation_model::<false>(128, 300, &[(1, 0), (-1, 0), (-1, 2), (1, 0), (1, 4)]);
 }

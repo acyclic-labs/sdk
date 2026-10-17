@@ -30,7 +30,7 @@ impl TranscriptSearch {
                 (range.start, range.end)
             })
         {
-            let next = rank as i64 + self.steps;
+            let next = (rank as i64).saturating_add(self.steps);
             if (0..self.local.len() as i64).contains(&next) {
                 self.selected = Some(self.local[next as usize].clone());
                 self.steps = 0;
