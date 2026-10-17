@@ -365,31 +365,47 @@ async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
     Ok(actors)
 }
 
+async fn event_stream(endpoints: &Endpoints) -> TestResult<(acyclic_stream::grpc::Client, u64)> {
+    let ca = std::fs::read(&endpoints.streams.ca_file)?;
+    let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
+        &endpoints.streams.endpoint,
+        &endpoints.streams.bearer,
+        ca,
+    )
+    .await?;
+    let start = append_events(
+        &streams,
+        vec![acyclic_stream::OwnedBytes::from_static(
+            b"before-subscription",
+        )],
+    )
+    .await?
+    .end;
+    Ok((streams, start))
+}
+
 #[tokio::test]
 #[ignore = "needs node scripts/local-cloud.mjs --topology full"]
 async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     let endpoints = endpoints()?;
-    let mut actors = published_actor(&endpoints).await?;
+    let phase = std::time::Instant::now();
+    let (actors, events) = futures::join!(published_actor(&endpoints), event_stream(&endpoints));
+    let mut actors = actors?;
+    let (_streams, start) = events?;
+    println!("Actors setup: {:.3}s", phase.elapsed().as_secs_f64());
+    let phase = std::time::Instant::now();
     let created = observation(actors.create_actor(create()).await?.into_inner().actor, 1)?;
     assert_eq!(created.state, wire::ActorState::Paused as i32);
     assert!(created.subscriptions.is_empty());
-    assert_eq!(
-        observation(actors.create_actor(create()).await?.into_inner().actor, 1)?,
-        created
+    let mut retrier = actors.clone();
+    let (retry, inspected) = futures::join!(
+        retrier.create_actor(create()),
+        actors.inspect_actor(wire::InspectActorRequest {
+            actor_id: ACTOR.into()
+        })
     );
-    assert_eq!(
-        observation(
-            actors
-                .inspect_actor(wire::InspectActorRequest {
-                    actor_id: ACTOR.into()
-                })
-                .await?
-                .into_inner()
-                .actor,
-            1
-        )?,
-        created
-    );
+    assert_eq!(observation(retry?.into_inner().actor, 1)?, created);
+    assert_eq!(observation(inspected?.into_inner().actor, 1)?, created);
     invoke(&mut actors, None, 0).await?;
     for (add, counter) in [(2, 2), (-1, 1), (4, 5)] {
         invoke(&mut actors, Some(add), counter).await?;
@@ -409,34 +425,18 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
     assert!(saved.checkpoint_epoch > 0);
     assert!(saved.checkpoint_unix_millis.is_some());
     assert_eq!(saved.state, wire::ActorState::Active as i32);
-    assert_eq!(
-        observation(
-            actors
-                .checkpoint_actor(checkpoint)
-                .await?
-                .into_inner()
-                .actor,
-            1
-        )?,
-        saved
+    let (retry, invoked) = futures::join!(
+        retrier.checkpoint_actor(checkpoint),
+        invoke(&mut actors, None, 5)
     );
-    invoke(&mut actors, None, 5).await?;
+    assert_eq!(observation(retry?.into_inner().actor, 1)?, saved);
+    invoked?;
+    println!(
+        "Actors counter/checkpoint: {:.3}s",
+        phase.elapsed().as_secs_f64()
+    );
+    let phase = std::time::Instant::now();
 
-    let ca = std::fs::read(&endpoints.streams.ca_file)?;
-    let streams = acyclic_stream::grpc::Client::connect_eager_with_ca_certificate(
-        &endpoints.streams.endpoint,
-        &endpoints.streams.bearer,
-        ca,
-    )
-    .await?;
-    let start = append_events(
-        &streams,
-        vec![acyclic_stream::OwnedBytes::from_static(
-            b"before-subscription",
-        )],
-    )
-    .await?
-    .end;
     let add = add_subscription("sdk-add");
     let added = observation(
         actors
@@ -501,32 +501,39 @@ async fn supported_actor_lifecycle_matches_the_counter_oracle() -> TestResult {
         CODE_V2,
     )?;
     subscriptions(&updated, &expected_subscriptions)?;
+    let mut retrier = actors.clone();
+    let (retry, invoked) = futures::join!(retrier.update_actor(update), async {
+        invoke_version(&mut actors, None, 5, 2).await?;
+        invoke_version(&mut actors, Some(3), 8, 2).await
+    });
     assert_eq!(
-        observation_with_code(
-            actors.update_actor(update).await?.into_inner().actor,
-            5,
-            CODE_V2
-        )?,
+        observation_with_code(retry?.into_inner().actor, 5, CODE_V2)?,
         updated
     );
-    invoke_version(&mut actors, None, 5, 2).await?;
-    invoke_version(&mut actors, Some(3), 8, 2).await?;
+    invoked?;
+    println!(
+        "Actors subscriptions/migration: {:.3}s",
+        phase.elapsed().as_secs_f64()
+    );
+    let phase = std::time::Instant::now();
     let deleted = wire::DeleteActorRequest {
         actor_id: ACTOR.into(),
         idempotency_key: "sdk-delete".into(),
     };
     actors.delete_actor(deleted.clone()).await?;
-    actors.delete_actor(deleted).await?;
-    let missing = actors
-        .inspect_actor(wire::InspectActorRequest {
-            actor_id: ACTOR.into(),
+    let (retry, missing) = futures::join!(
+        retrier.delete_actor(deleted),
+        actors.inspect_actor(wire::InspectActorRequest {
+            actor_id: ACTOR.into()
         })
-        .await
-        .expect_err("deleted actor must be absent");
+    );
+    retry?;
+    let missing = missing.expect_err("deleted actor must be absent");
     assert_eq!(
         grpc::error_detail(&missing).map(|error| error.code),
         Some(wire::ErrorCode::ActorNotFound as i32)
     );
+    println!("Actors deletion: {:.3}s", phase.elapsed().as_secs_f64());
     println!(
         "local cloud: supported Actor lifecycle and exact v2 migration passed; delivery and paused recovery are separate ignored Cloud request 11 checks"
     );
