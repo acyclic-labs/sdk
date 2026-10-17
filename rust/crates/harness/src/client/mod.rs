@@ -77,14 +77,14 @@ mod query;
 pub use query::ClientQuery;
 mod file_submit;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use file_submit::validate_request_key;
 mod file_error;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 mod retry;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) mod waiting_calls;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use retry::submission_retry;
 pub use file_error::FileClientError;
 mod offline;

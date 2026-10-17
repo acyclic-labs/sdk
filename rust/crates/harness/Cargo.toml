@@ -26,6 +26,7 @@ required-features = ["tui"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
+required-features = ["test-support"]
 
 [[test]]
 name = "git_executor"
@@ -76,7 +77,7 @@ required-features = ["filesystem"]
 [[test]]
 name = "goal-files"
 path = "tests/goal_files.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "local-recursive-fork"
@@ -91,7 +92,7 @@ required-features = ["filesystem-local"]
 [[test]]
 name = "context-discovery"
 path = "tests/context_discovery.rs"
-required-features = ["filesystem"]
+required-features = ["filesystem", "test-support"]
 
 [[test]]
 name = "filesystem_access"

@@ -167,6 +167,7 @@ impl MemoryStore {
         bytes: &[u8],
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        let _ = io;
         let blob_key = (
             reference.descriptor().byte_length(),
             *reference.descriptor().sha256(),

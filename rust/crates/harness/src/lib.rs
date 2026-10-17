@@ -86,7 +86,7 @@ pub mod search;
 pub mod source_authorization;
 pub mod store;
 pub mod task_volume;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;
 pub mod tools;
