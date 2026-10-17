@@ -72,7 +72,9 @@ async fn streaming(bound: bool) -> Result<()> {
         if bound {
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
-                views.project_commands(&ui, &authority)?;
+                if let Some(task)=ui.active_task() {
+                    views.follow_task(local.task_files().as_ref(),&authority,task).await?;
+                }
                 let mut renderer = ClientRenderer::default();
                 renderer.update(views.views(), &authority);
                 let mut terminal =

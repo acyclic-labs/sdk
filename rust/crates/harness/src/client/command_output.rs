@@ -1,8 +1,10 @@
 //! Projection of the existing command outcome envelope, without another store.
 use super::HeadlessOutcome;
+use crate::task_volume::{Component, FileKey, TaskFile};
 use crate::{Error, Result, task_volume::FileValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
+use std::{borrow::Cow, collections::BTreeMap};
 
 #[derive(Deserialize)]
 struct Outcome<'a> {
@@ -16,11 +18,6 @@ struct Outcome<'a> {
     completed: bool,
     #[serde(default)]
     output_omitted: bool,
-}
-#[derive(Deserialize)]
-struct Text {
-    #[serde(default)]
-    text: Option<String>,
 }
 
 fn settled(outcome: &Outcome<'_>) -> Result<HeadlessOutcome> {
@@ -55,205 +52,243 @@ pub(super) fn completion(bytes: &[u8]) -> Result<HeadlessOutcome> {
     settled(&outcome)
 }
 
-pub(super) fn text(file: &FileValue) -> Option<(u64, String)> {
-    if !matches!(
-        file.key,
-        crate::task_volume::FileKey::Task {
-            file: crate::task_volume::TaskFile::ExecutionResult(_),
-            ..
-        }
-    ) {
-        return None;
-    }
-    let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).ok()?;
-    if settled(&outcome).ok()? != HeadlessOutcome::Completed {
-        return None;
-    }
-    let text: Text = serde_json::from_str(outcome.ok?.get()).ok()?;
-    Some((outcome.sequence, text.text?))
+/// Logical owner of an immutable command outcome file.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub enum OutputOwner {
+    /// A task's execution results.
+    Task(Component),
+    /// A UI session's execution results.
+    Session(Component),
 }
-
-/// Disposable incremental fold of the retained session archive.
-#[derive(Default)]
-pub(super) struct Projection {
-    owner: String,
-    after: u64,
-    cut: Option<(u64, Option<u64>)>,
-    segments: Vec<std::sync::Arc<str>>,
-    revision: u64,
-    applied_revision: u64,
-    applied_segments: usize,
-    archive_len: usize,
-    live_len: usize,
-    reasoning_len: usize,
-    active: Option<crate::TaskId>,
-    text_pending: usize,
-    reasoning_pending: usize,
-    live_start: Option<crate::task_volume::FileKey>,
-    reasoning_start: Option<crate::task_volume::FileKey>,
+/// Parsed metadata from one canonical outcome file, shared by every renderer.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
+pub struct CommandOutputView<'a> {
+    /// Canonical outcome ordering, independent of UUID/path order.
+    pub sequence: u64,
+    /// Terminal result from the producer's existing envelope.
+    pub completion: HeadlessOutcome,
+    /// Exact decoded text when this command produces displayable text.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+    pub text: Option<Cow<'a, str>>,
+    /// Exact failure text, if present.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+    pub error: Option<Cow<'a, str>>,
+    /// Stock task selected by this completed command, when supplied.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
+    pub task: Option<crate::TaskId>,
 }
-
-impl Projection {
-    pub(super) fn refresh<P: acyclic_stream::StreamProvider + ?Sized>(
-        &mut self,
-        files: &super::CommandSession<P>,
-        owner: &crate::wire::Authority,
-    ) -> Result<bool> {
-        let key = super::task_compat::views::authority_key(owner);
-        let history_after = files
-            .state(super::CommandFileRoot::Session, "layout.json")?
-            .and_then(|value| value["history_after"].as_u64())
-            .unwrap_or(0);
-        let cut = (history_after, files.first_output_sequence());
-        let rebuild =
-            self.owner != key || self.cut != Some(cut) || self.after > files.output_sequence();
-        if rebuild {
-            self.owner = key;
-            self.cut = Some(cut);
-            self.after = history_after;
-            self.segments.clear();
-            self.revision = self.revision.wrapping_add(1);
-        }
-        let mut changed = rebuild;
-        // A BTreeMap range visits each new outcome once. History/retention
-        // changes rebuild with the same single forward pass, never nth(back).
-        for record in files.output_since(self.after) {
-            let (sequence, value) = record?;
-            if let Some(text) = value
-                .get("ok")
-                .and_then(|value| value.get("text"))
-                .and_then(serde_json::Value::as_str)
-            {
-                self.segments.push(std::sync::Arc::from(text));
+#[derive(Default, Deserialize)]
+struct Display<'a> {
+    #[serde(borrow)]
+    text: Option<Cow<'a, str>>,
+    task: Option<crate::TaskId>,
+}
+fn owner(key: &FileKey) -> Option<OutputOwner> {
+    match key {
+        FileKey::Task {
+            task,
+            file: TaskFile::ExecutionResult(_),
+        } => Some(OutputOwner::Task(task.clone())),
+        FileKey::Session {
+            session,
+            file: TaskFile::ExecutionResult(_),
+        } => Some(OutputOwner::Session(session.clone())),
+        _ => None,
+    }
+}
+impl<'a> CommandOutputView<'a> {
+    /// Invalid envelopes remain ordinary files and cannot invent a UI outcome.
+    pub fn from_file(file: &'a FileValue) -> Option<Self> {
+        Self::from_bytes(&file.key, &file.bytes)
+    }
+    fn from_bytes(key: &FileKey, bytes: &'a [u8]) -> Option<Self> {
+        owner(key)?;
+        let outcome: Outcome<'_> = serde_json::from_slice(bytes).ok()?;
+        let completion = settled(&outcome).ok()?;
+        let value: Display = outcome
+            .ok
+            .and_then(|value| serde_json::from_str(value.get()).ok())
+            .unwrap_or_default();
+        Some(Self {
+            sequence: outcome.sequence,
+            completion,
+            text: value.text,
+            task: value.task,
+            error: outcome
+                .error
+                .and_then(|value| serde_json::from_str(value.get()).ok()),
+        })
+    }
+}
+#[derive(Clone, Debug, PartialEq)]
+struct Metadata {
+    sequence: u64,
+    task: Option<crate::TaskId>,
+    has_text: bool,
+}
+#[derive(Default, Deserialize)]
+struct DisplayMetadata<'a> {
+    #[serde(borrow)]
+    text: Option<&'a RawValue>,
+    task: Option<crate::TaskId>,
+}
+impl Metadata {
+    fn from_file(file: &FileValue) -> Option<Self> {
+        owner(&file.key)?;
+        let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).ok()?;
+        settled(&outcome).ok()?;
+        let display: DisplayMetadata<'_> = outcome
+            .ok
+            .and_then(|value| serde_json::from_str(value.get()).ok())
+            .unwrap_or_default();
+        Some(Self {
+            sequence: outcome.sequence,
+            task: display.task,
+            has_text: display.text.is_some_and(|text| text.get().starts_with('"')),
+        })
+    }
+}
+/// Two metadata indexes over the same parsed rows: ordered display and exact-key retirement.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct Outputs {
+    rows: BTreeMap<OutputOwner, BTreeMap<u64, BTreeMap<FileKey, Metadata>>>,
+    keys: BTreeMap<FileKey, (OutputOwner, u64)>,
+    text_tasks: BTreeMap<(OutputOwner, crate::TaskId), BTreeMap<u64, usize>>,
+}
+impl Outputs {
+    pub(super) fn includes(key: &FileKey) -> bool {
+        owner(key).is_some()
+    }
+    pub(super) fn remove(&mut self, key: &FileKey) {
+        let Some((owner, sequence)) = self.keys.remove(key) else {
+            return;
+        };
+        let rows = self.rows.get_mut(&owner).expect("indexed owner");
+        let sequence_rows = rows.get_mut(&sequence).expect("indexed sequence");
+        let value = sequence_rows.remove(key).expect("indexed output");
+        if let Some(task) = value.task.filter(|_| value.has_text) {
+            let task_key = (owner.clone(), task);
+            let sequences = self.text_tasks.get_mut(&task_key).expect("indexed task");
+            let count = sequences.get_mut(&sequence).expect("indexed task sequence");
+            *count -= 1;
+            if *count == 0 {
+                sequences.remove(&sequence);
             }
-            self.after = sequence;
-            changed = true;
+            if sequences.is_empty() {
+                self.text_tasks.remove(&task_key);
+            }
         }
-        Ok(changed)
+        if sequence_rows.is_empty() {
+            rows.remove(&sequence);
+        }
+        if rows.is_empty() {
+            self.rows.remove(&owner);
+        }
     }
-
-    pub(super) fn apply(
-        &mut self,
-        views: &mut super::TaskFileViews,
-        active: Option<crate::TaskId>,
-    ) -> usize {
-        let reset = self.applied_revision != self.revision;
-        let archived = self.applied_segments != self.segments.len();
-        let live = active.and_then(|task| {
-            views
-                .transcripts
-                .get(&format!("AGGREGATE_KIND_TASK:{task}"))
+    pub(super) fn insert(&mut self, file: &FileValue) {
+        self.remove(&file.key);
+        let Some(value) = Metadata::from_file(file) else {
+            return;
+        };
+        let owner = owner(&file.key).expect("validated outcome owner");
+        self.keys
+            .insert(file.key.clone(), (owner.clone(), value.sequence));
+        if let Some(task) = value.task.filter(|_| value.has_text) {
+            *self
+                .text_tasks
+                .entry((owner.clone(), task))
+                .or_default()
+                .entry(value.sequence)
+                .or_default() += 1;
+        }
+        self.rows
+            .entry(owner)
+            .or_default()
+            .entry(value.sequence)
+            .or_default()
+            .insert(file.key.clone(), value);
+    }
+    fn has_text(&self, owner: &OutputOwner, task: crate::TaskId, after: u64) -> bool {
+        self.text_tasks
+            .get(&(owner.clone(), task))
+            .and_then(BTreeMap::last_key_value)
+            .is_some_and(|(sequence, _)| *sequence > after)
+    }
+    fn from<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        after: Option<(u64, &FileKey)>,
+    ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        let rows = self.rows.get(owner);
+        let current = after.and_then(|(sequence, key)| {
+            rows?
+                .get(&sequence)
+                .map(|values| values.range((Excluded(key), Unbounded)))
         });
-        if self.after == 0 && live.is_none() {
-            if self.live_start.is_some()
-                || self.reasoning_start.is_some()
-                || self.live_len != 0
-                || self.reasoning_len != 0
-            {
-                views.transcripts.remove(&self.owner);
-                self.live_start = None;
-                self.reasoning_start = None;
-                self.live_len = 0;
-                self.reasoning_len = 0;
-            }
-            return 0;
-        }
-        let live_start = live.and_then(|text| text.file_start.clone());
-        let reasoning_start = live.and_then(|text| text.reasoning_start.clone());
-        let text_pending = live.map_or(0, |text| text.pending(false));
-        let reasoning_pending = live.map_or(0, |text| text.pending(true));
-        let text = live.map_or("", |text| text.streaming_text.as_str());
-        let live_size = text.len();
-        let restart = reset
-            || archived
-            || self.active != active
-            || live_size < self.live_len.saturating_sub(self.text_pending)
-            || self.live_start != live_start
-            || self.reasoning_start != reasoning_start;
-        let offset = if restart {
-            0
-        } else {
-            self.live_len.saturating_sub(self.text_pending)
-        };
-        let delta = text.get(offset..).unwrap_or_default().to_owned();
-        let text = live.map_or("", |text| text.reasoning.as_str());
-        let reasoning_size = text.len();
-        let reasoning_reset =
-            restart || reasoning_size < self.reasoning_len.saturating_sub(self.reasoning_pending);
-        let reasoning_offset = if reasoning_reset {
-            0
-        } else {
-            self.reasoning_len.saturating_sub(self.reasoning_pending)
-        };
-        let reasoning = text.get(reasoning_offset..).unwrap_or_default().to_owned();
-        let mut work = delta.len() + reasoning.len();
-        let transcript = views.transcripts.entry(self.owner.clone()).or_default();
-        if reset {
-            transcript.streaming_text.clear();
-            self.archive_len = 0;
-            self.applied_segments = 0;
-        }
-        if restart {
-            transcript.streaming_text.truncate(self.archive_len);
-        }
-        for segment in &self.segments[self.applied_segments..] {
-            if !transcript.streaming_text.is_empty() {
-                transcript.streaming_text.push_str("\n\n");
-            }
-            work += segment.len();
-            transcript.streaming_text.push_str(segment);
-        }
-        if archived || reset {
-            self.archive_len = transcript.streaming_text.len();
-        }
-        if offset == 0
-            && !delta.is_empty()
-            && self.archive_len != 0
-            && (restart || self.live_len == 0)
-        {
-            transcript.streaming_text.push_str("\n\n");
-        }
-        if !restart {
-            transcript.streaming_text.truncate(
-                transcript
-                    .streaming_text
-                    .len()
-                    .saturating_sub(self.text_pending),
-            );
-        }
-        transcript.streaming_text.push_str(&delta);
-        if reasoning_reset {
-            transcript.reasoning.clear();
-        }
-        if !reasoning_reset {
-            transcript.reasoning.truncate(
-                transcript
-                    .reasoning
-                    .len()
-                    .saturating_sub(self.reasoning_pending),
-            );
-        }
-        transcript.reasoning.push_str(&reasoning);
-        transcript.text_pending = text_pending;
-        transcript.reasoning_pending = reasoning_pending;
-        self.text_pending = text_pending;
-        self.reasoning_pending = reasoning_pending;
-        transcript.streaming_turn = Some(active.map_or_else(
-            || crate::OperationId::from_bytes(u128::from(self.after).to_be_bytes()),
-            |task| crate::OperationId::from_bytes(task.into_bytes()),
-        ));
-        self.applied_revision = self.revision;
-        self.applied_segments = self.segments.len();
-        self.live_len = live_size;
-        self.reasoning_len = reasoning_size;
-        self.active = active;
-        transcript.file_start.clone_from(&live_start);
-        self.live_start = live_start;
-        transcript.reasoning_start.clone_from(&reasoning_start);
-        self.reasoning_start = reasoning_start;
-        work
+        let later = rows.map(|rows| {
+            rows.range((
+                Excluded(after.map_or(0, |(sequence, _)| sequence)),
+                Unbounded,
+            ))
+        });
+        current.into_iter().flatten().chain(
+            later
+                .into_iter()
+                .flatten()
+                .flat_map(|(_, rows)| rows.iter()),
+        )
+    }
+    fn after<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        after: u64,
+    ) -> impl Iterator<Item = (&'a FileKey, &'a Metadata)> + use<'a> {
+        self.rows
+            .get(owner)
+            .into_iter()
+            .flat_map(move |rows| {
+                rows.range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            })
+            .flat_map(|(_, rows)| rows.iter())
     }
 }
+impl super::FileQueryView {
+    fn output<'a>(&'a self, key: &'a FileKey) -> Option<(&'a FileKey, CommandOutputView<'a>)> {
+        let file = self.files().get(key)?;
+        let [bytes] = file.segments.as_slice() else {
+            return None;
+        };
+        Some((key, CommandOutputView::from_bytes(key, bytes)?))
+    }
 
+    /// Whether a retained outcome supplies this task's canonical completed text.
+    pub fn has_command_text(&self, owner: &OutputOwner, task: crate::TaskId, after: u64) -> bool {
+        self.outputs.has_text(owner, task, after)
+    }
+    /// Resume producer order at an exact file identity, including tied sequence numbers.
+    pub fn outputs_from<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        after: Option<(u64, &FileKey)>,
+    ) -> impl Iterator<Item = (&'a FileKey, CommandOutputView<'a>)> + use<'a> {
+        self.outputs
+            .from(owner, after)
+            .filter_map(|(key, _)| self.output(key))
+    }
+    /// Borrow outcomes in producer order, visiting only records after the supplied sequence.
+    pub fn outputs<'a>(
+        &'a self,
+        owner: &OutputOwner,
+        after: u64,
+    ) -> impl Iterator<Item = (&'a FileKey, CommandOutputView<'a>)> + use<'a> {
+        self.outputs
+            .after(owner, after)
+            .filter_map(|(key, _)| self.output(key))
+    }
+}
 #[cfg(test)]
 mod tests;

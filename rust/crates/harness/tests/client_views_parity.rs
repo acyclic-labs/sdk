@@ -130,6 +130,27 @@ fn same(
         }
         let status: Option<Status> =
             serde_wasm_bindgen::from_value(browser.status(&agent).unwrap()).unwrap();
+        let owner = acyclic_harness::client::OutputOwner::Task(
+            acyclic_harness::task_volume::Component::new("t").unwrap(),
+        );
+        let actual_outcomes: serde_json::Value = serde_wasm_bindgen::from_value(
+            browser
+                .outcomes(&agent, serde_wasm_bindgen::to_value(&owner).unwrap(), 0)
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_outcomes = native
+            .read(|views| {
+                let Some(cursor) = views.cursor(&path) else {
+                    return serde_json::json!([]);
+                };
+                let files = views.selection(&(cursor.volume, cursor.query)).unwrap();
+                serde_json::to_value(files.outputs(&owner, 0).collect::<Vec<_>>()).unwrap()
+            })
+            .unwrap();
+        if actual_outcomes != expected_outcomes {
+            return Err("view parity: command outcomes differ".into());
+        }
         let expected_status = native
             .read(|v| {
                 v.status(&path).map(|s| Status {
@@ -244,6 +265,12 @@ async fn exercise(
         &volume,
         ".tasks/t/turns/9007199254740993/request.json",
         &request("initial"),
+    )
+    .await;
+    put(
+        &volume,
+        ".tasks/t/executions/reply/result.json",
+        br#"{"sequence":9007199254740993,"ok":{"text":"completed answer"}}"#,
     )
     .await;
     let mut chunk = Write::new(

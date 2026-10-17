@@ -1,7 +1,10 @@
+use crate as harness;
+#[path = "../../../tests/support/empty_client_views.rs"]
+mod file_views;
 use super::*;
 use crate::{
     TaskId,
-    client::{ClientSession, MemoryClientState, local_documents},
+    client::{ClientViews, local_documents},
     conversation::ContentPublisher,
     filesystem::FilesystemContentPublisher,
     task_volume::{FileKey, FileValue, Query},
@@ -13,9 +16,9 @@ use crate::{
 };
 use futures::StreamExt as _;
 
-fn picture(session: &ClientSession<MemoryClientState>, owner: &wire::Authority) -> String {
+fn picture(session: &ClientViews, owner: &wire::Authority) -> String {
     let mut renderer = ClientRenderer::default();
-    renderer.update(session.views(), owner);
+    renderer.update(session, owner);
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal
         .draw(|frame| {
@@ -38,14 +41,14 @@ fn picture(session: &ClientSession<MemoryClientState>, owner: &wire::Authority) 
 }
 
 async fn apply_next(
-    source: &mut acyclic_stream::BoxProviderStream<'static, Result<crate::client::ViewUpdate>>,
-    session: &mut ClientSession<MemoryClientState>,
+    source: &mut crate::task_volume::ChangeStream,
+    session: &mut ClientViews,
 ) -> Result<()> {
     let update = tokio::time::timeout(std::time::Duration::from_secs(2), source.next())
         .await
         .map_err(super::super::storage)?
         .ok_or_else(|| Error::NotFound("document update".into()))??;
-    session.apply_update(update)
+    session.query_change(update).map(|_| ())
 }
 
 proptest::proptest! {
@@ -77,12 +80,8 @@ proptest::proptest! {
                     &FileValue::new(FileKey::Goal, b"Wrong execution-log goal".to_vec())).await?;
                 let owner = wire::Authority { kind: wire::AggregateKind::Task as i32,
                     id: TaskId::new().to_string() };
-                let mut session = ClientSession::open(MemoryClientState::default())?;
-                session.track(wire::ReplayCursor { authority: Some(owner.clone()),
-                    generation: "documents".into(), revision: 0 })?;
-                let mut source = local_documents(&harness, &owner).await?;
-                apply_next(&mut source, &mut session).await?;
-                apply_next(&mut source, &mut session).await?;
+                let mut session = file_views::empty();
+                let mut source = local_documents(&harness, &mut session).await?;
                 let initial = picture(&session, &owner);
                 assert!(initial.contains("Scratch goal"), "{initial}");
                 assert!(initial.contains("Scratch plan"), "{initial}");
@@ -90,7 +89,7 @@ proptest::proptest! {
                 let updated = format!("# Updated goal {text}");
                 publisher.stage_once(OperationId::new(), "GOAL.md", updated.as_bytes(),
                     "text/markdown", "GOAL.md", None)?.await?;
-                apply_next(&mut source, &mut session).await?;
+                for _ in 0..2 {apply_next(&mut source, &mut session).await?;}
                 let followed = picture(&session, &owner);
                 assert!(followed.contains("Updated goal"), "{followed}");
                 assert!(!followed.contains("Scratch goal"));

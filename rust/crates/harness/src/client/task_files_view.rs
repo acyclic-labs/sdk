@@ -3,7 +3,7 @@ use super::{ClientViews, FileQueryView};
 use crate::task_volume::{
     Channel, Component, Cursor, FileKey, HeadFile, Query, TaskFile, ToolFile,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// One task at an accepted query cut; payloads remain shared file segments.
 #[derive(Clone)]
@@ -12,6 +12,8 @@ pub struct TaskQueryView<'a> {
     pub cursor: &'a Cursor,
     /// Canonical task identity.
     pub task: &'a Component,
+    pub(crate) source: &'a Arc<Query>,
+    selection: &'a FileQueryView,
     files: &'a BTreeMap<FileKey, HeadFile>,
     selected: std::collections::btree_map::Range<'a, FileKey, HeadFile>,
 }
@@ -47,6 +49,8 @@ impl FileQueryView {
         TaskQueryView {
             cursor: self.cursor(),
             task,
+            source: self.source(),
+            selection: self,
             files: self.files(),
             selected: self.files().range(range),
         }
@@ -63,6 +67,42 @@ impl ClientViews {
     }
 }
 impl<'a> TaskQueryView<'a> {
+    pub(crate) fn selection(&self) -> &'a FileQueryView {
+        self.selection
+    }
+    pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
+        match key {
+            FileKey::Task { task, .. } if task == self.task => self.files.get(key),
+            _ => None,
+        }
+    }
+    pub(crate) fn text_from(
+        &self,
+        from: Option<&FileKey>,
+    ) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
+        let (mut lower, upper) = Query::Task(self.task.clone())
+            .ranges()
+            .pop()
+            .expect("task range");
+        if let Some(from) = from {
+            lower = std::ops::Bound::Included(from.clone());
+        }
+        self.files.range((lower, upper)).filter_map(|(_, file)| {
+            let FileKey::Task { file: kind, .. } = &file.key else {
+                return None;
+            };
+            let (turn, channel) = match kind {
+                TaskFile::TextHead { turn, channel } => (*turn, *channel),
+                TaskFile::Chunk { turn, .. } => (*turn, file.channel?),
+                _ => return None,
+            };
+            Some(TaskTextView {
+                turn,
+                channel,
+                file,
+            })
+        })
+    }
     /// Exact task files in numeric identity order, retaining canonical metadata.
     pub fn files(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
         self.selected.clone().map(|(_, file)| file)
@@ -123,6 +163,30 @@ impl<'a> TaskQueryView<'a> {
     }
 }
 impl<'a> ToolQueryView<'a> {
+    pub(crate) fn source(&self) -> &'a Arc<Query> {
+        self.task.source
+    }
+    pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
+        self.task.file(key).filter(|file| matches!(&file.key,
+            FileKey::Task { file: TaskFile::Tool { turn, call, .. }, .. } if *turn == self.turn && call == self.call))
+    }
+    pub(crate) fn output_from(
+        &self,
+        stderr: bool,
+        from: Option<&FileKey>,
+    ) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
+        let leaf = |sequence| {
+            if stderr {
+                ToolFile::Stderr(sequence)
+            } else {
+                ToolFile::Stdout(sequence)
+            }
+        };
+        self.task
+            .files
+            .range(from.cloned().unwrap_or_else(|| self.key(leaf(0)))..=self.key(leaf(u64::MAX)))
+            .map(|(_, file)| file)
+    }
     fn key(&self, file: ToolFile) -> FileKey {
         FileKey::Task {
             task: self.task.task.clone(),

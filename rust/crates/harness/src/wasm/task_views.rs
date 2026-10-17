@@ -1,5 +1,9 @@
 //! Browser task projection from the same borrowed native file view.
-use super::{json::to_js, query::QueryFileInfo, swarm::WasmClientViews};
+use super::{
+    json::{from_js, to_js},
+    query::QueryFileInfo,
+    swarm::WasmClientViews,
+};
 use crate::{
     client::TaskQueryView,
     task_volume::{Channel, Component, Cursor},
@@ -78,6 +82,29 @@ impl<'a> From<TaskQueryView<'a>> for TaskQueryInfo<'a> {
 }
 #[wasm_bindgen]
 impl WasmClientViews {
+    /// Borrow ordered immutable outcomes from the same followed selection.
+    #[wasm_bindgen(unchecked_return_type = "[FileKey, CommandOutputView][]")]
+    pub fn outcomes(
+        &self,
+        agent: &str,
+        #[wasm_bindgen(unchecked_param_type = "OutputOwner")] owner: JsValue,
+        after: u64,
+    ) -> Result<JsValue, JsValue> {
+        let agent =
+            StreamPath::new(agent).map_err(|error| JsValue::from_str(&error.to_string()))?;
+        let owner: crate::client::OutputOwner = from_js(owner)?;
+        self.views
+            .read(|views| {
+                let Some(cursor) = views.cursor(&agent) else {
+                    return to_js(&Vec::<u8>::new());
+                };
+                let Some(files) = views.selection(&(cursor.volume, cursor.query)) else {
+                    return to_js(&Vec::<u8>::new());
+                };
+                to_js(&files.outputs(&owner, after).collect::<Vec<_>>())
+            })
+            .map_err(|error| JsValue::from_str(&error.to_string()))?
+    }
     /// Task text/tool folders at the exact followed cut. Read payloads with
     /// `segments(agent, file.key)`; metadata reads never concatenate output.
     #[wasm_bindgen(unchecked_return_type = "TaskQueryInfo | null")]

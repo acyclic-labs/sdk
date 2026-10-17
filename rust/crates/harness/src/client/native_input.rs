@@ -1,4 +1,4 @@
-//! Native input adapters; wire decoding and settlement stay in the shared runner.
+//! Native input adapters; JSONL decoding and settlement stay in the shared runner.
 use crate::{Error, Result};
 use futures::{StreamExt, stream::BoxStream};
 
@@ -13,37 +13,6 @@ pub fn stdin_jsonl() -> BoxStream<'static, Result<String>> {
     )
 }
 
-/// Waits for UI input or a validated delivery. Publication/commit is completed
-/// outside select, so an input event cannot cancel a half-published delivery.
-#[cfg(feature = "tui")]
-pub async fn next_tui_event<S: super::ClientStateStore>(
-    client: &mut super::HarnessClient<S>,
-    input: &mut (impl futures::Stream<Item = Result<crate::tui::key_event::InputEvent>> + Unpin),
-    completions: &mut crate::tui_files::CompletionFiles,
-    prompt: &mut crate::tui::PromptInput,
-    commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
-    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
-) -> Result<Option<crate::tui::key_event::InputEvent>> {
-    let delivery = tokio::select! {
-        event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
-        delivery = client.read_delivery() => delivery?,
-        update = documents.next() => {
-            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
-            return Ok(None);
-        },
-        change = commands.observe_change() => { change?; return Ok(None); },
-        change = completions.read_change() => {
-            completions.apply_change(change?, prompt)?;
-            return Ok(None);
-        },
-    };
-    let delivery = delivery.ok_or_else(|| {
-        Error::Conflict("live replay ended; reconnect from the committed cursor".into())
-    })?;
-    client.publish_delivery(delivery, |_| Ok(())).await?;
-    Ok(None)
-}
-
 /// Multiplex terminal input with authorized file publications.
 #[cfg(all(feature = "tui", feature = "filesystem-local"))]
 pub async fn next_file_tui_event(
@@ -52,13 +21,13 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
-    documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
+    documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
-            client.apply_update(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
+            client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;
             Ok(None)
         },
         change = commands.observe_change() => { change?; Ok(None) },

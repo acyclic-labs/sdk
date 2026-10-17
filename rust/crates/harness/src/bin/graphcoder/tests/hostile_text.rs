@@ -1,7 +1,4 @@
 use acyclic_harness::{
-    OperationId,
-    client::TaskFileViews,
-    model::ModelEvent,
     tui::{ClientRenderer, ratatui::style::Modifier},
     wire,
 };
@@ -24,20 +21,17 @@ fn hostile_text_rows_preserve_markdown_style_without_hidden_controls() {
         id: "text".into(),
     };
     for scenario in scenarios {
-        let mut views = TaskFileViews::default();
-        views
-            .model_event(
-                &owner,
-                OperationId::new(),
-                ModelEvent::Content {
-                    delta: scenario.text,
-                },
-            )
-            .unwrap();
+        let mut views = super::file_views::empty();
+        super::file_views::append_text(&mut views, &owner.id, false, &scenario.text);
         if let Some(usage) = scenario.usage {
-            views.usage.insert(
-                format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id),
-                usage,
+            super::file_views::put(
+                &mut views,
+                acyclic_harness::task_volume::FileKey::Task {
+                    task: acyclic_harness::task_volume::Component::new(&owner.id).unwrap(),
+                    file: acyclic_harness::task_volume::TaskFile::Completion(0),
+                },
+                serde_json::to_vec(&usage).unwrap(),
+                None,
             );
         }
         let mut renderer = ClientRenderer::default();

@@ -6,6 +6,7 @@ pub use runner::{HeadlessClient, run_headless, run_jsonl};
 /// Settled task outcome with stable process exit codes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum HeadlessOutcome {
     /// The task completed, or is idle awaiting another prompt.
     Completed,

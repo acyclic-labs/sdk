@@ -42,7 +42,8 @@ pub async fn run(
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
-    let mut documents = client::local_documents(&local, &authority).await?;
+    client.follow_commands(&commands).await?;
+    let mut documents = client::local_documents(&local, client.views_mut()).await?;
     loop {
         client
             .follow_task(
@@ -53,7 +54,6 @@ pub async fn run(
                     .unwrap_or(acyclic_harness::TaskId::parse(&authority.id)?),
             )
             .await?;
-        client.project_commands(&commands, &authority)?;
         renderer.update(client.views(), &authority);
         if commands.exit_requested()? {
             return Ok(());
