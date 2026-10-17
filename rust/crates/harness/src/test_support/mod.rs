@@ -1,9 +1,9 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) mod differential;
 pub(crate) mod admission_work;
 mod client_views;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod differential;
 pub use client_views::empty_client_views;
 mod scripted;
 mod search;
