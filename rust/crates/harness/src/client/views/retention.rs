@@ -25,7 +25,7 @@ fn data(next: u64, key: Bytes, length: usize) -> wire::SessionData {
 fn retained(sizes: (usize, usize, usize, usize), history: bool, broken: bool) -> i64 {
     let (old, current, key_bytes, other) = sizes;
     let mut kept = None;
-    let allocation = allocation_counter::measure(|| {
+    let allocation = acyclic_test_support::measure(|| {
         let path = |s| StreamPath::new(s).unwrap();
         let mut views = ClientViews::new(
             path("swarm"),
