@@ -31,9 +31,12 @@ impl AgentPanel {
         views: &TaskFileViews,
         files: &CommandSession<P>,
     ) -> Result<()> {
+        // Layout rule: an open view (help, feedback, history, plan or any
+        // later overlay) owns the whole transcript area. The tree is a side
+        // panel, drawn only beside the transcript, never over an overlay.
         self.open = files
             .state(CommandFileRoot::Session, "layout.json")?
-            .is_some_and(|layout| layout["tree"] == true);
+            .is_some_and(|layout| layout["tree"] == true && layout["open_view"].is_null());
         self.selected = files.selected_task()?.map(|task| task.to_string());
         let view = views
             .queries

@@ -327,3 +327,114 @@ async fn followed_status_files_render_the_tree_and_keys_select_by_file() {
     assert!(!agents.is_open());
     assert!(!paint(&mut renderer, &agents, &files, &input).contains("Agents"));
 }
+
+/// Opens the tree, then each overlay through the production input path, and
+/// paints exactly as `view::run`. `close` dismisses the overlay with Escape
+/// first, so the tree is legitimately visible again.
+async fn overlay_with_tree_open(close: bool) {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("agent-tree-overlay").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    status(&volume, task(1), None, "completed", false).await;
+    status(&volume, task(2), Some(task(1)), "pending", true).await;
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task(1).to_string(),
+    };
+    let mut files = CommandSession::open(
+        volume.clone(),
+        OperationId::from_bytes([8; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        128,
+    )
+    .await
+    .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"renderer":"ratatui"}),
+        )
+        .await
+        .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &serde_json::json!({"selected_task": task(1), "tree": true}),
+        )
+        .await
+        .unwrap();
+    let mut client = TaskFileClient::observe_task(volume.as_ref(), &owner, task(1), 128, 65_536)
+        .await
+        .unwrap();
+    let mut overviews = task_overview_files(volume.as_ref(), 64, 65_536)
+        .await
+        .unwrap();
+    client
+        .apply_update(overviews.next().await.unwrap().unwrap())
+        .unwrap();
+    let mut input = PromptInput::default();
+    PromptFiles::default().refresh(&files, &mut input).unwrap();
+    let mut renderer = ClientRenderer::default();
+    let mut agents = AgentPanel::default();
+    agents.update(client.views(), &files).unwrap();
+    assert!(paint(&mut renderer, &agents, &files, &input).contains(&short(2)));
+    for (command, overlay) in [("/help", "Shortcuts"), ("/feedback", "Enter saves locally")] {
+        let submit = InputEffect::Submit {
+            text: command.into(),
+            queued: false,
+            edit: None,
+        };
+        if let Some(effect) = agents.input(&mut files, submit).await.unwrap() {
+            file_tui_input(&mut files, &NoFiles, effect, 10, 0)
+                .await
+                .unwrap();
+        }
+        if close {
+            press(
+                &mut input,
+                &agents,
+                &mut files,
+                KeyCode::Esc,
+                KeyModifiers::NONE,
+            )
+            .await;
+        }
+        renderer.configure(client.views(), &owner, &files).unwrap();
+        agents.update(client.views(), &files).unwrap();
+        let visible = paint(&mut renderer, &agents, &files, &input);
+        assert!(
+            !visible.contains("Agents") && !visible.contains(&short(2)),
+            "tree drawn over the {command} overlay:\n{visible}"
+        );
+        assert!(visible.contains(overlay), "{command}:\n{visible}");
+        press(
+            &mut input,
+            &agents,
+            &mut files,
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn overlays_own_the_area_and_hide_the_tree() {
+    overlay_with_tree_open(false).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "tree drawn over the /help overlay")]
+async fn a_visible_tree_is_detected_negative_control() {
+    overlay_with_tree_open(true).await;
+}
