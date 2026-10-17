@@ -7,6 +7,10 @@ pub(crate) struct FsCommand {
     pub(crate) volume: Option<String>,
 }
 
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, all(feature = "filesystem-local", feature = "native-execution"))
+))]
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {
         [command, branch] if command == "diff" && branch.starts_with("agents/") => Some(branch),

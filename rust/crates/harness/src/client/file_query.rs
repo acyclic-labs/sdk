@@ -192,12 +192,9 @@ impl FileQueryView {
             let [bytes] = head.segments.as_slice() else {
                 return Err(Error::Invalid("semantic file must have one segment".into()));
             };
-            let value = FileValue {
-                key: head.key.clone(),
-                bytes: bytes.clone(),
-                channel: head.channel,
-                publication: head.publication,
-            };
+            let mut value = FileValue::new(head.key.clone(), bytes.clone());
+            value.channel = head.channel;
+            value.publication = head.publication;
             match &value.key {
                 FileKey::Goal => {
                     view.goal = GoalFileView::from_file(Some(&value), maximum_bytes);

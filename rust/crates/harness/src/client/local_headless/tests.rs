@@ -113,7 +113,7 @@ proptest! {
             let mut rejected = false;
             let mut delivered = 0;
             for sequence in 0..count {
-                let file = FileValue { publication: None,
+                let file = FileValue { requester: None, publication: None,
                     key: FileKey::Task { task: Component::new(crate::runtime::task_id_for_admission(operation).to_string()).unwrap(),
                         file: TaskFile::Chunk { turn: if turns { (sequence / 64) as u64 } else { 0 }, sequence: sequence as u64 } },
                     channel: Some(crate::task_volume::Channel::Text), bytes: vec![b'x'].into() };

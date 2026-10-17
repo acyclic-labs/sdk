@@ -45,6 +45,11 @@ mod tests;
 
 /// Trusted command adapter.
 pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
+    /// Cancellation of this invocation, independent of its retained task lease.
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        None
+    }
+
     /// Executes or reconciles a retained command under the exact task lease.
     fn execute<'a>(
         &'a self,
@@ -329,6 +334,13 @@ impl TaskContext {
 }
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
+    fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
+        self.owner.invocation_cancellation()
+    }
+
+    fn task_id(&self) -> TaskId {
+        self.owner.task_id()
+    }
     fn validate_scope(
         &self,
         scope: &RuntimeScope,
@@ -355,6 +367,15 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     fn admission(&self) -> (&TaskAdmissionRecord, &crate::workflow::WorkflowAdmission) {
         (self.owner.admission(), self.owner.workflow_admission())
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        context: &'a TaskContext,
+        dispatch: crate::model::ModelDispatch,
+        fence: &'a LeaseFence,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
+        Box::pin(self.host.claim_model_from_context(context, dispatch, fence))
+    }
     fn verify_owner<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
@@ -369,6 +390,26 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
                         .map(|io| io as &mut dyn crate::store::HistoryIo),
                 )
                 .await
+        })
+    }
+    fn file_publication_condition(
+        &self,
+    ) -> BoxFuture<'_, Result<(acyclic_stream::CommitCondition, Option<u64>)>> {
+        Box::pin(async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.native_custody.is_some() {
+                return Err(Error::Unsupported(
+                    "task file publication requires ordinary execution".into(),
+                ));
+            }
+            let condition = self
+                .owner
+                .condition(crate::distributed::JournalWrite::Fresh, &mut None)
+                .await?;
+            Ok((
+                condition,
+                self.owner.admission().run_limits.deadline_epoch_ms,
+            ))
         })
     }
     fn send<'a>(
@@ -503,19 +544,45 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, &(fence), None).await?;
+        self.task_context_with_cancellation(task, fence, None).await
+    }
+
+    pub(crate) async fn task_context_with_cancellation(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        cancellation: Option<&acyclic_fs::CancellationToken>,
+    ) -> Result<TaskContext> {
+        let (owner, scope) = self
+            .host
+            .ordinary_journal_owner_with_scope(task, &fence)
+            .await?;
+        let scope = scope.with_replayed_extensions(owner.admission().extensions.clone())?;
+        let owner = match cancellation {
+            Some(cancellation) => owner.with_invocation_cancellation(cancellation),
+            None => owner,
+        };
+        let owner = Arc::new(owner);
         let context = self
             .harness
-            .durable_context(task, OperationId::from_bytes(task.into_bytes()), None)
+            .open_durable_context(
+                task,
+                OperationId::from_bytes(task.into_bytes()),
+                None,
+                crate::runtime::IssuedContextPurpose::Read,
+                None,
+                Some(scope),
+            )
             .await?;
         let mut context =
             Arc::try_unwrap(context).unwrap_or_else(|_| unreachable!("fresh context is unshared"));
         context.owned_mailbox = Some(Arc::new(TaskJournalMailbox {
             host: Arc::clone(&self.host),
-            owner: Arc::new(owner),
+            owner: Arc::clone(&owner),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: None,
         }));
+        context.bind_ordinary_created_owner(owner)?;
         if context.scope().resource_proofs().is_empty()
             && context.scope().grants().contains(
                 &self

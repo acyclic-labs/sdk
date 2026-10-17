@@ -51,7 +51,7 @@ proptest! {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: task.to_string() };
             let mut generation = volume.snapshot(&Query::Tasks, 32).await.unwrap().generation;
             let files: Vec<_> = chunks.iter().enumerate().map(|(index, bytes)| FileValue {
-                publication: None,
+                requester: None, publication: None,
                 key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: index as u64 } },
                 channel: Some(if reasoning { Channel::Reasoning } else { Channel::Text }), bytes: bytes.clone().into(),
             }).collect();
@@ -101,6 +101,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
             .append(
                 empty.generation,
                 &FileValue {
+                    requester: None,
                     publication: None,
                     key: FileKey::Task {
                         task: Component::new(&owner.id).unwrap(),
@@ -166,6 +167,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
         .append(
             cut.generation,
             &FileValue {
+                requester: None,
                 publication: None,
                 key: FileKey::Task {
                     task: Component::new(&owners[0].id).unwrap(),
@@ -221,7 +223,7 @@ proptest! {
             let owner = crate::wire::Authority { kind: crate::wire::AggregateKind::Task as i32, id: task.to_string() };
             let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
             volume.append(cut.generation, &FileValue {
-                publication: None,
+                requester: None, publication: None,
                 key: FileKey::Task { task: Component::new(task.to_string()).unwrap(), file: TaskFile::Chunk { turn: 0, sequence: 0 } },
                 channel: Some(Channel::Reasoning), bytes: b"reasoning".to_vec().into(),
             }).await.unwrap();
@@ -276,6 +278,7 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
         .await
         .unwrap();
     let file = FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: current,

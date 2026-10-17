@@ -63,24 +63,18 @@ async fn followed_task_files_render_without_a_wire_connection() {
     let mut renderer = ClientRenderer::default();
     renderer.update(client.views(), &owner);
     assert!(!picture(&renderer).contains("File-backed answer"));
-    files
-        .append(
-            cut.generation,
-            &FileValue {
-                publication: None,
-                key: FileKey::Task {
-                    task: Component::new(task.to_string()).unwrap(),
-                    file: TaskFile::Chunk {
-                        turn: 0,
-                        sequence: 0,
-                    },
-                },
-                channel: Some(Channel::Text),
-                bytes: b"**File-backed answer**".to_vec().into(),
+    let mut file = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Chunk {
+                turn: 0,
+                sequence: 0,
             },
-        )
-        .await
-        .unwrap();
+        },
+        b"**File-backed answer**".to_vec(),
+    );
+    file.channel = Some(Channel::Text);
+    files.append(cut.generation, &file).await.unwrap();
     client.next_change().await.unwrap();
     renderer.update(client.views(), &owner);
     assert!(picture(&renderer).contains("File-backed answer"));

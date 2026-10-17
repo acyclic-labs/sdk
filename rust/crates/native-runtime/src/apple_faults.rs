@@ -28,11 +28,50 @@ pub(super) enum Mutation {
     DropRetry,
     /// Forgets the last byte of a short read that did move bytes.
     LoseByte,
+    /// Advises later runs even when the timed run was cached.
+    AdviseAlways,
+    /// Times every run instead of a logarithmic sample.
+    TimeEveryRun,
+    /// Judges every run against the latency floor alone, ignoring its size.
+    FixedThreshold,
 }
 
 thread_local! {
     static FAULTS: RefCell<VecDeque<Fault>> = const { RefCell::new(VecDeque::new()) };
     static MUTATION: Cell<Mutation> = const { Cell::new(Mutation::None) };
+    static ELAPSED: Cell<fn(usize) -> std::time::Duration> = const { Cell::new(cached) };
+    static TIMED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Returns and resets how many runs this thread timed.
+pub(super) fn timed_runs() -> usize {
+    TIMED.replace(0)
+}
+
+fn cached(_bytes: usize) -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+fn device(_bytes: usize) -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+
+/// Makes every timed run on this thread take a device read's time (or no
+/// time, the default), so traces stay exact however loaded the machine is.
+pub(super) fn force_uncached(uncached: bool) {
+    ELAPSED.set(if uncached { device } else { cached });
+}
+
+/// Makes each timed run on this thread take `elapsed(bytes)` of I/O time,
+/// where `bytes` is what that run requested.
+pub(super) fn force_elapsed(elapsed: fn(usize) -> std::time::Duration) {
+    ELAPSED.set(elapsed);
+}
+
+/// The test build's forced I/O time for a timed run of `bytes`.
+pub(super) fn elapsed(bytes: usize) -> std::time::Duration {
+    TIMED.set(TIMED.get() + 1);
+    ELAPSED.get()(bytes)
 }
 
 /// Queues faults for this thread's next raw attempts and sets the mutation.
@@ -47,6 +86,7 @@ pub(super) fn arm(faults: &[Fault], mutation: Mutation) {
 /// Clears this thread's faults and mutation, returning how many faults were consumed.
 pub(super) fn disarm(armed: usize) -> usize {
     MUTATION.set(Mutation::None);
+    ELAPSED.set(cached);
     armed - FAULTS.with_borrow_mut(std::mem::take).len()
 }
 

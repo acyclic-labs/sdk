@@ -29,6 +29,7 @@ fn put(views: &mut ClientViews, path: &str, bytes: Vec<u8>, channel: Option<Chan
         .query_change(Change {
             cursor,
             file: Some(FileValue {
+                requester: None,
                 key: FileKey::parse(path).unwrap(),
                 bytes: bytes.into(),
                 channel,

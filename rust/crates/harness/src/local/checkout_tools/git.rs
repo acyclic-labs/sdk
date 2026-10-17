@@ -132,7 +132,10 @@ impl CheckoutTools {
                     context.operation_id(),
                     0,
                     lease.publication_permit(),
-                    Some(Arc::clone(owner)),
+                    Some((
+                        context.task().ordinary_journal_owner::<LocalStream>()?,
+                        false,
+                    )),
                 )
                 .await?;
             }

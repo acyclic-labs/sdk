@@ -61,6 +61,9 @@ impl LocalHarness {
             )
             .await?,
         );
+        let erased_files = Arc::new(task_files.reopen_erased().await?);
+        let mut runtime = runtime.with_task_files(erased_files.clone())?;
+        runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
             let directory = owner::directory(&owner::state_directory(&config.project)?)?;
@@ -121,6 +124,7 @@ impl LocalHarness {
             scratch: volume.clone(),
             journal: volume.clone(),
             verifier: verifier.clone(),
+            issuer: None,
             signed: signed.clone(),
             model,
             provider,

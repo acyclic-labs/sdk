@@ -9,6 +9,29 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+
+/// The clock the capture deadline reads. Tests freeze it so that expiry is
+/// ordered by the capture loop's own checks instead of scheduler latency.
+#[cfg(not(test))]
+fn capture_now() -> Instant {
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn capture_now() -> Instant {
+    CAPTURE_CLOCK.with(std::cell::Cell::get).unwrap_or_else(Instant::now)
+}
+
+/// Freezes this thread's capture clock at `now`, or restores wall time.
+#[cfg(test)]
+fn set_capture_clock(now: Option<Instant>) {
+    CAPTURE_CLOCK.with(|clock| clock.set(now));
+}
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
 use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
@@ -120,16 +143,18 @@ impl ProcessTree {
             .checked_add(2)
             .ok_or(io::ErrorKind::InvalidInput)?;
         let mut arguments = prepared_process_vec(argument_slots, &meter)?;
-        // MaybeUninit accepts uninitialized slots; actual pointer writes and their
-        // copy receipt occur at the later synchronous spawn, never hypothetically.
-        unsafe {
-            arguments.data.set_len(argument_slots);
-        }
+        // Actual pointer writes and their copy receipt occur at the later
+        // synchronous spawn, never hypothetically.
+        arguments
+            .data
+            .resize(argument_slots, std::mem::MaybeUninit::uninit());
         let inherited = platform::inherited_environment();
         let mut environment_count = 0_usize;
         if !inherited.is_null() {
             loop {
                 meter.examine(1, 0)?;
+                // SAFETY: the host environment is a null-terminated pointer
+                // array, and this index has not passed its terminator.
                 if unsafe { (*inherited.add(environment_count)).is_null() } {
                     break;
                 }
@@ -145,10 +170,13 @@ impl ProcessTree {
         let mut environment_pointers = prepared_process_vec(pointer_count, &meter)?;
         for index in 0..environment_count {
             meter.examine(1, 0)?;
+            // SAFETY: `index` precedes the terminator counted above.
             let value = unsafe { *inherited.add(index) };
             let mut length = 0_usize;
             loop {
                 meter.examine(1, 0)?;
+                // SAFETY: each entry is a NUL-terminated string, and this
+                // offset has not passed its terminator.
                 if unsafe { *value.add(length) } == 0 {
                     break;
                 }
@@ -157,6 +185,7 @@ impl ProcessTree {
             let terminated = length.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
             meter.admit_examination(0, terminated as u64)?;
             let mut bytes = prepared_process_vec(terminated, &meter)?;
+            // SAFETY: the entry's `length` bytes and its terminator were read above.
             bytes.data.extend_from_slice(unsafe {
                 std::slice::from_raw_parts(value.cast::<u8>(), terminated)
             });
@@ -206,14 +235,17 @@ impl ProcessTree {
             .checked_mul(std::mem::size_of::<*mut libc::c_char>())
             .ok_or(io::ErrorKind::InvalidInput)?;
         meter.admit_examination((count - 1) as u64, bytes as u64)?;
-        prepared.arguments.data[0].write(program.as_ptr().cast_mut());
-        for (slot, argument) in prepared.arguments.data[1..count - 1].iter_mut().zip(args) {
+        let [first, middle @ .., last] = prepared.arguments.data.as_mut_slice() else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        first.write(program.as_ptr().cast_mut());
+        for (slot, argument) in middle.iter_mut().zip(args) {
             slot.write(argument.as_ptr().cast_mut());
         }
-        prepared.arguments.data[count - 1].write(std::ptr::null_mut());
+        last.write(std::ptr::null_mut());
         meter.record_examination((count - 1) as u64, bytes as u64)?;
-        // Every slot is initialized above, and the caller retains all argument
-        // data while this existing synchronous native spawn borrows it.
+        // SAFETY: every slot is initialized above, and the caller retains all
+        // argument data while this existing synchronous native spawn borrows it.
         let arguments =
             unsafe { std::slice::from_raw_parts(prepared.arguments.data.as_ptr().cast(), count) };
         let result = platform::spawn_closed_with_arguments(
@@ -286,10 +318,14 @@ impl ProcessTree {
 
     #[cfg(unix)]
     fn owned_child_id(&self) -> io::Result<libc::id_t> {
-        self.native_child
-            .map(|pid| pid as libc::id_t)
-            .or_else(|| self.child.as_ref().map(Child::id))
-            .ok_or_else(|| io::ErrorKind::Other.into())
+        match self.native_child {
+            Some(pid) => libc::id_t::try_from(pid).map_err(io::Error::other),
+            None => self
+                .child
+                .as_ref()
+                .map(Child::id)
+                .ok_or_else(|| io::ErrorKind::Other.into()),
+        }
     }
 
     fn select_control_meter(&mut self, meter: Option<&dyn crate::NativeReadMeter>) {
@@ -395,7 +431,7 @@ impl ProcessTree {
                     "process output was already collected",
                 )));
             }
-            let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            let deadline = capture_now().checked_add(timeout).ok_or_else(|| {
                 ProcessCaptureFailure::before_capture(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "process deadline overflow",
@@ -481,7 +517,7 @@ impl ProcessTree {
                         }
                         return Ok(());
                     }
-                    if Instant::now() >= deadline {
+                    if capture_now() >= deadline {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
                             "process output deadline exceeded; effects may have occurred",

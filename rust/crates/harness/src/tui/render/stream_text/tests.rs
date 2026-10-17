@@ -23,6 +23,7 @@ fn replaced_head(bodies: &[String], forget_prefix: bool) {
             .query_change(Change {
                 cursor,
                 file: Some(FileValue {
+                    requester: None,
                     key: key.clone(),
                     bytes: body.as_bytes().to_vec().into(),
                     channel: Some(Channel::Text),

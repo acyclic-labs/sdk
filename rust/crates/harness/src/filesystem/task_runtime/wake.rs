@@ -257,9 +257,20 @@ where
             &context.context().read_file(&command.payload, None).await?,
         )
         .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
+        let mail_after = if command.kind == super::super::MAIL_RECEIVE_TASK_COMMAND_KIND
+            && super::super::child_agent::is_child(&admission)
+        {
+            Some(
+                super::super::child_agent::mail_cursor(&record.transition, command).map_err(
+                    |reason| observed::boundary(io, crate::wire::ErrorCode::Unauthorized, reason),
+                )?,
+            )
+        } else {
+            None
+        };
         if !self
             .commands()
-            .wait_ready_observed(context.context(), command, payload, io)
+            .wait_ready_observed(context.context(), command, payload, mail_after, io)
             .await?
         {
             return Ok(false);

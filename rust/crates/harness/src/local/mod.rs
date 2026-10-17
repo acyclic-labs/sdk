@@ -27,6 +27,7 @@ mod admission;
 mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
+mod children;
 mod command_machine;
 mod command_views;
 mod commands;
@@ -61,11 +62,12 @@ pub type LocalTaskRuntime =
 pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
-    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
     verifier: AuthorityVerifier,
+    issuer: Option<AuthorityIssuer>,
     signed: Scope,
     model: Model,
     provider: Arc<dyn ModelProvider>,
@@ -258,9 +260,13 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
             let stream = Arc::new(
-                LocalStream::open(directory.join("stream"), Default::default())
-                    .await
-                    .map_err(storage)?,
+                LocalStream::open_with_clock(
+                    directory.join("stream"),
+                    Default::default(),
+                    config.clock.clone(),
+                )
+                .await
+                .map_err(storage)?,
             );
             let issuer = AuthorityIssuer::new(
                 "acyclic.local",
@@ -301,6 +307,7 @@ impl LocalHarness {
                 scratch,
                 journal,
                 verifier,
+                issuer: Some(issuer),
                 signed,
                 model,
                 provider,
@@ -331,7 +338,7 @@ impl LocalHarness {
     }
 
     /// Trusted host's task-file volume; clients render its bounded live queries.
-    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<LocalStream>> {
+    pub fn task_files(&self) -> &Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>> {
         &self.task_files
     }
 

@@ -15,6 +15,7 @@ pub fn put(views: &mut ClientViews, key: FileKey, bytes: Vec<u8>, channel: Optio
         .query_change(Change {
             cursor,
             file: Some(FileValue {
+                requester: None,
                 key,
                 bytes: bytes.into(),
                 channel,

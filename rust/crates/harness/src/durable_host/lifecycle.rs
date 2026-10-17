@@ -264,7 +264,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<TaskJournalOwner<P>> {
-        self.journal_owner_record(task_id, fence, None, io).await
+        self.journal_owner_record(task_id, fence, None, io)
+            .await
+            .map(|(owner, _)| owner)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn ordinary_journal_owner_with_scope(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+    ) -> Result<(TaskJournalOwner<P>, RuntimeScope)> {
+        self.journal_owner_record(task_id, fence, None, None).await
     }
 
     #[cfg(feature = "filesystem")]
@@ -278,7 +289,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         original: Option<OperationSpec>,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<TaskJournalOwner<P>> {
+    ) -> Result<(TaskJournalOwner<P>, RuntimeScope)> {
         let operation = OperationId::from_bytes(task_id.into_bytes());
         #[cfg(not(target_arch = "wasm32"))]
         let (admission, mut custody) = match io {
@@ -423,7 +434,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             owner.verify(true, &mut work).await?;
         }
-        Ok(owner)
+        Ok((owner, scope))
     }
 
     pub(super) async fn publish_control(

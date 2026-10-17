@@ -21,6 +21,7 @@ fn v2_project_merge_receipt_fixture_round_trips_canonically() -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
 fn field_copy_receipt() -> Result<ProjectMergeReceipt> {
     let mut receipt: ProjectMergeReceipt =
         serde_json::from_str(include_str!("../../fixtures/v2/project-merge-receipt.json"))

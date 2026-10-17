@@ -42,6 +42,7 @@ fn query(task: crate::TaskId, recent: u32) -> Query {
 }
 fn chunk(task: crate::TaskId, sequence: u64, bytes: &[u8]) -> FileValue {
     FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -157,7 +158,7 @@ async fn removing_the_last_chunk_clears_the_projection() {
         .await
         .unwrap();
     let mut renderer = ClientRenderer::default();
-    assert!(picture(&mut renderer,client.views(),&owner).contains("evicted"));
+    assert!(picture(&mut renderer, client.views(), &owner).contains("evicted"));
     let status = FileValue::new(
         FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -172,12 +173,19 @@ async fn removing_the_last_chunk_clears_the_projection() {
         .unwrap();
     same_files(selection(&client), selection(&reopened));
     let files = selection(&client);
-    assert_eq!(files.files().len(),1);
+    assert_eq!(files.files().len(), 1);
     assert!(files.files().contains_key(&FileKey::Task {
-        task: Component::new(task.to_string()).unwrap(), file: TaskFile::Status,
+        task: Component::new(task.to_string()).unwrap(),
+        file: TaskFile::Status,
     }));
-    assert!(files.task(&Component::new(task.to_string()).unwrap()).text().next().is_none());
-    assert!(!picture(&mut renderer,client.views(),&owner).contains("evicted"));
+    assert!(
+        files
+            .task(&Component::new(task.to_string()).unwrap())
+            .text()
+            .next()
+            .is_none()
+    );
+    assert!(!picture(&mut renderer, client.views(), &owner).contains("evicted"));
 }
 
 #[tokio::test]

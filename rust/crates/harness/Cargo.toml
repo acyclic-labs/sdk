@@ -173,7 +173,7 @@ required-features = ["filesystem"]
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
-model-checking = ["dep:loom", "dep:same-file", "dep:tempfile"]
+model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]

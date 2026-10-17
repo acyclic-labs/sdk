@@ -208,6 +208,7 @@ fn pooled((index, size): (u8, usize)) -> FileValue {
     };
     let key = FileKey::Task { task, file };
     FileValue {
+        requester: None,
         key,
         channel,
         publication: None,

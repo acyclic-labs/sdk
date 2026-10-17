@@ -568,3 +568,86 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     drop(recovery_custody);
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn ordinary_stock_context_keeps_its_owner_and_rejects_changed_fences(suffix in "[a-z]{1,8}") {
+        let executor = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let result: Result<()> = executor.block_on(async {
+            let fixture = Fixture::new().await?;
+            let runtime = fixture.runtime(None).await?;
+            let lease = fixture.admit(&runtime).await?;
+            let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+            runtime.task_host().start_task(&lease, &mut None).await?;
+            let fence = LeaseFence::from(&lease.reservation);
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let context = Arc::new(runtime.task_context_with_cancellation(task, fence.clone(), Some(&cancellation)).await?);
+            let owner = Arc::clone(context.owned_mailbox.as_ref().unwrap());
+            let provider = Arc::new(PendingModel {
+                clock: fixture.clock.clone(),
+                generated: AtomicUsize::new(0),
+                reconciled: AtomicUsize::new(0),
+            });
+            let model = Model::new("synthetic".into(), "retained".into(), "1".into(), Value::Null)?;
+            let mut changed = fence.clone();
+            changed.reservation_id.push_str(&suffix);
+            assert!(matches!(runtime.stock_execution_with_context(
+                Arc::clone(&context), changed.clone(), OperationId::new(), model.clone(), provider.clone(),
+                ContextPipeline::default(), fixture.tools.clone(), None,
+            ).await, Err(Error::Unauthorized(_))));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let original = context.ordinary_journal_owner::<acyclic_stream::MemoryStream>()?;
+                let journal = runtime.workflow_journal_with_context(&context)?;
+                assert!(Arc::ptr_eq(&original, journal.owner.as_ref().unwrap()));
+                let commands = runtime.commands();
+                let command_journal = commands.command_workflow_journal(&context, task, &fence, None).await?;
+                assert!(Arc::ptr_eq(&original, command_journal.owner.as_ref().unwrap()));
+                assert!(matches!(commands.command_workflow_journal(&context, task, &changed, None).await, Err(Error::Unauthorized(_))));
+                assert!(matches!(commands.command_workflow_journal(&context, TaskId::new(), &fence, None).await, Err(Error::Unauthorized(_))));
+                assert!(matches!(runtime.harness().open_registered_task(
+                    task, &changed, journal.clone(), Some(Arc::clone(&context)),
+                ).await, Err(Error::Unauthorized(_))));
+                let retained = Arc::strong_count(&owner);
+                let session = runtime.harness().open_registered_task(
+                    task, &fence, journal, Some(Arc::clone(&context)),
+                ).await?;
+                assert_eq!(Arc::strong_count(&owner), retained + 1);
+                drop(session);
+                assert_eq!(Arc::strong_count(&owner), retained);
+                let dispatch = crate::model::ModelDispatch { operation_id: OperationId::new(), step: 0, request_digest: [3;32] };
+                assert!(matches!(owner.claim_model_dispatch(&context, dispatch.clone(), &changed).await, Err(Error::Unauthorized(_))));
+                let narrowed = context.scoped(crate::Capabilities::default(), context.scope().limits())?;
+                assert!(matches!(owner.claim_model_dispatch(&narrowed, dispatch.clone(), &fence).await, Err(Error::Unauthorized(_))));
+                let other = fixture.runtime(None).await?;
+                assert!(matches!(other.task_host().claim_model_from_context(&context, dispatch.clone(), &fence).await, Err(Error::Unauthorized(_))));
+                for _ in 0..2 { owner.claim_model_dispatch(&context, dispatch.clone(), &fence).await?; }
+                let mut changed_request = dispatch;
+                changed_request.request_digest[0] ^= 1;
+                assert!(owner.claim_model_dispatch(&context, changed_request, &fence).await.is_err());
+            }
+            let retained = Arc::strong_count(&owner);
+            let execution = runtime.stock_execution_with_context(
+                context, fence, OperationId::new(), model, provider.clone(),
+                ContextPipeline::default(), fixture.tools.clone(), None,
+            ).await?.with_compaction_policy(crate::context::CompactionPolicy::Disabled);
+            // Ownership identity, rather than elapsed time, proves composition
+            // retained the issued owner instead of reopening its proof chain.
+            assert_eq!(Arc::strong_count(&owner), retained);
+            assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+            cancellation.cancel();
+            let input = TurnInput { operation_id: execution.operation_id(),
+                input: crate::model::ModelContent::Text("stopped invocation".into()),
+                selected_context: None, max_steps: 1 };
+            let stopped = execution.execute(input).await;
+            assert!(matches!(stopped,
+                Err(Error::InteractionRejected(crate::InteractionRejection::Cancelled))), "{stopped:?}");
+            assert_eq!(provider.generated.load(Ordering::SeqCst), 0);
+            drop(execution);
+            assert_eq!(Arc::strong_count(&owner), retained - 1);
+            Ok(())
+        });
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
+}

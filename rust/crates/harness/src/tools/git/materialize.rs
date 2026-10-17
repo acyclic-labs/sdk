@@ -160,7 +160,7 @@ where
             operation_id,
             from: from.id(),
             to,
-            excluded_names: &[".git", ".system"],
+            excluded_names: &[".git", ".system", ".volumes"],
             options: &options,
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,
