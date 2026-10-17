@@ -43,13 +43,12 @@ fn encode<const BROKEN: bool>(
     cancellation: &CancellationToken,
     actual: Arc<AtomicU64>,
     pages: bool,
-    page: Option<PageStorage>,
+    storage: Option<EffectStorage>,
 ) {
     EFFECT.with(|witness| *witness.borrow_mut() = Some((actual, pages)));
     OMIT_RESERVATION.with(|flag| flag.set(BROKEN));
     let mut accounting = allocation::KernelAccounting::native(work, cancellation);
-    if pages {
-        let (wire, mut output, owner) = page.unwrap();
+    if let Some((wire, mut output, owner)) = storage {
         let mut observer = EncodeAccounting {
             accounting: &mut accounting,
             owned_bytes: output.len() as u64,
@@ -60,21 +59,25 @@ fn encode<const BROKEN: bool>(
             bytes_encoded: wire.len() as u64,
             ..WorkCounters::UNCHARGED
         };
-        // Bound the model to the protected page effect. Storage is funded
+        // Bound the model to the protected effect. Storage is funded
         // before contention, as in the read-credit model. Admission, page-step
         // mapping, completion and refund are the production observer paths;
         // full writer/capacity callback sequences are covered by the byte oracle.
-        if observer
-            .observe(&crate::kernel::blob::page_write_step(
-                EncodeWorkStep::Admit(delta),
-            ))
-            .is_ok()
-        {
+        let (before, after) = if pages {
+            (
+                crate::kernel::blob::page_write_step(EncodeWorkStep::Admit(delta)),
+                crate::kernel::blob::page_write_step(EncodeWorkStep::Completed(delta)),
+            )
+        } else {
+            (
+                EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes: 10 }),
+                EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes: 10 }),
+            )
+        };
+        if observer.observe(&before).is_ok() {
             output.copy_from_slice(&wire);
             assert_eq!(output, wire);
-            let _ = observer.observe(&crate::kernel::blob::page_write_step(
-                EncodeWorkStep::Completed(delta),
-            ));
+            let _ = observer.observe(&after);
         }
         drop(output);
         drop(observer);
@@ -97,9 +100,9 @@ fn encode<const BROKEN: bool>(
     EFFECT.with(|witness| *witness.borrow_mut() = None);
 }
 
-type PageStorage = (Vec<u8>, Vec<u8>, crate::NativeAllocation);
+type EffectStorage = (Vec<u8>, Vec<u8>, crate::NativeAllocation);
 
-fn page_storage(work: &NativeMaterializationWork) -> PageStorage {
+fn effect_storage(work: &NativeMaterializationWork, pages: bool) -> EffectStorage {
     let page = crate::kernel::BlobPage {
         first_offset: 0,
         end_offset: 1,
@@ -112,13 +115,17 @@ fn page_storage(work: &NativeMaterializationWork) -> PageStorage {
             },
         }]),
     };
-    let wire = crate::kernel::encode_blob_page(
-        &page,
-        1,
-        |_| Ok::<_, CanonicalDecodeError>(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )
-    .unwrap();
+    let wire = if pages {
+        crate::kernel::encode_blob_page(
+            &page,
+            1,
+            |_| Ok::<_, CanonicalDecodeError>(()),
+            |_| CanonicalDecodeError::AllocationFailed,
+        )
+        .unwrap()
+    } else {
+        b"ACYFSFIL\x01\x00".to_vec()
+    };
     let owner = work
         .claim(wire.len() as u64, 1, WorkCounters::UNCHARGED)
         .unwrap();
@@ -131,6 +138,7 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
     pages: bool,
     resource: bool,
     cancel: bool,
+    bounded: bool,
 ) {
     loom::model(move || {
         let cancellation = CancellationToken::new();
@@ -155,8 +163,8 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
             original.clone()
         };
         let baseline = original.live_allocation_bytes();
-        let worker_page = pages.then(|| page_storage(&work));
-        let local_page = pages.then(|| page_storage(&work));
+        let worker_page = bounded.then(|| effect_storage(&work, pages));
+        let local_page = bounded.then(|| effect_storage(&work, pages));
         // Standard Arc only transports owners pinned through join. All mutable
         // production leaf/resource/cancellation state and the witness use sync.
         let actual = Arc::new(AtomicU64::new(0));
@@ -202,16 +210,17 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
 #[test]
 fn concurrent_headers_reserve_zero_one_or_both_allowances() {
     for maximum in [0, 10, 20] {
-        race::<false, true>(maximum, false, false, false);
+        race::<false, true>(maximum, false, false, false, false);
+        race::<false, true>(maximum, false, false, false, true);
     }
-    race::<false, true>(10, false, true, false);
-    race::<false, true>(10, false, false, true);
+    race::<false, true>(10, false, true, false, false);
+    race::<false, true>(10, false, false, true, false);
 }
 
 #[test]
 fn concurrent_blob_pages_reserve_the_page_write_charge() {
     for maximum in [0, 1, 2] {
-        race::<false, true>(maximum, true, false, false);
+        race::<false, true>(maximum, true, false, false, true);
     }
 }
 
@@ -226,10 +235,11 @@ fn rejected(panic: Box<dyn std::any::Any + Send>, expected: &str) {
 #[test]
 fn check_only_admission_and_deleting_the_bound_assertion_are_detected() {
     for (maximum, pages) in [(10, false), (1, true)] {
-        let panic = std::panic::catch_unwind(|| race::<true, true>(maximum, pages, false, false))
-            .expect_err("the old check-only admission must violate its allowance");
+        let panic =
+            std::panic::catch_unwind(|| race::<true, true>(maximum, pages, false, false, true))
+                .expect_err("the old check-only admission must violate its allowance");
         rejected(panic, "concurrent encoders must not exceed admitted work");
-        race::<true, false>(maximum, pages, false, false);
+        race::<true, false>(maximum, pages, false, false, true);
     }
 }
 
