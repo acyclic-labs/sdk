@@ -22,8 +22,9 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
         ..ProptestConfig::default()
     });
     let check = |(bytes, mode, kind, admitted, cancelled): (Vec<u8>, u32, u8, bool, bool)| {
-        for forced in [false, true] {
-            let _fallback = crate::native_host::stat_probe::Fallback::enter(forced);
+        for (forced, without_birth_time) in [(false, false), (false, true), (true, false)] {
+            let _statx =
+                crate::native_host::stat_probe::StatxOptions::enter(forced, without_birth_time);
             let mut outcomes = Vec::new();
             for old in [false, true] {
                 // Separate files, descriptors, roots, cancellation and original ledgers.
@@ -114,6 +115,13 @@ fn capture_metadata_queries_match_frozen_facts_without_generation_work() {
                     .unwrap()
                     .map(|stat| {
                         assert_eq!(metadata_bytes(&stat), metadata_bytes(&expected));
+                        if forced || without_birth_time {
+                            assert!(stat.birth_time().is_none());
+                            assert_eq!(
+                                stat.created().unwrap_err().kind(),
+                                std::io::ErrorKind::Unsupported
+                            );
+                        }
                         assert_eq!(stat.identity(), expected.identity());
                         assert_eq!(
                             (stat.len(), stat.nlink()),
@@ -226,8 +234,9 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
         runtime.block_on(super::capture_policy_tests::native_checkout(&setup))?,
     ];
     let check = |(sparse, limit, edit, growth, cancelled): (bool, u64, u8, u64, bool)| {
-        for forced in [false, true] {
-            let _fallback = crate::native_host::stat_probe::Fallback::enter(forced);
+        for (forced, without_birth_time) in [(false, false), (false, true), (true, false)] {
+            let _statx =
+                crate::native_host::stat_probe::StatxOptions::enter(forced, without_birth_time);
             let mut outcomes = Vec::new();
             for old in [false, true] {
                 let source = tempfile::tempdir().unwrap();
@@ -241,6 +250,9 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                 let root = HostRoot::open(source.path(), &mut crate::native_host::ordinary_work())
                     .unwrap();
                 let snapshot = test_host_stat(&root, Path::new("file")).unwrap();
+                if forced || without_birth_time {
+                    prop_assert!(snapshot.birth_time().is_none());
+                }
                 let cancellation = CancellationToken::new();
                 let work = NativeMaterializationWork::new(
                     WorkBudget {
@@ -354,18 +366,7 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                     bits
                 };
                 prop_assert_eq!(trace, oracle(old));
-                // Each completed comparison converts both unavailable birth
-                // times through the existing three-allocation io::Error path.
-                let comparisons = [
-                    !cancelled && limit >= 2 + fallback_reads,
-                    !cancelled && edit != 3 && limit >= 3 + extra + 2 * fallback_reads,
-                    !cancelled && matches!(edit, 0 | 4) && limit >= 4 + extra + 3 * fallback_reads,
-                ]
-                .into_iter()
-                .filter(|completed| *completed)
-                .count() as u64;
-                let expected_heap =
-                    strings + u64::from(!success) + if fallback { 6 * comparisons } else { 0 };
+                let expected_heap = strings + u64::from(!success);
                 prop_assert_eq!(
                     heap.count_total,
                     expected_heap,

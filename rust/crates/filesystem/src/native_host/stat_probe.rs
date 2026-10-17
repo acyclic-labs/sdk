@@ -10,30 +10,37 @@ thread_local! {
     static DUPLICATE: Cell<bool> = const { Cell::new(false) };
     static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
     static EXAMINATIONS: Cell<Option<u64>> = const { Cell::new(None) };
+    static LEGACY_BIRTH_TIME: Cell<bool> = const { Cell::new(false) };
     #[cfg(target_os = "linux")]
-    static FALLBACK: Cell<bool> = const { Cell::new(false) };
+    static STATX_OPTIONS: Cell<(bool, bool)> = const { Cell::new((false, false)) };
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) struct Fallback(bool);
+pub(crate) struct StatxOptions((bool, bool));
 #[cfg(target_os = "linux")]
-impl Fallback {
-    pub(crate) fn enter(force: bool) -> Self {
-        Self(FALLBACK.replace(force))
+impl StatxOptions {
+    pub(crate) fn enter(fallback: bool, without_birth_time: bool) -> Self {
+        Self(STATX_OPTIONS.replace((fallback, without_birth_time)))
     }
 }
 #[cfg(target_os = "linux")]
-impl Drop for Fallback {
+impl Drop for StatxOptions {
     fn drop(&mut self) {
-        FALLBACK.set(self.0);
+        STATX_OPTIONS.set(self.0);
     }
 }
 #[cfg(target_os = "linux")]
-pub(crate) fn statx_result<T>(
-    result: Result<T, rustix::io::Errno>,
-) -> Result<T, rustix::io::Errno> {
-    if FALLBACK.get() {
+pub(crate) fn statx_result(
+    result: Result<rustix::fs::Statx, rustix::io::Errno>,
+) -> Result<rustix::fs::Statx, rustix::io::Errno> {
+    let (fallback, without_birth_time) = STATX_OPTIONS.get();
+    if fallback {
         Err(rustix::io::Errno::NOSYS)
+    } else if without_birth_time {
+        result.map(|mut stat| {
+            stat.stx_mask &= !rustix::fs::StatxFlags::BTIME.bits();
+            stat
+        })
     } else {
         result
     }
@@ -86,6 +93,9 @@ impl Probe {
     pub(crate) fn restore_enumeration(&self) {
         RESTORE_WALK.set(true);
     }
+    pub(crate) fn restore_birth_time_errors(&self) {
+        LEGACY_BIRTH_TIME.set(true);
+    }
     pub(crate) fn new(old: bool, edit: Option<Edit>) -> Self {
         assert!(STATE.replace(Some((old, 1, 0))).is_none());
         EDIT.set(edit);
@@ -104,6 +114,7 @@ impl Drop for Probe {
         DUPLICATE.set(false);
         RESTORE_WALK.set(false);
         EXAMINATIONS.set(None);
+        LEGACY_BIRTH_TIME.set(false);
     }
 }
 pub(crate) fn old() -> bool {
@@ -114,6 +125,9 @@ pub(crate) fn duplicate() -> bool {
 }
 pub(crate) fn restore_walk() -> bool {
     RESTORE_WALK.get()
+}
+pub(crate) fn legacy_birth_time() -> bool {
+    LEGACY_BIRTH_TIME.get()
 }
 #[cfg(target_os = "linux")]
 pub(super) fn query(handle: bool) {

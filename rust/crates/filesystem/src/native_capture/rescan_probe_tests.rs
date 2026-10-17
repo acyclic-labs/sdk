@@ -149,17 +149,7 @@ fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool 
             .into_iter()
             .flatten()
     });
-    // Unavailable birth times construct the existing metadata errors during
-    // comparisons; the frozen implementation incurs the same 48 allocations.
-    heap.count_total
-        == if cfg!(windows) {
-            324
-        } else if fallback {
-            379
-        } else {
-            331
-        }
-        && trace.iter().copied().eq(expected)
+    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace.iter().copied().eq(expected)
 }
 
 fn run(
@@ -193,6 +183,9 @@ fn run(
     }
     if fault == 2 {
         probe.duplicate_queries();
+    }
+    if fault == 4 {
+        probe.restore_birth_time_errors();
     }
     let _owner = (fault == 3).then(super::owner_allocation_tests::restore_owner);
     let mut result = None;
@@ -269,13 +262,14 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
     acyclic_native_runtime::initialize_native_io_services()?;
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    for forced in [false, true] {
+    for (forced, without_birth_time) in [(false, false), (false, true), (true, false)] {
         #[cfg(windows)]
-        if forced {
+        if forced || without_birth_time {
             continue;
         }
         #[cfg(target_os = "linux")]
-        let _fallback = crate::native_host::stat_probe::Fallback::enter(forced);
+        let _statx =
+            crate::native_host::stat_probe::StatxOptions::enter(forced, without_birth_time);
         #[cfg(target_os = "linux")]
         let fallback = crate::native_host::stat_probe::uses_fallback(&std::fs::File::open(".")?);
         #[cfg(windows)]
@@ -356,7 +350,10 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                 trace.iter().collect::<Vec<_>>()
             );
             if limit == u64::MAX && !cancelled {
-                for fault in [1, 2, 3] {
+                for fault in [1, 2, 3, 4] {
+                    if fault == 4 && !(forced || without_birth_time) {
+                        continue; // The old conversion allocates only for absent birth times.
+                    }
                     if cfg!(windows) && fault == 1 {
                         continue; // next_metadata already forwards to next on Windows.
                     }
@@ -381,6 +378,14 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                     }
                     if fault == 3 {
                         assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+                    }
+                    if fault == 4 {
+                        assert_eq!(broken_heap.count_total, after_heap.count_total + 48);
+                        assert_eq!(broken_trace, trace);
+                        eprintln!(
+                            "BIRTH_TIME fallback={fallback} masked={without_birth_time} old={} optional={}",
+                            broken_heap.count_total, after_heap.count_total
+                        );
                     }
                     assert_eq!(
                         minimal_rescan(broken_heap, &broken_trace, fallback),
