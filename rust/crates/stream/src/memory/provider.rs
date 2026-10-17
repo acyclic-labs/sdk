@@ -132,15 +132,9 @@ impl StreamProvider for MemoryStream {
             (self.clone(), request.parent, changed, None),
             |(provider, parent, mut changed, mut previous)| async move {
                 loop {
-                    let next = {
-                        let state = provider.state.read().await;
-                        // Switch from the creation wakeup to this parent's own index.
-                        if let Some(index) = state.child_index(parent.as_ref()) {
-                            changed = index.changed.subscribe();
-                        }
-                        changed.borrow_and_update();
-                        state.next_child(parent.as_ref(), previous.as_ref())?
-                    };
+                    let next = provider
+                        .next_child_snapshot(parent.as_ref(), previous.as_ref(), &mut changed)
+                        .await?;
                     if let Some(path) = next {
                         previous = Some(path.clone());
                         return Ok(Some((

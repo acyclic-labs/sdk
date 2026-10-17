@@ -2,6 +2,44 @@
 #![cfg(all(acyclic_loom, feature = "local"))]
 
 #[test]
+fn unpolled_follow_cannot_park_a_memory_permit() {
+    acyclic_stream::verification::local_follow_parking(false, false, true);
+}
+#[test]
+fn unpolled_children_cannot_park_a_memory_permit() {
+    acyclic_stream::verification::local_follow_parking(false, true, true);
+}
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_follow_retains_pending_memory_read() {
+    acyclic_stream::verification::local_follow_parking(true, false, true);
+}
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_children_retains_pending_memory_read() {
+    acyclic_stream::verification::local_follow_parking(true, true, true);
+}
+
+#[test]
+fn unpolled_follow_cannot_park_a_publication_permit() {
+    acyclic_stream::verification::local_follow_parking(false, false, false);
+}
+#[test]
+fn unpolled_children_cannot_park_a_publication_permit() {
+    acyclic_stream::verification::local_follow_parking(false, true, false);
+}
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_follow_retains_pending_publication_read() {
+    acyclic_stream::verification::local_follow_parking(true, false, false);
+}
+#[test]
+#[should_panic(expected = "deadlock")]
+fn negative_control_children_retains_pending_publication_read() {
+    acyclic_stream::verification::local_follow_parking(true, true, false);
+}
+
+#[test]
 fn checked_registration_races_accepted_path_publication() {
     acyclic_stream::verification::local_path_registration(false);
 }

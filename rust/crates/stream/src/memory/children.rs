@@ -67,7 +67,11 @@ impl State {
     }
 }
 impl MemoryStream {
-    async fn child_changes(&self, parent: Option<&StreamPath>) -> watch::Receiver<()> {
+    #[cfg(acyclic_loom)]
+    pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
+        self.state.write().await
+    }
+    pub(crate) async fn child_changes(&self, parent: Option<&StreamPath>) -> watch::Receiver<()> {
         let mut state = self.state.write().await;
         if let Some(index) = state.child_index(parent) {
             return index.changed.subscribe();
@@ -76,6 +80,20 @@ impl MemoryStream {
             .hierarchy_changed
             .get_or_insert_with(|| watch::channel(()).0)
             .subscribe()
+    }
+    pub(crate) async fn next_child_snapshot(
+        &self,
+        parent: Option<&StreamPath>,
+        previous: Option<&StreamPath>,
+        changed: &mut watch::Receiver<()>,
+    ) -> Result<Option<StreamPath>, StreamError> {
+        let state = self.state.read().await;
+        // Switch from the creation wakeup to this parent's own index.
+        if let Some(index) = state.child_index(parent) {
+            *changed = index.changed.subscribe();
+        }
+        changed.borrow_and_update();
+        state.next_child(parent, previous)
     }
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) async fn next_child(

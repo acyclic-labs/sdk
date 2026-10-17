@@ -354,6 +354,11 @@ pub fn local_failure_lock_order(hold_borrow: bool) {
     crate::local::follow_model::failure_lock_order(hold_borrow);
 }
 
+/// Checks unpolled record/child consumers against fair publication handoff.
+pub fn local_follow_parking(retain_pending: bool, children: bool, memory: bool) {
+    crate::local::parking_model::verify(retain_pending, children, memory);
+}
+
 /// Accepted readers and watermark queries must not wait for snapshot device I/O.
 pub fn local_compaction_visibility(hold_publication: bool) {
     crate::local::compaction_model::verify(u8::from(hold_publication));

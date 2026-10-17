@@ -139,6 +139,8 @@ impl LocalStream {
                 revision: watch::channel(0).0,
                 #[cfg(acyclic_loom)]
                 omit_follow_wake: false,
+                #[cfg(acyclic_loom)]
+                retain_pending_read: false,
                 durable_tails: Mutex::new(Default::default()),
                 #[cfg(feature = "test-support")]
                 persistence_cut: Default::default(),

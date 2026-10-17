@@ -22,7 +22,7 @@ impl LocalStream {
                 span.record("terminal", "error");
                 obs::failed(&span, error.code());
             })?;
-            let state = FollowState {
+            let state = Box::new(FollowState {
                 provider: self.clone(),
                 path,
                 cursor,
@@ -31,30 +31,39 @@ impl LocalStream {
                 failed,
                 done: false,
                 span: span.clone(),
-            };
+            });
             Ok(span
                 .scope(stream::try_unfold(state, |mut state| async move {
-                    let result = async {
-                        loop {
-                            if let Some(record) = state
-                                .provider
-                                .accepted(state.provider.inner.provider.next_checked_record(
-                                    &state.path,
-                                    &mut state.cursor,
-                                    &mut state.anchor,
-                                ))
-                                .await??
-                            {
-                                return Ok(record);
-                            }
-                            state.wait().await?;
+                    loop {
+                        #[cfg(acyclic_loom)]
+                        let retain_pending = state.provider.inner.retain_pending_read;
+                        let (next, record) = drive::drive(
+                            Box::pin(async move {
+                                let record = state
+                                    .provider
+                                    .accepted(state.provider.inner.provider.next_checked_record(
+                                        &state.path,
+                                        &mut state.cursor,
+                                        &mut state.anchor,
+                                    ))
+                                    .await;
+                                (state, record)
+                            }),
+                            #[cfg(acyclic_loom)]
+                            retain_pending,
+                        )
+                        .await;
+                        state = next;
+                        let result = match record.and_then(std::convert::identity) {
+                            Ok(Some(record)) => return Ok(Some((record, state))),
+                            Ok(None) => state.wait().await,
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = result {
+                            state.failed(&error);
+                            return Err(error);
                         }
                     }
-                    .await;
-                    if let Err(error) = &result {
-                        state.failed(error);
-                    }
-                    Ok(Some((result?, state)))
                 }))
                 .boxed())
         })
