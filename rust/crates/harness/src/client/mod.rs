@@ -88,9 +88,13 @@ pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod interest_files;
 pub use interest_files::InterestDocument;
 mod swarm;
-pub use swarm::{SwarmClient, SwarmClientLimits, SwarmUpdate};
+#[cfg(any(
+    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "wasm", target_arch = "wasm32")
+))]
+pub use swarm::SwarmClient;
+pub use swarm::{SwarmClientLimits, SwarmUpdate};
 mod file_views;
-mod session_views;
 pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;
@@ -109,6 +113,7 @@ pub(crate) use retry::submission_retry;
 mod offline;
 pub use offline::validate_offline_request;
 mod query_subscription;
+mod session_views;
 pub(crate) use file_views::FileViews;
 pub(crate) use query_subscription::{PublishError, QuerySubscription, query_error};
 #[cfg(feature = "test-support")]
@@ -119,7 +124,9 @@ pub mod query_verification {
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::WasmClientViews;
+pub use crate::wasm::swarm::WasmClientViews;
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+pub use wasm::WasmHypothesisClient;
 
 type Record<D> = Fact<<D as Domain>::Key, <D as Domain>::Basis, <D as Domain>::Value>;
 /// Persisted data specialized to a domain; never authoritative evidence.
@@ -158,6 +165,10 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
+#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+pub(crate) mod mailbox;
+#[cfg(acyclic_harness_loom)]
+pub use mailbox::verify_mailbox;
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
@@ -204,10 +215,6 @@ pub use native_input::next_file_tui_event;
 mod local_headless;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_prompt};
-#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
-pub(crate) mod mailbox;
-#[cfg(acyclic_harness_loom)]
-pub use mailbox::verify_mailbox;
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local_identity;
