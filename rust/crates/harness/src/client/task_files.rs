@@ -1,5 +1,5 @@
 //! Disposable client views over the authorized task-volume snapshot and follow.
-use super::{ClientSession, TaskFileViews, MemoryClientState};
+use super::{ClientSession, MemoryClientState, TaskFileViews};
 use crate::{
     Error, Result,
     task_volume::{ChangeStream, FileQuerySource, Query},
@@ -15,6 +15,7 @@ pub struct TaskFileClient {
     commands_dirty: bool,
     selected: Option<crate::TaskId>,
     bounds: (usize, usize),
+    presentation_revision: u64,
 }
 impl TaskFileClient {
     /// Observe an authorized task selection at one atomic cut.
@@ -55,6 +56,7 @@ impl TaskFileClient {
             commands_dirty: false,
             selected: None,
             bounds: (maximum_files, maximum_bytes),
+            presentation_revision: 0,
         })
     }
     /// Follow only the current task's bounded display tail, excluding inbox archives.
@@ -92,6 +94,7 @@ impl TaskFileClient {
             self.changes = replacement.changes;
             self.selected = Some(task);
             self.commands_dirty = true;
+            self.advance_presentation();
         }
         Ok(())
     }
@@ -100,6 +103,18 @@ impl TaskFileClient {
     pub fn views(&self) -> &TaskFileViews {
         self.session.views()
     }
+    /// Ephemeral revision of the accepted file/view fold, for presentation reuse.
+    pub fn presentation_revision(&self) -> u64 {
+        self.presentation_revision
+    }
+
+    fn advance_presentation(&mut self) {
+        self.presentation_revision = self
+            .presentation_revision
+            .checked_add(1)
+            .expect("presentation revision overflow");
+    }
+
     /// Project this UI session's completed commands into its shared transcript.
     pub fn project_commands<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
@@ -111,13 +126,16 @@ impl TaskFileClient {
             self.session
                 .project_commands(&mut self.command_projection, files.active_task());
             self.commands_dirty = false;
+            self.advance_presentation();
         }
         Ok(())
     }
 
     /// Apply a separate authorized document query.
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
-        self.session.apply_update(update)
+        self.session.apply_update(update)?;
+        self.advance_presentation();
+        Ok(())
     }
     /// Read the next push publication; no local polling or execution host.
     pub async fn next_change(&mut self) -> Result<()> {
@@ -126,8 +144,10 @@ impl TaskFileClient {
             .next()
             .await
             .ok_or_else(|| Error::Conflict("task follow ended; reopen snapshot".into()))??;
-        self.session.query_change(change)?;
-        self.commands_dirty = true;
+        if self.session.query_change(change)? {
+            self.commands_dirty = true;
+            self.advance_presentation();
+        }
         Ok(())
     }
 }
