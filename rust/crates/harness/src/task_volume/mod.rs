@@ -3,6 +3,8 @@ mod child;
 pub use child::{ChildFile, ChildState, ChildStatus};
 
 pub(crate) mod command_query;
+#[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
+mod derived_tests;
 mod durability;
 mod files;
 mod follow;
@@ -218,11 +220,8 @@ struct Index {
     next: u64,
     commit: CommitId,
     files: FileIndex,
-    executions: BTreeMap<(Option<Component>, u64), FileKey>,
-    pending_commands: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
-    view_order: BTreeMap<(Component, u8, u64), FileKey>,
-    view_revisions: BTreeMap<FileKey, (u8, u64)>,
-    overviews: BTreeMap<Component, FileKey>,
+    commands: command_query::Commands,
+    views: recent::Views,
 }
 
 /// A disposable index over one durable private task volume.
@@ -552,35 +551,16 @@ fn validate_file(index: &Index, file: &FileValue) -> Result<()> {
     Ok(())
 }
 
+// The only mutation of the file index; derived views and command indexes
+// fold the same replacement, never a separately maintained copy of it.
 fn apply(index: &mut Index, file: FileValue, position: u64) {
-    recent::record(index, &file, position);
-    let owner = command_query::owner(&file.key);
-    if command_query::is_result(&file.key) && !index.files.contains_key(&file.key) {
-        index
-            .executions
-            .insert((owner.clone(), position), file.key.clone());
-        if let Some(pending) = index.pending_commands.get_mut(&owner) {
-            for make in [TaskFile::Request, TaskFile::ExecutionClaim] {
-                if let Some(key) = command_query::related(&file.key, make) {
-                    pending.remove(&key);
-                }
-            }
-            if pending.is_empty() {
-                index.pending_commands.remove(&owner);
-            }
-        }
-    } else if let Some(result) = command_query::related(&file.key, TaskFile::ExecutionResult) {
-        if !index.files.contains_key(&result) {
-            index
-                .pending_commands
-                .entry(owner)
-                .or_default()
-                .insert(file.key.clone());
-        }
-    }
-    index
+    let command = index.commands.prepare(&index.files, &file.key);
+    let display = recent::Views::prepare(&file, position);
+    let previous = index
         .files
         .insert(file.key.clone(), StoredFile { file, position });
+    index.views.record(display, previous.as_ref());
+    index.commands.record(command, position, previous.is_some());
 }
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

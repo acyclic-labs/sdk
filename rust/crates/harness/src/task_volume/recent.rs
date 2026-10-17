@@ -44,21 +44,68 @@ fn file_kind(file: &FileValue) -> Option<u8> {
         kind(&file.key)
     }
 }
-pub(super) fn record(index: &mut Index, file: &FileValue, position: u64) {
-    let (FileKey::Task { task, file: leaf }, Some(kind)) = (&file.key, file_kind(file)) else {
-        return;
-    };
-    if let Some((old_kind, sequence)) = index
-        .view_revisions
-        .insert(file.key.clone(), (kind, position))
-    {
-        index.view_order.remove(&(task.clone(), old_kind, sequence));
+/// Recent display order per task, derived from index replacements alone.
+#[derive(Default)]
+pub(super) struct Views {
+    order: BTreeMap<(Component, u8, u64), FileKey>,
+    overviews: BTreeMap<Component, FileKey>,
+}
+/// One display file about to replace any stored version of its key.
+pub(super) struct Display {
+    task: Component,
+    kind: u8,
+    position: u64,
+    key: FileKey,
+}
+impl Views {
+    pub(super) fn prepare(file: &FileValue, position: u64) -> Option<Display> {
+        let (FileKey::Task { task, .. }, Some(kind)) = (&file.key, file_kind(file)) else {
+            return None;
+        };
+        Some(Display {
+            task: task.clone(),
+            kind,
+            position,
+            key: file.key.clone(),
+        })
     }
-    index
-        .view_order
-        .insert((task.clone(), kind, position), file.key.clone());
-    if *leaf == TaskFile::Status {
-        index.overviews.insert(task.clone(), file.key.clone());
+    /// Every version of a display key is a display file, so the replaced stored
+    /// file locates its old order entry.
+    pub(super) fn record(&mut self, display: Option<Display>, previous: Option<&StoredFile>) {
+        let Some(Display {
+            task,
+            kind,
+            position,
+            key,
+        }) = display
+        else {
+            return;
+        };
+        if let Some(previous) = previous
+            && let Some(old) = file_kind(&previous.file)
+        {
+            self.order.remove(&(task.clone(), old, previous.position));
+        }
+        if matches!(
+            key,
+            FileKey::Task {
+                file: TaskFile::Status,
+                ..
+            }
+        ) {
+            self.overviews.insert(task.clone(), key.clone());
+        }
+        self.order.insert((task, kind, position), key);
+    }
+    #[cfg(test)]
+    pub(super) fn parts(
+        &self,
+    ) -> (
+        Vec<((Component, u8, u64), FileKey)>,
+        Vec<(Component, FileKey)>,
+    ) {
+        let order = self.order.clone().into_iter().collect();
+        (order, self.overviews.clone().into_iter().collect())
     }
 }
 pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<Vec<FileValue>> {
@@ -89,7 +136,8 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
         let mut files = Vec::new();
         for kind in 0..=7 {
             for ((_, _, sequence), key) in index
-                .view_order
+                .views
+                .order
                 .range((task.clone(), kind, 0)..=(task.clone(), kind, u64::MAX))
                 .rev()
                 .take((*recent as usize).min(maximum))
@@ -109,6 +157,7 @@ pub(super) fn snapshot(index: &Index, query: &Query, maximum: usize) -> Result<V
             .collect())
     } else {
         Ok(index
+            .views
             .overviews
             .values()
             .take(maximum)
