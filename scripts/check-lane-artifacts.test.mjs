@@ -50,7 +50,13 @@ test('real Git changed-path gate rejects committed artifacts and permits their r
   const check = base => spawnSync(process.execPath, [checker, base, 'HEAD'], {cwd: root, encoding: 'utf8'});
   try {
     git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
-    write('README.md'); write('inherited.md'); const baseline = commit();
+    write('README.md'); commit();
+    for (const base of ['', '0'.repeat(40)]) {
+      const result = check(base);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      assert.match(result.stdout, /Changed-path lane artifact policy passed/);
+    }
+    write('inherited.md'); const baseline = commit();
     write('docs/ci-releases.md'); const healthy = commit();
     assert.equal(check(baseline).status, 0);
     for (const path of ['docs/approvals-map.md', 'docs/scratch-plan.md', 'docs/new-product-guide.md']) {
