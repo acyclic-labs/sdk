@@ -179,7 +179,7 @@ fn background_prefix_rescan_negative_control() {
     let projection = projection(&"a".repeat(4096));
     WORK.with(|work| work.set((0, 0)));
     for end in (32..=4096).step_by(32) {
-        scan(&projection, "b", &[0], 0..end, true, |_| {});
+        scan((&projection).into(), "b", &[0], 0..end, true, |_| {});
     }
     assert!(
         WORK.with(|work| work.get().1) <= 10 * projection.index.text.len(),
