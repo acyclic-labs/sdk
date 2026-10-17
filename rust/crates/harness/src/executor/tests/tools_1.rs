@@ -371,6 +371,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(interactions.clone()),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
+        AtomicUsize::new(0),
     );
     assert_eq!(
         executor
@@ -394,6 +395,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
             Mutex::new(partial),
             Mutex::new(artifacts.clone()),
             Mutex::new(interactions.clone()),
+            AtomicUsize::new(0),
             AtomicUsize::new(0),
             AtomicUsize::new(0),
         );
@@ -429,6 +431,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         Mutex::new(records.clone()),
         Mutex::new(missing),
         Mutex::new(interactions),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -542,6 +545,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         Mutex::new(journal.2.lock().unwrap().clone()),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
+        AtomicUsize::new(0),
     );
     assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
     let incomplete = Journal(
@@ -557,6 +561,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(reopened.1.lock().unwrap().clone()),
         Mutex::new(reopened.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );
@@ -579,6 +584,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         ),
         Mutex::new(incomplete.1.lock().unwrap().clone()),
         Mutex::new(incomplete.2.lock().unwrap().clone()),
+        AtomicUsize::new(0),
         AtomicUsize::new(0),
         AtomicUsize::new(0),
     );

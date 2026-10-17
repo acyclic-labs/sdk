@@ -10,6 +10,7 @@ impl CheckoutTools {
         state: OwnedMutexGuard<State>,
         files: output::Output,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
+        workspace::volumes::project(&state.mounts).await?;
         let workspace = state
             .workspace
             .as_ref()

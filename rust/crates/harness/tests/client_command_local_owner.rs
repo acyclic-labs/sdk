@@ -311,7 +311,14 @@ async fn production_compact_and_export_requests_have_durable_effects() -> Result
     let compact = send(&local, &mut client, "/compact keep decisions").await?;
     assert_eq!(compact["summary"], "remember the invariant");
     let requests = provider.requests();
-    assert!(requests[0].messages.iter().any(|message| matches!(&message.content, acyclic_harness::model::ModelContent::Text(text) if text.contains("original prompt") && text.contains("keep decisions"))), "compaction omitted the actual admitted prompt");
+    for required in ["original prompt", "keep decisions"] {
+        assert!(requests[0].messages.iter().any(|message| matches!(&message.content, acyclic_harness::model::ModelContent::Text(text) if text.contains(required))), "compaction omitted {required}");
+    }
+    assert!(
+        requests[0].tools.is_empty(),
+        "manual compaction exposed coding tools"
+    );
+    assert!(requests[0].max_output_tokens.is_some());
     let queued = send(&local, &mut client, "continue").await?;
     let task = TaskId::parse(queued["task"].as_str().unwrap())?;
     assert_eq!(local.resume(task).await?.text, "continued");

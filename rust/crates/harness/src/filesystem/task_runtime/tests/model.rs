@@ -136,6 +136,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     );
     let runtime = opening.await?;
     let input = super::super::super::ModelTaskCommand {
+        summary_source: None,
         context_manifest: super::manifest::manifest(&fixture, true, "").await?.0,
         input: crate::model::ModelContent::Text("question".into()),
         selected_context: None,
@@ -292,6 +293,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     fixture.machine.native.store(true, Ordering::SeqCst);
 
     let input = super::super::super::ModelTaskCommand {
+        summary_source: None,
         context_manifest: super::manifest::manifest(&fixture, true, "").await?.0,
         input: crate::model::ModelContent::Text("must not dispatch".into()),
         selected_context: None,
