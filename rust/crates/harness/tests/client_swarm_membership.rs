@@ -22,12 +22,10 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
         let a = TaskVolume::open(provider.clone(), path("swarm/a/files"))
             .await
             .unwrap();
-        a.append(
-            a.head().await.unwrap(),
-            &Write::new(FileKey::Goal, b"retained history".to_vec()),
-        )
-        .await
-        .unwrap();
+        let publication = acyclic_harness::OperationId::from_bytes([9; 16]);
+        let mut goal = Write::new(FileKey::Goal, b"retained history".to_vec());
+        goal.publication = Some(publication);
+        a.append(a.head().await.unwrap(), &goal).await.unwrap();
         config
             .append(
                 config.head().await.unwrap(),
@@ -82,6 +80,8 @@ fn settled_archive_reclaims_capacity_and_keeps_history_readable() {
             .read(|v| {
                 assert_eq!(v.agents().count(), 2);
                 assert!(v.cursor(&path("swarm/a")).is_some());
+                assert_eq!(v.file(&path("swarm/a"), &FileKey::Goal).unwrap().publication, Some(publication));
+                assert!(v.goals().any(|view| matches!(view.goal, acyclic_harness::client::GoalFileView::Present { goal } if goal.markdown == "retained history")));
             })
             .unwrap();
         let mut owned = Vec::new();

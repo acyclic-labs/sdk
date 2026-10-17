@@ -239,7 +239,9 @@ impl FileViews {
                 }
             } else if let Some(before) = before {
                 if !file.key.mutable()
-                    && (before.segments.len() != 1 || before.segments[0] != file.bytes)
+                    && (before.segments.len() != 1
+                        || before.segments[0] != file.bytes
+                        || before.publication != file.publication)
                 {
                     return Err(Error::ImmutableConflict(file.key.clone()));
                 }

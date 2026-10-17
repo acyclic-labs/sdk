@@ -256,9 +256,11 @@ impl FileQueryView {
     }
 
     fn matches_head(&self, file: &FileValue) -> bool {
-        self.storage
-            .file(&file.key)
-            .is_some_and(|head| head.segments.len() == 1 && head.segments[0] == file.bytes)
+        self.storage.file(&file.key).is_some_and(|head| {
+            head.segments.len() == 1
+                && head.segments[0] == file.bytes
+                && head.publication == file.publication
+        })
     }
 
     fn project(&mut self, change: &Change) {
