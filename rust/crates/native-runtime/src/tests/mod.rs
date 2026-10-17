@@ -74,6 +74,8 @@ pub(super) struct ReadBudgetMeter {
     pub(super) cancelled: AtomicBool,
     cancel_after_read: bool,
     panic_after_read: bool,
+    /// Runs when a write moved nothing because its pipe was full.
+    pub(super) blocked_write: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl ReadBudgetMeter {
@@ -141,11 +143,17 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn record_reserved_bytes(
         &self,
-        _: NativeOperationKind,
+        kind: NativeOperationKind,
         maximum: u64,
         actual: u64,
     ) -> io::Result<()> {
         assert!(actual <= maximum);
+        if kind == NativeOperationKind::Write
+            && actual == 0
+            && let Some(blocked) = &self.blocked_write
+        {
+            blocked();
+        }
         assert!(
             self.used_bytes
                 .fetch_sub(maximum - actual, Ordering::AcqRel)
