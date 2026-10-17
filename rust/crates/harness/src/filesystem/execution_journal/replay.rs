@@ -56,7 +56,7 @@ where
             let page_maximum = maximum.min(EXECUTION_REPLAY_PAGE_RECORDS);
             let capacity = page_maximum as usize;
             let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> =
-                crate::model::vec_with_capacity(capacity, io)?;
+                crate::model::vec_with_capacity(if io.is_some() { capacity } else { 0 }, io)?;
             let (_path_hold, path) = {
                 let path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
@@ -114,6 +114,11 @@ where
                     ));
                 }
             };
+            if io.is_none() {
+                result
+                    .try_reserve_exact(entries.size_hint().1.unwrap_or(capacity).min(capacity))
+                    .map_err(Error::Allocation)?;
+            }
             loop {
                 let _record_hold;
                 if let Some(io) = io {
@@ -211,6 +216,13 @@ where
                     drop(model);
                     None
                 };
+                // Provider hints size storage only; the independent page bound
+                // above still rejects excess records, even for a false hint.
+                if result.len() == result.capacity() {
+                    result
+                        .try_reserve_exact(capacity - result.len())
+                        .map_err(Error::Allocation)?;
+                }
                 result.push((
                     ExecutionRecord {
                         operation_id,

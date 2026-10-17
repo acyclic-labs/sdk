@@ -72,7 +72,7 @@ proptest! {
     // identity, and configuration files obey the same bounds as instructions.
     #[cfg(feature = "filesystem")]
     #[test]
-    fn command_and_configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256) {
+    fn command_and_configuration_sources_round_trip(path in "[a-zé猫]{1,40}", text in ".{0,80}", bound in 1usize..256, summary in any::<bool>()) {
         use crate::conversation::{FileDescriptor, FileRef};
         let reference = FileRef::new(
             skill("skills/x/SKILL.md".into())?.source.root.volume,
@@ -81,11 +81,13 @@ proptest! {
             "manifest.json".into(), &mut None,
         )?;
         let command = crate::filesystem::ModelTaskCommand {
+            summary_source: summary.then(|| Box::new(reference.clone())),
             context_manifest: reference.clone(), input: ModelContent::Text(text),
             selected_context: None, max_steps: 1, max_output_tokens: None,
             mailbox_operation: None, selected_output_volume: None,
         };
         let encoded = serde_json::to_vec(&command).unwrap();
+        prop_assert_eq!(serde_json::from_slice::<Value>(&encoded).unwrap().get("summary_source").is_some(), summary);
         prop_assert_eq!(serde_json::from_slice::<crate::filesystem::ModelTaskCommand>(&encoded).unwrap(), command);
         let mut omitted = serde_json::from_slice::<Value>(&encoded).unwrap();
         omitted.as_object_mut().unwrap().remove("context_manifest");

@@ -142,15 +142,13 @@ fork_join_conformance() {
 # Exercise the installed native host against its real local providers, not a
 # test-only coordinator. The script records binary, suite and scenario evidence.
 installed_graphcoder() {
-  local install_root="$SDK_TEMP_DIR/graphcoder-installed" scenario_parent
-  scenario_parent="$(mktemp -d "$SDK_TEMP_DIR/graphcoder.XXXXXXXX")"
-  cargo install --path rust/crates/harness --locked \
-    --features terminal,filesystem-local,native-execution --bin graphcoder \
-    --root "$install_root" --target-dir "$target_dir-release"
-  node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder" \
-    --full "$scenario_parent/scenario"
-  node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder" \
-    --fresh "$scenario_parent/pty-scenario" --evidence "$scenario_parent/pty-output"
+  local install_root="$SDK_TEMP_DIR/graphcoder-installed"
+  cargo install --path rust/crates/harness/src/bin/graphcoder --locked --debug \
+    --root "$install_root" --target-dir "$target_dir"
+  bun install --cwd scripts/graphcoder-pty --frozen-lockfile --ignore-scripts
+  node --test scripts/graphcoder-pty/screen.test.mjs
+  node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder"
+  node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder"
 }
 
 # Keep external-host inputs pinned and exercise the source-built CLI, including
@@ -182,6 +180,7 @@ case "$lane" in
   gate)
     node scripts/qualify-mcp-loom.mjs --all-features
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
+    node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
@@ -389,13 +388,13 @@ case "$lane" in
     }
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
-        harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
+        harness_tests --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
       harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
         --test client_public_consumer identical_public_harness_trace
     harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
-    harness_tests --features wasm --target wasm32-unknown-unknown --test client-goal-views
+    harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser \
       --target wasm32-unknown-unknown --lib --locked

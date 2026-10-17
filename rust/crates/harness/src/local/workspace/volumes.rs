@@ -1,7 +1,5 @@
 use super::*;
-use acyclic_fs::{
-    CancellationToken, MountOptions, MountPublication, WorkBudget, kernel::NamespacePath,
-};
+use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
@@ -69,19 +67,19 @@ pub(super) async fn attach(
             .map_err(|failure| Error::from(failure.error))?
             .value;
         let destination = root.join(relative);
-        create_mount_directory(root, Path::new(relative))?;
-        let options = if mount.mode.read_only() {
-            MountOptions::read_only()
-        } else {
-            MountOptions::read_write().publication(MountPublication::Manual)
-        };
+        // Bind the namespace before the initial source/watch cut. Creating its
+        // parent during the first shell command would author a project change
+        // even when that command only reads. The projection itself stays absent.
+        if let Some(parent) = Path::new(relative).parent() {
+            create_mount_directory(root, parent)?;
+        }
         acyclic_fs::WorkspaceGraph::new(store.clone())
             .register_root(&source)
             .await?;
-        let native = source.mount(&destination, options).await?;
         mount.view.source = Some(Arc::new(MountedVolume {
             workspace: crate::tools::git::OwnedView::Volume(source),
-            native: Some(native),
+            destination,
+            native: StateArc::new(AsyncMutex::new(None)),
         }));
     }
     Ok(())
@@ -89,17 +87,67 @@ pub(super) async fn attach(
 
 pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     for (_, mount) in mounts.mounts() {
-        if let Some(native) = mount
-            .view
-            .source
-            .as_ref()
-            .and_then(|source| source.native.as_ref())
-        {
-            native.sync().await?;
-            native.advance_to_head().await?;
+        if let Some(source) = &mount.view.source {
+            let native = source.native().await;
+            if let Some(native) = native.as_ref() {
+                native.sync().await?;
+                native.advance_to_head().await?;
+            }
         }
     }
     Ok(())
+}
+
+pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
+    for (relative, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
+            // A Linux task view aliases the original binding; mount at that
+            // binding's root, never below another owner-only FUSE mount.
+            let root = projection_root(&source.destination, relative)?;
+            source
+                .project(root, relative, mount.mode.read_only())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+fn projection_root<'a>(destination: &'a Path, relative: &str) -> Result<&'a Path> {
+    destination
+        .ancestors()
+        .nth(Path::new(relative).components().count())
+        .filter(|_| destination.ends_with(relative))
+        .ok_or_else(|| Error::Invalid("volume projection lies outside its binding".into()))
+}
+
+#[cfg(test)]
+mod binding_paths {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Native aliases retain their source's composed root, independent of
+        // prefix spelling or a nested task's different physical root.
+        #[test]
+        fn projection_keeps_the_source_binding_root(
+            directories in prop::collection::vec("[a-zA-ZΩα]{1,8}", 0..4),
+            volume in "[a-zA-ZΩα]{1,8}",
+        ) {
+            let mut root=std::env::current_dir().map_err(|error| TestCaseError::fail(error.to_string()))?;
+            for directory in directories {root.push(directory);}
+            let relative=format!(".volumes/{volume}");
+            let destination=root.join(&relative);
+            let projected=projection_root(&destination,&relative)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            prop_assert_eq!(projected,root.as_path());
+            let other=format!("{relative}x");
+            prop_assert!(projection_root(&destination,&other).is_err());
+            // Choosing the alias task's root loses the source binding.
+            let task_root=root.join("task-view");
+            prop_assert_ne!(task_root.as_path(),projected);
+        }
+    }
 }
 
 // fusermount's elevated helper cannot traverse an owner-only FUSE mount.
@@ -111,13 +159,12 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
         if relative.is_empty() {
             continue;
         }
-        let native = mount
+        let source = mount
             .view
             .source
             .as_ref()
-            .and_then(|source| source.native.as_ref())
             .ok_or_else(|| Error::NotFound("volume mount is not bound".into()))?;
-        let target = native.path();
+        let target = source.destination.as_path();
         let relative = Path::new(relative);
         if let Some(parent) = relative.parent() {
             create_mount_directory(root, parent)?;
@@ -150,7 +197,24 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     Ok(())
 }
 
-fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+// Recover only SDK-owned mount destinations. The existing recovery API takes
+// the exclusive destination fence before probing or detaching the driver, so
+// a live owner is rejected and authored host residue is retained.
+pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+    if let Some(parent) = relative.parent() {
+        create_mount_directory(root, parent)?;
+    }
+    let destination = root.join(relative);
+    let [fence, _] = acyclic_fs::native_mount_control_paths(&destination)?;
+    match std::fs::symlink_metadata(fence) {
+        Ok(_) => acyclic_fs::detach_native_mount_destination_after_crash(&destination)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(mount_io(error)),
+    }
+    create_mount_directory(root, relative)
+}
+
+pub(super) fn create_mount_directory(root: &Path, relative: &Path) -> Result<()> {
     let mut path = root.to_path_buf();
     for part in relative.components() {
         let std::path::Component::Normal(name) = part else {
@@ -201,7 +265,7 @@ mod tests {
     fn mount_directory_preserves_the_native_io_cause() -> Result<()> {
         let directory = tempfile::tempdir().map_err(storage)?;
         let error =
-            create_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
+            prepare_mount_directory(&directory.path().join("missing"), Path::new(SCRATCH_PATH))
                 .expect_err("the mount parent is absent");
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Io(error), ..
@@ -216,7 +280,7 @@ mod tests {
         std::os::unix::fs::symlink(outside.path(), root.path().join(".volumes"))
             .map_err(storage)?;
         assert!(matches!(
-            create_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
+            prepare_mount_directory(root.path(), Path::new(SCRATCH_PATH)),
             Err(Error::Invalid(_))
         ));
         assert!(!outside.path().join("scratch").exists());

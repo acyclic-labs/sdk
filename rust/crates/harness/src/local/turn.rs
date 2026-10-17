@@ -17,6 +17,13 @@ impl LocalHarness {
             LocalObjectBackend,
         >,
     > {
+        let model = self.command_model(task).await?;
+        self.runtime
+            .commands()
+            .with_model(&model, self.provider.clone(), &self.compaction, None)
+    }
+
+    pub(super) async fn command_model(&self, task: Option<TaskId>) -> Result<Model> {
         let mut model = self.model.clone();
         let settings = self
             .task_files
@@ -52,9 +59,7 @@ impl LocalHarness {
             }
         }
         model.validate()?;
-        self.runtime
-            .commands()
-            .with_model(&model, self.provider.clone(), &self.compaction, None)
+        Ok(model)
     }
     /// Owner-gated stock commands for this same runtime.
     pub fn commands(&self) -> Result<impl crate::filesystem::TaskCommandHost + '_> {
@@ -75,30 +80,135 @@ impl LocalHarness {
             ));
         }
         let task = crate::runtime::task_id_for_admission(operation);
+        let continuation = self.continuation_selection(task).await?;
+        // Ordinary active children need no terminal-parent probe. Their existing
+        // admission/parent check is already performed by prepare_inheritance.
+        if continuation.is_some()
+            || compact::checkpoints::capture_selection(
+                &self.task_files.inner,
+                parent,
+                self.limits.file_bytes,
+            )
+            .await?
+            .1
+            .is_some()
+        {
+            let existing = match self.runtime.task_host().observe_admission(task).await {
+                Ok(record) => Some(record.parent),
+                Err(Error::NotFound(_)) => None,
+                Err(error) => return Err(error),
+            };
+            if continuation.is_none() && existing.is_some_and(|retained| retained != Some(parent)) {
+                return Err(Error::Conflict(
+                    "task admission belongs to another conversation".into(),
+                ));
+            }
+            // Completed executions retain their lifetime boundary. A conversation
+            // continuation is a new root bound to the selected immutable checkpoint.
+            if continuation.is_some()
+                || existing.is_none()
+                    && matches!(
+                        self.runtime.task_host().outcome(parent).await?,
+                        Some(
+                            crate::Outcome::Succeeded(_)
+                                | crate::Outcome::Failed { .. }
+                                | crate::Outcome::Cancelled
+                        )
+                    )
+            {
+                return super::admission::serialized(&self.admission, async || {
+                    let (selected, through) = match self.continuation_selection(task).await? {
+                        Some(selected) => {
+                            let through = selected
+                                .continuation
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    Error::Invalid("continuation lost parent history".into())
+                                })?
+                                .through
+                                .clone();
+                            (selected, through)
+                        }
+                        None => {
+                            let (cut, selected, _) = compact::checkpoints::capture_selection(
+                                &self.task_files.inner,
+                                parent,
+                                self.limits.file_bytes,
+                            )
+                            .await?;
+                            let selected = selected.ok_or_else(|| {
+                                Error::Conflict("continuation lost its checkpoint".into())
+                            })?;
+                            let through = selected.through.clone().unwrap_or(cut.cursor);
+                            (selected, through)
+                        }
+                    };
+                    let (retained, checkpoint) = self
+                        .retain_continuation(task, parent, selected, through, prompt)
+                        .await?;
+                    let prompt = &retained
+                        .continuation
+                        .as_ref()
+                        .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
+                        .prompt;
+                    self.prepare_inheritance(task, None).await?;
+                    let (receive, model) = match self.recover_turn_inputs(operation).await? {
+                        Some(inputs) => inputs,
+                        None => {
+                            let prompt = self.prompt_context(Some(task), prompt).await?;
+                            self.stage_bound_turn(
+                                operation,
+                                &prompt,
+                                checkpoint.boundary.manifest,
+                                self.input_publisher()?.as_ref(),
+                            )
+                            .await?
+                        }
+                    };
+                    self.admit_turn(operation, None, receive, model).await
+                })
+                .await;
+            }
+        }
         inheritance::admit_prepared(
             &self.admission,
             Box::pin(self.prepare_inheritance(task, Some(parent))),
             Box::pin(async {
                 let prompt = self.prompt_context(Some(task), prompt).await?;
                 let (receive, model) = self.stage_turn(operation, &prompt).await?;
-                let definition = self
-                    .runtime
-                    .harness()
-                    .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
-                let record = self.runtime.task_host().observe_admission(parent).await?;
-                self.runtime
-                    .harness()
-                    .durable_context(parent, record.operation_id, None)
-                    .await?
-                    .admit(
-                        operation,
-                        &definition,
-                        serde_json::json!({"receive":receive,"model":model}),
-                    )
+                self.admit_turn(operation, Some(parent), receive, model)
                     .await
             }),
         )
         .await
+    }
+    // The caller holds the existing admission gate and prepares inheritance.
+    pub(super) async fn admit_turn(
+        &self,
+        operation: OperationId,
+        parent: Option<TaskId>,
+        receive: WorkflowCommand,
+        model: WorkflowCommand,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
+        let definition = self
+            .runtime
+            .harness()
+            .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+        let input = serde_json::json!({"receive":receive,"model":model});
+        if let Some(parent) = parent {
+            let record = self.runtime.task_host().observe_admission(parent).await?;
+            self.runtime
+                .harness()
+                .durable_context(parent, record.operation_id, None)
+                .await?
+                .admit(operation, &definition, input)
+                .await
+        } else {
+            self.runtime
+                .harness()
+                .admit(operation, &definition, input, None)
+                .await
+        }
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
     pub fn submit<'a>(
@@ -132,14 +242,27 @@ impl LocalHarness {
         prompt: &str,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let manifest = match &self.context_manifest {
+            Some(reference) => reference.clone(),
+            None => {
+                self.stage_context_manifest_with(operation, publisher)
+                    .await?
+            }
+        };
+        self.stage_bound_turn(operation, prompt, manifest, publisher)
+            .await
+    }
+
+    pub(super) async fn stage_bound_turn(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        manifest: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         let model = crate::filesystem::ModelTaskCommand {
-            context_manifest: match &self.context_manifest {
-                Some(reference) => reference.clone(),
-                None => {
-                    self.stage_context_manifest_with(operation, publisher)
-                        .await?
-                }
-            },
+            summary_source: None,
+            context_manifest: manifest,
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
             max_steps: u32::try_from(self.limits.model_steps)
@@ -209,17 +332,48 @@ impl LocalHarness {
             payload,
         };
         let receive_operation = receive_operation(operation);
-        let payload = publisher
-            .stage_once(
-                receive_operation,
-                &format!("inputs/{operation}.receive.json"),
-                b"{\"after\":0}",
-                "application/json",
-                "mailbox receive",
-                None,
-            )?
-            .await?
-            .0;
+        // Older admissions retained one identical payload per turn. Keep their
+        // exact reference on retry; new commands share one immutable journal file.
+        let (retained, _) = publisher
+            .observe_staged_once(receive_operation, self.limits.file_bytes, None)?
+            .await?;
+        let payload = match retained {
+            Some(payload) => {
+                let descriptor = crate::conversation::FileDescriptor::from_bytes(
+                    b"{\"after\":0}",
+                    "application/json",
+                    &mut None,
+                )?;
+                if payload.path() != format!("inputs/{operation}.receive.json")
+                    || payload.descriptor() != &descriptor
+                    || payload.display_name() != "mailbox receive"
+                {
+                    return Err(Error::Conflict(
+                        "retained receive input has another identity".into(),
+                    ));
+                }
+                payload
+            }
+            None => {
+                let mut hash = blake3::Hasher::new();
+                hash.update(b"acyclic.local.mail-receive-input/v1\0");
+                hash.update(publisher.volume().storage_name(&mut None)?.as_bytes());
+                let identity = hash.finalize();
+                let mut bytes = [0; 16];
+                bytes.copy_from_slice(&identity.as_bytes()[..16]);
+                publisher
+                    .stage_once(
+                        OperationId::from_bytes(bytes),
+                        "inputs/mailbox-receive.json",
+                        b"{\"after\":0}",
+                        "application/json",
+                        "mailbox receive",
+                        None,
+                    )?
+                    .await?
+                    .0
+            }
+        };
         let receive = WorkflowCommand {
             operation_id: receive_operation,
             kind: crate::filesystem::MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
@@ -361,7 +515,7 @@ impl LocalHarness {
     }
 }
 
-fn receive_operation(operation: OperationId) -> OperationId {
+pub(super) fn receive_operation(operation: OperationId) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.mail-receive/v1\0");
     hash.update(&operation.into_bytes());

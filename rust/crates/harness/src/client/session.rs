@@ -1,9 +1,9 @@
 //! Durable outbox and replay reducer. A record is committed before publication.
 
 use super::{
-    ClientViews,
+    TaskFileViews,
     content::MessageContent,
-    views::{authority_key, payload},
+    task_compat::views::{authority_key, payload},
 };
 use crate::{
     Error, Result, wire,
@@ -79,7 +79,7 @@ pub struct ClientSession<S> {
     pending: Vec<Option<wire::CommandEnvelope>>,
     operations: HashMap<String, usize>,
     idempotency: HashSet<(String, String)>,
-    views: ClientViews,
+    views: TaskFileViews,
     view_revisions: BTreeMap<String, u64>,
     tail_records: usize,
 }
@@ -95,7 +95,7 @@ impl<S: ClientStateStore> ClientSession<S> {
             pending: Vec::new(),
             operations: HashMap::new(),
             idempotency: HashSet::new(),
-            views: ClientViews::default(),
+            views: TaskFileViews::default(),
             view_revisions: BTreeMap::new(),
             tail_records: 0,
         };
@@ -258,6 +258,12 @@ impl<S: ClientStateStore> ClientSession<S> {
             .unwrap_or(0)
     }
 
+    /// Owner replay cut, independent of the task-file presentation cache.
+    #[must_use]
+    pub fn replay_revision(&self, authority: &wire::Authority) -> u64 {
+        self.view_revision(authority)
+    }
+
     /// Snapshot-plus-follow starts at the projection cut, retaining durable acknowledgements.
     #[must_use]
     pub fn replay_request(&self) -> wire::ResumeRequest {
@@ -270,6 +276,79 @@ impl<S: ClientStateStore> ClientSession<S> {
         request
     }
 
+    /// Folds one verified platform-follow update into the shared disposable views.
+    /// Query cursors remain owned by the platform follow, independently of the
+    /// durable wire outbox and acknowledgements.
+    pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
+        match update {
+            super::ViewUpdate::File(change) => self.query_change(change).map(|_| ()),
+            super::ViewUpdate::DocumentChange { authority, change } => {
+                self.apply_documents(&authority, |documents| documents.apply_change(&change))
+            }
+            super::ViewUpdate::Model {
+                authority,
+                turn,
+                event,
+            } => self.model_event(&authority, turn, event),
+            super::ViewUpdate::ToolOutput {
+                authority,
+                call_id,
+                delta,
+            } => self.tool_output(&authority, &call_id, &delta),
+            super::ViewUpdate::DocumentSnapshot {
+                authority,
+                query,
+                snapshot,
+            } => self.apply_documents(&authority, |documents| documents.replace(&query, &snapshot)),
+            super::ViewUpdate::DocumentFile { authority, file } => {
+                self.apply_documents(&authority, |documents| documents.apply(&file))
+            }
+        }
+    }
+
+    /// Replace a captured-volume query fold at its authenticated snapshot cut.
+    pub fn replace_diff(
+        &mut self,
+        authority: &wire::Authority,
+        view: super::DiffView,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        self.views.diffs.insert(authority_key(authority), view);
+        Ok(())
+    }
+
+    /// Fold one exact-path publication before the query adapter advances its cursor.
+    pub async fn diff_publication(
+        &mut self,
+        authority: &wire::Authority,
+        publication: &super::DiffPublication,
+        reader: &dyn crate::conversation::ContentResidencyVerifier,
+        limits: super::DiffLimits,
+    ) -> Result<Vec<String>> {
+        self.require_tracked(authority)?;
+        self.views
+            .diffs
+            .get_mut(&authority_key(authority))
+            .ok_or_else(|| Error::Invalid("open the diff query snapshot before its follow".into()))?
+            .apply(publication, reader, limits)
+            .await
+    }
+
+    fn apply_documents(
+        &mut self,
+        authority: &wire::Authority,
+        apply: impl FnOnce(&mut super::DocumentViews) -> Result<()>,
+    ) -> Result<()> {
+        self.require_tracked(authority)?;
+        let key = authority_key(authority);
+        if let Some(documents) = self.views.documents.get_mut(&key) {
+            return apply(documents);
+        }
+        let mut documents = super::DocumentViews::default();
+        apply(&mut documents)?;
+        self.views.documents.insert(key, documents);
+        Ok(())
+    }
     /// Folds an incoming model item into the session's shared renderer state.
     pub fn model_event(
         &mut self,
@@ -348,7 +427,7 @@ impl<S: ClientStateStore> ClientSession<S> {
 
     /// State shared by every renderer.
     #[must_use]
-    pub fn views(&self) -> &ClientViews {
+    pub fn views(&self) -> &TaskFileViews {
         &self.views
     }
 
@@ -518,7 +597,7 @@ impl<S: ClientStateStore> ClientSession<S> {
         self.pending = checkpoint.pending.into_iter().map(Some).collect();
         self.operations = operations;
         self.idempotency = idempotency;
-        self.views = ClientViews::default();
+        self.views = TaskFileViews::default();
         self.view_revisions.clear();
         self.tail_records = 0;
         Ok(())
@@ -707,3 +786,6 @@ fn valid_authority(authority: Option<&wire::Authority>) -> Result<&wire::Authori
     }
     Ok(authority)
 }
+
+#[path = "session_tasks.rs"]
+mod task_views;

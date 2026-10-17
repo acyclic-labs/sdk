@@ -3,6 +3,7 @@ use super::*;
 
 pub(super) struct Seed {
     scenario: Scenario,
+    pub parent: PathBuf,
     files: super::super::snapshot::Snapshot,
     stream: super::super::snapshot::Snapshot,
     pub history: Option<crate::projection::SelectedModelContext>,
@@ -17,6 +18,7 @@ impl Seed {
         let root = fixture.directory.path();
         Ok(Self {
             scenario,
+            parent: root.parent().expect("fixture parent").to_owned(),
             files: super::super::snapshot::Snapshot::capture(&root.join("filesystem"))?,
             stream: super::super::snapshot::Snapshot::capture(&root.join("tasks"))?,
             history: fixture.history.into_inner(),

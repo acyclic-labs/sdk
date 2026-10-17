@@ -6,6 +6,13 @@ pub(crate) struct NativeProofAccounting {
     pub(super) non_native: AtomicU64,
 }
 impl NativeProofAccounting {
+    pub(super) const ALLOCATION_BYTES: u64 = const {
+        match crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<Self>()) {
+            Ok(bytes) => bytes as u64,
+            Err(_) => panic!("shared proof accounting Arc layout overflow"),
+        }
+    };
+
     pub(crate) fn retire_native(&self, bytes: u64) {
         self.retired.fetch_add(bytes, Ordering::Release);
     }

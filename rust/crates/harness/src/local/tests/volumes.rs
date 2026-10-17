@@ -85,8 +85,16 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         b"root"
     );
     assert_eq!(
-        std::fs::read(scratch.native.as_ref().unwrap().path().join("data-file"))
-            .map_err(super::super::storage)?,
+        std::fs::read(
+            scratch
+                .native()
+                .await
+                .as_ref()
+                .unwrap()
+                .path()
+                .join("data-file")
+        )
+        .map_err(super::super::storage)?,
         b"data"
     );
     Ok(())

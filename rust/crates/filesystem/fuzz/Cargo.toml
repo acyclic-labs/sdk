@@ -57,3 +57,10 @@ bench = false
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "encoder_work"
+path = "fuzz_targets/encoder_work.rs"
+test = false
+doc = false
+bench = false

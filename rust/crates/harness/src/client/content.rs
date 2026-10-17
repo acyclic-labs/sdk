@@ -2,15 +2,23 @@
 
 use crate::{
     Error, Result,
-    conversation::{ContentResidencyVerifier, ConversationMessage, Limits, MessageKind},
+    conversation::{
+        ContentResidencyVerifier, ConversationMessage, Limits, MessageKind, verified_content_bytes,
+    },
     model::ToolResultContent,
 };
 use serde_json::Value;
 
 pub(super) enum MessageContent {
-    Call { name: String, arguments: Value },
+    Call {
+        name: String,
+        arguments: Value,
+    },
     Output(ToolResultContent),
-    Usage(Value),
+    Transcript {
+        text: Option<String>,
+        metadata: Option<Value>,
+    },
 }
 
 impl MessageContent {
@@ -18,11 +26,13 @@ impl MessageContent {
         message: &ConversationMessage,
         files: Option<&dyn ContentResidencyVerifier>,
     ) -> Result<Option<Self>> {
-        let metadata = message.extensions.get("acyclic.model.metadata");
-        if !matches!(
-            message.kind,
-            MessageKind::ToolCall | MessageKind::ToolResult
-        ) && metadata.is_none()
+        if !Self::requires_files(message)
+            && (!message
+                .content
+                .descriptor()
+                .media_type()
+                .starts_with("text/")
+                || files.is_none())
         {
             return Ok(None);
         }
@@ -57,19 +67,41 @@ impl MessageContent {
             MessageKind::ToolResult => Self::Output(
                 crate::projection::read_tool_output(message, files, limits, None).await?,
             ),
-            MessageKind::Assistant => {
-                let metadata =
-                    metadata.ok_or_else(|| Error::Invalid("assistant metadata missing".into()))?;
-                Self::Usage(
-                    crate::projection::read_value(files, metadata, limits.render_bytes, None)
-                        .await?
-                        .0,
-                )
-            }
             _ => {
-                return Err(Error::Invalid(
-                    "model metadata belongs to an assistant message".into(),
-                ));
+                let metadata = if let Some(reference) =
+                    message.extensions.get("acyclic.model.metadata")
+                {
+                    if message.kind != MessageKind::Assistant {
+                        return Err(Error::Invalid(
+                            "model metadata belongs to an assistant message".into(),
+                        ));
+                    }
+                    Some(
+                        crate::projection::read_value(files, reference, limits.render_bytes, None)
+                            .await?
+                            .0,
+                    )
+                } else {
+                    None
+                };
+                let text = if message
+                    .content
+                    .descriptor()
+                    .media_type()
+                    .starts_with("text/")
+                {
+                    let (bytes, _hold) =
+                        verified_content_bytes(files, &message.content, limits.render_bytes, None)
+                            .await?;
+                    Some(
+                        std::str::from_utf8(&bytes)
+                            .map_err(|error| Error::Invalid(error.to_string()))?
+                            .to_owned(),
+                    )
+                } else {
+                    None
+                };
+                Self::Transcript { text, metadata }
             }
         }))
     }

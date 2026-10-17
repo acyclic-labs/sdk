@@ -70,7 +70,7 @@ impl StockExecution<'_> {
             ));
         }
         let (source, instruction) = self.prepare_summary_source(&context, through)?;
-        let summary = crate::conversation::BoundedContentFuture::new(self.io, || {
+        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
             self.summarize(
                 journal,
                 Some(input),
@@ -81,6 +81,14 @@ impl StockExecution<'_> {
             )
         })?
         .await?;
+        #[cfg(feature = "filesystem")]
+        let text_hold = self
+            .io
+            .map(|io| io.guard_owned(text.capacity() as u64))
+            .transpose()?;
+        drop(text);
+        #[cfg(feature = "filesystem")]
+        drop(text_hold);
         if self.stock.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }

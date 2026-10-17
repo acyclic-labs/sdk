@@ -10,6 +10,10 @@ mod blob;
 mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
+#[doc(hidden)]
+#[cfg(any(test, feature = "fuzzing"))]
+pub mod encoder_fuzz;
+
 mod export;
 mod extent;
 mod extent_clone;

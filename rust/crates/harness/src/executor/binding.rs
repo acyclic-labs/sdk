@@ -83,6 +83,8 @@ impl StockExecution<'_> {
         #[derive(Serialize)]
         struct Request<'a> {
             executor: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            summary_source: Option<&'a FileRef>,
             input: &'a TurnInput,
             model: &'a Model,
             max_output_tokens: Option<u32>,
@@ -112,6 +114,7 @@ impl StockExecution<'_> {
         preparation_digest(
             &Request {
                 executor: "acyclic.stock.v7",
+                summary_source: self.stock.summary_source.as_deref(),
                 input,
                 model: &self.stock.model,
                 max_output_tokens: self.output_tokens(),

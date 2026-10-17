@@ -2,5 +2,5 @@
   "attention_every":97,
   "layouts":[{"visible":[0,8],"prefetch":[8,16]},{"visible":[8,16],"prefetch":[16,24]}],
   "expect":{"wire":{"content_follows":24,"removed":8,"peak_full":16,
-    "snapshots":24,"peak_heads":24,"retained_full":16,"visible_updates":48,"fold_items":192,"full_records":64}}
+    "snapshots":24,"peak_heads":16,"retained_full":16,"visible_updates":48,"fold_items":192,"full_records":64}}
 }

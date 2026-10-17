@@ -3,7 +3,7 @@
 use super::{FileViews, PublishError, QuerySubscription, QueryViewLimits, query_error};
 use crate::{
     Result,
-    task_volume::{Change, Cursor, HeadFile, Query, TaskVolume},
+    task_volume::{Change, Cursor, Generation, HeadFile, HeadSnapshot, Query, TaskVolume},
 };
 use acyclic_stream::StreamProvider;
 
@@ -24,14 +24,32 @@ impl ClientQuery {
         cursor: Option<Cursor>,
         limits: QueryViewLimits,
     ) -> Result<Self> {
+        let window = matches!(query, Query::TaskSession { .. });
         let (subscription, snapshot) =
             QuerySubscription::open(volume, query, cursor, limits.segments).await?;
-        let views = FileViews::snapshot(snapshot, limits).map_err(query_error)?;
+        let mut views = FileViews::snapshot(snapshot, limits).map_err(query_error)?;
+        views.window = window;
         Ok(Self {
             subscription,
             views,
             limits,
         })
+    }
+
+    /// Captures the accepted view cut. Segment slices retain their original
+    /// backing allocation; snapshotting clones only bounded file/segment metadata.
+    pub fn snapshot(&self) -> HeadSnapshot {
+        let cursor = self.cursor().clone();
+        HeadSnapshot {
+            files: self.files().cloned().collect(),
+            generation: Generation {
+                volume: cursor.volume,
+                epoch: cursor.epoch,
+                position: cursor.position,
+                commit: cursor.commit,
+            },
+            cursor,
+        }
     }
 
     /// Last completely published view cut. A failed publisher leaves it unchanged.
@@ -85,8 +103,10 @@ impl ClientQuery {
         let views = &mut self.views;
         self.subscription
             .reconnect(volume, |snapshot| {
-                let replacement =
+                let window = views.window;
+                let mut replacement =
                     FileViews::snapshot(snapshot, self.limits).map_err(query_error)?;
+                replacement.window = window;
                 *views = replacement;
                 Ok(())
             })

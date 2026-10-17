@@ -309,6 +309,20 @@ impl LocalStream {
         .map_err(|_| self.inner.poison())
     }
 
+    // Called under visibility before releasing an ordinary replay. A deferred
+    // original must become required, without appending a duplicate frame.
+    fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
+        if REQUIRE && !deferred() {
+            let mut journal = self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            journal.required = journal.appended;
+        }
+        Ok(())
+    }
+
     /// Returns once every frame through `sequence` is durable: group commit.
     async fn await_durable(&self, sequence: u64) -> Result<(), StreamError> {
         let mut synced = self.inner.synced.subscribe();

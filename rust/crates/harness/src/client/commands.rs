@@ -42,7 +42,11 @@ pub use session::CommandSession;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::consume_local_command;
+pub(crate) use local::run_local_command_files;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{
+    consume_local_command, run_local_command, run_local_commands, with_local_commands,
+};
 
 /// Skills share the context loader's validation, metadata and lazy pinned body.
 pub use crate::context::SkillMetadata as SkillSpec;
@@ -181,6 +185,18 @@ pub struct CommandSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CommandRequest {
+    /// Cancel the captured admitted task. Published as an immutable request file.
+    Cancel {
+        /// Exact task; later selection changes cannot retarget this request.
+        task: crate::TaskId,
+    },
+    /// Submit an immutable replacement of an earlier user request as a new branch.
+    Replace {
+        /// Original prompt admission, retained for provenance.
+        message: crate::OperationId,
+        /// Replacement prompt; never interpreted as a slash command.
+        text: String,
+    },
     /// Exit the client.
     Quit,
     /// Create a new root conversation.
@@ -334,6 +350,56 @@ pub enum CommandResolution {
         /// View identifier.
         query: CommandQuery,
     },
+}
+
+impl CommandResolution {
+    /// Moves a resolved prompt into the stock model command's input. Mentioned
+    /// files retain their pinned revisions and use verified bounded text projection.
+    /// Repeated file identities attach once, in first-mention order.
+    pub fn into_model_input(self) -> Result<crate::model::ModelContent> {
+        use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
+        let Self::Prompt { text, mentions, .. } = self else {
+            return Err(Error::Invalid(
+                "command selects a view or typed operation".into(),
+            ));
+        };
+        if mentions.is_empty() {
+            let content = ModelContent::Text(text);
+            content.validate_user_input(&mut None)?;
+            return Ok(content);
+        }
+        // Borrow identities while selecting indices, then move refs into the input.
+        // No file ref, path, version or prompt text is cloned for attachment.
+        let mut seen = BTreeMap::new();
+        let mut selected = Vec::with_capacity(mentions.len());
+        for (index, mention) in mentions.iter().enumerate() {
+            let file = &mention.file;
+            let identity = (file.volume(), file.path(), file.version());
+            if let Some(previous) = seen.insert(identity, file) {
+                if previous != file {
+                    return Err(Error::Conflict("mentioned file identity changed".into()));
+                }
+            } else {
+                selected.push(index);
+            }
+        }
+        drop(seen);
+        let mut parts = Vec::with_capacity(selected.len() + 1);
+        parts.push(ModelContentPart::Text { text });
+        let mut selected = selected.into_iter().peekable();
+        for (index, mention) in mentions.into_iter().enumerate() {
+            if selected.peek() == Some(&index) {
+                selected.next();
+                parts.push(ModelContentPart::File {
+                    file: mention.file,
+                    policy: FileProjectionPolicy::BoundedFull,
+                });
+            }
+        }
+        let content = ModelContent::Parts(parts);
+        content.validate_user_input(&mut None)?;
+        Ok(content)
+    }
 }
 
 /// Validated immutable catalog, sorted by name for help and completion.

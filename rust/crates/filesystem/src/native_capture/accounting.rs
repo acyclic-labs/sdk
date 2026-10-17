@@ -151,17 +151,6 @@ pub(super) fn capture_sort_by<T>(
     Ok(())
 }
 
-pub(super) fn capture_allocate(
-    meter: &NativeMaterializationWork,
-    bytes: u64,
-) -> Result<(), CaptureError> {
-    meter
-        .with_original_leaf(|work| {
-            work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
-        })
-        .map_err(capture_demand_error)
-}
-
 pub(super) fn capture_charge(
     meter: &NativeMaterializationWork,
     work: WorkCounters,
@@ -191,7 +180,7 @@ pub(super) fn capture_reserve<T>(
     let wanted = values
         .len()
         .checked_add(additional)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     if wanted <= values.capacity() {
         return Ok(());
     }
@@ -199,11 +188,11 @@ pub(super) fn capture_reserve<T>(
     let old = values
         .capacity()
         .checked_mul(size)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     let copied = values
         .len()
         .checked_mul(size)
-        .ok_or(CaptureError::from(WorkError::Overflow))?;
+        .ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
     let grown = wanted.max(values.capacity().saturating_mul(2).max(4));
     let capacity = match grown.checked_mul(size) {
         Some(bytes)

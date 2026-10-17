@@ -8,8 +8,12 @@ use std::io::{self, Read};
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak, mpsc};
+#[cfg(test)]
+use std::sync::mpsc;
+use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::task::{Context, Poll, Waker};
+mod sync;
+use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -19,12 +23,12 @@ pub mod obs;
 mod process_tree;
 #[cfg(windows)]
 mod windows;
-#[cfg(windows)]
-pub use windows::terminal;
 #[cfg(all(unix, not(target_os = "linux")))]
 use apple::{read_batch as read_batch_impl, write_all_batch_owned as write_all_batch_impl};
 #[cfg(target_os = "linux")]
 use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
+#[cfg(windows)]
+pub use windows::terminal;
 #[cfg(windows)]
 use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 

@@ -1,4 +1,5 @@
 use super::*;
+mod media_type;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -321,7 +322,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         } else {
             (
                 crate::executor::with_history_io(Some(io), |work| {
-                    FileDescriptor::from_bytes(&bytes, "application/octet-stream", work)
+                    FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
                 })?,
                 stock_string_copy(name, Some(io))?,
             )
@@ -338,6 +339,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
         })?;
         grant.require_file_read(&reference, Some(io))?;
+        if staged.is_some() {
+            // Upload metadata carries the publication operation, not a sentinel.
+            // Reuse range authentication to bind it to the original atomic write.
+            self.read_pinned_range(
+                &reference,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                Some(io),
+            )
+            .await?;
+        }
         let publication = staged
             .as_ref()
             .map(|file| file_publication(file, Some(io)))

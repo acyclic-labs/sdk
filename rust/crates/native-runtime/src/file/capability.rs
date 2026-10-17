@@ -380,7 +380,7 @@ impl NativeFile {
 
     /// Submits owned writes while retaining this handle.
     pub fn write_all_batch_async(&self, writes: Vec<OwnedWrite>) -> NativeCompletion<()> {
-        let state = Arc::new(Mutex::new(CompletionState::default()));
+        let state = Arc::new(CompletionMutex::new(CompletionState::default()));
         let span = obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
             .sized(writes.len(), || {
                 writes.iter().map(|write| write.bytes.len()).sum()

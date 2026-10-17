@@ -115,6 +115,12 @@ impl NativeStockExecutor {
         self
     }
 
+    /// Selects a pinned summary source without copying its retained command data.
+    pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
+        self.stock = self.stock.with_summary_source(source);
+        self
+    }
+
     /// Runs the shared stock engine with the exact issued context and operation.
     pub(crate) fn execute_progress_with_native_context<'a>(
         &'a self,

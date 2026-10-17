@@ -9,7 +9,7 @@ impl StockExecution<'_> {
         step: u32,
         source: crate::context::Context,
         instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
+    ) -> Result<(crate::context::ContextSummary, String)> {
         if parent.is_some_and(|parent| step >= parent.max_steps) {
             return Err(stock_boundary(
                 self.io,
@@ -21,7 +21,10 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
+        let pinned = self.stock.summary_source.as_deref();
+        if pinned.is_none() {
+            stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
+        }
         stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
@@ -31,12 +34,19 @@ impl StockExecution<'_> {
                 "summary requires a caller-selected output token budget",
             ));
         }
-        let source_bytes: acyclic_stream::OwnedBytes = match self.io {
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
-            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+        let source_bytes: Option<acyclic_stream::OwnedBytes> = if pinned.is_some() {
+            None
+        } else {
+            Some(match self.io {
+                #[cfg(feature = "filesystem")]
+                Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+                _ => crate::contract::canonical_json_bytes(&source)?.into(),
+            })
         };
-        let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
+        let source_digest = match pinned {
+            Some(file) => *file.descriptor().sha256(),
+            None => crate::model::hash_bytes(source_bytes.as_deref().unwrap(), self.io)?,
+        };
         let source_messages = u32::try_from(source.messages.len()).map_err(|_| {
             stock_boundary(
                 self.io,
@@ -85,18 +95,20 @@ impl StockExecution<'_> {
         } else {
             executor.ensure_started(journal, &input).await?;
         }
-        let source_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
-        })?;
-        stage_bytes(
-            journal,
-            operation_id,
-            &source_key,
-            &source_bytes,
-            true,
-            self.io,
-        )
-        .await?;
+        if let Some(source_bytes) = &source_bytes {
+            let source_key = with_history_io(self.io, |work| {
+                crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
+            })?;
+            stage_bytes(
+                journal,
+                operation_id,
+                &source_key,
+                source_bytes,
+                true,
+                self.io,
+            )
+            .await?;
+        }
         let events = executor
             .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
             .await?;
@@ -153,7 +165,7 @@ impl StockExecution<'_> {
         step: u32,
         source: (u32, [u8; 32]),
         text: String,
-    ) -> Result<crate::context::ContextSummary> {
+    ) -> Result<(crate::context::ContextSummary, String)> {
         let (source_messages, source_digest) = source;
         let output = if let Some(context) = self.original_context() {
             let path = with_history_io(self.io, |work| {
@@ -193,7 +205,7 @@ impl StockExecution<'_> {
             output,
         };
         stage_summary_provenance(journal, &summary, self.io).await?;
-        Ok(summary)
+        Ok((summary, text))
     }
 }
 

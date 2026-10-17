@@ -66,7 +66,7 @@ pub(crate) fn allocate_blocking_wait_wake(
 }
 
 pub(crate) fn measured_completion_meter<T>(
-    state: &Mutex<CompletionState<T>>,
+    state: &CompletionMutex<CompletionState<T>>,
 ) -> io::Result<Arc<dyn NativeReadMeter>> {
     state
         .lock()

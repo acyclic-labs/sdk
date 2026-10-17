@@ -47,6 +47,19 @@ mod frontmatter;
 mod client_files;
 use client_files::Fixture;
 
+#[path = "client_mention_attachments.rs"]
+mod attachments;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_mention_provider.rs"]
+mod mention_provider;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "filesystem-local",
+    feature = "test-support"
+))]
+#[path = "support/client_local.rs"]
+mod client_local;
+
 impl Fixture {
     async fn catalog(
         &self,
@@ -445,6 +458,130 @@ async fn mention_bytes_are_cumulative_and_duplicate_paths_read_once() -> Result<
             .await
             .is_ok(),
             succeeds
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn resolved_mentions_attach_to_the_stock_model_input_at_the_pinned_revision() -> Result<()> {
+    use acyclic_harness::{
+        filesystem::ModelTaskCommand,
+        model::{FileProjectionPolicy, ModelContent, ModelContentPart},
+    };
+    let fixture = Fixture::new(&[
+        (".claude/commands/read.md", "Read $ARGUMENTS"),
+        ("a.txt", "before"),
+        ("b.txt", "bee"),
+        ("space name.txt", "spaces"),
+    ])
+    .await?;
+    let catalog = fixture.catalog(&[("", CommandScope::Project)], &[]).await?;
+    let CommandResolution::Prompt {
+        source: Some(source),
+        ..
+    } = catalog
+        .resolve("/read", fixture.reader.as_ref(), 1024)
+        .await?
+    else {
+        panic!("pinned command");
+    };
+    fixture.put("a.txt", "after", "later-edit").await?;
+    for (input, text, expected) in [
+        ("hello", "hello", vec![]),
+        ("@a.txt", "@a.txt", vec![("a.txt", "before")]),
+        (
+            "@b.txt @a.txt @b.txt",
+            "@b.txt @a.txt @b.txt",
+            vec![("b.txt", "bee"), ("a.txt", "before")],
+        ),
+        (
+            "/read @\"space name.txt\"",
+            "Read @\"space name.txt\"",
+            vec![("space name.txt", "spaces")],
+        ),
+        (
+            "mail@example.com \\@a.txt",
+            "mail@example.com \\@a.txt",
+            vec![],
+        ),
+    ] {
+        let resolved = catalog
+            .resolve_input(
+                input,
+                &source.root,
+                &source.generation,
+                fixture.reader.as_ref(),
+                1024,
+            )
+            .await?;
+        let CommandResolution::Prompt {
+            text: prepared_text,
+            ..
+        } = &resolved
+        else {
+            panic!("prompt");
+        };
+        let allocation = prepared_text.as_ptr();
+        let content = resolved.into_model_input()?;
+        let (prepared_text, files) = match &content {
+            ModelContent::Text(text) => (text, &[][..]),
+            ModelContent::Parts(parts) => {
+                let Some(ModelContentPart::Text { text }) = parts.first() else {
+                    panic!("prompt text first");
+                };
+                (text, &parts[1..])
+            }
+            _ => panic!("complete prompt input"),
+        };
+        assert_eq!(prepared_text, text);
+        assert_eq!(prepared_text.as_ptr(), allocation, "prompt text must move");
+        assert_eq!(files.len(), expected.len());
+        for (part, (path, body)) in files.iter().zip(expected) {
+            let ModelContentPart::File { file, policy } = part else {
+                panic!("file attachment");
+            };
+            assert_eq!(file.path(), path);
+            assert_eq!(policy, &FileProjectionPolicy::BoundedFull);
+            assert_eq!(
+                fixture.reader.read(file, 1024, None)?.await?.as_ref(),
+                body.as_bytes()
+            );
+        }
+        // Submit uses the existing command schema, retaining immutable refs rather
+        // than copying file bodies into a second prompt format.
+        let command = ModelTaskCommand {
+            context_manifest: source.read(fixture.reader.as_ref(), 1024).await?.0,
+            summary_source: None,
+            input: content,
+            selected_context: None,
+            max_steps: 1,
+            max_output_tokens: None,
+            mailbox_operation: None,
+            selected_output_volume: None,
+        };
+        let encoded = serde_json::to_vec(&command).unwrap();
+        let submitted: ModelTaskCommand = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(submitted, command);
+        submitted.input.validate_user_input(&mut None)?;
+        submitted
+            .input
+            .validate_limits(Default::default(), &mut None)?;
+    }
+    for input in ["/diff", "/compact now", "/model provider/model", ""] {
+        assert!(
+            catalog
+                .resolve_input(
+                    input,
+                    &source.root,
+                    &source.generation,
+                    fixture.reader.as_ref(),
+                    1024
+                )
+                .await?
+                .into_model_input()
+                .is_err(),
+            "{input}"
         );
     }
     Ok(())

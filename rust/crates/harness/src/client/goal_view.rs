@@ -7,14 +7,19 @@ use serde::Serialize;
 
 /// Read-only progress derived from the existing retained request head.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct GoalProgress {
     /// Admitted or staged task occupying the ordinary request head.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub operation: OperationId,
     /// Original user turn for this goal loop.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     pub root: OperationId,
     /// Automatic continuations retained by that loop; edits never reset it.
     pub continuations: u32,
     /// GOAL.md write publication acknowledged by this retained request head.
+    #[cfg_attr(feature = "wasm", tsify(type = "string | null"))]
     pub goal_revision: Option<OperationId>,
 }
 
@@ -32,6 +37,8 @@ impl GoalProgress {
 
 /// One goal rendering over two independent, accepted filesystem cuts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct GoalQueryView<'a> {
     /// Current GOAL.md publication cursor.
     pub cursor: &'a Cursor,
@@ -78,21 +85,16 @@ impl ClientViews {
         request: ([u8; 32], [u8; 32]),
     ) -> Result<()> {
         if !self
-            .queries
-            .get(&goal)
+            .selection(&goal)
             .is_some_and(|view| view.query().matches(&FileKey::Goal))
             || !self
-                .queries
-                .get(&request)
+                .selection(&request)
                 .is_some_and(|view| view.query() == &Query::File(FileKey::RequestHead))
         {
             return Err(Error::Invalid(
                 "goal sources require observed goal and request-head queries".into(),
             ));
         }
-        self.goal_sources.retain(|goal, request| {
-            self.queries.contains_key(goal) && self.queries.contains_key(request)
-        });
         self.goal_sources.insert(goal, request);
         Ok(())
     }
@@ -100,14 +102,22 @@ impl ClientViews {
     /// Re-derives the rendering from current source cuts; arrival order adds no state.
     pub fn goal_view(&self, volume: [u8; 32], query: [u8; 32]) -> Option<GoalQueryView<'_>> {
         let identity = (volume, query);
-        let file = self.queries.get(&identity)?;
+        self.goal_selection(&identity, self.selection(&identity)?)
+    }
+
+    pub(super) fn goal_selection<'a>(
+        &'a self,
+        identity: &([u8; 32], [u8; 32]),
+        file: &'a super::FileQueryView,
+    ) -> Option<GoalQueryView<'a>> {
         if !file.query().matches(&FileKey::Goal) {
             return None;
         }
         let request = self
             .goal_sources
-            .get(&identity)
-            .and_then(|key| self.queries.get(key));
+            .get(identity)
+            .and_then(|key| self.selection(key))
+            .or_else(|| file.query().matches(&FileKey::RequestHead).then_some(file));
         Some(GoalQueryView {
             cursor: file.cursor(),
             request_cursor: request.map(|view| view.cursor()),
@@ -131,11 +141,6 @@ impl Serialize for Goals<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_seq(
-            self.0
-                .queries
-                .keys()
-                .filter_map(|(volume, query)| self.0.goal_view(*volume, *query)),
-        )
+        serializer.collect_seq(self.0.goals())
     }
 }

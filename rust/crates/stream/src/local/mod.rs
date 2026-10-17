@@ -60,6 +60,8 @@ pub(crate) mod discovery_model;
 pub(crate) mod follow_model;
 #[cfg(acyclic_loom)]
 pub(crate) mod query_model;
+#[cfg(acyclic_loom)]
+pub(crate) mod replay_model;
 
 #[cfg(test)]
 static JOURNAL_OPEN_SUBMITTED: Mutex<Option<(PathBuf, tokio::sync::oneshot::Sender<()>)>> =

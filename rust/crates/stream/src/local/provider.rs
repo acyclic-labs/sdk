@@ -157,14 +157,14 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, None).await
+        commit::<true>(self, request, None).await
     }
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        commit(self, request, Some(deadline)).await
+        commit::<true>(self, request, Some(deadline)).await
     }
 
     async fn read_commit(
@@ -264,7 +264,7 @@ impl StreamProvider for LocalStream {
     }
 }
 
-async fn commit(
+async fn commit<const ELIDE_REPLAY: bool>(
     stream: &LocalStream,
     request: CommitRequest,
     deadline: Option<u64>,
@@ -280,13 +280,30 @@ async fn commit(
     span.scope(async {
         stream
             .exclusive(&span, move |stream| async move {
-                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                // The visibility guard covers this lookup and settlement. A
+                // replay still passes through commit_inner for fingerprint and
+                // deadline semantics, then exclusive awaits the original WAL.
+                let replay = ELIDE_REPLAY
+                    && stream
+                        .inner
+                        .provider
+                        .has_replay(&request.idempotency_key)
+                        .await?;
+                let frame = if replay {
+                    None
+                } else {
+                    Some(stream.prepare(&Command::Commit(request.clone()))?)
+                };
                 let (outcome, _claim) = stream
                     .inner
                     .provider
                     .commit_inner(request, deadline)
                     .await?;
-                stream.persist(frame).await?;
+                if let Some(frame) = frame {
+                    stream.persist(frame).await?;
+                } else {
+                    stream.require_accepted::<true>()?;
+                }
                 Ok(outcome)
             })
             .await

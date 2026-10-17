@@ -33,7 +33,7 @@ fn session() -> ClientSession<MemoryClientState> {
 #[tokio::test]
 async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically() {
     use acyclic_harness::{
-        client::{CommandCatalog, CommandQuery, CommandResolution, FileQueryView},
+        client::{CommandCatalog, CommandQuery, CommandResolution, TaskFileQueryView},
         conversation::CompositeContentVerifier,
         task_volume::{Change, FileKey, Query, TaskVolume, Write},
     };
@@ -134,9 +134,9 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         }
     }
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
-    assert!(FileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
+    assert!(TaskFileQueryView::from_snapshot(Query::File(FileKey::Goal), snapshot, 2, 128).is_err());
     let snapshot = volume.snapshot(&Query::Plans, 2).await.unwrap();
-    assert!(FileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
+    assert!(TaskFileQueryView::from_snapshot(Query::Plans, snapshot, 2, 1).is_err());
     // Check both the bounded source and the client's independent revision validation.
     let mut volume_changes = volume
         .follow(
@@ -756,121 +756,17 @@ async fn autospawn_only_for_missing_service() {
     assert_eq!(denied.spawns.load(Ordering::Relaxed), 1);
 }
 
-#[test]
-fn canonical_jsonl_golden_frames() {
-    let frame = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Admission(wire::Admission {
-            operation: Some(wire::OperationIdentity {
-                operation_id: "op".into(),
-                idempotency_key: "key".into(),
-            }),
-            state: wire::AdmissionState::Accepted as i32,
-            error: None,
-        })),
-    };
-    let line = jsonl::server_frame(&frame).unwrap();
-    assert_eq!(
-        line,
-        r#"{"admission":{"operation":{"operationId":"op","idempotencyKey":"key"},"state":"ADMISSION_STATE_ACCEPTED"}}"#
-    );
-    assert_eq!(jsonl::parse_server_frame(&line).unwrap(), frame);
-    let line = r#"{"acknowledge":{"authority":{"kind":"AGGREGATE_KIND_TASK","id":"task"},"generation":"g","throughRevision":"18446744073709551615"}}"#;
-    let frame = jsonl::parse_client_frame(line).unwrap();
-    assert_eq!(jsonl::client_frame(&frame).unwrap(), line);
-    assert!(jsonl::parse_client_frame(r#"{"bogus":1}"#).is_err());
-    assert!(jsonl::parse_client_frame("{} {}").is_err());
-}
+#[path = "client_session_jsonl.rs"]
+mod jsonl_tests;
 
-#[test]
-fn streaming_views_share_tool_identity_and_keep_provider_usage() {
-    use acyclic_harness::{client::ClientViews, model::ModelEvent};
-    let mut views = ClientViews::default();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Content {
-                delta: "hel".into(),
-            },
-        )
-        .unwrap();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Content { delta: "lo".into() },
-        )
-        .unwrap();
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Reasoning {
-                delta: "thinking".into(),
-            },
-        )
-        .unwrap();
-    views.tool_output(&owner(), "call", "first\n");
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-                "call".into(),
-                "bash".into(),
-                serde_json::json!({"command":"pwd"}),
-            )),
-        )
-        .unwrap();
-    views.tool_output(&owner(), "call", "second\n");
-    let usage = serde_json::json!({"input_tokens":12,"output_tokens":2});
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Completed {
-                metadata: usage.clone(),
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        views.transcripts["AGGREGATE_KIND_TASK:task"].streaming_text,
-        "hello"
-    );
-    assert_eq!(
-        views.transcripts["AGGREGATE_KIND_TASK:task"].reasoning,
-        "thinking"
-    );
-    assert_eq!(
-        views.tools["AGGREGATE_KIND_TASK:task"]["call"].output,
-        tool_text("first\nsecond\n")
-    );
-    assert_eq!(views.tools["AGGREGATE_KIND_TASK:task"]["call"].name, "bash");
-    assert_eq!(views.usage["AGGREGATE_KIND_TASK:task"], usage);
-    views
-        .model_event(
-            &owner(),
-            acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            ModelEvent::Completed { metadata: usage },
-        )
-        .unwrap();
-    assert_eq!(
-        views.usage["AGGREGATE_KIND_TASK:task"],
-        serde_json::json!({"input_tokens":24,"output_tokens":4})
-    );
-}
-
-#[path = "client_session_headless.rs"]
-mod headless;
+#[path = "client_session_views.rs"]
+mod views;
 
 #[path = "client_session_recovery.rs"]
 mod recovery;
 
 #[path = "client_session_admissions.rs"]
 mod admissions;
-
-#[path = "client_session_lifecycle.rs"]
-mod lifecycle;
 
 #[path = "client_session_review.rs"]
 mod review;
@@ -891,3 +787,6 @@ mod files;
 #[path = "client_session_usage.rs"]
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 mod usage;
+
+#[path = "client_session_documents.rs"]
+mod documents;

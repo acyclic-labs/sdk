@@ -2,11 +2,26 @@ use super::*;
 use crate::conversation::{BoundedContentFuture, ContentHold, ContentIo};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct Interrupted<'a> {
+pub(in crate::local::tests) struct Interrupted<'a> {
     publisher: &'a dyn ContentPublisher,
     cut: usize,
     after: bool,
     calls: AtomicUsize,
+}
+
+impl<'a> Interrupted<'a> {
+    pub(in crate::local::tests) fn new(
+        publisher: &'a dyn ContentPublisher,
+        cut: usize,
+        after: bool,
+    ) -> Self {
+        Self {
+            publisher,
+            cut,
+            after,
+            calls: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl ContentPublisher for Interrupted<'_> {
@@ -168,19 +183,25 @@ async fn sweep_case(checkout: bool, cut: usize, after: bool, publications: usize
 
 #[tokio::test]
 async fn volume_recovery_covers_every_publication_and_lost_acknowledgement() -> Result<()> {
-    futures::future::try_join_all(
-        (0..3).flat_map(|cut| [false, true].map(move |after| sweep_case(false, cut, after, 3))),
-    )
-    .await?;
+    futures::future::try_join_all((0..3).flat_map(|cut| {
+        [false, true].map(move |after| WORKERS.spawn(sweep_case(false, cut, after, 3)))
+    }))
+    .await
+    .map_err(super::super::super::storage)?
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
     Ok(())
 }
 
 #[cfg(feature = "native-execution")]
 #[tokio::test]
 async fn checkout_recovery_covers_every_publication_and_lost_acknowledgement() -> Result<()> {
-    futures::future::try_join_all(
-        (0..5).flat_map(|cut| [false, true].map(move |after| sweep_case(true, cut, after, 5))),
-    )
-    .await?;
+    futures::future::try_join_all((0..5).flat_map(|cut| {
+        [false, true].map(move |after| WORKERS.spawn(sweep_case(true, cut, after, 5)))
+    }))
+    .await
+    .map_err(super::super::super::storage)?
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
     Ok(())
 }

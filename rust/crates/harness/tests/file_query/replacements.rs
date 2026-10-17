@@ -100,7 +100,7 @@ proptest! {
                 while view.cursor().position < fresh.cursor.position {
                     view.apply(next(&mut changes).await)?;
                 }
-                assert!(unindexed(&view.files()[&FileKey::Goal], bytes.as_bytes()));
+                assert!(unindexed_head(&view.files()[&FileKey::Goal], bytes.as_bytes()));
                 assert_eq!(view.cursor().commit, fresh.cursor.commit);
             }
             Ok::<_, Box<dyn std::error::Error>>(())
@@ -152,18 +152,22 @@ async fn stale_goal_metadata_control_and_descriptor_fallback()
             view.apply(next(&mut changes).await)?;
         }
         let file = &view.files()[&FileKey::Goal];
-        assert_eq!(file.bytes.as_ref(), bytes.as_bytes());
+        assert_eq!(file.segments[0].as_ref(), bytes.as_bytes());
         if bytes == ORIGINAL {
             assert!(
-                !unindexed(file, bytes.as_bytes()),
+                !unindexed_head(file, bytes.as_bytes()),
                 "preserved-metadata control escaped the replacement oracle"
             );
         } else {
             assert!(
-                unindexed(file, bytes.as_bytes()),
+                unindexed_head(file, bytes.as_bytes()),
                 "an obsolete descriptor must not end a readable goal query"
             );
         }
     }
     Ok(())
+}
+
+fn unindexed_head(file: &acyclic_harness::task_volume::HeadFile, bytes: &[u8]) -> bool {
+    file.publication.is_none() && file.segments.len() == 1 && file.segments[0].as_ref() == bytes
 }

@@ -35,7 +35,7 @@ export * from "./project.js";
 export * from "./interaction.js";
 export * from "./extension.js";
 export * from "./client.js";
-export * from "./client-views.js";
+export * from "./hypotheses.js";
 export * from "./client-demand.js";
 export { RequestScheduler, RequestCapacityError, type RequestLimits } from "./client-requests.js";
 export type { ClientSnapshot } from "./client-snapshot.js";

@@ -2,15 +2,13 @@
 use super::*;
 use acyclic_harness::{
     AgentId,
-    client::{FileClientState, ViewUpdate},
+    client::FileClientState,
     conversation::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOwner, VolumeRef,
     },
-    model::ModelEvent,
     resources::ProviderRef,
 };
-use futures::{FutureExt, StreamExt};
 use prost::Message;
 
 #[cfg(unix)]
@@ -67,130 +65,6 @@ fn journal_aliases_share_the_writer_lock_and_checkpoint_target() {
     std::fs::hard_link(&path, &hard_link).unwrap();
     assert!(FileClientState::open(&path).is_err());
     assert!(FileClientState::open(&hard_link).is_err());
-}
-
-#[tokio::test]
-async fn incoming_model_and_tool_streams_update_session_owned_views() {
-    let provider = Arc::new(acyclic_stream::MemoryStream::default());
-    let model = acyclic_stream::Stream::new(provider.clone(), "client/model").unwrap();
-    let tools = acyclic_stream::Stream::new(provider, "client/tool-output").unwrap();
-    // Establish the streams before following; later appends must wake the reader.
-    model
-        .append(
-            serde_json::to_vec(&ModelEvent::Content {
-                delta: "first".into(),
-            })
-            .unwrap(),
-        )
-        .await
-        .unwrap();
-    tools.append(b"stdout\n".to_vec()).await.unwrap();
-    let mut model_source = model.follow(0).await.unwrap().map(|record| {
-        let record = record?;
-        Ok(ViewUpdate::Model {
-            authority: owner(),
-            turn: acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-            event: serde_json::from_slice(&record.value)
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-        })
-    });
-    let mut tool_source = tools.follow(0).await.unwrap().map(|record| {
-        let record = record?;
-        Ok(ViewUpdate::ToolOutput {
-            authority: owner(),
-            call_id: "call".into(),
-            delta: String::from_utf8(record.value.to_vec()).unwrap(),
-        })
-    });
-    let mut client = HarnessClient::connect(Arc::new(Host::default()), session())
-        .await
-        .unwrap();
-    assert!(client.next_update(&mut model_source).await.unwrap());
-    assert!(
-        client
-            .next_update(&mut model_source)
-            .now_or_never()
-            .is_none()
-    );
-    for event in [
-        ModelEvent::Content {
-            delta: " second".into(),
-        },
-        ModelEvent::Reasoning {
-            delta: "thinking".into(),
-        },
-        ModelEvent::ToolCall(acyclic_harness::model::ToolCall::new(
-            "call".into(),
-            "bash".into(),
-            serde_json::json!({"command":"pwd"}),
-        )),
-        ModelEvent::Completed {
-            metadata: serde_json::json!({"tokens":2}),
-        },
-        ModelEvent::Completed {
-            metadata: serde_json::json!({"tokens":3}),
-        },
-    ] {
-        model
-            .append(serde_json::to_vec(&event).unwrap())
-            .await
-            .unwrap();
-        assert!(
-            client
-                .next_update(&mut model_source)
-                .now_or_never()
-                .expect("push must wake renderer")
-                .unwrap()
-        );
-    }
-    assert!(client.next_update(&mut tool_source).await.unwrap());
-    tools.append(b"stderr\n".to_vec()).await.unwrap();
-    assert!(
-        client
-            .next_update(&mut tool_source)
-            .now_or_never()
-            .unwrap()
-            .unwrap()
-    );
-    let views = client.session().views();
-    let key = "AGGREGATE_KIND_TASK:task";
-    assert_eq!(views.transcripts[key].streaming_text, "first second");
-    assert_eq!(views.transcripts[key].reasoning, "thinking");
-    assert_eq!(views.tools[key]["call"].name, "bash");
-    assert_eq!(
-        views.tools[key]["call"].output,
-        tool_text("stdout\nstderr\n")
-    );
-    assert_eq!(views.usage[key], serde_json::json!({"tokens":5}));
-    // Streaming and committed replay share one session, without journaling tails.
-    client.replay().await.unwrap();
-    client.next_delivery().await.unwrap();
-    assert_eq!(
-        client.session().views().transcripts[key].streaming_text,
-        "first second"
-    );
-    assert_eq!(
-        client.session().views().tasks[key].status,
-        LifecycleState::Completed
-    );
-    let mut state = client.into_session();
-    let views = state.views().clone();
-    let mut untracked = owner();
-    untracked.id = "untracked".into();
-    assert!(
-        state
-            .model_event(
-                &untracked,
-                acyclic_harness::OperationId::from_bytes(7u128.to_be_bytes()),
-                ModelEvent::Content {
-                    delta: "bad".into()
-                }
-            )
-            .is_err()
-    );
-    assert!(state.tool_output(&untracked, "call", "bad").is_err());
-    assert_eq!(state.views(), &views);
-    assert_eq!(state.into_store().load().unwrap().len(), 2);
 }
 
 fn message_delivery(revision: u64) -> wire::Delivery {
@@ -251,7 +125,7 @@ impl ClientStateStore for MeasuredStore {
 }
 
 #[test]
-fn checkpoint_work_is_linear_and_replay_rebuilds_disposable_transcripts() {
+fn checkpoint_work_is_linear_and_replay_rebuilds_operation_progress() {
     let mut totals = Vec::new();
     for count in [256, 512] {
         let mut state = ClientSession::open(MeasuredStore::default()).unwrap();
@@ -260,13 +134,8 @@ fn checkpoint_work_is_linear_and_replay_rebuilds_disposable_transcripts() {
         for revision in 0..count {
             state.receive(frame(message_delivery(revision))).unwrap();
         }
-        let expected = state.views().clone();
-        assert_eq!(
-            expected.transcripts["AGGREGATE_KIND_TASK:task"]
-                .messages
-                .len(),
-            count as usize
-        );
+        let expected = state.replay_revision(&owner());
+        assert_eq!(expected, count);
         let mut store = state.into_store();
         assert!(store.load().unwrap().len() <= 64);
         assert_eq!(store.checkpoint_count, count as usize / 64);
@@ -278,7 +147,7 @@ fn checkpoint_work_is_linear_and_replay_rebuilds_disposable_transcripts() {
         let mut recovered = ClientSession::open(store).unwrap();
         assert_eq!(recovered.resume().cursors[0].revision, count);
         assert_eq!(recovered.replay_request().cursors[0].revision, 0);
-        assert_eq!(recovered.views(), &Default::default());
+        assert_eq!(recovered.replay_revision(&owner()), 0);
         for revision in 0..count {
             recovered
                 .receive(frame(message_delivery(revision)))
@@ -289,7 +158,7 @@ fn checkpoint_work_is_linear_and_replay_rebuilds_disposable_transcripts() {
         recovered
             .receive(frame(message_delivery(count - 1)))
             .unwrap();
-        assert_eq!(recovered.views(), &expected);
+        assert_eq!(recovered.replay_revision(&owner()), expected);
         assert_eq!(recovered.replay_request().cursors[0].revision, count);
         assert_eq!(
             recovered.pending().cloned().collect::<Vec<_>>(),
@@ -316,26 +185,16 @@ fn rehydration_accepts_a_page_crossing_the_durable_cursor_without_duplication() 
     page.events.extend(message_delivery(1).events);
     state.receive(frame(page.clone())).unwrap();
     assert_eq!(state.resume().cursors[0].revision, 2);
-    assert_eq!(state.view_revision(&owner()), 2);
+    assert_eq!(state.replay_revision(&owner()), 2);
     state.receive(frame(page)).unwrap();
-    assert_eq!(
-        state.views().transcripts["AGGREGATE_KIND_TASK:task"]
-            .messages
-            .len(),
-        2
-    );
+    assert_eq!(state.replay_revision(&owner()), 2);
     let mut store = state.into_store();
     assert_eq!(store.load().unwrap().len(), 2);
     let mut state = ClientSession::open(store).unwrap();
     for revision in 0..2 {
         state.receive(frame(message_delivery(revision))).unwrap();
     }
-    assert_eq!(
-        state.views().transcripts["AGGREGATE_KIND_TASK:task"]
-            .messages
-            .len(),
-        2
-    );
+    assert_eq!(state.replay_revision(&owner()), 2);
 }
 
 #[test]
@@ -378,7 +237,7 @@ fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
 
 #[test]
 fn long_journal_names_survive_automatic_checkpoint_and_reopen() {
-    for name in ["a".repeat(220), "b".repeat(250), "é".repeat(110)] {
+    for name in ["a".repeat(220), "b".repeat(250), "\u{e9}".repeat(110)] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join(name);
         let mut writer = ClientSession::open(FileClientState::open(&path).unwrap()).unwrap();
@@ -410,145 +269,7 @@ fn long_journal_names_survive_automatic_checkpoint_and_reopen() {
     }
 }
 
-#[test]
-fn historical_assistant_replay_preserves_the_current_turn_tail() {
-    use acyclic_harness::model::ModelEvent;
-    let mut state = session();
-    let current = acyclic_harness::OperationId::from_bytes(2u128.to_be_bytes());
-    for event in [
-        ModelEvent::Content {
-            delta: "current text".into(),
-        },
-        ModelEvent::Reasoning {
-            delta: "current reasoning".into(),
-        },
-    ] {
-        state.model_event(&owner(), current, event).unwrap();
-    }
-    state
-        .receive(frame(turn_delivery(
-            0,
-            acyclic_harness::OperationId::from_bytes(1u128.to_be_bytes()),
-        )))
-        .unwrap();
-    let tail = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
-    assert_eq!(tail.streaming_turn, Some(current));
-    assert_eq!(tail.streaming_text, "current text");
-    assert_eq!(tail.reasoning, "current reasoning");
-    assert_eq!(tail.messages.len(), 1);
-    state.receive(frame(turn_delivery(1, current))).unwrap();
-    let tail = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
-    assert!(tail.streaming_turn.is_none());
-    assert!(tail.streaming_text.is_empty());
-    assert!(tail.reasoning.is_empty());
-    assert_eq!(tail.messages.len(), 2);
-}
-
-#[tokio::test]
-async fn replay_before_delayed_model_updates_does_not_reopen_a_committed_turn() {
-    for with_live_turn in [false, true] {
-        let mut state = session();
-        let committed = acyclic_harness::OperationId::from_bytes(2u128.to_be_bytes());
-        state.receive(frame(turn_delivery(0, committed))).unwrap();
-        if with_live_turn {
-            let live = acyclic_harness::OperationId::from_bytes(3u128.to_be_bytes());
-            state
-                .model_event(
-                    &owner(),
-                    live,
-                    ModelEvent::Content {
-                        delta: "live".into(),
-                    },
-                )
-                .unwrap();
-            state
-                .model_event(
-                    &owner(),
-                    live,
-                    ModelEvent::Reasoning {
-                        delta: "reasoning".into(),
-                    },
-                )
-                .unwrap();
-        }
-        let before = state.views().clone();
-        let mut client = HarnessClient::connect(Arc::new(Host::default()), state)
-            .await
-            .unwrap();
-        let mut delayed = futures::stream::iter(
-            [
-                ModelEvent::Content {
-                    delta: "already committed".into(),
-                },
-                ModelEvent::Reasoning {
-                    delta: "already committed reasoning".into(),
-                },
-            ]
-            .map(|event| {
-                Ok(ViewUpdate::Model {
-                    authority: owner(),
-                    turn: committed,
-                    event,
-                })
-            }),
-        );
-        for _ in 0..2 {
-            assert!(client.next_update(&mut delayed).await.unwrap());
-            assert_eq!(client.session().views(), &before);
-        }
-    }
-}
-
 proptest::proptest! {
-    // Property: committing a turn absorbs its delayed deltas in every ordering,
-    // without clearing or changing a different live turn's text and reasoning.
-    #[test]
-    fn committed_turn_absorbs_delayed_deltas(
-        committed in 1u128..64,
-        live in 64u128..128,
-        text in ".{0,64}", reasoning in ".{0,64}",
-        live_first in proptest::bool::ANY,
-    ) {
-        let mut state = session();
-        let committed = acyclic_harness::OperationId::from_bytes(committed.to_be_bytes());
-        let live = acyclic_harness::OperationId::from_bytes(live.to_be_bytes());
-        state.receive(frame(turn_delivery(0, committed))).unwrap();
-        if live_first {
-            state.model_event(&owner(), live, ModelEvent::Content { delta: "live".into() }).unwrap();
-            state.model_event(&owner(), live, ModelEvent::Reasoning { delta: "reasoning".into() }).unwrap();
-        }
-        let before = state.views().clone();
-        for event in [ModelEvent::Content { delta: text }, ModelEvent::Reasoning { delta: reasoning }] {
-            state.model_event(&owner(), committed, event).unwrap();
-            proptest::prop_assert_eq!(state.views(), &before);
-        }
-    }
-
-    // Property: replay only removes the tail whose canonical message is committed.
-    #[test]
-    fn replay_clears_only_the_matching_streaming_turn(
-        current in 1u128..64, previous in 1u128..64,
-        text in ".{0,64}", reasoning in ".{0,64}",
-    ) {
-        use acyclic_harness::model::ModelEvent;
-        let mut state = session();
-        let id = acyclic_harness::OperationId::from_bytes(current.to_be_bytes());
-        state.model_event(&owner(), id, ModelEvent::Content { delta: text.clone() }).unwrap();
-        state.model_event(&owner(), id, ModelEvent::Reasoning { delta: reasoning.clone() }).unwrap();
-        let mut commit = message_delivery(0);
-        let mut payload: EventPayload = serde_json::from_slice(&commit.events[0].canonical_payload_json).unwrap();
-        if let EventPayload::ConversationMessageAppended { message } = &mut payload {
-            message.id = acyclic_harness::conversation::assistant_message_id(acyclic_harness::OperationId::from_bytes(previous.to_be_bytes()));
-        }
-        commit.events[0].canonical_payload_json = serde_json::to_vec(&payload).unwrap();
-        state.receive(frame(commit)).unwrap();
-        let view = &state.views().transcripts["AGGREGATE_KIND_TASK:task"];
-        let matches = current == previous;
-        proptest::prop_assert_eq!(&view.streaming_text, if matches { "" } else { &text });
-        proptest::prop_assert_eq!(&view.reasoning, if matches { "" } else { &reasoning });
-        proptest::prop_assert_eq!(view.streaming_turn, if matches { None } else { Some(id) });
-    }
-
     // Property: all portable spellings of reserved suffixes fail before creating files.
     #[test]
     fn journal_reserved_suffixes_are_case_and_alias_independent(
@@ -585,23 +306,12 @@ proptest::proptest! {
         let request = wire::ClientFrame { frame: Some(wire::client_frame::Frame::Acknowledge(wire::Acknowledge {
             authority: Some(wire::Authority { kind, id }), generation, through_revision: revision,
         })) };
-        let json = jsonl::client_frame(&request).unwrap();
-        proptest::prop_assert_eq!(jsonl::parse_client_frame(&json).unwrap(), request.clone());
+        let encoded = request.encode_to_vec();
+        proptest::prop_assert_eq!(wire::ClientFrame::decode(encoded.as_slice()).unwrap(), request.clone());
         let record = SessionRecord { request: Some(request), response: None, checkpoint: None };
         let directory = tempfile::tempdir().unwrap();
         let mut store = FileClientState::open(&directory.path().join("state")).unwrap();
         store.append(&record).unwrap();
         proptest::prop_assert_eq!(store.load().unwrap(), vec![record]);
     }
-}
-
-fn turn_delivery(revision: u64, turn: acyclic_harness::OperationId) -> wire::Delivery {
-    let mut delivery = message_delivery(revision);
-    let mut payload: EventPayload =
-        serde_json::from_slice(&delivery.events[0].canonical_payload_json).unwrap();
-    if let EventPayload::ConversationMessageAppended { message } = &mut payload {
-        message.id = acyclic_harness::conversation::assistant_message_id(turn);
-    }
-    delivery.events[0].canonical_payload_json = serde_json::to_vec(&payload).unwrap();
-    delivery
 }

@@ -136,6 +136,8 @@ fn contiguous(first: u64, end: u64, mut ranges: impl Iterator<Item = (u64, u64)>
 
 mod codec;
 pub(crate) use codec::blob_page_encoded_length;
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) use codec::page_write_step;
 use codec::*;
 pub use codec::{blob_page_id, decode_blob_page, encode_blob_page};
 pub(crate) use codec::{decode_blob_page_with_accounting, encode_blob_page_with_accounting};

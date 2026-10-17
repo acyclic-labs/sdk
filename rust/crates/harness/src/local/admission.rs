@@ -35,7 +35,7 @@ fn can_admit(current: Option<OperationId>, expected: Option<OperationId>, termin
 }
 
 impl LocalHarness {
-    fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
+    pub(super) fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
         ContentGrant::verify_directory_read(
             &self.verifier,
             &self.signed,
@@ -465,5 +465,37 @@ fn admitted_task(admission: Admission<RuntimeTask<crate::executor::TurnOutput>>)
         }
         Admission::Indeterminate { operation_id } => Err(Error::Indeterminate(operation_id)),
         Admission::Rejected { reason } => Err(Error::Conflict(reason)),
+    }
+}
+
+impl LocalHarness {
+    /// Closes quiescent native mounts before releasing their provider handles.
+    /// An admitted unfinished turn must first settle or be recovered by its owner.
+    pub async fn close(self) -> Result<()> {
+        let (head, _) = self.current_turn().await?;
+        if !self.head_is_terminal(head.as_ref()).await? {
+            return Err(Error::Conflict(
+                "cannot close an unfinished local turn".into(),
+            ));
+        }
+        self.disconnect().await
+    }
+
+    /// Releases this host's native mounts while preserving every durable task,
+    /// including unfinished admission. Consuming the host excludes live borrows;
+    /// callers must first join active execution and drop client observations.
+    pub async fn disconnect(self) -> Result<()> {
+        #[cfg(feature = "native-execution")]
+        if let Some(workspace) = &self.workspace {
+            for (_, mount) in workspace.mounts.mounts() {
+                if let Some(source) = &mount.view.source {
+                    let native = source.native().await;
+                    if let Some(native) = native.as_ref() {
+                        native.unmount().await?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

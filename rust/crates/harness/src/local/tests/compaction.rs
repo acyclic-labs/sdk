@@ -1,6 +1,6 @@
 use super::*;
 
-struct LargeOutput;
+struct LargeOutput(usize);
 impl ToolExecutor for LargeOutput {
     fn reconcile<'a>(
         &'a self,
@@ -16,7 +16,7 @@ impl ToolExecutor for LargeOutput {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async {
             Ok(ToolResult {
-                value: json!({"text":"x".repeat(18_000)}),
+                value: json!({"text":"x".repeat(self.0)}),
             })
         })
     }
@@ -24,6 +24,22 @@ impl ToolExecutor for LargeOutput {
 
 #[tokio::test]
 async fn automatic_compaction_reads_its_exact_summary_without_widening_task_grants() -> Result<()> {
+    automatic_compaction_case(capacity(), 18_000).await
+}
+
+#[tokio::test]
+async fn automatic_compaction_fits_equal_small_context_and_output_capacities() -> Result<()> {
+    automatic_compaction_case(
+        ModelContextCapacity {
+            context_tokens: 8192,
+            output_tokens: 8192,
+        },
+        2000,
+    )
+    .await
+}
+
+async fn automatic_compaction_case(capacity: ModelContextCapacity, bytes: usize) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
     let call = |id: &str| {
@@ -38,14 +54,17 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
             }),
         ])
     };
-    let provider = scripted([
-        call("a"),
-        call("b"),
-        ScriptedTurn::Text("compressed history".into()),
-        ScriptedTurn::Text("done".into()),
-    ]);
+    let provider = Arc::new(
+        ScriptedModelProvider::new([
+            call("a"),
+            call("b"),
+            ScriptedTurn::Text("compressed history".into()),
+            ScriptedTurn::Text("done".into()),
+        ])
+        .with_context_capacity(capacity),
+    );
     let mut large = tool("test.large");
-    large.executor = Arc::new(LargeOutput);
+    large.executor = Arc::new(LargeOutput(bytes));
     let harness = LocalHarness::open(
         volume_config(directory.path(), project, provider.clone())?
             .without_default_tools()
@@ -67,6 +86,16 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
     assert_eq!(harness.resume(task_id).await?.text, "done");
     let requests = provider.requests();
     assert_eq!(requests.len(), 4);
+    for request in &requests {
+        let request =
+            crate::model::PreparedModelRequest::prepare(request.clone(), harness.limits, None)?;
+        let count = provider.count_tokens(&request).await?;
+        let input = count.validate(&request, &mut None)?;
+        assert!(
+            input + u64::from(request.request().max_output_tokens.unwrap())
+                <= u64::from(capacity.context_tokens)
+        );
+    }
     let summary = requests[3]
         .messages
         .iter()
@@ -122,5 +151,59 @@ async fn automatic_compaction_reads_its_exact_summary_without_widening_task_gran
         4,
         "completed recovery resent the model request"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> Result<()> {
+    let capacity = ModelContextCapacity {
+        context_tokens: 8192,
+        output_tokens: 8192,
+    };
+    for legacy in [false, true] {
+        let directory = tempfile::tempdir().map_err(super::super::storage)?;
+        let project = volume(directory.path()).await?;
+        let provider = Arc::new(
+            ScriptedModelProvider::new([ScriptedTurn::Text("done".into())])
+                .with_context_capacity(capacity),
+        );
+        let mut config =
+            volume_config(directory.path(), project, provider.clone())?.without_default_tools();
+        if legacy {
+            config = config.compaction(crate::context::CompactionPolicy::Threshold(
+                crate::context::ThresholdCompaction {
+                    response_reserve_tokens: 8190,
+                    recent_tokens: 1,
+                    ..Default::default()
+                },
+            ));
+        }
+        let harness = LocalHarness::open(config).await?;
+        let result = harness.run("complete an ordinary prompt").await;
+        // Both presets must pass the same real admission/content preflight.
+        // Restoring the former output-first preset prevents generation entirely.
+        if legacy {
+            assert!(result.is_err(), "output-first control unexpectedly fit");
+            assert!(
+                provider.requests().is_empty(),
+                "an unfunded legacy budget reached the provider"
+            );
+        } else {
+            assert_eq!(result?.text, "done");
+            let requests = provider.requests();
+            assert_eq!(requests.len(), 1);
+            let request = crate::model::PreparedModelRequest::prepare(
+                requests[0].clone(),
+                harness.limits,
+                None,
+            )?;
+            let count = provider.count_tokens(&request).await?;
+            let input = count.validate(&request, &mut None)?;
+            let output = request.request().max_output_tokens.unwrap();
+            assert!(input > 2);
+            assert!(output > 0 && input + u64::from(output) <= u64::from(capacity.context_tokens));
+        }
+        harness.close().await?;
+    }
     Ok(())
 }

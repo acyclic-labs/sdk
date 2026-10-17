@@ -17,7 +17,7 @@ notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/fil
 
 [dependencies]
 blake3.workspace = true
-acyclic-harness = { path = "../harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
+acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
 serde-saphyr = { version = "=1.3.0", features = ["serialize"], optional = true }
 libfuzzer-sys = "0.4"
@@ -135,6 +135,14 @@ bench = false
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_mentions"
+path = "fuzz_targets/client_mentions.rs"
 required-features = ["runtime"]
 test = false
 doc = false
@@ -263,6 +271,7 @@ bench = false
 [[bin]]
 name = "wire_frames"
 path = "fuzz_targets/wire_frames.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -270,6 +279,7 @@ bench = false
 [[bin]]
 name = "journal_decode"
 path = "fuzz_targets/journal_decode.rs"
+required-features = ["runtime"]
 test = false
 doc = false
 bench = false
@@ -282,8 +292,24 @@ doc = false
 bench = false
 
 [[bin]]
+name = "ui_prompt"
+path = "fuzz_targets/ui_prompt.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "model_request"
 path = "fuzz_targets/model_request.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_swarm_views"
+path = "fuzz_targets/client_swarm_views.rs"
 required-features = ["runtime"]
 test = false
 doc = false

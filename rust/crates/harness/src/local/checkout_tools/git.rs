@@ -42,14 +42,7 @@ impl CheckoutTools {
                 "--volume supports diff, log, show, status and merge".into(),
             ));
         }
-        if !relative.is_empty()
-            && mount
-                .view
-                .source
-                .as_ref()
-                .and_then(|source| source.native.as_ref())
-                .is_none()
-        {
+        if !relative.is_empty() && mount.view.source.is_none() {
             return Err(Error::NotFound("volume mount is not bound".into()));
         }
         Ok(&mount.view.source)
@@ -65,7 +58,11 @@ impl CheckoutTools {
         let source = self
             .fs_source(workspace, &parsed, context.effective_scope())?
             .clone();
-        let native = source.as_ref().and_then(|source| source.native.as_ref());
+        let native = match &source {
+            Some(source) => Some(source.native().await),
+            None => None,
+        };
+        let native = native.as_ref().and_then(|guard| guard.as_ref());
         let State {
             active, watcher, ..
         } = state;
@@ -89,7 +86,7 @@ impl CheckoutTools {
             &acyclic_stream::SystemUnixMillisClock,
         );
         let before_recovery = head(view).await?;
-        if native.is_none() {
+        if source.is_none() {
             self.prepare_reconciliation(workspace, context, b"recover", &before_recovery)
                 .await?;
         }
@@ -106,7 +103,7 @@ impl CheckoutTools {
         };
         // With no recovered window the preparation marker covers no changes.
         // Acknowledge it without refreshing a mount that is already current.
-        if native.is_none() {
+        if source.is_none() {
             self.publish_reconciliation(workspace, context, recovered)
                 .await?;
         } else if recovered && let Some(native) = native {
@@ -128,7 +125,7 @@ impl CheckoutTools {
             .map_err(storage)?;
         let result = async {
             owner.verify_owner(None)?.await?;
-            if native.is_none() {
+            if source.is_none() {
                 self.capture(
                     (workspace, checkout),
                     watcher,
@@ -144,14 +141,16 @@ impl CheckoutTools {
                     filesystem: &workspace.filesystem,
                     store: &workspace.store,
                     view,
-                    root: native.map_or(workspace.path.as_path(), |mount| mount.path()),
-                    repository: if native.is_some() {
+                    root: source.as_ref().map_or(workspace.path.as_path(), |source| {
+                        source.destination.as_path()
+                    }),
+                    repository: if source.is_some() {
                         volume.id()
                     } else {
                         workspace.view().workspace().id()
                     },
                     lease: Some(lease.clone()),
-                    checkout: (native.is_none() && workspace.mounted.is_none())
+                    checkout: (source.is_none() && workspace.mounted.is_none())
                         .then_some(workspace.identity),
                     author: "LocalHarness",
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
@@ -164,7 +163,7 @@ impl CheckoutTools {
         }
         .await;
         let before_close = head(view).await?;
-        if native.is_none()
+        if source.is_none()
             && !result
                 .as_ref()
                 .is_ok_and(|output| output.switched.is_some())
@@ -201,9 +200,10 @@ impl CheckoutTools {
                 owner.verify_owner(None)?.await?;
                 native.advance_to_head().await?;
                 owner.verify_owner(None)?.await?;
-            } else if !result
-                .as_ref()
-                .is_ok_and(|output| output.switched.is_some())
+            } else if source.is_none()
+                && !result
+                    .as_ref()
+                    .is_ok_and(|output| output.switched.is_some())
             {
                 if publication.is_ok() {
                     self.publish_reconciliation(workspace, context, true)

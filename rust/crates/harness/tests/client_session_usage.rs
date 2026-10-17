@@ -153,45 +153,29 @@ async fn whole_turn_usage(first: u16, second: Option<u16>, final_step_only: bool
         }
         deliveries.push(delivery);
     }
-    let connect = |state| {
-        let host = Arc::new(Host::default());
-        *host.trace.lock().unwrap() = Some(Box::pin(futures::stream::iter(
-            deliveries.clone().into_iter().map(Ok),
-        )));
-        let files = Arc::new(Files(storage.clone()));
-        async move {
-            HarnessClient::connect(host, state)
-                .await
-                .map(|client| client.with_files(files))
+    let expected = json!({"tokens":u32::from(first) + u32::from(second.unwrap_or(0)), "cost":{"micro_units":if second.is_some() {7} else {3}}, "finish":if second.is_some() {"stop"} else {"tool"}});
+    let mut committed = 0;
+    for delivery in deliveries {
+        for event in delivery.events {
+            let (payload, _) =
+                decode_event_payload(&event.event_type, &event.canonical_payload_json, &mut None)?;
+            if let EventPayload::ConversationMessageAppended { message } = payload
+                && message.kind == acyclic_harness::conversation::MessageKind::Assistant
+            {
+                let reference = &message.extensions["acyclic.model.metadata"];
+                let metadata = Files(storage.clone())
+                    .read(reference, 65_536, None)?
+                    .await?;
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&metadata).expect("canonical writer metadata"),
+                    expected,
+                    "finished turn must retain all step usage"
+                );
+                committed += 1;
+            }
         }
-    };
-    let mut state = ClientSession::open(MemoryClientState::default())?;
-    state.track(cursor)?;
-    let mut client = connect(state).await?;
-    for metadata in [first_metadata, final_metadata] {
-        client.model_event(&authority, turn, ModelEvent::Completed { metadata })?;
     }
-    let live = client.session().views().usage.clone();
-    assert_eq!(
-        live.values().next(),
-        Some(
-            &json!({"tokens":u32::from(first) + u32::from(second.unwrap_or(0)), "cost":{"micro_units":if second.is_some() {7} else {3}}, "finish":if second.is_some() {"stop"} else {"tool"}})
-        )
-    );
-    client.replay().await?;
-    while client.next_delivery().await?.is_some() {}
-    assert_eq!(
-        client.session().views().usage,
-        live,
-        "finished turn must retain all step usage"
-    );
-    let expected = client.session().views().clone();
-    let mut state = client.into_session();
-    state.checkpoint()?;
-    let mut reopened = connect(ClientSession::open(state.into_store())?).await?;
-    reopened.replay().await?;
-    while reopened.next_delivery().await?.is_some() {}
-    assert_eq!(reopened.session().views(), &expected);
+    assert_eq!(committed, 1);
     Ok(())
 }
 

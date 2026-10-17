@@ -11,38 +11,7 @@ fn counts(schedule: &Schedule) -> std::collections::BTreeMap<&'static str, usize
     }
     counts
 }
-impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>> Layer<S>
-    for Reads
-{
-    fn on_new_span(
-        &self,
-        attributes: &tracing::span::Attributes<'_>,
-        id: &tracing::span::Id,
-        _: Context<'_, S>,
-    ) {
-        if attributes.metadata().name() == "acyclic.harness.journal.stage" {
-            eprintln!(
-                "STAGE_BEGIN {id:?} ready={} fields={:?} boundaries={:?}",
-                self.0.ready_reads(),
-                attributes.values(),
-                counts(&self.0)
-            );
-        }
-    }
-
-    fn on_close(&self, id: tracing::span::Id, context: Context<'_, S>) {
-        if context
-            .span(&id)
-            .is_some_and(|span| span.name() == "acyclic.harness.journal.stage")
-        {
-            eprintln!(
-                "STAGE_END {id:?} ready={} boundaries={:?}",
-                self.0.ready_reads(),
-                counts(&self.0)
-            );
-        }
-    }
-
+impl<S: tracing::Subscriber> Layer<S> for Reads {
     fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
         if event.metadata().target() != "acyclic_harness::read_profile" {
             return;
@@ -53,9 +22,10 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
                 if field.name() == "phase" {
                     let counts = counts(self.0);
                     eprintln!(
-                        "READ_PROFILE {phase}: elapsed={:?} ready={} boundaries={counts:?}",
+                        "READ_PROFILE {phase}: elapsed={:?} ready={} admission={:?} boundaries={counts:?}",
                         self.1.elapsed(),
-                        self.0.ready_reads()
+                        self.0.ready_reads(),
+                        self.0.admission_submission(),
                     );
                 }
             }
@@ -65,11 +35,29 @@ impl<S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'
     }
 }
 
-pub(super) fn install(schedule: &Arc<Schedule>) -> Option<impl Sized> {
-    std::env::var_os("GC_LOCAL_READ_PROFILE").map(|_| {
+pub(super) fn start() -> Option<std::time::Instant> {
+    std::env::var_os("GC_LOCAL_READ_PROFILE").map(|_| std::time::Instant::now())
+}
+
+pub(super) fn install(
+    schedule: &Arc<Schedule>,
+    started: Option<std::time::Instant>,
+    restored: Option<std::time::Instant>,
+) -> Option<tracing::subscriber::DefaultGuard> {
+    started.map(|started| {
+        let restored = restored.expect("profile restore started");
+        eprintln!(
+            "READ_PROFILE setup: seed={:?} restore={:?}",
+            restored.duration_since(started),
+            restored.elapsed(),
+        );
         tracing::subscriber::set_default(
-            tracing_subscriber::registry()
-                .with(Reads(Arc::clone(schedule), std::time::Instant::now())),
+            tracing_subscriber::registry().with(
+                Reads(Arc::clone(schedule), started).with_filter(
+                    tracing_subscriber::filter::Targets::new()
+                        .with_target("acyclic_harness::read_profile", tracing::Level::TRACE),
+                ),
+            ),
         )
     })
 }

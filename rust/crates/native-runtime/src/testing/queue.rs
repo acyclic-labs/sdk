@@ -129,3 +129,54 @@ async fn scoped_completion_uses_the_real_host_worker() -> io::Result<()> {
     assert!(worker.unwrap().starts_with("acyclic-host-io-"));
     Ok(())
 }
+
+#[test]
+fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Result<()> {
+    let threads = Arc::new(AtomicUsize::new(0));
+    let observed = threads.clone();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .on_thread_start(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+        })
+        .build()?;
+    runtime.block_on(async {
+        let _inline = crate::InlineBlocking::enter();
+        let driver = std::thread::current().id();
+        let worker = spawn_blocking(|| std::thread::current().name().map(String::from))
+            .await
+            .unwrap();
+        assert!(worker.unwrap().starts_with("acyclic-host-io-"));
+        let (schedule, mut events) = Schedule::new();
+        let mut controlled = Box::pin(schedule.scope(async {
+            spawn_blocking(|| std::thread::current().id())
+                .await
+                .unwrap()
+        }));
+        let mut boundaries = Vec::new();
+        loop {
+            tokio::select! {
+                actual = &mut controlled => { assert_eq!(actual, driver); break; },
+                boundary = events.recv() => {
+                    let boundary = boundary.unwrap();
+                    boundaries.push(boundary.name);
+                    boundary.release();
+                }
+            }
+        }
+        schedule.drained().await;
+        assert_eq!(boundaries, ["blocking:submitted", "blocking:completed"]);
+    });
+    let check = || {
+        assert_eq!(
+            threads.load(Ordering::SeqCst),
+            0,
+            "private blocking pool created"
+        )
+    };
+    check();
+    // The former untracked branch starts a real private worker. The same
+    // thread-count assertion must reject it, not just compare modeled counts.
+    runtime.block_on(async { tokio::task::spawn_blocking(|| ()).await.unwrap() });
+    assert!(std::panic::catch_unwind(check).is_err());
+    Ok(())
+}

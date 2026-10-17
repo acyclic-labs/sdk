@@ -245,6 +245,9 @@ impl LocalCoreStateStore {
         }
         if let Ownership::Owned(owner) = &self.ownership
             && let Ok(residents) = owner.residents.read()
+            && owner
+                .cache_limit
+                .is_none_or(|limit| residents.0.len() < limit)
             && let Some(index) = residents.position(T::key(id), work)?
         {
             return Ok(residents
@@ -339,8 +342,15 @@ impl Namespace {
                     Some(log) => log,
                     None => CoreLog::open(self, Arc::clone(&owner.residents))?,
                 };
-                let result = if log.sequence >= OWNED_CHECKPOINT {
-                    log.checkpoint(self)
+                let full = owner
+                    .cache_limit
+                    .is_some_and(|limit| log.residents().0.len() >= limit);
+                let result = if log.sequence >= OWNED_CHECKPOINT || full {
+                    log.checkpoint(self).map(|()| {
+                        if owner.cache_limit.is_some() {
+                            *log.residents() = Residents::default();
+                        }
+                    })
                 } else {
                     Ok(())
                 }

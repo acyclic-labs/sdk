@@ -1,0 +1,2 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"bash",
+  "arguments":{"command":"printf changed > plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"]}

@@ -15,7 +15,7 @@ pub struct NativeCompletion<T> {
     test_completion: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     pub(crate) pool: &'static LazyLock<io::Result<NativeWorkers>>,
     pub(crate) prepared_wake: Option<Arc<BlockingWaitWake>>,
-    pub(crate) state: Option<Arc<Mutex<CompletionState<T>>>>,
+    pub(crate) state: Option<Arc<CompletionMutex<CompletionState<T>>>>,
     pub(crate) ready: Option<io::Result<T>>,
     pub(crate) pending: Option<NativeJob>,
     pub(crate) waiter: Option<Arc<CapacityWaiter>>,
@@ -34,7 +34,7 @@ impl NativeCompletion<Vec<Bytes>> {
         #[cfg(windows)] overlapped: bool,
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
-        let state = Arc::new(Mutex::new(CompletionState::default()));
+        let state = Arc::new(CompletionMutex::new(CompletionState::default()));
         Self::pending(
             NativeJob::Read {
                 file,
@@ -55,7 +55,7 @@ impl NativeCompletion<Vec<Bytes>> {
 impl<T> NativeCompletion<T> {
     pub(crate) fn pending(
         job: NativeJob,
-        state: Arc<Mutex<CompletionState<T>>>,
+        state: Arc<CompletionMutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
         Self {

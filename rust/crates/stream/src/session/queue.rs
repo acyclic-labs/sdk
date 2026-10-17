@@ -1,6 +1,6 @@
 use super::*;
 
-impl<P: StreamProvider> Session<P> {
+impl<P: StreamProvider + ?Sized> Session<P> {
     pub(super) fn record(
         &mut self,
         identity: wire::SessionChannel,

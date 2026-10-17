@@ -89,6 +89,27 @@ impl Fixture {
         Ok(fixture)
     }
 
+    /// Ordinary workspace mutation: no upload metadata is staged for this path.
+    pub async fn put_workspace_file(&self, path: &str, bytes: &[u8], key: &str) -> Result<()> {
+        use acyclic_harness::filesystem::{WorkspaceMutation, workspace_ref};
+        let volume = &self.root.volume;
+        let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name(&mut None)?)?;
+        let mut mutations = Vec::new();
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            mutations.push(WorkspaceMutation::CreateDirectory {
+                path: format!("/{parent}"),
+            });
+        }
+        mutations.push(WorkspaceMutation::PutFile {
+            path: format!("/{path}"),
+            bytes: bytes.to_vec().into(),
+        });
+        self.host
+            .apply(&workspace, None, &mutations, &IdempotencyKey::new(key)?)
+            .await?;
+        Ok(())
+    }
+
     pub async fn put(&self, path: &str, text: &str, key: &str) -> Result<()> {
         self.put_file(path, text.as_bytes(), "text/plain", key)
             .await?;

@@ -6,6 +6,11 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    /// Bind canonical streaming projections to the authorized private task files.
+    pub fn bind_task_files(&mut self, files: Option<Arc<crate::task_volume::TaskFiles<P>>>) {
+        self.task_files = files;
+    }
+
     /// Binds root private files independently of the project's default output.
     pub fn with_private_volume(
         mut self,

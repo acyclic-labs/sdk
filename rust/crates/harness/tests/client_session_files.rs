@@ -272,29 +272,10 @@ async fn invalid_tool_files_never_reach_jsonl_or_the_durable_cursor() {
             .await
             .unwrap()
             .with_files(fixture.reader.clone());
-        let mut output = Vec::new();
-        assert!(
-            acyclic_harness::client::run_headless(
-                &mut client,
-                command(),
-                headless::target(),
-                &mut output
-            )
-            .await
-            .is_err()
-        );
+        assert!(client.next_delivery().await.is_err());
         assert_eq!(client.session().resume().cursors[0].revision, 0);
         assert!(host.acknowledgements.lock().unwrap().is_empty());
         assert_eq!(client.session().views(), &Default::default());
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .lines()
-                .all(|line| !matches!(
-                    jsonl::parse_server_frame(line).unwrap().frame,
-                    Some(wire::server_frame::Frame::Delivery(_))
-                ))
-        );
     }
 }
 
@@ -335,5 +316,107 @@ proptest::proptest! {
         structured in proptest::bool::ANY,
     ) {
         futures::executor::block_on(recover_views(&chunks, &tokens, structured));
+    }
+}
+
+async fn recover_transcript(chunks: &[String]) {
+    let text = chunks.concat();
+    let user_text = format!("user: {text}");
+    let fixture = client_files::Fixture::new(&[]).await.unwrap();
+    let user_body = fixture
+        .put_file("user.txt", user_text.as_bytes(), "text/plain", "user")
+        .await
+        .unwrap();
+    let body = fixture
+        .put_file(
+            "assistant.txt",
+            text.as_bytes(),
+            "text/markdown",
+            "assistant",
+        )
+        .await
+        .unwrap();
+    let turn = OperationId::from_bytes([8; 16]);
+    let user = message(1, MessageKind::User, user_body);
+    let user_id = user.id;
+    let mut assistant = message(2, MessageKind::Assistant, body);
+    assistant.id = acyclic_harness::conversation::assistant_message_id(turn);
+    let assistant_id = assistant.id;
+    let page = page(vec![user, assistant]);
+    let mut client = connect(session(), page.clone(), &fixture).await;
+    for chunk in chunks {
+        client
+            .model_event(
+                &owner(),
+                turn,
+                ModelEvent::Content {
+                    delta: chunk.clone(),
+                },
+            )
+            .unwrap();
+    }
+    client.next_delivery().await.unwrap().unwrap();
+    let expected = client.session().views().clone();
+    let transcript = &expected.transcripts[KEY];
+    assert_eq!(transcript.text[&user_id], user_text);
+    assert_eq!(transcript.text[&assistant_id], text);
+    assert!(transcript.streaming_text.is_empty());
+    assert!(transcript.streaming_turn.is_none());
+    // Late chunks cannot duplicate or replace the canonical file projection.
+    client
+        .model_event(
+            &owner(),
+            turn,
+            ModelEvent::Content {
+                delta: "late".into(),
+            },
+        )
+        .unwrap();
+    assert_eq!(client.session().views(), &expected);
+    let mut state = client.into_session();
+    state.checkpoint().unwrap();
+    let state = ClientSession::open(state.into_store()).unwrap();
+    assert_eq!(state.views(), &Default::default());
+    let mut recovered = connect(state, page, &fixture).await;
+    recovered.next_delivery().await.unwrap().unwrap();
+    assert_eq!(recovered.session().views(), &expected);
+}
+
+#[tokio::test]
+async fn committed_text_survives_stream_handover_and_reopen() {
+    recover_transcript(&["hello ".into(), "界👩‍💻\n".into(), "**world**".into()]).await;
+}
+
+#[tokio::test]
+async fn invalid_utf8_leaves_previous_transcript_and_cursor_unchanged() {
+    let fixture = client_files::Fixture::new(&[]).await.unwrap();
+    let content = fixture
+        .put_file("invalid.txt", &[0xff], "text/plain", "invalid")
+        .await
+        .unwrap();
+    let mut client = connect(
+        session(),
+        page(vec![message(1, MessageKind::User, content)]),
+        &fixture,
+    )
+    .await;
+    let before = client.session().views().clone();
+    assert!(matches!(
+        client.next_delivery().await,
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(client.session().views(), &before);
+    assert_eq!(client.session().resume().cursors[0].revision, 0);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Property: canonical transcript text and the recovered view do not depend
+    // on Unicode chunk boundaries or empty deltas; streaming is replaced once.
+    #[test]
+    fn transcript_replay_equals_live_for_arbitrary_unicode_chunks(
+        chunks in proptest::collection::vec(".{0,32}", 0..8),
+    ) {
+        futures::executor::block_on(recover_transcript(&chunks));
     }
 }

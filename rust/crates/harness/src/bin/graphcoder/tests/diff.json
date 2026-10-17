@@ -1,0 +1,58 @@
+[
+  {
+    "row": "Unified diff and diffstat",
+    "path": "src/main.rs", "base": "before\n", "current": "after\n",
+    "expected": ["src/main.rs (modified) +1 -1", "-before", "+after"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Binary changes remain explicit",
+    "path": "image.bin", "base": "\u0000old", "current": "\u0000new",
+    "expected": ["image.bin (modified) +0 -0", "Binary file changed"],
+    "absent": ["old", "new"]
+  },
+  {
+    "row": "Empty added file remains visible",
+    "path": "empty.txt", "base": null, "current": "",
+    "expected": ["empty.txt (added) +0 -0"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Empty removed file remains visible",
+    "path": "empty.txt", "base": "", "current": null,
+    "expected": ["empty.txt (removed) +0 -0"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Removed text is a deletion",
+    "path": "old.txt", "base": "deleted line\n", "current": null,
+    "expected": ["old.txt (removed) +0 -1", "-deleted line"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Unicode diff text retains graphemes",
+    "path": "note.txt", "base": "old\n", "current": "日本語 👩‍💻 é\n",
+    "expected": ["note.txt (modified) +1 -1", "+日本語 👩‍💻 é"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "No-newline markers are displayed",
+    "path": "note.txt", "base": "before", "current": "after",
+    "expected": ["-before", "+after", "\\ No newline at end of file"],
+    "absent": ["Binary file changed"]
+  },
+  {
+    "row": "Hostile diff paths and content remain literal",
+    "path": "x\u202e",
+    "base": "before\n",
+    "current": "safe\u001b[31m\u202e\n",
+    "expected": [
+      "x\\u{202e} (modified)",
+      "+safe\\u{1b}[31m\\u{202e}"
+    ],
+    "absent": [
+      "\u001b",
+      "\u202e"
+    ]
+  }
+]

@@ -149,6 +149,9 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     if !is_ownership_conflict(&LocalCoreStateStore::new(&root).namespace()) {
         return Err("child admitted a shared store to an owned namespace".into());
     }
+    if !is_ownership_conflict(&LocalCoreStateStore::open_shared_owner(&root)) {
+        return Err("child joined an owner from another process".into());
+    }
     if !is_ownership_conflict(&LocalCoreStateStore::open_owned(&root)) {
         return Err("child opened a second owner".into());
     }

@@ -362,6 +362,8 @@ pub enum KernelAccounting<'a> {
 }
 
 mod accounting;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod effects;
 
 pub(crate) struct VisitedObjectSet {
     slots: Vec<Option<ObjectId>>,

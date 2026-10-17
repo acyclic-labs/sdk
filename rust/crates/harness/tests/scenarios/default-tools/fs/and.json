@@ -1,0 +1,3 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"fs",
+  "arguments":{"command":"status && printf hacked > plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],
+ "expect":{"results":{"call":{"content":{"value":{"error":"invalid request: fs accepts one facade command"}}}}}}

@@ -115,7 +115,13 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         #[cfg(not(target_arch = "wasm32"))]
         if let KernelAccounting::NativeOriginal { work, cancellation } = &*self.accounting {
             let (work, cancellation) = (*work, *cancellation);
-            return self.reserve_pending(work, cancellation, delta);
+            return crate::kernel::allocation::effects::reserve(
+                work,
+                cancellation,
+                &mut self.pending,
+                delta,
+                false,
+            );
         }
         self.accounting.admit(delta)
     }
@@ -124,7 +130,12 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         #[cfg(not(target_arch = "wasm32"))]
         if let KernelAccounting::NativeOriginal { work, cancellation } = &*self.accounting {
             let (work, cancellation) = (*work, *cancellation);
-            return self.complete_pending(work, cancellation, delta);
+            return crate::kernel::allocation::effects::complete(
+                work,
+                cancellation,
+                &mut self.pending,
+                delta,
+            );
         }
         self.accounting.record_completed(delta)
     }
@@ -135,82 +146,11 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl OriginalReadAccounting<'_, '_> {
-    fn reserve_pending(
-        &mut self,
-        work: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-        delta: WorkCounters,
-    ) -> Result<(), FsError> {
-        work.state(|state| {
-            // Existing root/resource failures precede caller cancellation;
-            // cancellation precedes a new reservation's allowance failure.
-            state
-                .admit(WorkCounters::UNCHARGED)
-                .map_err(crate::materializer::native_materialization_work_error)?;
-            cancellation.check()?;
-            let delta = state.item_charge(delta);
-            let pending = self
-                .pending
-                .checked_add(delta)
-                .map_err(crate::NativeTreeMaterializationError::from)?;
-            #[cfg(all(test, acyclic_fs_loom))]
-            let broken = model_checking::broken_reservation();
-            #[cfg(not(all(test, acyclic_fs_loom)))]
-            let broken = false;
-            let admitted = if broken {
-                state.admit(delta)
-            } else {
-                state.reserve_reconciled(delta)
-            };
-            admitted.map_err(crate::materializer::native_materialization_work_error)?;
-            self.pending = pending;
-            Ok(())
-        })
-    }
-    fn complete_pending(
-        &mut self,
-        work: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-        actual: WorkCounters,
-    ) -> Result<(), FsError> {
-        work.state(|state| {
-            let actual = state.item_charge(actual);
-            let credited = actual.intersect_budget(self.pending);
-            self.pending = credited
-                .remaining(self.pending)
-                .map_err(crate::NativeTreeMaterializationError::from)?;
-            state
-                .complete(credited, actual)
-                .map_err(crate::materializer::native_materialization_work_error)?;
-            // Keep the original post-effect admission and caller check, after
-            // charging actual work, without releasing and reacquiring the leaf.
-            state
-                .admit(WorkCounters::UNCHARGED)
-                .map_err(crate::materializer::native_materialization_work_error)?;
-            cancellation.check().map_err(Into::into)
-        })
-    }
-}
-
 impl Drop for OriginalReadAccounting<'_, '_> {
     fn drop(&mut self) {
         #[cfg(not(target_arch = "wasm32"))]
-        if self.pending != WorkCounters::UNCHARGED {
-            if let Some(work) = self.accounting.native_work() {
-                // Refund before the allocation field is destroyed, and release
-                // the original leaf before any owner can re-enter it on drop.
-                #[cfg(all(test, acyclic_fs_loom))]
-                if model_checking::broken_refund() {
-                    return;
-                }
-                work.state(|state| {
-                    if state.refund(self.pending).is_err() {
-                        state.poison_native_original_work();
-                    }
-                });
-            }
+        if let Some(work) = self.accounting.native_work() {
+            crate::kernel::allocation::effects::refund(work, &mut self.pending);
         }
     }
 }
