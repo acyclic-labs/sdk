@@ -416,6 +416,7 @@ impl PromptInput {
                         }];
                     }
                     Action::Escape => return vec![InputEffect::Host(Action::Escape)],
+                    Action::ReverseSearch => return effects,
                     _ => {}
                 }
             }
