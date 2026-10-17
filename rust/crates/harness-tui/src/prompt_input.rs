@@ -27,6 +27,11 @@ pub enum InputEffect {
     Paste,
     /// Suspend terminal presentation and edit the current text externally.
     ExternalEditor,
+    /// Move through transcript matches; the host publishes the selection file.
+    FindStep {
+        /// Move to the preceding match instead of the following one.
+        previous: bool,
+    },
     /// Interrupt the active operation.
     Interrupt,
     /// Exit requested by double interrupt or Ctrl+D on an empty prompt.
@@ -75,6 +80,7 @@ pub struct PromptInput {
     pub recording: bool,
     /// Host transcript selection, already converted to markdown for copying.
     pub transcript_selection: Option<String>,
+    transcript_draft: Option<Editor>,
     /// User overrides used by both dispatch and help.
     pub keymap: InputKeymap,
     /// Completion results folded from the host's current file-query snapshots.
@@ -111,6 +117,9 @@ impl PromptInput {
         if !self.editor.set_settings(settings) {
             return false;
         }
+        if let Some(draft) = self.transcript_draft.as_mut() {
+            draft.set_settings(settings);
+        }
         if let Some(search) = self.search.as_mut() {
             search.original.set_settings(settings);
         }
@@ -118,6 +127,39 @@ impl PromptInput {
             edit.draft.set_settings(settings);
         }
         true
+    }
+
+    /// Whether the separate transcript-query editor is active.
+    pub fn transcript_search(&self) -> bool {
+        self.transcript_draft.is_some()
+    }
+
+    /// Apply a followed chat draft to its own editor, including during search.
+    pub fn set_chat_draft(&mut self, text: &str) {
+        self.transcript_draft
+            .as_mut()
+            .unwrap_or(&mut self.editor)
+            .set_text(text, 0);
+    }
+
+    /// Select the followed search editor without editing the suspended chat draft.
+    pub fn set_transcript_search(&mut self, query: Option<&str>) {
+        match (self.transcript_search(), query) {
+            (false, Some(query)) => {
+                let mut editor = Editor::new(query);
+                editor.set_settings(*self.editor.settings());
+                self.transcript_draft = Some(std::mem::replace(&mut self.editor, editor));
+                self.pending_chord = None;
+            }
+            (true, None) => {
+                if let Some(draft) = self.transcript_draft.take() {
+                    self.editor = draft;
+                }
+                self.pending_chord = None;
+            }
+            (true, Some(query)) if self.editor.text() != query => self.editor.set_text(query, 0),
+            _ => {}
+        }
     }
 
     /// Current history-file projection, shared by every editor context.
@@ -132,7 +174,11 @@ impl PromptInput {
 
     /// Refresh the popup from the editor delta and current file-query fold.
     pub fn refresh_completions(&mut self) {
-        self.completion.refresh(&self.editor);
+        if self.transcript_search() {
+            self.completion.dismiss(&self.editor);
+        } else {
+            self.completion.refresh(&self.editor);
+        }
     }
     /// Build a controller around a loaded draft or new editor.
     pub fn new(editor: Editor) -> Self {
@@ -345,6 +391,20 @@ impl PromptInput {
         if self.search.is_some() && self.search_key(decoded, now_ms, &mut effects) {
             return effects;
         }
+        if self.transcript_search()
+            && let DecodedKey::Action { action, .. } = decoded
+        {
+            match action {
+                Action::Submit | Action::Newline => {
+                    return vec![InputEffect::FindStep {
+                        previous: action == Action::Newline,
+                    }];
+                }
+                Action::Escape => return vec![InputEffect::Host(Action::Escape)],
+                Action::ReverseSearch => return effects,
+                _ => {}
+            }
+        }
         if let DecodedKey::Action { action, select } = decoded
             && !(action == Action::Escape && self.editing.is_some())
             && self
@@ -471,7 +531,9 @@ impl PromptInput {
                 self.editor.set_cursor(self.editor.cursor(), false);
             }
             other => {
-                self.editor.break_group();
+                if other != Action::App(crate::AppAction::Find) {
+                    self.editor.break_group();
+                }
                 effects.push(InputEffect::Host(other));
             }
         }
@@ -501,6 +563,7 @@ impl PromptInput {
         }
         let previous = motion == Motion::Up;
         let history = !select
+            && !self.transcript_search()
             && matches!(motion, Motion::Up | Motion::Down)
             && self.editor.recall(&mut self.history, previous, now_ms);
         if !history {

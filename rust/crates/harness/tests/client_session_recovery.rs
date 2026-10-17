@@ -1,5 +1,7 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use acyclic_harness::client::FileClientState;
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::OpenOptions;
 
 struct CheckpointStore {
@@ -193,6 +195,7 @@ proptest::proptest! {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn checkpoint_keeps_a_paused_opener_on_the_same_writer_lock() {
     let directory = tempfile::tempdir().unwrap();

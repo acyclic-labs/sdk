@@ -50,6 +50,7 @@ fn file(agent: AgentId, path: &str) -> Result<FileRef> {
 }
 
 mod history;
+#[cfg(feature = "filesystem")]
 mod native;
 mod security;
 mod wire;

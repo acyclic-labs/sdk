@@ -9,6 +9,29 @@ use std::process::{Child, Command, ExitStatus, Output};
 use std::time::{Duration, Instant};
 
 mod capture;
+
+/// The clock the capture deadline reads. Tests freeze it so that expiry is
+/// ordered by the capture loop's own checks instead of scheduler latency.
+#[cfg(not(test))]
+fn capture_now() -> Instant {
+    Instant::now()
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_CLOCK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn capture_now() -> Instant {
+    CAPTURE_CLOCK.with(std::cell::Cell::get).unwrap_or_else(Instant::now)
+}
+
+/// Freezes this thread's capture clock at `now`, or restores wall time.
+#[cfg(test)]
+fn set_capture_clock(now: Option<Instant>) {
+    CAPTURE_CLOCK.with(|clock| clock.set(now));
+}
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
 use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
@@ -408,7 +431,7 @@ impl ProcessTree {
                     "process output was already collected",
                 )));
             }
-            let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            let deadline = capture_now().checked_add(timeout).ok_or_else(|| {
                 ProcessCaptureFailure::before_capture(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     "process deadline overflow",
@@ -494,7 +517,7 @@ impl ProcessTree {
                         }
                         return Ok(());
                     }
-                    if Instant::now() >= deadline {
+                    if capture_now() >= deadline {
                         return Err(io::Error::new(
                             io::ErrorKind::TimedOut,
                             "process output deadline exceeded; effects may have occurred",

@@ -86,6 +86,8 @@ pub struct ClientRenderer {
     folded_views: usize,
     key: String,
     help: super::help::Help,
+    search: super::TranscriptSearch,
+    search_open: bool,
     busy: bool,
     tool_details: bool,
     seen: usize,
@@ -372,7 +374,46 @@ impl ClientRenderer {
             self.plans_changed = self.plans.len();
         }
         self.wrapped = true;
+        let layout = files
+            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_default();
+        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
+        self.search
+            .project(&self.wrapped_transcript, self.search_open);
+        if self.search_open {
+            self.search.update(
+                &self.wrapped_transcript,
+                layout["search_query"].as_str().unwrap_or(""),
+                layout["search_index"].as_i64().unwrap_or(0),
+                input.theme.style(super::config::ThemeRole::Selection),
+            );
+            let height = usize::from(areas.transcript.height);
+            let first = if self.search.count() != 0 {
+                self.search.selected_row(
+                    &self.wrapped_transcript,
+                    layout["search_index"].as_i64().unwrap_or(0),
+                )
+            } else {
+                self.wrapped_transcript
+                    .rows()
+                    .len()
+                    .saturating_sub(height)
+                    .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
+            }
+            .min(self.wrapped_transcript.rows().len().saturating_sub(height));
+            self.search.prepare(&self.wrapped_transcript, first, height);
+        }
         Ok(())
+    }
+
+    /// Yield before a bounded, cancellable full-search-count slice.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn search_progress(&mut self) {
+        if !self.search_open || !self.search.pending() {
+            std::future::pending::<()>().await;
+        }
+        tokio::task::yield_now().await;
+        self.search.advance(&self.wrapped_transcript, 4096);
     }
 
     fn compose_notices(&mut self) {
@@ -452,6 +493,28 @@ impl ClientRenderer {
             };
         }
         match view {
+            Some("find")
+                if layout
+                    .as_ref()
+                    .is_some_and(|value| value["view_input"] == "find") =>
+            {
+                let index = layout
+                    .as_ref()
+                    .and_then(|value| value["search_index"].as_i64())
+                    .unwrap_or(0);
+                screen.transcript = self.wrapped_transcript.rows();
+                screen.transcript_search =
+                    (self.search.count() != 0).then_some((&self.wrapped_transcript, &self.search));
+                screen.reasoning = &[];
+                screen.search_row = (self.search.count() != 0)
+                    .then(|| self.search.selected_row(&self.wrapped_transcript, index));
+                screen.status = Line::raw(format!(
+                    "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
+                    self.search.position(index),
+                    self.search.count(),
+                    if self.search.pending() { "…" } else { "" }
+                ));
+            }
             Some("feedback") => {
                 screen.feedback = layout
                     .as_ref()
@@ -570,6 +633,9 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
 #[cfg(test)]
 mod tests;
 
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "search_tests.rs"]
+mod search_tests;
 #[cfg(test)]
 #[path = "thinking_tests.rs"]
 mod thinking_tests;

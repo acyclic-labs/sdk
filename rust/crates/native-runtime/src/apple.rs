@@ -5,7 +5,10 @@
 //! instead of one call per request. Read buffers of a page or more come from
 //! a bounded pool and return to it when the last `Bytes` view drops, so a
 //! steady stream of large reads lands in memory the kernel has already mapped
-//! instead of faulting fresh pages in during the copy.
+//! instead of faulting fresh pages in during the copy. Once one run of a
+//! scattered batch proves uncached, the kernel is asked to start reading every
+//! later run, so they overlap on the device instead of queueing behind one
+//! worker.
 
 #![allow(
     unsafe_code,
@@ -22,11 +25,23 @@ use std::io;
 use std::ops::DerefMut;
 use std::os::fd::{AsRawFd as _, RawFd};
 use std::sync::{OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Darwin's `IOV_MAX`, used when `sysconf` cannot report the limit.
 const IOV_MAX_FALLBACK: usize = 1024;
 /// Darwin rejects a single transfer of more than `INT_MAX` bytes.
 const MAX_TRANSFER: usize = i32::MAX as usize;
+/// A run was not served from the page cache when its I/O takes longer than
+/// this latency plus its bytes at `CACHED_BYTES_PER_NANO`. A device read adds
+/// tens to hundreds of microseconds of latency; a cached run costs only its
+/// copy, which grows with its size.
+const UNCACHED_LATENCY: Duration = Duration::from_micros(40);
+/// A floor on page-cache copy throughput. One warm 4 MiB `preadv` copies at
+/// about 38 bytes per nanosecond on an M4, but concurrent copies share memory
+/// bandwidth: at 4 and 16 concurrent batches a floor of 8 still misjudged warm
+/// 4 MiB runs, while 2 did not. A 4 KiB device read (100 µs or more) stays
+/// uncached at any floor.
+const CACHED_BYTES_PER_NANO: u64 = 2;
 
 type Vectored = unsafe extern "C" fn(c_int, *const libc::iovec, c_int, libc::off_t) -> isize;
 
@@ -506,12 +521,20 @@ fn read_batch_with(
     let shard = Shard::local();
     with_scratch(|scratch, limit| {
         let mut rest = reads;
+        let mut advised = false;
+        let mut index = 0_usize;
         while !rest.is_empty() {
             let (run, next) =
                 rest.split_at(contiguous(rest, limit, |read| (read.offset, read.length)));
             for read in run {
                 scratch.buffers.push(read_buffer(read.length, shard)?);
             }
+            // Only a batch with later runs can benefit, and it advises once.
+            // Timing runs 1, 2, 4, 8, ... keeps a cached batch at a logarithmic
+            // number of clock reads while still catching a cold batch early.
+            index += 1;
+            let timed = !advised && !next.is_empty() && sampled(index);
+            let started = timed.then(Instant::now);
             fill(
                 file.as_raw_fd(),
                 run,
@@ -519,6 +542,8 @@ fn read_batch_with(
                 Segments::new(&mut scratch.segments, limit),
                 vectored,
             )?;
+            // Only the transfer is timed, before any result conversion.
+            let elapsed = started.map(|started| elapsed(started, run));
             results.extend(
                 scratch
                     .buffers
@@ -526,10 +551,94 @@ fn read_batch_with(
                     .zip(run)
                     .map(|(buffer, read)| read_result(buffer, read.length, shard)),
             );
+            if elapsed.is_some_and(|elapsed| uncached(elapsed, transferred(run))) {
+                advise(file.as_raw_fd(), next, limit);
+                advised = true;
+            }
             rest = next;
         }
         Ok(results)
     })
+}
+
+/// Whether the `index`th run (from 1) of a batch is timed.
+fn sampled(index: usize) -> bool {
+    #[cfg(test)]
+    if faults::mutated(faults::Mutation::TimeEveryRun) {
+        return true;
+    }
+    index.is_power_of_two()
+}
+
+/// The I/O time of `run`, which began at `started`.
+fn elapsed(started: Instant, run: &[OwnedRead]) -> Duration {
+    #[cfg(test)]
+    {
+        let _ = started;
+        faults::elapsed(transferred(run))
+    }
+    #[cfg(not(test))]
+    {
+        let _ = run;
+        started.elapsed()
+    }
+}
+
+/// The bytes a run asked to transfer.
+fn transferred(run: &[OwnedRead]) -> usize {
+    run.iter()
+        .fold(0_usize, |total, read| total.saturating_add(read.length))
+}
+
+/// Whether a run of `bytes` that took `elapsed` had to wait for the device:
+/// longer than the device latency floor plus a cached copy of its bytes.
+fn uncached(elapsed: Duration, bytes: usize) -> bool {
+    #[cfg(test)]
+    if faults::mutated(faults::Mutation::AdviseAlways) {
+        return true;
+    }
+    #[cfg(test)]
+    let bytes = if faults::mutated(faults::Mutation::FixedThreshold) {
+        0
+    } else {
+        bytes
+    };
+    let copy =
+        Duration::from_nanos(u64::try_from(bytes).unwrap_or(u64::MAX) / CACHED_BYTES_PER_NANO);
+    elapsed >= UNCACHED_LATENCY.saturating_add(copy)
+}
+
+/// Asks the kernel to start reading every run of `reads` now. `F_RDADVISE`
+/// queues asynchronous read-ahead and returns without waiting, so the later
+/// positional reads find their pages arriving or resident. It is only advice:
+/// a refusal changes nothing the reads themselves will not report.
+fn advise(fd: RawFd, reads: &[OwnedRead], limit: usize) {
+    let mut rest = reads;
+    while !rest.is_empty() {
+        let (run, next) = rest.split_at(contiguous(rest, limit, |read| (read.offset, read.length)));
+        rest = next;
+        let Some(first) = run.first() else {
+            continue;
+        };
+        let bytes = transferred(run);
+        let (Ok(count), Ok(offset)) = (
+            c_int::try_from(bytes.min(MAX_TRANSFER)),
+            position(first.offset),
+        ) else {
+            continue;
+        };
+        if count == 0 {
+            continue;
+        }
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("rdadvise", first.offset, bytes as u64));
+        let advice = libc::radvisory {
+            ra_offset: offset,
+            ra_count: count,
+        };
+        // SAFETY: F_RDADVISE only reads the advice record for the live descriptor.
+        let _ = unsafe { libc::fcntl(fd, libc::F_RDADVISE, &raw const advice) };
+    }
 }
 
 /// Fills each buffer's spare capacity from its contiguous range until full or end of file.

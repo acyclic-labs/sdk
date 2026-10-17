@@ -202,10 +202,16 @@ impl LocalStream {
     }
 
     fn flush_all(&self, span: &tracing::Span) -> Result<(), StreamError> {
+        #[cfg(feature = "test-support")]
+        let written;
         let (target, file, durability) = {
             let journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
             if journal.synced >= journal.appended {
                 return Ok(());
+            }
+            #[cfg(feature = "test-support")]
+            {
+                written = (journal.epoch, journal.bytes);
             }
             span.record("batch_len", journal.appended - journal.synced);
             (
@@ -217,6 +223,11 @@ impl LocalStream {
         sync_file_data(&file, durability).map_err(|_| self.inner.poison())?;
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
         self.inner.publish_synced(&mut journal, target);
+        // A restart in between already marked its own header flushed.
+        #[cfg(feature = "test-support")]
+        if journal.epoch == written.0 {
+            journal.flushed = journal.flushed.max(written.1);
+        }
         Ok(())
     }
 
@@ -225,8 +236,10 @@ impl LocalStream {
         #[cfg(feature = "test-support")]
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]
-        if cut.as_ref().is_some_and(|cut| !cut.admit()) {
-            return Err(self.inner.poison());
+        if let Some(cut) = &cut
+            && !cut.admit()
+        {
+            return Err(self.cut_crash(cut.as_ref()).await);
         }
         let required = !deferred();
         let journal = self.inner.journal.clone();
@@ -244,8 +257,8 @@ impl LocalStream {
             return Err(self.inner.poison());
         }
         #[cfg(feature = "test-support")]
-        if cut.is_some_and(|cut| !cut.acknowledge()) {
-            return Err(self.inner.poison());
+        if let Some(cut) = cut {
+            return self.cut_after_write(cut).await;
         }
         self.inner.published();
         Ok(())

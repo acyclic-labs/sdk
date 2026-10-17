@@ -56,7 +56,7 @@ pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem"))]
 pub(crate) use content::verify_model_contents_with_summary_authorization;
 mod retained;
 mod turn;

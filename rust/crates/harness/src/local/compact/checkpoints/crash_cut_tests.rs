@@ -156,7 +156,8 @@ async fn cuts() -> (FileKey, Vec<(Option<Cut>, Recovered)>) {
         },
         |stream| recover(stream, next.borrow().clone().unwrap()),
     )
-    .await;
+    .await
+    .expect("every crash is simulated faithfully");
     // The checkpoint file, then its selection.
     assert_eq!(found.writes, 2, "publication durable boundaries changed");
     let expected = key(next.borrow().as_ref().unwrap());

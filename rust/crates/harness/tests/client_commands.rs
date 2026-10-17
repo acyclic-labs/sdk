@@ -10,6 +10,7 @@ use acyclic_harness::{
 };
 use serde_json::{Value, json};
 
+#[cfg(not(target_arch = "wasm32"))]
 fn volume_error(error: acyclic_harness::task_volume::Error) -> acyclic_harness::Error {
     acyclic_harness::Error::Storage(error.to_string())
 }
@@ -49,9 +50,6 @@ use client_files::Fixture;
 
 #[path = "client_mention_attachments.rs"]
 mod attachments;
-#[cfg(not(target_arch = "wasm32"))]
-#[path = "client_mention_provider.rs"]
-mod mention_provider;
 #[cfg(all(
     not(target_arch = "wasm32"),
     feature = "filesystem-local",
@@ -59,6 +57,9 @@ mod mention_provider;
 ))]
 #[path = "support/client_local.rs"]
 mod client_local;
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "client_mention_provider.rs"]
+mod mention_provider;
 
 impl Fixture {
     async fn catalog(

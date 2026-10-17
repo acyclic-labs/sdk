@@ -808,6 +808,26 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
     Ok(())
 }
 
+/// Holds this thread's capture clock at a chosen instant until dropped.
+struct FrozenCaptureClock;
+
+impl FrozenCaptureClock {
+    fn at(now: std::time::Instant) -> Self {
+        super::set_capture_clock(Some(now));
+        Self
+    }
+
+    fn advance_to(&self, now: std::time::Instant) {
+        super::set_capture_clock(Some(now));
+    }
+}
+
+impl Drop for FrozenCaptureClock {
+    fn drop(&mut self) {
+        super::set_capture_clock(None);
+    }
+}
+
 #[test]
 fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     use super::ProcessInput;
@@ -870,10 +890,16 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     ready(temporary.path(), "stdin-stall-ready", || {
         tree_exited(&mut tree)
     });
+    // The capture clock is frozen and only reaches the deadline inside the
+    // second check, so expiry is ordered after two full capture iterations no
+    // matter how late the scheduler runs this thread.
+    let timeout = Duration::from_millis(20);
+    let started = std::time::Instant::now();
+    let clock = FrozenCaptureClock::at(started);
     let mut checks = 0;
     let failure = tree
         .wait_with_output(
-            Duration::from_millis(20),
+            timeout,
             4096,
             Some(crate::CaptureInput::Exchange {
                 initial: &vec![b'i'; BULK_BYTES],
@@ -881,6 +907,9 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
             }),
             || {
                 checks += 1;
+                if checks == 2 {
+                    clock.advance_to(started + timeout);
+                }
                 Ok(())
             },
             |_| Ok(crate::ProcessInput::default()),
@@ -890,7 +919,8 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
         .expect_err("deadline stops stalled input");
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
-    assert!(checks > 1);
+    drop(clock);
+    assert_eq!(checks, 2, "the deadline expired only once the clock reached it");
     assert!(failure.cleanup_completed);
     assert!(tree.is_reaped());
 }

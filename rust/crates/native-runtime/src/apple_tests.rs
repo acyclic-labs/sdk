@@ -434,13 +434,19 @@ fn modelled_lengths(
     let mut queue = faults.iter().copied();
     let mut consumed = 0;
     let mut lengths = Vec::new();
-    let mut start = 0;
-    while start < ranges.len() {
-        let mut end = start + 1;
-        while end < ranges.len() && ranges[end].0 == ranges[end - 1].0 + ranges[end - 1].1 as u64 {
-            end += 1;
-        }
-        let run = &ranges[start..end];
+    let mut rest = ranges;
+    while let Some(&(first, _)) = rest.first() {
+        // Each run is a maximal prefix whose requests abut end to start.
+        let joined = rest
+            .windows(2)
+            .take_while(
+                |pair| matches!(pair, [(at, length), (next, _)] if *next == at + *length as u64),
+            )
+            .count();
+        let Some((run, tail)) = rest.split_at_checked(joined + 1) else {
+            break;
+        };
+        rest = tail;
         let total: usize = run.iter().map(|range| range.1).sum();
         let mut moved = 0;
         while moved < total {
@@ -455,7 +461,7 @@ fn modelled_lengths(
                     })
                     .unwrap_or(0)
             };
-            let at = run[0].0 + moved as u64;
+            let at = first + moved as u64;
             let available = usize::try_from(file_length.saturating_sub(at)).unwrap_or(usize::MAX);
             let count = loop {
                 let fault = queue.next();
@@ -478,7 +484,6 @@ fn modelled_lengths(
             lengths.push(take);
             left -= take;
         }
-        start = end;
     }
     (lengths, consumed)
 }
@@ -593,8 +598,11 @@ proptest! {
         layout in arbitrary_layout(),
         faults in prop::collection::vec(arbitrary_fault(), 0..8),
         vectorize in any::<bool>(),
+        uncached in any::<bool>(),
     ) {
         let preadv = vectorize.then(|| vectored(Direction::Read)).flatten();
+        // Advice is cleared with the faults when the oracle disarms.
+        super::faults::force_uncached(uncached);
         prop_assert_eq!(read_oracle(&layout, preadv, &faults, Mutation::None), Ok(()));
     }
 }
@@ -685,7 +693,9 @@ fn a_scalar_zero_after_progress_is_write_zero() {
     assert_eq!(consumed, 2);
     assert_eq!(trace, [("pwrite", 0, 3), ("pwrite", 3, 4)]);
     let mut expected: Vec<u8> = (0..FILE).map(content).collect();
-    expected[..3].copy_from_slice(b"abc");
+    for (slot, byte) in expected.iter_mut().zip(b"abc") {
+        *slot = *byte;
+    }
     assert_eq!(new_bytes, expected);
     assert_eq!(write_oracle(&writes, None, &faults, Mutation::None), Ok(()));
 }
@@ -814,7 +824,7 @@ fn assert_contents(results: &[Bytes], requests: &[OwnedRead], bytes: &[u8]) {
     for (result, read) in results.iter().zip(requests) {
         let start = usize::try_from(read.offset).unwrap();
         let end = (start + read.length).min(bytes.len());
-        assert_eq!(result[..], bytes[start..end]);
+        assert_eq!(result.get(..), bytes.get(start..end));
     }
 }
 
@@ -891,13 +901,16 @@ fn a_reused_buffer_exposes_only_the_bytes_of_its_new_read() {
             .spawn(|| {
                 Shard::isolate();
                 let first = read_batch_with(&file, &full, None).unwrap();
-                let storage = first[0].as_ptr();
+                let storage = first.first().unwrap().as_ptr();
                 drop(first);
                 // The same buffer comes back, filled only to end of file.
                 let short = read_batch_with(&file, &tail, None).unwrap();
-                assert_eq!(short[0].as_ptr(), storage);
+                let [reused] = short.as_slice() else {
+                    panic!("one read yields one buffer");
+                };
+                assert_eq!(reused.as_ptr(), storage);
+                assert_eq!(reused.len(), 100);
                 assert_contents(&short, &tail, &bytes);
-                assert_eq!(short[0].len(), 100);
             })
             .join()
             .unwrap();
@@ -923,4 +936,171 @@ fn the_pool_keeps_idle_bytes_within_its_budget() {
     assert_eq!(shard.idle().bytes, share - class);
     // A class with nothing idle is allocated fresh.
     assert_eq!(shard.take(2 * class).unwrap().capacity(), 2 * class);
+}
+
+/// Reads `ranges` with every timed run forced uncached (or cached), beside
+/// the baseline, and returns both outcomes and the new trace.
+fn advised_read(
+    ranges: &[(u64, usize)],
+    vectored: Option<Vectored>,
+    uncached: bool,
+    mutation: Mutation,
+) -> (Outcome<Vec<Bytes>>, Outcome<Vec<Bytes>>, Vec<Event>) {
+    let requests = reads(ranges);
+    let ([(old, _), (new, trace)], _) = faulted(
+        &[],
+        mutation,
+        |file| outcome(baseline_read(file, &requests)),
+        |file| {
+            super::faults::force_uncached(uncached);
+            outcome(read_batch_with(file, &requests, vectored))
+        },
+    );
+    (old, new, trace)
+}
+
+#[test]
+fn an_uncached_run_advises_every_later_run_once_and_cached_batches_never_do() {
+    let scattered = [
+        (0, 100),
+        (100, 50),
+        (5_000, 100),
+        (9_000, 100),
+        (9_950, 100),
+    ];
+    let preadv = vectored(Direction::Read);
+    let (old, new, trace) = advised_read(&scattered, preadv, true, Mutation::None);
+    assert_eq!(new, old);
+    assert_eq!(
+        trace,
+        [
+            ("preadv", 0, 150),
+            ("rdadvise", 5_000, 100),
+            ("rdadvise", 9_000, 100),
+            ("rdadvise", 9_950, 100),
+            ("pread", 5_000, 100),
+            ("pread", 9_000, 100),
+            ("pread", 9_950, 100),
+        ]
+    );
+    let (old, new, trace) = advised_read(&scattered, preadv, false, Mutation::None);
+    assert_eq!(new, old);
+    let cached = [
+        ("preadv", 0, 150),
+        ("pread", 5_000, 100),
+        ("pread", 9_000, 100),
+        ("pread", 9_950, 100),
+    ];
+    assert_eq!(trace, cached);
+    // Negative control: advising a cached batch fails the same exact trace.
+    let (old, new, trace) = advised_read(&scattered, preadv, false, Mutation::AdviseAlways);
+    assert_eq!(new, old);
+    assert_ne!(trace, cached);
+    // A single run has nothing later to advise, and empty runs are not advised.
+    let (_, _, trace) = advised_read(&[(0, 4096), (4096, 4096)], preadv, true, Mutation::None);
+    assert_eq!(trace, [("preadv", 0, 8192)]);
+    let (_, _, trace) = advised_read(&[(0, 10), (50, 0), (60, 5)], None, true, Mutation::None);
+    assert_eq!(
+        trace,
+        [("pread", 0, 10), ("rdadvise", 60, 5), ("pread", 60, 5)]
+    );
+}
+
+#[test]
+fn a_cached_batch_times_a_logarithmic_number_of_runs() {
+    let (_directory, file) = fixture().unwrap();
+    // 64 separate runs: runs 1, 2, 4, 8, 16 and 32 are timed; run 64 has
+    // nothing after it to advise.
+    let ranges: Vec<_> = (0..64).map(|index| (index * 150, 100)).collect();
+    let requests = reads(&ranges);
+    super::faults::timed_runs();
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    assert_eq!(super::faults::timed_runs(), 6);
+    // Negative control: timing every run fails the same count.
+    arm(&[], Mutation::TimeEveryRun);
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    disarm(0);
+    assert_eq!(super::faults::timed_runs(), 63);
+    // Once advised, nothing further is timed.
+    super::faults::force_uncached(true);
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    super::faults::force_uncached(false);
+    assert_eq!(super::faults::timed_runs(), 1);
+}
+
+#[test]
+fn advising_allocates_nothing() {
+    let (_directory, file) = fixture().unwrap();
+    let ranges: Vec<_> = (0..40).map(|index| (index * 250, 100)).collect();
+    let requests = reads(&ranges);
+    read_batch_with(&file, &requests, None).unwrap();
+    super::faults::force_uncached(true);
+    let mut result = None;
+    let allocation = measure(|| result = Some(read_batch_with(&file, &requests, None)));
+    super::faults::force_uncached(false);
+    assert_eq!(result.unwrap().unwrap().len(), requests.len());
+    assert_eq!(allocation.count_total, requests.len() as u64 + 1);
+}
+
+#[test]
+fn the_page_cache_verdict_scales_with_the_bytes_transferred() {
+    let micros = Duration::from_micros;
+    // A cached 4 KiB run copies in about a microsecond; a device read takes
+    // 100 µs or more.
+    assert!(!uncached(micros(2), 4096));
+    assert!(uncached(micros(100), 4096));
+    // A warm 4 MiB run takes about 110 µs on an M4, well over the latency
+    // floor alone, but under the floor plus a cached copy of 4 MiB.
+    assert!(!uncached(micros(110), 4 << 20));
+    assert!(uncached(
+        micros(40) + Duration::from_nanos((4 << 20) / 2),
+        4 << 20
+    ));
+    // An absurd size saturates instead of overflowing.
+    assert!(!uncached(Duration::from_secs(1), usize::MAX));
+}
+
+/// A warm run's I/O time: about a microsecond per 4 KiB at the measured
+/// 38 bytes per nanosecond, plus a microsecond of call overhead.
+fn warm(bytes: usize) -> Duration {
+    Duration::from_micros(1) + Duration::from_nanos(bytes as u64 / 38)
+}
+
+/// A cold run's I/O time: a device read of at least 120 µs.
+fn cold(bytes: usize) -> Duration {
+    Duration::from_micros(120) + Duration::from_nanos(bytes as u64 / 4)
+}
+
+/// A 4 MiB run followed by 64 scattered 4 KiB-scale runs, with each timed run
+/// taking `elapsed(bytes)` of I/O time; returns the number of advice calls.
+fn mixed_batch_advice(elapsed: fn(usize) -> Duration, mutation: Mutation) -> usize {
+    let mut ranges = vec![(0, 4 << 20)];
+    ranges.extend((0..64).map(|index| (index * 150, 100)));
+    let requests = reads(&ranges);
+    let ([(old, _), (new, trace)], _) = faulted(
+        &[],
+        mutation,
+        |file| outcome(baseline_read(file, &requests)),
+        |file| {
+            super::faults::force_elapsed(elapsed);
+            outcome(read_batch_with(file, &requests, vectored(Direction::Read)))
+        },
+    );
+    assert_eq!(new, old);
+    trace
+        .iter()
+        .filter(|(call, _, _)| *call == "rdadvise")
+        .count()
+}
+
+#[test]
+fn a_warm_large_run_before_scattered_reads_issues_no_advice() {
+    // Every run warm: the 4 MiB run's copy time is not mistaken for a device read.
+    assert_eq!(mixed_batch_advice(warm, Mutation::None), 0);
+    // Negative control: judging the 4 MiB run by the latency floor alone
+    // advises all 64 later runs.
+    assert_eq!(mixed_batch_advice(warm, Mutation::FixedThreshold), 64);
+    // Cold, the 4 MiB run's time fits a cached copy, so the next timed run
+    // (the first scattered one) proves uncached and advises the other 63.
+    assert_eq!(mixed_batch_advice(cold, Mutation::None), 63);
 }
