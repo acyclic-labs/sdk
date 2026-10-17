@@ -20,6 +20,19 @@ mod old {
             differential::record(("remove", order));
         }
     }
+    /// Snapshot events implied by the collect above (later duplicates replace
+    /// earlier ones), recorded outside the measured construction.
+    fn snapshot_trace(files: &[FileValue], bytes: usize) {
+        let mut seen = BTreeMap::new();
+        for (order, file) in files.iter().enumerate() {
+            if file.bytes.len() <= bytes {
+                if let Some(previous) = seen.insert(&file.key, order as u64) {
+                    differential::record(("remove", previous));
+                }
+                differential::record(("insert", order as u64));
+            }
+        }
+    }
     fn insert(files: &mut Window, file: &FileValue, order: u64) {
         differential::record(("insert", order));
         files.insert(file.key.clone(), (order, file.clone()));
@@ -68,13 +81,12 @@ mod old {
         bytes: usize,
         recent: usize,
     ) -> Old {
-        let mut window = Window::new();
-        for (order, file) in files.drain(..).enumerate() {
-            if file.bytes.len() <= bytes {
-                remove(&mut window, &file.key);
-                insert(&mut window, &file, order as u64);
-            }
-        }
+        let mut window: Window = files
+            .drain(..)
+            .enumerate()
+            .filter(|(_, file)| file.bytes.len() <= bytes)
+            .map(|(order, file)| (file.key.clone(), (order as u64, file)))
+            .collect();
         trim(&mut window, maximum, bytes, recent);
         *files = window.values().map(|(_, file)| file.clone()).collect();
         Old(window, maximum, bytes, recent)
@@ -115,6 +127,7 @@ mod old {
             _ => maximum,
         };
         let snapshot = observation.snapshot.as_mut().ok_or(Error::ResetRequired)?;
+        snapshot_trace(&snapshot.files, bytes);
         let window = window(&mut snapshot.files, maximum, bytes, recent);
         observation.changes = Box::pin(futures::stream::try_unfold(
             (observation.changes, window),
@@ -411,26 +424,27 @@ fn window_reports_only_keys_visible_before_each_change() {
     assert_eq!(new.0, expected);
 }
 
-/// N retained one-byte files and three changes: an unrelated checkpoint, an
-/// explicit removal and an oversized replacement.
-fn fixture(n: usize) -> (Window, [Change; 3]) {
+/// N retained one-byte files and four changes: an unrelated checkpoint, an
+/// explicit removal, an oversized replacement and a surviving replacement.
+fn fixture(n: usize) -> (Window, [Change; 4]) {
     let mut files: Vec<_> = (0..n).map(|index| unclassified(index, 1)).collect();
     let window = Window::new(&mut files, n, n, 0);
     let changes = [
         change(Vec::new(), None, Vec::new(), 7),
         change(vec![files[0].key.clone()], None, Vec::new(), 8),
         change(Vec::new(), Some(unclassified(1, n + 1)), Vec::new(), 9),
+        change(Vec::new(), Some(unclassified(2, 1)), Vec::new(), 10),
     ];
     (window, changes)
 }
 /// Allocations per change plus total allocated bytes, measured untraced.
-fn allocations(n: usize, apply: fn(&mut Window, &mut Change)) -> [u64; 4] {
+fn allocations(n: usize, apply: fn(&mut Window, &mut Change)) -> [u64; 5] {
     let (mut window, mut changes) = fixture(n);
-    let mut counts = [0; 4];
+    let mut counts = [0; 5];
     for (index, change) in changes.iter_mut().enumerate() {
         let measured = measure(|| apply(&mut window, change));
         counts[index] = measured.count_total;
-        counts[3] += measured.bytes_total;
+        counts[4] += measured.bytes_total;
     }
     counts
 }
@@ -447,6 +461,15 @@ fn rebuilding(window: &mut Window, change: &mut Change) {
     window.apply(change);
     drop(before);
 }
+/// Restores queuing a surviving replacement as a removal, cleared after reinsertion.
+fn queuing(window: &mut Window, change: &mut Change) {
+    for file in change.file.iter().chain(&change.files) {
+        if window.entries.contains_key(&file.key) {
+            change.removed.push(file.key.clone());
+        }
+    }
+    window.apply(change);
+}
 fn old_allocations(n: usize) -> u64 {
     let mut files: Vec<_> = (0..n).map(|index| unclassified(index, 1)).collect();
     let mut window = old::window(&mut files, n, n, 0);
@@ -456,11 +479,17 @@ fn old_allocations(n: usize) -> u64 {
 
 #[test]
 fn window_change_work_is_independent_of_retained_files() {
-    let exact = [0, 0, 1, 4 * std::mem::size_of::<FileKey>() as u64];
+    let exact = [0, 0, 1, 0, 4 * std::mem::size_of::<FileKey>() as u64];
     for n in [64, 128] {
         assert_eq!(allocations(n, Window::apply), exact, "{n} files");
-        assert_eq!(trace(n), [("remove", 0), ("remove", 1)], "{n} files");
+        let replacements = [("remove", 0), ("remove", 1), ("remove", 2), ("insert", 10)];
+        assert_eq!(trace(n), replacements, "{n} files");
     }
+    assert_ne!(
+        allocations(64, queuing)[3],
+        0,
+        "a queued surviving replacement was not detected"
+    );
     assert_ne!(
         allocations(64, rebuilding),
         exact,
