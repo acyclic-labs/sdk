@@ -98,7 +98,8 @@ impl SwarmClient {
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
         let mut membership =
-            membership::Membership::observe(parent, self.root.clone(), self.limits.agents).await?;
+            membership::Membership::observe(parent, session, self.root.clone(), self.limits.agents)
+                .await?;
         let mut follows = follows::Follows::new(session.clone(), discovery);
         let mut demand = ClientInterests::from_layout(self.root.clone(), [], [], 0)?;
         let mut snapshots = snapshots::Snapshots::new(self.limits.selected);

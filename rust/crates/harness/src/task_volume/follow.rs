@@ -190,41 +190,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
                 acyclic_stream::CommitId::from_bytes(cursor.commit),
             )
             .await?;
-        let stream = futures::stream::try_unfold(
-            (records, query, cursor),
-            |(mut records, query, mut cursor)| async move {
-                let Some(record) = records.next().await else {
-                    return Err(Error::ResetRequired);
-                };
-                let record = record?;
-                if record.sequence != cursor.position {
-                    return Err(Error::ResetRequired);
-                }
-                let file = segment::decode(&record.value)?;
-                cursor.position += 1;
-                cursor.accepted = cursor.accepted.max(cursor.position);
-                cursor.commit = *record.commit_id.as_bytes();
-                let file = query.matches_file(&file).then_some(file);
-                let (file, removed) = if query == Query::ActiveAgents {
-                    match file {
-                        Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
-                            (None, vec![file.key])
-                        }
-                        file => (file, Vec::new()),
-                    }
-                } else {
-                    (file, Vec::new())
-                };
-                let change = Change {
-                    file,
-                    files: Vec::new(),
-                    removed,
-                    cursor: cursor.clone(),
-                };
-                Ok(Some((change, (records, query, cursor))))
-            },
-        );
-        Ok(Box::pin(stream))
+        Ok(record_changes(query, cursor, records))
     }
 
     /// Starts or resumes one query, returning an explicit reset with replacement snapshot.
@@ -294,4 +260,49 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             changes,
         })
     }
+}
+
+// One fold for provider follows and multiplexed client follows. Callers open a
+// checked record stream at this cursor; no file decoding or membership policy
+// is duplicated by the client transport.
+pub(crate) fn record_changes(
+    query: Query,
+    cursor: Cursor,
+    records: acyclic_stream::RecordStream,
+) -> ChangeStream {
+    let stream = futures::stream::try_unfold(
+        (records, query, cursor),
+        |(mut records, query, mut cursor)| async move {
+            let Some(record) = records.next().await else {
+                return Err(Error::ResetRequired);
+            };
+            let record = record?;
+            if record.sequence != cursor.position {
+                return Err(Error::ResetRequired);
+            }
+            let file = segment::decode(&record.value)?;
+            cursor.position += 1;
+            cursor.accepted = cursor.accepted.max(cursor.position);
+            cursor.commit = *record.commit_id.as_bytes();
+            let file = query.matches_file(&file).then_some(file);
+            let (file, removed) = if query == Query::ActiveAgents {
+                match file {
+                    Some(file) if !super::ChildStatus::parse(&file.bytes)?.active() => {
+                        (None, vec![file.key])
+                    }
+                    file => (file, Vec::new()),
+                }
+            } else {
+                (file, Vec::new())
+            };
+            let change = Change {
+                file,
+                files: Vec::new(),
+                removed,
+                cursor: cursor.clone(),
+            };
+            Ok(Some((change, (records, query, cursor))))
+        },
+    );
+    Box::pin(stream)
 }

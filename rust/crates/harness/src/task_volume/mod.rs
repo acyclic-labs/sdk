@@ -20,8 +20,8 @@ mod segment;
 mod source;
 mod watermarks;
 pub use files::TaskFiles;
-pub(crate) use follow::query_id;
 pub use follow::{Change, ChangeStream, Cursor, Observation, Snapshot};
+pub(crate) use follow::{query_id, record_changes};
 pub use heads::{HeadFile, HeadSnapshot};
 pub use plan_name::PlanName;
 pub use schema::{

@@ -32,6 +32,7 @@ pub(super) struct Counts {
     pub children: usize,
     pub actor_channels: usize,
     pub status_follows: usize,
+    pub membership_follows: usize,
     pub content_follows: usize,
     pub removed: usize,
     pub peak_full: usize,
@@ -44,7 +45,7 @@ pub(super) struct Counts {
     #[serde(skip)]
     full: BTreeSet<u64>,
     #[serde(skip)]
-    discovery: BTreeSet<u64>,
+    always_followed: BTreeSet<u64>,
     #[serde(skip)]
     released: bool,
     #[serde(skip)]
@@ -90,7 +91,7 @@ impl Counts {
                 self.root_credit += u64::from(window.frames)
             }
             Some(Body::Window(_))
-                if !self.released && !self.discovery.contains(&frame.channel_id) =>
+                if !self.released && !self.always_followed.contains(&frame.channel_id) =>
             {
                 self.held.push(frame.clone());
                 return Ok(false);
@@ -109,7 +110,17 @@ impl Counts {
                     match &subscription.kind {
                         Some(Kind::Children(_)) => {
                             self.children += 1;
-                            self.discovery.insert(id);
+                            self.always_followed.insert(id);
+                        }
+                        Some(Kind::Follow(follow)) if follow.path == "swarm/files" => {
+                            if follow.delivery != wire::SessionDelivery::All as i32
+                                || follow.preceding_commit_id.len() != 32
+                                || self.membership_follows != 0
+                            {
+                                return Err(acyclic_stream::StreamError::InvalidArgument);
+                            }
+                            self.membership_follows += 1;
+                            self.always_followed.insert(id);
                         }
                         Some(Kind::Follow(follow))
                             if follow.delivery == wire::SessionDelivery::Latest as i32 =>

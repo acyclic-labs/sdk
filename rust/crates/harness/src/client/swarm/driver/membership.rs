@@ -11,16 +11,30 @@ pub(super) struct Membership {
 impl Membership {
     pub async fn observe<P: StreamProvider + ?Sized>(
         parent: &TaskVolume<P>,
+        session: &acyclic_stream::session::Client,
         root: StreamPath,
         maximum: usize,
     ) -> Result<Self> {
-        let observation = parent
-            .observe(crate::task_volume::Query::ActiveAgents, None, maximum)
+        let snapshot = parent
+            .snapshot(&crate::task_volume::Query::ActiveAgents, maximum)
             .await
             .map_err(|e| Error::Storage(e.to_string()))?;
-        let snapshot = observation
-            .snapshot
-            .ok_or_else(|| Error::Conflict("active membership snapshot missing".into()))?;
+        // Live membership shares the same bounded session as discovery/status.
+        // A direct provider follow can be ready for the entire accepted tail and
+        // enqueue unbounded lazy registrations before the transport is driven.
+        let records = session
+            .follow_checked(
+                parent.path().clone(),
+                snapshot.cursor.position,
+                acyclic_stream::CommitId::from_bytes(snapshot.cursor.commit),
+            )
+            .await
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let changes = crate::task_volume::record_changes(
+            crate::task_volume::Query::ActiveAgents,
+            snapshot.cursor,
+            records,
+        );
         Ok(Self {
             root: root.clone(),
             initial: snapshot
@@ -38,7 +52,7 @@ impl Membership {
                         .map_err(|e| Error::Invalid(e.to_string()))
                 })
                 .collect::<Result<_>>()?,
-            changes: observation.changes,
+            changes,
         })
     }
     // Initial status follows are admitted by discovery deliveries, whose wire

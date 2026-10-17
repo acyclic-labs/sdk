@@ -1,9 +1,9 @@
-//! Initial snapshot admission races the real bounded outbound transport queue.
+//! Status admission races the real bounded outbound transport queue.
 use super::fixture::fixture;
 use super::*;
 
-/// Explores the transport drain racing snapshot versus discovery-paced subscriptions.
-pub fn verify_discovery_admission(bypass_discovery: bool) {
+/// Explores a transport drain racing snapshot or live membership admission.
+pub fn verify_discovery_admission(bypass_delivery: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -38,7 +38,7 @@ pub fn verify_discovery_admission(bypass_discovery: bool) {
             assert!(matches!(frame.body, Some(Body::Interest(_))));
             delivering.send(()).unwrap();
         });
-        if !bypass_discovery {
+        if !bypass_delivery {
             loom::future::block_on(children.next()).unwrap();
         }
         pool.subscribe(3).unwrap();
@@ -46,7 +46,7 @@ pub fn verify_discovery_admission(bypass_discovery: bool) {
         let admitted = pool.routes.contains_key(&3);
         assert!(
             admitted,
-            "membership snapshot bypassed discovery backpressure"
+            "membership bypassed session delivery backpressure"
         );
     });
 }

@@ -32,6 +32,11 @@ fn status_paths(updates: &[wire::SessionInterest]) -> Option<BTreeSet<String>> {
     for update in updates {
         for subscription in &update.upsert {
             if let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind {
+                if follow.path == "swarm/files" {
+                    assert_eq!(follow.delivery, wire::SessionDelivery::All as i32);
+                    assert_eq!(follow.preceding_commit_id.len(), 32);
+                    continue;
+                }
                 if follow.delivery != wire::SessionDelivery::Latest as i32
                     || !found.insert(follow.path.clone())
                 {
@@ -364,4 +369,111 @@ fn ready_membership_cannot_register_before_discovery_is_delivered() {
             .collect::<Vec<_>>();
         assert!(check_statuses(&interests, count));
     });
+}
+
+#[test]
+fn live_and_republished_membership_wait_for_shared_session_delivery() {
+    for initial in [false, true] {
+        futures::executor::block_on(async {
+            use acyclic_harness::{
+                TaskId,
+                task_volume::{ChildState, ChildStatus},
+            };
+            let provider = Arc::new(MemoryStream::default());
+            let parent = TaskVolume::open(provider.clone(), path("swarm/files"))
+                .await
+                .unwrap();
+            let config = TaskVolume::open(provider.clone(), path("config/files"))
+                .await
+                .unwrap();
+            let count = acyclic_stream::MAX_ITEMS * 2 + 1;
+            if initial {
+                for id in 0..count {
+                    status::status(&provider, &format!("swarm/a{id:05}"), false).await;
+                    status::member(&parent, &format!("a{id:05}")).await;
+                }
+            }
+            let (release, waiting) = futures::channel::oneshot::channel::<()>();
+            let waiting = std::sync::Mutex::new(Some(waiting));
+            let responses: runtime::ResponseMap = Arc::new(move |source| {
+                let mut waiting = waiting.lock().unwrap().take();
+                Box::pin(source.then(move |frame| {
+                    let held = matches!(&frame, Ok(frame) if matches!(&frame.body,
+                        Some(wire::session_frame::Body::Data(data)) if if initial {
+                            matches!(data.item, Some(wire::session_data::Item::Child(_)))
+                        } else { matches!(data.item, Some(wire::session_data::Item::Record(_))) }));
+                    let waiting = if held { waiting.take() } else { None };
+                    async move {
+                        if let Some(waiting) = waiting {
+                            waiting.await.unwrap();
+                        }
+                        frame
+                    }
+                }))
+            });
+            let (session, mut runner, mut observed) =
+                runtime::open(provider.clone(), Arc::new(|s| s), responses);
+            let client = super::client(limits(count)).unwrap();
+            let views = client.views();
+            let mut consumer = Box::pin(client.follow(
+                &config,
+                &parent,
+                &session,
+                |_, _| {
+                    futures::future::ready(Err(acyclic_harness::task_volume::Error::InvalidPath))
+                },
+                async |_| Ok(()),
+            ));
+            assert!(runner.until_idle(consumer.as_mut()).await.is_none());
+            while observed.try_recv().is_ok() {}
+            for id in 0..count {
+                if !initial {
+                    status::status(&provider, &format!("swarm/a{id:05}"), false).await;
+                }
+                let value = ChildStatus {
+                    task: TaskId::from_bytes([1; 16]),
+                    state: ChildState::Running,
+                    settled: false,
+                    inputs: 2,
+                };
+                write(
+                    &parent,
+                    &format!("agents/a{id:05}/status.json"),
+                    &serde_json::to_vec(&value).unwrap(),
+                )
+                .await;
+            }
+            let settled = runner.until_idle(consumer.as_mut()).await;
+            assert!(
+                settled.is_none(),
+                "membership burst initial={initial} terminated: {settled:?}"
+            );
+            assert_eq!(
+                views.read(|v| v.agents().count()).unwrap(),
+                0,
+                "live membership bypassed held session delivery"
+            );
+            let pending = std::iter::from_fn(|| observed.try_recv().ok())
+                .filter_map(|frame| match frame.body {
+                    Some(wire::session_frame::Body::Interest(change)) => Some(change),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(status_paths(&pending).unwrap().len(), 0);
+            release.send(()).unwrap();
+            let settled = runner.until_idle(consumer.as_mut()).await;
+            assert!(
+                settled.is_none(),
+                "membership burst failed after release: {settled:?}"
+            );
+            assert_eq!(views.read(|v| v.agents().count()).unwrap(), count);
+            let admitted = std::iter::from_fn(|| observed.try_recv().ok())
+                .filter_map(|frame| match frame.body {
+                    Some(wire::session_frame::Body::Interest(change)) => Some(change),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert!(check_statuses(&admitted, count));
+        });
+    }
 }
