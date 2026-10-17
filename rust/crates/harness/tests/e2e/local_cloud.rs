@@ -5,6 +5,7 @@
 //! executor families are compared and the subagent family's refusals pinned.
 use super::{
     TestResult, execution,
+    resume::{self, Remote},
     scenario::Scenario,
     scenario_data,
     subagents::{self, Refusal, SubagentCase},
@@ -34,14 +35,7 @@ enum Case {
 
 #[derive(serde::Deserialize)]
 struct Endpoints {
-    streams: Endpoint,
-}
-
-#[derive(serde::Deserialize)]
-struct Endpoint {
-    endpoint: String,
-    bearer: String,
-    ca_file: PathBuf,
+    streams: Remote,
 }
 
 /// The scenario data. Cargo names the crate at run time too; a prebuilt test
@@ -124,6 +118,9 @@ async fn compare<A: StreamProvider, B: StreamProvider>(
 /// Session services: the transport a cloud Edge speaks, in process.
 struct Loopback {
     client: Arc<Client>,
+    /// How another process reaches this server.
+    remote: Remote,
+    _ca: tempfile::TempDir,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
@@ -159,11 +156,17 @@ async fn loopback(provider: Arc<MemoryStream>) -> TestResult<Loopback> {
             )
             .serve_with_incoming(incoming),
     );
-    let client =
-        Client::connect_eager_with_ca_certificate(&endpoint, "loopback", certificate.cert.pem())
-            .await?;
+    let ca = tempfile::tempdir()?;
+    let remote = Remote {
+        endpoint,
+        bearer: "loopback".into(),
+        ca_file: ca.path().join("ca.pem"),
+    };
+    std::fs::write(&remote.ca_file, certificate.cert.pem())?;
     Ok(Loopback {
-        client: Arc::new(client),
+        client: remote.connect().await?,
+        remote,
+        _ca: ca,
         server,
     })
 }
@@ -351,15 +354,7 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
-    let streams = endpoints.streams;
-    let remote = Arc::new(
-        Client::connect_eager_with_ca_certificate(
-            &streams.endpoint,
-            &streams.bearer,
-            std::fs::read(&streams.ca_file)?,
-        )
-        .await?,
-    );
+    let remote = endpoints.streams.connect().await?;
     // The provider contract first: a divergence there names the operation.
     acyclic_stream::conformance::verify(remote.as_ref()).await?;
     // Pinned, so this fails once the cloud serves what subagents need; the
@@ -386,9 +381,37 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
         }
     }))
     .await?;
+    // A harness process killed mid-turn resumes from the cloud's journal, and
+    // observes what it observes resuming from a loopback journal.
+    let cloud = resume::kill_and_resume(&endpoints.streams, remote.clone()).await?;
+    let loopback = loopback(Arc::new(MemoryStream::default())).await?;
+    let local = resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
+    if cloud != local {
+        return Err(format!(
+            "resumed journals differ: {cloud:?} on the cloud, {local:?} on loopback"
+        )
+        .into());
+    }
+    resume::resume_unjournaled(remote.clone()).await?;
     println!(
-        "local cloud: Stream conformance passed; {} executor scenarios matched; the subagent family is refused: {refused:?}",
+        "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the subagent family is refused: {refused:?}",
         executor_cases.len()
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn killed_turn_resumes_from_a_loopback_journal() -> TestResult {
+    let loopback = loopback(Arc::new(MemoryStream::default())).await?;
+    let resumed = resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
+    let model: Vec<_> = resumed
+        .iter()
+        .filter(|event| event["kind"] == "model")
+        .filter_map(|event| event["event"]["delta"].as_str())
+        .collect();
+    if model != ["partial-", "restored"] {
+        return Err(format!("the resumed journal holds {resumed:?}").into());
+    }
+    // Negative control: without a journaled prefix there is nothing to resume.
+    resume::resume_unjournaled(loopback.client.clone()).await
 }
