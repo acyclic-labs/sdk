@@ -22,11 +22,14 @@ pub async fn next_file_tui_event(
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
     animation: bool,
+    renderer: &mut crate::tui::ClientRenderer,
     documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
-        _ = animation_frame::<true>(animation) => Ok(None),
+        biased;
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
+        _ = animation_frame::<true>(animation) => Ok(None),
+        _ = renderer.search_progress() => Ok(None),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
             client.apply_change(update.ok_or_else(|| Error::Conflict("document follow ended; reopen snapshots".into()))??)?;

@@ -19,6 +19,8 @@ pub struct Screen<'a> {
     pub transcript: &'a [Line<'a>],
     /// Independently cached tool tail, following the answer rows without copies.
     pub tools: &'a [Line<'a>],
+    /// Search decoration over the existing wrapping projection; only visible rows are painted.
+    pub transcript_search: Option<(&'a crate::WrappedLines, &'a crate::TranscriptSearch)>,
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -37,6 +39,8 @@ pub struct Screen<'a> {
     pub overlay_title: &'a str,
     /// The followed layout selects the local feedback input form.
     pub feedback: bool,
+    /// Search selection overrides follow-tail while its file-backed form is open.
+    pub search_row: Option<usize>,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -216,6 +220,13 @@ impl Screen<'_> {
         now_ms: u64,
     ) -> ScreenAreas {
         let mut areas = self.areas(frame.area(), input);
+        let transcript_scroll = self.search_row.map_or(transcript_scroll, |row| {
+            row.min(
+                self.transcript
+                    .len()
+                    .saturating_sub(usize::from(areas.transcript.height)),
+            )
+        });
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
         let thinking = self.thinking_line(input, &areas, transcript_scroll, now_ms);
         areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
@@ -231,25 +242,28 @@ impl Screen<'_> {
             for (row, index) in (transcript_scroll..end).enumerate() {
                 #[cfg(test)]
                 ROW_WORK.with(|work| work.set(work.get() + 1));
-                let line = if index < self.reasoning.len() {
-                    Some(&self.reasoning[index])
+                let area = Rect::new(
+                    areas.transcript.x,
+                    areas.transcript.y + row as u16,
+                    areas.transcript.width,
+                    1,
+                );
+                if index < self.reasoning.len() {
+                    frame.render_widget(&self.reasoning[index], area);
                 } else if index < self.reasoning.len() + self.transcript.len() {
-                    Some(&self.transcript[index - self.reasoning.len()])
+                    let index = index - self.reasoning.len();
+                    if let Some((projection, search)) = self.transcript_search {
+                        frame.render_widget(search.row(projection, index), area);
+                    } else {
+                        frame.render_widget(&self.transcript[index], area);
+                    }
                 } else if index < self.reasoning.len() + self.transcript.len() + self.tools.len() {
-                    Some(&self.tools[index - self.reasoning.len() - self.transcript.len()])
-                } else {
-                    thinking.as_ref()
-                };
-                if let Some(line) = line {
                     frame.render_widget(
-                        line,
-                        Rect::new(
-                            areas.transcript.x,
-                            areas.transcript.y + row as u16,
-                            areas.transcript.width,
-                            1,
-                        ),
+                        &self.tools[index - self.reasoning.len() - self.transcript.len()],
+                        area,
                     );
+                } else if let Some(line) = thinking.as_ref() {
+                    frame.render_widget(line, area);
                 }
             }
         } else {

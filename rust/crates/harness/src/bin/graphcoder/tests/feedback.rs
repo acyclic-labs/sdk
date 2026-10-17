@@ -233,14 +233,14 @@ async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt()
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &serde_json::json!({"open_view":"find","view_input":"find"}),
+            &serde_json::json!({"open_view":"theme","view_input":"theme"}),
         )
         .await
         .unwrap();
-    handle_tui_input(&mut files, &NoFiles, submit("/find"))
+    handle_tui_input(&mut files, &NoFiles, submit("/theme"))
         .await
         .unwrap();
-    for name in ["find", "theme", "tree", "terminal"] {
+    for name in ["theme", "tree", "terminal"] {
         assert!(
             !files
                 .catalog()

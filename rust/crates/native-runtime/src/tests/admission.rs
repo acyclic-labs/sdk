@@ -235,6 +235,7 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
     workers
         .sender
@@ -353,6 +354,7 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(crate::sync::Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
     let job = || run_blocking_io(|| (), None).map(|mut task| task.pending.take().unwrap());
     workers

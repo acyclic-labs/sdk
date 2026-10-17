@@ -37,6 +37,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         root: PathBuf::new(),
         torn_tail: None,
         _ownership_anchor: None,
+        #[cfg(feature = "test-support")]
+        flushed: 0,
     };
     let clock: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
     let commit_clock = Arc::new(PinnedCommitClock {

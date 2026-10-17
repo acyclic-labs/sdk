@@ -55,6 +55,96 @@ fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     }
 }
 
+/// Runs `test` alone in a fresh test process and returns true here once it
+/// passed there; returns false inside that process, which runs the body.
+///
+/// The worker pools are process-global, so a test that asserts exact charges
+/// or forces admission order must not share them with concurrent tests.
+pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
+    const CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_EXCLUSIVE_TEST";
+    if std::env::var_os(CHILD).is_some_and(|name| name == test) {
+        return Ok(false);
+    }
+    let output = crate::process_output(
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD, test),
+        Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )?;
+    assert!(
+        output.status.success(),
+        "{test} failed in its exclusive process:
+{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(true)
+}
+
+/// Holds every worker of a pool and fills its queue, so the next submission
+/// waits for admission until this drops.
+pub(crate) struct Saturation {
+    gate: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    _held: Vec<NativeCompletion<()>>,
+}
+
+impl Saturation {
+    pub(crate) fn new(pool: &'static LazyLock<io::Result<NativeWorkers>>) -> io::Result<Self> {
+        let threads = workers(pool, false)?.threads;
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let mut held = Vec::new();
+        loop {
+            let started = started_tx.clone();
+            let closed = Arc::clone(&gate);
+            let mut job = task_completion(
+                move || {
+                    let _ = started.send(());
+                    let (open, changed) = &*closed;
+                    let mut open = open.lock().unwrap();
+                    while !*open {
+                        open = changed.wait(open).unwrap();
+                    }
+                    Ok(())
+                },
+                None,
+                None,
+                None,
+                pool,
+            )?;
+            assert!(
+                Pin::new(&mut job)
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            if job.waiter.is_some() {
+                // The queue is full; dropping the waiting job unregisters it.
+                return Ok(Self { gate, _held: held });
+            }
+            held.push(job);
+            if held.len() == threads {
+                // Every worker holds one gated job, so queued jobs stay queued.
+                for _ in 0..threads {
+                    started_rx
+                        .recv_timeout(Duration::from_secs(10))
+                        .map_err(io::Error::other)?;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Saturation {
+    fn drop(&mut self) {
+        let (open, changed) = &*self.gate;
+        *open
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        changed.notify_all();
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ReadBudgetMeter {
     pub(super) used_operations: AtomicU64,

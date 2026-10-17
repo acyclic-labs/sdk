@@ -461,6 +461,7 @@ dependencies = [
  "crossterm 0.28.1",
  "image",
  "loom",
+ "memchr",
  "nix 0.31.3",
  "proptest",
  "ratatui",

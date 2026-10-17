@@ -83,6 +83,7 @@ pub async fn run(
             &mut input,
             &mut commands,
             areas.animation,
+            &mut renderer,
             &mut documents,
         )
         .await?
