@@ -18,7 +18,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-const BODY: &str = "Project marker: Î»\nverbatim <literal>\n";
+const BODY: &str = "Project marker: λ\nverbatim <literal>\n";
 
 fn source(path: &str, bytes: &[u8]) -> FileRef {
     FileRef::new(

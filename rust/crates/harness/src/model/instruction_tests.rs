@@ -29,7 +29,7 @@ fn file(path: &str, body: &str, label: &str) -> FileRef {
 ))]
 #[test]
 fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
-    let body = "verbatim project instructions Î»";
+    let body = "verbatim project instructions λ";
     let file = file("nested/AGENTS.md", body, "rules");
     for native in [false, true] {
         let result =
