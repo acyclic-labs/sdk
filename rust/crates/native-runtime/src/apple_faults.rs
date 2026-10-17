@@ -28,11 +28,35 @@ pub(super) enum Mutation {
     DropRetry,
     /// Forgets the last byte of a short read that did move bytes.
     LoseByte,
+    /// Advises later runs even when the timed run was cached.
+    AdviseAlways,
+    /// Times every run instead of a logarithmic sample.
+    TimeEveryRun,
 }
 
 thread_local! {
     static FAULTS: RefCell<VecDeque<Fault>> = const { RefCell::new(VecDeque::new()) };
     static MUTATION: Cell<Mutation> = const { Cell::new(Mutation::None) };
+    static UNCACHED: Cell<bool> = const { Cell::new(false) };
+    static TIMED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Returns and resets how many runs this thread timed.
+pub(super) fn timed_runs() -> usize {
+    TIMED.replace(0)
+}
+
+/// Makes every timed run on this thread look uncached (or cached, the
+/// default), so traces stay exact however loaded the test machine is.
+pub(super) fn force_uncached(uncached: bool) {
+    UNCACHED.set(uncached);
+}
+
+/// The test build's page-cache verdict: the forced value, unless the
+/// `AdviseAlways` mutation claims every run was uncached.
+pub(super) fn uncached(_started: std::time::Instant) -> bool {
+    TIMED.set(TIMED.get() + 1);
+    UNCACHED.get() || mutated(Mutation::AdviseAlways)
 }
 
 /// Queues faults for this thread's next raw attempts and sets the mutation.
@@ -47,6 +71,7 @@ pub(super) fn arm(faults: &[Fault], mutation: Mutation) {
 /// Clears this thread's faults and mutation, returning how many faults were consumed.
 pub(super) fn disarm(armed: usize) -> usize {
     MUTATION.set(Mutation::None);
+    UNCACHED.set(false);
     armed - FAULTS.with_borrow_mut(std::mem::take).len()
 }
 

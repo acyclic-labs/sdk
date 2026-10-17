@@ -593,8 +593,11 @@ proptest! {
         layout in arbitrary_layout(),
         faults in prop::collection::vec(arbitrary_fault(), 0..8),
         vectorize in any::<bool>(),
+        uncached in any::<bool>(),
     ) {
         let preadv = vectorize.then(|| vectored(Direction::Read)).flatten();
+        // Advice is cleared with the faults when the oracle disarms.
+        super::faults::force_uncached(uncached);
         prop_assert_eq!(read_oracle(&layout, preadv, &faults, Mutation::None), Ok(()));
     }
 }
@@ -923,4 +926,116 @@ fn the_pool_keeps_idle_bytes_within_its_budget() {
     assert_eq!(shard.idle().bytes, share - class);
     // A class with nothing idle is allocated fresh.
     assert_eq!(shard.take(2 * class).unwrap().capacity(), 2 * class);
+}
+
+/// Reads `ranges` with every timed run forced uncached (or cached), beside
+/// the baseline, and returns both outcomes and the new trace.
+fn advised_read(
+    ranges: &[(u64, usize)],
+    vectored: Option<Vectored>,
+    uncached: bool,
+    mutation: Mutation,
+) -> (Outcome<Vec<Bytes>>, Outcome<Vec<Bytes>>, Vec<Event>) {
+    let requests = reads(ranges);
+    let ([(old, _), (new, trace)], _) = faulted(
+        &[],
+        mutation,
+        |file| outcome(baseline_read(file, &requests)),
+        |file| {
+            super::faults::force_uncached(uncached);
+            outcome(read_batch_with(file, &requests, vectored))
+        },
+    );
+    (old, new, trace)
+}
+
+#[test]
+fn an_uncached_run_advises_every_later_run_once_and_cached_batches_never_do() {
+    let scattered = [
+        (0, 100),
+        (100, 50),
+        (5_000, 100),
+        (9_000, 100),
+        (9_950, 100),
+    ];
+    let preadv = vectored(Direction::Read);
+    let (old, new, trace) = advised_read(&scattered, preadv, true, Mutation::None);
+    assert_eq!(new, old);
+    assert_eq!(
+        trace,
+        [
+            ("preadv", 0, 150),
+            ("rdadvise", 5_000, 100),
+            ("rdadvise", 9_000, 100),
+            ("rdadvise", 9_950, 100),
+            ("pread", 5_000, 100),
+            ("pread", 9_000, 100),
+            ("pread", 9_950, 100),
+        ]
+    );
+    let (old, new, trace) = advised_read(&scattered, preadv, false, Mutation::None);
+    assert_eq!(new, old);
+    let cached = [
+        ("preadv", 0, 150),
+        ("pread", 5_000, 100),
+        ("pread", 9_000, 100),
+        ("pread", 9_950, 100),
+    ];
+    assert_eq!(trace, cached);
+    // Negative control: advising a cached batch fails the same exact trace.
+    let (old, new, trace) = advised_read(&scattered, preadv, false, Mutation::AdviseAlways);
+    assert_eq!(new, old);
+    assert_ne!(trace, cached);
+    // A single run has nothing later to advise, and empty runs are not advised.
+    let (_, _, trace) = advised_read(&[(0, 4096), (4096, 4096)], preadv, true, Mutation::None);
+    assert_eq!(trace, [("preadv", 0, 8192)]);
+    let (_, _, trace) = advised_read(&[(0, 10), (50, 0), (60, 5)], None, true, Mutation::None);
+    assert_eq!(
+        trace,
+        [("pread", 0, 10), ("rdadvise", 60, 5), ("pread", 60, 5)]
+    );
+}
+
+#[test]
+fn a_cached_batch_times_a_logarithmic_number_of_runs() {
+    let (_directory, file) = fixture().unwrap();
+    // 64 separate runs: runs 1, 2, 4, 8, 16 and 32 are timed; run 64 has
+    // nothing after it to advise.
+    let ranges: Vec<_> = (0..64).map(|index| (index * 150, 100)).collect();
+    let requests = reads(&ranges);
+    super::faults::timed_runs();
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    assert_eq!(super::faults::timed_runs(), 6);
+    // Negative control: timing every run fails the same count.
+    arm(&[], Mutation::TimeEveryRun);
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    disarm(0);
+    assert_eq!(super::faults::timed_runs(), 63);
+    // Once advised, nothing further is timed.
+    super::faults::force_uncached(true);
+    read_batch_with(&file, &requests, vectored(Direction::Read)).unwrap();
+    super::faults::force_uncached(false);
+    assert_eq!(super::faults::timed_runs(), 1);
+}
+
+#[test]
+fn advising_allocates_nothing() {
+    let (_directory, file) = fixture().unwrap();
+    let ranges: Vec<_> = (0..40).map(|index| (index * 250, 100)).collect();
+    let requests = reads(&ranges);
+    read_batch_with(&file, &requests, None).unwrap();
+    super::faults::force_uncached(true);
+    let mut result = None;
+    let allocation = measure(|| result = Some(read_batch_with(&file, &requests, None)));
+    super::faults::force_uncached(false);
+    assert_eq!(result.unwrap().unwrap().len(), requests.len());
+    assert_eq!(allocation.count_total, requests.len() as u64 + 1);
+}
+
+#[test]
+fn the_page_cache_verdict_is_a_threshold_on_elapsed_time() {
+    let now = Instant::now();
+    assert!(!exceeds(now, UNCACHED));
+    let earlier = now.checked_sub(UNCACHED).unwrap();
+    assert!(exceeds(earlier, UNCACHED));
 }
