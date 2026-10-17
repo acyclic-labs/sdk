@@ -70,6 +70,7 @@ async fn streaming(bound: bool) -> Result<()> {
             result = boundary => result.expect("model dispatch"),
         }
         if bound {
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
             loop {
                 views.project_commands(&ui, &authority)?;
                 let mut renderer = ClientRenderer::default();
@@ -110,10 +111,21 @@ async fn streaming(bound: bool) -> Result<()> {
                     result = views.next_change() => result?,
                 }
             }
+                Ok::<(), Error>(())
+            }).await.expect("canonical chunk must reach the styled frame")?;
             // The same request publication used by Ctrl+C, not an injected status.
-            ui.cancel_active().await?;
+            // Accepted chunks may be observed before their publisher receives
+            // its acknowledgement. Keep driving the owner while publishing
+            // control input, just as with_local_commands does in production.
+            let (published, settled) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    tokio::join!(ui.cancel_active(), run)
+                })
+                .await
+                .expect("cancel publication and owner must progress together");
+            published?;
             assert!(matches!(
-                run.await,
+                settled,
                 Err(Error::InteractionRejected(
                     crate::InteractionRejection::Cancelled
                 ))
