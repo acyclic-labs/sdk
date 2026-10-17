@@ -6,6 +6,8 @@ use crate::{
 };
 use proptest::prelude::*;
 
+pub(super) mod compaction_race;
+
 async fn open(directory: &Path) -> Result<LocalHarness> {
     let volume = super::super::tests::volume(directory).await?;
     let config = super::super::tests::volume_config(
