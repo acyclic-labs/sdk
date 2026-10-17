@@ -6,14 +6,17 @@ thread_local! {
 
 /// Record an event; inactive recording does nothing. A mismatched event type panics.
 pub fn record<T: 'static>(event: T) {
+    let mut pending = Some(event);
     TRACE.with_borrow_mut(|trace| {
         if let Some(trace) = trace {
             trace
                 .downcast_mut::<Vec<T>>()
                 .expect("trace event type")
-                .push(event);
+                .push(pending.take().unwrap());
         }
     });
+    // Inactive events may themselves record from Drop.
+    drop(pending);
 }
 
 /// Initialize each side separately, then return its result and complete trace.

@@ -71,3 +71,23 @@ fn capture_resets_after_panic_and_rejects_wrong_types_and_nesting() {
     );
     record(1u32); // Capture is inactive again.
 }
+
+#[test]
+fn inactive_event_destructors_can_record_during_initialization() {
+    use std::rc::Rc;
+    struct Event(Rc<Cell<usize>>);
+    impl Drop for Event {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+            record(1u32);
+        }
+    }
+    let dropped = Rc::new(Cell::new(0));
+    record(Event(dropped.clone()));
+    assert_eq!(dropped.get(), 1);
+    assert_eq!(
+        pair::<_, _, u32>(|| record(Event(dropped.clone())), |(), _| record(2u32),),
+        [((), vec![2]), ((), vec![2])]
+    );
+    assert_eq!(dropped.get(), 3);
+}
