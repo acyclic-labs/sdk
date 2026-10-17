@@ -30,6 +30,11 @@ path = "tests/main.rs"
 required-features = ["test-support"]
 
 [[test]]
+name = "decoder-properties"
+path = "tests/decoder_properties.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "git_executor"
 path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
