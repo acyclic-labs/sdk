@@ -234,6 +234,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     }
     verify_stale_tail_condition(provider, source.clone()).await?;
     verify_fork_with_records(provider, source.clone()).await?;
+    verify_read_open_failures(provider, source.clone()).await?;
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
@@ -265,6 +266,32 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {
     if absent_observation.idempotency_key != absent_key
         || absent_observation.request_digest == [0; 32]
         || absent_observation.outcome != IdempotencyOutcome::Commit(absent_conflict)
+    {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(())
+}
+
+/// A finite read reports an absent path or a start beyond the tail when it
+/// opens, never as a deferred first item: callers treat `NotFound` from the
+/// open as an empty history.
+async fn verify_read_open_failures(
+    provider: &dyn StreamProvider,
+    source: StreamPath,
+) -> Result<(), StreamError> {
+    let open = |path: StreamPath, from: u64| async move {
+        provider
+            .read(ReadRequest {
+                path,
+                from,
+                limit: 1,
+            })
+            .await
+            .err()
+    };
+    let beyond = provider.tail(source.clone()).await? + 1;
+    if open(path("conformance/never-written")?, 0).await != Some(StreamError::NotFound)
+        || open(source, beyond).await != Some(StreamError::OutOfRange)
     {
         return Err(StreamError::Unavailable);
     }
