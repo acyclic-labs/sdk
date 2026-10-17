@@ -43,7 +43,7 @@ proptest! {
         let operation = OperationId::from_bytes(id);
         let key = FileKey::Session { session: Component::new(operation.to_string()).unwrap(), file: TaskFile::Request(Component::new(operation.to_string()).unwrap()) };
         let cursor = Cursor { volume:[1;32], epoch:uuid::Uuid::from_bytes(id), schema:SCHEMA, query:[2;32], position, accepted:position, durable:position, commit:[3;32] };
-        let head = HeadSnapshot { files:vec![HeadFile { key:key.clone(), segments:vec![bytes.clone().into()], length:bytes.len() as u64, through_sequence:None }], cursor:cursor.clone(), generation:Generation { volume:cursor.volume, epoch:cursor.epoch, position, commit:cursor.commit } };
+        let head = HeadSnapshot { files:vec![HeadFile { key:key.clone(), channel:None, publication:None, segments:vec![bytes.clone().into()], length:bytes.len() as u64, through_sequence:None }], cursor:cursor.clone(), generation:Generation { volume:cursor.volume, epoch:cursor.epoch, position, commit:cursor.commit } };
         let query = Query::Session(Component::new(operation.to_string()).unwrap());
         prop_assert_eq!(jsonl::parse_snapshot(&jsonl::snapshot(&query, &head).unwrap()).unwrap(), (query, head));
         let change = Change { file:Some(FileValue::new(key, bytes)), files:vec![], removed:vec![], cursor };

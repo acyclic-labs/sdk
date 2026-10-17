@@ -258,6 +258,12 @@ impl<S: ClientStateStore> ClientSession<S> {
             .unwrap_or(0)
     }
 
+    /// Owner replay cut, independent of the task-file presentation cache.
+    #[must_use]
+    pub fn replay_revision(&self, authority: &wire::Authority) -> u64 {
+        self.view_revision(authority)
+    }
+
     /// Snapshot-plus-follow starts at the projection cut, retaining durable acknowledgements.
     #[must_use]
     pub fn replay_request(&self) -> wire::ResumeRequest {

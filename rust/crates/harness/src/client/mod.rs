@@ -32,10 +32,10 @@ mod document_files;
 mod documents;
 pub use document_files::document_files;
 pub use documents::DocumentViews;
-mod usage;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod task_compat;
+pub(crate) use task_compat::views::authority_key;
 pub use task_compat::{
     ClientViews as TaskFileViews, FileQueryView as TaskFileQueryView,
     GoalFileView as TaskGoalFileView, GoalProgress as TaskGoalProgress,

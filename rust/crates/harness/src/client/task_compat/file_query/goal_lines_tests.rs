@@ -1,5 +1,5 @@
 use super::*;
-use crate::{client::GoalQueryView, task_volume::Generation};
+use crate::{client::TaskGoalQueryView as GoalQueryView, task_volume::Generation};
 use proptest::prelude::*;
 
 fn cursor(position: u64) -> Cursor {

@@ -131,7 +131,7 @@ impl ClientRenderer {
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
     pub fn update(&mut self, views: &TaskFileViews, authority: &wire::Authority) {
-        let key = crate::client::task_compat::views::authority_key(authority);
+        let key = crate::client::authority_key(authority);
         if self.key != key {
             *self = Self {
                 key: key.clone(),

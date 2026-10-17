@@ -1,5 +1,6 @@
 //! Temporary task-file projection, retained for #626 until the #778 follow-up.
 use super::*;
+mod usage;
 pub(in crate::client) mod views;
 pub use views::{ClientViews, TaskView, ToolCallView, TranscriptView, ViewUpdate};
 mod file_query;

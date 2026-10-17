@@ -66,7 +66,7 @@ impl Source {
             file
         } else {
             let mut head: serde_json::Value = serde_json::from_slice(include_bytes!(
-                "../../../../harness-fuzz/corpus/records/turn"
+                "../../../../../harness-fuzz/corpus/records/turn"
             ))
             .unwrap();
             head["automatic_turns"] = self.count.into();
