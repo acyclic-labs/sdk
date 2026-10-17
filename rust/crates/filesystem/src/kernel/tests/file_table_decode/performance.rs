@@ -60,7 +60,9 @@ fn check(count: u8, fault: u8) -> Result<(), &'static str> {
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let decode = |accounting: &mut KernelAccounting<'_>| {
         crate::kernel::decode_owned(accounting, |observe| {
-            decode_file_table_page::<crate::FsError>(&bytes, DecodeLimits::default(), observe)
+            decode_file_table_page::<crate::FsError>(&bytes, DecodeLimits::default(), &mut |step| {
+                observe(step)
+            })
         })
         .unwrap()
     };

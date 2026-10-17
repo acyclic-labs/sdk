@@ -1,6 +1,7 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "file_table_decode/reference.rs"]
 mod reference;
 
 #[derive(Clone, Debug, PartialEq)]
