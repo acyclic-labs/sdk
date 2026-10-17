@@ -119,7 +119,7 @@ pub(super) async fn open(
     LocalHarness::register_commands(&mut tasks, &mut machines)?;
     machines.register(stock, &mut None)?;
     machines.register(preparation, &mut None)?;
-    let runtime = LocalTaskRuntime::open(
+    let mut runtime = LocalTaskRuntime::open(
         config.stream,
         config.files.clone(),
         config.journal,
@@ -141,6 +141,7 @@ pub(super) async fn open(
     .await?
     .with_output_volume(config.project, None)?
     .with_private_volume(config.scratch, None)?;
+    runtime.bind_task_files(Some(Arc::clone(&task_files)));
     #[cfg(feature = "native-execution")]
     let runtime = match config.workspace {
         Some(workspace) => {

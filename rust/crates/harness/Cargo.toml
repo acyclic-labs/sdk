@@ -1,6 +1,7 @@
 [package]
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
 autotests = false
+autobins = false
 name = "acyclic-harness"
 version.workspace = true
 edition.workspace = true
@@ -116,11 +117,6 @@ name = "client_history"
 path = "tests/client_history.rs"
 
 [[test]]
-name = "client_terminal"
-path = "tests/client_terminal.rs"
-required-features = ["terminal"]
-
-[[test]]
 name = "mcp-durable"
 path = "tests/mcp_durable.rs"
 required-features = ["filesystem-local", "mcp-http"]
@@ -172,11 +168,6 @@ required-features = ["filesystem", "test-support"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
-
-[[bin]]
-name = "graphcoder"
-path = "src/bin/graphcoder.rs"
-required-features = ["terminal"]
 
 [[example]]
 name = "native-process-approval"
@@ -281,7 +272,7 @@ rustls-platform-verifier = { workspace = true, optional = true }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
-tokio = { version = "1.48.0", default-features = false, features = ["signal"] }
+tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
 proptest.workspace = true

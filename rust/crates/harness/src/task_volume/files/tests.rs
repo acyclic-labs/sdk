@@ -1,5 +1,6 @@
 use super::*;
 use crate::AgentId;
+use crate::task_volume::FileQuerySource;
 use acyclic_stream::{MemoryStream, StreamError};
 use proptest::prelude::*;
 
@@ -99,11 +100,14 @@ async fn every_owner_scope_pair_is_checked_before_storage() {
 }
 
 fn files() -> Vec<(FileKey, bool)> {
-    use crate::task_volume::{Channel, Component, InputPath, PlanName, TaskFile, ToolFile};
+    use crate::task_volume::{Channel, Component, InputPath, TaskFile, ToolFile};
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
-        (FileKey::Plan(PlanName::new("id").unwrap()), true),
+        (
+            FileKey::Plan(crate::task_volume::PlanName::new(id.as_str()).unwrap()),
+            true,
+        ),
         (
             FileKey::Input(InputPath::try_from("workspace/note.txt".to_owned()).unwrap()),
             true,
@@ -182,6 +186,51 @@ fn files() -> Vec<(FileKey, bool)> {
     files
 }
 
+#[tokio::test]
+async fn authorized_queries_bound_snapshot_and_follow_content() {
+    use futures::StreamExt as _;
+    let agent = AgentId::from_bytes([4; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        Some(agent),
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        4096,
+    )
+    .await
+    .unwrap();
+    let generation = files.snapshot(&Query::Root, 8).await.unwrap().generation;
+    files
+        .write(generation, &FileValue::new(FileKey::Goal, b"one".to_vec()))
+        .await
+        .unwrap();
+    let query = Query::File(FileKey::Goal);
+    assert!(matches!(
+        files.observe_files(query.clone(), None, 1, 2).await,
+        Err(Error::LimitExceeded)
+    ));
+    let mut selected = files.observe_files(query, None, 1, 3).await.unwrap();
+    let snapshot = selected.snapshot.take().unwrap();
+    assert_eq!(snapshot.files[0].bytes.as_ref(), b"one");
+    files
+        .write(
+            snapshot.generation,
+            &FileValue::new(FileKey::Goal, b"four".to_vec()),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        selected.changes.next().await,
+        Some(Err(Error::LimitExceeded))
+    ));
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // The only accepted owner/scope state is Agent with exact identity equality.
@@ -207,5 +256,144 @@ proptest! {
             prop_assert_eq!(result.is_ok(), caller_owned && bytes <= maximum);
             if !caller_owned { prop_assert!(matches!(result, Err(Error::Unauthorized))); }
         }
+    }
+}
+
+#[cfg(feature = "tui")]
+#[tokio::test]
+async fn composed_ui_uses_authorized_writes_and_cannot_claim_execution() {
+    use crate::client::{CommandFileRoot, CommandSession};
+    struct NoFiles;
+    impl crate::conversation::ContentResidencyVerifier for NoFiles {}
+    let agent = AgentId::from_bytes([1; 16]);
+    let volume = volume(agent);
+    let (verifier, scope) = authority(
+        Some(agent),
+        &volume,
+        &[VolumeOperation::Read, VolumeOperation::Write],
+    );
+    let files = TaskFiles::open(
+        Arc::new(MemoryStream::default()),
+        &volume,
+        &verifier,
+        &scope,
+        65_536,
+    )
+    .await
+    .unwrap();
+    let files = Arc::new(files);
+    let identity = uuid::Uuid::from_bytes([5; 16]);
+    let mut commands = CommandSession::open_authorized(files.clone(), identity, 65_536, 64)
+        .await
+        .unwrap();
+    commands.submit("/diff", &NoFiles).await.unwrap();
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+    crate::client::file_tui_input(
+        &mut commands,
+        &NoFiles,
+        crate::tui::InputEffect::Submit {
+            text: "ordinary request".into(),
+            queued: false,
+            edit: None,
+        },
+        10,
+        100,
+    )
+    .await
+    .unwrap();
+    let request = commands.take_request().unwrap();
+    let before = files.snapshot(&Query::Root, 64).await.unwrap().generation;
+    let result = commands
+        .consume(&request, |_, _, _| async {
+            panic!("a UI must never acquire execution ownership")
+        })
+        .await;
+    let error = result.unwrap_err();
+    assert!(matches!(
+        &error,
+        crate::Error::TaskFiles(source) if matches!(source.as_ref(), Error::Unauthorized)
+    ));
+    assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
+    assert_eq!(
+        files.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    drop(commands);
+    let reopened = CommandSession::open_authorized(files, identity, 65_536, 64)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+}
+
+#[cfg(all(feature = "tui", feature = "terminal"))]
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    // Property: authorized GOAL/plans snapshots plus push changes equal reopening
+    // at the final cut, in both TaskFileViews and the composed TestBackend cells.
+    #[test]
+    fn document_binding_snapshot_follow_equals_reopen(events in prop::collection::vec((0u8..2, ".{0,20}"), 1..7), cut in 0usize..7) {
+        use crate::{client::{ClientSession, MemoryClientState, document_files}, wire};
+        use futures::{StreamExt, FutureExt};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let agent = AgentId::from_bytes([1;16]);
+            let volume = volume(agent);
+            let (verifier, scope) = authority(Some(agent), &volume, &[VolumeOperation::Read, VolumeOperation::Write]);
+            let files = TaskFiles::open(Arc::new(MemoryStream::default()), &volume, &verifier, &scope, 65_536).await.unwrap();
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: crate::TaskId::from_bytes([2;16]).to_string() };
+            let new_session = || {
+                let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
+                session.track(wire::ReplayCursor { authority: Some(owner.clone()), generation: "generation".into(), revision: 0 }).unwrap();
+                session
+            };
+            let cut = cut.min(events.len());
+            let mut generation = files.snapshot(&Query::Root, 4).await.unwrap().generation;
+            for (kind, text) in &events[..cut] {
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::PlanName::new("layout").unwrap()) };
+                generation = files.write(generation, &FileValue::new(key, text.as_bytes().to_vec())).await.unwrap();
+            }
+            let mut source = document_files(&files, &owner, 4, 65_536).await.unwrap();
+            let mut live = new_session();
+            for _ in 0..2 { live.apply_update(source.next().await.unwrap().unwrap()).unwrap(); }
+            for (kind, text) in &events[cut..] {
+                let key = if *kind == 0 { FileKey::Goal } else { FileKey::Plan(super::super::PlanName::new("layout").unwrap()) };
+                for _ in 0..2 {
+                    let before = generation;
+                    generation = files.write(generation, &FileValue::new(key.clone(), text.as_bytes().to_vec())).await.unwrap();
+                    let next = tokio::task::unconstrained(source.next()).now_or_never();
+                    if generation == before {
+                        prop_assert!(next.is_none());
+                    } else {
+                        live.apply_update(next.expect("accepted cut must be immediately followed").unwrap().unwrap()).unwrap();
+                    }
+                }
+            }
+            let mut replayed = new_session();
+            let mut reopened = document_files(&files, &owner, 4, 65_536).await.unwrap();
+            for _ in 0..2 { replayed.apply_update(reopened.next().await.unwrap().unwrap()).unwrap(); }
+            prop_assert_eq!(&live.views().documents, &replayed.views().documents);
+            let mut pictures = Vec::new();
+            for session in [&live, &replayed] {
+                let mut renderer = crate::tui::ClientRenderer::default();
+                renderer.update(session.views(), &owner);
+                let mut terminal = crate::tui::ratatui::Terminal::new(crate::tui::ratatui::backend::TestBackend::new(80, 20)).unwrap();
+                terminal.draw(|frame| { renderer.screen().render(frame, &crate::tui::PromptInput::default(), &mut crate::tui::Viewport::default(), 0, 0); }).unwrap();
+                pictures.push(terminal.backend().buffer().clone());
+            }
+            prop_assert_eq!(&pictures[0], &pictures[1]);
+            Ok(())
+        })?;
     }
 }

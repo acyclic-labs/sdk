@@ -133,7 +133,7 @@ impl DemandWork {
             return Err(error.into_work_or(crate::WorkError::Overflow));
         }
         if accounting::acquire_final_owner(Arc::strong_count(shared)) {
-            let bytes = (std::mem::size_of::<NativeProofAccounting>() as u64)
+            let bytes = NativeProofAccounting::ALLOCATION_BYTES
                 .checked_add(self.roots.paid_non_native)
                 .and_then(|bytes| bytes.checked_add(shared.take_retired()))
                 .ok_or(crate::WorkError::Overflow)?;
@@ -290,11 +290,10 @@ impl DemandWork {
         if let Some(shared) = &self.roots.proof_accounting {
             return Ok(shared.clone());
         }
-        self.claim_allocation(
-            std::mem::size_of::<NativeProofAccounting>() as u64,
-            1,
-            WorkCounters::UNCHARGED,
-        )?;
+        let bytes = NativeProofAccounting::ALLOCATION_BYTES;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        let bytes = metadata_tests::admitted_bytes(bytes);
+        self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
         let shared = Arc::new(NativeProofAccounting::default());
         self.roots.proof_accounting = Some(shared.clone());
         Ok(shared)
@@ -380,3 +379,7 @@ mod tests;
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
 mod loom_tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "admissions_metadata_tests.rs"]
+mod metadata_tests;

@@ -21,6 +21,8 @@ impl NativeDemandReadMeter {
     }
     #[track_caller]
     pub(crate) fn lock(&self) -> crate::lock_order::MutexGuard<'_, DemandWork> {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        lock_probe::visit(self);
         crate::lock_order::lock::<_, { crate::lock_order::LEAF }>(&self.0).unwrap_or_else(
             |poisoned| {
                 let mut state = poisoned.into_inner();
@@ -28,6 +30,10 @@ impl NativeDemandReadMeter {
                 state
             },
         )
+    }
+    #[cfg(all(test, not(acyclic_fs_loom)))]
+    pub(crate) fn count_locks<T>(&self, operation: impl FnOnce() -> T) -> (T, usize) {
+        lock_probe::count(self, operation)
     }
     #[track_caller]
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
@@ -38,6 +44,9 @@ impl NativeDemandReadMeter {
         self.lock().take_native_io_failure()
     }
 }
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod lock_probe;
 
 #[cfg(all(test, acyclic_fs_loom))]
 mod model_checking;

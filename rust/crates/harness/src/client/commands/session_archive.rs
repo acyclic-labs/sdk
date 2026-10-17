@@ -1,6 +1,10 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    pub(crate) fn first_output_sequence(&self) -> Option<u64> {
+        self.outputs.keys().next().copied()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::client::commands) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
@@ -65,6 +69,22 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Whether this exact error is stored in the request's immutable outcome.
+    /// A claim, successful result or different storage failure is insufficient.
+    pub async fn failure_is_saved(
+        &mut self,
+        request: &files::FileValue,
+        failure: &Error,
+    ) -> Result<bool> {
+        let key = related(&request.key, files::TaskFile::ExecutionResult)
+            .ok_or_else(|| Error::Invalid("not a command request".into()))?;
+        let Some(file) = self.read_file(&key).await? else {
+            return Ok(false);
+        };
+        let outcome: Value = serde_json::from_slice(&file.bytes).map_err(codec)?;
+        Ok(outcome["error"].as_str() == Some(failure.to_string().as_str()))
     }
 
     pub(super) async fn read_file(
@@ -213,8 +233,13 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
     };
     let encoded = (|| -> serde_json::Result<()> {
         let mut serializer = serde_json::Serializer::new(&mut output);
-        let mut map = serializer.serialize_map(Some(2))?;
+        let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry("sequence", &sequence)?;
+        let completion = result.as_ref().map_or_else(
+            |error| crate::client::HeadlessOutcome::from_error(error),
+            |_| crate::client::HeadlessOutcome::Completed,
+        );
+        map.serialize_entry("completion", &completion)?;
         match result {
             Ok(value) => map.serialize_entry("ok", value)?,
             Err(error) => map.serialize_entry("error", &error.to_string())?,
@@ -226,7 +251,8 @@ pub(super) fn output_bytes(sequence: u64, result: &Result<Value>, maximum: u64) 
         output.overflow = false;
         serde_json::to_writer(
             &mut output,
-            &json!({"sequence":sequence,"completed":true,"output_omitted":true}),
+            &json!({"sequence":sequence,"completed":true,"output_omitted":true,
+                "completion":result.as_ref().map_or_else(|error| crate::client::HeadlessOutcome::from_error(error), |_| crate::client::HeadlessOutcome::Completed)}),
         )
         .map_err(codec)?;
     } else {

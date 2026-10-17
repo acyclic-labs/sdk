@@ -22,6 +22,10 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
+        Box::pin(self.follow_cancellation())
+    }
+
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         Some(self.verifier.audience())
     }
@@ -182,9 +186,12 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
-                let result = self
-                    .append_validated(operation, None, key, event, Some(&local))
-                    .await;
+                let result = async {
+                    self.append_validated(operation, None, key, event, Some(&local))
+                        .await?;
+                    self.publish_chunk(key, event, Some(&local)).await
+                }
+                .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
                 return result.map(|_| ());
@@ -192,8 +199,8 @@ where
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
                 self.append_validated(operation, None, key, event, io)
-                    .await
-                    .map(|_| ())
+                    .await?;
+                self.publish_chunk(key, event, io).await
             })
             .await
         })

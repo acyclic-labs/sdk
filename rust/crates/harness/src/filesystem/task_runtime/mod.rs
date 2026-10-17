@@ -260,6 +260,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     policy: Option<Arc<dyn ToolPolicy>>,
     interaction_owner: Option<TaskInteractionOwner>,
     recursive_source: Option<Arc<super::ConfiguredRecursiveToolSource<P, A, O>>>,
+    task_files: Option<Arc<crate::task_volume::TaskFiles<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }

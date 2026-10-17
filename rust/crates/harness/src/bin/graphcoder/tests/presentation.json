@@ -1,0 +1,126 @@
+[
+  {
+    "row": "Reasoning toggle",
+    "reasoning": true,
+    "expected": [
+      "Private reasoning",
+      "Visible answer"
+    ],
+    "absent": []
+  },
+  {
+    "row": "Reasoning toggle off",
+    "reasoning": false,
+    "expected": [
+      "Visible answer"
+    ],
+    "absent": [
+      "Private reasoning"
+    ]
+  },
+  {
+    "row": "Streaming markdown",
+    "reasoning": false,
+    "expected": [
+      "Visible answer"
+    ],
+    "absent": [
+      "**Visible answer**"
+    ]
+  },
+  {
+    "row": "Header busy indicator",
+    "bold_header": true,
+    "reasoning": false,
+    "status": "active",
+    "expected": [
+      "● GraphCoder"
+    ],
+    "absent": [
+      "STOPPED"
+    ]
+  },
+  {
+    "row": "Header cancelled indicator",
+    "reasoning": false,
+    "status": "cancelled",
+    "expected": [
+      "○ GraphCoder ■ STOPPED"
+    ],
+    "absent": [
+      "● GraphCoder"
+    ]
+  },
+  {
+    "row": "Per-owner feedback line",
+    "reasoning": false,
+    "status": "waiting",
+    "feedback": "Waiting for a response",
+    "expected": [
+      "Waiting for a response"
+    ],
+    "absent": [
+      "STOPPED"
+    ]
+  },
+  {
+    "row": "Hostile-text sanitizing in feedback",
+    "reasoning": false,
+    "status": "waiting",
+    "feedback": "\u001b[31mnotice",
+    "expected": [
+      "\\u{1b}[31mnotice"
+    ],
+    "absent": [
+      "\u001b"
+    ]
+  },
+  {
+    "row": "Streaming markdown wraps at the composed transcript width",
+    "reasoning": false,
+    "width": 12,
+    "expected": ["Visible answ", "er"],
+    "absent": ["Visible answer", "**Visible answer**"]
+  },
+  {
+    "row": "Reasoning and answer share the same Unicode width projection",
+    "reasoning": true,
+    "width": 12,
+    "expected": ["Private reas", "oning", "Visible answ", "er"],
+    "absent": ["Private reasoning", "Visible answer"]
+  },
+  {
+    "row": "Followed goal and plans Markdown wrap inside their bordered panels",
+    "reasoning": false,
+    "width": 100,
+    "goal": "**aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaBBBB**",
+    "plan": "**ppppppppppppppppppppppppppppppZZZZ**",
+    "expected": ["GOAL.md", "plans/", "BBB", "ZZZ"],
+    "absent": ["**"]
+  },
+  {
+    "row": "Removed documents release the side panel after reflow",
+    "reasoning": false,
+    "width": 100,
+    "expected": ["Visible answer"],
+    "absent": ["GOAL.md", "plans/", "BBB", "ZZZ"]
+  },
+  {
+    "row": "Tool details are collapsed by the followed setting",
+    "reasoning": false, "details": false, "height": 30, "tool_lines": 21,
+    "expected": ["read", "Visible answer"],
+    "absent": ["detail 00", "detail 20"]
+  },
+  {
+    "row": "Expanded tool output keeps the 20-line cap",
+    "reasoning": false, "details": true, "height": 30, "tool_lines": 21,
+    "expected": ["read", "detail 00", "detail 19"],
+    "absent": ["detail 20"]
+  },
+  {
+    "row": "Collapsing tool details removes cached output immediately",
+    "reasoning": false, "details": false, "height": 30, "tool_lines": 21,
+    "expected": ["read", "Visible answer"],
+    "absent": ["detail 00", "detail 19", "detail 20"]
+  }
+]
