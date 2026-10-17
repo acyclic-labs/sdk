@@ -1,4 +1,5 @@
 const STATIC='static.yml';
+const SCANNER_TEST='cargo test --locked --manifest-path rust/verification/loom-locks/Cargo.toml';
 const SCHEDULED=[];
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -163,7 +164,7 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
 });
 
-test('the required job checks Cargo lock consistency and committed lane artifacts without builds or installs',()=>{
+test('the required job checks lock consistency, lane artifacts and Loom classification with the scanner properties',()=>{
  const job=YAML.parse(read(STATIC)).jobs.static;
  assert.equal(job.name,'SDK Static');
  assert.equal(job.env.RUSTUP_TOOLCHAIN,'stable');
@@ -173,10 +174,13 @@ test('the required job checks Cargo lock consistency and committed lane artifact
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  SCANNER_TEST,
+  'node --test scripts/check-loom-models.test.mjs',
+  'node --test scripts/local-cloud.test.mjs',
   'cargo update --workspace --locked',
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);
- assert.doesNotMatch(JSON.stringify(job),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
+ assert.doesNotMatch(JSON.stringify({...job,steps:job.steps.filter(step=>step.run!==SCANNER_TEST)}),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
 });
 test('README approval guard runs on pull requests without manual dispatch',()=>{
  const guard=triggers(read('readme-guard.yml'));

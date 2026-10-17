@@ -121,7 +121,8 @@ pub fn assert_negative_control(
     expect_model_failure(|| run(Some(suite_bound)), expected);
 }
 
-/// Exhausts one producer and checked subscriber through the real provider.
+/// Exhausts, with no preemption bound, one producer and checked subscriber
+/// through the real provider.
 ///
 /// # Panics
 /// Panics on a violated model invariant.
@@ -158,7 +159,8 @@ fn subscription_and_append(omit_wake: bool) {
     });
 }
 
-/// Exhausts checked subscription against real state replacement.
+/// Exhausts, with no preemption bound, checked subscription against real state
+/// replacement.
 ///
 /// # Panics
 /// Panics on a violated model invariant.
@@ -199,7 +201,8 @@ fn subscription_and_recovery(retain_old: bool) {
     });
 }
 
-/// Exhausts Head publication against real state replacement.
+/// Exhausts, with no preemption bound, Head publication against real state
+/// replacement.
 ///
 /// # Panics
 /// Panics on a violated model invariant.
@@ -288,7 +291,8 @@ pub fn local_persist_wakes_parked_followers(omit_wake: bool) {
     crate::local::query_model::persist_wakes_parked_followers(omit_wake);
 }
 
-/// Exhausts the real session registration adapter against accepted-history loss.
+/// Exhausts, with no preemption bound, the real session registration adapter
+/// against accepted-history loss.
 /// `omit_anchor` is the negative control: it bypasses only checked registration.
 ///
 /// # Panics

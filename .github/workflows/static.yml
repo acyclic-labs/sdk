@@ -32,6 +32,10 @@ jobs:
           node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
       - name: Verify lane artifact gate and its negative control
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
+      - name: Verify the Loom scanner properties and negative controls
+        run: cargo test --locked --manifest-path rust/verification/loom-locks/Cargo.toml
+      - name: Check Loom model classification and its negative controls
+        run: node --test scripts/check-loom-models.test.mjs
       - name: Verify the local cloud fixture's guards and verdict
         run: node --test scripts/local-cloud.test.mjs
       - name: Check lockfile and manifests without compiling

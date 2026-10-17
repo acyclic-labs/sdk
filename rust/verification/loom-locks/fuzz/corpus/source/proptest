@@ -1,0 +1,1 @@
+proptest::proptest! { #[test] fn p(lock: std::sync::Mutex<u8>) {} }

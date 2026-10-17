@@ -91,7 +91,7 @@ fn create_claim_control(broken: bool, session: bool) {
         // competing_writers_cannot_tear_the_shared_projection models the real
         // atomic publication fence. At that cut, an identical claim contender
         // either captured the old generation or observed the winning claim.
-        // Exhaust both classes without re-exploring provider commit internals.
+        // Cover both classes without re-exploring provider commit internals.
         for observed_winner in [false, true] {
             let provider = Arc::new(MemoryStream::default());
             let path = StreamPath::new("claim")?;

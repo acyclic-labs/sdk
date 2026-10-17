@@ -1,0 +1,1 @@
+fn p() -> u8 { let value: u8 = Default::default(); value }
