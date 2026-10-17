@@ -4,7 +4,7 @@ use acyclic_harness::{
     LocalHarness, OperationId, TaskId,
     client::FileQueryView,
     model::{ModelEvent, ToolCall},
-    task_volume::{Component, FileKey, FileValue, Observation, Query, TaskFile, ToolFile},
+    task_volume::{Component, FileKey, HeadFile, Observation, Query, TaskFile, ToolFile},
     test_support::{ScriptedEvent, ScriptedTurn},
     tool::ToolInvocation,
 };
@@ -66,7 +66,8 @@ pub(super) async fn verify(
         .observe(selected.clone(), None, 64)
         .await?
         .snapshot
-        .ok_or("missing final tool snapshot")?;
+        .ok_or("missing final tool snapshot")?
+        .into_heads()?;
     let mut view = FileQueryView::from_snapshot(selected, initial, 64, 65_536)?;
     while view.cursor().position != target.cursor.position {
         let change = observation
@@ -116,7 +117,7 @@ pub(super) async fn verify(
 }
 
 pub(super) fn check(
-    files: &BTreeMap<FileKey, FileValue>,
+    files: &BTreeMap<FileKey, HeadFile>,
     task: TaskId,
     operation: OperationId,
     calls: &[(u64, ToolCall)],
@@ -170,21 +171,27 @@ pub(super) fn check(
         if owner != &task || value.channel.is_some() {
             return Err("task tool file lost its owning task or channel".into());
         }
+        let [bytes] = value.segments.as_slice() else {
+            return Err("tool file must retain its single immutable segment".into());
+        };
+        if value.length != bytes.len() as u64 {
+            return Err("tool file length differs from its segment".into());
+        }
         match file {
             ToolFile::Request => {
-                if serde_json::from_slice::<Value>(&value.bytes)? != *request {
+                if serde_json::from_slice::<Value>(bytes)? != *request {
                     return Err("published tool request payload differs".into());
                 }
                 requests += 1;
             }
             ToolFile::Result => {
-                if serde_json::from_slice::<Value>(&value.bytes)? != **result {
+                if serde_json::from_slice::<Value>(bytes)? != **result {
                     return Err("published tool result differs".into());
                 }
                 completed += 1;
             }
             ToolFile::Stdout(sequence) | ToolFile::Stderr(sequence) => {
-                if value.bytes.is_empty() {
+                if bytes.is_empty() {
                     return Err("empty task output publication".into());
                 }
                 let channel = if matches!(file, ToolFile::Stdout(_)) {
@@ -192,12 +199,12 @@ pub(super) fn check(
                 } else {
                     "stderr"
                 };
-                let (next, bytes) = output.entry((*turn, call.clone(), channel)).or_default();
+                let (next, assembled) = output.entry((*turn, call.clone(), channel)).or_default();
                 if *sequence != *next {
                     return Err("task output sequence has a gap".into());
                 }
                 *next += 1;
-                bytes.extend_from_slice(&value.bytes);
+                assembled.extend_from_slice(bytes);
             }
             ToolFile::Arguments(_) => return Err("unexpected bash argument fragment".into()),
         }
