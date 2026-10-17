@@ -22,8 +22,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok((query, observed))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(in crate::client::commands) fn view_bounds(&self) -> (usize, usize) {
+    pub(in crate::client) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
     }
 
