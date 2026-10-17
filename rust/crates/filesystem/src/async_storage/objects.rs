@@ -3,9 +3,11 @@ use super::*;
 /// The objects one authority record makes reachable, which must be durable before the record is appended.
 #[derive(Clone, Copy, Debug)]
 pub enum PublicationScope<'a> {
-    /// The complete authenticated closure of one published generation.
+    /// The authenticated closure of one published generation.
     Closure {
-        /// Every object the record reaches.
+        /// Every object the record reaches, or, when its proof reused the
+        /// published parent's proof from the same collection epoch, every
+        /// object it reaches that the parent's closure did not list.
         objects: &'a [ObjectId],
         /// The store's [`AsyncObjectStore::collection_sweeps`] before the closure was proven.
         proven_at: u64,

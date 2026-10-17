@@ -89,6 +89,8 @@ mod merge_drivers;
 
 mod operation_identity;
 
+mod proof_cache;
+
 mod publication;
 
 mod publication_guards;

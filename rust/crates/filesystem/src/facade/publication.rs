@@ -707,7 +707,7 @@ pub(super) fn durable_head(commit: &DurableCommit) -> Head {
     }
 }
 
-pub(super) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
+pub(crate) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::for_volume(config),
         maximum_objects: config.limits.maximum_objects_per_generation,

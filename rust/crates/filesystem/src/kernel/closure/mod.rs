@@ -176,6 +176,9 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
 
 mod memory;
 pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
+mod published;
+use published::ProofSlot;
+pub(crate) use published::Unpublished;
 use memory::{ProofVec, map_get, map_insert, set_insert};
 mod walk;
 pub(crate) use walk::ProofContext;
@@ -190,6 +193,9 @@ pub(crate) struct CachedProof {
     _guard: ProofGuard,
     object_bytes: u64,
 }
+
+/// A publication proof whose reuse waits on its own append outcome.
+pub(crate) type PendingProof = Unpublished<CachedProof>;
 
 /// Proves the complete immutable object closure and namespace/file-table consistency.
 pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
@@ -213,7 +219,7 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;
     let result = ProofContext::new(store, limits, meter.clone())
-        .prove(generation_root, None)
+        .prove(generation_root)
         .await;
     let (proof, guard) =
         result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;

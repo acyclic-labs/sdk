@@ -43,6 +43,15 @@ impl<A, O> Fs<A, O> {
     pub fn capabilities(&self) -> EmbeddedCapabilities {
         self.inner.capabilities
     }
+    /// Drops every cached publication proof, restoring the full walk for the next commit.
+    #[cfg(test)]
+    pub(crate) fn forget_publication_proofs(&self) {
+        *self
+            .inner
+            .publication_proof
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Default::default();
+    }
     pub(crate) fn workspace_name_identity(
         &self,
         name: impl AsRef<str>,

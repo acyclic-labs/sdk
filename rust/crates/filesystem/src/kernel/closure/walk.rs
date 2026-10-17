@@ -51,8 +51,22 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     pub(crate) async fn prove(
         &mut self,
         generation_root: ObjectId,
-        cache: Option<&Mutex<CachedProofs>>,
     ) -> Result<(GenerationProof, ProofGuard), crate::FsError> {
+        self.prove_cached(generation_root, None)
+            .await
+            .map(|(proof, guard, _)| (proof, guard))
+    }
+
+    /// Proves the closure, reusing the parent's published proof from `cache` when it is current.
+    pub(crate) async fn prove_cached(
+        &mut self,
+        generation_root: ObjectId,
+        cache: Option<&Mutex<CachedProofs>>,
+    ) -> Result<(GenerationProof, ProofGuard, Option<PendingProof>), crate::FsError> {
+        let store = self.store;
+        let epochs = store.collection().map(|collection| collection.epochs());
+        // Before the first object read: a collection begun later makes this proof stale.
+        let began = crate::collection::CollectionEpoch::read(epochs);
         Self::require_kind(generation_root, ObjectKind::GenerationRoot)?;
         let root_bytes = self.read_object(generation_root, false).await?;
         let root = self.meter.decode_steps(|observe| {
@@ -65,16 +79,16 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         drop(root_bytes);
         let generation_id = GenerationId::new(generation_root.digest);
         let root_object_bytes = self.object_bytes;
-        // Collected stores must continue to enumerate the exact live closure.
-        let cache = cache.filter(|_| self.store.collection().is_none());
-        let previous = match cache {
-            Some(cache) => cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get(root.0.volume_id, &self.meter)?,
+        let slot = match cache {
+            Some(cache) => Some(
+                cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .slot(root.0.volume_id, &self.meter)?,
+            ),
             None => None,
-        }
-        .filter(|cached| {
+        };
+        let previous = slot.as_ref().and_then(|slot| slot.current(epochs)).filter(|cached| {
             cached.limits == self.limits
                 && root.0.volume_id == cached.root.volume_id
                 && root.0.root_file_id == cached.root.root_file_id
@@ -103,9 +117,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 );
                 let mut root_guard = root.1;
                 output.1.absorb(&mut root_guard)?;
-                self.remember(cache, &output.0, object_count)?;
+                let pending = self.remember(slot, began, &output.0, object_count)?;
                 output.0.work = self.meter.work();
-                return Ok(output);
+                return Ok((output.0, output.1, pending));
             }
             self.objects = ProofVec::new(&self.meter);
             set_insert(&mut self.objects, generation_root)?;
@@ -150,9 +164,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             objects.1,
         );
         output.1.absorb(&mut root.1)?;
-        self.remember(cache, &output.0, output.0.objects.len() as u64)?;
+        let object_count = output.0.objects.len() as u64;
+        let pending = self.remember(slot, began, &output.0, object_count)?;
         output.0.work = self.meter.work();
-        Ok(output)
+        Ok((output.0, output.1, pending))
     }
 
     async fn read_object(
