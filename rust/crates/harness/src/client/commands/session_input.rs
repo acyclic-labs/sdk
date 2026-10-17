@@ -23,8 +23,38 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         &mut self,
         resolution: CommandResolution,
     ) -> Result<OperationId> {
-        self.publish_resolution_with_retry::<true>(resolution, OperationId::new())
+        self.publish_input_resolution_at::<true>(resolution, OperationId::new())
             .await
+    }
+
+    pub(super) async fn publish_input_resolution_at<const RETRY: bool>(
+        &mut self,
+        resolution: CommandResolution,
+        operation: OperationId,
+    ) -> Result<OperationId> {
+        for _ in 0..super::publication::PUBLICATION_ATTEMPTS {
+            let before = self.generation;
+            match self
+                .publish_resolution_with_retry::<RETRY>(resolution.clone(), operation)
+                .await
+            {
+                // Quit modifies only exit_requested. Recompute it over an owner
+                // layout update rather than clobbering selection/history fields.
+                Err(Error::Conflict(_))
+                    if RETRY
+                        && self.generation != before
+                        && matches!(
+                            resolution,
+                            CommandResolution::Submit {
+                                request: CommandRequest::Quit
+                            }
+                        ) => {}
+                result => return result,
+            }
+        }
+        Err(Error::Conflict(
+            "command layout remained busy; retry the input".into(),
+        ))
     }
 
     async fn submit_with_retry<const RETRY: bool>(
@@ -63,9 +93,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "command query advanced during resolution; retry from the new cut".into(),
                 ));
             }
-            return self
-                .publish_resolution_with_retry::<RETRY>(resolution, operation)
-                .await;
+            return if RETRY {
+                self.publish_input_resolution_at::<true>(resolution, operation)
+                    .await
+            } else {
+                self.publish_resolution_with_retry::<false>(resolution, operation)
+                    .await
+            };
         }
         Err(Error::Conflict(
             "command resolution remained busy; retry the input".into(),

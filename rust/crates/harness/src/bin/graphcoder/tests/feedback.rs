@@ -302,7 +302,7 @@ async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt()
 }
 
 #[tokio::test]
-async fn a_peer_edit_rejects_the_action_without_ending_the_session() {
+async fn quit_merges_the_refreshed_layout_without_losing_a_peer_edit() {
     let volume = volume().await;
     let mut stale = session(volume.clone(), 4).await;
     let mut peer = session(volume, 4).await;
@@ -321,17 +321,11 @@ async fn a_peer_edit_rejects_the_action_without_ending_the_session() {
         .unwrap()
         .unwrap();
     assert_eq!(layout["peer"], true);
-    assert!(
-        layout["exit_requested"].is_null(),
-        "stale action overwrote a peer"
-    );
+    assert_eq!(layout["exit_requested"], true);
     assert!(
         stale
             .state(CommandFileRoot::Session, "notifications.json")
             .unwrap()
-            .unwrap()[0]
-            .as_str()
-            .unwrap()
-            .contains("command query advanced")
+            .is_none()
     );
 }

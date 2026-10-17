@@ -136,7 +136,11 @@ fn omitting_the_file_comparison_is_detected_negative_control() {
     assert!(std::panic::catch_unwind(|| peer_edit::<false>(true)).is_err());
 }
 
-fn input_handoff<const RETRY: bool>(peer_first: bool, prompt: bool) {
+fn input_handoff<const RETRY: bool, const MERGE_LAYOUT: bool>(
+    peer_first: bool,
+    prompt: bool,
+    layout_peer: bool,
+) {
     loom::model(move || {
         loom::future::block_on(Box::pin(async {
             let volume = Arc::new(
@@ -152,13 +156,32 @@ fn input_handoff<const RETRY: bool>(peer_first: bool, prompt: bool) {
                     .await
                     .unwrap();
             let operation = OperationId::from_bytes([4; 16]);
-            let peer = files::FileValue::new(ui("config", "peer.json").unwrap(), b"true".to_vec());
+            let peer = if layout_peer {
+                files::FileValue::new(
+                    input
+                        .state_key(CommandFileRoot::Session, "layout.json")
+                        .unwrap(),
+                    br#"{"peer":true}"#.to_vec(),
+                )
+            } else {
+                files::FileValue::new(ui("config", "peer.json").unwrap(), b"true".to_vec())
+            };
             let publish_peer = || {
                 let volume = volume.clone();
-                let peer = peer.clone();
+                let mut peer = peer.clone();
                 loom::thread::spawn(move || {
                     loom::future::block_on(Box::pin(async move {
                         let cut = volume.head().await.unwrap();
+                        if layout_peer {
+                            let snapshot = volume
+                                .snapshot(&files::Query::File(peer.key.clone()), 1)
+                                .await
+                                .unwrap();
+                            let mut layout: Value =
+                                serde_json::from_slice(&snapshot.files[0].bytes).unwrap();
+                            layout["peer"] = json!(true);
+                            peer.bytes = serde_json::to_vec(&layout).unwrap().into();
+                        }
                         volume.append(cut, &peer).await.unwrap();
                     }))
                 })
@@ -181,16 +204,33 @@ fn input_handoff<const RETRY: bool>(peer_first: bool, prompt: bool) {
                     request: CommandRequest::Quit,
                 }
             };
-            let result = input
-                .publish_resolution_with_retry::<RETRY>(resolution.clone(), operation)
-                .await
-                .unwrap();
+            let result = if MERGE_LAYOUT {
+                input
+                    .publish_input_resolution_at::<RETRY>(resolution.clone(), operation)
+                    .await
+            } else {
+                input
+                    .publish_resolution_with_retry::<RETRY>(resolution.clone(), operation)
+                    .await
+            }
+            .unwrap();
             assert_eq!(result, operation);
             if !peer_first {
                 publish_peer();
             }
+            input.refresh_files().await.unwrap();
             let snapshot = volume.snapshot(&files::Query::Root, 32).await.unwrap();
-            assert!(snapshot.files.contains(&peer));
+            if layout_peer {
+                assert_eq!(
+                    input
+                        .state(CommandFileRoot::Session, "layout.json")
+                        .unwrap()
+                        .unwrap()["peer"],
+                    true
+                );
+            } else {
+                assert!(snapshot.files.contains(&peer));
+            }
             if prompt {
                 let requests: Vec<_> = snapshot
                     .files
@@ -236,13 +276,22 @@ fn input_handoff<const RETRY: bool>(peer_first: bool, prompt: bool) {
 fn input_publications_survive_both_read_write_handoffs_without_new_identities() {
     for prompt in [false, true] {
         for peer_first in [false, true] {
-            input_handoff::<true>(peer_first, prompt);
+            for layout_peer in [false, true] {
+                input_handoff::<true, true>(peer_first, prompt, layout_peer);
+            }
         }
     }
 }
 #[test]
 fn fail_on_input_contention_is_detected_negative_control() {
     for prompt in [false, true] {
-        assert!(std::panic::catch_unwind(|| input_handoff::<false>(true, prompt)).is_err());
+        assert!(
+            std::panic::catch_unwind(|| input_handoff::<false, true>(true, prompt, false)).is_err()
+        );
     }
+}
+
+#[test]
+fn retaining_the_old_quit_layout_is_detected_negative_control() {
+    assert!(std::panic::catch_unwind(|| input_handoff::<true, false>(true, false, true)).is_err());
 }
