@@ -215,6 +215,7 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
   "Win32_System_WindowsProgramming",
 ] }
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 
 [features]
@@ -233,6 +234,7 @@ napi-types = ["dep:napi", "dep:napi-derive"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
+syn = { version = "=3.0.6", features = ["full", "visit"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects" }
 loom = "0.7.2"
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }

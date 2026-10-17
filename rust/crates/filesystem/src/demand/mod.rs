@@ -22,6 +22,9 @@ pub use contracts::*;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native;
 #[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
+#[path = "native_read_tests.rs"]
+mod native_read_tests;
+#[cfg(all(test, feature = "native-watch", not(target_arch = "wasm32")))]
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
