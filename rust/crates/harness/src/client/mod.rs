@@ -178,7 +178,7 @@ pub use journal_model::verify_journal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, disconnect_local, local_documents, local_prompt};
+pub use local::{connect_local, disconnect_local, local_documents, local_input, local_prompt};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",

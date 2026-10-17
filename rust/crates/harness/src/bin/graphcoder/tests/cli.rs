@@ -31,13 +31,35 @@ async fn execute(
     operation: OperationId,
     mode: Mode,
 ) -> Vec<u8> {
+    let output = spawn(workspace, catalog, settings, operation, mode, "hello").await;
+    assert!(
+        output.status.success(),
+        "exit {:?}
+{}
+{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
+async fn spawn(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+    mode: Mode,
+    prompt: &str,
+) -> std::process::Output {
     let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
         format!(
-            "{}\n",
-            serde_json::to_string(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+            "{}
+",
+            serde_json::to_string(&prepare_local_prompt(operation, prompt).unwrap()).unwrap()
         )
         .into_bytes()
     } else {
@@ -71,9 +93,9 @@ async fn execute(
     } else if jsonl {
         command.args(["--input-format", "jsonl"]);
     } else {
-        command.args(["-p", "hello"]);
+        command.args(["-p", prompt]);
     }
-    let output = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::initialize_native_io_services().unwrap();
         acyclic_native_runtime::ProcessTree::spawn(&mut command)
             .unwrap()
@@ -91,7 +113,9 @@ async fn execute(
             )
             .unwrap_or_else(|failure| {
                 panic!(
-                    "GraphCoder process failed: {}\nstdout: {}\nstderr: {}",
+                    "GraphCoder process failed: {}
+stdout: {}
+stderr: {}",
                     failure.error,
                     String::from_utf8_lossy(&failure.stdout),
                     String::from_utf8_lossy(&failure.stderr)
@@ -99,15 +123,7 @@ async fn execute(
             })
     })
     .await
-    .unwrap();
-    assert!(
-        output.status.success(),
-        "exit {:?}\n{}\n{}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    output.stdout
+    .unwrap()
 }
 
 async fn scenario(mode: Mode) {
@@ -241,4 +257,135 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+/// Headless `-p` resolves slash input through the TUI's catalog: project
+/// prompts expand, direct tools run, and anything else fails without chat.
+#[tokio::test]
+async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let app = Router::new()
+        .route(
+            "/count",
+            post(|| async { Json(json!({"input_tokens":64})) }),
+        )
+        .route(
+            "/responses",
+            post(move |Json(body): Json<Value>| {
+                let requests = requests.clone();
+                async move {
+                    requests.send(body["input"].to_string()).unwrap();
+                    ([("content-type", "text/event-stream")], ANSWER)
+                }
+            }),
+        );
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    let settings = directory.path().join("settings");
+    std::fs::create_dir_all(workspace.join(".claude/commands")).unwrap();
+    std::fs::create_dir(&settings).unwrap();
+    std::fs::write(
+        workspace.join(".claude/commands/marker.md"),
+        "Marker body $ARGUMENTS",
+    )
+    .unwrap();
+    let catalog = directory.path().join("catalog.json");
+    std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
+        "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
+        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
+    }})).unwrap()).unwrap();
+    let run = |prompt: &'static str| {
+        let (workspace, catalog, settings) = (workspace.clone(), catalog.clone(), settings.clone());
+        async move {
+            spawn(
+                &workspace,
+                &catalog,
+                &settings,
+                OperationId::new(),
+                Mode::Prompt,
+                prompt,
+            )
+            .await
+        }
+    };
+    let results = |output: &std::process::Output| -> Vec<Value> {
+        std::str::from_utf8(&output.stdout)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .flat_map(|line| {
+                let change: Change = serde_json::from_str(line).unwrap();
+                change.file.into_iter().chain(change.files)
+            })
+            .filter(|file| {
+                matches!(
+                    file.key,
+                    FileKey::Session {
+                        file: TaskFile::ExecutionResult(_),
+                        ..
+                    }
+                )
+            })
+            .map(|file| serde_json::from_slice(&file.bytes).unwrap())
+            .collect()
+    };
+
+    // A project prompt expands; the model never sees the slash command.
+    let output = run("/marker world").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body = observed.try_recv().unwrap();
+    assert!(body.contains("Marker body world"), "{body}");
+    assert!(!body.contains("/marker"), "{body}");
+
+    // A direct tool runs without a model turn and reports its output.
+    let output = run("/shell echo LPSHELL").await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let shell = results(&output);
+    assert_eq!(shell.len(), 1);
+    assert!(
+        shell[0]["ok"]["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("LPSHELL")
+    );
+
+    // Unknown commands and renderer-only selections fail with no model call.
+    for (prompt, message) in [
+        (
+            "/definitely-unknown",
+            "Unknown command: /definitely-unknown",
+        ),
+        ("/help", "no headless form"),
+    ] {
+        let output = run(prompt).await;
+        assert!(!output.status.success(), "{prompt}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(message), "{prompt}: {stderr}");
+    }
+    assert!(
+        observed.try_recv().is_err(),
+        "only the prompt reached the model"
+    );
+    stop.send(()).unwrap();
+    server.await.unwrap();
 }

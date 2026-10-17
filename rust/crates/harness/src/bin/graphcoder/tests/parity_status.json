@@ -107,7 +107,7 @@
   {
     "section": "1. Slash commands",
     "row": "/shell",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Implemented: stdout/stderr/exit render in the session transcript (tests::task_files::shell_command_output_renders_in_the_session_transcript); headless runs it (tests::cli::headless_slash_input_is_a_command_or_an_error_never_chat)"
   },
   {
     "section": "1. Slash commands",
@@ -122,7 +122,7 @@
   {
     "section": "1. Slash commands",
     "row": "/fetch",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Partial: dispatches to its own url_fetch tool (client_command_local_owner); no url_fetch tool is registered by default yet"
   },
   {
     "section": "1. Slash commands",
@@ -277,7 +277,7 @@
   {
     "section": "2. Prompt editor",
     "row": "Esc ladder (cancel edit, close popup, pause if busy, resume if stopped, clear selections, focus messages)",
-    "status": "Partial; shared-widget coverage only unless a production scenario is named"
+    "status": "Partial: close view, interrupt a running turn, dismiss feedback (tests::escape::); resume-if-stopped and message focus deferred"
   },
   {
     "section": "2. Prompt editor",
