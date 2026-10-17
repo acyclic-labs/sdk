@@ -200,12 +200,12 @@ pub(super) fn fuse_recovery_stat(
     path: &CStr,
     work: &mut &NativeMaterializationWork,
 ) -> Result<rustix::fs::Stat, NativeTreeMaterializationError> {
-    #[cfg(all(test, acyclic_fs_native_loom))]
-    if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
-        return Ok(kernel.helper_stat());
-    }
     loop {
         work.charge(ReadOperations.delta(1))?;
+        #[cfg(all(test, acyclic_fs_native_loom))]
+        if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
+            return Ok(kernel.helper_stat());
+        }
         match rustix::fs::stat(path) {
             Err(rustix::io::Errno::INTR) => continue,
             result => return result.map_err(|error| std::io::Error::from(error).into()),

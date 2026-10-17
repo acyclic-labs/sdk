@@ -79,18 +79,7 @@ impl Pinned {
     }
 
     pub(super) fn still_current(&self) -> Result<bool, NativeMountError> {
-        #[cfg(all(test, acyclic_fs_native_loom))]
-        if let Some(kernel) = super::kernel::current() {
-            return Ok(kernel.current_stat().stx_mnt_id == self.mount);
-        }
-        let metadata = match rustix::fs::statx(
-            &self.parent,
-            self.path
-                .file_name()
-                .ok_or(NativeMountError::InvalidDestination)?,
-            AtFlags::SYMLINK_NOFOLLOW | AtFlags::STATX_DONT_SYNC,
-            StatxFlags::TYPE | StatxFlags::MNT_ID,
-        ) {
+        let metadata = match self.current_stat() {
             Ok(metadata) => metadata,
             Err(rustix::io::Errno::NOENT) => return Ok(false),
             Err(error) => return Err(std::io::Error::from(error).into()),
@@ -99,6 +88,19 @@ impl Pinned {
             return Err(NativeMountError::InvalidDestination);
         }
         Ok(metadata.stx_mask & StatxFlags::MNT_ID.bits() != 0 && metadata.stx_mnt_id == self.mount)
+    }
+
+    fn current_stat(&self) -> rustix::io::Result<rustix::fs::Statx> {
+        #[cfg(all(test, acyclic_fs_native_loom))]
+        if let Some(kernel) = super::kernel::current() {
+            return Ok(kernel.current_stat());
+        }
+        rustix::fs::statx(
+            &self.parent,
+            self.path.file_name().ok_or(rustix::io::Errno::INVAL)?,
+            AtFlags::SYMLINK_NOFOLLOW | AtFlags::STATX_DONT_SYNC,
+            StatxFlags::TYPE | StatxFlags::MNT_ID,
+        )
     }
 
     pub(super) fn detach(

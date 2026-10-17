@@ -1,5 +1,4 @@
 use super::*;
-use crate::sync::native::{Arc, Condvar, Mutex};
 
 fn remount(
     destination: &Path,
@@ -26,32 +25,20 @@ fn scenario(
 ) {
     let kernel = kernel::Kernel::install(base, helper_stat, broken);
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
-    let finished = Arc::new((Mutex::new(false), Condvar::new()));
-    let peer_finished = finished.clone();
     let peer_kernel = kernel;
     let peer_destination = destination.to_path_buf();
-    let peer = loom::thread::spawn(move || {
-        let guard = match remount(&peer_destination, &peer_kernel) {
-            Ok(guard) => Some(guard),
-            Err(NativeMountError::DestinationBusy) => None,
-            Err(error) => panic!("{error}"),
-        };
-        if guard.is_some() {
-            // A mounted session keeps its actual fence while recovery runs.
-            let mut done = peer_finished.0.lock().unwrap();
-            while !*done {
-                done = peer_finished.1.wait(done).unwrap();
-            }
-        }
-        drop(guard);
+    let peer = loom::thread::spawn(move || match remount(&peer_destination, &peer_kernel) {
+        Ok(guard) => Some(guard),
+        Err(NativeMountError::DestinationBusy) => None,
+        Err(error) => panic!("{error}"),
     });
     match recover(&pinned) {
         Ok(_) | Err(NativeMountError::DestinationBusy) => {}
         Err(error) => panic!("{error}"),
     }
-    *finished.0.lock().unwrap() = true;
-    finished.1.notify_all();
-    peer.join().unwrap();
+    // The join result retains the mounted session's real fence until recovery
+    // returns, without adding a test-only coordination lock.
+    drop(peer.join().unwrap());
     let _remounted = remount(destination, &kernel).unwrap();
     kernel.assert_safe();
 }

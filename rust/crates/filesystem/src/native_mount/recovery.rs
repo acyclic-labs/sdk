@@ -94,7 +94,7 @@ pub(super) struct NativeRecoveryShared {
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
     pub(super) shared: RecoveryArc<NativeRecoveryShared>,
-    // Closing the only sender asks the prestarted worker to retire the owner.
+    // Last drop notifies the prestarted worker to retire the owner.
     retirement: RetirementSender,
 }
 

@@ -7,24 +7,27 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 
-// Lock order: owner state -> kernel state. No kernel callback enters an owner
-// or work ledger. Registry waits release the kernel lock atomically. The fixture
-// is installed before actors start and has no separate synchronization lock.
+// Lock order: owner state -> either syscall domain. The namespace and flock
+// locks never nest or call an owner/ledger. Fixture metadata is immutable before
+// actors start; it is not a synchronization dependency between syscalls.
 loom::lazy_static! {
     static ref CONTEXT: Kernel = Kernel::new();
 }
 
 pub(in crate::native_mount) struct Kernel {
+    fixture: std::sync::OnceLock<Fixture>,
     state: Mutex<State>,
+    locks: Mutex<HashMap<(u64, u64), RawFd>>,
     unlocked: Condvar,
 }
-struct State {
-    base: Option<Statx>,
-    helper_stat: Option<rustix::fs::Stat>,
+struct Fixture {
+    base: Statx,
+    helper_stat: rustix::fs::Stat,
     early_release: bool,
+}
+struct State {
     mount: Option<u64>,
     pinned: HashMap<RawFd, u64>,
-    locks: HashMap<(u64, u64), RawFd>,
     helper_running: bool,
     live_detaches: usize,
     mount_before_exit: usize,
@@ -37,17 +40,15 @@ pub(in crate::native_mount) fn current() -> Option<&'static Kernel> {
 impl Kernel {
     fn new() -> Self {
         Self {
+            fixture: std::sync::OnceLock::new(),
             state: Mutex::new(State {
-                base: None,
-                helper_stat: None,
-                early_release: false,
                 mount: Some(0),
                 pinned: HashMap::new(),
-                locks: HashMap::new(),
                 helper_running: false,
                 live_detaches: 0,
                 mount_before_exit: 0,
             }),
+            locks: Mutex::new(HashMap::new()),
             unlocked: Condvar::new(),
         }
     }
@@ -58,16 +59,21 @@ impl Kernel {
         early_release: bool,
     ) -> &'static Self {
         let kernel = &*CONTEXT;
-        let mut state = kernel.state.lock().unwrap();
-        state.base = Some(base);
-        state.helper_stat = Some(helper_stat);
-        state.early_release = early_release;
-        drop(state);
+        assert!(
+            kernel
+                .fixture
+                .set(Fixture {
+                    base,
+                    helper_stat,
+                    early_release
+                })
+                .is_ok()
+        );
         kernel
     }
 
     pub(in crate::native_mount) fn early_release(&self) -> bool {
-        self.state.lock().unwrap().early_release
+        self.fixture.get().unwrap().early_release
     }
 
     pub(in crate::native_mount) fn stat(&self, fd: RawFd, flags: AtFlags) -> io::Result<Statx> {
@@ -77,14 +83,14 @@ impl Kernel {
         if flags.contains(AtFlags::STATX_FORCE_SYNC) && mount == 0 {
             return Err(io::Error::from_raw_os_error(libc::ENOTCONN));
         }
-        let mut stat = state.base.unwrap();
+        let mut stat = self.fixture.get().unwrap().base;
         stat.stx_mnt_id = mount;
         Ok(stat)
     }
 
     pub(in crate::native_mount) fn current_stat(&self) -> Statx {
         let state = self.state.lock().unwrap();
-        let mut stat = state.base.unwrap();
+        let mut stat = self.fixture.get().unwrap().base;
         stat.stx_mnt_id = state.mount.unwrap_or(2);
         stat
     }
@@ -96,35 +102,34 @@ impl Kernel {
 
     pub(in crate::native_mount) fn try_lock(&self, file: &File) -> io::Result<()> {
         let identity = Self::identity(file);
-        let mut state = self.state.lock().unwrap();
-        if let Some(owner) = state.locks.get(&identity) {
+        let mut locks = self.locks.lock().unwrap();
+        if let Some(owner) = locks.get(&identity) {
             if *owner == file.as_raw_fd() {
                 return Ok(());
             }
             return Err(io::Error::from_raw_os_error(libc::EWOULDBLOCK));
         }
-        state.locks.insert(identity, file.as_raw_fd());
+        locks.insert(identity, file.as_raw_fd());
         Ok(())
     }
 
     pub(in crate::native_mount) fn unlock(&self, file: &File) {
         let identity = Self::identity(file);
-        let mut state = self.state.lock().unwrap();
-        if state.locks.get(&identity) == Some(&file.as_raw_fd()) {
-            state.locks.remove(&identity);
+        let mut locks = self.locks.lock().unwrap();
+        if locks.get(&identity) == Some(&file.as_raw_fd()) {
+            locks.remove(&identity);
             self.unlocked.notify_all();
         }
     }
 
     pub(in crate::native_mount) fn wait_for_unlock(&self, file: &File) {
         let identity = Self::identity(file);
-        let mut state = self.state.lock().unwrap();
-        while state
-            .locks
+        let mut locks = self.locks.lock().unwrap();
+        while locks
             .get(&identity)
             .is_some_and(|fd| *fd != file.as_raw_fd())
         {
-            state = self.unlocked.wait(state).unwrap();
+            locks = self.unlocked.wait(locks).unwrap();
         }
     }
 
@@ -158,7 +163,7 @@ impl Kernel {
     }
 
     pub(in crate::native_mount) fn helper_stat(&self) -> rustix::fs::Stat {
-        self.state.lock().unwrap().helper_stat.unwrap()
+        self.fixture.get().unwrap().helper_stat
     }
 }
 
