@@ -317,20 +317,40 @@ proptest! {
 }
 
 fn mixed_navigation_model<const LOCAL_WRAP: bool>(size: usize, gap: usize, events: &[(i8, u8)]) {
-    let text = format!("needle{}\n", "日x".repeat(gap)).repeat(size);
-    let projection = projection(&text);
+    let events: Vec<_> = events
+        .iter()
+        .map(|&(direction, frames)| (direction, frames, None))
+        .collect();
+    resize_navigation_model::<LOCAL_WRAP, false>(size, gap, false, &events);
+}
+
+fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
+    size: usize,
+    gap: usize,
+    initially_hidden: bool,
+    events: &[(i8, u8, Option<(u16, u16)>)],
+) {
+    let mut text = format!("needle{}\n", "日x".repeat(gap)).repeat(size);
+    if initially_hidden {
+        text.insert_str(0, &format!("{}\n", "x".repeat(80)));
+        text.push_str(&"x".repeat(12000));
+    }
+    let mut projection = projection(&text);
+    let source = [Line::from(ratatui::text::Span::raw(text.clone()))];
     let reference = crate::transcript_matches(&text, "needle");
     let mut search = TranscriptSearch::default();
     search.update(&projection, "needle", 0, Style::default());
-    search.prepare(&projection, 40, 10);
+    let mut height = if initially_hidden { 1 } else { 10 };
+    search.prepare(&projection, if initially_hidden { 0 } else { 40 }, height);
     let mut expected = reference
         .iter()
         .position(|r| Some(r) == search.selected.as_ref())
-        .unwrap() as i64;
+        .map(|r| r as i64);
     let mut index = 0;
-    for &(direction, frames) in events {
+    for &(direction, frames, resize) in events {
         index += i64::from(direction);
-        expected = (expected + i64::from(direction)).rem_euclid(reference.len() as i64);
+        expected =
+            expected.map(|rank| (rank + i64::from(direction)).rem_euclid(reference.len() as i64));
         if LOCAL_WRAP && direction != 0 {
             let rank = search
                 .local
@@ -343,9 +363,41 @@ fn mixed_navigation_model<const LOCAL_WRAP: bool>(size: usize, gap: usize, event
             search.index = index;
         }
         search.update(&projection, "needle", index, Style::default());
+        if let Some((width, rows)) = resize {
+            height = usize::from(rows);
+            projection.update(&source, source.len(), width);
+            search.update(&projection, "needle", index, Style::default());
+        }
         for _ in 0..=frames {
-            let row = search.selected_row(&projection, index);
-            search.prepare(&projection, row, 10);
+            let first = if expected.is_some() {
+                search.selected_row(&projection, index)
+            } else {
+                0
+            };
+            let unanchored = search.selected.is_none();
+            let queued = search.steps;
+            search.prepare(&projection, first, height);
+            if expected.is_none() {
+                // Reference viewport matches use source identities, independently
+                // of the production selection and its queued navigation state.
+                let visible: Vec<_> = reference
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, range)| {
+                        (first..first + height).contains(&projection.source_rows[range.start])
+                    })
+                    .map(|(rank, _)| rank)
+                    .collect();
+                if !visible.is_empty() {
+                    expected =
+                        Some(visible[index.rem_euclid(visible.len() as i64) as usize] as i64);
+                }
+            }
+            if REPLAY_INITIAL && unanchored && search.selected.is_some() {
+                // Restore the old handoff: initial rank consumes index but leaves
+                // the same moves queued for the next navigate() call.
+                search.steps = queued;
+            }
             WORK.with(|w| w.set((0, 0)));
             search.advance(&projection, 64);
             let (front, back) = WORK.with(|w| w.get());
@@ -353,20 +405,31 @@ fn mixed_navigation_model<const LOCAL_WRAP: bool>(size: usize, gap: usize, event
                 front + back <= 6 * 64 + 128,
                 "directional slice must stay bounded"
             );
+            if expected.is_none() {
+                expected = if !search.pending() {
+                    Some(index.rem_euclid(reference.len() as i64))
+                } else {
+                    reference
+                        .iter()
+                        .position(|range| Some(range) == search.nearest.as_ref())
+                        .map(|rank| rank as i64)
+                };
+            }
             if search.steps == 0 {
                 assert_eq!(
                     search.selected.as_ref(),
-                    Some(&reference[expected as usize]),
-                    "mixed navigation must follow source identity, not viewport wrapping"
+                    expected.map(|rank| &reference[rank as usize]),
+                    "mixed navigation must consume each move once across frames and resize"
                 );
             }
         }
     }
     finish(&mut search, &projection);
+    let expected = expected.unwrap_or_else(|| index.rem_euclid(reference.len() as i64));
     assert_eq!(
         search.selected.as_ref(),
         Some(&reference[expected as usize]),
-        "mixed navigation must follow source identity, not viewport wrapping"
+        "mixed navigation must consume each move once across frames and resize"
     );
 }
 
@@ -376,7 +439,7 @@ fn backwards_after_viewport_handoff_returns_to_the_previous_source_match() {
 }
 
 #[test]
-#[should_panic(expected = "mixed navigation must follow source identity")]
+#[should_panic(expected = "mixed navigation must consume each move once")]
 fn partial_viewport_wrap_negative_control() {
     mixed_navigation_model::<true>(8192, 0, &[(1, 2), (-1, 2)]);
 }
@@ -405,9 +468,10 @@ proptest! {
     fn mixed_navigation_and_background_frames_property(
         size in 256usize..800,
         gap in 0usize..160,
-        events in prop::collection::vec((-1i8..=1, 0u8..4), 1..64),
+        initially_hidden in any::<bool>(),
+        events in prop::collection::vec((-1i8..=1, 0u8..4, prop::option::of((16u16..120,12u16..24))), 1..64),
     ) {
-        mixed_navigation_model::<false>(size,gap,&events);
+        resize_navigation_model::<false,false>(size,gap,initially_hidden,&events);
     }
 }
 
@@ -426,4 +490,24 @@ fn navigation_before_the_first_known_match_is_applied_once() {
 #[test]
 fn reversing_navigation_cancels_a_probe_between_sparse_matches() {
     mixed_navigation_model::<false>(128, 300, &[(1, 0), (-1, 0), (-1, 2), (1, 0), (1, 4)]);
+}
+
+#[test]
+fn resize_before_first_match_consumes_queued_navigation_once() {
+    resize_navigation_model::<false, false>(
+        8192,
+        0,
+        true,
+        &[
+            (1, 0, Some((40, 20))),
+            (-1, 2, Some((80, 12))),
+            (1, 1, Some((24, 16))),
+        ],
+    );
+}
+
+#[test]
+#[should_panic(expected = "mixed navigation must consume each move once")]
+fn initial_selection_replays_queued_move_negative_control() {
+    resize_navigation_model::<false, true>(8192, 0, true, &[(1, 0, Some((40, 20)))]);
 }

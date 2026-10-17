@@ -326,6 +326,9 @@ impl TranscriptSearch {
         if self.selected.is_none() && !self.active().is_empty() {
             let rank = self.index.rem_euclid(self.active().len() as i64) as usize;
             self.selected = self.active().get(rank).cloned();
+            // The initial rank already includes every move queued without an anchor.
+            self.steps = 0;
+            self.navigation = None;
         }
     }
 
