@@ -24,22 +24,6 @@ async fn scenario<const BOUND: bool>(
         )
         .await
         .unwrap();
-    if row["cancel"] == true {
-        // Recreate the exact filtered default that #626 persisted, then upgrade.
-        handle_tui_input(&mut files, &NoFiles, submit("/shortcuts"))
-            .await
-            .unwrap();
-        let legacy: Vec<_> = files
-            .catalog()
-            .commands()
-            .filter(|spec| spec.name != "feedback")
-            .cloned()
-            .collect();
-        files
-            .install_catalog(serde_json::to_vec(&legacy).unwrap())
-            .await
-            .unwrap();
-    }
     let mut renderer = ClientRenderer::default();
     handle_tui_input(
         &mut files,
@@ -165,17 +149,7 @@ fn missing_feedback_binding_is_detected_negative_control() {
 }
 
 #[test]
-fn shipped_catalog_upgrade_shrunk_seed() {
-    futures::executor::block_on(scenario::<true>(
-        &serde_json::json!({"command":"/feedback","cancel":true}),
-        "Report: ",
-        7,
-        12,
-    ));
-}
-
-#[test]
-fn catalog_upgrade_preserves_user_edits() {
+fn removing_only_feedback_keeps_the_catalog_authoritative() {
     futures::executor::block_on(async {
         let mut files = session(volume().await, 39).await;
         files
@@ -189,13 +163,12 @@ fn catalog_upgrade_preserves_user_edits() {
         handle_tui_input(&mut files, &NoFiles, submit("/shortcuts"))
             .await
             .unwrap();
-        let mut custom: Vec<_> = files
+        let custom: Vec<_> = files
             .catalog()
             .commands()
             .filter(|spec| spec.name != "feedback")
             .cloned()
             .collect();
-        custom[0].description = "User preference".into();
         files
             .install_catalog(serde_json::to_vec(&custom).unwrap())
             .await

@@ -3,7 +3,6 @@ use crate::{
     Result,
     client::{
         BuiltinCommand, CommandAction, CommandFileRoot, CommandQuery, CommandSession, CommandSpec,
-        DEFAULT_COMMANDS_JSON,
     },
 };
 use acyclic_stream::StreamProvider;
@@ -35,35 +34,13 @@ fn supported(spec: &CommandSpec) -> bool {
 pub(crate) async fn configure<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
 ) -> Result<()> {
-    let mut commands: Vec<_> = files
+    let commands: Vec<_> = files
         .catalog()
         .commands()
         .filter(|spec| supported(spec))
         .cloned()
         .collect();
-    // Upgrade only the exact catalog shipped by #626. A user's edited catalog
-    // remains authoritative, including an intentionally absent feedback command.
-    let mut defaults: Vec<CommandSpec> = serde_json::from_slice(DEFAULT_COMMANDS_JSON)
-        .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-    defaults.sort_by(|left, right| left.name.cmp(&right.name));
-    let legacy: Vec<_> = defaults
-        .iter()
-        .filter(|spec| {
-            supported(spec)
-                && !matches!(
-                    spec.action,
-                    CommandAction::Select {
-                        query: CommandQuery::Feedback
-                    }
-                )
-        })
-        .cloned()
-        .collect();
-    let upgrade = commands == legacy;
-    if upgrade {
-        commands = defaults.into_iter().filter(supported).collect();
-    }
-    if upgrade || commands.len() != files.catalog().commands().count() {
+    if commands.len() != files.catalog().commands().count() {
         let bytes = serde_json::to_vec(&commands)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
         files.install_catalog(bytes).await?;
