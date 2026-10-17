@@ -69,13 +69,11 @@ fn accounting_bench(bencher: Bencher, observers: usize, shared: bool) {
             work.receipt()
         );
     }
-    benchmark_marker("accounting", shared, true);
     if shared {
         bencher.bench(|| work.charge(delta).unwrap());
     } else {
         bencher.bench_local(|| work.charge(delta).unwrap());
     }
-    benchmark_marker("accounting", shared, false);
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!("after observers={observers} work={:?}", work.receipt());
     }
@@ -133,9 +131,7 @@ fn accounting_source_registry(bencher: Bencher, (count, retire): (usize, bool)) 
             work.receipt()
         );
     }
-    benchmark_marker("accounting_source_registry", retire, true);
     bencher.bench(|| work.charge(delta).unwrap());
-    benchmark_marker("accounting_source_registry", retire, false);
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!(
             "after sources={count} retired={retire} live={} work={:?}",
