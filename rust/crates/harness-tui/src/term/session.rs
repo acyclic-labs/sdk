@@ -184,22 +184,17 @@ impl Drop for Tty {
     }
 }
 
+/// Restoration tests compare descriptor flags only through this helper.
+#[cfg(test)]
+#[path = "../../tests/support/status_flags.rs"]
+mod status_flags;
+
 #[cfg(test)]
 mod tests {
+    use super::status_flags::settable_status_flags as status_flags;
     use super::*;
-    use rustix::fs::{OFlags, fcntl_getfl};
+    use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
-
-    /// The descriptor's settable status flags. Darwin also reports
-    /// `FWASWRITTEN` (0x10000) from `F_GETFL` once the open file has been
-    /// written; it is kernel bookkeeping that `F_SETFL` can neither set nor
-    /// clear, so it is not part of the state a session saves and restores.
-    fn status_flags(file: &File) -> io::Result<OFlags> {
-        let flags = fcntl_getfl(file)?;
-        #[cfg(target_vendor = "apple")]
-        let flags = flags.difference(OFlags::from_bits_retain(0x0001_0000));
-        Ok(flags)
-    }
 
     #[test]
     fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
