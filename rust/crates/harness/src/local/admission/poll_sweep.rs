@@ -342,6 +342,8 @@ enum Recovery {
     Resume,
     /// Submit a new prompt while no provider retains the cut effects' receipts.
     Supersede,
+    /// The same, on the host whose driving future was dropped at the cut.
+    SameHost,
 }
 
 async fn case(
@@ -399,7 +401,8 @@ async fn case_with(
             };
             assert_eq!(output?.text, "done");
         }
-        drop(harness);
+        // A dropped driver future, not a dead process, interrupted a same-host turn.
+        let kept = (recovery == Recovery::SameHost).then_some(harness);
         if cut.is_some() {
             // The driver joined the physical completion of detached provider work.
             let trace = schedule.drained();
@@ -410,7 +413,10 @@ async fn case_with(
             );
         }
         schedule.recover();
-        let reopened = fixture.open().await?;
+        let reopened = match kept {
+            Some(harness) => harness,
+            None => fixture.open().await?,
+        };
         let current = reopened.current_turn().await?.0;
         let mut unadmitted = false;
         if let Some(current) = &current {
@@ -436,7 +442,17 @@ async fn case_with(
             }
         }
         let admission_committed = current.is_some() && !unadmitted;
-        if recovery == Recovery::Supersede && cut.is_some() {
+        if recovery == Recovery::SameHost
+            && let Some(current) = &current
+        {
+            // Every claim died with the dropped future, including a submission
+            // cancelled after its admission committed.
+            assert!(
+                reopened.drivers.orphaned(current.operation),
+                "a dropped future still owns the head"
+            );
+        }
+        if recovery != Recovery::Resume && cut.is_some() {
             let (root, interrupted) =
                 supersede::recover(&fixture, &reopened, current.as_ref()).await?;
             return Ok(Coverage {
@@ -604,7 +620,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
                 .map(move |cut| (*scenario, baseline, seed, cut))
         })
         .collect();
-    if recovery == Recovery::Supersede {
+    if recovery != Recovery::Resume {
         // Every durable kind in the turn is cut: stream commits, file
         // publications, and each model and tool dispatch and acceptance.
         let kinds: std::collections::BTreeSet<_> = cuts
@@ -729,6 +745,11 @@ fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
 #[test]
 fn new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch() -> Result<()> {
     sweep(&[Scenario::EffectAndContinuation], Recovery::Supersede)
+}
+
+#[test]
+fn new_prompt_on_the_same_host_settles_a_dropped_submission_or_driver() -> Result<()> {
+    sweep(&[Scenario::EffectAndContinuation], Recovery::SameHost)
 }
 
 #[test]

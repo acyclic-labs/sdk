@@ -152,8 +152,21 @@ impl LocalHarness {
             &crate::IdempotencyKey::new(format!("local-turn:{}", turn.operation))?,
         )
         .await?;
-        self.drivers.submitted(turn.operation);
-        admit(&turn).await
+        self.owned(turn.operation, admit(&turn)).await
+    }
+
+    /// Admits under a submission claim that a cancelled or refused admission releases.
+    async fn owned(
+        &self,
+        operation: OperationId,
+        admit: impl Future<Output = Result<Admission<RuntimeTask<crate::executor::TurnOutput>>>>,
+    ) -> Result<Admission<RuntimeTask<crate::executor::TurnOutput>>> {
+        let submission = self.drivers.submit(operation);
+        let admission = admit.await?;
+        if matches!(admission, Admission::Accepted(_)) {
+            submission.accepted();
+        }
+        Ok(admission)
     }
 
     async fn write_turn(
@@ -243,7 +256,7 @@ impl LocalHarness {
             if let Some(turn) = &current
                 && turn.operation == operation
             {
-                return self.admit_retained(turn).await;
+                return self.owned(operation, self.admit_retained(turn)).await;
             }
             let mut terminal = self.head_is_terminal(current.as_ref()).await?;
             // A head no caller in this process drives cannot settle on its own.

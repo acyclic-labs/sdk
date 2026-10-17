@@ -34,8 +34,14 @@ impl Drivers {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(super) fn submitted(&self, operation: OperationId) {
+    /// Claims a head for its submitter. The caller holds the admission gate.
+    pub(super) fn submit(&self, operation: OperationId) -> Submission<'_> {
         self.state().submitted = Some(operation);
+        Submission {
+            drivers: self,
+            operation,
+            accepted: false,
+        }
     }
 
     /// Callers claim under the admission gate, which also serializes supersession.
@@ -71,6 +77,30 @@ impl Drop for Driving<'_> {
             if *count == 0 {
                 state.active.remove(&self.operation);
             }
+        }
+    }
+}
+
+/// A submitter's claim on its head. Unless admission is accepted, dropping it,
+/// including by cancelling the submission mid-await, leaves the head orphaned
+/// for the next prompt. An accepted claim lasts until a driver takes the head.
+pub(super) struct Submission<'a> {
+    drivers: &'a Drivers,
+    operation: OperationId,
+    accepted: bool,
+}
+
+impl Submission<'_> {
+    pub(super) fn accepted(mut self) {
+        self.accepted = true;
+    }
+}
+
+impl Drop for Submission<'_> {
+    fn drop(&mut self) {
+        let mut state = self.drivers.state();
+        if !self.accepted && state.submitted == Some(self.operation) {
+            state.submitted = None;
         }
     }
 }
@@ -183,6 +213,46 @@ mod model {
         let outcome = outcome.lock().unwrap();
         assert!(outcome.0, "orphan was never settled");
         assert_eq!(outcome.1, 1, "driven turn was superseded");
+    }
+
+    // The submitter's admission await is cancelled after the head is published.
+    fn cancelled_submission(mark_outlives_cancellation: bool) {
+        let gate = StateArc::new(Mutex::new(()));
+        let drivers = StateArc::new(Drivers::new());
+        let operation = OperationId::from_bytes([1; 16]);
+        let submitter = {
+            let (gate, drivers) = (gate.clone(), drivers.clone());
+            thread::spawn(move || {
+                complete(super::super::admission::serialized(&gate, async || {
+                    let submission = drivers.submit(operation);
+                    thread::yield_now();
+                    if mark_outlives_cancellation {
+                        submission.accepted();
+                    }
+                }))
+            })
+        };
+        submitter.join().unwrap();
+        let after = complete(super::super::admission::serialized(&gate, async || {
+            drivers.orphaned(operation)
+        }));
+        assert!(after, "cancelled submission kept its head");
+    }
+
+    #[test]
+    fn a_cancelled_submission_leaves_its_head_to_the_next_prompt() {
+        loom::model(|| cancelled_submission(false));
+        let failure = std::panic::catch_unwind(|| loom::model(|| cancelled_submission(true)))
+            .expect_err("surviving submission mark negative control did not fail");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("cancelled submission kept its head"),
+            "{message}"
+        );
     }
 
     #[test]
