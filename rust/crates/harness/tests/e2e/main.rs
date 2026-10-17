@@ -9,6 +9,8 @@ mod local_admission;
 mod local_case;
 mod local_execution;
 mod local_tests;
+mod local_tool_files;
+mod local_tool_files_tests;
 mod local_workspace;
 mod matchers;
 mod notification_history;

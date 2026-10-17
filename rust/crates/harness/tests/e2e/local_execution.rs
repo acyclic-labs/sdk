@@ -70,6 +70,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
     }
     let turns = super::local_case::bind_seed_files(case.turns, &references)?;
+    let scripted_calls = super::local_tool_files::calls(&turns);
     let provider = Arc::new(ScriptedModelProvider::new(turns));
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
@@ -83,6 +84,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
+    let tool_files = super::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
@@ -120,6 +122,20 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 }
             }
         }
+    }
+    if let Some(observation) = tool_files {
+        super::local_tool_files::verify(
+            &harness,
+            task_id,
+            operation,
+            observation,
+            &scripted_calls,
+            case.expect
+                .results
+                .as_ref()
+                .ok_or("bash results are required")?,
+        )
+        .await?;
     }
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let cut = stream.tail(path).await?;
