@@ -324,12 +324,16 @@ fn admitted_work_keeps_observation_after_observer_drop() {
     }
 }
 
-fn root_context_case(mode: u8, broken: bool, see: &mut Observer<'_, Seen>) -> Result<(), Stop> {
+fn root_context_case(
+    mode: u8,
+    fault: Option<&Fault>,
+    see: &mut Observer<'_, Seen>,
+) -> Result<(), Stop> {
     use tracing::callsite::Callsite as _;
     let seen = Capture::default();
     let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(seen.clone()));
-    let root = tracing::dispatcher::with_default(&subscriber, || {
+    let (root, expected_id) = tracing::dispatcher::with_default(&subscriber, || {
         let caller = tracing::info_span!("test.root.caller");
         caller.in_scope(|| {
             let span = match mode {
@@ -343,15 +347,17 @@ fn root_context_case(mode: u8, broken: bool, see: &mut Observer<'_, Seen>) -> Re
                 ),
                 _ => tracing::info_span!(parent: None, "test.root.enabled"),
             };
-            if broken {
-                super::OperationSpan::new(span)
-            } else {
-                super::OperationSpan::new_root(span)
-            }
+            let expected_id = span.id();
+            let root = match fault {
+                Some(Fault::RetainedCaller) => super::OperationSpan::new(span),
+                Some(Fault::DiscardedRoot) => super::OperationSpan::new_root(tracing::Span::none()),
+                _ => super::OperationSpan::new_root(span),
+            };
+            (root, expected_id)
         })
     });
     let released = seen.closed("test.root.caller");
-    let own_context = root.context().id() == root.id();
+    let own_context = root.context().id() == expected_id && root.id() == expected_id;
     drop(root);
     see.see(Seen::Root {
         released,
@@ -371,6 +377,7 @@ fn causal_registry_case(
     broken: bool,
     see: &mut Observer<'_, Seen>,
 ) -> Result<(), Stop> {
+    let expected = usize::from(!foreign);
     let first = Capture::default();
     let second = Capture::default();
     let _registration = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
@@ -395,7 +402,7 @@ fn causal_registry_case(
         .unwrap();
     see.see(Seen::Registry {
         actual: root.follows_from.len(),
-        expected: usize::from(!foreign),
+        expected,
     })
 }
 
@@ -420,6 +427,7 @@ enum Case {
 enum Fault {
     InstalledIdleDispatcher,
     RetainedCaller,
+    DiscardedRoot,
     ForeignRegistry,
 }
 #[derive(Debug)]
@@ -442,9 +450,7 @@ enum Seen {
 fn observation_oracle() -> Oracle<Case, Fault, Seen> {
     Oracle::declare(|input, fault, see| match input {
         Case::Idle => unobserved_bypass(matches!(fault, Some(Fault::InstalledIdleDispatcher)), see),
-        Case::Root(mode) => {
-            root_context_case(*mode, matches!(fault, Some(Fault::RetainedCaller)), see)
-        }
+        Case::Root(mode) => root_context_case(*mode, fault, see),
         Case::Registry(foreign) => {
             causal_registry_case(*foreign, matches!(fault, Some(Fault::ForeignRegistry)), see)
         }
@@ -470,6 +476,7 @@ fn observation_oracle() -> Oracle<Case, Fault, Seen> {
     })
     .control("idle", Case::Idle, Fault::InstalledIdleDispatcher)
     .control("root", Case::Root(1), Fault::RetainedCaller)
+    .control("root", Case::Root(2), Fault::DiscardedRoot)
     .control("registry", Case::Registry(true), Fault::ForeignRegistry)
     .build()
 }
