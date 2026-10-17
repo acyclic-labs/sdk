@@ -5,7 +5,6 @@ use acyclic_harness::{
     conversation::FileRef,
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
-use acyclic_test_support::differential::oracle::Stop;
 
 #[derive(Debug)]
 pub struct Seen {
@@ -65,11 +64,11 @@ fn reference(input: &CommandResolution) -> std::result::Result<ModelContent, &'s
     })
 }
 
-pub fn observe(
+pub fn observe<E>(
     input: &CommandResolution,
     tamper: impl Fn(&str, &mut Result<ModelContent>),
-    mut see: impl FnMut(Seen) -> std::result::Result<(), Stop>,
-) -> std::result::Result<(), Stop> {
+    mut see: impl FnMut(Seen) -> std::result::Result<(), E>,
+) -> std::result::Result<(), E> {
     // Fix the independent expectation before executing the production path.
     let expected = reference(input);
     let mut actual = input.clone().into_model_input();
