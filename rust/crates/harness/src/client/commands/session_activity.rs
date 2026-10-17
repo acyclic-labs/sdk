@@ -53,7 +53,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         if text.is_empty() {
             return Err(Error::Invalid("replacement prompt is empty".into()));
         }
-        self.publish_resolution(CommandResolution::Submit {
+        self.publish_input_resolution(CommandResolution::Submit {
             request: CommandRequest::Replace {
                 message: operation,
                 text,

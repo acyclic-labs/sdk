@@ -1,5 +1,5 @@
 use acyclic_harness::{
-    Error, OperationId,
+    OperationId,
     client::{ClientViews, CommandFileRoot, CommandSession, handle_tui_input},
     task_volume::{FileKey, Query, TaskFile, TaskVolume},
     tui::{
@@ -148,18 +148,40 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
 }
 
 #[tokio::test]
-async fn stale_publication_is_propagated_without_turning_into_feedback() {
+async fn unrelated_publication_is_retried_without_ending_the_input_session() {
     let volume = volume().await;
     let mut stale = session(volume.clone(), 4).await;
     let _other = session(volume.clone(), 5).await;
     let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
-    let error = handle_tui_input(&mut stale, &NoFiles, submit("/diff"))
+    handle_tui_input(&mut stale, &NoFiles, submit("/diff"))
         .await
-        .unwrap_err();
-    assert!(matches!(error, Error::Conflict(_)));
+        .unwrap();
+    assert!(
+        volume
+            .snapshot(&Query::Root, 64)
+            .await
+            .unwrap()
+            .generation
+            .position
+            > before.position
+    );
     assert_eq!(
-        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
-        before
+        stale
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+    let _later = session(volume.clone(), 6).await;
+    handle_tui_input(&mut stale, &NoFiles, InputEffect::Quit)
+        .await
+        .unwrap();
+    assert_eq!(
+        stale
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap()["exit_requested"],
+        true
     );
     assert!(
         stale
@@ -276,5 +298,40 @@ async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt()
             .state(CommandFileRoot::Session, "search.json")
             .unwrap()
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_peer_edit_rejects_the_action_without_ending_the_session() {
+    let volume = volume().await;
+    let mut stale = session(volume.clone(), 4).await;
+    let mut peer = session(volume, 4).await;
+    peer.write_state(
+        CommandFileRoot::Session,
+        "layout.json",
+        &serde_json::json!({"peer":true}),
+    )
+    .await
+    .unwrap();
+    handle_tui_input(&mut stale, &NoFiles, InputEffect::Quit)
+        .await
+        .unwrap();
+    let layout = stale
+        .state(CommandFileRoot::Session, "layout.json")
+        .unwrap()
+        .unwrap();
+    assert_eq!(layout["peer"], true);
+    assert!(
+        layout["exit_requested"].is_null(),
+        "stale action overwrote a peer"
+    );
+    assert!(
+        stale
+            .state(CommandFileRoot::Session, "notifications.json")
+            .unwrap()
+            .unwrap()[0]
+            .as_str()
+            .unwrap()
+            .contains("command query advanced")
     );
 }

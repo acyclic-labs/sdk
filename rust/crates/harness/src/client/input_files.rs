@@ -18,7 +18,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
         InputEffect::Submit {
             text, edit: None, ..
         } => {
-            files.submit(&text, reader).await?;
+            files.submit_input(&text, reader).await?;
         }
         InputEffect::Host(crate::tui::Action::Escape) => {
             let mut layout = files
@@ -50,7 +50,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
         InputEffect::Interrupt => files.cancel_active().await?,
         InputEffect::Quit => {
             files
-                .publish_resolution(CommandResolution::Submit {
+                .publish_input_resolution(CommandResolution::Submit {
                     request: CommandRequest::Quit,
                 })
                 .await?;
@@ -66,7 +66,8 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
 }
 
 /// Process a user action, retaining ordinary command errors as session feedback.
-/// Authority, storage and ambiguous publication failures still reach the caller.
+/// Contention and peer edits stay visible as feedback; authority, storage and
+/// ambiguous publication failures still reach the caller.
 pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     files: &mut CommandSession<P>,
     reader: &dyn ContentResidencyVerifier,
@@ -80,7 +81,12 @@ pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     }
     let messages = match apply_tui_input(files, reader, effect).await {
         Ok(()) => Vec::new(),
-        Err(error @ (Error::Invalid(_) | Error::NotFound(_) | Error::Unsupported(_))) => {
+        Err(
+            error @ (Error::Invalid(_)
+            | Error::NotFound(_)
+            | Error::Unsupported(_)
+            | Error::Conflict(_)),
+        ) => {
             vec![error.to_string()]
         }
         Err(error) => return Err(error),
@@ -88,9 +94,16 @@ pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     let current = files.state(CommandFileRoot::Session, "notifications.json")?;
     let next = serde_json::json!(messages);
     if current.as_ref() != Some(&next) && (current.is_some() || !messages.is_empty()) {
-        files
+        if let Err(error) = files
             .write_state(CommandFileRoot::Session, "notifications.json", &next)
-            .await?;
+            .await
+        {
+            // The input is already accepted. A newer peer notification wins;
+            // losing this presentation-only CAS must not terminate the session.
+            if !matches!(error, Error::Conflict(_)) {
+                return Err(error);
+            }
+        }
     }
     Ok(())
 }

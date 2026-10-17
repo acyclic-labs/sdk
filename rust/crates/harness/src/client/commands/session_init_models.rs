@@ -135,3 +135,114 @@ fn a_same_file_edit_is_never_overwritten_by_rebasing() {
 fn omitting_the_file_comparison_is_detected_negative_control() {
     assert!(std::panic::catch_unwind(|| peer_edit::<false>(true)).is_err());
 }
+
+fn input_handoff<const RETRY: bool>(peer_first: bool, prompt: bool) {
+    loom::model(move || {
+        loom::future::block_on(Box::pin(async {
+            let volume = Arc::new(
+                files::TaskVolume::open(
+                    Arc::new(MemoryStream::default()),
+                    StreamPath::new("input-handoff-model").unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+            let mut input =
+                CommandSession::open(volume.clone(), uuid::Uuid::from_bytes([1; 16]), 8192, 32)
+                    .await
+                    .unwrap();
+            let operation = OperationId::from_bytes([4; 16]);
+            let peer = files::FileValue::new(ui("config", "peer.json").unwrap(), b"true".to_vec());
+            let publish_peer = || {
+                let volume = volume.clone();
+                let peer = peer.clone();
+                loom::thread::spawn(move || {
+                    loom::future::block_on(Box::pin(async move {
+                        let cut = volume.head().await.unwrap();
+                        volume.append(cut, &peer).await.unwrap();
+                    }))
+                })
+                .join()
+                .unwrap();
+            };
+            // The session read its generation above. Force both sides of the
+            // real read/write handoff, with the actual instrumented provider.
+            if peer_first {
+                publish_peer();
+            }
+            let resolution = if prompt {
+                CommandResolution::Prompt {
+                    text: "hello".into(),
+                    source: None,
+                    mentions: Vec::new(),
+                }
+            } else {
+                CommandResolution::Submit {
+                    request: CommandRequest::Quit,
+                }
+            };
+            let result = input
+                .publish_resolution_with_retry::<RETRY>(resolution.clone(), operation)
+                .await
+                .unwrap();
+            assert_eq!(result, operation);
+            if !peer_first {
+                publish_peer();
+            }
+            let snapshot = volume.snapshot(&files::Query::Root, 32).await.unwrap();
+            assert!(snapshot.files.contains(&peer));
+            if prompt {
+                let requests: Vec<_> = snapshot
+                    .files
+                    .iter()
+                    .filter(|file| {
+                        matches!(
+                            file.key,
+                            files::FileKey::Session {
+                                file: files::TaskFile::Request(_),
+                                ..
+                            }
+                        )
+                    })
+                    .collect();
+                assert_eq!(requests.len(), 1, "retry duplicated a submission");
+                assert_eq!(
+                    requests[0].key,
+                    files::FileKey::Session {
+                        session: component(input.session.to_string()).unwrap(),
+                        file: files::TaskFile::Request(input.request_id(operation).unwrap()),
+                    }
+                );
+                // Replay the same publication identity; it is already accepted.
+                input
+                    .publish_resolution_with_retry::<true>(resolution, operation)
+                    .await
+                    .unwrap();
+                assert_eq!(volume.head().await.unwrap(), snapshot.generation);
+            } else {
+                assert_eq!(
+                    input
+                        .state(CommandFileRoot::Session, "layout.json")
+                        .unwrap()
+                        .unwrap()["exit_requested"],
+                    true
+                );
+            }
+        }));
+    });
+}
+
+#[test]
+fn input_publications_survive_both_read_write_handoffs_without_new_identities() {
+    for prompt in [false, true] {
+        for peer_first in [false, true] {
+            input_handoff::<true>(peer_first, prompt);
+        }
+    }
+}
+#[test]
+fn fail_on_input_contention_is_detected_negative_control() {
+    for prompt in [false, true] {
+        assert!(std::panic::catch_unwind(|| input_handoff::<false>(true, prompt)).is_err());
+    }
+}

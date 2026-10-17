@@ -19,6 +19,8 @@ mod init;
 #[cfg(all(test, acyclic_harness_loom))]
 #[path = "session_init_models.rs"]
 mod init_models;
+#[path = "session_input.rs"]
+mod input;
 #[path = "session_publish.rs"]
 mod publication;
 #[path = "session_view.rs"]
@@ -322,7 +324,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         name: &str,
         value: &Value,
     ) -> Result<()> {
-        self.publish(
+        self.publish_rebased::<true, true>(
             self.state_key(root, name)?,
             serde_json::to_vec(value).map_err(codec)?,
             false,
@@ -345,7 +347,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command catalog changed; review the new revision".into(),
             ));
         }
-        self.publish(key, bytes, false).await
+        self.publish_rebased::<true, true>(key, bytes, false).await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
@@ -392,47 +394,20 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         Ok(snapshot)
     }
 
-    /// Resolve at the current file-query cut, then publish the ordinary file
-    /// change with that generation as its precondition. Stale cuts fail closed.
-    pub async fn submit(
-        &mut self,
-        input: &str,
-        reader: &dyn ContentResidencyVerifier,
-    ) -> Result<OperationId> {
-        if let Some(confirmation) = self
-            .state(CommandFileRoot::Session, "layout.json")?
-            .and_then(|layout| layout.get("confirmation").cloned())
-            .filter(|value| !value.is_null())
-        {
-            match input.trim().to_ascii_lowercase().as_str() {
-                "yes" | "y" => return self.confirm_request(confirmation, true).await,
-                "no" | "n" => return self.confirm_request(confirmation, false).await,
-                _ => {}
-            }
-        }
-        if let Some(operation) = self.view_input(input).await? {
-            return Ok(operation);
-        }
-        let cut = self.generation;
-        let resolution = self
-            .catalog
-            .resolve(input, reader, self.maximum_bytes)
-            .await?;
-        self.load_task_settings().await?;
-        if self.generation != cut {
-            return Err(Error::Conflict(
-                "command query advanced during resolution; retry from the new cut".into(),
-            ));
-        }
-        self.publish_resolution(resolution).await
-    }
-
     /// Publishes an already-resolved key action at its observed file cut.
     pub async fn publish_resolution(
         &mut self,
         resolution: CommandResolution,
     ) -> Result<OperationId> {
-        let operation = OperationId::new();
+        self.publish_resolution_with_retry::<false>(resolution, OperationId::new())
+            .await
+    }
+
+    pub(super) async fn publish_resolution_with_retry<const RETRY: bool>(
+        &mut self,
+        resolution: CommandResolution,
+        operation: OperationId,
+    ) -> Result<OperationId> {
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
                 let task = if change.root == CommandFileRoot::Session {
@@ -454,7 +429,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             } else {
                 self.state_key(change.root, &change.path)?
             };
-            self.publish(
+            self.publish_rebased::<RETRY, true>(
                 key,
                 serde_json::to_vec(&change.contents).map_err(codec)?,
                 change.create_only,

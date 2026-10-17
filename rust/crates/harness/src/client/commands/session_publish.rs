@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const PUBLICATION_ATTEMPTS: usize = 8;
+
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     pub(super) async fn publish(
         &mut self,
@@ -13,7 +15,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
 
     /// Persist an editor projection across unrelated owner publications. The
     /// observed target contents are still a precondition; peer edits fail closed.
-    /// Command resolution and execution claims retain their strict query CAS.
+    /// Non-input resolution and execution claims retain their strict query CAS.
     pub(crate) async fn write_unchanged_state(
         &mut self,
         root: CommandFileRoot,
@@ -42,12 +44,15 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command publication exceeds byte bound".into(),
             ));
         }
-        if create_only && self.files.contains_key(&key) {
+        let file = files::FileValue::new(key, bytes);
+        let before = self.files.get(&file.key).cloned();
+        if create_only && before.is_some() {
+            if RETRY && before.as_ref() == Some(&file) {
+                return Ok(());
+            }
             return Err(Error::Conflict("command file already exists".into()));
         }
-        let before = self.files.get(&key).cloned();
-        let file = files::FileValue::new(key, bytes);
-        loop {
+        for _ in 0..PUBLICATION_ATTEMPTS {
             self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
             let expected = self.generation;
             let published = if let Some(writer) = &self.writer {
@@ -68,6 +73,9 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     while self.generation.position < generation.position {
                         self.advance().await?;
                     }
+                    if RETRY && create_only && self.files.get(&file.key) == Some(&file) {
+                        return Ok(());
+                    }
                     if !RETRY
                         || self.generation == expected
                         || (MATCH_KEY && self.files.get(&file.key) != before.as_ref())
@@ -80,5 +88,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(error) => return Err(error.into()),
             }
         }
+        Err(Error::Conflict(
+            "command publication remained busy; retry the input".into(),
+        ))
     }
 }

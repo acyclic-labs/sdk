@@ -38,7 +38,13 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             };
             let bytes = serde_json::to_vec(&request).map_err(codec)?;
             let saved = self.read_file(&key).await?;
-            if self.generation != cut {
+            if self.generation != cut
+                && self
+                    .state(CommandFileRoot::Session, "layout.json")?
+                    .and_then(|layout| layout.get("confirmation").cloned())
+                    .as_ref()
+                    != Some(&confirmation)
+            {
                 return Err(Error::Conflict(
                     "confirmation changed; review the current layout".into(),
                 ));
@@ -46,7 +52,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             match saved {
                 Some(saved) if saved.bytes.as_ref() == bytes => {}
                 Some(_) => return Err(Error::Conflict("confirmation request changed".into())),
-                None => self.publish(key, bytes, true).await?,
+                None => self.publish_rebased::<true, true>(key, bytes, true).await?,
             }
         }
         let mut layout = self
