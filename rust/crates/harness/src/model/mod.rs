@@ -9,9 +9,7 @@ mod preparation;
 mod provider;
 mod reasoning;
 mod request;
-#[cfg(feature = "filesystem")]
 mod usage;
-#[cfg(feature = "filesystem")]
 pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod tests;
