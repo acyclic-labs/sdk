@@ -34,6 +34,7 @@ pub use documents::DocumentViews;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod task_compat;
+#[cfg(feature = "tui")]
 pub(crate) use task_compat::views::authority_key;
 pub use task_compat::{
     ClientViews as TaskFileViews, FileQueryView as TaskFileQueryView,
