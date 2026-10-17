@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_harness::{
     AgentId,
-    client::ViewUpdate,
+    client::{FileClientState, ViewUpdate},
     conversation::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOwner, VolumeRef,
@@ -11,8 +11,6 @@ use acyclic_harness::{
     resources::ProviderRef,
 };
 use futures::{FutureExt, StreamExt};
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness::client::FileClientState;
 use prost::Message;
 
 #[cfg(unix)]
@@ -340,7 +338,6 @@ fn rehydration_accepts_a_page_crossing_the_durable_cursor_without_duplication() 
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
     for suffix in ["lock", "checkpoint"] {
@@ -379,7 +376,6 @@ fn journal_sidecars_cannot_be_opened_as_journals_or_overwrite_existing_data() {
     assert_eq!(std::fs::read(lock).unwrap(), b"a pre-existing journal");
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn long_journal_names_survive_automatic_checkpoint_and_reopen() {
     for name in ["a".repeat(220), "b".repeat(250), "é".repeat(110)] {
@@ -554,7 +550,6 @@ proptest::proptest! {
     }
 
     // Property: all portable spellings of reserved suffixes fail before creating files.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn journal_reserved_suffixes_are_case_and_alias_independent(
         name in "[a-zA-Z0-9_-]{1,24}", upper in proptest::collection::vec(proptest::bool::ANY, 11),
@@ -569,7 +564,6 @@ proptest::proptest! {
     }
 
     // Property: every admitted basename within NAME_MAX leaves room for checkpoint files.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn checkpoint_names_are_independent_of_journal_name_length(name in "[a-zA-Z0-9_-]{1,250}") {
         let directory = tempfile::tempdir().unwrap();
@@ -583,7 +577,6 @@ proptest::proptest! {
     }
 
     // Property: file framing and canonical protobuf JSON preserve every admitted field.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn client_frame_and_journal_record_roundtrip(
         id in ".{0,32}", generation in ".{0,32}", revision in proptest::num::u64::ANY,

@@ -4,11 +4,9 @@ use acyclic_harness::{
     Result,
     client::{
         AttentionEvent, AttentionNotification, NotificationMode, NotificationView,
-        TerminalNotificationProtocol,
+        TerminalNotificationProtocol, terminal_notification,
     },
 };
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_harness::client::terminal_notification;
 
 fn notice(sequence: u64, event: AttentionEvent) -> AttentionNotification {
     AttentionNotification {
@@ -144,7 +142,6 @@ fn suppressed_notifications_drain_without_calling_a_broken_terminal() -> Result<
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn terminal_encoding_allocates_only_its_output_buffer() {
     let notification = AttentionNotification {
@@ -176,7 +173,6 @@ fn terminal_encoding_allocates_only_its_output_buffer() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn queue_insertion_cost_is_independent_of_payload_size() -> Result<()> {
     let mut previous = None;
@@ -213,7 +209,6 @@ fn queue_insertion_cost_is_independent_of_payload_size() -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn existing_task_updates_allocate_only_shared_record_metadata() -> Result<()> {
     let mut previous_bytes = None;

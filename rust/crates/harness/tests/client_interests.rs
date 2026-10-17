@@ -8,7 +8,6 @@ mod continuity;
 #[path = "client_interest_discovery.rs"]
 mod discovery;
 #[path = "client_interest_wire.rs"]
-#[cfg(not(target_arch = "wasm32"))]
 mod platform;
 #[path = "support/quiescent.rs"]
 mod quiescent;
