@@ -268,3 +268,105 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
 
 #[cfg(all(feature = "tui", feature = "terminal"))]
 mod retention;
+
+async fn checkpoint_model<const BROKEN: bool>() {
+    use futures::StreamExt as _;
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("checkpoint-frame").unwrap(),
+    )
+    .await
+    .unwrap();
+    let task = crate::TaskId::from_bytes([34; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let mut client = TaskFileClient::observe(&volume, &owner, 128, 65536)
+        .await
+        .unwrap();
+    let revision = client.presentation_revision();
+    let ignored = FileValue::new(FileKey::Goal, b"unrelated".to_vec());
+    volume
+        .append(volume.head().await.unwrap(), &ignored)
+        .await
+        .unwrap();
+    client.next_change().await.unwrap();
+    if BROKEN {
+        client.advance_presentation();
+    }
+    assert_eq!(
+        client.presentation_revision(),
+        revision,
+        "checkpoints must not invalidate presentation"
+    );
+    assert!(!client.commands_dirty);
+    // The alternate File input path consumes another real checkpoint as well.
+    volume
+        .append(
+            volume.head().await.unwrap(),
+            &FileValue::new(FileKey::Goal, b"other".to_vec()),
+        )
+        .await
+        .unwrap();
+    let change = client.changes.next().await.unwrap().unwrap();
+    client
+        .apply_update(super::super::ViewUpdate::File(change))
+        .unwrap();
+    assert_eq!(client.presentation_revision(), revision);
+    let other = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Request(Component::new("draft").unwrap()),
+        },
+        b"draft".to_vec(),
+    );
+    client
+        .apply_update(super::super::ViewUpdate::DocumentFile {
+            authority: owner.clone(),
+            file: other.clone(),
+        })
+        .unwrap();
+    let cursor = client
+        .views()
+        .queries
+        .values()
+        .next()
+        .unwrap()
+        .cursor()
+        .clone();
+    client
+        .apply_update(super::super::ViewUpdate::DocumentChange {
+            authority: owner.clone(),
+            change: crate::task_volume::Change {
+                file: Some(other),
+                files: vec![],
+                removed: vec![],
+                cursor,
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        client.presentation_revision(),
+        revision,
+        "non-document writes must not invalidate presentation"
+    );
+    client
+        .apply_update(super::super::ViewUpdate::DocumentFile {
+            authority: owner,
+            file: FileValue::new(FileKey::Goal, b"visible goal".to_vec()),
+        })
+        .unwrap();
+    assert!(client.presentation_revision() > revision);
+}
+
+#[test]
+fn filtered_checkpoints_and_non_document_writes_preserve_the_render_cut() {
+    futures::executor::block_on(checkpoint_model::<false>());
+}
+
+#[test]
+#[should_panic(expected = "checkpoints must not invalidate presentation")]
+fn checkpoint_invalidation_negative_control() {
+    futures::executor::block_on(checkpoint_model::<true>());
+}
