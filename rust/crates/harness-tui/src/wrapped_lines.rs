@@ -1,7 +1,4 @@
-use crate::{
-    Editor, Layout,
-    config::{ThemeRole, default_style},
-};
+use crate::{Editor, Layout};
 use ratatui::{
     layout::Alignment,
     style::{Modifier, Style},
@@ -77,7 +74,7 @@ impl WrappedLines {
             for row in visible_rows(&source.layout) {
                 self.ranges.push(offset + row.start..offset + row.end);
             }
-            paint(&source, &[], &mut self.rows);
+            paint(&source, &[], None, Style::default(), &mut self.rows);
             self.sources.push(source);
         }
     }
@@ -88,10 +85,15 @@ impl WrappedLines {
     }
 
     /// Repaint cached rows with source-byte highlights, without another layout.
-    pub fn highlight(&mut self, matches: &[Range<usize>]) {
+    pub fn highlight(
+        &mut self,
+        matches: &[Range<usize>],
+        selected: Option<&Range<usize>>,
+        style: Style,
+    ) {
         self.rows.clear();
         for source in &self.sources {
-            paint(source, matches, &mut self.rows);
+            paint(source, matches, selected, style, &mut self.rows);
         }
     }
 
@@ -128,7 +130,13 @@ fn visible_rows(layout: &Layout) -> impl Iterator<Item = &crate::layout::Row> {
 }
 
 // Ordinary wrapping and search use this single style/coalescing path.
-fn paint(source: &Source, matches: &[Range<usize>], output: &mut Vec<Line<'static>>) {
+fn paint(
+    source: &Source,
+    matches: &[Range<usize>],
+    selected: Option<&Range<usize>>,
+    selection: Style,
+    output: &mut Vec<Line<'static>>,
+) {
     let mut next = matches.partition_point(|range| range.end <= source.offset);
     for row in visible_rows(&source.layout) {
         let mut spans = Vec::with_capacity(usize::from(!row.cells.is_empty()));
@@ -149,9 +157,12 @@ fn paint(source: &Source, matches: &[Range<usize>], output: &mut Vec<Line<'stati
             if matches.get(next).is_some_and(|range| {
                 range.start < source.offset + cell.source.end && range.end > at
             }) {
-                style = style
-                    .patch(default_style(ThemeRole::Selection))
-                    .add_modifier(Modifier::UNDERLINED);
+                style = style.patch(selection).add_modifier(Modifier::UNDERLINED);
+            }
+            if selected.is_some_and(|range| {
+                range.start < source.offset + cell.source.end && range.end > at
+            }) {
+                style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
             }
             if previous.is_some_and(|previous| previous != style) {
                 spans.push(span(&row.cells[group..index], previous.unwrap()));

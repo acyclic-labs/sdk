@@ -83,7 +83,7 @@ pub struct ClientRenderer {
     key: String,
     help: super::help::Help,
     search: super::TranscriptSearch,
-    search_cut: Option<(String, u16, usize)>,
+    search_cut: Option<(String, u16, usize, i64, Style)>,
     busy: bool,
     tool_details: bool,
     seen: usize,
@@ -355,14 +355,22 @@ impl ClientRenderer {
             .unwrap_or_default();
         if layout["open_view"] == "find" && layout["view_input"] == "find" {
             let query = layout["search_query"].as_str().unwrap_or("").to_owned();
-            let cut = (query, width, self.transcript.len());
+            let cut = (
+                query,
+                width,
+                self.transcript.len(),
+                layout["search_index"].as_i64().unwrap_or(0),
+                input.theme.style(super::config::ThemeRole::Selection),
+            );
             if search_changed || self.search_cut.as_ref() != Some(&cut) {
-                self.search.update(&mut self.wrapped_transcript, &cut.0);
+                self.search
+                    .update(&mut self.wrapped_transcript, &cut.0, cut.3, cut.4);
                 self.search_cut = Some(cut);
             }
         } else {
             if self.search_cut.take().is_some() {
-                self.wrapped_transcript.highlight(&[]);
+                self.wrapped_transcript
+                    .highlight(&[], None, Style::default());
             }
         }
         Ok(())
@@ -459,7 +467,8 @@ impl ClientRenderer {
                 screen.search_row =
                     (self.search.count() != 0).then(|| self.search.selected_row(index));
                 screen.status = Line::raw(format!(
-                    "Find: {} matches · Enter next · Shift+Enter previous · Escape closes",
+                    "Find: {}/{} matches · Enter next · Shift+Enter previous · Escape closes",
+                    self.search.position(index),
                     self.search.count()
                 ));
             }

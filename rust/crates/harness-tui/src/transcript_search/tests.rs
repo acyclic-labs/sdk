@@ -1,5 +1,8 @@
 use super::*;
 use proptest::prelude::*;
+fn selection() -> ratatui::style::Style {
+    crate::config::default_style(crate::config::ThemeRole::Selection)
+}
 
 // Independent whole-string fold plus a naive window scan. The production path
 // retains only needle-sized origins and uses prefix links rather than rescans.
@@ -60,7 +63,7 @@ proptest! {
         let mut view = TranscriptSearch::default();
         let mut wrapped=crate::WrappedLines::default();
         wrapped.update(&source,0,width);
-        view.update(&mut wrapped,&query);
+        view.update(&mut wrapped,&query,0,selection());
         prop_assert_eq!(view.count(),reference(&text,&query).len());
         let actual: String=wrapped.rows().iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
         let layout=crate::Layout::new(&crate::Editor::new(&text),usize::from(width));
@@ -100,7 +103,7 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     ];
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
-    view.update(&mut wrapped, "strasse");
+    view.update(&mut wrapped, "strasse", 0, selection());
     assert_eq!(view.count(), 2);
     assert_eq!(view.selected_row(-1), 1);
     assert_eq!(view.selected_row(2), 0);
@@ -130,7 +133,7 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
         ["Straße", "STRASSE"]
     );
     wrapped.update(&source, 0, 3);
-    view.update(&mut wrapped, "strasse");
+    view.update(&mut wrapped, "strasse", 0, selection());
     assert_eq!(view.count(), 2, "wrapping must not split the search needle");
     assert!(view.selected_row(1) > 0);
 }
@@ -184,9 +187,9 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     wrapped.update(&source, 0, 5);
     let ordinary = wrapped.rows().to_vec();
     let mut search = TranscriptSearch::default();
-    search.update(&mut wrapped, "strasse");
+    search.update(&mut wrapped, "strasse", 0, selection());
     assert_eq!(search.count(), 2);
-    wrapped.highlight(&[]);
+    wrapped.highlight(&[], None, selection());
     assert_eq!(wrapped.rows(), ordinary);
 }
 
@@ -205,7 +208,7 @@ fn partial_matches_preserve_every_style_boundary() {
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
     let mut search = TranscriptSearch::default();
-    search.update(&mut wrapped, "bc");
+    search.update(&mut wrapped, "bc", 0, selection());
     let spans = &wrapped.rows()[0].spans;
     assert_eq!(
         spans
@@ -228,4 +231,70 @@ fn partial_matches_preserve_every_style_boundary() {
             .add_modifier
             .contains(Modifier::ITALIC | Modifier::UNDERLINED)
     );
+}
+
+fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::Line,
+    };
+    let mut wrapped = crate::WrappedLines::default();
+    wrapped.update(&[Line::raw("one one")], 0, 80);
+    let mut search = TranscriptSearch::default();
+    let red = Style::default().fg(Color::Red);
+    search.update(&mut wrapped, "one", 0, red);
+    assert_eq!(search.position(0), 1);
+    assert!(
+        wrapped.rows()[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    );
+    search.update(&mut wrapped, "one", if INDEX { 1 } else { 0 }, red);
+    assert!(
+        !wrapped.rows()[0].spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED),
+        "selected occurrence must change within the same row"
+    );
+    assert!(
+        wrapped.rows()[0]
+            .spans
+            .last()
+            .unwrap()
+            .style
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    );
+    assert_eq!(search.selected_row(0), search.selected_row(1));
+    assert_eq!(search.position(1), 2);
+    let blue = Style::default().fg(Color::Blue).bg(Color::Yellow);
+    search.update(&mut wrapped, "one", 1, if THEME { blue } else { red });
+    assert_eq!(
+        wrapped.rows()[0].spans[0].style.fg,
+        Some(Color::Blue),
+        "resolved selection color must change"
+    );
+    assert_eq!(
+        wrapped.rows()[0].spans.last().unwrap().style.bg,
+        Some(Color::Yellow)
+    );
+}
+
+#[test]
+fn selected_occurrence_and_resolved_theme_repaint_the_shared_rows() {
+    selected_theme_model::<true, true>();
+}
+
+#[test]
+#[should_panic(expected = "selected occurrence must change within the same row")]
+fn missing_selected_index_negative_control() {
+    selected_theme_model::<false, true>();
+}
+
+#[test]
+#[should_panic(expected = "resolved selection color must change")]
+fn hardcoded_selection_theme_negative_control() {
+    selected_theme_model::<true, false>();
 }

@@ -92,7 +92,7 @@ fn allocation_model<const PER_GRAPHEME: bool>() {
         }
     });
     let candidate = acyclic_test_support::measure(|| {
-        projection.highlight(&[0..8192]);
+        projection.highlight(&[0..8192], None, selected);
         if PER_GRAPHEME {
             let spans: Vec<_> = text.chars().map(|c| Span::raw(c.to_string())).collect();
             std::hint::black_box(spans);
@@ -120,6 +120,22 @@ fn allocation_model<const PER_GRAPHEME: bool>() {
         rows
     );
     assert_eq!(projection.rows(), baseline);
+    // The complete public query path also has an exact budget: matcher buffers,
+    // 8192 retained match locations, and one extra span for the selected byte.
+    let mut search = acyclic_harness_tui::TranscriptSearch::default();
+    let query = acyclic_test_support::measure(|| search.update(&mut projection, "a", 0, selected));
+    assert_eq!(search.count(), 8192);
+    assert_eq!(
+        query.count_total,
+        (2 * rows + 18) as u64,
+        "full query allocation count"
+    );
+    assert_eq!(
+        query.bytes_total,
+        (8192 + (rows + 4) * std::mem::size_of::<Span<'static>>() + 327672) as u64,
+        "full query allocation bytes"
+    );
+
     assert_eq!(
         projection
             .rows()

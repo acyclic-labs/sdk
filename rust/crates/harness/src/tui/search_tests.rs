@@ -14,12 +14,12 @@ use std::sync::Arc;
 struct NoFiles;
 impl crate::conversation::ContentResidencyVerifier for NoFiles {}
 
-fn paint(
+fn paint_frame(
     renderer: &mut ClientRenderer,
     files: &CommandSession<MemoryStream>,
     input: &PromptInput,
     width: u16,
-) -> String {
+) -> super::super::ratatui::buffer::Buffer {
     renderer.layout(files, input, width, 20).unwrap();
     let screen = renderer.screen_for(files).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
@@ -28,9 +28,16 @@ fn paint(
             screen.render(frame, input, &mut Viewport::default(), 0, 0);
         })
         .unwrap();
-    terminal
-        .backend()
-        .buffer()
+    terminal.backend().buffer().clone()
+}
+
+fn paint(
+    renderer: &mut ClientRenderer,
+    files: &CommandSession<MemoryStream>,
+    input: &PromptInput,
+    width: u16,
+) -> String {
+    paint_frame(renderer, files, input, width)
         .content
         .iter()
         .map(|cell| cell.symbol())
@@ -131,10 +138,36 @@ async fn scenario<const BOUND: bool>(query: &str) {
     assert!(files.take_request().is_none());
     let text = paint(&mut renderer, &files, &input, 80);
     assert!(
-        text.contains("2 matches"),
+        text.contains("2/2 matches"),
         "Unicode matches must reach the composed status"
     );
     assert!(text.contains("STRASSE"), "next match must scroll into view");
+    // Changing only the resolved theme must invalidate cached search styles.
+    let mut theme = super::super::config::ConfigView::default();
+    for (color, expected) in [
+        ("#112233", Color::Rgb(17, 34, 51)),
+        ("#445566", Color::Rgb(68, 85, 102)),
+    ] {
+        theme.set_file(
+            super::super::config::Scope::User,
+            super::super::config::ConfigFile::Theme,
+            Some(&serde_json::json!({"selection":{"foreground":color}}).to_string()),
+        );
+        input.theme = theme
+            .theme(&super::super::term::Capabilities {
+                colour: super::super::term::ColourDepth::TrueColour,
+                ..Default::default()
+            })
+            .unwrap();
+        let frame = paint_frame(&mut renderer, &files, &input, 80);
+        assert!(
+            frame
+                .content
+                .iter()
+                .any(|cell| cell.fg == expected && cell.modifier.contains(Modifier::UNDERLINED)),
+            "resolved selection theme must reach the composed search frame"
+        );
+    }
     let reopened = CommandSession::open(
         volume.clone(),
         uuid::Uuid::from_bytes([25; 16]),
@@ -156,7 +189,7 @@ async fn scenario<const BOUND: bool>(query: &str) {
             .await
             .unwrap();
     }
-    assert!(paint(&mut renderer, &files, &input, 80).contains("Straße"));
+    assert!(paint(&mut renderer, &files, &input, 80).contains("1/2 matches"));
     for effect in input.key(KeyEvent::new(KeyCode::Esc, M::NONE), 5, 78) {
         file_tui_input(&mut files, &NoFiles, effect, 20, 0)
             .await
