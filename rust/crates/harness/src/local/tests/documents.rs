@@ -1,6 +1,3 @@
-use crate as harness;
-#[path = "../../../tests/support/empty_client_views.rs"]
-mod file_views;
 use super::*;
 use crate::{
     TaskId,
@@ -80,7 +77,7 @@ proptest::proptest! {
                     &FileValue::new(FileKey::Goal, b"Wrong execution-log goal".to_vec())).await?;
                 let owner = wire::Authority { kind: wire::AggregateKind::Task as i32,
                     id: TaskId::new().to_string() };
-                let mut session = file_views::empty();
+                let mut session = crate::test_support::empty_client_views();
                 let mut source = local_documents(&harness, &mut session).await?;
                 let initial = picture(&session, &owner);
                 assert!(initial.contains("Scratch goal"), "{initial}");

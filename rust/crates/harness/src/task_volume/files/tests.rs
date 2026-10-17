@@ -1,8 +1,3 @@
-#[cfg(all(feature = "tui", feature = "terminal"))]
-use crate as harness;
-#[cfg(all(feature = "tui", feature = "terminal"))]
-#[path = "../../../tests/support/empty_client_views.rs"]
-mod file_views;
 use super::*;
 use crate::AgentId;
 use crate::task_volume::FileQuerySource;
@@ -358,7 +353,7 @@ proptest! {
             let (verifier, scope) = authority(Some(agent), &volume, &[VolumeOperation::Read, VolumeOperation::Write]);
             let files = TaskFiles::open(Arc::new(MemoryStream::default()), &volume, &verifier, &scope, 65_536).await.unwrap();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: crate::TaskId::from_bytes([2;16]).to_string() };
-            let new_session=file_views::empty;
+            let new_session=crate::test_support::empty_client_views;
             let cut = cut.min(events.len());
             let mut generation = files.snapshot(&Query::Root, 4).await.unwrap().generation;
             for (kind, text) in &events[..cut] {

@@ -5,9 +5,7 @@ use super::harness::{
     task_volume::{Change, Channel, Component, FileKey, FileValue, TaskFile},
 };
 
-#[path = "empty_client_views.rs"]
-mod initial;
-pub use initial::empty;
+pub use harness::test_support::empty_client_views as empty;
 pub fn put(views: &mut ClientViews, key: FileKey, bytes: Vec<u8>, channel: Option<Channel>) {
     let mut cursor = views.selections().next().unwrap().1.cursor().clone();
     cursor.position += 1;

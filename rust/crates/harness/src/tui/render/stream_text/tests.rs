@@ -1,12 +1,9 @@
 use super::*;
-use crate as harness;
 use crate::task_volume::{Change, Component, FileKey, FileValue, TaskFile};
 use proptest::prelude::*;
-#[path = "../../../../tests/support/empty_client_views.rs"]
-mod initial;
 
 fn replaced_head(bodies: &[String], forget_prefix: bool) {
-    let mut views = initial::empty();
+    let mut views = crate::test_support::empty_client_views();
     let task = Component::new("task").unwrap();
     let key = FileKey::Task {
         task: task.clone(),

@@ -10,11 +10,6 @@ use proptest::prelude::*;
 use std::sync::Arc;
 #[path = "client_command_activity.rs"]
 mod activity;
-#[cfg(feature = "tui")]
-use acyclic_harness as harness;
-#[cfg(feature = "tui")]
-#[path = "support/empty_client_views.rs"]
-mod file_views;
 #[path = "client_command_session_bounds.rs"]
 mod bounds;
 

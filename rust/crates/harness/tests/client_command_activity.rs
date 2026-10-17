@@ -25,7 +25,7 @@ proptest! {
             #[cfg(feature = "tui")] {
                 use acyclic_harness::tui::{ClientRenderer, PromptInput, Viewport, ratatui::{Terminal, backend::TestBackend}};
                 let authority = wire::Authority { kind: wire::AggregateKind::Task as i32, id: TaskId::from_bytes([3;16]).to_string() };
-                let views = super::file_views::empty();
+                let views = acyclic_harness::test_support::empty_client_views();
                 let mut renderer = ClientRenderer::default();
                 renderer.update(&views, &authority);
                 renderer.configure(&views, &authority, &commands).unwrap();

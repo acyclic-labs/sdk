@@ -3,6 +3,8 @@
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod differential;
 pub(crate) mod admission_work;
+mod client_views;
+pub use client_views::empty_client_views;
 mod scripted;
 mod search;
 mod task_volume_work;
