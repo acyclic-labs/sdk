@@ -259,8 +259,8 @@ async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
 }
 
-/// Headless `-p` resolves slash input through the TUI's catalog: project
-/// prompts expand, direct tools run, and anything else fails without chat.
+/// Headless `-p` resolves input through the TUI's catalog: plain text is a
+/// prompt, direct tools run, and any other slash input fails without chat.
 #[tokio::test]
 async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -293,13 +293,8 @@ async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     let settings = directory.path().join("settings");
-    std::fs::create_dir_all(workspace.join(".claude/commands")).unwrap();
+    std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
-    std::fs::write(
-        workspace.join(".claude/commands/marker.md"),
-        "Marker body $ARGUMENTS",
-    )
-    .unwrap();
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
@@ -342,16 +337,15 @@ async fn headless_slash_input_is_a_command_or_an_error_never_chat() {
             .collect()
     };
 
-    // A project prompt expands; the model never sees the slash command.
-    let output = run("/marker world").await;
+    // Plain text is a prompt.
+    let output = run("plain words LPPROMPT").await;
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
     let body = observed.try_recv().unwrap();
-    assert!(body.contains("Marker body world"), "{body}");
-    assert!(!body.contains("/marker"), "{body}");
+    assert!(body.contains("plain words LPPROMPT"), "{body}");
 
     // A direct tool runs without a model turn and reports its output.
     let output = run("/shell echo LPSHELL").await;
