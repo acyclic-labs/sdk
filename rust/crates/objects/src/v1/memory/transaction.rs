@@ -28,14 +28,17 @@ impl Transaction {
         // branches stay unique. All fallible checks and durable I/O are done.
         *state = self.state;
         if let Some(change) = self.object {
-            let bucket = state
-                .buckets
-                .get_mut(change.bucket.as_str())
-                .expect("staged object bucket was validated before commit");
-            if let Some(value) = change.value {
-                bucket.objects.insert(change.key, value);
-            } else {
-                bucket.objects.remove(change.key.as_str());
+            let bucket = state.buckets.get_mut(change.bucket.as_str());
+            assert!(
+                bucket.is_some(),
+                "staged object bucket was validated before commit"
+            );
+            if let Some(bucket) = bucket {
+                if let Some(value) = change.value {
+                    bucket.objects.insert(change.key, value);
+                } else {
+                    bucket.objects.remove(change.key.as_str());
+                }
             }
         }
         if let Some((key, receipt)) = self.receipt {
