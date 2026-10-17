@@ -34,6 +34,17 @@ async function attachment(path: string, bytes: Uint8Array, mediaType: string): P
   return contracts.validate("file_ref", file);
 }
 
+test("Pi projects scoped instructions through the shared Rust renderer", async () => {
+  const bytes = new TextEncoder().encode("project marker λ\n");
+  const file = await attachment("archive/retained", bytes, "text/markdown");
+  const input: ModelRequest = { ...request, messages: [{ role: "user", content: {
+    kind: "file", file, policy: { project_instructions: { volume: file.volume, path: "project/AGENTS.md" } },
+  } }] };
+  const projected = await projectPiRequest(input, { resolveFile: async () => bytes, maxResolvedBytes: 4096 });
+  expect(projected.messages[0]?.content).toEqual([{ type: "text",
+    text: "# AGENTS.md instructions for project\n\n<INSTRUCTIONS>\nproject marker λ\n\n</INSTRUCTIONS>" }]);
+});
+
 test("Pi default projection resolves bounded text and leaves image and document references opaque", async () => {
   const imageBytes = Uint8Array.of(1, 2, 3);
   const textBytes = new TextEncoder().encode("file text");
