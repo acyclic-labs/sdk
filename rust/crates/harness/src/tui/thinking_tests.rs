@@ -69,8 +69,18 @@ async fn followed_busy<const BOUND: bool>() {
     assert!(!text(&paint::<BOUND>(&mut renderer, &files, 0)).contains("Thinking…"));
     files.submit("hello", &NoFiles).await.unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
+    let layout = files
+        .state(CommandFileRoot::Session, "layout.json")
+        .unwrap();
     let first = paint::<BOUND>(&mut renderer, &files, 0);
     let later = paint::<BOUND>(&mut renderer, &files, Thinking::FRAME_MS);
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap(),
+        layout,
+        "animation must not publish layout state"
+    );
     assert!(
         text(&first).contains("Thinking…"),
         "followed busy state must render thinking"
@@ -100,12 +110,6 @@ async fn followed_busy<const BOUND: bool>() {
         .unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
     assert!(!text(&paint::<BOUND>(&mut renderer, &files, 0)).contains("Thinking…"));
-    assert!(
-        files
-            .state(CommandFileRoot::Session, "layout.json")
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[test]
