@@ -67,6 +67,7 @@ pub struct FileQueryView {
     rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
     goal_revision: Option<crate::OperationId>,
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     materialized: bool,
@@ -178,6 +179,7 @@ impl FileQueryView {
             rejected_models,
             goal: GoalFileView::Missing,
             goal_revision: None,
+            #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
             goal_line_starts: Arc::default(),
             progress: None,
             materialized,
@@ -216,7 +218,10 @@ impl FileQueryView {
                 }
             }
         }
-        view.goal_line_starts = goal_line_starts(&view.goal);
+        #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+        {
+            view.goal_line_starts = goal_line_starts(&view.goal);
+        }
         Ok(view)
     }
 
@@ -266,6 +271,7 @@ impl FileQueryView {
         &self.goal
     }
 
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     pub(super) fn goal_line_starts(&self) -> &Arc<[usize]> {
         &self.goal_line_starts
     }
@@ -319,7 +325,10 @@ impl FileQueryView {
             if *key == FileKey::Goal {
                 self.goal = GoalFileView::Missing;
                 self.goal_revision = None;
-                self.goal_line_starts = Arc::default();
+                #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+                {
+                    self.goal_line_starts = Arc::default();
+                }
             }
             if *key == FileKey::RequestHead {
                 self.progress = None;
@@ -348,7 +357,10 @@ impl FileQueryView {
             {
                 self.goal = GoalFileView::from_file(Some(&file), self.maximum_bytes);
                 self.goal_revision = goal_revision(Some(&file));
-                self.goal_line_starts = goal_line_starts(&self.goal);
+                #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
+                {
+                    self.goal_line_starts = goal_line_starts(&self.goal);
+                }
             }
             if matches!(file.key, FileKey::Plan(_)) && !self.matches_head(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
@@ -509,6 +521,7 @@ fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {
     file.bytes.len() > maximum_bytes && super::model_view::turn_request(&file.key).is_some()
 }
 
+#[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
 pub(super) fn goal_line_starts(goal: &GoalFileView) -> Arc<[usize]> {
     let GoalFileView::Present { goal } = goal else {
         return Arc::default();

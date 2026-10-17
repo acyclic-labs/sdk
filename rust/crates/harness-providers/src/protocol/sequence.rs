@@ -32,6 +32,22 @@ pub(crate) fn user_boundary(role: Option<&str>) -> bool {
     role == Some("user")
 }
 
+/// ANT-TOOL-05: whether an Anthropic content block is a `tool_result`.
+pub(crate) fn tool_result(part: &Value) -> bool {
+    part["type"] == "tool_result"
+}
+
+/// ANT-TOOL-05: every `tool_result` in a message precedes all other content.
+/// Takes one `tool_result` flag per block, in order.
+pub(crate) fn results_lead(results: impl IntoIterator<Item = bool>) -> bool {
+    let mut content = false;
+    results.into_iter().all(|result| {
+        let leads = !(result && content);
+        content |= !result;
+        leads
+    })
+}
+
 /// GEM-TOOL-05/06: a part is a call, else a response, else other content.
 pub(crate) enum GeminiPart<'a> {
     Call(&'a Value),

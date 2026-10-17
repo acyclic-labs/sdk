@@ -275,3 +275,37 @@ proptest! {
         prop_assert_eq!((measured.count_max, measured.bytes_max), (peaks.0 as u64, peaks.1 as u64));
     }
 }
+
+#[test]
+fn differential_rejects_changed_bytes_errors_and_observer_order() {
+    let observe = || (b"bytes".to_vec(), Err::<(), _>(7u8), vec![1u8, 2]);
+    for fault in 0..3 {
+        let rejected = std::panic::catch_unwind(|| {
+            differential(observe, || {
+                let mut result = observe();
+                match fault {
+                    0 => result.0.push(0),
+                    1 => result.1 = Ok(()),
+                    2 => result.2.reverse(),
+                    _ => unreachable!("bounded fault"),
+                }
+                result
+            })
+        });
+        assert!(
+            rejected.is_err(),
+            "differential oracle accepted corruption {fault}"
+        );
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn differential_keeps_complete_results_and_symmetric_measurements(bytes in prop::collection::vec(any::<u8>(), 0..65), error in any::<u8>()) {
+        let observe = || (bytes.clone(), Err::<(), _>(error), vec![1u8, 2]);
+        let (result, [before, after]) = differential(observe, observe);
+        prop_assert_eq!(result, (bytes, Err(error), vec![1u8, 2]));
+        prop_assert_eq!(before, after);
+    }
+}

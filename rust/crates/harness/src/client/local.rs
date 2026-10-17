@@ -1,5 +1,5 @@
 //! Local bindings shared by native clients; presentation never owns a host.
-use crate::{Error, OperationId, Result, local::LocalHarness, wire};
+use crate::{OperationId, Result, local::LocalHarness, wire};
 use std::sync::Arc;
 
 /// Opens the authorized task-file client; opening starts no task.
@@ -53,7 +53,9 @@ pub async fn local_ui(
     owner: &wire::Authority,
 ) -> Result<super::CommandSession<acyclic_stream::LocalStream>> {
     if owner.kind != wire::AggregateKind::Task as i32 {
-        return Err(Error::Invalid("local UI requires a task owner".into()));
+        return Err(crate::Error::Invalid(
+            "local UI requires a task owner".into(),
+        ));
     }
     let session = uuid::Uuid::from_bytes(OperationId::parse(operation)?.into_bytes());
     // TODO(#495): obtain the stable UI-session identity and bounds from client settings.

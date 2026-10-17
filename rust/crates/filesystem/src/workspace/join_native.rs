@@ -152,7 +152,7 @@ fn validate_join_side_selections(
         loop {
             let key = keys.next().ok_or(DrivenJoinError::StaleCandidate)?;
             accounting
-                .charge(item_work(1))
+                .charge_items(1)
                 .map_err(WorkspaceError::from)?;
             match key.cmp(conflict) {
                 std::cmp::Ordering::Less => {}

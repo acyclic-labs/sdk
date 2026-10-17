@@ -17,6 +17,7 @@ impl HostRoot {
         self.identity
     }
     #[cfg(unix)]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
         self.directory.as_raw_fd()
     }
@@ -149,6 +150,7 @@ impl HostRoot {
             self.stat_source(path, work)
         }
     }
+    #[cfg(any(test, feature = "native-mount", not(target_os = "linux")))]
     pub(crate) fn stat_file<W: NativeHostWork>(
         &self,
         file: &File,
@@ -167,6 +169,7 @@ impl HostRoot {
             )
         }
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn stat_file_metadata<W: NativeHostWork>(
         &self,
         file: &File,

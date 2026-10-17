@@ -75,16 +75,16 @@ pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;
 mod file_submit;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use file_submit::validate_request_key;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 mod retry;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) mod waiting_calls;
 pub use file_error::FileClientError;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use retry::submission_retry;
 mod offline;
 pub use offline::validate_offline_request;
@@ -141,7 +141,7 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
-#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_harness_loom))]
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;

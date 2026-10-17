@@ -164,7 +164,7 @@ impl DurableToolRunner<'_> {
             Ok(true) => tool_outcome(operation_id, Some(reason), io).map(Some),
             Ok(false) => Ok(None),
             Err(error) if tool_propagate(&error, io) => Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if error.leaves_effect_uncertain() => {
                 tool_outcome(operation_id, None, io).map(Some)
             }
             Err(error) => Err(error),

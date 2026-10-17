@@ -192,6 +192,26 @@ mod turns {
             turn_repair_violation(Adapter::Gemini, &batch, &broken),
             Some("unordered responses")
         );
+        // ANT-TOOL-05: user text between a call and its result merges ahead of
+        // the result; production moves results to the front of the turn.
+        let text_first = [
+            json!({"role":"user","content":[{"type":"text","text":"q"}]}),
+            json!({"role":"assistant","content":[{"type":"tool_use","id":"c","name":"f","input":{}}]}),
+            json!({"role":"user","content":[{"type":"text","text":"also"}]}),
+            json!({"role":"user","content":[{"type":"tool_result","tool_use_id":"c","content":"ok"}]}),
+        ];
+        let healthy = replay_turns_with(Adapter::Anthropic, &text_first, RULES).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Anthropic, &text_first, &healthy),
+            None
+        );
+        assert_eq!(healthy[2]["content"][0]["type"], "tool_result");
+        assert_eq!(healthy[2]["content"][1]["text"], "also");
+        let broken = replay_turns_with(Adapter::Anthropic, &text_first, unordered).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Anthropic, &text_first, &broken),
+            Some("interrupted results")
+        );
         // Greptile: responses already in call order but behind text still
         // interrupt the exchange; production moves them to the front.
         let mut interrupted = batch.clone();
@@ -256,6 +276,7 @@ mod turns {
             include_bytes!("../../../fuzz/corpus/turns/anthropic-joined-blank-text").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-result-moved-past-blank").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-ordered-behind-text").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/anthropic-text-before-result").as_slice(),
         ] {
             assert_turns(bytes);
         }

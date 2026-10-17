@@ -45,6 +45,6 @@ pub(super) fn map_error(error: ProviderError, operation: Option<OperationId>) ->
             "Machines guest command outcome is unknown on machine {machine}"
         )),
         ProviderError::Failed => Error::Storage("Machines operation failed".into()),
-        ProviderError::Cancelled => Error::Storage("Machines operation was cancelled".into()),
+        ProviderError::Cancelled => Error::Cancelled,
     }
 }

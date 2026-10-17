@@ -2,16 +2,20 @@
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
+#[cfg(feature = "test-support")]
 pub(crate) mod admission_work;
 mod client_views;
 pub use client_views::empty_client_views;
 mod scripted;
 mod search;
+#[cfg(feature = "test-support")]
 mod task_volume_work;
 pub use search::{ScriptedSearch, ScriptedSearchProvider};
 
 pub use scripted::{ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn};
+#[cfg(feature = "test-support")]
 pub use task_volume_work::measure as measure_task_volume_work;
+#[cfg(feature = "test-support")]
 pub(crate) use task_volume_work::{
     Files as TaskVolumeFiles, examined as task_volume_item_examined,
 };
@@ -42,5 +46,7 @@ pub fn local_task_stream(
     harness.task_stream()
 }
 
+#[cfg(feature = "test-support")]
 pub(crate) mod model_view_work;
+#[cfg(feature = "test-support")]
 pub use model_view_work::measure as measure_model_view_work;

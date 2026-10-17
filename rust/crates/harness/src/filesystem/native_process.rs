@@ -80,6 +80,7 @@ pub struct NativeProcessAuthority {
     pub approvals: Arc<dyn ToolApprovalVerifier>,
 }
 
+#[cfg(any(feature = "filesystem-local", all(test, unix)))]
 pub(crate) mod bash;
 pub(crate) mod capture;
 mod invocation;

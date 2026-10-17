@@ -174,7 +174,7 @@ impl<'tools> DurableToolRunner<'tools> {
                 Ok(Some(result)) => result,
                 Ok(None) => return tool_outcome(operation_id, None, io),
                 Err(error) if tool_propagate(&error, io) => return Err(error),
-                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                Err(error) if error.leaves_effect_uncertain() => {
                     return tool_outcome(operation_id, None, io);
                 }
                 Err(error) => {
@@ -211,7 +211,7 @@ impl<'tools> DurableToolRunner<'tools> {
         let result_ref = match self.stage(operation_id, "tool:result", &result.0, io).await {
             Ok(reference) => reference,
             Err(error) if tool_propagate(&error, io) => return Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if error.leaves_effect_uncertain() => {
                 return tool_outcome(operation_id, None, io).map(Some);
             }
             Err(_) => {
@@ -231,7 +231,7 @@ impl<'tools> DurableToolRunner<'tools> {
         {
             Ok(reference) => reference,
             Err(error) if tool_propagate(&error, io) => return Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if error.leaves_effect_uncertain() => {
                 return tool_outcome(operation_id, None, io).map(Some);
             }
             Err(_) => {
@@ -263,7 +263,7 @@ impl<'tools> DurableToolRunner<'tools> {
             Ok(true) => tool_success(result, io).map(Some),
             Ok(false) => Ok(None),
             Err(error) if tool_propagate(&error, io) => Err(error),
-            Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if error.leaves_effect_uncertain() => {
                 tool_outcome(operation_id, None, io).map(Some)
             }
             Err(error) => Err(error),
