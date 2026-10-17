@@ -6,17 +6,13 @@ use std::sync::Arc;
 // shims. No replacement volume, snapshot, CAS or model-only file map is used.
 fn capture_and_publish<const ATOMIC: bool, const FENCE: bool>(racing_capture: bool) {
     loom::model(move || {
-        let volume = Arc::new(
-            block_on(TaskVolume::open(
-                Arc::new(MemoryStream::default()),
-                StreamPath::new("summary-selection").unwrap(),
-            ))
-            .unwrap(),
-        );
+        let provider = Arc::new(MemoryStream::default());
+        let path = StreamPath::new("summary-selection").unwrap();
+        let writer = Arc::new(block_on(TaskVolume::open(provider.clone(), path.clone())).unwrap());
         let task = TaskId::from_bytes([1; 16]);
         let head = commands::compact_key(task).unwrap();
         let query = Query::Turns(Component::new(task.to_string()).unwrap());
-        let initial_cut = block_on(volume.cut(&query)).unwrap();
+        let initial_cut = block_on(writer.cut(&query)).unwrap();
         let a_key = checkpoint_key(task, 1, OperationId::from_bytes([1; 16])).unwrap();
         let b_key = checkpoint_key(task, 2, OperationId::from_bytes([2; 16])).unwrap();
         let initial = SummarySelection {
@@ -25,8 +21,8 @@ fn capture_and_publish<const ATOMIC: bool, const FENCE: bool>(racing_capture: bo
             selected_at: 0,
             through: None,
         };
-        let generation = block_on(volume.head()).unwrap();
-        let generation = block_on(volume.append(
+        let generation = block_on(writer.head()).unwrap();
+        let generation = block_on(writer.append(
             generation,
             &FileValue::new(head.clone(), serde_json::to_vec(&initial).unwrap()),
         ))
@@ -35,8 +31,11 @@ fn capture_and_publish<const ATOMIC: bool, const FENCE: bool>(racing_capture: bo
             through: Some(initial_cut.clone()),
             ..initial.clone()
         };
+        // Independent real clients share the stream, not disposable caches.
+        // This bounds the topology without bounding schedules or permutations.
+        let volume = Arc::new(block_on(TaskVolume::open_existing(provider, path)).unwrap());
         let publish_rewind = {
-            let volume = volume.clone();
+            let volume = writer.clone();
             let head = head.clone();
             let rewind = rewind.clone();
             move || {
