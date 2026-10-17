@@ -1,7 +1,7 @@
 //! Immutable failed command outcomes remain visible and recoverable.
 use acyclic_harness::{
     Error, OperationId, TaskId,
-    client::{CommandFileRoot, CommandSession, TaskFileViews},
+    client::{CommandFileRoot, CommandSession},
     task_volume::TaskVolume,
     tui::{ClientRenderer, PromptInput, Viewport},
     wire,
@@ -44,7 +44,7 @@ proptest! {
             let mut files = CommandSession::open(volume.clone(), id, 65_536, 128).await.unwrap();
             let mut renderer = ClientRenderer::default();
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "owner".into() };
-            renderer.update(&TaskFileViews::default(), &owner);
+            renderer.update(&super::file_views::empty(), &owner);
             for failed in [true, false].into_iter().chain(sequence) {
                 files.submit("hello", &NoFiles).await.unwrap();
                 let request = files.take_request().unwrap();

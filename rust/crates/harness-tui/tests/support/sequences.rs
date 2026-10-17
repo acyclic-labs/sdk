@@ -5,8 +5,10 @@ pub fn exercise(data: &[u8]) -> Editor {
     let mut editor = Editor::default();
     let mut history = acyclic_harness_tui::PromptHistory::default();
     for (step, chunk) in data.chunks(8).enumerate() {
-        let op = chunk[0];
-        let text = String::from_utf8_lossy(&chunk[1..]);
+        let Some((&op, rest)) = chunk.split_first() else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(rest);
         let mut recalled = false;
         match op % 22 {
             0..=2 => editor.insert(&text, step as u64),

@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{CommandFileRoot, CommandSession, TaskFileViews, handle_tui_input},
+    client::{CommandFileRoot, CommandSession, handle_tui_input},
     task_volume::{FileKey, Query, TaskFile, TaskVolume},
     tui::{
         ClientRenderer, InputEffect, PromptInput, Viewport,
@@ -78,20 +78,8 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
         kind: acyclic_harness::wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = TaskFileViews::default();
-    views.tasks.insert(
-        format!(
-            "{}:{}",
-            acyclic_harness::wire::AggregateKind::Task.as_str_name(),
-            owner.id
-        ),
-        acyclic_harness::client::TaskView {
-            status: acyclic_harness::core::LifecycleState::Active,
-            lifecycle_operation_id: None,
-            reason: Some("owner feedback".into()),
-            parent: None,
-        },
-    );
+    let mut views = super::file_views::empty();
+    super::file_views::status(&mut views, &owner.id, "active", Some("owner feedback"));
     renderer.update(&views, &owner);
     assert!(painted(&mut renderer, &files).contains("owner feedback"));
     assert!(painted(&mut renderer, &files).contains("Unknown command: /not-a-command"));

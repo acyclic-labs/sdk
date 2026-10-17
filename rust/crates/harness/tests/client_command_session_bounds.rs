@@ -139,3 +139,155 @@ proptest! {
         })?;
     }
 }
+
+// The answer selection is bounded independently of the session's per-file
+// admission limit. Prompt state remains readable through its own live query.
+async fn full_prompt_state(history: usize, draft: usize, live: bool) {
+    use acyclic_harness::{client::TaskFileClient, wire};
+    let volume = volume().await.unwrap();
+    let mut commands = CommandSession::open(volume.clone(), session_id(), 65_536, 128)
+        .await
+        .unwrap();
+    let history_limit = commands
+        .state_byte_limit(CommandFileRoot::Config, "history.json")
+        .unwrap();
+    // Include both the stream framing and the JSON array/string framing.
+    let history = json!(["h".repeat(history.min(history_limit - 4))]);
+    let draft = json!("d".repeat(draft));
+    commands
+        .write_state(CommandFileRoot::Config, "history.json", &history)
+        .await
+        .unwrap();
+    commands.submit("/shell hi", &DeniedReader).await.unwrap();
+    let request = commands.next_request().await.unwrap();
+    commands
+        .consume(&request, |_, _, _| async { Ok(json!({"text":"answer"})) })
+        .await
+        .unwrap();
+    if !live {
+        commands
+            .write_state(CommandFileRoot::Session, "draft.json", &draft)
+            .await
+            .unwrap();
+    }
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "root".into(),
+    };
+    // A 512-byte display window must not limit a valid 64-KiB prompt file.
+    let mut display = TaskFileClient::observe(volume.as_ref(), &owner, 128, 512)
+        .await
+        .unwrap();
+    display.follow_commands(&commands).await.unwrap();
+    if live {
+        commands
+            .write_state(CommandFileRoot::Session, "draft.json", &draft)
+            .await
+            .unwrap();
+    }
+    commands
+        .write_state(
+            CommandFileRoot::Session,
+            "layout.json",
+            &json!({"selected_task":null,"open_view":"history"}),
+        )
+        .await
+        .unwrap();
+    let cut = volume.head().await.unwrap().position;
+    let caught_up = |display: &TaskFileClient| {
+        display.views().selections().any(|(_, files)| {
+            matches!(files.query(), Query::CommandSession { .. }) && files.cursor().position >= cut
+        })
+    };
+    // Every wait follows an already accepted publication; no sleeps or polling.
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !caught_up(&display) {
+            display.next_change().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let answers = display
+        .views()
+        .selections()
+        .find(|(_, files)| matches!(files.query(), Query::CommandSession { .. }))
+        .unwrap()
+        .1;
+    assert_eq!(answers.files().len(), 1);
+    assert!(
+        answers
+            .files()
+            .keys()
+            .all(|key| key.path().ends_with("/result.json"))
+    );
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Config, "history.json")
+            .unwrap(),
+        Some(history.clone())
+    );
+    assert_eq!(
+        commands
+            .state(CommandFileRoot::Session, "draft.json")
+            .unwrap(),
+        Some(draft.clone())
+    );
+    #[cfg(feature = "tui")]
+    {
+        let mut renderer = acyclic_harness::tui::ClientRenderer::default();
+        renderer.update_files(&display, &owner);
+        renderer
+            .configure(display.views(), &owner, &commands)
+            .unwrap();
+        assert!(!renderer.screen().transcript.is_empty());
+        commands
+            .write_state(
+                CommandFileRoot::Session,
+                "layout.json",
+                &json!({"history_after":commands.output_sequence(),"selected_task":null}),
+            )
+            .await
+            .unwrap();
+        // The answer selection contains no layout file. Its existing session
+        // query must still clear archived answers, even at the same render cut.
+        renderer
+            .configure(display.views(), &owner, &commands)
+            .unwrap();
+        assert!(renderer.screen().transcript.is_empty());
+    }
+    commands.submit("/quit", &DeniedReader).await.unwrap();
+    assert!(commands.exit_requested().unwrap());
+    let reopened = CommandSession::open(volume, session_id(), 65_536, 128)
+        .await
+        .unwrap();
+    assert!(reopened.exit_requested().unwrap());
+    display.follow_commands(&reopened).await.unwrap();
+    assert_eq!(
+        reopened
+            .state(CommandFileRoot::Config, "history.json")
+            .unwrap(),
+        Some(history)
+    );
+    assert_eq!(
+        reopened
+            .state(CommandFileRoot::Session, "draft.json")
+            .unwrap(),
+        Some(draft)
+    );
+}
+
+#[tokio::test]
+async fn full_history_draft_and_ui_writes_allow_open_and_close() {
+    for live in [false, true] {
+        full_prompt_state(usize::MAX, 8192, live).await;
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn prompt_files_never_compete_with_the_answer_window(history in 60_000usize..65_501, draft in 6000usize..16_384, live in any::<bool>()) {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(full_prompt_state(history, draft, live));
+    }
+}

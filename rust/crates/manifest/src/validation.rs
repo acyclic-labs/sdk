@@ -93,9 +93,10 @@ pub(crate) fn hostname(value: &str) -> bool {
             .rsplit('.')
             .next()
             .is_some_and(|tail| !tail.bytes().all(|b| b.is_ascii_digit()))
-        && !value
-            .split('.')
-            .any(|part| part.starts_with("0x") && part[2..].bytes().all(|b| b.is_ascii_hexdigit()))
+        && !value.split('.').any(|part| {
+            part.strip_prefix("0x")
+                .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()))
+        })
         && !value.ends_with(".localhost")
         && !value.ends_with(".local")
 }
@@ -211,173 +212,271 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
             &p,
             "environment-name",
         )?;
-        let entries = index(&environment.entries, |e| &e.name, &p)?;
-        require(!entries.is_empty(), &p, "entries-required")?;
-        let bindings = index(&environment.bindings, |b| b.name(), &p)?;
-        let grants = index(&environment.grants, |g| &g.name, &p)?;
-        let secrets = index(&environment.secrets, |s| &s.name, &p)?;
-        work += entries.len() + bindings.len() + grants.len() + secrets.len();
-        let mut actions = HashMap::new();
-        for grant in &environment.grants {
-            require(identifier(&grant.name), &p, "grant-name")?;
-            require(
-                matches!(
-                    grant
-                        .grant
-                        .resource
-                        .name
-                        .split_once(":/")
-                        .map(|(product, _)| product),
-                    Some(
-                        "streams"
-                            | "fs"
-                            | "objects"
-                            | "actors"
-                            | "workers"
-                            | "machines"
-                            | "execution"
-                            | "infer"
-                            | "billing"
-                            | "identity"
-                    )
-                ),
-                &p,
-                "unsupported-binding-product",
-            )?;
-            // Conversion invokes S1's resource/action validation, including product equality.
-            <ResourceGrant as wire::ContractType>::from_proto(
-                acyclic_auth::contract::ResourceGrantProto::from(grant.grant.0.clone()),
-            )
-            .map_err(|_| ManifestError::invalid(&p, "auth-grant"))?;
-            require(
-                acyclic_auth::valid_resource(&grant.grant.resource.name),
-                &p,
-                "auth-resource",
-            )?;
-            actions.insert(
-                grant.name.as_str(),
+        work += validate_environment(environment, &p, &mut routes)?;
+    }
+    Ok(work)
+}
+
+type Names<'a, T> = HashMap<&'a str, &'a T>;
+type Selections<'a> = HashMap<&'a str, HashSet<&'a str>>;
+
+fn validate_environment<'a>(
+    environment: &'a Environment,
+    p: &str,
+    routes: &mut HashSet<(&'a String, &'a String)>,
+) -> Result<usize, ManifestError> {
+    let mut work = 0;
+    let entries = index(&environment.entries, |e| &e.name, p)?;
+    require(!entries.is_empty(), p, "entries-required")?;
+    let bindings = index(&environment.bindings, |b| b.name(), p)?;
+    let grants = index(&environment.grants, |g| &g.name, p)?;
+    let secrets = index(&environment.secrets, |s| &s.name, p)?;
+    work += entries.len() + bindings.len() + grants.len() + secrets.len();
+    let actions = grant_actions(environment, p, &mut work)?;
+    for binding in &environment.bindings {
+        require(
+            identifier(binding.name()) && !secrets.contains_key(binding.name()),
+            p,
+            "binding-name",
+        )?;
+        let grant = grants
+            .get(binding.capability())
+            .ok_or_else(|| ManifestError::invalid(p, "unknown-binding-grant"))?;
+        require(
+            binding.resource() == grant.grant.resource.name,
+            p,
+            "binding-resource-grant",
+        )?;
+        work += 2;
+    }
+    for secret in &environment.secrets {
+        require(identifier(&secret.name), p, "secret-name")?;
+        SecretReference::new(secret.reference.as_str().into())?;
+        work += 1;
+    }
+    let (selected, subscribed) = validate_entries(environment, p, &bindings, &secrets, &mut work)?;
+    work += validate_inboxes(
+        environment,
+        p,
+        &bindings,
+        &grants,
+        &actions,
+        &selected,
+        &subscribed,
+    )?;
+    for asset in &environment.assets {
+        require(digest(&asset.bundle_sha256), p, "asset-digest")?;
+        require(
+            selected
+                .get(asset.entry.as_str())
+                .is_some_and(|s| s.contains(asset.binding.as_str())),
+            p,
+            "asset-selected-binding",
+        )?;
+        let binding = bindings
+            .get(asset.binding.as_str())
+            .ok_or_else(|| ManifestError::invalid(p, "asset-binding"))?;
+        let grant = grants
+            .get(binding.capability())
+            .ok_or_else(|| ManifestError::invalid(p, "asset-grant"))?;
+        require(
+            grant.grant.resource.prefix
+                && scope(&grant.grant.resource, &asset_bucket(&grant.grant.resource)?)
+                && actions
+                    .get(grant.name.as_str())
+                    .is_some_and(|actions| actions.contains("objects/get")),
+            p,
+            "asset-resource-grant",
+        )?;
+        work += 3;
+    }
+    for route in &environment.routes {
+        require(
+            entries.contains_key(route.entry.as_str())
+                && hostname(&route.host)
+                && path(&route.path_prefix)
+                && route.host != "run.acyclic.dev"
+                && !route.host.ends_with(".run.acyclic.dev"),
+            p,
+            "customer-route",
+        )?;
+        require(
+            routes.insert((&route.host, &route.path_prefix)),
+            p,
+            "duplicate-route-across-environments",
+        )?;
+        work += 2;
+    }
+    Ok(work)
+}
+
+fn grant_actions<'a>(
+    environment: &'a Environment,
+    p: &str,
+    work: &mut usize,
+) -> Result<Selections<'a>, ManifestError> {
+    let mut actions = HashMap::new();
+    for grant in &environment.grants {
+        require(identifier(&grant.name), p, "grant-name")?;
+        require(
+            matches!(
                 grant
                     .grant
-                    .actions
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<HashSet<_>>(),
-            );
-            work += grant.grant.actions.len();
-        }
-        for binding in &environment.bindings {
+                    .resource
+                    .name
+                    .split_once(":/")
+                    .map(|(product, _)| product),
+                Some(
+                    "streams"
+                        | "fs"
+                        | "objects"
+                        | "actors"
+                        | "workers"
+                        | "machines"
+                        | "execution"
+                        | "infer"
+                        | "billing"
+                        | "identity"
+                )
+            ),
+            p,
+            "unsupported-binding-product",
+        )?;
+        // Conversion invokes S1's resource/action validation, including product equality.
+        <ResourceGrant as wire::ContractType>::from_proto(
+            acyclic_auth::contract::ResourceGrantProto::from(grant.grant.0.clone()),
+        )
+        .map_err(|_| ManifestError::invalid(p, "auth-grant"))?;
+        require(
+            acyclic_auth::valid_resource(&grant.grant.resource.name),
+            p,
+            "auth-resource",
+        )?;
+        actions.insert(
+            grant.name.as_str(),
+            grant
+                .grant
+                .actions
+                .iter()
+                .map(String::as_str)
+                .collect::<HashSet<_>>(),
+        );
+        *work += grant.grant.actions.len();
+    }
+    Ok(actions)
+}
+
+fn validate_entries<'a>(
+    environment: &'a Environment,
+    p: &str,
+    bindings: &Names<'a, Contract<Binding>>,
+    secrets: &Names<'a, SecretRef>,
+    work: &mut usize,
+) -> Result<(Selections<'a>, Selections<'a>), ManifestError> {
+    let mut selected = HashMap::new();
+    let mut subscribed = HashMap::new();
+    for (ii, entry) in environment.entries.iter().enumerate() {
+        let ep = format!("{p}.entries[{ii}]");
+        require(
+            identifier(&entry.name) && identifier(&entry.module) && digest(&entry.artifact_sha256),
+            &ep,
+            "entry-artifact",
+        )?;
+        let mut selection = HashSet::new();
+        for name in &entry.bindings {
             require(
-                identifier(binding.name()) && !secrets.contains_key(binding.name()),
-                &p,
-                "binding-name",
-            )?;
-            let grant = grants
-                .get(binding.capability())
-                .ok_or_else(|| ManifestError::invalid(&p, "unknown-binding-grant"))?;
-            require(
-                binding.resource() == grant.grant.resource.name,
-                &p,
-                "binding-resource-grant",
-            )?;
-            work += 2;
-        }
-        for secret in &environment.secrets {
-            require(identifier(&secret.name), &p, "secret-name")?;
-            SecretReference::new(secret.reference.as_str().into())?;
-            work += 1;
-        }
-        let mut selected = HashMap::new();
-        let mut subscribed = HashMap::new();
-        for (ii, entry) in environment.entries.iter().enumerate() {
-            let ep = format!("{p}.entries[{ii}]");
-            require(
-                identifier(&entry.name)
-                    && identifier(&entry.module)
-                    && digest(&entry.artifact_sha256),
+                bindings.contains_key(name.as_str()) && selection.insert(name.as_str()),
                 &ep,
-                "entry-artifact",
+                "selected-binding",
             )?;
-            let mut selection = HashSet::new();
-            for name in &entry.bindings {
-                require(
-                    bindings.contains_key(name.as_str()) && selection.insert(name.as_str()),
-                    &ep,
-                    "selected-binding",
-                )?;
-                work += 2;
-            }
-            let mut secret_names = HashSet::new();
-            for name in &entry.secrets {
-                require(
-                    secrets.contains_key(name.as_str()) && secret_names.insert(name.as_str()),
-                    &ep,
-                    "selected-secret",
-                )?;
-                work += 2;
-            }
-            if let Some(fetch) = &entry.fetch {
-                require(
-                    identifier(&fetch.name)
-                        && !selection.contains(fetch.name.as_str())
-                        && !secret_names.contains(fetch.name.as_str()),
-                    &ep,
-                    "fetch-binding-name",
-                )?;
-                let mut destinations = HashSet::new();
-                require(!fetch.egress.is_empty(), &ep, "fetch-egress-required")?;
-                for rule in &fetch.egress {
-                    require(
-                        hostname(&rule.host)
-                            && rule.port != 0
-                            && destinations.insert((&rule.host, rule.port)),
-                        &ep,
-                        "https-authority",
-                    )?;
-                    work += 1;
-                }
-            }
-            match &entry.runtime {
-                EntryRuntime::Actor { subscriptions, .. } => {
-                    let mut streams = HashSet::new();
-                    for sub in subscriptions {
-                        acyclic_stream::StreamPath::new(sub.stream_path())
-                            .map_err(|_| ManifestError::invalid(&ep, "stream-path"))?;
-                        require(
-                            streams.insert(sub.stream_path()),
-                            &ep,
-                            "duplicate-subscription-stream",
-                        )?;
-                        work += 1;
-                    }
-                    // Shared constructor checks positive ActorLimits, starts, IDs and placement anchors.
-                    lower_actor_unchecked(&bindings, entry, "manifest-admission")?;
-                    subscribed.insert(entry.name.as_str(), streams);
-                }
-                EntryRuntime::Worker { limits } => require(
-                    limits.cpu_millis > 0 && limits.memory_bytes > 0 && limits.timeout_millis > 0,
-                    &ep,
-                    "worker-limits",
-                )?,
-            }
-            selected.insert(entry.name.as_str(), selection);
+            *work += 2;
         }
-        index(&environment.crons, |c| &c.name, &p)?;
-        for (ci, cron) in environment.crons.iter().enumerate() {
+        let mut secret_names = HashSet::new();
+        for name in &entry.secrets {
             require(
-                identifier(&cron.name) && super::cron::valid(&cron.schedule),
-                &format!("{p}.crons[{ci}]"),
-                "cron-schedule",
+                secrets.contains_key(name.as_str()) && secret_names.insert(name.as_str()),
+                &ep,
+                "selected-secret",
             )?;
+            *work += 2;
         }
-        let cron_targets = environment.crons.iter().enumerate().map(|(ci, cron)| {
-            (
-                cron.entry.as_str(),
-                cron.inbox_binding.as_str(),
-                &cron.inbox.0,
-                format!("{p}.crons[{ci}]"),
-            )
-        });
-        let timer_targets = environment
+        if let Some(fetch) = &entry.fetch {
+            require(
+                identifier(&fetch.name)
+                    && !selection.contains(fetch.name.as_str())
+                    && !secret_names.contains(fetch.name.as_str()),
+                &ep,
+                "fetch-binding-name",
+            )?;
+            let mut destinations = HashSet::new();
+            require(!fetch.egress.is_empty(), &ep, "fetch-egress-required")?;
+            for rule in &fetch.egress {
+                require(
+                    hostname(&rule.host)
+                        && rule.port != 0
+                        && destinations.insert((&rule.host, rule.port)),
+                    &ep,
+                    "https-authority",
+                )?;
+                *work += 1;
+            }
+        }
+        match &entry.runtime {
+            EntryRuntime::Actor { subscriptions, .. } => {
+                let mut streams = HashSet::new();
+                for sub in subscriptions {
+                    acyclic_stream::StreamPath::new(sub.stream_path())
+                        .map_err(|_| ManifestError::invalid(&ep, "stream-path"))?;
+                    require(
+                        streams.insert(sub.stream_path()),
+                        &ep,
+                        "duplicate-subscription-stream",
+                    )?;
+                    *work += 1;
+                }
+                // Shared constructor checks positive ActorLimits, starts, IDs and placement anchors.
+                lower_actor_unchecked(bindings, entry, "manifest-admission")?;
+                subscribed.insert(entry.name.as_str(), streams);
+            }
+            EntryRuntime::Worker { limits } => require(
+                limits.cpu_millis > 0 && limits.memory_bytes > 0 && limits.timeout_millis > 0,
+                &ep,
+                "worker-limits",
+            )?,
+        }
+        selected.insert(entry.name.as_str(), selection);
+    }
+    Ok((selected, subscribed))
+}
+
+fn validate_inboxes(
+    environment: &Environment,
+    p: &str,
+    bindings: &Names<'_, Contract<Binding>>,
+    grants: &Names<'_, BindingGrant>,
+    actions: &Selections<'_>,
+    selected: &Selections<'_>,
+    subscribed: &Selections<'_>,
+) -> Result<usize, ManifestError> {
+    let mut work = 0;
+    index(&environment.crons, |c| &c.name, p)?;
+    for (ci, cron) in environment.crons.iter().enumerate() {
+        require(
+            identifier(&cron.name) && super::cron::valid(&cron.schedule),
+            &format!("{p}.crons[{ci}]"),
+            "cron-schedule",
+        )?;
+    }
+    let cron_targets = environment.crons.iter().enumerate().map(|(ci, cron)| {
+        (
+            cron.entry.as_str(),
+            cron.inbox_binding.as_str(),
+            &cron.inbox.0,
+            format!("{p}.crons[{ci}]"),
+        )
+    });
+    let timer_targets =
+        environment
             .entries
             .iter()
             .enumerate()
@@ -393,78 +492,38 @@ pub fn validate_work(manifest: &DeploymentManifest) -> Result<usize, ManifestErr
                 )),
                 _ => None,
             });
-        for (entry, inbox_binding, inbox, cp) in cron_targets.chain(timer_targets) {
-            let path = stream_path(&inbox.name)?;
-            require(!inbox.prefix, &cp, "exact-inbox")?;
-            require(
-                subscribed
-                    .get(entry)
-                    .is_some_and(|s| s.contains(path.as_str())),
-                &cp,
-                "inbox-wake-subscription",
-            )?;
-            require(
-                selected
-                    .get(entry)
-                    .is_some_and(|s| s.contains(inbox_binding)),
-                &cp,
-                "inbox-selected-binding",
-            )?;
-            let binding = bindings
-                .get(inbox_binding)
-                .ok_or_else(|| ManifestError::invalid(&cp, "inbox-binding"))?;
-            let grant = grants
-                .get(binding.capability())
-                .ok_or_else(|| ManifestError::invalid(&cp, "inbox-grant"))?;
-            require(
-                scope(&grant.grant.resource, &inbox.name)
-                    && actions[grant.name.as_str()].contains("streams/append"),
-                &cp,
-                "inbox-authority",
-            )?;
-            work += 4;
-        }
-        for asset in &environment.assets {
-            require(digest(&asset.bundle_sha256), &p, "asset-digest")?;
-            require(
-                selected
-                    .get(asset.entry.as_str())
-                    .is_some_and(|s| s.contains(asset.binding.as_str())),
-                &p,
-                "asset-selected-binding",
-            )?;
-            let binding = bindings
-                .get(asset.binding.as_str())
-                .ok_or_else(|| ManifestError::invalid(&p, "asset-binding"))?;
-            let grant = grants
-                .get(binding.capability())
-                .ok_or_else(|| ManifestError::invalid(&p, "asset-grant"))?;
-            require(
-                grant.grant.resource.prefix
-                    && scope(&grant.grant.resource, &asset_bucket(&grant.grant.resource)?)
-                    && actions[grant.name.as_str()].contains("objects/get"),
-                &p,
-                "asset-resource-grant",
-            )?;
-            work += 3;
-        }
-        for route in &environment.routes {
-            require(
-                entries.contains_key(route.entry.as_str())
-                    && hostname(&route.host)
-                    && path(&route.path_prefix)
-                    && route.host != "run.acyclic.dev"
-                    && !route.host.ends_with(".run.acyclic.dev"),
-                &p,
-                "customer-route",
-            )?;
-            require(
-                routes.insert((&route.host, &route.path_prefix)),
-                &p,
-                "duplicate-route-across-environments",
-            )?;
-            work += 2;
-        }
+    for (entry, inbox_binding, inbox, cp) in cron_targets.chain(timer_targets) {
+        let path = stream_path(&inbox.name)?;
+        require(!inbox.prefix, &cp, "exact-inbox")?;
+        require(
+            subscribed
+                .get(entry)
+                .is_some_and(|s| s.contains(path.as_str())),
+            &cp,
+            "inbox-wake-subscription",
+        )?;
+        require(
+            selected
+                .get(entry)
+                .is_some_and(|s| s.contains(inbox_binding)),
+            &cp,
+            "inbox-selected-binding",
+        )?;
+        let binding = bindings
+            .get(inbox_binding)
+            .ok_or_else(|| ManifestError::invalid(&cp, "inbox-binding"))?;
+        let grant = grants
+            .get(binding.capability())
+            .ok_or_else(|| ManifestError::invalid(&cp, "inbox-grant"))?;
+        require(
+            scope(&grant.grant.resource, &inbox.name)
+                && actions
+                    .get(grant.name.as_str())
+                    .is_some_and(|actions| actions.contains("streams/append")),
+            &cp,
+            "inbox-authority",
+        )?;
+        work += 4;
     }
     Ok(work)
 }
@@ -508,7 +567,9 @@ fn lower_actor_unchecked(
     let bytes = entry
         .artifact_sha256
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let text = std::str::from_utf8(pair)
                 .map_err(|_| ManifestError::invalid("artifactSha256", "digest"))?;

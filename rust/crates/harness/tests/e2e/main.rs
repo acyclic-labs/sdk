@@ -31,6 +31,7 @@ mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+mod subagents;
 mod swarm;
 mod swarm_case;
 mod swarm_provider;

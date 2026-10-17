@@ -100,19 +100,6 @@ name = "filesystem_access"
 path = "tests/filesystem_access.rs"
 
 [[test]]
-name = "client_journal_model"
-path = "tests/client_journal_model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "client_session"
-path = "tests/client_session.rs"
-
-[[test]]
-name = "decoder_properties"
-path = "tests/decoder_properties.rs"
-
-[[test]]
 name = "client_history"
 path = "tests/client_history.rs"
 

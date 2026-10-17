@@ -59,7 +59,8 @@ type ViewIndex<V> = BTreeMap<FileKey, V>;
 /// Bounded, shared file slices from one accepted volume query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileQueryView {
-    query: Query,
+    query: Arc<Query>,
+    pub(super) outputs: super::command_output::Outputs,
     storage: super::FileViews,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     models: ViewIndex<super::ModelFileView>,
@@ -170,7 +171,8 @@ impl FileQueryView {
             .map(|key| (key.clone(), super::ModelFileView::Invalid))
             .collect();
         let mut view = Self {
-            query,
+            query: Arc::new(query),
+            outputs: super::command_output::Outputs::default(),
             storage,
             rows: BTreeMap::new(),
             models,
@@ -204,6 +206,9 @@ impl FileQueryView {
                 FileKey::Plan(_) => {
                     view.rows.insert(value.key.clone(), plan_rows(&value));
                 }
+                _ if super::command_output::Outputs::includes(&value.key) => {
+                    view.outputs.insert(&value);
+                }
                 _ => {
                     view.models
                         .insert(value.key.clone(), super::ModelFileView::from_file(&value));
@@ -219,6 +224,11 @@ impl FileQueryView {
 
     /// File selection represented by this fold, including an empty snapshot.
     pub fn query(&self) -> &Query {
+        &self.query
+    }
+
+    #[cfg(feature = "tui")]
+    pub(crate) fn source(&self) -> &Arc<Query> {
         &self.query
     }
 
@@ -278,6 +288,11 @@ impl FileQueryView {
             .flat_map(|rows| rows.iter().map(String::as_str))
     }
 
+    #[cfg(feature = "tui")]
+    pub(crate) fn plan_files(&self) -> impl Iterator<Item = &crate::task_volume::HeadFile> {
+        self.rows.keys().filter_map(|key| self.storage.file(key))
+    }
+
     /// Collects plain rows for consumers that require an owned export.
     pub fn plan_lines(&self) -> Vec<String> {
         self.plan_rows().map(str::to_owned).collect()
@@ -315,6 +330,7 @@ impl FileQueryView {
             if *key == FileKey::RequestHead {
                 self.progress = None;
             }
+            self.outputs.remove(key);
             self.rows.remove(key);
             self.models.remove(key);
             self.rejected_models.remove(key);
@@ -327,6 +343,9 @@ impl FileQueryView {
                 continue;
             }
             self.rejected_models.remove(&file.key);
+            if super::command_output::Outputs::includes(&file.key) && !self.matches_head(file) {
+                self.outputs.insert(file);
+            }
             if file.key == FileKey::RequestHead && !self.matches_head(&file) {
                 self.progress = super::GoalProgress::from_file(Some(&file));
             }
@@ -453,7 +472,7 @@ impl FileQueryView {
             let old = self.storage.files.get(key);
             if old.is_none()
                 && !self.rejected_models.contains(key)
-                && self.query != Query::ActiveAgents
+                && *self.query != Query::ActiveAgents
             {
                 return Err(invalid());
             }
@@ -492,6 +511,7 @@ impl FileQueryView {
 fn semantic(key: &FileKey) -> bool {
     matches!(key, FileKey::Goal | FileKey::Plan(_) | FileKey::RequestHead)
         || super::model_view::turn_request(key).is_some()
+        || super::command_output::Outputs::includes(key)
 }
 
 fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {

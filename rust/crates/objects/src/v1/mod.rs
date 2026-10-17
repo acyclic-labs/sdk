@@ -219,7 +219,7 @@ pub trait ObjectsProvider: Send + Sync {
         &self,
         request: wire::DeleteObjectRequest,
     ) -> Result<wire::DeleteObjectResponse, Error>;
-    /// Atomically restores a retained prefix. Expired coverage is PreconditionFailed;
+    /// Atomically restores a retained prefix. Expired coverage is `PreconditionFailed`;
     /// repeating the same mutation identity returns its original result.
     async fn restore(
         &self,

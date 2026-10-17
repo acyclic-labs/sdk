@@ -76,7 +76,8 @@ async fn visibility_model<
         settings.reduced_motion = reduced;
         input.set_settings(settings);
         let screen = Screen {
-            transcript: &history,
+            transcript: &history[..20],
+            tools: &history[20..],
             feedback,
             overlay: if overlay { &help } else { &[] },
             ..Screen::default()

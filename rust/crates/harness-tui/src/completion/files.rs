@@ -44,15 +44,14 @@ impl CompletionMenu {
     }
 
     fn set_entries(&mut self, path: &str, present: bool, entries: Vec<Entry>) {
-        let order = self
-            .files
-            .get(path)
-            .map(|(order, _)| *order)
-            .unwrap_or_else(|| {
+        let order = self.files.get(path).map_or_else(
+            || {
                 let order = self.next_file;
                 self.next_file += 1;
                 order
-            });
+            },
+            |(order, _)| *order,
+        );
         if let Some((_, old)) = self.files.remove(path) {
             for entry in old.iter().filter(|entry| entry.theme) {
                 let name = entry.item.value.to_ascii_lowercase();
@@ -114,8 +113,14 @@ impl CompletionMenu {
     }
 }
 
-fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
-    let make = |kind, value: String, description, tool, append_space| Entry {
+fn make(
+    kind: CompletionKind,
+    value: String,
+    description: String,
+    tool: bool,
+    append_space: bool,
+) -> Entry {
+    Entry {
         kind,
         theme: false,
         item: Rc::new(Completion {
@@ -129,7 +134,10 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             tool,
             append_space,
         }),
-    };
+    }
+}
+
+fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
     if let Some(path) = path.strip_prefix("workspace/") {
         return Ok(vec![make(
             CompletionKind::Mention,
@@ -173,6 +181,11 @@ fn parse_file(path: &str, bytes: &[u8]) -> io::Result<Vec<Entry>> {
             })
             .collect();
     }
+    command_definitions(bytes)
+}
+
+/// Command entries, with their aliases, from a `commands/*.json` file.
+fn command_definitions(bytes: &[u8]) -> io::Result<Vec<Entry>> {
     let definitions: Vec<serde_json::Value> = serde_json::from_slice(bytes)?;
     definitions
         .into_iter()

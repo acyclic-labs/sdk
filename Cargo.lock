@@ -425,6 +425,7 @@ dependencies = [
  "acyclic-harness",
  "acyclic-objects",
  "acyclic-stream",
+ "acyclic-test-support",
  "async-stream",
  "base64 0.22.1",
  "blake3",

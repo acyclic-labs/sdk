@@ -26,7 +26,7 @@ fn editing_message_border_title_and_text_snapshot() -> Result<(), Box<dyn std::e
         ])
     );
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptBox::new(&input, 1000), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptBox::new(&input, 1000), frame.area(), &mut viewport);
     })?;
     assert_eq!(terminal.backend().buffer()[(0, 0)].fg, Color::Yellow);
     assert_eq!(viewport.cursor, Some((6, 1)));
@@ -46,7 +46,7 @@ fn attachment_recording_activity_and_half_screen_height() -> Result<(), Box<dyn 
     let mut terminal = Terminal::new(TestBackend::new(40, 5))?;
     let mut viewport = Viewport::default();
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptBox::new(&input, 100), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptBox::new(&input, 100), frame.area(), &mut viewport);
     })?;
     let title: String = (0..40)
         .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
@@ -58,7 +58,7 @@ fn attachment_recording_activity_and_half_screen_height() -> Result<(), Box<dyn 
     for width in 1..=12 {
         let mut narrow = Terminal::new(TestBackend::new(width, 3))?;
         narrow.draw(|frame| {
-            frame.render_stateful_widget(PromptBox::new(&input, 100), frame.area(), &mut viewport)
+            frame.render_stateful_widget(PromptBox::new(&input, 100), frame.area(), &mut viewport);
         })?;
     }
     Ok(())

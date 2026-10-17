@@ -89,6 +89,15 @@ pub(super) async fn verify(
     if quiescent::until_idle(next.as_mut()).await.is_some() {
         return Err("tool follow delivered beyond its settled cut".into());
     }
+    let owner = Component::new(task.to_string())?;
+    let projected = view.task(&owner);
+    if projected.tools().count() != calls.len()
+        || projected
+            .tools()
+            .any(|tool| tool.request().is_none() || tool.result().is_none())
+    {
+        return Err("shared tool projection lost a request or result".into());
+    }
     check(view.files(), task, operation, calls, results)?;
     // Break the consumer's real observed files, retaining the fixture oracle.
     let mut dropped = view.files().clone();

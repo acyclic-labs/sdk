@@ -20,38 +20,12 @@ mod hypothesis;
 pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
-mod session;
-pub use session::{
-    ClientSession, ClientStateStore, MemoryClientState, SessionCheckpoint, SessionRecord,
-};
-mod transport;
-pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
-mod content;
 mod document_files;
-mod documents;
 pub use document_files::document_files;
-pub use documents::DocumentViews;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
-mod task_compat;
-#[cfg(feature = "tui")]
-pub(crate) use task_compat::views::authority_key;
-pub use task_compat::{
-    ClientViews as TaskFileViews, FileQueryView as TaskFileQueryView,
-    GoalFileView as TaskGoalFileView, GoalProgress as TaskGoalProgress,
-    GoalQueryView as TaskGoalQueryView, ModelFileView as TaskModelFileView,
-    ModelQueryView as TaskModelQueryView, TaskView, ToolCallView, TranscriptView, ViewUpdate,
-};
-#[cfg(feature = "tui")]
-pub use task_compat::{GoalPanel as TaskGoalPanel, PlanPanel as TaskPlanPanel};
-#[cfg(not(target_arch = "wasm32"))]
-mod journal;
-#[cfg(not(target_arch = "wasm32"))]
-mod journal_lock;
-pub mod jsonl;
-#[cfg(not(target_arch = "wasm32"))]
-pub use journal::FileClientState;
 mod headless;
+pub mod jsonl;
 pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
 mod commands;
 pub use commands::*;
@@ -66,9 +40,11 @@ pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod task_files;
 pub use task_files::TaskFileClient;
 mod command_output;
+pub use command_output::{CommandOutputView, OutputOwner};
 mod file_query;
-mod task_projection;
 pub use file_query::{FileQueryView, GoalFileView};
+mod task_files_view;
+pub use task_files_view::{TaskQueryView, TaskTextView, ToolQueryView};
 mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
@@ -170,11 +146,6 @@ pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
 
-#[cfg(all(acyclic_harness_loom, not(target_arch = "wasm32")))]
-mod journal_model;
-#[cfg(all(acyclic_harness_loom, not(target_arch = "wasm32")))]
-pub use journal_model::verify_journal;
-
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -190,7 +161,7 @@ mod native_input;
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 pub use native_input::stdin_jsonl;
 #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-pub use native_input::{next_tui_event, terminal_events};
+pub use native_input::terminal_events;
 
 #[cfg(feature = "tui")]
 mod input_files;
