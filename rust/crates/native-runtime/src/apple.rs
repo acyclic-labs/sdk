@@ -12,15 +12,16 @@
     reason = "positional transfers hand held descriptors and owned buffers to the kernel"
 )]
 
+use crate::sync::Mutex;
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_int, c_void};
 use std::fs::File;
 use std::io;
+use std::ops::DerefMut;
 use std::os::fd::{AsRawFd as _, RawFd};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{OnceLock, PoisonError};
 
 /// Darwin's `IOV_MAX`, used when `sysconf` cannot report the limit.
 const IOV_MAX_FALLBACK: usize = 1024;
@@ -75,6 +76,11 @@ const POOL_SHARDS: usize = 8;
 /// Idle read buffers, grouped by capacity. Each I/O worker takes from its own
 /// shard, and a buffer returns to the shard it came from, so a worker
 /// contends only with threads releasing its earlier results.
+///
+/// Lock order: the shard lock is a leaf. Nothing else is locked, woken or
+/// called while it is held, and a buffer the pool rejects is freed only after
+/// it is released. The lock comes from `crate::sync`, so the Loom model drives
+/// this same code.
 struct Shard {
     idle: Mutex<Idle>,
 }
@@ -82,8 +88,24 @@ struct Shard {
 struct Idle {
     classes: Vec<(usize, Vec<Vec<u8>>)>,
     bytes: usize,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    broken_accounting: bool,
+    #[cfg(all(test, acyclic_native_runtime_loom))]
+    broken_ownership: bool,
 }
 
+impl Idle {
+    const EMPTY: Self = Self {
+        classes: Vec::new(),
+        bytes: 0,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_accounting: false,
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        broken_ownership: false,
+    };
+}
+
+#[cfg(not(acyclic_native_runtime_loom))]
 static SHARDS: [Shard; POOL_SHARDS] = [const { Shard::new() }; POOL_SHARDS];
 
 thread_local! {
@@ -91,22 +113,42 @@ thread_local! {
 }
 
 impl Shard {
+    #[cfg(not(acyclic_native_runtime_loom))]
     const fn new() -> Self {
         Self {
-            idle: Mutex::new(Idle {
-                classes: Vec::new(),
-                bytes: 0,
-            }),
+            idle: Mutex::new(Idle::EMPTY),
+        }
+    }
+
+    /// Model builds create each shard inside the model, with a Loom lock.
+    #[cfg(acyclic_native_runtime_loom)]
+    fn new() -> Self {
+        Self {
+            idle: Mutex::new(Idle::EMPTY),
         }
     }
 
     /// The calling worker's shard, assigned round-robin on first use.
+    #[cfg(not(acyclic_native_runtime_loom))]
     fn local() -> &'static Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         LOCAL_SHARD.with(|local| {
             local.get().unwrap_or_else(|| {
                 let index = NEXT.fetch_add(1, Ordering::Relaxed) % POOL_SHARDS;
                 let shard = SHARDS.get(index).unwrap_or(&SHARDS[0]);
+                local.set(Some(shard));
+                shard
+            })
+        })
+    }
+
+    /// Model builds have no process-wide shards; each thread gets its own.
+    #[cfg(acyclic_native_runtime_loom)]
+    fn local() -> &'static Self {
+        LOCAL_SHARD.with(|local| {
+            local.get().unwrap_or_else(|| {
+                let shard: &'static Self = Box::leak(Box::new(Self::new()));
                 local.set(Some(shard));
                 shard
             })
@@ -121,7 +163,7 @@ impl Shard {
         shard
     }
 
-    fn idle(&self) -> std::sync::MutexGuard<'_, Idle> {
+    fn idle(&self) -> impl DerefMut<Target = Idle> + '_ {
         self.idle.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -134,7 +176,11 @@ impl Shard {
                 .iter_mut()
                 .find(|(capacity, _)| *capacity == class)
                 .and_then(|(_, buffers)| buffers.pop());
-            if reused.is_some() {
+            #[cfg(all(test, acyclic_native_runtime_loom))]
+            let broken = idle.broken_accounting;
+            #[cfg(not(all(test, acyclic_native_runtime_loom)))]
+            let broken = false;
+            if reused.is_some() && !broken {
                 idle.bytes -= class;
             }
             reused
@@ -161,6 +207,10 @@ impl Idle {
     fn keep(&mut self, buffer: Vec<u8>) -> Option<Vec<u8>> {
         let class = buffer.capacity();
         if self.bytes + class > POOL_BUDGET / POOL_SHARDS {
+            return Some(buffer);
+        }
+        #[cfg(all(test, acyclic_native_runtime_loom))]
+        if self.broken_ownership {
             return Some(buffer);
         }
         if !self.classes.iter().any(|(capacity, _)| *capacity == class) {
@@ -208,23 +258,21 @@ const fn pooled(length: usize) -> bool {
     length >= POOL_PAGE
 }
 
-/// An empty buffer for a `length`-byte read.
-fn read_buffer(length: usize) -> io::Result<Vec<u8>> {
+/// An empty buffer for a `length`-byte read, from `shard` when pooled.
+fn read_buffer(length: usize, shard: &'static Shard) -> io::Result<Vec<u8>> {
     if pooled(length) {
-        return Shard::local().take(length.div_ceil(POOL_PAGE) * POOL_PAGE);
+        return shard.take(length.div_ceil(POOL_PAGE) * POOL_PAGE);
     }
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(length)?;
     Ok(buffer)
 }
 
-/// The caller-facing view of a filled `length`-byte read buffer.
-fn read_result(buffer: Vec<u8>, length: usize) -> Bytes {
+/// The caller-facing view of a filled `length`-byte read buffer. A pooled
+/// buffer returns to `shard`, the one it was taken from.
+fn read_result(buffer: Vec<u8>, length: usize, shard: &'static Shard) -> Bytes {
     if pooled(length) {
-        Bytes::from_owner(Recycled {
-            buffer,
-            shard: Shard::local(),
-        })
+        Bytes::from_owner(Recycled { buffer, shard })
     } else {
         Bytes::from(buffer)
     }
@@ -455,13 +503,14 @@ fn read_batch_with(
     }
     let mut results = Vec::new();
     results.try_reserve_exact(reads.len())?;
+    let shard = Shard::local();
     with_scratch(|scratch, limit| {
         let mut rest = reads;
         while !rest.is_empty() {
             let (run, next) =
                 rest.split_at(contiguous(rest, limit, |read| (read.offset, read.length)));
             for read in run {
-                scratch.buffers.push(read_buffer(read.length)?);
+                scratch.buffers.push(read_buffer(read.length, shard)?);
             }
             fill(
                 file.as_raw_fd(),
@@ -475,7 +524,7 @@ fn read_batch_with(
                     .buffers
                     .drain(..)
                     .zip(run)
-                    .map(|(buffer, read)| read_result(buffer, read.length)),
+                    .map(|(buffer, read)| read_result(buffer, read.length, shard)),
             );
             rest = next;
         }
@@ -620,3 +669,7 @@ mod faults;
 #[cfg(test)]
 #[path = "apple_tests.rs"]
 mod tests;
+
+#[cfg(all(test, acyclic_native_runtime_loom))]
+#[path = "apple_model.rs"]
+mod model;
