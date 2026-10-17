@@ -120,19 +120,12 @@ async fn read_family_rejects_a_valid_but_wrong_selected_range() -> crate::TestRe
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline =
         super::scenario::load_value(&root, &root.join("default-tools/read/middle.json"))?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(baseline.clone()),
-    )
-    .await??;
+    super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
     broken["turns"][0][0]["arguments"]["range"]["start"] = 2.into();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(broken),
-    )
-    .await?
-    .expect_err("accepted the wrong selected bytes");
+    let error = super::drivers::run(broken)
+        .await
+        .expect_err("accepted the wrong selected bytes");
     assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }
@@ -218,19 +211,12 @@ async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
 async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = super::scenario::load_value(&root, &root.join("default-tools/fs/empty.json"))?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(baseline.clone()),
-    )
-    .await??;
+    super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
     broken["turns"][0][0]["arguments"]["command"] = " \t\n".into();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(broken),
-    )
-    .await?
-    .expect_err("parser dispatch passed unchanged schema-rejection expectations");
+    let error = super::drivers::run(broken)
+        .await
+        .expect_err("parser dispatch passed unchanged schema-rejection expectations");
     assert!(
         error.to_string().contains("scripted model turns"),
         "{error}"
@@ -241,19 +227,12 @@ async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
 async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = super::scenario::load_value(&root, &root.join(path))?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(baseline.clone()),
-    )
-    .await??;
+    super::drivers::run(baseline.clone()).await?;
     let mut broken = baseline;
     broken["turns"][0][0]["arguments"]["command"] = command.into();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(broken),
-    )
-    .await?
-    .expect_err("a different command passed unchanged family expectations");
+    let error = super::drivers::run(broken)
+        .await
+        .expect_err("a different command passed unchanged family expectations");
     assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }

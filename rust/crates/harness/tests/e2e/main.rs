@@ -1,5 +1,6 @@
 //! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 mod composer;
+mod deadline_tests;
 mod discovery;
 mod drivers;
 mod execution;
@@ -48,7 +49,7 @@ use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
     path::Path,
-    time::{Duration, Instant},
+    time::Instant,
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use scenario_data::discover;
@@ -296,7 +297,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
                 let case = scenario::load_value(&root, &case_path)?;
-                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
+                drivers::run(case).await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await
