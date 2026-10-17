@@ -1,7 +1,7 @@
 //! One judge for argument normalization, shared by the fuzz target and the
 //! test oracle: fixtures record [`Seen`] events and only [`INVARIANTS`] rule.
-//! Tests inject defects through `encode` and `envelope`; the fuzz target
-//! passes the production values.
+//! Tests inject defects through a [`Codec`]'s seams, including each
+//! adapter's own call serialization; the fuzz target passes [`CODEC`].
 use super::{Arguments, literal_at_depth};
 use crate::Adapter;
 use serde_json::Value;
@@ -73,9 +73,57 @@ pub(crate) const INVARIANTS: [(&str, Check); 5] = [
     }),
 ];
 
+/// Every adapter whose call serialization the judge observes, in order.
+pub(crate) const ADAPTERS: [Adapter; 4] = [
+    Adapter::Anthropic,
+    Adapter::Responses,
+    Adapter::Chat,
+    Adapter::Gemini,
+];
+
+/// The seams a run serializes and decodes through.
+pub(crate) struct Codec {
+    /// Generated levels the decoder admits beyond the input bound.
+    pub envelope: u32,
+    /// Standalone argument serialization.
+    pub encode: fn(&Value) -> Vec<u8>,
+    /// One adapter's call serialization around the arguments.
+    pub call: fn(Adapter, &Value) -> Vec<u8>,
+}
+
+/// The production seams.
+pub(crate) const CODEC: Codec = Codec {
+    envelope: ENVELOPE,
+    encode,
+    call,
+};
+
 /// The production argument encoding.
 pub(crate) fn encode(value: &Value) -> Vec<u8> {
     serde_json::to_vec(&Arguments(value)).unwrap_or_default()
+}
+
+/// The production call encoding for `adapter`.
+pub(crate) fn call(adapter: Adapter, arguments: &Value) -> Vec<u8> {
+    let call = super::super::call::Call {
+        adapter,
+        id: "call_0".into(),
+        name: "echo".into(),
+        arguments,
+        signature: None,
+    };
+    serde_json::to_vec(&call).unwrap_or_default()
+}
+
+/// Where `adapter`'s call carries its arguments: an object, or for
+/// Responses and Chat, the JSON text of one.
+pub(crate) fn slot(adapter: Adapter, wire: &mut Value) -> &mut Value {
+    match adapter {
+        Adapter::Anthropic => &mut wire["input"],
+        Adapter::Gemini => &mut wire["functionCall"]["args"],
+        Adapter::Responses => &mut wire["arguments"],
+        Adapter::Chat => &mut wire["function"]["arguments"],
+    }
 }
 
 /// Decodes `bytes` with the input bound plus `envelope` generated levels and
@@ -95,19 +143,18 @@ pub(crate) fn decoded<S>(
     Ok(result.ok())
 }
 
-/// Records how `encode` normalizes `value` directly and how every adapter's
-/// call normalizes it, decoding with `envelope` generated levels.
+/// Records how `codec.encode` normalizes `value` directly and how every
+/// adapter's `codec.call` normalizes it, decoding with `codec.envelope`.
 pub(crate) fn normalization<S>(
     value: &Value,
-    envelope: u32,
-    encode: fn(&Value) -> Vec<u8>,
+    codec: &Codec,
     see: &mut impl FnMut(Seen) -> Result<(), S>,
 ) -> Result<(), S> {
-    let bytes = encode(value);
-    let Some(normalized) = decoded(see, "arguments", &bytes, envelope)? else {
+    let bytes = (codec.encode)(value);
+    let Some(normalized) = decoded(see, "arguments", &bytes, codec.envelope)? else {
         return Ok(());
     };
-    let again = encode(&normalized);
+    let again = (codec.encode)(&normalized);
     see(Seen::Normalized {
         site: "arguments".into(),
         value: value.clone(),
@@ -116,38 +163,21 @@ pub(crate) fn normalization<S>(
     see(Seen::Reencoded {
         equal: again == bytes,
     })?;
-    for adapter in [
-        Adapter::Anthropic,
-        Adapter::Responses,
-        Adapter::Chat,
-        Adapter::Gemini,
-    ] {
+    for adapter in ADAPTERS {
         let site = format!("{adapter:?} call");
-        let call = super::super::call::Call {
-            adapter,
-            id: "call_0".into(),
-            name: "echo".into(),
-            arguments: value,
-            signature: None,
-        };
-        let encoded = serde_json::to_vec(&call).unwrap_or_default();
-        let Some(wire) = decoded(see, &site, &encoded, envelope)? else {
+        let encoded = (codec.call)(adapter, value);
+        let Some(mut wire) = decoded(see, &site, &encoded, codec.envelope)? else {
             return Ok(());
         };
+        let arguments = slot(adapter, &mut wire).take();
         let arguments = match adapter {
-            Adapter::Anthropic => wire["input"].clone(),
-            Adapter::Gemini => wire["functionCall"]["args"].clone(),
+            Adapter::Anthropic | Adapter::Gemini => arguments,
             Adapter::Responses | Adapter::Chat => {
-                let raw = if adapter == Adapter::Responses {
-                    &wire["arguments"]
-                } else {
-                    &wire["function"]["arguments"]
-                };
                 // Codec fuzzing includes standalone values deeper than an
                 // admitted ModelRequest. Validate those with the derived output
                 // bound; actual request validator admission is checked separately.
-                let raw = raw.as_str().unwrap_or_default().as_bytes();
-                let Some(arguments) = decoded(see, &site, raw, envelope)? else {
+                let raw = arguments.as_str().unwrap_or_default().as_bytes();
+                let Some(arguments) = decoded(see, &site, raw, codec.envelope)? else {
                     return Ok(());
                 };
                 arguments
@@ -165,7 +195,7 @@ pub(crate) fn normalization<S>(
 /// Fuzz entry: the model JSON round trip plus every invariant, as panics.
 pub(crate) fn assert_normalization(value: &Value) {
     crate::fuzzing::assert_model_json_round_trip(value);
-    let judged = normalization(value, ENVELOPE, encode, &mut |seen| {
+    let judged = normalization(value, &CODEC, &mut |seen| {
         for (name, check) in INVARIANTS {
             if let Err(detail) = check(&seen) {
                 panic!("{name}: {detail}");

@@ -24,7 +24,9 @@ mod judge;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) use judge::assert_normalization;
 #[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) use judge::{ENVELOPE, INVARIANTS, Seen, decoded, encode, normalization};
+pub(crate) use judge::{
+    ADAPTERS, CODEC, Codec, ENVELOPE, INVARIANTS, Seen, call, decoded, encode, normalization, slot,
+};
 
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub(crate) fn literal(bytes: &[u8]) -> acyclic_harness::Result<Value> {

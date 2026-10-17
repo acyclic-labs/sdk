@@ -2,7 +2,9 @@
 // record observations, the shared judge's invariants plus projection ones
 // rule, and a targeted fault proves each invariant load bearing.
 use super::*;
-use crate::projection::arguments::{ENVELOPE, INVARIANTS, Seen, decoded, encode, normalization};
+use crate::projection::arguments::{
+    ADAPTERS, CODEC, Codec, ENVELOPE, INVARIANTS, Seen, call, decoded, encode, normalization, slot,
+};
 use acyclic_harness::model::{ModelContentPart, ToolCall, ToolResultContent};
 use acyclic_test_support::differential::oracle::{Observer, Oracle, Stop};
 use proptest::prelude::*;
@@ -50,20 +52,35 @@ enum Fault {
     NoEnvelope,
     /// Decodes with one generated envelope level.
     OneEnvelope,
-    /// The Chat body carries the unwrapped argument text.
-    UnwrapWire,
-    /// The wire call copies the arguments instead of borrowing them.
-    Materialize,
-    /// Projection rewrites the canonical history with normalized arguments.
-    NormalizeHistory,
+    /// The adapter's call serializes its arguments without the `_raw` wrapper.
+    CallUnwrapped(Adapter),
+    /// The adapter's projected body carries the unwrapped arguments.
+    UnwrapWire(Adapter),
+    /// The adapter's wire call references a copy of the arguments.
+    Materialize(Adapter),
+    /// Projecting for the adapter rewrites the canonical history with
+    /// normalized arguments.
+    NormalizeHistory(Adapter),
 }
 
 impl Fault {
-    fn envelope(fault: Option<Self>) -> u32 {
-        match fault {
-            Some(Self::NoEnvelope) => 0,
-            Some(Self::OneEnvelope) => 1,
-            _ => ENVELOPE,
+    fn codec(fault: Option<Self>) -> Codec {
+        Codec {
+            envelope: match fault {
+                Some(Self::NoEnvelope) => 0,
+                Some(Self::OneEnvelope) => 1,
+                _ => ENVELOPE,
+            },
+            encode: Self::encode(fault),
+            call: match fault {
+                Some(Self::CallUnwrapped(adapter)) => match adapter {
+                    Adapter::Anthropic => unwrapped::<0>,
+                    Adapter::Responses => unwrapped::<1>,
+                    Adapter::Chat => unwrapped::<2>,
+                    Adapter::Gemini => unwrapped::<3>,
+                },
+                _ => CODEC.call,
+            },
         }
     }
 
@@ -81,8 +98,40 @@ impl Fault {
                 Value::Null => b"{}".to_vec(),
                 _ => encode(value),
             },
-            _ => encode,
+            _ => CODEC.encode,
         }
+    }
+}
+
+/// Arguments as an adapter would carry them without the `_raw` wrapper.
+fn bare(adapter: Adapter, value: &Value) -> Value {
+    match adapter {
+        Adapter::Anthropic | Adapter::Gemini => value.clone(),
+        Adapter::Responses | Adapter::Chat => Value::String(value.to_string()),
+    }
+}
+
+/// `ADAPTERS[N]`'s call serialization with its arguments unwrapped; every
+/// other adapter's is production.
+fn unwrapped<const N: usize>(adapter: Adapter, value: &Value) -> Vec<u8> {
+    let bytes = call(adapter, value);
+    if adapter != ADAPTERS[N] {
+        return bytes;
+    }
+    let Ok(mut wire) = crate::projection::arguments::literal(&bytes) else {
+        return bytes;
+    };
+    *slot(adapter, &mut wire) = bare(adapter, value);
+    serde_json::to_vec(&wire).unwrap_or_default()
+}
+
+/// Where the projected body for `adapter` carries the fixture's arguments.
+fn projected_slot(adapter: Adapter, wire: &mut Value) -> &mut Value {
+    match adapter {
+        Adapter::Anthropic => &mut wire["messages"][1]["content"][0]["input"],
+        Adapter::Gemini => &mut wire["contents"][1]["parts"][0]["functionCall"]["args"],
+        Adapter::Chat => &mut wire["messages"][2]["tool_calls"][0]["function"]["arguments"],
+        Adapter::Responses => &mut wire["input"][2]["arguments"],
     }
 }
 
@@ -116,7 +165,7 @@ fn lift<const N: usize>(event: &Event) -> std::result::Result<(), String> {
 }
 
 fn oracle() -> Oracle<Case, Fault, Event> {
-    Oracle::declare(run)
+    let mut oracle = Oracle::declare(run)
         .invariant(INVARIANTS[0].0, lift::<0>)
         .invariant(INVARIANTS[1].0, lift::<1>)
         .invariant(INVARIANTS[2].0, lift::<2>)
@@ -163,19 +212,37 @@ fn oracle() -> Oracle<Case, Fault, Event> {
             "idempotent",
             Case::Normalized(json!([1])),
             Fault::AlwaysWrap,
-        )
-        .control("admitted", Case::Projected(json!([1])), Fault::UnwrapWire)
-        .control(
-            "borrowed",
-            Case::Projected(json!({"nested": [1, 2, 3]})),
-            Fault::Materialize,
-        )
-        .control(
-            "history",
-            Case::Projected(json!([1])),
-            Fault::NormalizeHistory,
-        )
-        .build()
+        );
+    // Each adapter serializes and projects separately, so each carries its
+    // own controls: dropping one adapter's observations fails its controls.
+    for adapter in ADAPTERS {
+        let carried = match adapter {
+            Adapter::Anthropic | Adapter::Gemini => "object",
+            Adapter::Responses | Adapter::Chat => "admitted",
+        };
+        oracle = oracle
+            .control(
+                "object",
+                Case::Normalized(json!([1])),
+                Fault::CallUnwrapped(adapter),
+            )
+            .control(
+                carried,
+                Case::Projected(json!([1])),
+                Fault::UnwrapWire(adapter),
+            )
+            .control(
+                "borrowed",
+                Case::Projected(json!({"nested": [1, 2, 3]})),
+                Fault::Materialize(adapter),
+            )
+            .control(
+                "history",
+                Case::Projected(json!([1])),
+                Fault::NormalizeHistory(adapter),
+            );
+    }
+    oracle.build()
 }
 
 fn run(
@@ -185,12 +252,9 @@ fn run(
 ) -> std::result::Result<(), Stop> {
     let fault = fault.copied();
     let (Case::Normalized(value) | Case::Projected(value)) = case;
-    normalization(
-        value,
-        Fault::envelope(fault),
-        Fault::encode(fault),
-        &mut |seen| observer.see(Event::Normalization(seen)),
-    )?;
+    normalization(value, &Fault::codec(fault), &mut |seen| {
+        observer.see(Event::Normalization(seen))
+    })?;
     match case {
         Case::Normalized(_) => Ok(()),
         Case::Projected(value) => projection(value, fault, observer),
@@ -203,12 +267,7 @@ fn projection(
     observer: &mut Observer<'_, Event>,
 ) -> std::result::Result<(), Stop> {
     let call = || ToolCall::new("call_0".into(), "echo".into(), value.clone());
-    for adapter in [
-        Adapter::Anthropic,
-        Adapter::Responses,
-        Adapter::Chat,
-        Adapter::Gemini,
-    ] {
+    for adapter in ADAPTERS {
         let (provider, _) = provider(adapter, 200);
         let (prepared, _) = request(&provider).unwrap();
         let mut request = prepared.request().clone();
@@ -228,6 +287,11 @@ fn projection(
                 }),
             },
         ]);
+        let ModelContent::Part(ModelContentPart::ToolCall(source)) = &request.messages[2].content
+        else {
+            unreachable!("the fixture appended a tool call")
+        };
+        let copy = source.arguments.clone();
         let names = crate::tool_names::Names::new(&request);
         let origin = provider.reasoning_origin(provider.key.as_deref(), None);
         let projected = crate::projection::body_named(
@@ -237,27 +301,26 @@ fn projection(
             &origin,
             &mut crate::files::FileText::default(),
         );
-        let Ok(projected) = projected else {
+        let Ok(mut projected) = projected else {
             observer.see(Event::Admitted {
                 adapter,
                 admitted: false,
             })?;
             return Err(Stop);
         };
-        let ModelContent::Part(ModelContentPart::ToolCall(source)) = &request.messages[2].content
-        else {
-            unreachable!("the fixture appended a tool call")
-        };
-        let copy = source.arguments.clone();
-        let borrowed = projected.borrowed_arguments();
-        let wire_call = match fault {
-            Some(Fault::Materialize) => Some(&copy),
-            _ => borrowed.first().copied(),
-        };
+        if fault == Some(Fault::Materialize(adapter)) {
+            for arguments in projected.arguments() {
+                *arguments = &copy;
+            }
+        }
+        let borrowed: Vec<&Value> = projected
+            .arguments()
+            .into_iter()
+            .map(|arguments| *arguments)
+            .collect();
         observer.see(Event::Borrowed {
             adapter,
-            same: borrowed.len() == 1
-                && wire_call.is_some_and(|wire| std::ptr::eq(&source.arguments, wire)),
+            same: borrowed.len() == 1 && std::ptr::eq(&source.arguments, borrowed[0]),
         })?;
         let mut see = |seen| observer.see(Event::Normalization(seen));
         let bytes = serde_json::to_vec(&projected).unwrap_or_default();
@@ -265,24 +328,20 @@ fn projection(
         let Some(mut wire) = decoded(&mut see, &site, &bytes, 0)? else {
             return Ok(());
         };
-        if fault == Some(Fault::UnwrapWire) && adapter == Adapter::Chat {
-            wire["messages"][2]["tool_calls"][0]["function"]["arguments"] =
-                Value::String(value.to_string());
+        if fault == Some(Fault::UnwrapWire(adapter)) {
+            *projected_slot(adapter, &mut wire) = bare(adapter, value);
         }
+        if matches!(adapter, Adapter::Chat | Adapter::Responses) {
+            observer.see(Event::Admitted {
+                adapter,
+                admitted: crate::validate_input(adapter, &wire).is_empty(),
+            })?;
+        }
+        let arguments = projected_slot(adapter, &mut wire).take();
         let arguments = match adapter {
-            Adapter::Anthropic => wire["messages"][1]["content"][0]["input"].clone(),
-            Adapter::Gemini => wire["contents"][1]["parts"][0]["functionCall"]["args"].clone(),
+            Adapter::Anthropic | Adapter::Gemini => arguments,
             Adapter::Chat | Adapter::Responses => {
-                observer.see(Event::Admitted {
-                    adapter,
-                    admitted: crate::validate_input(adapter, &wire).is_empty(),
-                })?;
-                let raw = if adapter == Adapter::Chat {
-                    &wire["messages"][2]["tool_calls"][0]["function"]["arguments"]
-                } else {
-                    &wire["input"][2]["arguments"]
-                };
-                let raw = raw.as_str().unwrap_or_default().as_bytes();
+                let raw = arguments.as_str().unwrap_or_default().as_bytes();
                 let mut see = |seen| observer.see(Event::Normalization(seen));
                 let Some(arguments) = decoded(&mut see, &site, raw, 0)? else {
                     return Ok(());
@@ -291,7 +350,7 @@ fn projection(
             }
         };
         drop(projected);
-        if fault == Some(Fault::NormalizeHistory) {
+        if fault == Some(Fault::NormalizeHistory(adapter)) {
             request.messages[2].content = ModelContent::Part(ModelContentPart::ToolCall(
                 ToolCall::new("call_0".into(), "echo".into(), arguments.clone()),
             ));
