@@ -19,6 +19,8 @@ pub(super) struct ModelEffects {
     // Single executor; never held across an await, no nested locks.
     responses: Mutex<Vec<(ModelDispatch, Vec<ModelEvent>)>>,
     summary_files: Mutex<Vec<FileRef>>,
+    // Real providers retain no receipt a reopened host can reconcile.
+    forgotten: Mutex<bool>,
 }
 
 impl ModelEffects {
@@ -33,6 +35,10 @@ impl ModelEffects {
             .iter()
             .map(|(dispatch, _)| *dispatch)
             .collect()
+    }
+    pub fn forget(&self, turns: Vec<ScriptedTurn>) {
+        *self.forgotten.lock().unwrap() = true;
+        *self.turns.lock().unwrap() = turns.into();
     }
     pub fn accepted(&self) -> usize {
         self.responses.lock().unwrap().len()
@@ -81,6 +87,7 @@ impl ModelEffects {
             schedule,
             responses: Mutex::default(),
             summary_files: Mutex::default(),
+            forgotten: Mutex::default(),
         }
     }
 }
@@ -162,6 +169,9 @@ impl ModelProvider for ModelEffects {
     ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
             self.schedule.point("model:reconcile").await;
+            if *self.forgotten.lock().unwrap() {
+                return Ok(None);
+            }
             let events = self
                 .responses
                 .lock()
@@ -229,6 +239,7 @@ pub(super) struct Effect {
     pub schedule: Arc<Schedule>,
     // A non-idempotent external effect: execute twice increments twice and fails.
     pub calls: Mutex<Vec<ToolInvocation>>,
+    pub forgotten: Mutex<bool>,
 }
 impl ToolExecutor for Effect {
     fn execute<'a>(
@@ -265,6 +276,9 @@ impl ToolExecutor for Effect {
     ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             self.schedule.point("tool:reconcile").await;
+            if *self.forgotten.lock().unwrap() {
+                return Ok(None);
+            }
             if self.calls.lock().unwrap().is_empty() {
                 let active = self.schedule.dispatch("tool:finish-reservation");
                 self.calls.lock().unwrap().push(invocation.clone());

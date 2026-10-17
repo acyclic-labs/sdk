@@ -101,14 +101,7 @@ impl LocalHarness {
             }
             Err(error) => return Err(error),
         };
-        Ok(matches!(
-            outcome,
-            Some(
-                crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled
-            )
-        ))
+        Ok(super::orphans::settled(outcome.as_ref()))
     }
 
     async fn admit_retained(
@@ -159,6 +152,7 @@ impl LocalHarness {
             &crate::IdempotencyKey::new(format!("local-turn:{}", turn.operation))?,
         )
         .await?;
+        self.drivers.submitted(turn.operation);
         admit(&turn).await
     }
 
@@ -251,11 +245,16 @@ impl LocalHarness {
             {
                 return self.admit_retained(turn).await;
             }
-            if !can_admit(
-                current.as_ref().map(|turn| turn.operation),
-                None,
-                self.head_is_terminal(current.as_ref()).await?,
-            ) {
+            let mut terminal = self.head_is_terminal(current.as_ref()).await?;
+            // A head no caller in this process drives cannot settle on its own.
+            if let Some(turn) = &current
+                && !terminal
+                && self.drivers.orphaned(turn.operation)
+            {
+                self.supersede(turn.operation).await?;
+                terminal = self.head_is_terminal(current.as_ref()).await?;
+            }
+            if !can_admit(current.as_ref().map(|turn| turn.operation), None, terminal) {
                 return Ok(Admission::Rejected {
                     reason: "local agent already has an admitted turn".into(),
                 });

@@ -22,6 +22,7 @@ mod read_profile;
 mod requests;
 mod seed;
 mod selected_history;
+mod supersede;
 use seed::Seed;
 
 type Harness = LocalHarness;
@@ -133,6 +134,7 @@ impl Fixture {
             effect: Arc::new(Effect {
                 schedule,
                 calls: Default::default(),
+                forgotten: Default::default(),
             }),
             scenario,
             history: RefCell::new(seed.and_then(|seed| seed.history.clone())),
@@ -260,6 +262,7 @@ impl Fixture {
                 },
             ),
             admission: StateArc::new(Mutex::new(())),
+            drivers: super::super::orphans::Drivers::new(),
             #[cfg(feature = "native-execution")]
             workspace: None,
             #[cfg(feature = "native-execution")]
@@ -328,6 +331,17 @@ struct Coverage {
     ready_reads: usize,
     admission_submission: Option<usize>,
     admission_committed: bool,
+    // The reopened head was unsettled and the new prompt had to settle it.
+    interrupted: bool,
+}
+
+/// How a reopened host continues after a cut.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Recovery {
+    /// Resume the interrupted head with fully reconcilable effects.
+    Resume,
+    /// Submit a new prompt while no provider retains the cut effects' receipts.
+    Supersede,
 }
 
 async fn case(
@@ -335,6 +349,16 @@ async fn case(
     cut: Option<usize>,
     baseline: &[&'static str],
     seed: Option<&Seed>,
+) -> Result<Coverage> {
+    case_with(scenario, cut, baseline, seed, Recovery::Resume).await
+}
+
+async fn case_with(
+    scenario: Scenario,
+    cut: Option<usize>,
+    baseline: &[&'static str],
+    seed: Option<&Seed>,
+    recovery: Recovery,
 ) -> Result<Coverage> {
     let profile = read_profile::start();
     // Each worker reuses its current-thread runtime. Bootstrap/recovery closures
@@ -412,6 +436,19 @@ async fn case(
             }
         }
         let admission_committed = current.is_some() && !unadmitted;
+        if recovery == Recovery::Supersede && cut.is_some() {
+            let (root, interrupted) =
+                supersede::recover(&fixture, &reopened, current.as_ref()).await?;
+            return Ok(Coverage {
+                interrupted,
+                observations: invariants::observe(&reopened, &fixture, root).await?,
+                points,
+                unadmitted,
+                ready_reads: schedule.ready_reads(),
+                admission_submission: schedule.admission_submission(),
+                admission_committed,
+            });
+        }
         let (root, output) = if let Some(current) = current {
             let root = crate::runtime::task_id_for_admission(current.root);
             (root, reopened.resume(root).await?)
@@ -481,6 +518,7 @@ async fn case(
             ready_reads: schedule.ready_reads(),
             admission_submission: schedule.admission_submission(),
             admission_committed,
+            interrupted: false,
         })
     })
     .await;
@@ -517,7 +555,22 @@ fn unavailable_shared_memory_falls_back_to_the_system_temporary_directory() {
     assert!(tempfile::tempdir_in(&missing).is_err());
 }
 
-fn sweep(scenarios: &[Scenario]) -> Result<()> {
+const DURABLE: [&str; 6] = [
+    "model:accepted",
+    "model:dispatch",
+    "native:submitted",
+    "task:submitted",
+    "tool:accepted",
+    "tool:dispatch",
+];
+
+// Durable state changes only at submissions and external effects; completion
+// and blocking-pool boundaries replay the same durable prefix.
+fn durable(point: &str) -> bool {
+    DURABLE.contains(&point)
+}
+
+fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let started = std::time::Instant::now();
     // Cuts are named push barriers, independent of task polling and I/O latency.
@@ -530,7 +583,10 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         let seed = runtime.block_on(Seed::new(scenario))?;
         let observed = runtime.block_on(Box::pin(case(scenario, None, &[], Some(&seed))))?;
         let baseline = observed.points;
-        coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
+        // The resume sweep owns the reviewed manifest for this same baseline.
+        if recovery == Recovery::Resume {
+            coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
+        }
         assert!(!baseline.is_empty());
         eprintln!(
             "{scenario:?}: {} deterministic cancellation points",
@@ -543,12 +599,29 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     let mut cuts: Vec<_> = schedules
         .iter()
         .flat_map(|(scenario, baseline, seed)| {
-            (1..=baseline.len()).map(move |cut| (*scenario, baseline, seed, cut))
+            (1..=baseline.len())
+                .filter(move |cut| recovery == Recovery::Resume || durable(baseline[cut - 1]))
+                .map(move |cut| (*scenario, baseline, seed, cut))
         })
         .collect();
+    if recovery == Recovery::Supersede {
+        // Every durable kind in the turn is cut: stream commits, file
+        // publications, and each model and tool dispatch and acceptance.
+        let kinds: std::collections::BTreeSet<_> = cuts
+            .iter()
+            .map(|(_, baseline, _, cut)| baseline[cut - 1])
+            .collect();
+        assert_eq!(
+            kinds,
+            DURABLE.into_iter().collect(),
+            "a durable boundary kind was not cut"
+        );
+    }
     coverage::permute(&mut cuts, 711);
-    coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _)| *scenario))?;
-    for (scenario, baseline, _) in &schedules {
+    if scenarios.len() > 1 {
+        coverage::check_interleaved(cuts.iter().map(|(scenario, _, _, _)| *scenario))?;
+    }
+    for (scenario, baseline, _) in schedules.iter().filter(|_| recovery == Recovery::Resume) {
         coverage::check_cuts(
             *scenario,
             baseline.len(),
@@ -561,6 +634,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
     let failed = AtomicBool::new(false);
     let completed = AtomicUsize::new(0);
     let unadmitted = AtomicUsize::new(0);
+    let interrupted = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         let workers: Vec<_> = (0..std::thread::available_parallelism()
             .unwrap()
@@ -593,7 +667,13 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                             return Ok(());
                         };
                         let coverage = runtime
-                            .block_on(Box::pin(case(scenario, Some(cut), baseline, Some(&seed))))
+                            .block_on(Box::pin(case_with(
+                                scenario,
+                                Some(cut),
+                                baseline,
+                                Some(&seed),
+                                recovery,
+                            )))
                             .map_err(|error| {
                                 let error = Error::Storage(format!(
                                     "{scenario:?} cut {cut}/{}: {error:?}",
@@ -604,6 +684,7 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
                                 error
                             })?;
                         unadmitted.fetch_add(usize::from(coverage.unadmitted), Ordering::Relaxed);
+                        interrupted.fetch_add(usize::from(coverage.interrupted), Ordering::Relaxed);
                         completed.fetch_add(1, Ordering::Relaxed);
                     }
                 })
@@ -623,17 +704,31 @@ fn sweep(scenarios: &[Scenario]) -> Result<()> {
         unadmitted.load(Ordering::Relaxed) > 0,
         "HEAD/admission crash window was not covered"
     );
+    // Non-vacuity: some cuts left an unsettled head that the old admission
+    // predicate rejected forever.
+    assert!(
+        recovery == Recovery::Resume || interrupted.load(Ordering::Relaxed) > 0,
+        "no cut left an interrupted head"
+    );
     eprintln!("complete replay sweep: {:?}", started.elapsed());
     Ok(())
 }
 
 #[test]
 fn run_cancellation_at_every_poll_recovers_head_and_admission() -> Result<()> {
-    sweep(&[
-        Scenario::Text,
-        Scenario::EffectAndContinuation,
-        Scenario::Compaction,
-    ])
+    sweep(
+        &[
+            Scenario::Text,
+            Scenario::EffectAndContinuation,
+            Scenario::Compaction,
+        ],
+        Recovery::Resume,
+    )
+}
+
+#[test]
+fn new_prompt_after_every_cut_settles_the_interrupted_turn_without_redispatch() -> Result<()> {
+    sweep(&[Scenario::EffectAndContinuation], Recovery::Supersede)
 }
 
 #[test]

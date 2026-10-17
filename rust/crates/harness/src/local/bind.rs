@@ -137,6 +137,7 @@ impl LocalHarness {
             mcp_diagnostics: Vec::new(),
             goal_continuations: config.goal_continuations,
             admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
+            drivers: super::orphans::Drivers::new(),
             #[cfg(feature = "native-execution")]
             workspace,
             #[cfg(feature = "native-execution")]

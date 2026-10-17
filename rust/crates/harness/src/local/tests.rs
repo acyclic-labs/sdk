@@ -737,6 +737,8 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
     Ok(())
 }
 
+#[path = "tests/interrupted_turns.rs"]
+mod interrupted_turns;
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 

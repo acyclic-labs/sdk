@@ -107,13 +107,8 @@ impl LocalHarness {
             // continuation is a new root bound to the selected immutable checkpoint.
             if continuation.is_some()
                 || existing.is_none()
-                    && matches!(
-                        self.runtime.task_host().outcome(parent).await?,
-                        Some(
-                            crate::Outcome::Succeeded(_)
-                                | crate::Outcome::Failed { .. }
-                                | crate::Outcome::Cancelled
-                        )
+                    && super::orphans::settled(
+                        self.runtime.task_host().outcome(parent).await?.as_ref(),
                     )
             {
                 return super::admission::serialized(&self.admission, async || {
@@ -478,20 +473,17 @@ impl LocalHarness {
             .runtime
             .harness()
             .task::<serde_json::Value, TurnOutput>("acyclic.stock_turn@1")?;
+        // Claim under the gate: a new prompt never supersedes a driven turn.
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let _driving =
+            super::admission::serialized(&self.admission, async || self.drivers.drive(operation))
+                .await;
         let handle = match self.runtime.harness().attach(task, &definition).await {
             Ok(handle) => handle,
             Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
             Err(error) => return Err(error),
         };
-        let terminal = matches!(
-            self.runtime.task_host().outcome(task).await?,
-            Some(
-                crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled
-            )
-        );
-        if !terminal {
+        if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
             let commands = self.commands()?;
             Box::pin(self.advance(task, &commands)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
