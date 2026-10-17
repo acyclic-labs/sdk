@@ -104,6 +104,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         };
         with_history_io(io, |work| request.validate(work))?;
+        if request.parent.kind == crate::core::AggregateKind::Task
+            && task.is_some_and(|task| task.origin().owner != *self.parent.authority())
+        {
+            return Err(reject(
+                Unauthorized,
+                "task fork requires its original preparation owner",
+            ));
+        }
         if !self.scope.capabilities().contains(capability::FORK_PUBLISH) {
             return Err(reject(
                 Unauthorized,

@@ -381,7 +381,7 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 mod tests;
 
 #[inline]
-fn compare_bytes(mut left: &[u8], mut right: &[u8]) -> Ordering {
+pub(crate) fn compare_bytes(mut left: &[u8], mut right: &[u8]) -> Ordering {
     #[cfg(test)]
     BYTE_COMPARISONS.with(|count| count.set(count.get() + 1));
     #[cfg(test)]

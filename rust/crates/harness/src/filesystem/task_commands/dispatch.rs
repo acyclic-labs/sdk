@@ -211,6 +211,7 @@ where
         context: &TaskContext,
         command: &WorkflowCommand,
         payload: Value,
+        mail_after: Option<u64>,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<bool> {
         mail::require_native_observer(io)?;
@@ -246,7 +247,8 @@ where
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 let input: MailReceiveTaskCommand = mail::decode_command(payload, io)?;
-                self.wait_mail(task, input.after, io).await
+                self.wait_mail(task, mail_after.unwrap_or(input.after), io)
+                    .await
             }
             TASK_OBSERVE_COMMAND_KIND => {
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;

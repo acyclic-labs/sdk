@@ -123,18 +123,14 @@ where
                         .await?,
                 )
             } else {
-                WorkerContext::Ordinary(
-                    self.harness
-                        .durable_context(task, operation_id, None)
-                        .await?,
-                )
+                self.host.start_task(lease, &mut None).await?;
+                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
             };
             #[cfg(target_arch = "wasm32")]
-            let context = WorkerContext::Ordinary(
-                self.harness
-                    .durable_context(task, operation_id, None)
-                    .await?,
-            );
+            let context = {
+                self.host.start_task(lease, &mut None).await?;
+                WorkerContext::Ordinary(Arc::new(self.task_context(task, fence.clone()).await?))
+            };
             #[cfg(not(target_arch = "wasm32"))]
             let mut session = if let WorkerContext::Native(context) = &context {
                 let work =
@@ -146,14 +142,16 @@ where
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work)
                     .await?
             } else {
-                self.host.start_task(lease, &mut None).await?;
-                self.open_task(task, fence.clone()).await?
+                let WorkerContext::Ordinary(context) = &context else {
+                    unreachable!()
+                };
+                let journal = self.workflow_journal_with_context(context)?;
+                self.harness
+                    .open_registered_task(task, fence, journal, Some(Arc::clone(context)))
+                    .await?
             };
             #[cfg(target_arch = "wasm32")]
-            let mut session = {
-                self.host.start_task(lease, &mut None).await?;
-                self.open_task(task, fence.clone()).await?
-            };
+            let mut session = { self.open_task(task, fence.clone()).await? };
             #[cfg(not(target_arch = "wasm32"))]
             let mut wake_custody;
             #[cfg(not(target_arch = "wasm32"))]

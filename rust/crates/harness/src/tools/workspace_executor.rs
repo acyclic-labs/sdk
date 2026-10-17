@@ -75,6 +75,16 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
+            if invocation.name == "fs" {
+                if let Some(command) = invocation
+                    .arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    && let Some(result) = super::agent_files::inspect(&context, command).await?
+                {
+                    return Ok(result);
+                }
+            }
             let executor = workspace(&context, None)?.clone();
             executor.execute(invocation, Some(context)).await
         })
@@ -94,6 +104,16 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
+            if invocation.name == "fs" {
+                if let Some(command) = invocation
+                    .arguments
+                    .get("command")
+                    .and_then(serde_json::Value::as_str)
+                    && let Some(result) = super::agent_files::inspect(&context, command).await?
+                {
+                    return Ok(Some(result));
+                }
+            }
             let executor = workspace(&context, None)?.clone();
             executor.reconcile(invocation, Some(context)).await
         })

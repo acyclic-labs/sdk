@@ -126,11 +126,13 @@ impl ForkSeed {
         if self.parent == self.child {
             return Err(work.invalid("fork child cannot equal its parent"));
         }
-        if self.parent.kind != crate::core::AggregateKind::Conversation
-            || self.child.kind != crate::core::AggregateKind::Conversation
-        {
-            return Err(work.invalid("fork must link parent and child conversations"));
-        }
+        let expected_history = super::request::history_selections(
+            &self.parent,
+            &self.child,
+            self.inherited_through_sequence,
+            self.summary.is_some() || self.history_witness.is_some(),
+            &mut work,
+        )?;
         let parent_path = work.stream_path(&self.parent)?;
         let _child_path = work.stream_path(&self.child)?;
         work.slots::<AgentId>(self.attached_agents.len())?;
@@ -294,8 +296,11 @@ impl ForkSeed {
                 }
             }
         }
-        if history != 1 || project != 1 || private != 1 || context > 1 || process > 1 {
-            return Err(work.invalid("fork needs one history, project, and scratch revision"));
+        if history != expected_history || project != 1 || private != 1 || context > 1 || process > 1
+        {
+            return Err(
+                work.invalid("fork captures differ from the parent kind and child allocation")
+            );
         }
         self.validate_inherited_context(&mut work)?;
         if let Some(boundary) = &self.boundary {

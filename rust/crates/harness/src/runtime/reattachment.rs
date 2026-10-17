@@ -165,6 +165,24 @@ impl AgentHarness {
     ) -> Result<ResumableTaskSession> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(context) = context {
+            if context.native_custody.is_none() {
+                if !Arc::ptr_eq(&context.harness, self)
+                    || !context.original_task_binding_matches(task_id, fence)
+                    || journal.task_binding() != Some((task_id, fence))
+                {
+                    return Err(Error::Unauthorized(
+                        "workflow context or journal owner differs".into(),
+                    ));
+                }
+                context.owned_task_binding(None)?;
+                let admission = context.owned_mailbox.as_ref().unwrap().admission().0;
+                let definition = Arc::clone(self.tasks.find(
+                    &admission.task.name,
+                    &admission.task.version,
+                    &mut None,
+                )?);
+                return definition.open_workflow(context, fence, journal)?.await;
+            }
             let work = context.native_work()?;
             let error = |code, reason| Error::NativeBoundary { code, reason };
             if !Arc::ptr_eq(&context.harness, self)

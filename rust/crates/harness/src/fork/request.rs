@@ -92,11 +92,13 @@ impl ForkRequest {
         if self.parent == self.child {
             return Err(work.invalid("fork child cannot equal its parent"));
         }
-        if self.parent.kind != crate::core::AggregateKind::Conversation
-            || self.child.kind != crate::core::AggregateKind::Conversation
-        {
-            return Err(work.invalid("fork must link parent and child conversations"));
-        }
+        let expected_history = history_selections(
+            &self.parent,
+            &self.child,
+            self.preparation.inherited_through_sequence,
+            self.preparation.summary.is_some(),
+            &mut work,
+        )?;
         let parent_path = work.stream_path(&self.parent)?;
         let _child_path = work.stream_path(&self.child)?;
         self.preparation.validate(self.child_agent, work.work())?;
@@ -156,8 +158,15 @@ impl ForkRequest {
                 _ => {}
             }
         }
-        if histories != 1 || projects != 1 || private != 1 || contexts > 1 || processes > 1 {
-            return Err(work.invalid("fork requires one history, project and scratch selection"));
+        if histories != expected_history
+            || projects != 1
+            || private != 1
+            || contexts > 1
+            || processes > 1
+        {
+            return Err(
+                work.invalid("fork selections differ from the parent kind and child allocation")
+            );
         }
         if let Some(boundary) = &self.boundary {
             boundary.validate(work.work())?;
@@ -197,5 +206,20 @@ impl ForkRequest {
             }
         }
         Ok(())
+    }
+}
+
+pub(in crate::fork) fn history_selections(
+    parent: &Authority,
+    child: &Authority,
+    through: u64,
+    has_summary: bool,
+    work: &mut CodecQuota<'_, '_>,
+) -> Result<usize> {
+    use crate::core::AggregateKind;
+    match (parent.kind, child.kind) {
+        (AggregateKind::Conversation, AggregateKind::Conversation) => Ok(1),
+        (AggregateKind::Task, AggregateKind::Task) if through == 0 && !has_summary => Ok(0),
+        _ => Err(work.invalid("fork must link conversations or history-free tasks")),
     }
 }

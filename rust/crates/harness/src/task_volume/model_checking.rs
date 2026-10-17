@@ -25,6 +25,14 @@ pub enum Fault {
     IgnoreDeadline,
     /// Stop output on an unrelated task-file writer's generation advance.
     StopAfterGenerationConflict,
+    /// Return from child control before its live effect future is drained.
+    DropActiveChild,
+    /// Admit child preparation before its staged inputs are durable.
+    SkipChildInputFence,
+    /// Send live child mail without acknowledging its result bound.
+    SkipChildInputAck,
+    /// Return a controller error while sibling effect futures are live.
+    DropSiblingEffects,
 }
 
 loom::thread_local! {
@@ -55,7 +63,7 @@ pub fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
-pub(super) fn enabled(fault: Fault) -> bool {
+pub(crate) fn enabled(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
 
@@ -80,3 +88,6 @@ pub async fn assert_index_matches<P: StreamProvider + ?Sized>(
         "acknowledgement overwrote rebuilt files"
     );
 }
+
+#[cfg(test)]
+pub(crate) use super::files::model_files as files;

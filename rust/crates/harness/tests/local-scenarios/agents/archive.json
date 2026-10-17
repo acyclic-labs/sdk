@@ -1,0 +1,158 @@
+{
+  "driver": "agents",
+  "prompt": "Archive the worker and remove it from the active list",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "original work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "archive",
+          "arguments": {
+            "agent": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "list",
+          "name": "fs",
+          "arguments": {
+            "command": "ls .volumes/agents"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 6,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Archived",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "model_requests": {
+      "parent": [
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "control",
+                "name": "archive",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "agent": "worker"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "list",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "success": true,
+                    "stdout": {
+                      "$contains": ".volumes/agents/worker/"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "active": []
+  },
+  "routes": {
+    "original work": "worker"
+  }
+}

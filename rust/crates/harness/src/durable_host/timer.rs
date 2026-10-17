@@ -126,7 +126,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(retained && self.now_unix_millis() >= deadline)
     }
 
-    #[cfg(any(test, feature = "filesystem"))]
+    #[cfg(feature = "filesystem")]
     pub(super) async fn timer_state(
         &self,
         task: TaskId,

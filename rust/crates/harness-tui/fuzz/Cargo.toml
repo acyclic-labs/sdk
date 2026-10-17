@@ -78,3 +78,10 @@ path = "fuzz_targets/config_theme.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "transcript_search"
+path = "fuzz_targets/transcript_search.rs"
+test = false
+doc = false
+bench = false
