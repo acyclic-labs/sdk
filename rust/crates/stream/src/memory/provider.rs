@@ -106,7 +106,7 @@ impl StreamProvider for MemoryStream {
         let mut cursor = HistoryCursor::new(path, end, request.from);
         Ok(stream::iter(
             std::iter::from_fn(move || cursor.next_record())
-                .take(request.limit as usize)
+                .take((end - request.from) as usize)
                 .map(Ok),
         )
         .boxed())

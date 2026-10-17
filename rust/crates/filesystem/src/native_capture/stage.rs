@@ -34,6 +34,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         return Err(CaptureError::from(crate::FsError::SourceSnapshotStale));
     }
     ensure_same_host_node(snapshot, &metadata)?;
+    #[cfg(unix)]
     let ranges = allocated_data_ranges(
         &file,
         0,
@@ -41,30 +42,41 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         maximum_extent_spans,
         &mut meter.clone(),
     )
+    .map(Some)
     .map_err(capture_demand_error)?;
-    let skip_import = ranges.is_empty();
+    #[cfg(windows)]
+    let ranges = regular_data_ranges(&file, &metadata, maximum_extent_spans, meter)?;
+    let skip_import = ranges.as_ref().is_some_and(Vec::is_empty);
     #[cfg(all(test, feature = "memory"))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
     if skip_import {
         let staged = capture_vec(0, meter)?;
         finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
-        let bytes = vector_bytes(&ranges);
+        let bytes = ranges.as_ref().map_or(0, vector_bytes);
         drop(ranges);
         drop(file);
         meter.clone().release(bytes).map_err(capture_demand_error)?;
         return Ok(staged);
     }
-    let positional = native_positional_file(file, meter)?;
-    let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
-    capture_allocate(meter, native_bytes)?;
-    let native = std::sync::Arc::new(positional);
+    let native = native_positional_file(file, meter)?;
+    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+    let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
-    let ranges =
-        settled_sparse_ranges(&native, &metadata, ranges, maximum_extent_spans, meter).await?;
-    let mut staged = capture_vec(ranges.len(), meter)?;
-    for range in &ranges {
+    let ranges = match ranges {
+        Some(ranges) => Some(
+            settled_sparse_ranges(&native, &metadata, ranges, maximum_extent_spans, meter).await?,
+        ),
+        None => None,
+    };
+    let full = [HostDataRange {
+        offset: 0,
+        length: metadata.len(),
+    }];
+    let data_ranges = ranges.as_deref().unwrap_or(&full);
+    let mut staged = capture_vec(data_ranges.len(), meter)?;
+    for range in data_ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
-            std::sync::Arc::clone(&native),
+            std::borrow::Borrow::<acyclic_native_runtime::NativeFile>::borrow(&native),
             range.offset,
             range.length,
         );
@@ -89,9 +101,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         staged.push((*range, content));
     }
     finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
-    let bytes = vector_bytes(&ranges)
-        .checked_add(native_bytes)
-        .ok_or(WorkError::Overflow)?;
+    let bytes = ranges.as_ref().map_or(0, vector_bytes);
     drop(ranges);
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
@@ -155,7 +165,9 @@ pub(super) fn native_positional_file(
     })
 }
 
-impl crate::kernel::AsyncBlobSource for acyclic_native_runtime::AsyncRangeReader {
+impl<F: std::borrow::Borrow<acyclic_native_runtime::NativeFile>> crate::kernel::AsyncBlobSource
+    for acyclic_native_runtime::AsyncRangeReader<F>
+{
     async fn read_owned_with_native_work(
         &mut self,
         maximum: usize,

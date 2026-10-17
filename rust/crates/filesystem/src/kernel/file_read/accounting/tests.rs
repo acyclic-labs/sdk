@@ -117,8 +117,14 @@ proptest! {
         let expected = work.admit(WorkCounters::UNCHARGED).map_err(FsError::from)
             .and_then(|()| caller.check().map_err(FsError::from))
             .and_then(|()| work.admit(delta).map_err(FsError::from));
+        let expected = expected.map_err(|error| format!("{error:?}"));
+        let before = original.receipt();
+        let preflight = observed.observe(super::super::super::codec::ReadAllocationStep::CheckCopy(amount));
+        prop_assert_eq!(preflight.map_err(|error| format!("{error:?}")), expected.clone());
+        prop_assert_eq!(original.receipt(), before);
+        prop_assert_eq!(observed.pending, WorkCounters::UNCHARGED);
         let actual = observed.admit(delta);
-        prop_assert_eq!(actual.map_err(|error| format!("{error:?}")), expected.map_err(|error| format!("{error:?}")));
+        prop_assert_eq!(actual.map_err(|error| format!("{error:?}")), expected);
     }
 
     // The aggregate parent check is a preflight, followed by individually

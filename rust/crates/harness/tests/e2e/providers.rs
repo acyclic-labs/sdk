@@ -170,7 +170,12 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    super::local_execution::check_frames(&case.expect.frames, &wire, operation)?;
+    super::local_execution::check_frames(
+        &case.expect.frames,
+        &wire,
+        operation,
+        super::local_case::ExpectedOutcome::Succeeded,
+    )?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
     let terminal = wire
@@ -178,7 +183,14 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
         .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire.remove(terminal);
-    if super::local_execution::check_frames(&case.expect.frames, &wire, operation).is_ok() {
+    if super::local_execution::check_frames(
+        &case.expect.frames,
+        &wire,
+        operation,
+        super::local_case::ExpectedOutcome::Succeeded,
+    )
+    .is_ok()
+    {
         return Err("wire oracle accepted a dropped root completion".into());
     }
     let (requests, remaining) = transport.take_requests();

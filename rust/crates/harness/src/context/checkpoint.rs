@@ -12,7 +12,7 @@ pub struct ContextSummary {
     pub step: u32,
     /// Number of ordered source messages covered by this summary.
     pub source_messages: u32,
-    /// Digest of the exact source projection, including immutable content refs.
+    /// Digest of the source: its descriptor SHA-256 for a pinned file, otherwise canonical BLAKE3.
     pub source_digest: [u8; 32],
     /// Immutable summary text staged through the execution journal.
     pub output: FileRef,

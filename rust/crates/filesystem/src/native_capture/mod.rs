@@ -24,10 +24,10 @@ mod model;
 #[cfg(all(test, unix))]
 mod native_view_baseline_tests;
 use accounting::*;
-#[cfg(any(windows, test))]
-mod sparse_scan;
 #[cfg(windows)]
 mod sparse;
+#[cfg(any(windows, test))]
+mod sparse_scan;
 #[cfg(windows)]
 use sparse::*;
 mod paths;
@@ -58,12 +58,16 @@ mod empty_stage_tests;
 mod host_file_race_tests;
 #[cfg(test)]
 mod native_range_tests;
+#[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+mod owner_allocation_tests;
 #[cfg(all(test, target_os = "linux"))]
 mod reuse_properties;
 #[cfg(all(test, unix, feature = "native-mount"))]
 mod root_capture_regression;
 #[cfg(all(test, unix))]
 mod unix_name_tests;
+#[cfg(all(test, windows, feature = "memory"))]
+mod windows_dense_tests;
 #[cfg(all(test, windows))]
 mod windows_name_tests;
 #[cfg(all(test, windows))]

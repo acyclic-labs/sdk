@@ -8,7 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-acyclic-fs = { path = ".." }
+acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 libfuzzer-sys = "0.4"
 serde.workspace = true
 serde_json.workspace = true
@@ -48,5 +48,19 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "decoder_work"
+path = "fuzz_targets/decoder_work.rs"
+test = false
+doc = false
+bench = false
+
 [lints]
 workspace = true
+
+[[bin]]
+name = "encoder_work"
+path = "fuzz_targets/encoder_work.rs"
+test = false
+doc = false
+bench = false

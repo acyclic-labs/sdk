@@ -374,6 +374,18 @@ pub(super) fn read_json<T: DeserializeOwned>(
         .map_err(LocalCoreStateStoreError::Json)
 }
 
+// Ordinary records also need token coalescing. Flush the buffer before the
+// caller's file durability barrier; encoding or flush failures cannot publish.
+pub(super) fn write_buffered_json(
+    writer: impl Write,
+    value: &impl Serialize,
+) -> Result<(), LocalCoreStateStoreError> {
+    let mut writer = std::io::BufWriter::with_capacity(8192, writer);
+    serde_json::to_writer(&mut writer, value)?;
+    writer.flush()?;
+    Ok(())
+}
+
 pub(super) fn write_journaled<T: Serialize>(
     paths: &RecordPaths,
     value: &T,
@@ -413,7 +425,7 @@ pub(super) fn write_journaled<T: Serialize>(
         serde_json::to_writer(&mut encoded, value)?;
         temporary.write_all(&encoded.bytes)?;
     } else {
-        serde_json::to_writer(&mut temporary, value)?;
+        write_buffered_json(&mut temporary, value)?;
     }
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
