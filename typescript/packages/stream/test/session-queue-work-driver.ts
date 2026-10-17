@@ -1,5 +1,5 @@
 import { plugin } from "bun";
-import { serve } from "./model-driver.js";
+import { serve, spend } from "./model-driver.js";
 
 plugin({ name: "queue-work-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session-queue\.ts$/ }, async args => {
@@ -35,6 +35,7 @@ async function command(request: { action: string; capacity: number; operations?:
     const writes = observed.modelWrites;
     const started = performance.now();
     for (let value = 0; value < request.capacity; value += 1) {
+      spend();
       if ((await reader.next()).value !== value) throw new Error("FIFO work fixture differs");
     }
     queue.end();
@@ -44,6 +45,7 @@ async function command(request: { action: string; capacity: number; operations?:
   let ended = false;
   const rows = [];
   for (const [action, value] of request.operations ?? []) {
+    spend();
     let outcome: unknown = "ok";
     try {
       switch (action % 5) {

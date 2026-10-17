@@ -14,15 +14,10 @@ export const checkpoint = (): Promise<void> => new Promise(resolve => setImmedia
 /** Protocol peer for client tests, with finite aggregate and channel credit. */
 export class SessionNode {
   /**
-   * Model drivers pass a step budget: every connection and every received frame spends one step. A client that keeps
-   * reconnecting or sending ends the process (its Rust owner then fails on the closed pipe) instead of spinning.
+   * Model drivers pass their process-wide budget (model-driver.ts `spend`): every connection and every received frame
+   * draws one step from it, so a client that keeps reconnecting or sending ends the process instead of spinning.
    */
-  constructor(private steps = Infinity) {}
-  private spend(): void {
-    if (--this.steps >= 0) return;
-    process.stderr.write("session model step budget exhausted\n");
-    process.exit(70);
-  }
+  constructor(private readonly spend: () => void = () => {}) {}
   readonly latest = new Map<string, wire.SessionData[]>();
   readonly history = new Map<string, WireRecord[]>();
   readonly paths = new Set<string>();

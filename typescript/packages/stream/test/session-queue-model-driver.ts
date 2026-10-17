@@ -1,5 +1,5 @@
 import { plugin } from "bun";
-import { serve } from "./model-driver.js";
+import { serve, spend } from "./model-driver.js";
 
 plugin({ name: "queue-cancellation-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session-queue\.ts$/ }, async args => {
@@ -38,6 +38,7 @@ async function command(action: string): Promise<unknown> {
     case "ready": break;
     case "abort": acceptedAtAbort = accepted; cancel.abort(); break;
     case "drain": {
+      spend();
       const next = reader.next();
       // A fresh producer arrives before the cancelled writer can resume from
       // its wakeup. The real queue must preserve admission/wire order.
@@ -47,7 +48,7 @@ async function command(action: string): Promise<unknown> {
     }
     case "finish":
       for (let index = 0; index < 2; index += 1) {
-        if (queue.available === 0) seen.push((await reader.next()).value!);
+        if (queue.available === 0) { spend(); seen.push((await reader.next()).value!); }
         await checkpoint();
       }
       break;
