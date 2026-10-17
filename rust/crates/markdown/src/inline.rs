@@ -1,60 +1,204 @@
 use super::*;
+#[path = "inline_classify.rs"]
+mod classify;
+#[path = "inline_hold.rs"]
+mod hold;
 
-#[derive(Default, Clone, Copy)]
-struct Mark {
-    line: usize,
-    visible: usize,
-    spans: usize,
-    bytes: usize,
-}
+// Events and expansion calls already parsed from a classification base.
+pub(super) type Seed<'s, 'e> = (usize, &'s [(Event<'e>, Range<usize>)], &'s [(usize, usize)]);
 
 #[derive(Default)]
 pub(super) struct Checkpoint {
     offset: usize,
-    mark: Mark,
     cost: usize,
     pub(super) valid: Range<usize>,
-    openers: delimiters::State,
 }
 
 #[derive(Default)]
 pub(super) struct Inline {
     pub(super) checkpoint: Checkpoint,
-    provisional: Option<Checkpoint>,
     start: usize,
+    scanner: inline_scan::Scanner,
+    classified: usize,
+    rows: classify::Rows,
+    charges: Vec<(usize, usize, Range<usize>)>,
+    code: Option<Range<usize>>,
+    held: Option<hold::Held>,
 }
 
 impl Inline {
+    fn classification(&mut self, source: &str, references: &References) -> Option<(usize, bool)> {
+        let appended = source.get(self.classified..)?;
+        let destination = self.scanner.prepare_classification(source, self.start);
+        // Only a byte that may close an angle opener can reinterpret it.
+        // Openers before the checkpoint are escaped or settled; a live one
+        // holds the checkpoint behind it.
+        let reopen = self
+            .scanner
+            .feed_angles(source)
+            .map(|opener| opener.max(self.checkpoint.offset));
+        let foreign = destination
+            || reopen.is_some()
+            || ((!references.committed.is_empty() || !references.pending.is_empty())
+                && appended.contains(']'));
+        let mut base = if foreign {
+            self.scanner.classification_resume(self.classified, reopen)
+        } else {
+            self.classified
+        };
+        let row = self.rows.push(source);
+        // A blank row ends a paragraph even when an inline construct remains
+        // provisional. Hand it directly to the block parser; classifying it
+        // here would allocate events that the fallback immediately discards.
+        if self.rows.closed() {
+            return None;
+        }
+        let classify = foreign || row.is_some() || appended.contains('\n');
+        #[cfg(test)]
+        let classify = if REPLAY_CLASSIFIER.get() {
+            base = self.start;
+            true
+        } else {
+            classify
+        };
+        if let Some(row) = row {
+            base = base.min(row);
+        }
+        // A row can begin inside a multiline code span; reclassifying the row
+        // can end the paragraph before the span closes, so classify from the
+        // span's start.
+        #[cfg(test)]
+        let skip_code = SKIP_CODE.get();
+        #[cfg(not(test))]
+        let skip_code = false;
+        if let Some(code) = self.code.as_ref().filter(|_| !skip_code)
+            && code.start < base
+            && base < code.end
+        {
+            base = code.start;
+        }
+        if classify {
+            base = self.scanner.classification_boundary(base);
+        }
+        Some((base, classify))
+    }
+
+    fn classification_end(&self, length: usize, base: usize, classify: bool) -> usize {
+        // EOF tick runs remain provisional in the native scanner. Exclude them
+        // from foreign-scope classification so their temporary code projection
+        // cannot hide label syntax needed when the run extends.
+        let end = if classify {
+            self.scanner.classification_end(length).max(base)
+        } else {
+            length
+        };
+        // A row that can still interrupt is decided by all of its bytes: an
+        // EOF tick run is the content that makes `1. ` a list item.
+        let undecided = self.rows.undecided();
+        #[cfg(test)]
+        let undecided = undecided.filter(|_| !SKIP_UNDECIDED.get());
+        if self.rows.inline_at(end) && undecided.is_none() {
+            end
+        } else {
+            length
+        }
+    }
+
+    fn record_charges(
+        &mut self,
+        calls: &[(usize, usize)],
+        base: usize,
+        sentinel: usize,
+        cost: usize,
+        valid: Range<usize>,
+    ) -> (usize, Range<usize>) {
+        let (mut cost, mut valid) = (cost, valid);
+        for (end, charge) in calls.iter().filter(|(end, _)| *end >= sentinel) {
+            (cost, valid) =
+                references::extend_expansion(cost, &valid, std::iter::once(&(*end, *charge)));
+            #[cfg(test)]
+            work::copy(
+                std::mem::size_of::<(usize, usize, Range<usize>)>()
+                    * (1 + if self.charges.len() == self.charges.capacity() {
+                        self.charges.len()
+                    } else {
+                        0
+                    }),
+            );
+            self.charges
+                .push((base + end.saturating_sub(sentinel), cost, valid.clone()));
+        }
+        (cost, valid)
+    }
     #[cfg(test)]
-    pub(super) fn retained(&self) -> usize {
-        self.checkpoint.openers.retained()
-            + self
-                .provisional
-                .as_ref()
-                .map_or(0, |checkpoint| checkpoint.openers.retained())
+    pub(super) fn retained(
+        &self,
+        nodes: &mut HashSet<usize>,
+        texts: &mut HashSet<usize>,
+        links: &mut HashSet<*const u8>,
+    ) -> (usize, usize) {
+        let (payload, metadata) = self.scanner.glyph_retained(nodes, texts, links);
+        (
+            payload,
+            metadata
+                + self.scanner.retained()
+                + self.charges.capacity() * std::mem::size_of::<(usize, usize, Range<usize>)>(),
+        )
+    }
+    fn update_code(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+        base: usize,
+        sentinel: usize,
+    ) {
+        let code = events
+            .iter()
+            .filter(|(event, range)| matches!(event, Event::Code(_)) && range.start >= sentinel)
+            .map(|(_, range)| base + range.start - sentinel..base + range.end - sentinel)
+            .next_back()
+            .filter(|range| {
+                #[cfg(test)]
+                work::scan(range.len());
+                source
+                    .get(range.clone())
+                    .is_some_and(|code| code.contains('\n'))
+            });
+        self.code = code.or(self.code.take().filter(|code| code.start < base));
+    }
+
+    pub(super) fn plain(&self) -> bool {
+        self.held.is_none() && self.scanner.plain()
     }
     pub(super) fn visible_frontier(&self, stable: usize, fallback: usize) -> (usize, usize) {
-        let mark = self.checkpoint.mark;
-        (
-            stable + mark.line,
-            if mark.visible == 0 {
-                fallback
-            } else {
-                stable + mark.visible
-            },
-        )
+        (stable, fallback)
     }
 }
 
+fn inline_paragraph(source: &str, events: &[(Event<'_>, Range<usize>)], sentinel: usize) -> bool {
+    events
+        .first()
+        .is_none_or(|(_, range)| range.start <= sentinel)
+        && paragraph(source, events)
+        && !events.iter().any(|(event, range)| {
+            matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
+                && range.start < sentinel
+                && range.end > sentinel
+        })
+}
+
 impl Markdown {
-    pub(super) fn advance_inline(&mut self, previous: usize) -> Option<usize> {
-        let inline = self.inline.as_ref()?;
-        let checkpoint = inline.provisional.as_ref().unwrap_or(&inline.checkpoint);
-        let cost = checkpoint.cost;
-        let base = checkpoint.offset;
-        let mark = checkpoint.mark;
-        let tail = self.source.get(base..).unwrap_or_default();
-        let context = if base == inline.start {
+    fn inline_source<'a>(
+        &'a self,
+        inline: &Inline,
+        base: usize,
+        end: usize,
+        previous: usize,
+        classify: bool,
+    ) -> (std::borrow::Cow<'a, str>, usize) {
+        let tail = self.source.get(base..end).unwrap_or_default();
+
+        let context = if !classify || base == inline.start {
             String::new()
         } else if self
             .source
@@ -67,188 +211,184 @@ impl Markdown {
         } else {
             left_context(self.source.get(..base).unwrap_or_default())
         };
-        let prefix = checkpoint.openers.prefix(&context);
-        let sentinel = prefix.len();
-        let source = format!("{prefix}{tail}");
+        let mut prefix = context;
         #[cfg(test)]
-        work::copy(source.len() + prefix.len());
-        let (events, calls) = events::scoped(
-            &source,
-            &self.references,
-            options(),
-            self.source
-                .len()
-                .max(100_000)
-                .saturating_sub(self.reference_cost)
-                .saturating_sub(cost),
-        );
-        if !paragraph(&source, &events)
-            || events.iter().any(|(event, range)| {
-                matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph))
-                    && range.start < sentinel
-                    && range.end > sentinel
-            })
+        if classify {
+            work::scan(tail.len());
+        }
+        if classify
+            && tail.contains("\\\n")
+            && inline.scanner.expanded_before(base)
+            && !inline.scanner.expands_after(base)
         {
+            // Insert inside an existing cell without introducing a new row.
+            let at = prefix
+                .char_indices()
+                .find(|(_, c)| *c != '|' && !c.is_whitespace())
+                .map(|(at, _)| at)
+                .or_else(|| prefix.find('|').map(|at| at + 1))
+                .unwrap_or(0);
+            prefix.insert_str(at, "`x`");
+        }
+        let sentinel = prefix.len();
+        let source = if prefix.is_empty() {
+            std::borrow::Cow::Borrowed(tail)
+        } else {
+            #[cfg(test)]
+            work::copy(prefix.len() + tail.len());
+            std::borrow::Cow::Owned(format!("{prefix}{tail}"))
+        };
+        #[cfg(test)]
+        work::copy(prefix.len());
+        (source, sentinel)
+    }
+    fn advance_engine(&mut self, previous: usize, seed: Option<Seed<'_, '_>>) -> Option<usize> {
+        let mut inline = self.inline.take()?;
+        let (base, classify) = inline.classification(&self.source, &self.references)?;
+        while inline.charges.last().is_some_and(|(end, _, _)| *end > base) {
+            #[cfg(test)]
+            work::scan(1);
+            inline.charges.pop();
+        }
+        let (cost, interval) = inline
+            .charges
+            .last()
+            .map_or((0, 0..usize::MAX), |(_, cost, valid)| {
+                (*cost, valid.clone())
+            });
+        let end = inline.classification_end(self.source.len(), base, classify);
+        let (source, sentinel) = self.inline_source(&inline, base, end, previous, classify);
+        let seed = seed.filter(|(seed_base, _, _)| *seed_base == base && end == self.source.len());
+        let (events, calls) = if classify {
+            if let Some((_, events, calls)) = seed {
+                (
+                    std::borrow::Cow::Borrowed(events),
+                    std::borrow::Cow::Borrowed(calls),
+                )
+            } else {
+                let (events, calls) = events::scoped(
+                    &source,
+                    &self.references,
+                    options(),
+                    self.source
+                        .len()
+                        .max(100_000)
+                        .saturating_sub(self.reference_cost)
+                        .saturating_sub(cost),
+                );
+                (
+                    std::borrow::Cow::Owned(events),
+                    std::borrow::Cow::Owned(calls),
+                )
+            }
+        } else {
+            (
+                std::borrow::Cow::Borrowed(&[][..]),
+                std::borrow::Cow::Borrowed(&[][..]),
+            )
+        };
+        if classify && !inline_paragraph(&source, &events, sentinel) {
             return None;
         }
-        let (boundary, provisional, openers) = boundary(&source, &events, sentinel);
-        let (cost, valid) = references::extend_expansion(
-            cost,
-            &checkpoint.valid,
-            calls.iter().filter(|(end, _)| *end <= boundary),
-        );
-        let first = self.stable_lines + mark.line;
-        let mut line = self
-            .lines
-            .get_mut(first)
-            .map(std::mem::take)
-            .unwrap_or_default();
-        self.lines.truncate(first);
-        line.spans.truncate(mark.spans);
-        if let Some(span) = line.spans.last_mut() {
-            span.text.truncate(mark.bytes);
+        if classify {
+            inline.update_code(&self.source, &events, base, sentinel);
         }
-        let mut renderer = render::Renderer::inline(line);
-        let mut committed = mark;
-        let mut previous_mark = mark;
-        let mut depth = 0usize;
-        for (event, range) in &events {
-            match event {
-                Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
-                Event::Text(text) if source.get(range.clone()) == Some(text.as_ref()) => {
-                    let start = sentinel.saturating_sub(range.start).min(text.len());
-                    if let Some(cut) =
-                        provisional.filter(|cut| *cut >= range.start + start && *cut < range.end)
-                    {
-                        let cut = cut - range.start;
-                        renderer.event_in(
-                            &Event::Text(text.get(start..cut).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                        previous_mark = renderer.inline_mark(mark);
-                        renderer.event_in(
-                            &Event::Text(text.get(cut..).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                    } else {
-                        renderer.event_in(
-                            &Event::Text(text.get(start..).unwrap_or_default().into()),
-                            Some(&self.references),
-                        );
-                    }
-                }
-                Event::Text(text) if range.start < sentinel => {
-                    let text = text.get(sentinel - range.start..).unwrap_or_default();
-                    renderer.event_in(&Event::Text(text.into()), Some(&self.references));
-                }
-                _ => renderer.event_in(event, Some(&self.references)),
-            }
-            match event {
-                Event::Start(_) => depth += 1,
-                Event::End(_) => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            if depth == 0 && range.end == boundary {
-                committed = renderer.inline_mark(mark);
-            }
-            if depth == 0 && Some(range.end) == provisional {
-                previous_mark = renderer.inline_mark(mark);
-            }
-        }
-        #[cfg(test)]
-        {
-            let count = renderer.lines.len() + 1;
-            work::copy(count * std::mem::size_of::<Line>());
-            if self.lines.capacity() - self.lines.len() < count {
-                work::copy(self.lines.len() * std::mem::size_of::<Line>());
-            }
-        }
-        self.lines.reserve(renderer.lines.len() + 1);
-        self.lines.append(&mut renderer.lines);
-        self.lines.push(renderer.into_inline());
-        self.inline = Some(Inline {
-            checkpoint: Checkpoint {
-                offset: base + boundary.saturating_sub(sentinel),
-                mark: committed,
-                cost,
-                valid,
-                openers: delimiters::State::compile(&openers, boundary),
+        inline.scanner.frontier(
+            inline_scan::Slice {
+                original: &self.source,
+                parsed: &source,
+                start: inline.start,
+                base,
+                sentinel,
+                boundary: sentinel,
+                classified: classify,
             },
-            provisional: provisional.map(|end| {
-                let (cost, valid) = references::extend_expansion(
-                    checkpoint.cost,
-                    &checkpoint.valid,
-                    calls.iter().filter(|(position, _)| *position <= end),
-                );
-                Checkpoint {
-                    offset: base + end.saturating_sub(sentinel),
-                    mark: previous_mark,
-                    cost,
-                    valid,
-                    openers: delimiters::State::compile(&openers, end),
-                }
-            }),
-            start: inline.start,
-        });
-        let fallback = if mark.visible == 0 {
-            self.visibility.end
+            &events,
+            &self.references,
+        );
+        let frontier = inline.scanner.neutral_frontier();
+        let boundary = if classify && frontier >= base {
+            base + boundary(&source, &events, sentinel, frontier - base + sentinel)
+                .saturating_sub(sentinel)
         } else {
-            self.stable_lines + mark.visible
+            frontier
         };
-        self.visible_lines = self.visible_end(first, self.lines.len(), fallback);
-        let tail = source.get(sentinel..).unwrap_or_default();
-        self.plain_links = tail.contains('[')
-            && tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
-        self.plain_entity = tail
-            .rsplit_once('&')
-            .is_some_and(|(_, rest)| rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '#'));
-        self.plain_spaces = tail.bytes().rev().take_while(|byte| *byte == b' ').count();
-        self.plain = tail.len() >= 8 && !table_candidate(&source) && !block_pending(tail.rsplit('\n').next().unwrap_or_default()) && events.iter().rev().find(|(event, _)| !matches!(event, Event::End(_)))
-            .is_some_and(|(event, range)| matches!(event, Event::Text(text) if text.chars().next_back().is_some_and(plain_character))
-                && range.end > sentinel && range.end == source.trim_end_matches(' ').len());
-        Some(first)
+        let boundary = inline.scanner.checkpoint(boundary);
+        let (cost, valid) = inline.record_charges(&calls, base, sentinel, cost, interval);
+        let changed = if previous < self.source.len() {
+            let (changed, visible) = inline.scanner.render_tree(
+                &self.source,
+                inline.start,
+                &mut self.lines,
+                self.stable_lines,
+                Some(&mut self.spare),
+            )?;
+            self.visible_lines = if visible == 0 {
+                self.visibility.end
+            } else {
+                self.stable_lines + visible
+            };
+            self.plain = false;
+            changed
+        } else {
+            inline.scanner.seed_input(&self.source, inline.start);
+            // The block parser has just rendered this initial tail. Seed only
+            // the retained state; its first projection will replace that tail.
+            self.stable_lines
+        };
+        let offset = inline.checkpoint.offset.max(boundary);
+        inline.scanner.permanent = inline.rows.permanent();
+        inline.scanner.discard_before(offset);
+        inline.checkpoint.offset = offset;
+        inline.checkpoint.cost = cost;
+        inline.checkpoint.valid = valid;
+        inline.classified = self.source.len();
+        self.inline = Some(inline);
+        Some(changed)
     }
 
     pub(super) fn begin_inline(
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
+        calls: &[(usize, usize)],
         base: usize,
     ) {
-        let content = source.trim_start_matches([' ', '\t']);
-        if possible_definition(content)
-            || !self.context.is_empty()
-            || self.offset != base
-            || !paragraph(source, events)
-        {
+        let paragraph_start = events.first().map_or(0, |(_, range)| range.start);
+        let body = source.get(paragraph_start..).unwrap_or_default();
+        let content = body.trim_start_matches([' ', '\t']);
+        if !self.context.is_empty() || self.offset != base || !paragraph(source, events) {
             return;
         }
+        let start = base + paragraph_start + body.len() - content.len();
         self.inline = Some(Inline {
             checkpoint: Checkpoint {
-                offset: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
-                mark: Mark::default(),
+                offset: start,
                 cost: 0,
                 valid: 0..usize::MAX,
-                openers: delimiters::State::default(),
             },
-            provisional: None,
-            start: base + source.len() - source.trim_start_matches([' ', '\t']).len(),
+            start,
+            scanner: inline_scan::Scanner::new(&self.source, start),
+            classified: start,
+            rows: classify::Rows::at(start),
+            charges: Vec::new(),
+            code: None,
+            held: None,
         });
         // Replay only this initial open tail; subsequent pushes retain its prefix.
         let plain = self.plain;
-        let _ = self.advance_inline(self.source.len());
+        let _ = self.advance_inline(self.source.len(), Some((base, events, calls)));
         self.plain = plain;
     }
 }
 
-fn left_context(source: &str) -> String {
+pub(super) fn left_context(source: &str) -> String {
     match source.chars().next_back() {
+        Some('\n') => "x\n".into(),
         Some(c) if c.is_whitespace() => "x ".into(),
         Some(c) if !c.is_ascii() => format!("x{c}"),
         Some(c) if !c.is_ascii_punctuation() => "x".into(),
-        _ => "x.".into(),
+        _ => ".".into(),
     }
 }
 
@@ -323,195 +463,53 @@ fn paragraph(source: &str, events: &[(Event<'_>, Range<usize>)]) -> bool {
             && source.get(range.end..).unwrap_or_default().bytes().all(|byte| matches!(byte, b' ' | b'\t')))
 }
 
-fn possible_definition(source: &str) -> bool {
-    source.starts_with('[')
-        && source
-            .split_once(']')
-            .is_none_or(|(_, rest)| rest.starts_with(':') || rest.chars().all(char::is_whitespace))
-}
-
 fn boundary(
     source: &str,
     events: &[(Event<'_>, Range<usize>)],
     sentinel: usize,
-) -> (usize, Option<usize>, Vec<(usize, delimiters::Opener)>) {
+    frontier: usize,
+) -> usize {
     let (prefix, row) = source.rsplit_once('\n').unwrap_or(("", source));
-    let mut limit = if block_pending(row) {
-        prefix.len()
-    } else {
-        source.len()
-    };
+    let mut limit = frontier;
+    if block_pending(row) {
+        limit = limit.min(prefix.len());
+    }
     if table_candidate(source) {
         limit = limit.min(source.rfind('\n').unwrap_or(source.len()));
     }
-    let mut brackets = Vec::new();
-    let mut labels = Vec::new();
-    let mut opaque_until = 0;
-    let mut closed_until = 0;
-    let (mut cursor, mut escaped) = (0, false);
-    let mut quoted_end = 0;
-    let mut style_until = 0;
-    let mut openers = Vec::new();
-    #[cfg(test)]
-    work::scan(source.len() * 2);
-    for (event, range) in events {
-        if matches!(event, Event::Start(tag) if !matches!(tag, Tag::Paragraph)) {
-            closed_until = closed_until.max(range.end);
-        }
-        match event {
-            Event::Text(text) => {
-                let opaque = range.end <= opaque_until;
-                if source.get(range.clone()).unwrap_or_default() != text.as_ref() {
-                    continue;
-                }
-                for byte in source
-                    .as_bytes()
-                    .get(cursor..range.start)
-                    .unwrap_or_default()
-                {
-                    escaped = *byte == b'\\' && !escaped;
-                }
-                for (index, byte) in source
-                    .get(range.clone())
-                    .unwrap_or_default()
-                    .bytes()
-                    .enumerate()
-                {
-                    let offset = range.start + index;
-                    let quoted = escaped;
-                    escaped = byte == b'\\' && !escaped;
-                    cursor = offset + 1;
-                    if quoted {
-                        quoted_end = offset + 1;
-                        continue;
-                    }
-                    if matches!(byte, b'`' | b'<') {
-                        // These higher-precedence openers can consume a closing
-                        // delimiter or link bracket when a later chunk closes them.
-                        limit = limit.min(offset);
-                    }
-                    if opaque {
-                        continue;
-                    }
-                    match byte {
-                        b'[' => brackets.push(offset),
-                        b']' => {
-                            if let Some(start) = brackets.pop()
-                                && brackets.is_empty()
-                            {
-                                labels.push(start);
-                            }
-                        }
-                        b'*' | b'_' | b'~' if offset >= closed_until && offset >= style_until => {
-                            if let Some((end, opener)) =
-                                delimiters::scan(source, offset, quoted_end)
-                            {
-                                style_until = end;
-                                if let Some(opener) = opener {
-                                    openers.push((end.min(range.end), opener));
-                                }
-                            } else {
-                                limit = limit.min(offset);
-                            }
-                        }
-                        b'`' | b'&' | b'<' | b'\\' => {
-                            if offset >= closed_until {
-                                limit = limit.min(offset);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Event::Start(Tag::Link { link_type, .. } | Tag::Image { link_type, .. }) => {
-                if matches!(event, Event::Start(Tag::Link { .. })) {
-                    // A successful inner link deactivates enclosing link brackets.
-                    // Image brackets remain active: image labels can contain links.
-                    brackets.retain(|start: &usize| {
-                        source.as_bytes().get(start.saturating_sub(1)) == Some(&b'!')
-                    });
-                }
-                if matches!(
-                    link_type,
-                    pulldown_cmark::LinkType::Inline
-                        | pulldown_cmark::LinkType::Autolink
-                        | pulldown_cmark::LinkType::Email
-                ) {
-                    opaque_until = range.end;
-                } else {
-                    labels.push(range.start);
-                }
-            }
-            _ => {}
-        }
-    }
-    if let Some(start) = brackets.first() {
-        limit = limit.min(*start);
-    }
-    if let Some(start) = labels.get(labels.len().saturating_sub(2)) {
-        limit = limit.min(*start);
-    }
+    limit = limit.min(source.trim_end_matches([' ', '\t']).len());
     let mut depth = 0usize;
     let mut boundary = sentinel;
-    let mut provisional = None;
     for (event, range) in events {
         match event {
-            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) | Event::SoftBreak => {
-                continue;
-            }
+            Event::Start(Tag::Paragraph) | Event::End(TagEnd::Paragraph) => continue,
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
             _ => {}
         }
-        if depth == 0
-            && range.end > sentinel
-            && range.end <= limit
-            && delimiters::safe_boundary(source, range.end)
-        {
-            // Every complete top-level event closes a checkpoint. At the input
-            // edge retain its predecessor too: another byte can change delimiter
-            // flanking or extend the closing run, regardless of the construct.
-            provisional = (range.end == limit).then_some(boundary);
-            if range.end == limit
-                && let Event::Text(text) = event
+        if depth == 0 {
+            if range.end <= limit && range.end > sentinel {
+                boundary = range.end;
+            } else if let Event::Text(text) = event
                 && source.get(range.clone()) == Some(text.as_ref())
+                && range.start <= limit
+                && range.end > limit
+                && limit > sentinel
             {
-                let cut = delimiters::text_frontier(text, range.start).max(sentinel);
-                if cut >= range.start && delimiters::safe_boundary(source, cut) {
-                    provisional = Some(cut);
-                }
+                boundary = limit;
             }
-            // An escaped character is complete; never split its escape pair.
-            if range.end == quoted_end {
-                provisional = None;
-            }
-            boundary = range.end;
         }
     }
-    (boundary, provisional, openers)
+    boundary
 }
 
-impl render::Renderer {
-    fn inline_mark(&self, base: Mark) -> Mark {
-        let line = self.inline_line();
-        let position = base.line + self.lines.len();
-        let visible = if line.spans.is_empty() {
-            self.lines
-                .iter()
-                .rposition(|line| {
-                    #[cfg(test)]
-                    work::visibility(1);
-                    !line.spans.is_empty()
-                })
-                .map_or(base.visible, |index| base.line + index + 1)
-        } else {
-            position + 1
-        };
-        Mark {
-            line: position,
-            visible,
-            spans: line.spans.len(),
-            bytes: line.spans.last().map_or(0, |span| span.text.len()),
-        }
-    }
-}
+// Negative control: feed rule and setext candidate rows to the engine.
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_HOLD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_CODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+// Negative control: treat rows that can still interrupt as decided.
+#[cfg(test)]
+thread_local! { pub(crate) static SKIP_UNDECIDED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+#[cfg(test)]
+thread_local! { pub(super) static REPLAY_CLASSIFIER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

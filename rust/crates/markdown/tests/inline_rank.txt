@@ -1,0 +1,3 @@
+# proptest regression seeds
+
+cc 1cd378b32763ef9fe4cecdc3511c3789e854089f2465735fdf69f1d9210597b4

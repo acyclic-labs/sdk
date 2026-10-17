@@ -3,85 +3,24 @@ use std::ops::Range;
 
 type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
-
-pub(crate) fn parse(
-    source: &str,
-    references: &crate::References,
-) -> Vec<(Event<'static>, Range<usize>)> {
-    parse_with(source, references, crate::options())
-}
-
-pub(crate) fn parse_with(
-    source: &str,
-    references: &crate::References,
-    options: pulldown_cmark::Options,
-) -> Vec<(Event<'static>, Range<usize>)> {
-    #[cfg(test)]
-    crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
-    let mut callback = |link: BrokenLink<'_>| {
-        references
-            .get(&crate::normalize(&link.reference))
-            .map(|(destination, title, _)| (destination.as_ref().into(), title.as_ref().into()))
-    };
-    let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
-            .into_offset_iter()
-            .map(|(mut event, range)| {
-                if let Event::Start(
-                    Tag::Link {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    }
-                    | Tag::Image {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    },
-                ) = &mut event
-                    && !id.is_empty()
-                    && references.get(&crate::normalize(id)).is_some()
-                {
-                    *dest_url = "".into();
-                    *title = "".into();
-                }
-                #[cfg(test)]
-                crate::work::event(&event);
-                (event.into_static(), range)
-            })
-            .collect();
-    if events
-        .iter()
-        .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
-    {
-        paragraphs(source, &events)
-    } else {
-        events
-    }
-}
+pub(super) type Overrides = Vec<(usize, Vec<Event<'static>>)>;
 
 // Normalized leaf templates contain no definitions. Charge reference expansion
 // against the document allowance, rather than restarting it for each leaf.
-pub(crate) fn scoped(
-    source: &str,
+pub(crate) fn scoped<'a>(
+    source: &'a str,
     references: &crate::References,
     options: pulldown_cmark::Options,
     mut budget: usize,
-) -> (OwnedEvents, Charges) {
+) -> (Vec<(Event<'a>, Range<usize>)>, Charges) {
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
     let mut calls = Vec::new();
-    let mut exhausted = false;
     let mut callback = |link: BrokenLink<'_>| {
         if budget == 0 {
             // No allowance remains. Keep a sentinel for the deferred suffix;
             // a larger document budget will reopen only this leaf.
-            if !exhausted {
-                calls.push((link.span.end, usize::MAX));
-                exhausted = true;
-            }
+            calls.push((link.span.end, usize::MAX));
             return None;
         }
         let (destination, title, _) = references.get(&crate::normalize(&link.reference))?;
@@ -94,10 +33,9 @@ pub(crate) fn scoped(
     };
     let events = Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
         .into_offset_iter()
-        .map(|(event, range)| {
+        .inspect(|(_event, _)| {
             #[cfg(test)]
-            crate::work::event(&event);
-            (event.into_static(), range)
+            crate::work::event(_event);
         })
         .collect();
     #[cfg(test)]
@@ -132,7 +70,10 @@ pub(crate) fn paragraphs<'a>(
             if source.as_bytes().get(end) == Some(&b'\n') {
                 end += 1;
             }
-            let range = range.start..end;
+            // An escaped first character's text begins after its backslash.
+            let begin = range.start
+                - usize::from(source.as_bytes().get(range.start.wrapping_sub(1)) == Some(&b'\\'));
+            let range = begin..end;
             result.push((Event::Start(Tag::Paragraph), range.clone()));
             result.extend_from_slice(events.get(start..index).unwrap_or_default());
             result.push((Event::End(TagEnd::Paragraph), range));
@@ -170,12 +111,87 @@ fn inline(event: &Event<'_>) -> bool {
 }
 
 impl crate::Markdown {
-    pub(super) fn parse_frontier(&mut self, source: &str) -> OwnedEvents {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Charges, Overrides) {
         #[cfg(test)]
         {
             crate::work::copy(source.len());
             self.parsed_bytes += source.len();
         }
-        parse(source, &self.references)
+        let (events, calls) = scoped(
+            source,
+            &self.references,
+            crate::options(),
+            self.source
+                .len()
+                .max(100_000)
+                .saturating_sub(self.reference_cost),
+        );
+        let events: OwnedEvents = events
+            .into_iter()
+            .map(|(event, range)| (event.into_static(), range))
+            .collect();
+        let events = if events
+            .iter()
+            .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
+        {
+            paragraphs(source, &events)
+        } else {
+            events
+        };
+        #[cfg(test)]
+        let unchecked = UNCHECKED_LOCAL_BUDGET.get();
+        #[cfg(not(test))]
+        let unchecked = false;
+        if self.references.pending.is_empty() || unchecked {
+            return (events, calls, Vec::new());
+        }
+        // Definitions in this parse bypass the broken-link callback. Resolve
+        // each reference-bearing leaf without definitions so every attempt
+        // consumes the same remaining document allowance as cached history.
+        let mut overrides = Vec::new();
+        let mut charges = Vec::new();
+        let mut budget = self
+            .source
+            .len()
+            .max(100_000)
+            .saturating_sub(self.reference_cost);
+        for (index, (event, range)) in events.iter().enumerate() {
+            let Event::Start(tag) = event else {
+                continue;
+            };
+            if !crate::is_leaf(tag) {
+                continue;
+            }
+            let mut end = index;
+            while end < events.len() {
+                #[cfg(test)]
+                crate::work::scan(1);
+                if events.get(end).is_some_and(
+                    |(event, _)| matches!(event, Event::End(tag) if crate::is_leaf_end(*tag)),
+                ) {
+                    break;
+                }
+                end += 1;
+            }
+            let Some(cache) = crate::Cached::new(
+                source,
+                range.clone(),
+                0..0,
+                crate::render::Renderer::default(),
+                events.get(index..=end).unwrap_or_default(),
+            ) else {
+                continue;
+            };
+            let (resolved, calls) = cache.template.resolved(&self.references, budget);
+            for (_, cost) in calls {
+                budget = budget.saturating_sub(cost);
+                charges.push((range.end, cost));
+            }
+            overrides.push((index, resolved));
+        }
+        (events, charges, overrides)
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static UNCHECKED_LOCAL_BUDGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

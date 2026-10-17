@@ -26,11 +26,17 @@ fn full(source: &str, width: u16) -> Vec<Line> {
     lines
 }
 
-fn bounded(lines: &[Line], input: usize, rows: usize, width: u16) -> usize {
+fn bounded<'a>(
+    lines: impl IntoIterator<Item = &'a Line> + Copy,
+    input: usize,
+    rows: usize,
+    width: u16,
+) -> usize {
+    let mut seen = std::collections::HashSet::new();
     let retained: usize = lines
-        .iter()
+        .into_iter()
         .flat_map(|line| &line.spans)
-        .map(|span| span.text.capacity())
+        .map(|span| span.text.retained(&mut seen).0)
         .sum();
     let bound = 12 * (input + rows * usize::from(width.max(1)));
     assert!(
@@ -89,7 +95,7 @@ proptest! {
             prefix.push_str(delta);
             let changed = streamed.push(delta);
             consumer.truncate(changed);
-            consumer.extend_from_slice(streamed.lines().get(changed..).expect("valid change boundary"));
+            consumer.extend((streamed.lines().slice(changed..).expect("valid change boundary")).iter().cloned());
             prop_assert_eq!(&consumer, &full(&prefix, width));
         }
         bounded(streamed.lines(), source.len(), rows + 1, width);
@@ -126,11 +132,13 @@ fn table_width_survives_clear_and_late_definitions() {
             source.push_str(delta);
             let changed = markdown.push(delta);
             consumer.truncate(changed);
-            consumer.extend_from_slice(
-                markdown
+            consumer.extend(
+                (markdown
                     .lines()
-                    .get(changed..)
-                    .expect("valid change boundary"),
+                    .slice(changed..)
+                    .expect("valid change boundary"))
+                .iter()
+                .cloned(),
             );
             assert_eq!(consumer, full(&source, 17));
             bounded(markdown.lines(), source.len(), 2, 17);
@@ -186,7 +194,11 @@ fn table_limit_chunks(columns: usize, rows: usize, batch: usize, cells: usize, r
         let changed = markdown.push(&delta);
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+        consumer.extend(
+            (markdown.lines().slice(changed..).expect("change boundary"))
+                .iter()
+                .cloned(),
+        );
         count += take;
         if count < rows && rows - count < batch {
             assert_eq!(consumer, full(&source, 80));
@@ -198,7 +210,11 @@ fn table_limit_chunks(columns: usize, rows: usize, batch: usize, cells: usize, r
             source.push_str(&delta);
             let changed = markdown.push(&delta);
             consumer.truncate(changed);
-            consumer.extend_from_slice(markdown.lines().get(changed..).expect("change boundary"));
+            consumer.extend(
+                (markdown.lines().slice(changed..).expect("change boundary"))
+                    .iter()
+                    .cloned(),
+            );
             assert_eq!(consumer, full(&source, 80));
         }
     }

@@ -66,7 +66,7 @@ fn batch_replacements_preserve_unchanged_line_allocations() {
             .iter()
             .flat_map(|line| &line.spans)
             .find(|span| span.text == "unaffected")
-            .map(|span| span.text.as_ptr())
+            .and_then(|span| span.text.allocation())
     };
     let before = pointer(&markdown);
     assert!(before.is_some());
@@ -121,7 +121,11 @@ fn document_budget_growth_keeps_unrelated_open_checkpoints() {
             }
             assert!(changed <= markdown.lines().len());
             consumer.truncate(changed);
-            consumer.extend_from_slice(markdown.lines().get(changed..).unwrap_or_default());
+            consumer.extend(
+                (markdown.lines().slice(changed..).unwrap_or_default())
+                    .iter()
+                    .cloned(),
+            );
             assert_eq!(consumer, full_parse(&markdown.source));
         };
         push(&references, false);
@@ -204,4 +208,49 @@ proptest! {
             previous = Some(work);
         }
     }
+}
+
+fn preview_budget_growth(stale: bool) {
+    let references = "[x][r]\n\n".repeat(60);
+    let definition = format!("[r]: /{}\n\n", "a".repeat(2000));
+    let prefix = format!(
+        "{}\n\n{references}{definition}",
+        "p".repeat(100_000 - references.len() - definition.len() - 2)
+    );
+    let mut markdown = Markdown::default();
+    let mut consumer = Vec::new();
+    for delta in [
+        prefix.as_str(),
+        "x ",
+        "_",
+        "x",
+        "&#10;",
+        "x",
+        "_",
+        "x",
+        "&#10;",
+        "x",
+        "_",
+        &"p".repeat(2001),
+        "&#10;",
+        "z",
+        "\n\n",
+    ] {
+        crate::inline_views::KEEP_STALE_PREFIX.set(stale && delta.len() == 2001);
+        let changed = markdown.push(delta);
+        crate::inline_views::KEEP_STALE_PREFIX.set(false);
+        consumer.truncate(changed);
+        consumer.extend(markdown.lines().slice(changed..).unwrap().iter().cloned());
+        assert_eq!(consumer, full_parse(&markdown.source));
+    }
+}
+
+#[test]
+fn budget_growth_preserves_resolved_links_during_preview_exchange() {
+    preview_budget_growth(false);
+}
+
+#[test]
+fn budget_growth_property_detects_stale_preview_prefixes() {
+    assert!(std::panic::catch_unwind(|| preview_budget_growth(true)).is_err());
 }

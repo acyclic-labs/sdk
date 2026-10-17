@@ -3,16 +3,20 @@
 
 mod code;
 mod context;
-mod delimiters;
 mod events;
 mod inline;
+mod inline_scan;
+mod inline_views;
+mod parse_tail;
 mod reference_render;
 mod references;
 mod render;
+mod spans;
 mod stream_code;
 mod stream_table;
 mod style;
 mod table;
+mod text;
 mod visibility;
 #[cfg(test)]
 mod work;
@@ -20,23 +24,28 @@ mod work;
 use context::{container, context_event, context_prefix};
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use references::{Key, References, Template, normalize};
+pub use spans::{SpanRef, Spans, TextRef};
 use std::{
     collections::{HashMap, HashSet},
     ops::Range,
 };
 pub use style::{Color, Line, Span, Style};
-
+pub use text::Text;
+mod line_buffer;
+pub use line_buffer::{Lines, LinesIter};
 /// Disposable incremental presentation of one append-only Markdown stream.
 /// Completed leaves and fence lines remain behind a parser checkpoint, including
 /// leaves inside containers. Reference changes parse only dependent blocks.
 #[derive(Default)]
 pub struct Markdown {
     source: String,
+    last_newline: Option<usize>,
     offset: usize,
     stable_lines: usize,
     visibility: visibility::Visibility,
     visible_lines: usize,
-    lines: Vec<Line>,
+    lines: line_buffer::Buffer,
+    spare: inline_views::Spare,
     state: render::Renderer,
     context: Vec<Container>,
     references: References,
@@ -45,6 +54,7 @@ pub struct Markdown {
     fence: Option<Fence>,
     inline: Option<inline::Inline>,
     table: Option<stream_table::Stream>,
+    rule: Option<u8>,
     reference_cost: usize,
     reference_limit: usize,
     plain: bool,
@@ -74,7 +84,8 @@ struct Container {
 
 struct Cached {
     template: Template,
-    state: render::Renderer,
+    // Boxed so the cache vector's geometric slack holds handles, not renderers.
+    state: Box<render::Renderer>,
     lines: Range<usize>,
     cost: usize,
     cumulative: usize,
@@ -115,7 +126,7 @@ impl Cached {
         }
         Some(Self {
             template: Template::new(raw, quotes, events),
-            state,
+            state: Box::new(state),
             lines,
             cost: 0,
             cumulative: 0,
@@ -151,6 +162,12 @@ impl Markdown {
     /// A consumer can truncate its presentation there and replace the suffix
     /// from [`Self::lines`]. Empty deltas leave the presentation unchanged.
     pub fn push(&mut self, delta: &str) -> usize {
+        let changed = self.push_delta(delta);
+        self.spare.finish(&self.lines, self.stable_lines, changed);
+        changed
+    }
+
+    fn push_delta(&mut self, delta: &str) -> usize {
         let old_len = self.visible_lines;
         if delta.is_empty() {
             return old_len;
@@ -162,7 +179,19 @@ impl Markdown {
         }
         let budget_line = self.advance_budget();
         let appended = self.source.get(previous..).unwrap_or_default();
+        if let Some(marker) = self.rule.take() {
+            #[cfg(test)]
+            work::scan(appended.len());
+            if appended
+                .bytes()
+                .all(|byte| byte == marker || matches!(byte, b' ' | b'\t'))
+            {
+                self.rule = Some(marker);
+                return old_len.min(self.visible_lines).min(budget_line);
+            }
+        }
         if self.plain
+            && self.inline.as_ref().is_none_or(inline::Inline::plain)
             && plain_text(appended)
             && !(self.plain_links && appended.contains(['(', ')']))
             && !(self.plain_entity && appended.contains(';'))
@@ -176,22 +205,7 @@ impl Markdown {
                 if visible.is_empty() {
                     self.plain_spaces += appended.len();
                 } else {
-                    if let Some(span) = line.spans.last_mut() {
-                        #[cfg(test)]
-                        {
-                            work::copy(self.plain_spaces + visible.len());
-                            if self.plain_spaces > span.text.capacity() - span.text.len() {
-                                work::copy(span.text.len());
-                            }
-                        }
-                        span.text
-                            .extend(std::iter::repeat_n(' ', self.plain_spaces));
-                        #[cfg(test)]
-                        if visible.len() > span.text.capacity() - span.text.len() {
-                            work::copy(span.text.len());
-                        }
-                        span.text.push_str(visible);
-                    }
+                    line.spans.append_text(self.plain_spaces, visible);
                     self.plain_spaces = appended.len() - visible.len();
                 }
             }
@@ -205,7 +219,7 @@ impl Markdown {
             self.plain &= !appended.contains('\t');
             return old_len.min(self.visible_lines).min(budget_line);
         }
-        if let Some(changed) = self.advance_inline(previous) {
+        if let Some(changed) = self.advance_inline(previous, None) {
             return changed
                 .min(old_len)
                 .min(self.visible_lines)
@@ -244,13 +258,13 @@ impl Markdown {
 
     /// Current unwrapped lines. A partial delimiter remains visible until it
     /// forms valid Markdown; no input is hidden waiting for a future delta.
-    pub fn lines(&self) -> &[Line] {
-        self.lines.get(..self.visible_lines).unwrap_or_default()
+    pub fn lines(&self) -> Lines<'_> {
+        self.lines.view(..self.visible_lines).unwrap_or_default()
     }
 
     fn visible_end(&self, start: usize, end: usize, fallback: usize) -> usize {
         self.lines
-            .get(start..end)
+            .view(start..end)
             .unwrap_or_default()
             .iter()
             .rposition(|line| {
@@ -302,7 +316,12 @@ impl Markdown {
     fn append(&mut self, delta: &str) {
         #[cfg(test)]
         work::copy(delta.len());
+        #[cfg(test)]
+        work::scan(delta.len());
         if !self.cr && !delta.contains('\r') {
+            if let Some(newline) = delta.rfind('\n') {
+                self.last_newline = Some(self.source.len() + newline);
+            }
             #[cfg(test)]
             if delta.len() > self.source.capacity() - self.source.len() {
                 work::grow_source(self.source.len());
@@ -316,6 +335,9 @@ impl Markdown {
                 continue;
             }
             self.cr = character == '\r';
+            if matches!(character, '\r' | '\n') {
+                self.last_newline = Some(self.source.len());
+            }
             self.source.push(if self.cr { '\n' } else { character });
         }
     }
@@ -324,13 +346,26 @@ impl Markdown {
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
+        (base, prefix): (usize, usize),
     ) -> Vec<bool> {
         #[cfg(test)]
         {
-            // Charge the full newline-search input and each reverse-sweep event.
-            self.boundary_work += source.len() + events.len();
+            self.boundary_work += events.len();
         }
-        let newline = source.rfind('\n');
+        let newline = self
+            .last_newline
+            .filter(|newline| *newline >= base)
+            .map(|newline| prefix + newline - base)
+            .or_else(|| prefix.checked_sub(1));
+        #[cfg(test)]
+        let newline = if RESCAN_NEWLINE.get() {
+            self.boundary_work += source.len();
+            source.rfind('\n')
+        } else {
+            newline
+        };
+        #[cfg(not(test))]
+        let _ = source;
         let mut next = false;
         let mut following = vec![false; events.len()];
         for ((event, range), following) in events.iter().rev().zip(following.iter_mut().rev()) {
@@ -340,130 +375,6 @@ impl Markdown {
             }
         }
         following
-    }
-
-    fn parse_tail(&mut self) -> bool {
-        let base = self.offset;
-        let prefix = context_prefix(&self.context);
-        let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        let events = self.parse_frontier(&source);
-        self.seal_leading_definitions(base, &source, &events);
-        let following_blocks = self.following_blocks(&source, &events);
-        let mut out = self.state.checkpoint();
-        let mut stack = self.context.clone();
-        let mut candidate = None;
-        let mut leaf = None;
-        let mut caches: Vec<(usize, Cached)> = Vec::new();
-        let mut cost = self.reference_cost;
-        let mut synthetic_leaf = false;
-        for (index, (event, range)) in events.iter().enumerate() {
-            let html_end = matches!(event, Event::End(TagEnd::HtmlBlock))
-                && stack
-                    .last()
-                    .is_some_and(|container| container.end == TagEnd::HtmlBlock);
-            if html_end {
-                synthetic_leaf = false;
-            } else if context_event(event, range, prefix.len(), &mut synthetic_leaf) {
-                continue;
-            }
-            if let Event::Start(tag) = event {
-                if is_leaf(tag) {
-                    let closed =
-                        stream_code::closed(&source, events.get(index..).unwrap_or_default());
-                    leaf = Some((
-                        range.start,
-                        self.lines.len() + out.lines.len(),
-                        out.checkpoint(),
-                        index,
-                        closed
-                            && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n'),
-                    ));
-                    if !closed
-                        && self.start_fence(
-                            &source,
-                            (base, prefix.len()),
-                            events.get(index..).unwrap_or_default(),
-                            &mut out,
-                            &stack,
-                        )
-                    {
-                        for (end, cache) in caches {
-                            if base + end.saturating_sub(prefix.len()) <= self.offset {
-                                self.cache(cache);
-                            }
-                        }
-                        return self.advance_fence();
-                    }
-                }
-                stack.push(container(&source, range.start, tag));
-            }
-            out.event_in(event, Some(&self.references));
-            if matches!(event, Event::Html(_))
-                && range.end > prefix.len()
-                && source.as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
-                && stack
-                    .last()
-                    .is_some_and(|container| container.end == TagEnd::HtmlBlock)
-            {
-                candidate = Some((
-                    base + range.end - prefix.len(),
-                    self.lines.len() + out.lines.len(),
-                    out.checkpoint(),
-                    stack.clone(),
-                ));
-            }
-            if let Event::End(end) = event {
-                if stack.last().is_some_and(|container| container.end == *end) {
-                    stack.pop();
-                }
-                let leaf_end = is_leaf_end(*end);
-                let closed = leaf.as_ref().is_some_and(|leaf| leaf.4);
-                if leaf_end
-                    && let Some((start, first, state, begin, _)) = leaf.take()
-                    && let Some(mut cache) = Cached::new(
-                        &source,
-                        start..range.end,
-                        first..self.lines.len() + out.lines.len(),
-                        state,
-                        events.get(begin..=index).unwrap_or_default(),
-                    )
-                {
-                    self.render_cache(&mut cache, &mut out, &mut cost);
-                    caches.push((range.end, cache));
-                }
-                if stack.is_empty() {
-                    out.lines.push(Line::default());
-                }
-                if inline_end(*end) {
-                    continue;
-                }
-                let next_block = following_blocks.get(index).copied().unwrap_or_default();
-                let sealed = closed
-                    || sealed(&source, range.end, *end, next_block)
-                    || (*end == TagEnd::HtmlBlock && context::html_closed(&source, range, &stack));
-                if range.end >= prefix.len()
-                    && (leaf_end || (stack.is_empty() && next_block))
-                    && sealed
-                {
-                    candidate = Some((
-                        base + range.end - prefix.len(),
-                        self.lines.len() + out.lines.len(),
-                        out.checkpoint(),
-                        stack.clone(),
-                    ));
-                }
-            } else if stack.is_empty() {
-                out.flush();
-                out.lines.push(Line::default());
-            }
-        }
-        out.flush();
-        self.lines.extend(out.lines);
-        self.finish_tail(candidate, caches, (base, prefix.len()));
-        self.finish_definitions(&source, &events, (base, prefix.len()));
-        self.begin_inline(&source, &events, base);
-        self.begin_table(&source, &events, base);
-        false
     }
 
     fn seal_leading_definitions(
@@ -483,22 +394,12 @@ impl Markdown {
         }
     }
 
-    fn finish_tail(
-        &mut self,
-        candidate: Option<(usize, usize, render::Renderer, Vec<Container>)>,
-        caches: Vec<(usize, Cached)>,
-        (base, prefix): (usize, usize),
-    ) {
+    fn finish_tail(&mut self, candidate: Option<(usize, usize, render::Renderer, Vec<Container>)>) {
         if let Some((offset, lines, state, context)) = candidate {
             self.offset = offset;
             self.set_stable_lines(lines);
             self.state = state;
             self.context = context;
-            for (end, cache) in caches {
-                if base + end.saturating_sub(prefix) <= offset && !cache.template.keys.is_empty() {
-                    self.cache(cache);
-                }
-            }
         }
     }
 
@@ -514,7 +415,12 @@ impl Markdown {
         if events.is_empty() && tail.ends_with("\n\n") {
             self.offset = self.source.len();
         } else if events.is_empty() {
-            self.offset = self.references.frontier(self.offset);
+            let sealed = self
+                .context
+                .is_empty()
+                .then(|| references::sealed_definitions(tail));
+            let sealed = sealed.flatten().map_or(0, |row| self.offset + row);
+            self.offset = self.references.frontier(self.offset).max(sealed);
         }
         if self.context.is_empty() {
             self.offset += self
@@ -540,18 +446,17 @@ impl Markdown {
         });
         let last_leaf = leaves.next();
         self.plain_heading = matches!(last_leaf, Some((Tag::Heading { .. }, _)));
-        let link_end = events
-            .iter()
-            .filter_map(|(event, range)| {
-                matches!(event, Event::End(TagEnd::Link | TagEnd::Image)).then_some(range.end)
-            })
-            .max()
-            .unwrap_or(frontier);
-        let inline_tail = source.get(link_end..).unwrap_or_default();
-        self.plain_links = inline_tail.contains('[')
-            && inline_tail
-                .rsplit_once(']')
-                .is_none_or(|(_, rest)| rest.starts_with('('));
+        self.plain_links = events.iter().any(|(event, range)| {
+            if let Event::Text(text) = event
+                && range.end > frontier
+            {
+                #[cfg(test)]
+                work::scan(text.len());
+                text.contains('[')
+            } else {
+                false
+            }
+        });
         self.plain_entity = tail.rsplit_once('&').is_some_and(|(_, suffix)| {
             suffix
                 .chars()
@@ -560,7 +465,8 @@ impl Markdown {
         let only_inline_leaf = matches!(last_leaf, Some((Tag::Paragraph | Tag::Heading { .. }, range))
             if !definition_candidate(source.get(range.start..).unwrap_or_default()))
             && leaves.next().is_none();
-        self.plain = tail.len() >= 8
+        self.plain = self.references.pending.is_empty()
+            && tail.len() >= 8
             // An unfinished block marker (for example `1.` on a new line)
             // can still become a list when a space arrives.
             && tail.rsplit('\n').next().is_some_and(|row| !row.trim_start_matches([' ', '\t']).starts_with('<') && row.chars().any(char::is_alphabetic))
@@ -705,3 +611,9 @@ fn blocks<'a>(
 #[cfg(test)]
 #[path = "../tests/full_parse.rs"]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    static SKIP_RULE_CHECKPOINT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static RESCAN_NEWLINE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}

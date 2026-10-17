@@ -1,0 +1,36 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b71b8e0352a57a78171e007a6a1650d6762fd47638f40a67ae9e410326190b7c # shrinks to chunks = ["**bold**"]
+cc f795c1b0c33c7c6e2fc52fd95312415508f412810dfa757afaee21322958b385 # shrinks to input = ["¡", "𐀀", "𐡜", "\t", "/"], splits = [116, 16, 167, 20, 183, 99]
+cc 6d853982e0a8e2fefed6cc13bb23d65122c9925dcfb1f120be8cfebed8091b0b # shrinks to [backslash, newline, U+00A1]
+cc 03e55729085cb08e7c9dd7345d9162278d70e791d07a910e5a8c79b0473027b3 # shrinks to input = ["*", "`", "*", "\\", "`", "*"], splits = []
+cc 0eeae3b557de5b1166c221f38daa616ecd1b9c8051c31e4f6f593c910f6e6ed3 # shrinks to input = ["¡", "\n", "\t", "&"], splits = []
+cc 224b589ff0f8d6460b166aa8f25f7249bca6943269fd52c4c081491b47d64b1f # shrinks to input = ["!", "\n", "\u{b}"], splits = []
+cc e1b7b8239beda6cc8bd50508ee82ddef3a45bc7d3339cee391e6e66353c110f4 # shrinks to input = ["[r]: /r\n[s]: /s\n\nprefix ", " ", "𐀀", "𐀀", "𐀀", " ", "¡", " ", "𐀀", "A", "a", "[r]", "[r]: /r\n[s]: /s\n\nprefix ", "a", " ", "¡", " ", "\0", "0", "a", "\0", "0", "¡", "¡", "0", "\0", " ", "a", "\0", "0", "A", "A", "A", "A", "0"], splits = [153, 17, 250]
+cc 6d7f2ccac9d4ed4bc4b55d747e07756fed9db1cdc582937ceda93726522c3436 # shrinks to input = ["\u{b}\n", "¡"], splits = []
+cc 28f3ac9cb0aab382e3cff658cd6e5241a3f5a3947bf20c4a470fc42021c66c54 # shrinks to input = ["[r]: /r\n[s]: /s\n\nprefix ", "[r]", "\\", "[r]: /r\n[s]: /s\n\nprefix "], splits = []
+cc 90f72551e54032961d022d243f2e3887f7e3200c133827732c9d6bea690fca26 # shrinks to input = ["\u{b}\n", "[r]: /r\n[s]: /s\n\nprefix "], splits = []
+cc 89678f1ff86b42f6def44ae23d31a6b702fbcc4c1e1413dda30a77d4b88bebe5 # shrinks to input = ["¡", "[`x](u)", "`", "![`x](u)", "[`x](u)", "<", "`", "[`x](u)"], splits = []
+cc e1cdfaed60974e91fa4b6f8b5540656bd18f87dcd82abd9577cf392e13d2ec0d # shrinks to input = [" ", "**a**", "\0", "\\", "| `a` | b |\n| - | - |\n| x | y |\n", "a", "𐀀", "\0", "0", "<https://x>", "\0", "[`x](u)", "[r]: /r\n[s]: /s\n\nprefix ", "a", "𐀀", "A", "𐀀", "[r]", "𐀀", "[`x](u)", "![`x](u)", "𐀀", "𐀀", "| `a` | b |\n| - | - |\n| x | y |\n", "a", "[r]", "0", "0", "[]", "**a**", "[r]: /r\n[s]: /s\n\nprefix ", "a", "ࠀ", "[r]"], splits = [234, 14]
+
+cc 99f58e204474e2b4eba1fd2a5ea5250b465807992f11129770d0f5a6428c61da
+
+cc 0a8ab59e7ef3c9d76116e0ae71fc4559a6f07f03f25418f6e67dbe621062f0ae
+
+cc 736bf3de9e36aa4b6f93bbe4b40b0b6371a37ee5a43b64bb97454ddb5b59f454
+
+cc 1ab60646a42eb7a713290d104a3017b9c6b9154b8eda22dabf40273569520521
+
+cc e6253ef1b09e79b598652fac949db366c00d4c1393d37b7b76353267ca5ed113
+
+cc b19474609d40e3883f43a484b2976894d5d3720669d0c4ab5b9e3473801e4c54
+
+cc aaa612a9f2f3a7549fbd762441228cbd93647a60b483f545a4fa2a7df5e6cb1c
+
+cc 635a9b93b3c60e292a39a7ea0d5c162e05ba8b2606deb9a445bb0eb2beb9b300
+
+cc 3284893e775a81e40d7c8a4d1976163346ac0c750cb9591f69a7b47fb5e48a97 # shrinks to chunks = ["*", "!", "\n"]

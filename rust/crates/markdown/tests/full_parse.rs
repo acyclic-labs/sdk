@@ -1,6 +1,12 @@
 use super::*;
 use proptest::prelude::*;
 
+#[path = "inline_chunks.rs"]
+mod inline_chunks;
+
+#[path = "linear_work.rs"]
+mod linear_work;
+
 #[path = "sequence_work.rs"]
 mod sequence_work;
 
@@ -13,7 +19,13 @@ mod reference_updates;
 #[path = "whitespace.rs"]
 mod whitespace;
 
-fn full_parse(source: &str) -> Vec<Line> {
+#[path = "adversarial_work.rs"]
+mod adversarial_work;
+
+#[path = "inline_hold.rs"]
+mod inline_hold;
+
+pub(super) fn full_parse(source: &str) -> Vec<Line> {
     // CommonMark normalizes CRLF and CR to LF before block parsing.
     let source = if source.contains('\r') {
         std::borrow::Cow::Owned(source.replace("\r\n", "\n").replace('\r', "\n"))
@@ -122,7 +134,7 @@ fn unused_definitions_never_parse_or_highlight_finalized_fences() {
         .lines()
         .get(1)
         .and_then(|line| line.spans.first())
-        .map(|span| span.text.as_ptr());
+        .and_then(|span| span.text.allocation());
     let highlighted = code::HIGHLIGHTED.get();
     let before = markdown.parsed_bytes;
     for index in 0..100 {
@@ -136,7 +148,7 @@ fn unused_definitions_never_parse_or_highlight_finalized_fences() {
             .lines()
             .get(1)
             .and_then(|line| line.spans.first())
-            .map(|span| span.text.as_ptr())
+            .and_then(|span| span.text.allocation())
     );
 }
 
@@ -293,7 +305,11 @@ fn check_chunks(source: &str, cuts: &[usize]) {
         let changed = streamed.push(source.get(offset..end).unwrap_or_default());
         assert!(changed <= streamed.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(streamed.lines().get(changed..).unwrap_or_default());
+        consumer.extend(
+            (streamed.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         assert_eq!(
             consumer,
             full_parse(source.get(..end).unwrap_or_default()),
@@ -303,6 +319,11 @@ fn check_chunks(source: &str, cuts: &[usize]) {
         );
         offset = end;
     }
+}
+
+#[test]
+fn task_reference_frontier_flushes_before_checkpoint() {
+    check_chunks("- [x] task [r]\n\n[r]: /url\n\n", &[8, 2, 12]);
 }
 
 #[test]
@@ -375,7 +396,7 @@ fn indented_code_retains_lines_and_defers_blank_lines() {
                 .lines()
                 .get(1)
                 .and_then(|line| line.spans.first())
-                .map(|span| span.text.as_ptr())
+                .and_then(|span| span.text.allocation())
         };
         let first = pointer(&markdown);
         assert!(first.is_some());
@@ -746,4 +767,9 @@ proptest! {
         prop_assert_eq!(replay.lines(), expected);
         prop_assert_eq!(replay.into_source(), serialized);
     }
+}
+
+#[test]
+fn reference_titles_can_complete_after_a_provisional_plain_list_tail() {
+    check_chunks("paragraph [r]: /url\n* [r]: /url\n(url)", &[1]);
 }

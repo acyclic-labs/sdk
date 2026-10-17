@@ -38,6 +38,13 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
         .get(line_start(source, position)..)
         .unwrap_or_default();
     let before = position - line_start(source, position);
+    // Item ranges can include indentation before the actual marker.
+    let before = if matches!(tag, Tag::Item) {
+        let rest = line.get(before..).unwrap_or_default();
+        before + rest.len() - rest.trim_start_matches([' ', '\t']).len()
+    } else {
+        before
+    };
     let parent: String = line
         .get(..before)
         .unwrap_or_default()
@@ -60,6 +67,9 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             ),
         };
     }
+    // An item whose marker ends its line takes its content one column after
+    // the marker; `*x` would instead be paragraph text.
+    let mut blank = false;
     let length = match tag {
         Tag::Item => {
             let marker = line.get(before..).unwrap_or_default();
@@ -70,6 +80,11 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
                 .bytes()
                 .take_while(|byte| matches!(byte, b' ' | b'\t'))
                 .count();
+            blank = padding == 0;
+            #[cfg(test)]
+            {
+                blank &= !GLUED_MARKER.get();
+            }
             before
                 + end
                 + if (1..=4).contains(&padding) {
@@ -87,7 +102,11 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             };
         }
     };
-    let marker = line.get(before..length).unwrap_or_default();
+    let marker = format!(
+        "{}{}",
+        line.get(before..length).unwrap_or_default(),
+        if blank { " " } else { "" }
+    );
     let opening = format!(
         "{parent}{marker}{}\n",
         if matches!(tag, Tag::Item) { "x" } else { "" }
@@ -169,7 +188,14 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
 pub(super) fn context_prefix(context: &[Container]) -> String {
     let mut prefix: String = context
         .iter()
-        .map(|container| container.opening.as_str())
+        .enumerate()
+        .filter(|(index, container)| {
+            !matches!(container.end, TagEnd::List(_))
+                || context
+                    .get(index + 1)
+                    .is_none_or(|next| next.end != TagEnd::Item)
+        })
+        .map(|(_, container)| container.opening.as_str())
         .collect();
     if let Some(container) = context
         .iter()
@@ -179,4 +205,34 @@ pub(super) fn context_prefix(context: &[Container]) -> String {
         prefix.push_str(&container.continuation);
     }
     prefix
+}
+
+// A parser EOF item marker is provisional: appending text without whitespace
+// turns it into lazy paragraph continuation instead of a sibling item.
+pub(super) fn item_marker_complete(source: &str, start: usize) -> bool {
+    let marker = source
+        .get(start..)
+        .unwrap_or_default()
+        .trim_start_matches([' ', '\t'])
+        .as_bytes();
+    let Some(first) = marker.first() else {
+        return false;
+    };
+    let length = if matches!(first, b'*' | b'-' | b'+') {
+        1
+    } else {
+        marker
+            .iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count()
+            + 1
+    };
+    marker.get(length).is_some_and(u8::is_ascii_whitespace)
+}
+
+#[cfg(test)]
+thread_local! {
+    // Negative control: reopen a blank-start item as `*x`, which is paragraph
+    // text rather than an item.
+    pub(super) static GLUED_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

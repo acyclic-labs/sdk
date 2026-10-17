@@ -1,0 +1,25 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 29c9ea00d9bea16048a6ede2da79c23c1ffd8d49769df4abbe7e996d2e106509 # shrinks to checkpoints = true, character_chunks = false, parts = ["A", "[x](u)", "¡"]
+cc 3b281c48e2044e1b91861bc76bced89256101e0c1c156f65dbc3459e5da26096
+cc b8f1ca588b40043bce2cb1d1fbccc7f5e5714807375b46d1ee712a9102d1b002
+
+cc 6325e933743df21a518d998d4d007b12a9799474d2dbc6d1ada9efdbef40326b
+
+cc 3f02b4c282032ae0f6702432b2d9734b69afb6bff2f53ae1198b55e481a0b516
+
+cc 2a842f4ef12c4b9391a6144a2783c88935c9d8b7c7c9fc7b2f434d7be166dc8e
+
+cc 21fed28a2c8154ebc3bac35689c0f2a0da7ab776bfeb00d2655818b75fdd3b08
+
+cc 89731d796752b0622499e8aab82426e2a24057c50d3e0797e3580b88c124b2ce
+
+cc b3d013268158fb6cd7ed260406ba4023383bd483f04db9b85ef8329a8f95e977
+
+cc 65fe94c362f27881ef0eee2137d2ac06122f927b13963247bf7e72f74e3c8d04 # checkpoints = true, character_chunks = false, parts = ["¡", "`", "<i>", "`", "`"]
+
+cc b35fe8e8b448bfc107212c57dc8f4243f8e2c0eab604b00dd9f4d769457e7586 # checkpoints = false, character_chunks = false, parts = ["[", "]", "(", "[x](u)", ")"]

@@ -1,0 +1,3 @@
+# Retained destination-index property regression.
+cc b8d906713a811b560a79f91ee4ae80bbec113bfd170809c6fc4b8bbc927c6ac1
+cc f73b218777cebc2d8702ab394c9b882fc3fc326ad7a80351054c447281c883cb

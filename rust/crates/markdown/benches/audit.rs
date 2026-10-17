@@ -25,7 +25,7 @@ fn measure(small: &str, large: &str, delta: impl Fn(usize) -> String) -> (Durati
             black_box(markdown.push(black_box(&delta)));
             times.push(before.elapsed());
         };
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             sample(&mut small_markdown, &mut small_times);
             sample(&mut large_markdown, &mut large_times);
         } else {

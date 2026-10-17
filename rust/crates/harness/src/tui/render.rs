@@ -503,7 +503,7 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
                     }
                 }
                 // TODO(#604): emit queried OSC 8 link metadata through the terminal backend.
-                Span::styled(super::display_text(&span.text).into_owned(), style)
+                Span::styled(super::display_text(&span.text.as_str()).into_owned(), style)
             })
             .collect::<Vec<_>>(),
     )

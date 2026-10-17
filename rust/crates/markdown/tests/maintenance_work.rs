@@ -78,3 +78,33 @@ proptest! {
         check_chunks(&source, &cuts);
     }
 }
+
+#[test]
+fn ordinary_budget_growth_keeps_the_visibility_boundary() {
+    let visits = |rescan| {
+        let mut markdown = Markdown::default();
+        markdown.push(&format!("{}word", "![](u)\n\n".repeat(12_501)));
+        markdown.push(" warm-up");
+        crate::reference_render::RESCAN_BUDGET.set(rescan);
+        let before = markdown.visible_work.get();
+        for _ in 0..64 {
+            markdown.push("x");
+        }
+        let used = markdown.visible_work.get() - before;
+        crate::reference_render::RESCAN_BUDGET.set(false);
+        assert_eq!(
+            markdown
+                .lines()
+                .last()
+                .expect("visible row")
+                .spans
+                .iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>(),
+            format!("word warm-up{}", "x".repeat(64)),
+        );
+        used
+    };
+    assert_eq!(visits(false), 0);
+    assert!(visits(true) >= 64);
+}
