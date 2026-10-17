@@ -198,4 +198,4 @@ impl NativeMaterializationWork {
 }
 
 #[cfg(all(test, not(acyclic_fs_loom)))]
-mod tests;
+pub(super) mod tests;

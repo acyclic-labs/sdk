@@ -81,48 +81,13 @@ fn every_original_and_ancestor_resource_ceiling_admits_exactly_the_full_layout()
     for authority in [false, true] {
         for depth in 0..4 {
             for remaining in 0..=required {
-                let work = root(WorkBudget {
-                    peak_allocation_bytes: if depth == 0 {
-                        NativeMaterializationWork::accounting_state_bytes() + remaining
-                    } else {
-                        crate::performance::BOUNDARY_BUDGET.peak_allocation_bytes
-                    },
-                    ..crate::performance::BOUNDARY_BUDGET
-                });
-                let mut scoped = work.clone();
-                for _ in 0..depth {
-                    scoped = scoped
-                        .native_volume_work(WorkBudget {
-                            peak_allocation_bytes: remaining,
-                            ..crate::performance::BOUNDARY_BUDGET
-                        })
-                        .unwrap();
-                }
-                let baseline = work.live_allocation_bytes();
-                let before = work.receipt();
-                let (result, observed) = measured(|| view(&scoped, authority));
-                assert_eq!(result.is_ok(), remaining == required);
-                if let Ok(owner) = result {
-                    assert_eq!(observed.count_total, 1);
-                    assert_eq!(observed.bytes_current as u64, required);
-                    assert_eq!(work.live_allocation_bytes(), baseline + required);
-                    drop(owner);
-                    assert_eq!(
-                        work.receipt().allocation_operations,
-                        before.allocation_operations + 1
-                    );
-                    assert_eq!(work.receipt().peak_allocation_bytes, baseline + required);
-                } else {
-                    assert_eq!(observed.count_total, 0);
-                    assert_eq!(work.receipt(), before);
-                }
-                assert_eq!(work.live_allocation_bytes(), baseline);
-                if let Some(resource) = &scoped.resource {
-                    assert_eq!(
-                        resource.remaining().unwrap().peak_allocation_bytes,
-                        remaining
-                    );
-                }
+                independent_ceiling_case(
+                    required,
+                    authority,
+                    if depth == 0 { remaining } else { required + 1 },
+                    &vec![remaining; depth],
+                    false,
+                );
             }
         }
     }
@@ -145,5 +110,130 @@ fn cancelled_invocation_does_not_allocate_or_change_the_receipt() {
             work.live_allocation_bytes(),
             NativeMaterializationWork::accounting_state_bytes()
         );
+    }
+}
+
+// Exercise the production admission path with every resource check except the
+// innermost disabled. The flag is thread-local and absent from production builds.
+std::thread_local! {
+    static ONLY_INNERMOST: std::cell::Cell<*const NativeResourceAllowance> = const {
+        std::cell::Cell::new(std::ptr::null())
+    };
+}
+
+pub(in crate::materializer) fn skip_ancestor_check(scope: &NativeResourceAllowance) -> bool {
+    ONLY_INNERMOST.with(|inner| !inner.get().is_null() && !std::ptr::eq(inner.get(), scope))
+}
+
+fn independent_ceiling_case(
+    required: u64,
+    authority: bool,
+    root_remaining: u64,
+    limits: &[u64],
+    only_innermost: bool,
+) {
+    let metadata =
+        crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeResourceAllowance>())
+            .unwrap() as u64;
+    let work = root(WorkBudget {
+        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
+            + limits.len() as u64 * metadata
+            + root_remaining,
+        ..crate::performance::BOUNDARY_BUDGET
+    });
+    let mut scoped = work.clone();
+    for &limit in limits {
+        scoped = scoped
+            .native_volume_work(WorkBudget {
+                peak_allocation_bytes: limit,
+                ..crate::performance::BOUNDARY_BUDGET
+            })
+            .unwrap();
+    }
+    let baseline = work.live_allocation_bytes();
+    let before = work.receipt();
+    let expected = root_remaining >= required && limits.iter().all(|&limit| limit >= required);
+    let (result, observed) = ONLY_INNERMOST.with(|inner| {
+        assert!(inner.get().is_null());
+        struct Reset<'a>(&'a std::cell::Cell<*const NativeResourceAllowance>);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.set(std::ptr::null());
+            }
+        }
+        let _reset = Reset(inner);
+        if only_innermost {
+            inner.set(Arc::as_ptr(scoped.resource.as_ref().unwrap()));
+        }
+        measured(|| view(&scoped, authority))
+    });
+    let admitted = result.is_ok();
+    drop(result);
+    assert_eq!(admitted, expected, "ceiling admission");
+    assert_eq!(observed.count_total, u64::from(expected));
+    assert_eq!(observed.bytes_total, if expected { required } else { 0 });
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    if expected {
+        assert_eq!(
+            work.receipt().allocation_operations,
+            before.allocation_operations + 1
+        );
+        assert_eq!(work.receipt().peak_allocation_bytes, baseline + required);
+    } else {
+        assert_eq!(work.receipt(), before);
+    }
+    if let Some(resource) = &scoped.resource {
+        assert_eq!(
+            resource.remaining().unwrap().peak_allocation_bytes,
+            *limits.iter().min().unwrap()
+        );
+    }
+}
+
+#[test]
+fn independently_constrained_ancestors_and_root_reject_roomy_descendants() {
+    let required =
+        crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeInvocationView>())
+            .unwrap() as u64;
+    for authority in [false, true] {
+        for depth in 1..=3 {
+            for constrained in 0..=depth {
+                for remaining in 0..=required {
+                    let mut limits = vec![required + 1; depth];
+                    let root_remaining = if constrained == 0 {
+                        remaining
+                    } else {
+                        limits[constrained - 1] = remaining;
+                        required + 1
+                    };
+                    independent_ceiling_case(required, authority, root_remaining, &limits, false);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn innermost_only_admission_is_detected_for_each_ancestor() {
+    let required =
+        crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<NativeInvocationView>())
+            .unwrap() as u64;
+    for authority in [false, true] {
+        for depth in 2..=3 {
+            for ancestor in 0..depth - 1 {
+                let mut limits = vec![required + 1; depth];
+                limits[ancestor] = required - 1;
+                let failure = std::panic::catch_unwind(|| {
+                    independent_ceiling_case(required, authority, required + 1, &limits, true);
+                })
+                .expect_err("innermost-only admission must violate the ceiling assertion");
+                assert!(
+                    failure
+                        .downcast_ref::<String>()
+                        .unwrap()
+                        .contains("ceiling admission")
+                );
+            }
+        }
     }
 }
