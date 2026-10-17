@@ -10,7 +10,9 @@ use std::{mem::ManuallyDrop, task::Context};
 // Lock order: visibility -> publication -> memory state -> path watch.
 // Failure-watch borrows end before publication; cancellation owns no lock.
 pub(crate) fn registration(omit_wake: bool) {
-    loom::model(move || {
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(1);
+    model.check(move || {
         let provider = query_model::fixture(omit_wake).unwrap();
         let keeper = ManuallyDrop::new(provider.clone());
         let path = StreamPath::new("watched").unwrap();
@@ -122,33 +124,16 @@ pub(crate) fn cancellation(retain: bool) {
 // Keep the executor's parker outside Loom-managed allocations so a deliberately
 // deadlocked negative control can unwind without dropping a Loom Notify guard.
 pub(super) fn park<F: Future>(future: F) -> F::Output {
-    struct Wake(loom::thread::Thread);
-    impl std::task::Wake for Wake {
-        fn wake(self: Arc<Self>) {
-            self.0.unpark();
-        }
-        fn wake_by_ref(self: &Arc<Self>) {
-            self.0.unpark();
-        }
-    }
-    let waker = std::task::Waker::from(Arc::new(Wake(loom::thread::current())));
-    let mut future = ManuallyDrop::new(Box::pin(future));
-    loop {
-        if let std::task::Poll::Ready(value) =
-            future.as_mut().poll(&mut Context::from_waker(&waker))
-        {
-            drop(ManuallyDrop::into_inner(future));
-            return value;
-        }
-        loom::thread::park();
-    }
+    crate::snapshot::park(future)
 }
 
 // Exercise the real visibility/failure lock ordering in both directions.
 // The mutant retains the real failure-watch borrow across publication's await;
 // a writer holding publication while poisoning must expose that cycle.
 pub(crate) fn failure_lock_order(hold_borrow: bool) {
-    loom::model(move || {
+    let mut model = loom::model::Builder::new();
+    model.preemption_bound = Some(1);
+    model.check(move || {
         let provider = query_model::fixture(false).unwrap();
         let keeper = ManuallyDrop::new(provider.clone());
         let path = StreamPath::new("watched").unwrap();

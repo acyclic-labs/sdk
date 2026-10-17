@@ -33,7 +33,7 @@ http = ["grpc", "dep:reqwest"]
 local = ["dep:fs2", "tokio/rt"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
-wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
+wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -50,7 +50,7 @@ serde_json.workspace = true
 serde = { workspace = true, optional = true }
 sha2.workspace = true
 thiserror.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["sync", "time"] }
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time", "rt"] }
 tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
 tracing.workspace = true
@@ -65,7 +65,7 @@ indexed_db_futures = { workspace = true, optional = true }
 serde-wasm-bindgen = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
-wasm-bindgen-futures = { workspace = true, optional = true }
+wasm-bindgen-futures.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 fs2 = { workspace = true, optional = true }

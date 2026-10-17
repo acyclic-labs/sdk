@@ -359,6 +359,22 @@ pub fn local_follow_parking(retain_pending: bool, children: bool, memory: bool) 
     crate::local::parking_model::verify(retain_pending, children, memory);
 }
 
+/// Compares queued admission and cancellation with Tokio's fair lock.
+pub fn lock_parity(negative: bool) {
+    loom::model(move || {
+        if negative {
+            crate::query_sync::parity::negative();
+        } else {
+            crate::query_sync::parity::run();
+        }
+    });
+}
+
+/// Checks direct memory-provider streams against an unpolled state reservation.
+pub fn memory_follow_parking(retain_pending: bool, children: bool, checked: bool) {
+    crate::memory::parking_model::verify(retain_pending, children, checked);
+}
+
 /// Accepted readers and watermark queries must not wait for snapshot device I/O.
 pub fn local_compaction_visibility(hold_publication: bool) {
     crate::local::compaction_model::verify(u8::from(hold_publication));

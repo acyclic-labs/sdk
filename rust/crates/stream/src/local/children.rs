@@ -7,6 +7,21 @@ struct ChildrenState {
     changed: watch::Receiver<()>,
     failed: watch::Receiver<bool>,
 }
+impl crate::snapshot::Snapshot for Box<ChildrenState> {
+    const OBSERVE: bool = true;
+    type Output = Result<Option<StreamPath>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
+        let state = &mut **self;
+        state
+            .provider
+            .accepted_snapshot(state.provider.inner.provider.next_child_snapshot(
+                state.parent.as_ref(),
+                state.previous.as_ref(),
+                &mut state.changed,
+            ))
+            .await?
+    }
+}
 
 impl LocalStream {
     pub(super) async fn follow_children(
@@ -29,24 +44,14 @@ impl LocalStream {
             loop {
                 #[cfg(acyclic_loom)]
                 let retain_pending = state.provider.inner.retain_pending_read;
-                let (next, child) = drive::drive(
-                    Box::pin(async move {
-                        let child = state
-                            .provider
-                            .accepted(state.provider.inner.provider.next_child_snapshot(
-                                state.parent.as_ref(),
-                                state.previous.as_ref(),
-                                &mut state.changed,
-                            ))
-                            .await;
-                        (state, child)
-                    }),
+                let (next, child) = crate::snapshot::read(
+                    state,
                     #[cfg(acyclic_loom)]
                     retain_pending,
                 )
                 .await;
                 state = next;
-                if let Some(path) = child?? {
+                if let Some(path) = child? {
                     state.previous = Some(path.clone());
                     return Ok(Some((crate::Child { path }, state)));
                 }

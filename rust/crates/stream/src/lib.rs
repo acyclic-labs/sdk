@@ -52,6 +52,7 @@ mod memory;
 mod obs;
 #[doc(hidden)]
 pub mod query_sync;
+mod snapshot;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -96,12 +97,12 @@ pub mod wire {
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-stream-v1.bin"));
+#[cfg(all(feature = "local", feature = "test-support"))]
+pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(feature = "local")]
 pub use local::{
     LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
 };
-#[cfg(all(feature = "local", feature = "test-support"))]
-pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.

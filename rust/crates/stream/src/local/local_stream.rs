@@ -447,16 +447,20 @@ impl LocalStream {
 
     /// Observes accepted publications without joining their durability wait.
     async fn accepted<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        let read = async {
-            self.check_available()?;
-            let _visibility = self.inner.publication.read().await;
-            self.check_available()?;
-            Ok(read.await)
-        };
+        let read = self.accepted_snapshot(read);
         #[cfg(feature = "test-support")]
         return acyclic_native_runtime::testing::observe_read(read).await;
         #[cfg(not(feature = "test-support"))]
         read.await
+    }
+
+    // Snapshot operations have no asynchronous acknowledgement after mutation.
+    // The shared stream driver owns observation outside its cancellable probe.
+    async fn accepted_snapshot<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
+        self.check_available()?;
+        let _visibility = self.inner.publication.read().await;
+        self.check_available()?;
+        Ok(read.await)
     }
 
     /// Runs one read under shared visibility, then joins its durable watermark.

@@ -24,9 +24,10 @@ use tokio::sync::mpsc;
 use tokio::{spawn, task::spawn_blocking};
 
 mod children;
-mod drive;
 #[cfg(acyclic_loom)]
 pub(crate) mod parking_model;
+#[cfg(all(test, not(acyclic_loom)))]
+mod snapshot_ready;
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;

@@ -37,24 +37,14 @@ impl LocalStream {
                     loop {
                         #[cfg(acyclic_loom)]
                         let retain_pending = state.provider.inner.retain_pending_read;
-                        let (next, record) = drive::drive(
-                            Box::pin(async move {
-                                let record = state
-                                    .provider
-                                    .accepted(state.provider.inner.provider.next_checked_record(
-                                        &state.path,
-                                        &mut state.cursor,
-                                        &mut state.anchor,
-                                    ))
-                                    .await;
-                                (state, record)
-                            }),
+                        let (next, record) = crate::snapshot::read(
+                            state,
                             #[cfg(acyclic_loom)]
                             retain_pending,
                         )
                         .await;
                         state = next;
-                        let result = match record.and_then(std::convert::identity) {
+                        let result = match record {
                             Ok(Some(record)) => return Ok(Some((record, state))),
                             Ok(None) => state.wait().await,
                             Err(error) => Err(error),

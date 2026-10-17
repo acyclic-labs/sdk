@@ -16,35 +16,43 @@ struct Access {
     readers: usize,
     writer: bool,
     next: usize,
+    granted: Vec<(usize, bool)>,
     waiters: std::collections::VecDeque<Waiter>,
+    stall_granted_readers: bool,
 }
 
 struct Waiter {
     id: usize,
     write: bool,
-    granted: bool,
     waker: Waker,
 }
 
 impl Access {
+    fn available(&self, write: bool) -> bool {
+        self.waiters.is_empty()
+            && !self.writer
+            && if write {
+                self.readers == 0
+            } else {
+                !self.stall_granted_readers || self.granted.is_empty()
+            }
+    }
     // Reserve ownership before waking, including for a waiter never polled
     // again. FIFO writers block later readers, exactly as Tokio's semaphore.
     fn grant(&mut self) -> Vec<Waker> {
         let mut wakes = Vec::new();
-        for waiter in &mut self.waiters {
-            if waiter.granted {
-                continue;
-            }
+        while let Some(waiter) = self.waiters.front() {
             if self.writer || (waiter.write && self.readers != 0) {
                 break;
             }
-            waiter.granted = true;
+            let waiter = self.waiters.pop_front().unwrap();
             if waiter.write {
                 self.writer = true;
             } else {
                 self.readers += 1;
             }
-            wakes.push(waiter.waker.clone());
+            self.granted.push((waiter.id, waiter.write));
+            wakes.push(waiter.waker);
         }
         wakes
     }
@@ -64,7 +72,7 @@ impl Gate {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if access.waiters.is_empty() && !access.writer && (!write || access.readers == 0) {
+        if access.available(write) {
             if write {
                 access.writer = true;
             } else {
@@ -84,20 +92,18 @@ impl Gate {
         poll_fn(|cx| {
             let mut access = self.0.lock().unwrap();
             if let Some(id) = registration.id {
-                let position = access
-                    .waiters
-                    .iter()
-                    .position(|waiter| waiter.id == id)
-                    .unwrap();
-                let waiter = &mut access.waiters[position];
-                if waiter.granted {
-                    access.waiters.remove(position);
+                if let Some(position) = access.granted.iter().position(|entry| entry.0 == id) {
+                    access.granted.remove(position);
                     registration.id = None;
                     return Poll::Ready(Permit { gate: self, write });
                 }
+                let waiter = access
+                    .waiters
+                    .iter_mut()
+                    .find(|waiter| waiter.id == id)
+                    .unwrap();
                 waiter.waker = cx.waker().clone();
-            } else if access.waiters.is_empty() && !access.writer && (!write || access.readers == 0)
-            {
+            } else if access.available(write) {
                 if write {
                     access.writer = true;
                 } else {
@@ -111,7 +117,6 @@ impl Gate {
                 access.waiters.push_back(Waiter {
                     id,
                     write,
-                    granted: false,
                     waker: cx.waker().clone(),
                 });
             }
@@ -133,14 +138,16 @@ impl Drop for Registration<'_> {
         };
         let wakes = {
             let mut access = self.gate.0.lock().unwrap();
-            let position = access
-                .waiters
-                .iter()
-                .position(|waiter| waiter.id == id)
-                .unwrap();
-            let waiter = access.waiters.remove(position).unwrap();
-            if waiter.granted {
-                access.release(waiter.write);
+            if let Some(position) = access.waiters.iter().position(|waiter| waiter.id == id) {
+                access.waiters.remove(position);
+            } else {
+                let position = access
+                    .granted
+                    .iter()
+                    .position(|entry| entry.0 == id)
+                    .unwrap();
+                let (_, write) = access.granted.remove(position);
+                access.release(write);
             }
             access.grant()
         };
@@ -229,6 +236,15 @@ pub struct RwLock<T> {
 }
 
 impl<T> RwLock<T> {
+    pub(crate) fn stalled_reader_control(value: T) -> Self {
+        Self {
+            data: tokio::sync::RwLock::new(value),
+            gate: Gate(LoomMutex::new(Access {
+                stall_granted_readers: true,
+                ..Access::default()
+            })),
+        }
+    }
     /// Constructs an unlocked value.
     pub fn new(value: T) -> Self {
         Self {

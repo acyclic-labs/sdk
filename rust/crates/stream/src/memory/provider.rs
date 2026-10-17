@@ -126,30 +126,7 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        validate_limit(request.limit)?;
-        let changed = self.child_changes(request.parent.as_ref()).await;
-        Ok(stream::try_unfold(
-            (self.clone(), request.parent, changed, None),
-            |(provider, parent, mut changed, mut previous)| async move {
-                loop {
-                    let next = provider
-                        .next_child_snapshot(parent.as_ref(), previous.as_ref(), &mut changed)
-                        .await?;
-                    if let Some(path) = next {
-                        previous = Some(path.clone());
-                        return Ok(Some((
-                            Child { path },
-                            (provider, parent, changed, previous),
-                        )));
-                    }
-                    changed
-                        .changed()
-                        .await
-                        .map_err(|_| StreamError::Unavailable)?;
-                }
-            },
-        )
-        .boxed())
+        self.follow_children(request).await
     }
 
     async fn children_page(

@@ -67,6 +67,39 @@ impl State {
     }
 }
 impl MemoryStream {
+    async fn follow_children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        validate_limit(request.limit)?;
+        let changed = self.child_changes(request.parent.as_ref()).await;
+        let state = Box::new(MemoryChildren {
+            provider: self.clone(),
+            parent: request.parent,
+            previous: None,
+            changed,
+        });
+        Ok(stream::try_unfold(state, |mut state| async move {
+            loop {
+                #[cfg(acyclic_loom)]
+                let retain_pending = state.provider.retain_pending_read;
+                let (next, child) = crate::snapshot::read(
+                    state,
+                    #[cfg(acyclic_loom)]
+                    retain_pending,
+                )
+                .await;
+                state = next;
+                if let Some(path) = child? {
+                    state.previous = Some(path.clone());
+                    return Ok(Some((Child { path }, state)));
+                }
+                state
+                    .changed
+                    .changed()
+                    .await
+                    .map_err(|_| StreamError::Unavailable)?;
+            }
+        })
+        .boxed())
+    }
     #[cfg(acyclic_loom)]
     pub(crate) async fn model_hold_writer(&self) -> impl Send + '_ {
         self.state.write().await
@@ -102,5 +135,26 @@ impl MemoryStream {
         previous: Option<&StreamPath>,
     ) -> Result<Option<StreamPath>, StreamError> {
         self.state.read().await.next_child(parent, previous)
+    }
+}
+
+struct MemoryChildren {
+    provider: MemoryStream,
+    parent: Option<StreamPath>,
+    previous: Option<StreamPath>,
+    changed: watch::Receiver<()>,
+}
+impl crate::snapshot::Snapshot for Box<MemoryChildren> {
+    type Output = Result<Option<StreamPath>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
+        let state = &mut **self;
+        state
+            .provider
+            .next_child_snapshot(
+                state.parent.as_ref(),
+                state.previous.as_ref(),
+                &mut state.changed,
+            )
+            .await
     }
 }
