@@ -33,6 +33,7 @@ mod checkout;
 mod commit;
 mod content;
 mod diff;
+mod directories;
 mod errors;
 mod extents;
 mod fork_options;

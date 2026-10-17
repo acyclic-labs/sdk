@@ -140,6 +140,7 @@ mod detached;
 mod diff;
 pub(crate) use diff::diff_generation_file_tables;
 mod directory;
+mod directory_prefix;
 mod error;
 mod extents;
 #[cfg(feature = "native-mount")]

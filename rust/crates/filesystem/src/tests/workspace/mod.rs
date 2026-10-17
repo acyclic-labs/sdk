@@ -75,6 +75,9 @@ mod change_sets;
 
 mod discovery;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod directories;
+
 mod fork_selection;
 
 mod generation;

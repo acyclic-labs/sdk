@@ -24,6 +24,13 @@ use std::cmp::Ordering;
 use std::mem::size_of;
 use thiserror::Error;
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum CaptureRecords {
+    None,
+    Terminal,
+    Prefixes,
+}
+
 /// Exact path lookup result. Absence is authenticated and not an error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PathLookup {
@@ -133,7 +140,7 @@ mod cache;
 use cache::*;
 mod provider;
 mod single;
-use single::*;
+pub(crate) use single::resolve_path_with_accounting;
 mod batch;
 pub(crate) use batch::PathQueries;
 use batch::*;

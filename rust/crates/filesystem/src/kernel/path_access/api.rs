@@ -143,7 +143,7 @@ pub(crate) async fn lookup_path_async_with_accounting<S: AsyncObjectStore>(
         cancellation,
         data_custody,
         false,
-        false,
+        CaptureRecords::None,
     )
     .await?;
     Ok(result.0.lookup)
@@ -172,7 +172,11 @@ pub(crate) async fn observe_path_async_with_accounting<S: AsyncObjectStore>(
         cancellation,
         data_custody,
         true,
-        capture_terminal,
+        if capture_terminal {
+            CaptureRecords::Terminal
+        } else {
+            CaptureRecords::None
+        },
     )
     .await
 }

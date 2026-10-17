@@ -5,7 +5,7 @@ use super::*;
     clippy::too_many_lines,
     reason = "This state transition keeps admission, effects and resource retirement in one frame."
 )]
-pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
+pub(crate) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
     store: &S,
     generation: &crate::kernel::GenerationRoot,
     path: &NamespacePath,
@@ -14,7 +14,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
     observe: bool,
-    capture_terminal: bool,
+    capture: CaptureRecords,
 ) -> Result<(ObservedPathLookup, KernelOwnedAllocation), crate::FsError> {
     accounting.check()?;
     validate_path(path, config, accounting)?;
@@ -39,7 +39,11 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     OperationReadCache::new(store, cache_entries, accounting, data_custody)?;
                 let mut dependencies = reserve_slots::<Dependency>(
                     if observe {
-                        path.depth().saturating_add(1)
+                        if capture == CaptureRecords::Prefixes {
+                            path.depth().saturating_mul(2).saturating_add(1)
+                        } else {
+                            path.depth().saturating_add(1)
+                        }
                     } else {
                         0
                     },
@@ -68,7 +72,10 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                     let payload = examine_item(accounting, None, || current.payload)?;
                     parent = Some(current);
                     let FilePayload::Directory { entries } = payload else {
-                        if observe && !capture_terminal {
+                        if capture == CaptureRecords::Prefixes {
+                            break;
+                        }
+                        if observe && capture == CaptureRecords::None {
                             found = false;
                             break;
                         }
@@ -175,8 +182,21 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                         return Err(PathLookupError::KindMismatch.into());
                     }
                     resolved = index + 1;
+                    if observe && capture == CaptureRecords::Prefixes {
+                        let expected =
+                            crate::kernel::probe::capture_file_record_state_with_accounting(
+                                current,
+                                accounting,
+                                Some(cancellation),
+                                data_custody,
+                            )?;
+                        dependencies.value.push(Dependency {
+                            region: DependencyRegion::FileRecord(current.file_id),
+                            expected,
+                        });
+                    }
                 }
-                if observe && found && capture_terminal {
+                if observe && found && capture == CaptureRecords::Terminal {
                     let expected = crate::kernel::probe::capture_file_record_state_with_accounting(
                         current,
                         accounting,

@@ -191,6 +191,56 @@ impl CheckoutDependencies {
         self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
     }
 
+    /// Returns how many leading dependencies `prepare_observations` would admit
+    /// when called once per group, and the error raised by the first group it
+    /// rejects. A group starts at each dependency for which `starts` is true.
+    /// Regions must be pairwise distinct, as they are along one path walk.
+    pub(crate) fn admissible_observation_groups(
+        &self,
+        dependencies: &[Dependency],
+        starts: impl Fn(&Dependency) -> bool,
+        maximum_dependencies: u32,
+    ) -> (usize, Option<DependencyError>) {
+        if dependencies.is_empty() {
+            return (0, None);
+        }
+        if maximum_dependencies == 0 {
+            return (0, Some(DependencyError::ZeroLimit));
+        }
+        let maximum = usize::try_from(maximum_dependencies).unwrap_or(usize::MAX);
+        let mut captured = self.captured.entries.len();
+        let mut start = 0;
+        while start < dependencies.len() {
+            let end = dependencies
+                .iter()
+                .skip(start + 1)
+                .position(&starts)
+                .map_or(dependencies.len(), |offset| start + 1 + offset);
+            for dependency in &dependencies[start..end] {
+                if let Err(error) = dependency.region.validate() {
+                    return (start, Some(error));
+                }
+                match self.captured.entries.get(&dependency.region) {
+                    Some(existing) if existing.expected != dependency.expected => {
+                        return (start, Some(DependencyError::ContradictoryState));
+                    }
+                    Some(_) => {}
+                    None => captured = captured.saturating_add(1),
+                }
+            }
+            if captured > maximum {
+                return (
+                    start,
+                    Some(DependencyError::TooManyDependencies {
+                        maximum: maximum_dependencies,
+                    }),
+                );
+            }
+            start = end;
+        }
+        (dependencies.len(), None)
+    }
+
     pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
         &mut self,
         extension: DependencyExtension,

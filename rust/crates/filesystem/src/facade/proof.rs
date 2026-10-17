@@ -79,6 +79,17 @@ impl DependencyLedger {
     pub(super) fn independent_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
         Self::sharing_with_custody(self.proof().clone(), data_custody)
     }
+    pub(super) fn admissible_observation_groups(
+        &self,
+        dependencies: &[Dependency],
+        starts: impl Fn(&Dependency) -> bool,
+        maximum: u32,
+    ) -> (usize, Option<DependencyError>) {
+        self.proof()
+            .dependencies
+            .admissible_observation_groups(dependencies, starts, maximum)
+    }
+
     pub(super) fn extend_observations(
         &self,
         dependencies: Vec<Dependency>,
@@ -180,5 +191,19 @@ impl DependencyLedger {
                 Ok(())
             },
         )
+    }
+}
+
+#[cfg(test)]
+impl<A, O> Checkout<A, O> {
+    pub(crate) fn directory_observations(&self) -> CheckoutDependencies {
+        self.dependencies.proof().dependencies.clone()
+    }
+
+    // Leaves room for `extra` more distinct dependencies in this checkout only.
+    pub(crate) fn limit_dependencies_after(&mut self, extra: u32) {
+        let held = u32::try_from(self.dependencies.proof().dependencies.len())
+            .expect("bounded dependency count");
+        self.volume.config.limits.maximum_checkout_dependencies = held + extra;
     }
 }

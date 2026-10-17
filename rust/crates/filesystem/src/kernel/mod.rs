@@ -185,14 +185,15 @@ pub use metadata::{
 };
 pub use mutation::{FileMutation, Mutation, MutationPlan, MutationPlanError, MutationPlanFailure};
 pub use namespace_path::{NamespacePath, NamespacePathError};
+pub(crate) use path_access::{
+    CaptureRecords, PathBatchMode, PathQueries, lookup_path_async_with_accounting,
+    lookup_paths_with_accounting, observe_path_async_with_accounting,
+    observe_paths_async_with_accounting, resolve_path_with_accounting,
+};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup,
     PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths,
     observe_path_async, observe_paths_async,
-};
-pub(crate) use path_access::{
-    PathBatchMode, PathQueries, lookup_path_async_with_accounting, lookup_paths_with_accounting,
-    observe_path_async_with_accounting, observe_paths_async_with_accounting,
 };
 pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
