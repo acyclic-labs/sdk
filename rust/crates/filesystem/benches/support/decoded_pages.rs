@@ -68,35 +68,33 @@ fn measured(bencher: Bencher, name: &str, count: u8, operation: impl Fn() + Sync
 
 #[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
 fn lookup(bencher: Bencher, count: u8) {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let store = LogicalObjectStore::new(Arc::new(objects), bucket);
-    lookup_store(bencher, count, store, "lookup");
+    lookup_store(bencher, count, false);
 }
 
 #[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
-fn lookup_uncached(bencher: Bencher, count: u8) {
-    lookup_store(
-        bencher,
-        count,
-        acyclic_fs::MemoryObjectStore::default(),
-        "lookup_uncached",
-    );
+fn lookup_cold(bencher: Bencher, count: u8) {
+    lookup_store(bencher, count, true);
 }
 
-fn lookup_store<S: AsyncObjectStore>(bencher: Bencher, count: u8, store: S, name: &str) {
+fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let store = LogicalObjectStore::new(Arc::new(objects), bucket);
+    let name = if cold { "lookup_cold" } else { "lookup" };
     let page = page(count);
     let id = file_table_page_id(&page, 64).unwrap_or_else(fail);
+    let encoded = encoded(&page);
+    let maximum = encoded.len() as u64;
     let cancellation = CancellationToken::new();
     let budget = acyclic_fs::performance::BOUNDARY_BUDGET;
     complete(store.put(
         id,
-        OwnedBytes::from(encoded(&page)),
+        OwnedBytes::from(encoded),
         &mut AuthorityWork::new(budget, &cancellation),
     ))
     .unwrap_or_else(fail);
-    let operation = || {
+    let operation = |store: &LogicalObjectStore<_>| {
         complete(lookup_file_record(
-            &store,
+            store,
             id,
             FileId::from_bytes([count; 16]),
             DecodeLimits::default(),
@@ -105,14 +103,29 @@ fn lookup_store<S: AsyncObjectStore>(bencher: Bencher, count: u8, store: S, name
         ))
         .unwrap_or_else(fail)
     };
-    let receipt = operation();
+    let receipt_store = store
+        .clone()
+        .with_object_limit(maximum)
+        .unwrap_or_else(fail);
+    let receipt = operation(if cold { &receipt_store } else { &store });
     assert!(receipt.value.is_some());
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {
         eprintln!("decoded_page_{name} count={count} work={:?}", receipt.work);
     }
-    measured(bencher, name, count, || {
-        std::hint::black_box(operation());
-    });
+    if cold {
+        bencher
+            .with_inputs(|| {
+                store
+                    .clone()
+                    .with_object_limit(maximum)
+                    .unwrap_or_else(fail)
+            })
+            .bench_refs(|store| std::hint::black_box(operation(store)));
+    } else {
+        measured(bencher, name, count, || {
+            std::hint::black_box(operation(&store));
+        });
+    }
 }
 
 #[divan::bench(args = [1, 8, 64], threads = [1, 4], sample_count = 32, sample_size = 16)]
