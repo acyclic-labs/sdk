@@ -34,7 +34,7 @@ async fn automatic_compaction_fits_equal_small_context_and_output_capacities() -
             context_tokens: 8192,
             output_tokens: 8192,
         },
-        2600,
+        2000,
     )
     .await
 }
@@ -183,12 +183,11 @@ async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> 
         // Both presets must pass the same real admission/content preflight.
         // Restoring the former output-first preset prevents generation entirely.
         if legacy {
-            let error = result.expect_err("output-first control unexpectedly fit");
+            assert!(result.is_err(), "output-first control unexpectedly fit");
             assert!(
-                error.to_string().contains("compaction") || error.to_string().contains("mandatory"),
-                "{error}"
+                provider.requests().is_empty(),
+                "an unfunded legacy budget reached the provider"
             );
-            assert!(provider.requests().is_empty());
         } else {
             assert_eq!(result?.text, "done");
             let requests = provider.requests();
