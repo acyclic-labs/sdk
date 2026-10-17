@@ -4,7 +4,11 @@ use ratatui::{text::Line, widgets::Widget};
 
 fn projection(text: &str) -> WrappedLines {
     let mut projection = WrappedLines::default();
-    projection.update(&[Line::raw(text.to_owned())], 0, 80);
+    projection.update(
+        &[Line::from(ratatui::text::Span::raw(text.to_owned()))],
+        0,
+        80,
+    );
     projection
 }
 fn finish(search: &mut TranscriptSearch, projection: &WrappedLines) {
@@ -158,7 +162,7 @@ fn indexed_navigation_covers_line_terminators_and_changed_suffixes() {
         &[
             Line::raw("first"),
             Line::raw("second"),
-            Line::raw("final\nrow"),
+            Line::from(ratatui::text::Span::raw("final\nrow")),
         ],
         2,
         80,
