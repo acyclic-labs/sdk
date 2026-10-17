@@ -20,7 +20,7 @@ use stream_text::StreamText;
 #[derive(Default)]
 pub struct ClientRenderer {
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    file_cut: Option<(u64, String)>,
+    file_cut: Option<(u64, wire::Authority)>,
     #[cfg(test)]
     folded_views: usize,
     key: String,
@@ -70,15 +70,16 @@ impl ClientRenderer {
         client: &crate::client::TaskFileClient,
         authority: &wire::Authority,
     ) {
-        let cut = (
-            client.presentation_revision(),
-            crate::client::authority_key(authority),
-        );
-        if self.file_cut.as_ref() == Some(&cut) {
+        let revision = client.presentation_revision();
+        if self
+            .file_cut
+            .as_ref()
+            .is_some_and(|(cut, owner)| *cut == revision && owner == authority)
+        {
             return;
         }
         self.update(client.views(), authority);
-        self.file_cut = Some(cut);
+        self.file_cut = Some((revision, authority.clone()));
     }
 
     /// Update only the active agent. Stable transcript rows survive text deltas;
