@@ -39,22 +39,6 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
                 .await?;
         }
-        InputEffect::Host(crate::tui::Action::App(crate::tui::AppAction::Find)) => {
-            let command = files
-                .catalog()
-                .commands()
-                .find(|spec| {
-                    spec.action
-                        == super::CommandAction::Select {
-                            query: super::CommandQuery::Find,
-                        }
-                })
-                .map(|spec| format!("/{}", spec.name))
-                .ok_or_else(|| {
-                    Error::Unsupported("transcript search has no enabled command".into())
-                })?;
-            files.submit_input(&command, reader).await?;
-        }
         InputEffect::Submit {
             text, edit: None, ..
         } => {
@@ -64,6 +48,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
             use crate::tui::AppAction;
             let query = match action {
                 AppAction::Help => CommandQuery::Shortcuts,
+                AppAction::Find => CommandQuery::Find,
                 AppAction::Reasoning => CommandQuery::Reasoning,
                 AppAction::Details => CommandQuery::Details,
                 _ => {
