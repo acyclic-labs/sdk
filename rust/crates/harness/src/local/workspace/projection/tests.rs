@@ -9,6 +9,12 @@ fn complete<F: Future>(future: F) -> F::Output {
     }
 }
 
+fn joined<T>(worker: thread::JoinHandle<T>) -> T {
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 fn checked(scenario: fn(bool), diagnostic: &str) {
     loom::model(move || scenario(false));
     let failure = std::panic::catch_unwind(|| loom::model(move || scenario(true)))
@@ -48,7 +54,7 @@ fn concurrent_initializers(broken: bool) {
         })
         .collect();
     for worker in workers {
-        worker.join().unwrap();
+        joined(worker);
     }
     assert_eq!(*count.lock().unwrap(), 1, "projection initialized twice");
 }
@@ -91,8 +97,8 @@ fn logical_write(broken: bool) {
         }))
         .unwrap();
     });
-    writer.join().unwrap();
-    mounting.join().unwrap();
+    joined(writer);
+    joined(mounting);
     assert_eq!(
         *complete(lock_owned(slot)),
         Some(*head.lock().unwrap()),
@@ -150,7 +156,7 @@ fn failure(broken: bool) {
     if !broken {
         assert!(complete(creation.as_mut()).is_err());
     }
-    reader.join().unwrap();
+    joined(reader);
 }
 
 #[test]
@@ -190,7 +196,7 @@ fn cancellation(broken: bool) {
     });
     thread::yield_now();
     drop(creation);
-    waiter.join().unwrap();
+    joined(waiter);
 }
 
 #[test]
@@ -225,7 +231,7 @@ fn lock_order(broken: bool) {
         }))
         .unwrap();
     }
-    other.join().unwrap();
+    joined(other);
 }
 
 #[test]
