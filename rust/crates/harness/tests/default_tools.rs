@@ -80,8 +80,8 @@ async fn run_admitted_file_case<F, Fut>(
     handler: F,
 ) -> Result<()>
 where
-    F: Fn(runtime::TaskContext) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<()>> + Send + 'static,
+    F: Fn(runtime::TaskContext) -> Fut + acyclic_stream::ProviderPlatform + 'static,
+    Fut: std::future::Future<Output = Result<()>> + acyclic_stream::ProviderTask + 'static,
 {
     let bundle = storage
         .builder()

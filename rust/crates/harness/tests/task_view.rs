@@ -13,6 +13,13 @@ use std::{
     sync::Arc,
 };
 
+fn volume_config() -> acyclic_fs::VolumeConfig {
+    #[cfg(not(target_arch = "wasm32"))]
+    return acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+    #[cfg(target_arch = "wasm32")]
+    acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable)
+}
+
 fn principal(agent: &str) -> Principal {
     Principal {
         kind: PrincipalKind::Agent,
@@ -105,7 +112,7 @@ fn volume(agent: &str, name: &str, policy: Arc<Policy>) -> Result<VolumeView<()>
         generation: 10,
         head: 10,
         policy,
-        config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
+        config: volume_config(),
         source: (),
     })
 }
@@ -310,7 +317,7 @@ proptest! {
             let id = format!("{agent}-project");
             let selected = if agent == "B" { path.to_owned() } else { format!(".volumes/agents/A/{path}") };
             for action in [Action::Read, Action::Write, Action::Create] {
-                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable) }, CONTEXT, &capability).allowed;
+                let direct = decide(&policy, &caller, action, Resource { lineage: &lineage, volume: &id, generation: 10, head: 10, path, config: volume_config() }, CONTEXT, &capability).allowed;
                 let mounted = table.resolve(Path::new(&selected)).is_ok_and(|(mount, relative)| mount.check(action, &relative, 100).is_ok());
                 prop_assert_eq!(mounted, direct);
             }

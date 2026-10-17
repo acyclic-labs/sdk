@@ -1,9 +1,13 @@
 use super::*;
-use acyclic_harness::client::{FileClientState, HeadlessOutcome, run_headless, run_jsonl};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::client::FileClientState;
+use acyclic_harness::client::{HeadlessOutcome, run_headless, run_jsonl};
 use futures::{FutureExt, StreamExt};
+use std::io::Write;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     fs::OpenOptions,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Seek, SeekFrom},
 };
 
 pub(super) fn target() -> wire::ObserveRequest {
@@ -462,6 +466,7 @@ fn checkpoint_bounds_recovery_after_ten_thousand_deliveries() {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_journal_recovers_a_torn_tail_and_checkpoint_replaces_the_prefix() {
     let directory = tempfile::tempdir().unwrap();
@@ -499,6 +504,7 @@ fn native_journal_recovers_a_torn_tail_and_checkpoint_replaces_the_prefix() {
     assert_eq!(recovered.pending().count(), 1);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_journal_rejects_corruption() {
     let directory = tempfile::tempdir().unwrap();
@@ -521,6 +527,7 @@ fn native_journal_rejects_corruption() {
     assert!(ClientSession::open(FileClientState::open(&path).unwrap()).is_err());
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn damaged_length_headers_never_truncate_committed_cursors_or_outbox() {
     let directory = tempfile::tempdir().unwrap();
@@ -549,6 +556,7 @@ fn damaged_length_headers_never_truncate_committed_cursors_or_outbox() {
     assert_eq!(restored.pending().cloned().collect::<Vec<_>>(), [command()]);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_valid_header_with_an_incomplete_payload_is_only_a_torn_append() {
     let directory = tempfile::tempdir().unwrap();
@@ -946,10 +954,11 @@ async fn finite_replay_refreshes_when_a_later_status_advances_its_cut() {
         *host.state.lock().unwrap() = Some(wire::CompletionState::Running);
         *host.snapshot_history.lock().unwrap() = Some(Vec::new());
         let final_delivery = delivery(0, LifecycleState::Completed);
-        let input = if before_eof {
+        let input: BoxProviderStream<'static, Result<String>> = if before_eof {
             let host = host.clone();
             let final_delivery = final_delivery.clone();
-            futures::stream::once(async move {
+            Box::pin(
+                futures::stream::once(async move {
                 host.snapshot_history
                     .lock()
                     .unwrap()
@@ -962,11 +971,11 @@ async fn finite_replay_refreshes_when_a_later_status_advances_its_cut() {
                     frame: Some(wire::client_frame::Frame::Observe(target())),
                 })
                 .unwrap())
-            })
-            .chain(futures::stream::pending())
-            .boxed()
+                })
+                .chain(futures::stream::pending()),
+            )
         } else {
-            futures::stream::pending().boxed()
+            Box::pin(futures::stream::pending())
         };
         let mut client = HarnessClient::connect(host.clone(), session())
             .await
