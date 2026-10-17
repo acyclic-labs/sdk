@@ -5,7 +5,7 @@ use serde_json::json;
 fn code(error: Error) -> u8 {
     match error {
         Error::Unauthorized(_) => 1,
-        Error::Storage(_) => 2,
+        Error::ModelUnavailable { .. } => 2,
         Error::Invalid(_) => 3,
         other => panic!("unexpected class: {other}"),
     }

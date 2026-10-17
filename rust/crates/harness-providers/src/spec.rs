@@ -46,4 +46,41 @@ pub struct ProviderSpec {
     pub token_counter: Option<crate::TokenCounterSpec>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
+    /// Bounded redelivery of a request the endpoint refused before generating anything.
+    #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub retry: RetrySpec,
+}
+
+/// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected, before
+/// any output. Waits use the provider's `Retry-After` when present, otherwise exponential
+/// backoff with deterministic per-dispatch jitter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
+pub struct RetrySpec {
+    /// Attempts after the first; zero disables redelivery.
+    pub attempts: u8,
+    /// Backoff before the first redelivery; each later one doubles it.
+    pub base_delay_ms: u32,
+    /// Longest single wait. A `Retry-After` beyond it ends redelivery immediately.
+    pub max_delay_ms: u32,
+}
+
+impl RetrySpec {
+    /// Three redeliveries from 500 ms, each wait at most 8 s.
+    pub const DEFAULT: Self = Self {
+        attempts: 3,
+        base_delay_ms: 500,
+        max_delay_ms: 8_000,
+    };
+    fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
+    }
+}
+
+impl Default for RetrySpec {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }

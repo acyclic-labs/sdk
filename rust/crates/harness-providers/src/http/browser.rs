@@ -84,10 +84,17 @@ impl HttpTransport for BrowserTransport {
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .ok()
+                .flatten()
+                .and_then(|value| crate::retry::retry_after(&value));
             let Some(body) = response.body() else {
                 return Ok(HttpResponse {
                     status,
                     body: Box::pin(futures::stream::empty()),
+                    retry_after,
                 });
             };
             let reader = body
@@ -118,7 +125,25 @@ impl HttpTransport for BrowserTransport {
             Ok(HttpResponse {
                 status,
                 body: Box::pin(body),
+                retry_after,
             })
+        })
+    }
+
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+        Box::pin(async move {
+            let milliseconds = JsValue::from_f64(duration.as_secs_f64() * 1_000.0);
+            let promise = Promise::new(&mut |resolve, _| {
+                let global = js_sys::global();
+                let scheduled = Reflect::get(&global, &JsValue::from_str("setTimeout"))
+                    .ok()
+                    .and_then(|set| set.dyn_into::<Function>().ok())
+                    .is_some_and(|set| set.call2(&global, &resolve, &milliseconds).is_ok());
+                if !scheduled {
+                    let _ = resolve.call0(&JsValue::UNDEFINED);
+                }
+            });
+            let _ = JsFuture::from(promise).await;
         })
     }
 }

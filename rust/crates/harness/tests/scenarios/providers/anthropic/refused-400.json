@@ -1,0 +1,53 @@
+{
+ "statuses": [
+  400
+ ],
+ "responses": [
+  [
+   "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bad\"}}"
+  ]
+ ],
+ "expect": {
+  "outcome": "failed",
+  "text": "",
+  "events": [
+   []
+  ],
+  "requests": [
+   {}
+  ],
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Failed": {
+      "message": {
+       "$contains": "model HTTP status 400"
+      }
+     }
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "failed",
+    "attention": true,
+    "parent": null,
+    "error": {
+     "$contains": "status 400"
+    }
+   }
+  ]
+ }
+}

@@ -11,6 +11,9 @@ pub(super) struct NativeServer {
 }
 
 impl HttpTransport for NativeServer {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("native login must not fall back to ordinary HTTP")
     }

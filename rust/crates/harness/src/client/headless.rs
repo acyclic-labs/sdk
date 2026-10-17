@@ -43,6 +43,7 @@ impl HeadlessOutcome {
             | wire::ErrorCode::Unsupported
             | wire::ErrorCode::Invalid
             | wire::ErrorCode::Unauthorized
+            | wire::ErrorCode::Unavailable
             | wire::ErrorCode::Storage => Self::Failed,
         }
     }

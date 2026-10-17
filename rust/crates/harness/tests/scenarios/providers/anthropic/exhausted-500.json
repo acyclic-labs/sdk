@@ -1,0 +1,77 @@
+{
+ "statuses": [
+  500,
+  500,
+  500,
+  500
+ ],
+ "responses": [
+  [
+   "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+  ],
+  [
+   "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+  ],
+  [
+   "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+  ],
+  [
+   "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+  ]
+ ],
+ "expect": {
+  "outcome": "failed",
+  "text": "",
+  "events": [
+   [],
+   [],
+   [],
+   []
+  ],
+  "requests": [
+   {},
+   {
+    "/model": "model"
+   },
+   {
+    "/model": "model"
+   },
+   {
+    "/model": "model"
+   }
+  ],
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Failed": {
+      "message": {
+       "$contains": "model provider unavailable (HTTP 500): {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"}}"
+      }
+     }
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "failed",
+    "attention": true,
+    "parent": null,
+    "error": {
+     "$contains": "HTTP 500"
+    }
+   }
+  ]
+ }
+}

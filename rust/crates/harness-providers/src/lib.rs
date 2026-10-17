@@ -43,6 +43,7 @@ mod protocol;
 mod reasoning;
 mod registry;
 mod resolved;
+mod retry;
 mod spec;
 mod sse;
 mod stream;
@@ -67,7 +68,7 @@ pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, ProviderSpec};
+pub use spec::{Authentication, ProviderSpec, RetrySpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;
@@ -80,13 +81,74 @@ fn invalid(reason: impl Into<String>) -> Error {
     Error::Invalid(reason.into())
 }
 
+/// The one status classification for dispatch, counting, refresh and stream error events.
+/// 408, 429 and 5xx are a typed refusal before generation that redelivery may clear.
 fn http_error(status: u16) -> Error {
-    let message = format!("model HTTP status {status}");
-    match status {
-        401 | 403 => Error::Unauthorized(message),
-        408 | 429 | 500..=599 => Error::Storage(message),
-        _ => Error::Invalid(message),
+    unavailable(status, &[]).unwrap_or_else(|| {
+        let message = format!("model HTTP status {status}");
+        match status {
+            401 | 403 => Error::Unauthorized(message),
+            _ => Error::Invalid(message),
+        }
+    })
+}
+
+/// Most bytes of a refusal body kept as its excerpt.
+const EXCERPT_BYTES: usize = 256;
+
+fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
+    matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
+        status: Some(status),
+        excerpt: excerpt(body),
+    })
+}
+
+/// Classifies a non-success response, reading at most [`EXCERPT_BYTES`] of a refusal's body.
+async fn http_failure(response: HttpResponse) -> Error {
+    use futures::StreamExt as _;
+    let HttpResponse {
+        status, mut body, ..
+    } = response;
+    if unavailable(status, &[]).is_none() {
+        return http_error(status);
     }
+    let mut prefix = Vec::new();
+    while prefix.len() < EXCERPT_BYTES {
+        let Some(Ok(chunk)) = body.next().await else {
+            break;
+        };
+        let room = EXCERPT_BYTES - prefix.len();
+        prefix.extend_from_slice(chunk.get(..room).unwrap_or(&chunk));
+    }
+    unavailable(status, &prefix).unwrap_or_else(|| http_error(status))
+}
+
+/// Lossy UTF-8 with control characters as spaces, bounded on a character boundary; a character
+/// the bound cut is dropped rather than replaced.
+fn excerpt(body: &[u8]) -> String {
+    let bounded = body.get(..EXCERPT_BYTES).unwrap_or(body);
+    let text = match std::str::from_utf8(bounded) {
+        Ok(text) => std::borrow::Cow::Borrowed(text),
+        Err(cut) if cut.error_len().is_none() => std::borrow::Cow::Borrowed(
+            bounded
+                .get(..cut.valid_up_to())
+                .and_then(|valid| std::str::from_utf8(valid).ok())
+                .unwrap_or_default(),
+        ),
+        Err(_) => String::from_utf8_lossy(bounded),
+    };
+    let mut excerpt = String::new();
+    for character in text.chars() {
+        if excerpt.len() + character.len_utf8() > EXCERPT_BYTES {
+            break;
+        }
+        excerpt.push(if character.is_control() {
+            ' '
+        } else {
+            character
+        });
+    }
+    excerpt.trim().to_owned()
 }
 
 fn json(bytes: &[u8]) -> Result<Value> {

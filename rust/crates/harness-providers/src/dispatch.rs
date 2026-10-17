@@ -41,39 +41,50 @@ pub(crate) fn generate_encoded<'a>(
         let mut auth = auth;
         #[cfg(not(target_arch = "wasm32"))]
         let mut recovery = Recovery::default();
+        let mut redelivery = crate::retry::Redelivery::new(provider.config.retry, dispatch);
+        let mut output = false;
         loop {
-            let response = send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await?;
-            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-            let failure = if !(200..300).contains(&response.status) {
-                Some(crate::http_error(response.status))
-            } else {
-                let mut events = crate::stream::events_named(provider.config.adapter, response.body,
-                    provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
-                let mut failure = None;
-                while let Some(event) = events.next().await {
-                    match event {
-                        Ok(event) => {
-                            #[cfg(not(target_arch = "wasm32"))]
-                            { recovery.output = true; }
-                            if let ModelEvent::Completed { metadata } = &event {
-                                provider.observe(request, input_bytes, metadata)?;
-                            }
-                            yield event;
-                        }
-                        Err(error) => { failure = Some(error); break; }
-                    }
+            let (failure, retry_after) = match send(provider, body.clone(), dispatch, auth.0.as_deref(), auth.1.as_deref()).await {
+                Err(error) => (Some(error), None),
+                Ok(response) if !(200..300).contains(&response.status) => {
+                    let retry_after = response.retry_after;
+                    (Some(crate::http_failure(response).await), retry_after)
                 }
-                failure
+                Ok(response) => {
+                    let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+                    let mut events = crate::stream::events_named(provider.config.adapter, response.body,
+                        provider.config.max_event_bytes, dispatch, Some(&names), Some(origin));
+                    let mut failure = None;
+                    while let Some(event) = events.next().await {
+                        match event {
+                            Ok(event) => {
+                                output = true;
+                                if let ModelEvent::Completed { metadata } = &event {
+                                    provider.observe(request, input_bytes, metadata)?;
+                                }
+                                yield event;
+                            }
+                            Err(error) => { failure = Some(error); break; }
+                        }
+                    }
+                    (failure, None)
+                }
             };
             let Some(error) = failure else { break; };
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(login) = &provider.codex_login {
+                recovery.output = output;
                 if recovery.retry(&error) {
                     drop(error);
                     let (key, account) = login.bearer(provider.transport.as_ref(), auth.0.as_deref(), None).await?;
                     auth = (Some(Cow::Owned(key)), account);
                     continue;
                 }
+            }
+            if let Some(wait) = redelivery.next(&error, retry_after, output) {
+                drop(error);
+                provider.transport.delay(wait).await;
+                continue;
             }
             Err(error)?;
         }

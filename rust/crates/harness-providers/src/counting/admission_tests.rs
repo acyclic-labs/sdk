@@ -76,9 +76,13 @@ struct CountResponse {
     empty_chunks: usize,
 }
 impl HttpTransport for CountResponse {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             Ok(HttpResponse {
+                retry_after: None,
                 status: self.status,
                 body: Box::pin(
                     futures::stream::repeat_with(|| Ok(Bytes::new()))
@@ -95,9 +99,9 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
     for (status, code) in [
         (401, acyclic_harness::wire::ErrorCode::Unauthorized),
         (403, acyclic_harness::wire::ErrorCode::Unauthorized),
-        (408, acyclic_harness::wire::ErrorCode::Storage),
-        (429, acyclic_harness::wire::ErrorCode::Storage),
-        (503, acyclic_harness::wire::ErrorCode::Storage),
+        (408, acyclic_harness::wire::ErrorCode::Unavailable),
+        (429, acyclic_harness::wire::ErrorCode::Unavailable),
+        (503, acyclic_harness::wire::ErrorCode::Unavailable),
         (400, acyclic_harness::wire::ErrorCode::Invalid),
     ] {
         let (mut provider, _) = provider(Adapter::Responses, 200);

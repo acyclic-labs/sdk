@@ -18,6 +18,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
             framing_tokens: 0,
         }),
         max_event_bytes: 4096,
+        retry: crate::RetrySpec::DEFAULT,
         models: BTreeMap::from([(
             "m".into(),
             ModelSpec {

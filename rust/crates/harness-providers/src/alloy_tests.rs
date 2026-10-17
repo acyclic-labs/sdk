@@ -16,6 +16,9 @@ struct Routing {
     sent: Mutex<Vec<HttpRequest>>,
 }
 impl HttpTransport for Routing {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             let name = request
@@ -31,6 +34,7 @@ impl HttpTransport for Routing {
                 .to_owned();
             self.sent.lock().unwrap().push(request);
             Ok(HttpResponse {
+                retry_after: None,
                 status: 200,
                 body: Box::pin(futures::stream::iter([Ok(Bytes::from(body))])),
             })
@@ -53,6 +57,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     base_url: format!("http://localhost/{name}"),
                     headers: BTreeMap::new(),
                     max_event_bytes: 65536,
+                    retry: crate::RetrySpec::DEFAULT,
                     token_counter: Some(TokenCounterSpec {
                         path: "count".into(),
                         adapter: *adapter,

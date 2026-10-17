@@ -231,6 +231,7 @@ fn wire_status(error: Error) -> Status {
         wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Code::Cancelled,
         wire::ErrorCode::InteractionExpired => Code::DeadlineExceeded,
         wire::ErrorCode::Storage
+        | wire::ErrorCode::Unavailable
         | wire::ErrorCode::Indeterminate
         | wire::ErrorCode::Unspecified => Code::Unavailable,
     };

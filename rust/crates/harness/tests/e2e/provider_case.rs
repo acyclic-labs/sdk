@@ -18,6 +18,9 @@ pub struct ProviderCase {
     pub prompt: String,
     pub seed: BTreeMap<String, String>,
     pub responses: Vec<Vec<String>>,
+    /// HTTP status of each response; omitted statuses are 200.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statuses: Vec<u16>,
     pub chunk_bytes: NonZeroUsize,
     /// Registered tools beyond the defaults, named like installed MCP tools.
     #[serde(default)]
@@ -35,6 +38,25 @@ pub struct Expectations {
     pub frames: Vec<Value>,
     pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
+    #[serde(default, skip_serializing_if = "is_succeeded")]
+    pub outcome: super::local_case::ExpectedOutcome,
+}
+
+fn is_succeeded(outcome: &super::local_case::ExpectedOutcome) -> bool {
+    *outcome == super::local_case::ExpectedOutcome::Succeeded
+}
+
+impl ProviderCase {
+    /// Status of response `index`.
+    pub fn status(&self, index: usize) -> u16 {
+        self.statuses.get(index).copied().unwrap_or(200)
+    }
+    /// Responses that complete a model step; refused ones are redelivered within it.
+    pub fn completed_steps(&self) -> usize {
+        (0..self.responses.len())
+            .filter(|&index| self.status(index) == 200)
+            .count()
+    }
 }
 
 impl ProviderCase {
@@ -44,6 +66,13 @@ impl ProviderCase {
             || self.responses.len() > 8
             || self.responses.len() != self.expect.events.len()
             || self.responses.len() != self.expect.requests.len()
+            || self.statuses.len() > self.responses.len()
+            || self
+                .statuses
+                .iter()
+                .any(|status| !(200..600).contains(status))
+            || (self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded)
+                != (self.status(self.responses.len() - 1) == 200)
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
             })

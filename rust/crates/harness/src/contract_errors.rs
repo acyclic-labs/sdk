@@ -42,6 +42,16 @@ pub enum Error {
     /// Automatic admission stopped with a file-driven blocked goal.
     #[error("goal blocked: {0}")]
     GoalBlocked(crate::goal::GoalBlockedReason),
+    /// The model provider definitively refused or could not take the request (HTTP 408, 429 or
+    /// 5xx, or no connection), after bounded redelivery or once output had begun. A definitive
+    /// failure: the provider performed no effect for the harness to reconcile.
+    #[error("model provider unavailable{}: {excerpt}", status.map_or_else(|| " (no connection)".to_owned(), |status| format!(" (HTTP {status})")))]
+    ModelUnavailable {
+        /// The final HTTP status; `None` when no connection was established.
+        status: Option<u16>,
+        /// Bounded, control-free excerpt of the provider's response body.
+        excerpt: String,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -414,6 +424,7 @@ impl Error {
             }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::ModelUnavailable { .. } => ErrorCode::Unavailable,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
@@ -521,6 +532,7 @@ impl Error {
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::ModelUnavailable { .. }
                 | Self::Cancelled
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)

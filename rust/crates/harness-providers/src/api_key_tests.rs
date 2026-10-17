@@ -62,12 +62,16 @@ impl Responses {
             _ => panic!("unexpected inference retry"),
         };
         Ok(HttpResponse {
+            retry_after: None,
             status: 200,
             body: chunks(fixture, 1),
         })
     }
 }
 impl HttpTransport for Responses {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move { self.exchange(request) })
     }

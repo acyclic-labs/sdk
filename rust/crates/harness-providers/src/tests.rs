@@ -221,6 +221,9 @@ struct Script {
 }
 
 impl HttpTransport for Script {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             if let Some(response) = fixture_count(&request) {
@@ -236,6 +239,7 @@ impl HttpTransport for Script {
                 .ok_or_else(|| invalid("missing fixture"))?
                 .1;
             Ok(HttpResponse {
+                retry_after: None,
                 status: self.status,
                 body: chunks(fixture, 1),
             })
@@ -257,6 +261,7 @@ fn fixture_count(request: &HttpRequest) -> Option<HttpResponse> {
     )
     .unwrap();
     Some(HttpResponse {
+        retry_after: None,
         status: 200,
         body: Box::pin(futures::stream::iter([Ok(body.into())])),
     })
@@ -290,6 +295,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
                 framing_tokens: 0,
             }),
             max_event_bytes: 4096,
+            retry: crate::RetrySpec::DEFAULT,
         }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
@@ -479,6 +485,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
             framing_tokens: 0,
         }),
         max_event_bytes: 4096,
+        retry: crate::RetrySpec::DEFAULT,
     };
     for base in [
         "http://example.test",

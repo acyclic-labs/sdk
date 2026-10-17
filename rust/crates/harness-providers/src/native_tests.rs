@@ -28,6 +28,9 @@ impl Fixture {
 }
 
 impl HttpTransport for Fixture {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("native execution must use its funded HTTP callback")
     }

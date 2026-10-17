@@ -25,6 +25,17 @@ pub struct HttpResponse {
     pub status: u16,
     /// Incremental body. Dropping it cancels I/O.
     pub body: BoxProviderStream<'static, Result<Bytes>>,
+    /// The response's `Retry-After` delay, when it gave one in seconds.
+    pub retry_after: Option<std::time::Duration>,
+}
+
+impl HttpResponse {
+    /// Records the response's `Retry-After` delay.
+    #[must_use]
+    pub const fn with_retry_after(mut self, retry_after: Option<std::time::Duration>) -> Self {
+        self.retry_after = retry_after;
+        self
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -42,6 +53,7 @@ impl HttpResponse {
         Ok(Self {
             status,
             body: native::body(stream, Some(work))?,
+            retry_after: None,
         })
     }
 }
@@ -50,6 +62,8 @@ impl HttpResponse {
 pub trait HttpTransport: ProviderPlatform {
     /// Sends exactly one request without retries.
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
+    /// Waits `duration` on the platform timer before a redelivery.
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()>;
     /// Whether this transport funds its native callback frames before allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
@@ -106,12 +120,20 @@ impl ReqwestTransport {
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .body(request.body)
-            .send()
-            .await
-            .map_err(|_| transport_error(native, "model HTTP exchange failed"))?;
+        let response = builder.body(request.body).send().await.map_err(|error| {
+            if error.is_connect() {
+                // The request never left this host: a definitive, redeliverable refusal.
+                connect_error(native)
+            } else {
+                transport_error(native, "model HTTP exchange failed")
+            }
+        })?;
         let status = response.status().as_u16();
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(crate::retry::retry_after);
         let body = response.bytes_stream().map(move |chunk| {
             chunk.map_err(|_| transport_error(native, "model HTTP body interrupted"))
         });
@@ -119,7 +141,11 @@ impl ReqwestTransport {
         let body = native::body(body, work)?;
         #[cfg(target_arch = "wasm32")]
         let body = Box::pin(body);
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            retry_after,
+        })
     }
     /// Creates the platform transport. Credentials are never forwarded across redirects.
     pub fn new() -> Result<Self> {
@@ -148,6 +174,20 @@ fn transport_error(native: bool, reason: &'static str) -> acyclic_harness::Error
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn connect_error(native: bool) -> acyclic_harness::Error {
+    if native {
+        return acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unavailable,
+            reason: "model provider connection failed",
+        };
+    }
+    acyclic_harness::Error::ModelUnavailable {
+        status: None,
+        excerpt: "connection failed".into(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl HttpTransport for ReqwestTransport {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(self.exchange(
@@ -155,6 +195,10 @@ impl HttpTransport for ReqwestTransport {
             #[cfg(not(target_arch = "wasm32"))]
             None,
         ))
+    }
+
+    fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+        Box::pin(tokio::time::sleep(duration))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -80,6 +80,20 @@ fn provider_case_rejects_ignored_fields_zero_chunks_and_unused_response_shapes()
             "accepted {key}"
         );
     }
+    // A refused last response cannot complete; statuses must be HTTP and one per response.
+    for statuses in [
+        serde_json::json!([500]),
+        serde_json::json!([99]),
+        serde_json::json!([200, 200]),
+    ] {
+        let mut broken = value.clone();
+        broken["statuses"] = statuses;
+        assert!(
+            serde_json::from_value::<ProviderCase>(broken)?
+                .validate()
+                .is_err()
+        );
+    }
     for statuses in [
         serde_json::json!([]),
         serde_json::json!([{}, {}]),

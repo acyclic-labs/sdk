@@ -160,6 +160,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                         },
                     ),
                     max_event_bytes: 1024 * 1024,
+                    retry: crate::RetrySpec::DEFAULT,
                 },
             )
         })

@@ -186,12 +186,18 @@ fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
-    parsed(&case, transport.clone()).await?;
+    // The parse oracle replays successful exchanges one per step; refusals are task-level.
+    let parse = case.statuses.iter().all(|status| *status == 200);
+    if parse {
+        parsed(&case, transport.clone()).await?;
+    }
     // A case with registered tools runs again with a default tool added ahead
     // of them: every request expectation, including wire tool names, holds.
     let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for added in &added[..if case.tools.is_empty() { 1 } else { 2 }] {
-        transport.restart()?;
+    for (run, added) in added[..if case.tools.is_empty() { 1 } else { 2 }].iter().enumerate() {
+        if parse || run > 0 {
+            transport.restart()?;
+        }
         task(&case, &transport, *added).await?;
     }
     Ok(())
@@ -221,10 +227,17 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let stream = local_task_stream(&harness);
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let mut frames = stream.follow(path.clone(), 0).await?;
-    let output = harness.resume(task_id).await?;
+    let output = harness.resume(task_id).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
-    if output.text != case.expect.text || output.steps as usize != case.responses.len() {
-        return Err(format!("provider task output differs: {output:?}").into());
+    match (case.expect.outcome, output) {
+        (super::local_case::ExpectedOutcome::Succeeded, Ok(output))
+            if output.text == case.expect.text
+                && output.steps as usize == case.completed_steps() => {}
+        (
+            super::local_case::ExpectedOutcome::Failed,
+            Err(acyclic_harness::Error::TaskFailed { task, .. }),
+        ) if task == task_id => {}
+        (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
     }
     let cut = stream.tail(path).await?;
     let mut wire = Vec::new();
@@ -243,7 +256,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         &case.expect.frames,
         &wire,
         operation,
-        super::local_case::ExpectedOutcome::Succeeded,
+        case.expect.outcome,
     )?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
@@ -256,7 +269,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         &case.expect.frames,
         &wire,
         operation,
-        super::local_case::ExpectedOutcome::Succeeded,
+        case.expect.outcome,
     )
     .is_ok()
     {

@@ -31,24 +31,32 @@ pub struct CodexLogin {
 #[derive(Clone, Copy)]
 struct RefreshFailure {
     code: acyclic_harness::wire::ErrorCode,
+    status: Option<u16>,
     message: [u8; 256],
     length: usize,
 }
 impl RefreshFailure {
     fn from_error(error: &acyclic_harness::Error) -> Option<Self> {
         use acyclic_harness::Error;
-        let message = match error {
-            Error::Unauthorized(message)
-            | Error::Storage(message)
-            | Error::Invalid(message)
-            | Error::NativeDiagnostic { message, .. } => message.as_str(),
-            Error::NativeBoundary { reason, .. } => reason,
-            _ => return None,
+        let (message, status) = match error {
+            Error::ModelUnavailable { status, excerpt } => (excerpt.as_str(), *status),
+            error => (
+                match error {
+                    Error::Unauthorized(message)
+                    | Error::Storage(message)
+                    | Error::Invalid(message)
+                    | Error::NativeDiagnostic { message, .. } => message.as_str(),
+                    Error::NativeBoundary { reason, .. } => reason,
+                    _ => return None,
+                },
+                None,
+            ),
         };
         if !matches!(
             error.code(),
             acyclic_harness::wire::ErrorCode::Unauthorized
                 | acyclic_harness::wire::ErrorCode::Storage
+                | acyclic_harness::wire::ErrorCode::Unavailable
                 | acyclic_harness::wire::ErrorCode::Invalid
         ) || message.len() > 256
         {
@@ -56,6 +64,7 @@ impl RefreshFailure {
         }
         let mut failure = Self {
             code: error.code(),
+            status,
             message: [0; 256],
             length: message.len(),
         };
@@ -77,6 +86,10 @@ impl RefreshFailure {
         Ok(match self.code {
             ErrorCode::Unauthorized => Error::Unauthorized(message),
             ErrorCode::Storage => Error::Storage(message),
+            ErrorCode::Unavailable => Error::ModelUnavailable {
+                status: self.status,
+                excerpt: message,
+            },
             _ => Error::Invalid(message),
         })
     }

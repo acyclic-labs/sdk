@@ -135,6 +135,9 @@ struct CancelRefresh {
     first: (u16, &'static str),
 }
 impl HttpTransport for CancelRefresh {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("native HTTP required")
     }

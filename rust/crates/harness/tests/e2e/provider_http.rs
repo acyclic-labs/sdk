@@ -24,7 +24,7 @@ pub(super) struct Recorded {
     // Test recording only: one lock, never nested or held across a poll/await.
     state: Mutex<State>,
     width: usize,
-    replies: Vec<Bytes>,
+    replies: Vec<(u16, Bytes)>,
 }
 impl Recorded {
     pub fn new(case: &ProviderCase) -> Arc<Self> {
@@ -37,7 +37,8 @@ impl Recorded {
             replies: case
                 .responses
                 .iter()
-                .map(|parts| Bytes::from(parts.concat()))
+                .enumerate()
+                .map(|(index, parts)| (case.status(index), Bytes::from(parts.concat())))
                 .collect(),
         })
     }
@@ -56,9 +57,9 @@ impl Recorded {
         state.next = 0;
         Ok(())
     }
-    fn reply(&self, request: HttpRequest) -> Result<Bytes> {
+    fn reply(&self, request: HttpRequest) -> Result<(u16, Bytes)> {
         if request.url.ends_with("/count") {
-            return Ok(Bytes::from_static(br#"{"input_tokens":32}"#));
+            return Ok((200, Bytes::from_static(br#"{"input_tokens":32}"#)));
         }
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let bytes = self
@@ -87,11 +88,16 @@ impl Recorded {
     }
 }
 impl HttpTransport for Recorded {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
+            let (status, bytes) = self.reply(request)?;
             Ok(HttpResponse {
-                status: 200,
-                body: Box::pin(self.chunks(self.reply(request)?)),
+                retry_after: None,
+                status,
+                body: Box::pin(self.chunks(bytes)),
             })
         })
     }
@@ -105,7 +111,8 @@ impl HttpTransport for Recorded {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
-            HttpResponse::with_native_body(200, self.chunks(self.reply(request)?), work)
+            let (status, bytes) = self.reply(request)?;
+            HttpResponse::with_native_body(status, self.chunks(bytes), work)
         })
     }
 }
@@ -144,6 +151,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
                 framing_tokens: 0,
             }),
             max_event_bytes: 4096,
+            retry: acyclic_harness_providers::RetrySpec::DEFAULT,
         },
     )?;
     registry.resolve("recorded/model")

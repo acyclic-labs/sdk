@@ -35,6 +35,9 @@ impl Server {
 }
 
 impl HttpTransport for Server {
+    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(async {})
+    }
     fn send(
         &self,
         request: HttpRequest,
@@ -42,6 +45,7 @@ impl HttpTransport for Server {
         Box::pin(async move {
             let (status, body) = self.reply(request)?;
             Ok(HttpResponse {
+                retry_after: None,
                 status,
                 body: Box::pin(futures::stream::once(async { Ok(Bytes::from(body)) })),
             })
@@ -239,6 +243,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
                 },
             )]),
             max_event_bytes: 4096,
+            retry: crate::RetrySpec::DEFAULT,
             token_counter: default_catalog()["openai"].token_counter.clone(),
         },
     )?;
