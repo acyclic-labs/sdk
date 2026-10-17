@@ -92,7 +92,8 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         let address = listener.local_addr().unwrap();
         let received = Arc::new(Mutex::new(Vec::<Value>::new()));
         let observed = received.clone();
-        let app = Router::new().route("/responses", post(move |Json(body): Json<Value>| {
+        let app = Router::new().route("/count", post(|| async { Json(json!({"input_tokens":64})) }))
+        .route("/responses", post(move |Json(body): Json<Value>| {
             observed.lock().unwrap().push(body);
             async { ([("content-type", "text/event-stream")], super::ANSWER) }
         }));
@@ -103,7 +104,8 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         registry.register("fake".into(), serde_json::from_value(json!({
             "adapter":"responses", "authentication":"optional", "base_url":format!("http://{address}"),
             "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},
-            "max_event_bytes":4096
+            "max_event_bytes":4096,
+            "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
         })).unwrap()).unwrap();
         let provider = registry.resolve("fake/tiny").unwrap();
         let agents = source("nested/AGENTS.md", BODY.as_bytes());
