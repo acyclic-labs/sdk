@@ -257,3 +257,33 @@ async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult 
     assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }
+
+proptest::proptest! {
+    #[test]
+    fn task_output_gap_is_rejected_even_when_concatenated_bytes_are_unchanged(
+        id in proptest::array::uniform16(proptest::num::u8::ANY),
+    ) {
+        use acyclic_harness::task_volume::{FileKey,TaskFile,ToolFile};
+        let task=acyclic_harness::TaskId::from_bytes(id);
+        let operation=acyclic_harness::OperationId::from_bytes(id);
+        let (files,calls,results)=super::local_tool_files_tests::fixture(task,operation,"out","err")
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        for stdout in [true,false] {
+            let mut broken=files.clone();
+            let original=broken.keys().find(|key| matches!(key,
+                FileKey::Task {file:TaskFile::Tool {file:ToolFile::Stdout(0),..},..} if stdout
+            ) || matches!(key,
+                FileKey::Task {file:TaskFile::Tool {file:ToolFile::Stderr(0),..},..} if !stdout
+            )).unwrap().clone();
+            let mut value=broken.remove(&original).unwrap();
+            let mut shifted=original;
+            let FileKey::Task {file:TaskFile::Tool {file,..},..}=&mut shifted else {unreachable!()};
+            *file=if stdout {ToolFile::Stdout(1)} else {ToolFile::Stderr(1)};
+            value.key=shifted.clone();
+            broken.insert(shifted,value);
+            let error=super::local_tool_files::check(&broken,task,operation,&calls,&results)
+                .expect_err("a sequence gap with identical payloads passed");
+            proptest::prop_assert!(error.to_string().contains("sequence has a gap"));
+        }
+    }
+}
