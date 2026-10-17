@@ -8,7 +8,16 @@ impl<S: ClientStateStore> ClientSession<S> {
     ) {
         let owner = authority_key(owner);
         self.views.transcripts.retain(|key, _| key == &owner);
-        self.views.queries = replacement.views.queries;
+        // Only the task tail is replaced; other shared folds (task overviews)
+        // keep following across task switches.
+        self.views.queries.retain(|_, view| {
+            use crate::task_volume::Query;
+            !matches!(
+                view.query(),
+                Query::Tasks | Query::Task(_) | Query::TaskView { .. }
+            )
+        });
+        self.views.queries.extend(replacement.views.queries);
         self.views.transcripts.extend(replacement.views.transcripts);
         self.views.task_folds = replacement.views.task_folds;
         self.views.tools = replacement.views.tools;

@@ -68,6 +68,7 @@ pub struct FileQueryView {
     goal_line_starts: Arc<[usize]>,
     progress: Option<super::GoalProgress>,
     cursor: Cursor,
+    revision: u64,
     bytes: usize,
     maximum_files: usize,
     maximum_bytes: usize,
@@ -153,6 +154,7 @@ impl FileQueryView {
             goal_line_starts,
             progress: super::GoalProgress::from_file(files.get(&FileKey::RequestHead)),
             files,
+            revision: cursor.position,
             cursor,
             bytes,
             maximum_files,
@@ -168,6 +170,13 @@ impl FileQueryView {
     /// Exact resume cut; it advances even for nonmatching publications.
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
+    }
+
+    /// Position of the latest publication that changed these files: the
+    /// snapshot cut or a later change. Cursor-only checkpoints leave it, so
+    /// renderers can skip unchanged folds in O(1).
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Admitted file slices, sharing immutable query payloads. Oversized model
@@ -366,6 +375,9 @@ impl FileQueryView {
         }
         self.bytes = bytes;
         self.cursor = change.cursor;
+        if changed {
+            self.revision = self.cursor.position;
+        }
         Ok(changed)
     }
 }

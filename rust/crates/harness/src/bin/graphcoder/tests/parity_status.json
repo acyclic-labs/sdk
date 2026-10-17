@@ -37,7 +37,7 @@
   {
     "section": "1. Slash commands",
     "row": "/tree",
-    "status": "Deferred follow-up; omitted from ratatui catalog"
+    "status": "Implemented: toggles session layout.json tree; GraphCoder tests::agents:: TestBackend"
   },
   {
     "section": "1. Slash commands",
@@ -432,12 +432,12 @@
   {
     "section": "3. TUI polish",
     "row": "Agent tree navigator: Tree, Family and Attention views, fuzzy search, actions",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Partial: Tree view over followed status files (state glyphs, STOPPED, attention, selection) in GraphCoder tests::agents::; Family/Attention views, fuzzy search and actions deferred"
   },
   {
     "section": "3. TUI polish",
     "row": "Agent navigation: parent, child, sibling, history",
-    "status": "Deferred follow-up; no production parity claimed"
+    "status": "Partial: parent/child/sibling select via session layout.json in GraphCoder tests::agents::; history deferred"
   },
   {
     "section": "3. TUI polish",
