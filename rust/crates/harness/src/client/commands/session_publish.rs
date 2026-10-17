@@ -89,7 +89,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             }
         }
         Err(Error::Conflict(
-            "command publication remained busy; retry the input".into(),
+            "command query advanced; retry from the new cut".into(),
         ))
     }
 }
