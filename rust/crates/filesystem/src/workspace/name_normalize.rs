@@ -38,13 +38,15 @@ pub(super) fn parse(
     // Each character's charge also checks cancellation.
     while let Some(character) = normalized.next() {
         let end = length + character.len_utf8();
-        let slot = output
-            .get_mut(length..end)
-            .ok_or(WorkspaceNameError::TooLong)?;
+        let Some(slot) = output.get_mut(length..end) else {
+            accounting.check()?;
+            return Err(WorkspaceNameError::TooLong.into());
+        };
         encode(character, slot, accounting, probe)?;
         length = end;
     }
     drop(normalized);
+    accounting.check()?;
     let canonical = std::str::from_utf8(output.get(..length).ok_or(WorkspaceNameError::TooLong)?)
         .map_err(WorkspaceError::engine)?;
     if canonical.is_empty() {

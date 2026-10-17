@@ -4,6 +4,32 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use std::cell::Cell;
 
+#[test]
+fn cancellation_after_encoding_precedes_length_errors_and_retention() {
+    for text in ["é".repeat(127), "é".repeat(128)] {
+        let cancellation = CancellationToken::new();
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut copied = 0;
+        let result = WorkspaceName::with_probe(
+            &text,
+            &mut accounting,
+            char::is_ascii,
+            &mut |tag, _, bytes| {
+                if tag == 2 {
+                    copied += bytes;
+                    if copied == 254 {
+                        cancellation.cancel();
+                    }
+                }
+            },
+        );
+        assert!(
+            matches!(result, Err(WorkspaceError::Cancelled(_))),
+            "{result:?}"
+        );
+    }
+}
+
 std::thread_local! {
     static EXTRA_ALLOCATION: Cell<bool> = const { Cell::new(false) };
 }
