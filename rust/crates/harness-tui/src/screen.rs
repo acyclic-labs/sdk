@@ -14,6 +14,8 @@ pub struct Screen<'a> {
     pub header: Line<'a>,
     /// Already rendered transcript rows, including the current streaming tail.
     pub transcript: &'a [Line<'a>],
+    /// Independently cached tool tail, following the answer rows without copies.
+    pub tools: &'a [Line<'a>],
     /// Visible current reasoning, folded from the same agent stream.
     pub reasoning: &'a [Line<'a>],
     /// Optional embedded terminal rows supplied by its terminal widget.
@@ -72,7 +74,8 @@ impl Screen<'_> {
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
-            (self.reasoning.len() + self.transcript.len()).saturating_sub(usize::from(height))
+            (self.reasoning.len() + self.transcript.len() + self.tools.len())
+                .saturating_sub(usize::from(height))
         } else {
             self.overlay
                 .len()
@@ -177,6 +180,7 @@ impl Screen<'_> {
                 .reasoning
                 .iter()
                 .chain(self.transcript)
+                .chain(self.tools)
                 .skip(transcript_scroll)
                 .take(usize::from(areas.transcript.height))
                 .enumerate()

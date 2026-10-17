@@ -81,7 +81,7 @@ fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: boo
     let mut oracle = expected(&stdout, 20);
     oracle.extend(expected(&stderr, 20 - out.min(20)));
     oracle.truncate(20);
-    assert_eq!(&live.rows()[1..], oracle);
+    assert_eq!(&live.tools()[1..], oracle);
     let result = serde_json::json!({"success":success,"exit_code":if success {0} else {7},"stdout":stdout,"stderr":stderr});
     put(
         &mut views,
@@ -89,7 +89,7 @@ fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: boo
         serde_json::to_vec(&result).unwrap(),
     );
     project(&views, &mut live, true);
-    let mut actual = live.rows().to_vec();
+    let mut actual = live.tools().to_vec();
     if duplicate {
         // Former renderer: echo the result JSON, then append the streamed files.
         actual.insert(1, Line::raw(result.to_string()));
@@ -104,11 +104,11 @@ fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: boo
     assert!(title.contains(if success { "exit 0" } else { "exit 7" }));
     let mut replay = TaskRows::default();
     project(&views, &mut replay, true);
-    assert_eq!(live.rows(), replay.rows());
+    assert_eq!(live.tools(), replay.tools());
     project(&views, &mut live, false);
-    assert_eq!(live.rows().len(), 1);
+    assert_eq!(live.tools().len(), 1);
     project(&views, &mut live, true);
-    assert_eq!(live.rows(), replay.rows());
+    assert_eq!(live.tools(), replay.tools());
 }
 
 proptest! {
@@ -175,11 +175,11 @@ fn stream_admission_retires_a_nonstreaming_fallback_before_its_first_byte() {
         );
     };
     render(&mut rows, &views);
-    assert_eq!(rows.rows().len(), 2);
+    assert_eq!(rows.tools().len(), 2);
     put(&mut views, ToolFile::Stdout(0), Vec::new());
     render(&mut rows, &views);
-    assert_eq!(rows.rows().len(), 1);
+    assert_eq!(rows.tools().len(), 1);
     put(&mut views, ToolFile::Stdout(1), b"streamed body".to_vec());
     render(&mut rows, &views);
-    assert_eq!(rows.rows()[1].to_string(), "streamed body");
+    assert_eq!(rows.tools()[1].to_string(), "streamed body");
 }

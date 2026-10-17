@@ -31,6 +31,8 @@ pub struct ClientRenderer {
     transcript_changed: usize,
     reasoning_changed: usize,
     wrapped_transcript: super::WrappedLines,
+    wrapped_tools: super::WrappedLines,
+    tools_changed: usize,
     wrapped_reasoning: super::WrappedLines,
     wrapped_goal: super::WrappedLines,
     wrapped_plans: super::WrappedLines,
@@ -101,6 +103,9 @@ impl ClientRenderer {
             self.tool_details,
             archived,
         );
+        if self.task.tools_changed() {
+            self.tools_changed = 0;
+        }
         let prefix = self.archive.rows().len();
         let changed = if archive_changed < old_prefix || prefix != old_prefix {
             self.transcript.truncate(archive_changed);
@@ -225,6 +230,7 @@ impl ClientRenderer {
         let width = areas.transcript.width;
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
+        self.wrap_tools(width);
         self.wrapped_reasoning
             .update(&self.reasoning_rows, self.reasoning_changed, width);
         self.transcript_changed = self.transcript.len();
@@ -241,6 +247,12 @@ impl ClientRenderer {
         }
         self.wrapped = true;
         Ok(())
+    }
+
+    fn wrap_tools(&mut self, width: u16) {
+        self.wrapped_tools
+            .update(self.task.tools(), self.tools_changed, width);
+        self.tools_changed = self.task.tools().len();
     }
 
     fn compose_notices(&mut self) {
@@ -353,6 +365,11 @@ impl ClientRenderer {
             } else {
                 &self.transcript
             },
+            tools: if self.wrapped {
+                self.wrapped_tools.rows()
+            } else {
+                self.task.tools()
+            },
             diff: &self.diff,
             goal: if self.wrapped && self.side_wrapped {
                 self.wrapped_goal.rows()
@@ -398,5 +415,7 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
     )
 }
 
+#[cfg(test)]
+mod tail_tests;
 #[cfg(test)]
 mod tests;

@@ -22,6 +22,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
 {
     let transcript = [Line::from("streaming assistant")];
     let terminal_rows = [Line::from("shell output")];
+    let tools = [Line::from("retained tool output")];
     let diff = [Line::from("+new line")];
     let goal = [Line::from("finish rewrite")];
     let plans = [Line::from("implement layout")];
@@ -29,6 +30,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     let screen = Screen {
         header: Line::from("parent / ● current"),
         transcript: &transcript,
+        tools: &tools,
         terminal: &terminal_rows,
         diff: &diff,
         goal: &goal,
@@ -47,6 +49,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     for expected in [
         "parent / ● current",
         "streaming assistant",
+        "retained tool output",
         "shell output",
         "+new line",
         "GOAL.md",

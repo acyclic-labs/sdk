@@ -27,6 +27,10 @@ pub(super) struct TaskRows {
     tools: BTreeMap<(u64, Component), ToolRows>,
     fallback: Archive,
     rows: Vec<Line<'static>>,
+    tool_rows: Vec<Line<'static>>,
+    tools_changed: bool,
+    #[cfg(test)]
+    tool_copies: usize,
     status: Option<HeadFile>,
     state: serde_json::Value,
     completions: Vec<HeadFile>,
@@ -43,6 +47,16 @@ fn metadata(file: &HeadFile) -> Option<serde_json::Value> {
 impl TaskRows {
     pub(super) fn rows(&self) -> &[Line<'static>] {
         &self.rows
+    }
+    pub(super) fn tools(&self) -> &[Line<'static>] {
+        &self.tool_rows
+    }
+    pub(super) fn tools_changed(&self) -> bool {
+        self.tools_changed
+    }
+    #[cfg(test)]
+    pub(super) fn tool_copies(&self) -> usize {
+        self.tool_copies
     }
     pub(super) fn reasoning(&self) -> (usize, &Vec<Line<'static>>) {
         (self.reasoning_changed, &self.reasoning_rows)
@@ -207,22 +221,25 @@ impl TaskRows {
         } else {
             self.fallback.rows()
         };
+        self.tools_changed = tool_changed;
         if tool_changed {
-            changed = changed.min(text.len());
+            self.tool_rows.clear();
+            for tool in self.tools.values() {
+                #[cfg(test)]
+                {
+                    self.tool_copies += tool.rows.len();
+                }
+                self.tool_rows.extend_from_slice(&tool.rows);
+            }
         }
         if hidden {
             self.rows.clear();
             return 0;
         }
-        // Only the changed Markdown suffix and tool tail enter the render cache.
+        // Answer changes never touch the independently cached tool tail.
         changed = changed.min(text.len());
         self.rows.truncate(changed);
         self.rows.extend_from_slice(&text[changed..]);
-        self.rows.extend(
-            self.tools
-                .values()
-                .flat_map(|tool| tool.rows.iter().cloned()),
-        );
         changed
     }
 }
