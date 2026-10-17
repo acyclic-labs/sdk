@@ -359,7 +359,8 @@ proptest! {
             prop_assert_eq!(before.1, after.1);
             let (before, after) = (before.0.1, after.0.1);
             prop_assert_eq!(after.count_total, before.count_total - 1);
-            let saved = [21136, 21024, 14304, 11840, 14192][mode as usize];
+            // Append's original frame now includes canonical chunk publication.
+            let saved = [21200, 21024, 14304, 11840, 14192][mode as usize];
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
