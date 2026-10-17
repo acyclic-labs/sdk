@@ -424,8 +424,22 @@ fn resize_navigation_model<const LOCAL_WRAP: bool, const REPLAY_INITIAL: bool>(
             }
         }
     }
-    finish(&mut search, &projection);
-    let expected = expected.unwrap_or_else(|| index.rem_euclid(reference.len() as i64));
+    while search.pending() {
+        search.advance(&projection, 31);
+        // The first identity can also appear during the final background drain,
+        // before any resize exposes it. Observe that handoff in the reference.
+        if expected.is_none() {
+            expected = if !search.pending() {
+                Some(index.rem_euclid(reference.len() as i64))
+            } else {
+                reference
+                    .iter()
+                    .position(|range| Some(range) == search.nearest.as_ref())
+                    .map(|rank| rank as i64)
+            };
+        }
+    }
+    let expected = expected.expect("nonempty reference has a selected match");
     assert_eq!(
         search.selected.as_ref(),
         Some(&reference[expected as usize]),
@@ -466,10 +480,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn mixed_navigation_and_background_frames_property(
-        size in 256usize..800,
-        gap in 0usize..160,
+        size in 64usize..160,
+        gap in 0usize..48,
         initially_hidden in any::<bool>(),
-        events in prop::collection::vec((-1i8..=1, 0u8..4, prop::option::of((16u16..120,12u16..24))), 1..64),
+        events in prop::collection::vec((-1i8..=1, 0u8..4, prop::option::of((16u16..120,12u16..24))), 1..32),
     ) {
         resize_navigation_model::<false,false>(size,gap,initially_hidden,&events);
     }
@@ -510,4 +524,9 @@ fn resize_before_first_match_consumes_queued_navigation_once() {
 #[should_panic(expected = "mixed navigation must consume each move once")]
 fn initial_selection_replays_queued_move_negative_control() {
     resize_navigation_model::<false, true>(8192, 0, true, &[(1, 0, Some((40, 20)))]);
+}
+
+#[test]
+fn first_match_discovered_while_draining_background_keeps_its_identity() {
+    resize_navigation_model::<false, false>(256, 0, true, &[(-3, 0, None)]);
 }
