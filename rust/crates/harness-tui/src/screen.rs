@@ -72,7 +72,8 @@ impl Screen<'_> {
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
-            (self.reasoning.len() + self.transcript.len()).saturating_sub(usize::from(height))
+            (self.reasoning.len() + self.transcript.len() + usize::from(input.busy))
+                .saturating_sub(usize::from(height))
         } else {
             self.overlay
                 .len()
@@ -170,6 +171,9 @@ impl Screen<'_> {
     ) -> ScreenAreas {
         let areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
+        let thinking = input
+            .busy
+            .then(|| crate::Thinking::new(&input.theme, now_ms).line());
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {
@@ -177,6 +181,7 @@ impl Screen<'_> {
                 .reasoning
                 .iter()
                 .chain(self.transcript)
+                .chain(thinking.iter())
                 .skip(transcript_scroll)
                 .take(usize::from(areas.transcript.height))
                 .enumerate()

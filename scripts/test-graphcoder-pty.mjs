@@ -5,15 +5,16 @@ import { spawn } from "node:child_process";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixture } from "./graphcoder-fixture.mjs";
-import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
+import { Terminal, screenText, hasBoldAnswer, thinkingPhase } from "./graphcoder-pty/screen.mjs";
 const [binary, scenario = "success"] = process.argv.slice(2);
-assert.ok(["success", "command-recovery", "uncertain", "typeahead", "cancel", "cancel-preparation"].includes(scenario));
+assert.ok(["success", "command-recovery", "uncertain", "typeahead", "cancel", "cancel-preparation", "thinking"].includes(scenario));
 assert.ok(binary && isAbsolute(binary), "absolute installed binary required");
 const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
 const host = await fixture();
 if (scenario === "uncertain") host.fail();
 else host.hold();
 if (scenario === "cancel-preparation") host.holdCount("cancel before headers");
+if (scenario === "thinking") host.holdCount("say hello");
 const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
 let launcher, args;
 if (process.platform === "win32") {
@@ -31,9 +32,21 @@ if (scenario === "cancel-preparation") host.counting.then(() => child.stdin.writ
 const sendPrompt = text => child.stdin.write(`\x1b[200~${text}\x1b[201~\r`);
 let failure, stopped = false;
 let output = "", submitted = false, retried = false, completed = false, intermediate = false;
+const phases = new Set();
+let countWaiting = false;
+if (scenario === "thinking") host.counting.then(() => { countWaiting = true; });
 const timeout = setTimeout(() => child.kill("SIGKILL"), 8000);
 function frame() {
   const visible = screenText(screen);
+  if (scenario === "thinking" && countWaiting) {
+    const phase = thinkingPhase(screen);
+    if (phase >= 0) phases.add(phase);
+    if (phases.size >= 2) {
+      assert.equal(host.calls(), 0, "thinking must animate before model dispatch");
+      countWaiting = false;
+      host.completeCount();
+    }
+  }
   if (scenario === "typeahead" && !retried && visible.includes("GraphCoder")) {
     retried = true;
     child.stdin.write("\x1b[?1;2c\x1b[>0;1;0c\x1b[12;40R");
@@ -55,7 +68,13 @@ function frame() {
     else host.complete();
   }
   const settled = ["cancel", "cancel-preparation"].includes(scenario) ? (intermediate || scenario === "cancel-preparation") && /cancelled/i.test(visible) : scenario === "uncertain" ? retried && visible.includes("conflict:") && visible.includes("admitted") : intermediate && visible.includes("○");
-  if (!completed && settled) { completed = true; child.stdin.write("\x04"); }
+  if (!completed && settled && (scenario !== "thinking" || !visible.includes("Thinking…"))) {
+    if (scenario === "thinking") {
+      assert.ok(phases.size >= 2, "no independent thinking frames while preparation waited");
+      assert.ok(!visible.includes("Thinking…"), "settled work must stop animating");
+    }
+    completed = true; child.stdin.write("\x04");
+  }
 }
 child.stdout.on("data", bytes => {
   output += bytes.toString("utf8");

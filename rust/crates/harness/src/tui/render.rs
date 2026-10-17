@@ -543,3 +543,7 @@ fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "thinking_tests.rs"]
+mod thinking_tests;
