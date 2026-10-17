@@ -169,7 +169,10 @@ impl LocalFileClient {
                     super::command_output::completion(bytes)?;
                 }
             }
-            emit(output, &(selection(self.operation)?, snapshot))?;
+            emit(
+                output,
+                super::jsonl::snapshot(&selection(self.operation)?, &snapshot)?,
+            )?;
             self.initial = false;
         }
         Ok(())
@@ -300,8 +303,8 @@ impl LocalFileClient {
     }
 }
 
-fn emit(output: &mut impl Write, value: &impl serde::Serialize) -> Result<()> {
-    let mut bytes = serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?;
+fn emit(output: &mut impl Write, line: String) -> Result<()> {
+    let mut bytes = line.into_bytes();
     bytes.push(b'\n');
     output
         .write_all(&bytes)
@@ -320,7 +323,7 @@ fn publish(output: &mut impl Write, change: &Change) -> Result<()> {
             super::command_output::completion(&file.bytes)?;
         }
     }
-    emit(output, change)
+    emit(output, super::jsonl::change(change)?)
 }
 
 impl HeadlessClient for LocalFileClient {

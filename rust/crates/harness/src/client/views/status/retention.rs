@@ -54,7 +54,7 @@ fn retained(sizes: (usize, usize, usize, usize), history: bool, broken: bool) ->
                 })
                 .unwrap();
             if broken {
-                previous = views.agents[&agent]
+                previous = views.agents.entries[&agent]
                     .status
                     .values
                     .first_key_value()
@@ -71,7 +71,7 @@ fn retained(sizes: (usize, usize, usize, usize), history: bool, broken: bool) ->
         if let Some(previous) = previous {
             // Restore precisely insert's old-key behavior, sharing the retired
             // body allocation despite the new value and reduced accounting.
-            let values = &mut views.agents.get_mut(&agent).unwrap().status.values;
+            let values = &mut views.agents.entries.get_mut(&agent).unwrap().status.values;
             let (_, value) = values.remove_entry(&key).unwrap();
             values.insert(previous, value);
         }

@@ -65,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(request) =
         acyclic_harness::client::parse_local_request(&String::from_utf8_lossy(data), operation)
     {
-        let canonical = serde_json::to_string(&request).unwrap();
+        let canonical = acyclic_harness::client::jsonl::request(&request).unwrap();
         assert_eq!(
             acyclic_harness::client::parse_local_request(&canonical, operation).unwrap(),
             request

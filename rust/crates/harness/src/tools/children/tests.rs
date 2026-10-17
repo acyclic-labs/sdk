@@ -33,7 +33,7 @@ async fn files() -> TaskFiles<MemoryStream> {
     files_with(Arc::new(MemoryStream::default())).await
 }
 
-async fn files_with(provider: Arc<MemoryStream>) -> TaskFiles<MemoryStream> {
+async fn files_with<P: StreamProvider>(provider: Arc<P>) -> TaskFiles<P> {
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
@@ -82,12 +82,16 @@ fn limits() -> Limits {
     }
 }
 
-async fn acknowledge(files: &TaskFiles<MemoryStream>, reference: &Component, state: ChildState) {
+async fn acknowledge<P: StreamProvider>(
+    files: &TaskFiles<P>,
+    reference: &Component,
+    state: ChildState,
+) {
     acknowledge_answer(files, reference, state, "child answer").await
 }
 
-async fn acknowledge_answer(
-    files: &TaskFiles<MemoryStream>,
+async fn acknowledge_answer<P: StreamProvider>(
+    files: &TaskFiles<P>,
     reference: &Component,
     state: ChildState,
     answer: &str,
@@ -176,8 +180,8 @@ async fn acknowledge_answer(
         .unwrap();
 }
 
-async fn publish(
-    files: &TaskFiles<MemoryStream>,
+async fn publish<P: StreamProvider>(
+    files: &TaskFiles<P>,
     reference: &Component,
     kind: ChildFile,
     bytes: &[u8],
@@ -565,3 +569,5 @@ proptest! {
 }
 
 mod review;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod crash_cuts;

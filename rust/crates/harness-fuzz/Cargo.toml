@@ -276,14 +276,6 @@ doc = false
 bench = false
 
 [[bin]]
-name = "journal_decode"
-path = "fuzz_targets/journal_decode.rs"
-required-features = ["runtime"]
-test = false
-doc = false
-bench = false
-
-[[bin]]
 name = "provider_scenario"
 path = "fuzz_targets/provider_scenario.rs"
 test = false

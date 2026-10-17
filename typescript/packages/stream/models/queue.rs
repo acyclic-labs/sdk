@@ -58,7 +58,7 @@ proptest! {
     ) {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
         let driver = DRIVER.get_or_init(|| std::sync::Mutex::new(driver("")));
-        let actual = driver.lock().unwrap().call(json!({"action":"trace","capacity":capacity,"operations":operations}));
+        let actual = driver.lock().unwrap().run().call(json!({"action":"trace","capacity":capacity,"operations":operations}));
         prop_assert_eq!(actual, expected(capacity, &operations));
     }
 }
