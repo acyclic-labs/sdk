@@ -114,9 +114,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(wrapped.rows(), split_wrapped.rows());
     let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
-    let Some(history) = fields.next() else {
-        return;
-    };
+    // Standalone JSON seeds must reach the result parser too; separators are
+    // optional inputs for the independent prompt-file checks below.
+    let history = fields.next().unwrap_or(b"[]");
     let keymap = fields.next();
     let notifications = fields.next();
     let layout = fields.next();
@@ -264,6 +264,23 @@ fuzz_target!(|data: &[u8]| {
             );
             renderer.update(&documents, &owner);
             assert_eq!(renderer.screen().transcript.len(), 1);
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                let title = renderer.screen().transcript[0].to_string();
+                let valid = value.is_object()
+                    && (value["success"].is_null() || value["success"].is_boolean())
+                    && (value["exit_code"].is_null()
+                        || value["exit_code"]
+                            .as_i64()
+                            .is_some_and(|code| i32::try_from(code).is_ok()));
+                if valid
+                    && (value["success"] == false
+                        || value["exit_code"].as_i64().is_some_and(|code| code != 0))
+                {
+                    assert!(title.contains("failed"));
+                } else if valid && value["success"] == true {
+                    assert!(title.contains("completed"));
+                }
+            }
             let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             let mut writes = vec![
                 (format!(".ui/session-{session}/draft.json"), draft),
