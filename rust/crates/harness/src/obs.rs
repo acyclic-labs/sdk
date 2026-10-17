@@ -83,6 +83,7 @@ pub(crate) fn traced<'a, T: 'a>(
 
 // The unmetered caller supplies the one required trait-erasure box. Keep the
 // existing boxed path above intact for admitted future layouts and charges.
+#[inline(always)]
 pub(crate) fn traced_future<'a, T: 'a>(
     span: OperationSpan,
     future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
