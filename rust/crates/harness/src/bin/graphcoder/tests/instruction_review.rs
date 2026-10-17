@@ -143,6 +143,7 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
             assert_eq!(body["input"][1]["content"][0]["text"], format!("# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\n{BODY}\n</INSTRUCTIONS>"));
             assert_eq!(body["input"][2]["type"], "function_call");
             assert_eq!(body["input"][3]["type"], "function_call_output");
+            assert_eq!(body["input"][2]["call_id"], body["input"][3]["call_id"]);
             let output: String = serde_json::from_str(body["input"][3]["output"].as_str().unwrap()).unwrap();
             assert_eq!(output.contains(returned), !repeated);
             assert_eq!(output.contains("instructions already included"), repeated);
