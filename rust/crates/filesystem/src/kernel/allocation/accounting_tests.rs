@@ -1,11 +1,11 @@
 use super::*;
 use proptest::prelude::*;
 
-fn amount(small: u64) -> impl Strategy<Value = u64> {
+pub(super) fn amount(small: u64) -> impl Strategy<Value = u64> {
     prop_oneof![7 => 0..small, 1 => any::<u64>()]
 }
 
-fn counters(values: [u64; 24]) -> WorkCounters {
+pub(super) fn counters(values: [u64; 24]) -> WorkCounters {
     let mut fields = serde_json::to_value(WorkCounters::UNCHARGED).unwrap();
     let fields_map = fields.as_object_mut().unwrap();
     assert_eq!(fields_map.len(), values.len());
@@ -15,7 +15,7 @@ fn counters(values: [u64; 24]) -> WorkCounters {
     serde_json::from_value(fields).unwrap()
 }
 
-fn status(result: Result<(), crate::FsError>) -> Result<(), String> {
+pub(super) fn status(result: Result<(), crate::FsError>) -> Result<(), String> {
     result.map_err(|error| format!("{error:?}"))
 }
 
