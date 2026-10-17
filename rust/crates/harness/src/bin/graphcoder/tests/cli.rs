@@ -325,7 +325,7 @@ async fn run(
 }
 
 #[tokio::test]
-async fn killed_mid_tool_process_does_not_brick_the_next_prompt() {
+async fn killed_mid_tool_process_does_not_brick_the_next_prompt_or_a_live_one() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let generated = Arc::new(AtomicUsize::new(0));
@@ -363,12 +363,37 @@ async fn killed_mid_tool_process_does_not_brick_the_next_prompt() {
     std::fs::create_dir(&settings).unwrap();
     let catalog = catalog(directory.path(), address);
     let effect = workspace.join(EFFECT);
-    let killed = run(
+    let release = directory.path().join("release");
+    let first = tokio::spawn(run(
         graphcoder(&workspace, &catalog, &settings, OperationId::new(), "start"),
-        Some(effect.clone()),
+        Some(release.clone()),
+    ));
+    while !effect.exists() {
+        if first.is_finished() {
+            panic!("first process ended before its effect: {:?}", first.await);
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // A second process never treats the first one's live turn as orphaned:
+    // the workspace stream admits one owning process at a time.
+    let contender = run(
+        graphcoder(&workspace, &catalog, &settings, OperationId::new(), "contend"),
+        None,
     )
     .await
-    .expect_err("the first process must be killed during its tool effect");
+    .unwrap();
+    assert!(
+        !contender.status.success() && !contender.stderr.is_empty(),
+        "contender opened a live workspace: {}",
+        String::from_utf8_lossy(&contender.stdout)
+    );
+    assert!(!first.is_finished(), "the live turn was disturbed");
+    assert_eq!(generated.load(Ordering::SeqCst), 1);
+    std::fs::write(&release, b"").unwrap();
+    let killed = first
+        .await
+        .unwrap()
+        .expect_err("the first process must be killed during its tool effect");
     assert!(killed.starts_with("killed"), "{killed}");
     // The next prompt settles the killed turn instead of rejecting admission.
     let output = run(

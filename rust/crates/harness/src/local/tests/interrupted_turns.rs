@@ -185,59 +185,58 @@ async fn a_driven_turn_is_never_superseded_until_its_driver_is_gone() -> Result<
     Ok(())
 }
 
+/// Reports its effect as uncertain, as a tool whose transport failed mid-call.
+struct Uncertain(Arc<AtomicUsize>);
+
+impl ToolExecutor for Uncertain {
+    fn execute<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<ToolResult>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(Error::Indeterminate(OperationId::new())) })
+    }
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 #[tokio::test]
 async fn an_indeterminate_resume_releases_its_reservation_to_the_next_prompt() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let project = volume(directory.path()).await?;
-    let (started, boundary) = tokio::sync::oneshot::channel();
-    let started = Mutex::new(Some(started));
-    let provider = Arc::new(
-        ScriptedModelProvider::new([
-            ScriptedTurn::Events(vec![ScriptedEvent::Pending {}]),
-            ScriptedTurn::Text("next".into()),
-        ])
-        .with_context_capacity(capacity())
-        .with_dispatch_observer(move |_| {
-            if let Some(started) = started.lock().unwrap().take() {
-                started.send(()).unwrap();
-            }
-        }),
-    );
-    let harness = LocalHarness::open(volume_config(
-        directory.path(),
-        project.clone(),
-        provider.clone(),
-    )?)
+    let executed = Arc::new(AtomicUsize::new(0));
+    let mut uncertain = tool("test.blocking");
+    uncertain.executor = Arc::new(Uncertain(Arc::clone(&executed)));
+    let provider = scripted([call(), ScriptedTurn::Text("next".into())]);
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?.tools(vec![uncertain]),
+    )
     .await?;
     let task = admitted(harness.submit(OperationId::new(), "start").await?);
-    match futures::future::select(harness.resume(task), boundary).await {
-        futures::future::Either::Right((Ok(()), execution)) => drop(execution),
-        _ => panic!("no model boundary"),
-    }
-    drop(harness);
-    let reopened =
-        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
-    // Resume cannot recover the unrecorded model response: the turn stays
-    // Indeterminate and its reservation is retained for reconciliation.
+    // The driver returns, leaving the turn Indeterminate with its reservation
+    // retained for reconciliation.
     assert!(matches!(
-        reopened.resume(task).await,
+        harness.resume(task).await,
         Err(Error::Indeterminate(_))
     ));
     assert!(matches!(
-        outcome(&reopened, task).await,
+        outcome(&harness, task).await,
         Some(crate::Outcome::Indeterminate { .. })
     ));
-    let next = admitted(reopened.submit(OperationId::new(), "next").await?);
+    let next = admitted(harness.submit(OperationId::new(), "next").await?);
     assert_eq!(
-        outcome(&reopened, task).await,
+        outcome(&harness, task).await,
         Some(crate::Outcome::Cancelled)
     );
     // With concurrency 1 this completes only if settlement released the reservation.
-    assert_eq!(reopened.resume(next).await?.text, "next");
-    assert_eq!(
-        provider.requests().len(),
-        2,
-        "interrupted model call was reissued"
-    );
+    assert_eq!(harness.resume(next).await?.text, "next");
+    assert_eq!(executed.load(Ordering::SeqCst), 1, "uncertain effect ran again");
+    assert_eq!(provider.requests().len(), 2, "model reissued");
     Ok(())
 }
