@@ -59,3 +59,79 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     assert_eq!(messages, before);
     Ok(())
 }
+
+#[tokio::test]
+async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
+    struct FixedPolicy(bool);
+    impl ToolPolicy for FixedPolicy {
+        fn identity(&self) -> ComponentIdentity {
+            ComponentIdentity {
+                name: "test.deny".into(),
+                version: "1".into(),
+                digest: [1 + u8::from(self.0); 32],
+            }
+        }
+        fn evaluate<'a>(
+            &'a self,
+            _: &'a ToolInvocation,
+            _: &'a RuntimeScope,
+            _io: Option<&'a crate::executor::PreparationIo>,
+        ) -> Result<
+            crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>,
+        > {
+            let decision = if self.0 {
+                ToolPolicyDecision::Deny {
+                    reason: "echo is\nforbidden here".into(),
+                }
+            } else {
+                ToolPolicyDecision::Allow
+            };
+            Ok(crate::store::HistoryContentFuture::Ordinary {
+                future: Box::pin(async move { Ok((decision, None)) }),
+                frame_bytes: 0,
+            })
+        }
+    }
+    // The allowing policy is the negative control: the same call dispatches and no error returns.
+    for deny in [true, false] {
+        let model = Arc::new(scripted_model());
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let tools = echo_tools(
+            tool_executor.clone(),
+            json!({"type": "object"}),
+            json!({"type": "object"}),
+            crate::tool::json_projection_schema(json!({"type": "object"})),
+        )?;
+        let executor = super::uncompacted_executor(
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            Some(Arc::new(FixedPolicy(deny))),
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([29; 16]),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 4,
+        };
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "done");
+        let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1");
+        assert_eq!(text.is_some(), deny);
+        if let Some(text) = text {
+            assert!(text.contains("(unauthorized)") && text.contains("echo is forbidden here"));
+        }
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
+        assert_eq!(executor.execute(input, &journal).await?, output);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
+    }
+    Ok(())
+}

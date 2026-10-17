@@ -9,10 +9,20 @@ enum ToolCallRejection {
     Unavailable,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
+    /// The bound policy denied the call; the model can adapt.
+    Refused(Error),
 }
 
-/// A recorded tool failure the model receives instead of a result.
-type ToolSettlement<T> = std::result::Result<T, ToolFailureKind>;
+/// Why the bound policy stopped a call before dispatch.
+enum PolicyStop {
+    /// Approval is pending or was rejected; the turn's progress reports it.
+    Progress(ExecutionProgress<()>),
+    /// The policy denied the call; the model receives the denial as the call's result.
+    Refused(Error),
+}
+
+/// A recorded tool failure's model-visible content, received instead of a result.
+type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>;
 
 impl StockExecution<'_> {
     pub(super) async fn settle_tool_call(
@@ -91,7 +101,8 @@ impl StockExecution<'_> {
                 step: recorded,
                 call_id,
                 reason,
-            } if *recorded == step && call_id == &invocation.call_id => Some(*reason),
+                cause,
+            } if *recorded == step && call_id == &invocation.call_id => Some((*reason, cause)),
             _ => None,
         });
         let completed = records.iter().find_map(|record| match &record.event {
@@ -113,17 +124,23 @@ impl StockExecution<'_> {
         if self.stock.reconciliation_only && started.is_none() {
             return Err(Error::Indeterminate(operation_id));
         }
-        let content = if let Some(reason) = failed {
-            tool_failure_content(reason, self.io)?
+        let content = if let Some((reason, cause)) = failed {
+            tool_failure_content(reason, cause, self.io)?
         } else if let Some((result, projection)) = completed {
             self.replay_tool_output(journal, result, projection, tool)
                 .await?
         } else {
-            if let Some(progress) = self
+            match self
                 .require_tool_policy(journal, operation_id, &invocation, tool, started.is_some())
                 .await?
             {
-                return Ok(progress);
+                Some(PolicyStop::Progress(progress)) => return Ok(progress),
+                Some(PolicyStop::Refused(denial)) => {
+                    let content = self
+                        .rejected_tool_content(&invocation, &ToolCallRejection::Refused(denial))?;
+                    return self.push_tool_result(&invocation, content, prior_messages);
+                }
+                None => {}
             }
             match self
                 .execute_tool_invocation(
@@ -139,8 +156,7 @@ impl StockExecution<'_> {
                 )
                 .await?
             {
-                Ok(content) => content,
-                Err(reason) => tool_failure_content(reason, self.io)?,
+                Ok(content) | Err(content) => content,
             }
         };
         self.push_tool_result(&invocation, content, prior_messages)
@@ -178,11 +194,21 @@ impl StockExecution<'_> {
                 work,
             ),
             ToolCallRejection::InvalidInput(violation) => preparation_format(
-                format_args!("tool `{name}` rejected its arguments: {violation}"),
+                format_args!(
+                    "tool `{name}` rejected its arguments: {}",
+                    Sanitized(violation)
+                ),
+                work,
+            ),
+            ToolCallRejection::Refused(refusal) => preparation_format(
+                format_args!("tool `{name}` refused the call {}", RefusalText(refusal)),
                 work,
             ),
         })?;
-        Ok(crate::model::ToolResultContent::Error { message: text })
+        Ok(crate::model::ToolResultContent::Error {
+            message: text,
+            provenance: crate::model::FailureProvenance::RECORDED,
+        })
     }
 
     fn authorize_tool_invocation(
@@ -231,13 +257,13 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         tool: &crate::tool::Tool,
         started: bool,
-    ) -> Result<Option<ExecutionProgress<()>>> {
+    ) -> Result<Option<PolicyStop>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(progress) = self
             .settle_native_tool_policy(journal, operation_id, invocation, &tool.definition, started)
             .await?
         {
-            return Ok(Some(progress));
+            return Ok(Some(PolicyStop::Progress(progress)));
         }
         if !stock_is_native(self.io) {
             let scope = &self.stock.tool_scope;
@@ -253,6 +279,11 @@ impl StockExecution<'_> {
                 }
                 match decision {
                     ToolPolicyDecision::Allow => {}
+                    // A denial before dispatch is the call's result; the pinned policy
+                    // re-derives it on replay. After a recorded start it is a conflict.
+                    ToolPolicyDecision::Deny { reason } if !started => {
+                        return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
+                    }
                     ToolPolicyDecision::Deny { reason } => {
                         return Err(Error::Unauthorized(reason));
                     }
@@ -287,7 +318,7 @@ impl StockExecution<'_> {
                             )
                             .await?
                         {
-                            return Ok(Some(progress));
+                            return Ok(Some(PolicyStop::Progress(progress)));
                         }
                     }
                 }
@@ -599,12 +630,16 @@ impl StockExecution<'_> {
 }
 
 /// The model-visible result of a recorded tool failure; replay derives the same content.
-fn tool_failure_content(
+pub(super) fn tool_failure_content(
     reason: ToolFailureKind,
+    cause: &ToolFailureCause,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
     Ok(crate::model::ToolResultContent::Error {
-        message: stock_string_copy(reason.message(), io)?,
+        message: with_history_io(io, |work| {
+            preparation_format(format_args!("{}", ToolFailureText(reason, cause)), work)
+        })?,
+        provenance: crate::model::FailureProvenance::RECORDED,
     })
 }
 

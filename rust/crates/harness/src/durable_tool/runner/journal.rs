@@ -145,14 +145,29 @@ impl DurableToolRunner<'_> {
         operation_id: OperationId,
         invocation: &ToolInvocation,
         reason: ToolFailureKind,
+        error: &Error,
         io: Option<&PreparationIo>,
     ) -> Result<Option<(Outcome<Value>, NativeCustody)>> {
+        tracing::warn!(
+            operation_id = %operation_id,
+            call_id = %invocation.call_id,
+            ?reason,
+            cause = ?error,
+            "durable tool call failed"
+        );
         let key = tool_text(format_args!("tool:failed:{}", OperationId::new()), io)?;
         let call = tool_text(format_args!("{}", invocation.call_id), io)?;
+        let message = tool_text(format_args!("{}", crate::executor::Sanitized(error)), io)?;
+        let cause = crate::executor::ToolFailureCause {
+            class: crate::executor::ToolErrorClass::of(error),
+            message: message.0,
+        };
+        let failed = tool_outcome(operation_id, Some((reason, &cause)), io)?;
         let event = ExecutionEvent::ToolFailed {
             step: 0,
             call_id: call.0,
             reason,
+            cause,
         };
         match match self
             .journal
@@ -161,7 +176,7 @@ impl DurableToolRunner<'_> {
             Ok(future) => future.await,
             Err(error) => Err(error),
         } {
-            Ok(true) => tool_outcome(operation_id, Some(reason), io).map(Some),
+            Ok(true) => Ok(Some(failed)),
             Ok(false) => Ok(None),
             Err(error) if tool_propagate(&error, io) => Err(error),
             Err(error) if error.leaves_effect_uncertain() => {

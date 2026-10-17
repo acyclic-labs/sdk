@@ -1074,17 +1074,14 @@ pub(super) async fn worker_restart_with_options(
             outcome
         };
         if with_mail_receive && !allow_mail_read {
+            // A missing read grant is definitive: the task settles failed and releases its lease.
             assert!(
-                matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
+                matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
             );
             coordinator.refresh(&mut None).await?;
-            assert_eq!(
-                coordinator
-                    .scheduler()
-                    .operation(operation)
-                    .and_then(|state| state.reservation.as_ref()),
-                Some(&lease.reservation)
-            );
+            let settled = coordinator.scheduler().operation(operation);
+            assert!(matches!(settled, Some(state) if state.reservation.is_none()
+                && matches!(&state.outcome, Some(acyclic_harness::Outcome::Failed { message }) if message.contains("mail:read"))));
             assert!(matches!(
                 runtime.task_host().inbox(task, 0, 1).await,
                 Err(Error::Unauthorized(_))

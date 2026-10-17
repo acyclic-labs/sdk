@@ -392,7 +392,7 @@ impl Error {
     #[must_use]
     pub fn code(&self) -> crate::wire::ErrorCode {
         use crate::wire::ErrorCode;
-        match self {
+        match self.cause() {
             Self::TaskFiles(error) => match error.as_ref() {
                 #[cfg(feature = "filesystem")]
                 crate::task_volume::Error::FileRead(error) => error.code(),
@@ -470,15 +470,40 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// The error a task-file read wraps, peeled recursively. The wire code and the uncertainty
+    /// classes all read through this one function, so a wrapped cause keeps its class.
+    fn cause(&self) -> &Self {
+        match self {
+            #[cfg(feature = "filesystem")]
+            Self::TaskFiles(error) => match error.as_ref() {
+                crate::task_volume::Error::FileRead(inner) => inner.cause(),
+                _ => self,
+            },
+            _ => self,
+        }
+    }
+
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
-    pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
+    pub(crate) fn leaves_effect_uncertain(&self) -> bool {
         matches!(
-            self,
+            self.cause(),
             Self::Indeterminate(_)
                 | Self::CommandIndeterminate { .. }
                 | Self::Storage(_)
                 | Self::Cancelled
         )
+    }
+
+    /// Whether a failed command's outcome is unknown. Native-ledger errors carry their class
+    /// only as a code, so a native storage, indeterminate or cancelled failure is uncertain too.
+    pub(crate) fn leaves_outcome_uncertain(&self) -> bool {
+        use crate::wire::ErrorCode;
+        self.leaves_effect_uncertain()
+            || (self.cause().is_native_failure()
+                && matches!(
+                    self.code(),
+                    ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
+                ))
     }
 
     /// Native failures must propagate before additional provider or deadline work.

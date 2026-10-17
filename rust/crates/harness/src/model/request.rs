@@ -189,8 +189,18 @@ impl ModelRequest {
                         "model tool result has no matching call".into(),
                     ));
                 };
-                if matches!(content, ToolResultContent::Error { .. }) {
-                    return Ok(());
+                // Only a failure the harness recorded is exempt from the call's contract; a
+                // supplied error result must not stand in for the result a bound call owes.
+                match content {
+                    ToolResultContent::Error { provenance, .. } if provenance.is_recorded() => {
+                        return Ok(());
+                    }
+                    ToolResultContent::Error { .. } => {
+                        return Err(Error::Invalid(
+                            "model tool error result has no recorded harness failure".into(),
+                        ));
+                    }
+                    _ => {}
                 }
                 let tool = Self::bound_tool(name, tools)
                     .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
@@ -213,6 +223,26 @@ impl ModelRequest {
     }
 }
 
+/// Marks every error result in harness-retained `messages` as a failure the harness recorded.
+pub(super) fn mark_recorded_failures(messages: &mut [ModelMessage]) {
+    for message in messages {
+        let parts = match &mut message.content {
+            ModelContent::Text(_) => &mut [][..],
+            ModelContent::Part(part) => std::slice::from_mut(part),
+            ModelContent::Parts(parts) => parts.as_mut_slice(),
+        };
+        for part in parts {
+            if let ModelContentPart::ToolResult {
+                content: ToolResultContent::Error { provenance, .. },
+                ..
+            } = part
+            {
+                *provenance = FailureProvenance::RECORDED;
+            }
+        }
+    }
+}
+
 /// A call awaiting its paired result: name and the arguments the model emitted.
 type PendingCall<'a> = (&'a String, &'a Value);
 
@@ -224,9 +254,27 @@ pub struct PreparedModelRequest {
     request_digest: [u8; 32],
 }
 impl PreparedModelRequest {
-    /// Decodes and verifies exact canonical input on the optional ledger.
+    /// Decodes and verifies exact canonical input on the optional ledger. Supplied bytes carry
+    /// no recorded failure, so an error result must not stand in for a bound call's result.
     pub fn decode(bytes: &[u8], limits: Limits, io: Option<&PreparationIo>) -> Result<Self> {
-        let request = match io {
+        Self::decode_with(bytes, limits, io, false)
+    }
+    /// Decodes a request the harness retained in its own private journal; its error results are
+    /// the failures it recorded.
+    pub(crate) fn decode_retained(
+        bytes: &[u8],
+        limits: Limits,
+        io: Option<&PreparationIo>,
+    ) -> Result<Self> {
+        Self::decode_with(bytes, limits, io, true)
+    }
+    fn decode_with(
+        bytes: &[u8],
+        limits: Limits,
+        io: Option<&PreparationIo>,
+        retained: bool,
+    ) -> Result<Self> {
+        let mut request: ModelRequest = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => crate::filesystem::retain_decoded(io.decode(
                 std::marker::PhantomData::<ModelRequest>,
@@ -236,6 +284,9 @@ impl PreparedModelRequest {
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
+        if retained {
+            mark_recorded_failures(&mut request.messages);
+        }
         let prepared = Self::encode_admitted(request, limits, io)?;
         charge_items(io, bytes.len() as u64)?;
         if prepared.bytes() != bytes {

@@ -83,7 +83,7 @@ pub(super) fn tool_success(
 }
 pub(super) fn tool_outcome(
     operation_id: OperationId,
-    failure: Option<ToolFailureKind>,
+    failure: Option<(ToolFailureKind, &crate::executor::ToolFailureCause)>,
     io: Option<&PreparationIo>,
 ) -> Result<(Outcome<Value>, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -98,8 +98,11 @@ pub(super) fn tool_outcome(
         .transpose()?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let custody = None;
-    let outcome = if let Some(reason) = failure {
-        let message = tool_text(format_args!("{}", reason.message()), io)?;
+    let outcome = if let Some((reason, cause)) = failure {
+        let message = tool_text(
+            format_args!("{}", crate::executor::ToolFailureText(reason, cause)),
+            io,
+        )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut message = message;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

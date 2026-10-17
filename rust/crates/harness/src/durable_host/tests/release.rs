@@ -150,6 +150,10 @@ async fn b19_release_requires_suspended_workflow_and_settled_tool() -> Result<()
                 step: 0,
                 call_id: "tool".into(),
                 reason: ToolFailureKind::ExecutorRejected,
+                cause: crate::executor::ToolFailureCause {
+                    class: crate::executor::ToolErrorClass::Failed,
+                    message: "tool failed".into(),
+                },
             }),
             None,
         )?

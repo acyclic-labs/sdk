@@ -52,7 +52,7 @@ pub(crate) async fn load_model_request(
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
-    crate::model::PreparedModelRequest::decode(&bytes, limits, io)
+    crate::model::PreparedModelRequest::decode_retained(&bytes, limits, io)
 }
 
 pub(crate) fn retain_preparation<T>(

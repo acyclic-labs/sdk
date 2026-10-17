@@ -267,6 +267,10 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
         step: 0,
         call_id: "tool".into(),
         reason: ToolFailureKind::ExecutorRejected,
+        cause: crate::executor::ToolFailureCause {
+            class: crate::executor::ToolErrorClass::Failed,
+            message: "tool failed".into(),
+        },
     };
     for _ in 0..2 {
         settlement
@@ -287,7 +291,11 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
                 &(ExecutionEvent::ToolFailed {
                     step: 0,
                     call_id: "missing".into(),
-                    reason: ToolFailureKind::ExecutorRejected
+                    reason: ToolFailureKind::ExecutorRejected,
+                    cause: crate::executor::ToolFailureCause {
+                        class: crate::executor::ToolErrorClass::Failed,
+                        message: "tool failed".into(),
+                    },
                 }),
                 None
             )?
@@ -535,6 +543,10 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
                 step: 0,
                 call_id: "original".into(),
                 reason: ToolFailureKind::ExecutorRejected,
+                cause: crate::executor::ToolFailureCause {
+                    class: crate::executor::ToolErrorClass::Failed,
+                    message: "tool failed".into(),
+                },
             },
             None,
         )?

@@ -125,10 +125,10 @@ impl<'tools> DurableToolRunner<'tools> {
                     .replay_tool_completion(definition, result, projection, limits, io)
                     .await;
             }
-            if let Some(ExecutionEvent::ToolFailed { reason, .. }) =
+            if let Some(ExecutionEvent::ToolFailed { reason, cause, .. }) =
                 records.0.get(2).map(|record| &record.event)
             {
-                return tool_outcome(operation_id, Some(*reason), io);
+                return tool_outcome(operation_id, Some((*reason, cause)), io);
             }
             let started = !records.0.is_empty();
             let dispatched = records.0.len() >= 2;
@@ -158,8 +158,11 @@ impl<'tools> DurableToolRunner<'tools> {
                 }
             };
             macro_rules! fail {
-                ($reason:expr) => {
-                    if let Some(outcome) = self.fail(operation_id, invocation, $reason, io).await? {
+                ($reason:expr, $error:expr) => {
+                    if let Some(outcome) = self
+                        .fail(operation_id, invocation, $reason, $error, io)
+                        .await?
+                    {
                         return Ok(outcome);
                     }
                     continue;
@@ -181,14 +184,14 @@ impl<'tools> DurableToolRunner<'tools> {
                     if !claimed {
                         return Err(error);
                     }
-                    fail!(ToolFailureKind::ExecutorRejected);
+                    fail!(ToolFailureKind::ExecutorRejected, &error);
                 }
             };
             let projection =
                 match self.project_output(definition, invocation, tool, &result.0, limits, io)? {
                     Ok(projection) => projection,
-                    Err(reason) => {
-                        fail!(reason);
+                    Err((reason, error)) => {
+                        fail!(reason, &error);
                     }
                 };
             if let Some(outcome) = self
@@ -214,12 +217,13 @@ impl<'tools> DurableToolRunner<'tools> {
             Err(error) if error.leaves_effect_uncertain() => {
                 return tool_outcome(operation_id, None, io).map(Some);
             }
-            Err(_) => {
+            Err(error) => {
                 return self
                     .fail(
                         operation_id,
                         invocation,
                         ToolFailureKind::PublicationRejected,
+                        &error,
                         io,
                     )
                     .await;
@@ -234,12 +238,13 @@ impl<'tools> DurableToolRunner<'tools> {
             Err(error) if error.leaves_effect_uncertain() => {
                 return tool_outcome(operation_id, None, io).map(Some);
             }
-            Err(_) => {
+            Err(error) => {
                 return self
                     .fail(
                         operation_id,
                         invocation,
                         ToolFailureKind::PublicationRejected,
+                        &error,
                         io,
                     )
                     .await;
@@ -456,7 +461,7 @@ impl<'tools> DurableToolRunner<'tools> {
         result: &ToolResult,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<std::result::Result<(Value, NativeCustody), ToolFailureKind>> {
+    ) -> Result<std::result::Result<(Value, NativeCustody), (ToolFailureKind, Error)>> {
         if let Err(error) = with_history_io(io, |work| {
             validate_json_schema_value(
                 &definition.output_schema,
@@ -468,19 +473,19 @@ impl<'tools> DurableToolRunner<'tools> {
             if tool_propagate(&error, io) {
                 return Err(error);
             }
-            return Ok(Err(ToolFailureKind::InvalidOutput));
+            return Ok(Err((ToolFailureKind::InvalidOutput, error)));
         }
         if let Err(error) = tool_json_bound(result, limits.file_bytes, io) {
             if tool_propagate(&error, io) {
                 return Err(error);
             }
-            return Ok(Err(ToolFailureKind::PublicationRejected));
+            return Ok(Err((ToolFailureKind::PublicationRejected, error)));
         }
         let projection = match tool.projection.project(invocation, result, native_work(io)) {
             Ok(projection) => projection,
             Err(error) if tool_propagate(&error, io) => return Err(error),
-            Err(_) => {
-                return Ok(Err(ToolFailureKind::ProjectionRejected));
+            Err(error) => {
+                return Ok(Err((ToolFailureKind::ProjectionRejected, error)));
             }
         };
         if native_work(io).is_some() && projection.1.is_none() {
@@ -492,7 +497,7 @@ impl<'tools> DurableToolRunner<'tools> {
             if tool_propagate(&error, io) {
                 return Err(error);
             }
-            return Ok(Err(ToolFailureKind::ProjectionRejected));
+            return Ok(Err((ToolFailureKind::ProjectionRejected, error)));
         }
         Ok(Ok(projection))
     }

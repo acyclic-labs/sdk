@@ -163,7 +163,7 @@ where
                     }
                     // Only a failure that may have left its effect behind is uncertain; every
                     // other failure settles the task as failed with its cause.
-                    Err(error) if error.leaves_effect_uncertain() => {
+                    Err(error) if error.leaves_outcome_uncertain() => {
                         let reason = crate::executor::with_history_io(io, |work| -> Result<_> {
                             Ok(crate::CommandIndeterminacyReason::Failed {
                                 code: crate::executor::preparation_format(
