@@ -1,0 +1,2 @@
+{"expect":{"view":null,"files":{"GOAL.md":"---\nstatus: *s\n---\n"},"view_error":"invalid goal frontmatter","runtime_error":
+    "invalid goal frontmatter"},"seed":{"GOAL.md":"---\nstatus: *s\n---\n"}}

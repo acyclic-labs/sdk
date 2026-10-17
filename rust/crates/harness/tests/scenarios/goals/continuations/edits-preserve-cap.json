@@ -1,0 +1,7 @@
+{"turns":["settled-0",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"write","arguments":{"path":".volumes/scratch/GOAL.md",
+    "text":"Ship the change and all tests\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":
+    "completed","metadata":null}],"Settled"],"expect":{"result":{"tasks":2,"continuations":1,"requests":3},"view":{"status":
+    "blocked","markdown":"Ship the change and all tests\n","reason":"Maximum goal continuations reached (limit 1)."},"files":{
+    "GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change and all tests\n"}},
+    "policy":{"max_continuations":1},"max_steps":2}

@@ -1,0 +1,6 @@
+{"turns":["settled-0","settled-1","settled-2","settled-3","settled-4","settled-5","settled-6","settled-7","settled-8","settled-9",
+    "settled-10","settled-11","settled-12","settled-13","settled-14","settled-15","settled-16","settled-17","settled-18",
+    "settled-19","settled-20","settled-21","settled-22","settled-23","settled-24","settled-25","settled-26","settled-27",
+    "settled-28","settled-29","settled-30","settled-31","Settled"],"expect":{"result":{"tasks":33,"continuations":32,"requests":33},
+    "view":{"status":"blocked","reason":"Maximum goal continuations reached (limit 32)."},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 32).\"\n---\nShip the change\n"}}}
