@@ -330,9 +330,9 @@ impl WorkCounters {
         Ok(merged)
     }
 
-    /// Adds `delta` in place once [`Self::admit`] accepts it: exactly `*self = self.checked_add(*delta)?` after that sum verifies against `budget`, but copies neither counter set.
+    /// Adds work in place after verifying the complete sum, leaving counters unchanged on overflow or denial.
     #[inline]
-    pub(crate) fn charge(&mut self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
+    pub fn charge(&mut self, delta: &Self, budget: &WorkBudget) -> Result<(), WorkError> {
         self.admit(delta, budget)?;
         self.add_admitted(delta);
         Ok(())

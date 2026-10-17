@@ -327,25 +327,58 @@ impl PreparationIo {
             }
         })
     }
+    #[inline]
     pub(crate) fn charge(
         &self,
         mut next: WorkCounters,
     ) -> std::result::Result<(), acyclic_fs::FsError> {
-        self.account(|accounting| {
-            if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
+        match self {
+            Self::Owned {
+                budget,
+                work,
+                cancellation,
+            } => {
+                let mut state = work
+                    .lock()
+                    .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?;
+                let (spent, allocations) = &mut *state;
+                let allocations = allocations
+                    .as_ref()
+                    .map_err(|error| acyclic_fs::FsError::from(*error))?;
                 next.peak_allocation_bytes = next
                     .peak_allocation_bytes
                     .checked_add(allocations.live_bytes())
                     .ok_or(acyclic_fs::WorkError::Overflow)?;
+                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+                crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
+                let result = cancellation
+                    .check()
+                    .map_err(Into::into)
+                    .and_then(|()| spent.charge(&next, budget).map_err(Into::into));
+                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+                crate::accounting_trace::after(
+                    crate::accounting_trace::Phase::Charge,
+                    &next,
+                    &result,
+                );
+                result
             }
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-            crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
-            let result = accounting.charge(next);
-            #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
-            crate::accounting_trace::after(crate::accounting_trace::Phase::Charge, &next, &result);
-            result
-        })
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { .. } => self.account(|accounting| {
+                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+                crate::accounting_trace::before(crate::accounting_trace::Phase::Charge, &next);
+                let result = accounting.charge(next);
+                #[cfg(all(test, debug_assertions, not(target_arch = "wasm32")))]
+                crate::accounting_trace::after(
+                    crate::accounting_trace::Phase::Charge,
+                    &next,
+                    &result,
+                );
+                result
+            }),
+        }
     }
+
     pub(crate) fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {
         self.account(|accounting| accounting.remaining())
     }

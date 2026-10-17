@@ -22,6 +22,7 @@ enum Fault {
     Repeat,
     Corrupt,
     OmitCharge,
+    OmitScanCharge,
 }
 fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     let calls = Cell::new(0);
@@ -31,6 +32,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     };
     let mut retained = 0_u64;
     let mut encoded = 0_u64;
+    let mut inspected = 0_u64;
     let mut allocations = 0;
     let mut charge = |event| {
         match event {
@@ -39,6 +41,9 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
             JsonCodecCharge::AllocationOperation { .. } => allocations += 1,
             JsonCodecCharge::Work { bytes, .. } if !matches!(fault, Fault::OmitCharge) => {
                 encoded += bytes
+            }
+            JsonCodecCharge::Inspect { items } if !matches!(fault, Fault::OmitScanCharge) => {
+                inspected += items
             }
             _ => {}
         }
@@ -67,14 +72,37 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     let expected = serde_json::to_vec(&expected_value).unwrap();
     let minimum = expected.len() as u64;
     prop_assert!(
-        calls.get() == if canonical { 2 } else { 1 }
+        calls.get() == 1
             && actual == expected
             && retained == actual.capacity() as u64
-            && encoded == minimum * if canonical { 3 } else { 1 }
+            && encoded == minimum * if canonical { 2 } else { 1 }
+            && inspected
+                == if canonical && has_array(value) {
+                    minimum
+                } else {
+                    0
+                }
             && allocations > 0,
-        "single serialization, funded storage or canonical output differs"
+        "single serialization, funded storage or canonical output differs: canonical={}, calls={}, actual={:?}, expected={:?}, retained={}, capacity={}, encoded={}, minimum={}, inspected={}, allocations={}",
+        canonical,
+        calls.get(),
+        actual,
+        expected,
+        retained,
+        actual.capacity(),
+        encoded,
+        minimum,
+        inspected,
+        allocations
     );
     Ok(())
+}
+fn has_array(value: &Value) -> bool {
+    match value {
+        Value::Array(_) => true,
+        Value::Object(fields) => fields.values().any(has_array),
+        _ => false,
+    }
 }
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -92,7 +120,11 @@ fn single_pass_negative_controls() {
     let value = serde_json::json!({"z": ["a", "b"], "a": 7});
     for canonical in [false, true] {
         check(&value, canonical, Fault::None).unwrap();
-        for fault in [Fault::Repeat, Fault::Corrupt, Fault::OmitCharge] {
+        let mut faults = vec![Fault::Repeat, Fault::Corrupt, Fault::OmitCharge];
+        if canonical {
+            faults.push(Fault::OmitScanCharge);
+        }
+        for fault in faults {
             let error = check(&value, canonical, fault).unwrap_err();
             assert!(
                 error

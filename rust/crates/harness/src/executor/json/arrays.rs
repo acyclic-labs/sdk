@@ -7,8 +7,8 @@ pub(super) fn bytes(count: usize) -> Result<usize> {
     checked(count.checked_mul(ENTRY), "JSON array index overflow")
 }
 
-// The index shares the encoded buffer's one allocation. Its parent links
-// replace a separate stack; entries and lengths are in decoder preorder.
+// Parent links replace a separate stack; entries and lengths are in decoder
+// preorder, whether separate or prefixed to a RawValue buffer.
 #[derive(Default)]
 pub(super) struct Index {
     next: usize,
@@ -79,4 +79,58 @@ fn put(table: &mut [u8], entry: usize, field: usize, value: usize) -> Result<()>
 }
 pub(super) fn count(table: &[u8], entry: usize) -> Result<usize> {
     get(table, entry, 2)
+}
+
+// The original serializer already validated this document. Reuse its bytes for
+// decoder array lengths instead of invoking user Serialize a second time.
+pub(super) fn build(
+    document: &[u8],
+    count: usize,
+    bounds: super::JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    charge: &mut dyn FnMut(super::JsonCodecCharge) -> Result<()>,
+) -> Result<Vec<u8>> {
+    use super::JsonCodecCharge;
+    let length = bytes(count)?;
+    if length == 0 {
+        return Ok(Vec::new());
+    }
+    charge(JsonCodecCharge::Retain {
+        bytes: length as u64,
+    })?;
+    charge(JsonCodecCharge::CopyAdmission {
+        bytes: length as u64,
+    })?;
+    charge(JsonCodecCharge::AllocationOperation {
+        bytes: length as u64,
+    })?;
+    let mut table = Vec::new();
+    table
+        .try_reserve_exact(length)
+        .map_err(super::Error::Allocation)?;
+    charge(JsonCodecCharge::Retain {
+        bytes: (table.capacity() - length) as u64,
+    })?;
+    charge(JsonCodecCharge::Copy {
+        bytes: length as u64,
+    })?;
+    table.resize(length, 0);
+    // Each byte causes at most one lexical item inspection. Fund the complete
+    // scan before entering it; no callbacks or encodings are needed per item.
+    charge(JsonCodecCharge::Inspect {
+        items: document.len() as u64,
+    })?;
+    let mut prepaid = |_| Ok(());
+    let prepaid =
+        std::cell::RefCell::new(&mut prepaid as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
+    let mut lexical = super::admission::Lexical::default();
+    let mut index = Index::default();
+    for byte in document {
+        let depth = lexical.depth;
+        let string = lexical.string;
+        let item = lexical.byte(*byte, bounds, code, &prepaid)?;
+        index.byte(&mut table, *byte, depth, string, item)?;
+    }
+    index.finish(&table)?;
+    Ok(table)
 }

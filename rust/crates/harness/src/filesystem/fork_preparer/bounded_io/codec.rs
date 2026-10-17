@@ -376,6 +376,7 @@ impl PreparationIo {
         )
     }
 
+    #[inline]
     pub(crate) fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {
         let next = match charge {
             Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),

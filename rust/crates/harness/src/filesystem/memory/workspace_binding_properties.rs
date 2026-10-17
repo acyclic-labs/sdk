@@ -45,7 +45,7 @@ async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
     let right = MemoryHarnessStorage::new(AgentId::new(), 65536)
         .await
         .unwrap();
-    let path = format!("batch/{}.txt", text[0]);
+    let path = format!("batch/item-{}.txt", text[0]);
     let first = format!("first:{}", text[1]);
     let second = format!("second:{}", text[2]);
     right
