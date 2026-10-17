@@ -116,7 +116,7 @@ fn kernel_charge(bencher: Bencher, (context, recheck): (u8, bool)) {
     bencher
         .counter(divan::counter::ItemsCount::new(CHARGES_PER_BATCH))
         .with_inputs(|| fixture(context, recheck))
-        .bench_refs(operation);
+        .bench_refs(|work| operation(work));
 }
 
 #[divan::bench(args = [0, 1], threads = [4], sample_count = 64, sample_size = 8)]
