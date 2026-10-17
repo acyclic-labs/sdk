@@ -6,7 +6,7 @@ import type {
   CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, ModelRequest as ModelRequestWire,
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
-  DiscoveredContext, PinnedContextPath, SkillMetadata,
+  DiscoveredContext, PinnedContextPath, SkillMetadata, InstructionIdentity,
   WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
@@ -177,6 +177,14 @@ export class NativeContracts {
 
   verifyFileBytes(file: FileRef, bytes: Uint8Array): void {
     wasm.verifyFileBytes(file, bytes);
+  }
+
+  instructionFrameBytes(file: FileRef, source: InstructionIdentity): number {
+    return wasm.instructionFrameBytes(file, source);
+  }
+
+  frameInstructions(file: FileRef, source: InstructionIdentity, bytes: Uint8Array, maximum: number): string {
+    return wasm.frameInstructions(file, source, bytes, BigInt(maximum));
   }
 
   decodeAttachmentManifest(manifest: FileRef, bytes: Uint8Array, itemCount: number): readonly Attachment[] {

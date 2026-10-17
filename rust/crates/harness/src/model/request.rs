@@ -35,6 +35,8 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
+        let mut remaining = limits.render_bytes;
+        reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
         #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;

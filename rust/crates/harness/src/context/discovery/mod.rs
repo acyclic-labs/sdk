@@ -7,7 +7,7 @@ use crate::{
         ContentResidencyVerifier, FileRef, PrivateDirectoryEntryKind, VolumeRef,
         validate_content_path,
     },
-    model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
+    model::{ModelContent, ModelMessage, ModelRole},
     resources::GenerationRef,
 };
 use serde::{Deserialize, Serialize};

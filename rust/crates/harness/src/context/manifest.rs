@@ -57,7 +57,13 @@ impl ContextManifest {
             limits.validate(work)?;
             crate::executor::json::json_byte_length(self, limits.render_bytes, work)?;
             self.discovery.validate(work)?;
-            for file in self.discovery.instructions.iter().chain(&self.sources) {
+            for file in self
+                .discovery
+                .instructions
+                .iter()
+                .map(|instruction| &**instruction)
+                .chain(&self.sources)
+            {
                 limits.validate_file(file, work)?;
             }
             for tool in &self.tools {

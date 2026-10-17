@@ -193,3 +193,54 @@ fn owned_compaction_proof_reconstructs_exactly_and_releases_actual_fields() -> R
     assert_eq!(cancelled.owned_bytes()?, 0);
     Ok(())
 }
+
+#[test]
+fn production_compaction_preserves_typed_project_instructions_with_role_control() -> Result<()> {
+    use crate::model::{FileProjectionPolicy, InstructionIdentity};
+    let file = message(ModelRole::System, "rules")?
+        .content
+        .file_refs()
+        .next()
+        .unwrap()
+        .clone();
+    let mut instructions = Vec::new();
+    for name in ["AGENTS.md", "CLAUDE.md"] {
+        instructions.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Part(ModelContentPart::File {
+                policy: FileProjectionPolicy::ProjectInstructions(Box::new(
+                    InstructionIdentity::new(file.volume().clone(), format!("nested/{name}"))?,
+                )),
+                file: file.clone(),
+            }),
+        });
+    }
+    let mut messages = instructions.clone();
+    messages.extend([
+        text(ModelRole::User, "old"),
+        text(ModelRole::Assistant, "answer"),
+        text(ModelRole::User, "current"),
+    ]);
+    let source = context(messages, Some(4));
+    let (retained, proof) = compact(&source, 4, source.messages.len())?;
+    for instruction in &instructions {
+        assert!(retained.messages.contains(instruction));
+    }
+    validate_compaction(&proof, &source, &retained, None)?;
+    // Same role, bytes and positions; remove only the typed retention marker.
+    let mut unmarked = source.clone();
+    for message in &mut unmarked.messages[..2] {
+        let ModelContent::Part(ModelContentPart::File { policy, .. }) = &mut message.content else {
+            unreachable!()
+        };
+        *policy = FileProjectionPolicy::BoundedFull;
+    }
+    let (dropped, _) = compact(&unmarked, 2, unmarked.messages.len())?;
+    assert!(dropped.messages.iter().all(|message| {
+        message
+            .content
+            .file_refs()
+            .all(|file| file != instructions[0].content.file_refs().next().unwrap())
+    }));
+    Ok(())
+}

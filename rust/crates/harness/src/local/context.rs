@@ -184,7 +184,7 @@ impl LocalHarness {
                     }
                     .validate_instruction(&bytes)?;
                     self.limits.validate_file(&file, &mut None)?;
-                    discovery.instructions.push(file);
+                    discovery.instructions.push(file.into());
                 }
                 Err(Error::NotFound(_)) => {}
                 Err(error) => return Err(error),

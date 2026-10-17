@@ -6,6 +6,15 @@ use acyclic_harness::{
 };
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(manifest) =
+        acyclic_harness::context::ContextManifest::decode(bytes, Limits::default())
+    {
+        let encoded = manifest.encode(Limits::default()).unwrap();
+        assert_eq!(
+            acyclic_harness::context::ContextManifest::decode(&encoded, Limits::default()).unwrap(),
+            manifest
+        );
+    }
     let Ok(request) = serde_json::from_slice::<ModelRequest>(bytes) else {
         return;
     };

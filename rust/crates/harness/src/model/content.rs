@@ -270,6 +270,10 @@ impl ModelContent {
         self.file_parts()
             .any(|(_, policy)| matches!(policy, FileProjectionPolicy::Native(_)))
     }
+    pub(crate) fn contains_project_instructions(&self) -> bool {
+        self.file_parts()
+            .any(|(_, policy)| matches!(policy, FileProjectionPolicy::ProjectInstructions(_)))
+    }
     /// Configuration claims for the authenticated host to verify.
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
         self.file_bindings().filter_map(|(_, binding)| binding)

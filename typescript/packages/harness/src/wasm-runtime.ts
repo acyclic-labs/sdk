@@ -16,7 +16,7 @@ const REQUIRED_HARNESS_WASM_EXPORTS = [
   "defaultCompactionPolicy", "validateThresholdCompaction", "validateModelTokenCount", "decodeExecutionEventJson",
   "validateModelContextSelection", "validateSelectedModelContext",
   "validateContextSelection", "applyContextProjection", "parseSkillMetadata", "projectDiscoveredContext",
-  "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath",
+  "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath", "instructionFrameBytes", "frameInstructions",
   "prepareConversationTurn",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
   "validateAuthorityPathSegment", "validateComponentLabel",

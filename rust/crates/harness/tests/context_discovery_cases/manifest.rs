@@ -131,10 +131,10 @@ async fn assert_request(
         .zip(INSTRUCTIONS)
     {
         assert_eq!(pinned.path(), path);
-        assert_eq!(message.role, ModelRole::System);
+        assert_eq!(message.role, ModelRole::User);
         assert_eq!(
             message.content.file_refs().collect::<Vec<_>>(),
-            vec![pinned]
+            vec![&**pinned]
         );
         assert_eq!(
             reader.read(pinned, 32_768, None)?.await?.as_ref(),

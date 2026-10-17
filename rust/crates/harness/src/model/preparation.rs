@@ -224,6 +224,11 @@ impl FileProjectionPolicy {
         Ok(match self {
             Self::Reference => Self::Reference,
             Self::BoundedFull => Self::BoundedFull,
+            Self::ProjectInstructions(source) => {
+                Self::ProjectInstructions(copy_boxed(source.as_ref(), quota, |source, quota| {
+                    source.copy_fields(quota)
+                })?)
+            }
             Self::Native(policy) => {
                 Self::Native(copy_boxed(policy.as_ref(), quota, |policy, quota| {
                     history_step(quota.work(), 1)?;

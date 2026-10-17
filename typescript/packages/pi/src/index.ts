@@ -1,4 +1,4 @@
-import { projectModelFile, type FileProjectionOptions, type ModelAttempt, type ModelContentPart,
+import { projectModelFile, modelFileProjectionBytes, HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES, type FileProjectionOptions, type ModelAttempt, type ModelContentPart,
   type ModelEvent, type ModelProvider, type ModelRequest, type ModelTokenCount } from "@acyclic-labs/harness";
 
 export type PiEvent =
@@ -74,18 +74,33 @@ export interface PiProjectedRequest {
 
 /** Safe default projection; custom Pi bridges can still supply their own. */
 export async function projectPiRequest(request: ModelRequest, options: FileProjectionOptions = {}): Promise<PiProjectedRequest> {
+  let remaining = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
+  if (!Number.isSafeInteger(remaining) || remaining < 0) throw new TypeError("maxResolvedBytes must be a non-negative safe integer");
+  let required = 0;
   for (const message of request.messages) {
     const parts = Array.isArray(message.content) ? message.content : [message.content];
     for (const part of parts) {
       if (typeof part !== "object" || part === null) continue;
       const data = part.kind === "tool_result" && part.content?.kind === "parts" ? part.content.parts : [part];
       for (const item of data) {
-        if (item.kind === "file" && item.policy !== "reference" && item.policy !== "bounded_full") {
+        if (item.kind === "file" && item.policy !== "reference" && item.policy !== "bounded_full"
+          && !(typeof item.policy === "object" && "project_instructions" in item.policy)) {
           throw new TypeError("unsupported native media policy for Pi adapter");
+        }
+        if (item.kind === "file") {
+          required += await modelFileProjectionBytes(item);
+          if (!Number.isSafeInteger(required) || required > remaining) throw new TypeError("files exceed combined projection byte limit");
         }
       }
     }
   }
+  const projectFile = async (part: Extract<ModelContentPart, { kind: "file" }>) => {
+    const bytes = await modelFileProjectionBytes(part);
+    if (bytes > remaining) throw new TypeError("files exceed combined projection byte limit");
+    const allowance = remaining;
+    remaining -= bytes;
+    return projectModelFile(part, { ...options, maxResolvedBytes: allowance });
+  };
   const messages: PiProjectedMessage[] = [];
   for (const message of request.messages) {
     const parts = typeof message.content === "string" ? [{ kind: "text", text: message.content }]
@@ -101,7 +116,7 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
           content.push({ type: "text", text: part.text });
           break;
         case "file":
-          content.push({ type: "text", text: await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, options) });
+          content.push({ type: "text", text: await projectFile(part as Extract<ModelContentPart, { kind: "file" }>) });
           break;
         case "tool_call":
           if (message.role !== "assistant" || typeof part.callId !== "string" || !part.callId
@@ -118,7 +133,7 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
             for (const item of part.content.parts) {
               if (item.kind === "text") data.push({ type: "text", text: item.text });
               else if (item.kind === "file") {
-                data.push({ type: "text", text: await projectModelFile(item, options) });
+                data.push({ type: "text", text: await projectFile(item) });
               } else throw new TypeError("unsupported Pi tool result data");
             }
             content.push({ type: "tool_result", callId: part.callId, name: part.name, value: data });

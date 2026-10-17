@@ -63,7 +63,10 @@ async fn volume_generation_is_pinned_across_an_update_between_instruction_reads(
     {
         let broken = capture(true).await?;
         assert_eq!(broken, [b"old agents".to_vec(), b"new claude".to_vec()]);
-        assert_ne!(broken, expected, "detector missed the former checkout route");
+        assert_ne!(
+            broken, expected,
+            "detector missed the former checkout route"
+        );
     }
     Ok(())
 }

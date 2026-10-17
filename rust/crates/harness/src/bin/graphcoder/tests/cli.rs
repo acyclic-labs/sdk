@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod instruction_review;
 use acyclic_harness::{
     OperationId,
     client::prepare_local_prompt,
@@ -46,6 +47,10 @@ async fn execute(
     input.write_all(&request).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
+        .env("CODEX_HOME", settings)
+        .env("LOCALAPPDATA", settings)
+        .env("XDG_DATA_HOME", settings)
+        .env_remove("OPENAI_API_KEY")
         .current_dir(workspace)
         .arg("--workspace")
         .arg(workspace)
@@ -138,7 +143,8 @@ async fn scenario(mode: Mode) {
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep the current goal in GOAL.md in the agent private volume; use active, blocked or done frontmatter status."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep each Markdown plan in plans/<id>.md beside GOAL.md in the agent private volume; use ordinary file tools and - [ ], - [~], - [x] task lists."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
-                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Reply using the workspace instructions. λ"}]},
+                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
+                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
                         ]));
                         assert_eq!(body["store"], false);
@@ -167,7 +173,12 @@ async fn scenario(mode: Mode) {
     if instructions {
         std::fs::write(
             workspace.join("AGENTS.md"),
-            "Reply using the workspace instructions. λ",
+            "Reply using the workspace instructions. λ\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("CLAUDE.md"),
+            "Project marker: claude-context λ",
         )
         .unwrap();
     }

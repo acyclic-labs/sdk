@@ -34,7 +34,7 @@ pub(in crate::context) fn place_context(
     io: Option<&PreparationIo>,
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, &contribution, placement, limits, io)?;
-    compose_context(context, contribution, placement, marker, io)
+    compose_context(context, contribution, placement, marker, limits, io)
 }
 
 pub(in crate::context) fn place_snapshot(
@@ -46,7 +46,7 @@ pub(in crate::context) fn place_snapshot(
 ) -> Result<Context> {
     let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
     let snapshot = copy_context(snapshot, io)?;
-    compose_context(context, snapshot, placement, marker, io)
+    compose_context(context, snapshot, placement, marker, limits, io)
 }
 
 struct JoinedMetadata<'a>(
@@ -159,7 +159,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    crate::executor::with_history_io(io, |work| {
+    let bytes = crate::executor::with_history_io(io, |work| {
         crate::executor::json::json_byte_length(
             &JoinedContext {
                 messages: ContextMessages {
@@ -173,8 +173,10 @@ fn preflight_context_composition(
             limits.render_bytes,
             work,
         )
-        .map(|_| ())
     })?;
+    let mut remaining = limits.render_bytes - bytes;
+    crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
+    crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)
 }
 
@@ -183,6 +185,7 @@ fn compose_context(
     mut contribution: Context,
     placement: ContextPlacement,
     marker: Option<u32>,
+    limits: Limits,
     io: Option<&PreparationIo>,
 ) -> Result<Context> {
     context.current_input_index = marker;
@@ -195,6 +198,9 @@ fn compose_context(
         ContextPlacement::Append => {
             append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
+    }
+    if crate::model::deduplicate_reads(&mut context.messages, io)? {
+        validate_projected_context(&context, limits, io)?;
     }
     Ok(context)
 }

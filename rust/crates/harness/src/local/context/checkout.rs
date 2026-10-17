@@ -73,7 +73,15 @@ impl LocalHarness {
                 )?
                 .await?
                 .0;
-            discovery.instructions.push(file);
+            discovery
+                .instructions
+                .push(crate::model::ProjectInstruction::Captured {
+                    file,
+                    source: crate::model::InstructionIdentity::new(
+                        self.project.clone(),
+                        name.clone(),
+                    )?,
+                });
         }
         Ok(discovery)
     }
