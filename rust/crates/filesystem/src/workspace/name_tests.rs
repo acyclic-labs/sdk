@@ -6,10 +6,12 @@ use std::cell::Cell;
 
 #[test]
 fn cancellation_after_encoding_precedes_length_errors_and_retention() {
-    for text in ["é".repeat(127), "é".repeat(128)] {
+    for (count, skip) in [(127, false), (128, false), (128, true)] {
+        let text = "é".repeat(count);
         let cancellation = CancellationToken::new();
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let mut copied = 0;
+        SKIP_LENGTH_CANCELLATION.with(|flag| flag.set(skip));
         let result = WorkspaceName::with_probe(
             &text,
             &mut accounting,
@@ -23,15 +25,27 @@ fn cancellation_after_encoding_precedes_length_errors_and_retention() {
                 }
             },
         );
-        assert!(
+        SKIP_LENGTH_CANCELLATION.with(|flag| flag.set(false));
+        assert_eq!(
             matches!(result, Err(WorkspaceError::Cancelled(_))),
+            !skip,
             "{result:?}"
         );
+        if skip {
+            assert!(matches!(
+                result,
+                Err(WorkspaceError::Name(WorkspaceNameError::TooLong))
+            ));
+        }
     }
 }
 
 std::thread_local! {
     static EXTRA_ALLOCATION: Cell<bool> = const { Cell::new(false) };
+    static SKIP_LENGTH_CANCELLATION: Cell<bool> = const { Cell::new(false) };
+}
+pub(super) fn skip_length_cancellation() -> bool {
+    SKIP_LENGTH_CANCELLATION.with(Cell::get)
 }
 pub(super) fn redundant_allocation() {
     if EXTRA_ALLOCATION.with(Cell::get) {
