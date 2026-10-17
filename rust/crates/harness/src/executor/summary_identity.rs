@@ -2,7 +2,6 @@ use crate::OperationId;
 use serde::Deserialize;
 
 // Only the journal's complete, immutable execution payload namespace qualifies.
-#[cfg(any(test, feature = "filesystem"))]
 pub(crate) fn summary_operation(path: &str) -> Option<OperationId> {
     let tail = path.strip_prefix(".system/execution/")?;
     let (operation, name) = tail.split_once('/')?;
