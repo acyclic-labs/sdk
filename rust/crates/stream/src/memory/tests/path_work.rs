@@ -40,17 +40,17 @@ fn projected(state: &State, destinations: &[StreamPath]) -> BTreeSet<String> {
                 .match_indices('/')
                 .map(|(end, _)| end)
                 .chain(std::iter::once(path.as_str().len()))
-                .map(move |end| path.as_str()[..end].to_owned())
+                .filter_map(move |end| path.as_str().get(..end).map(str::to_owned))
         })
         .filter(|path| !state.paths.contains_key(path.as_str()))
         .collect()
 }
 fn result<'a>(items: impl Iterator<Item = (&'a StreamPath, usize)>) -> Vec<String> {
     items
-        .map(|(path, end)| path.as_str()[..end].to_owned())
+        .filter_map(|(path, end)| path.as_str().get(..end).map(str::to_owned))
         .collect()
 }
-fn verify(state: &State, destinations: &[StreamPath], actual: Vec<String>) {
+fn verify(state: &State, destinations: &[StreamPath], actual: &[String]) {
     let unique = actual.iter().cloned().collect::<BTreeSet<_>>();
     assert_eq!(unique.len(), actual.len(), "duplicate path allocation");
     assert_eq!(
@@ -73,7 +73,7 @@ proptest! {
         let provider = provider(&known);
         let state = futures::executor::block_on(provider.state.read());
         let actual = result(missing_paths(&state, destinations.iter()));
-        verify(&state, &destinations, actual.clone());
+        verify(&state, &destinations, &actual);
         prop_assert_eq!(&actual, &result(old_missing_paths(&state, destinations.iter())));
         let (planned, _) = provider.paths(&state, destinations.iter()).unwrap();
         prop_assert_eq!(actual, planned.iter().map(|(path, _)| path.as_str().to_owned()).collect::<Vec<_>>());
@@ -118,7 +118,7 @@ fn negative_control_existing_parent_does_not_imply_existing_destination() {
     verify(
         &state,
         &destinations,
-        result(missing_paths(&state, incorrectly_skipped)),
+        &result(missing_paths(&state, incorrectly_skipped)),
     );
 }
 

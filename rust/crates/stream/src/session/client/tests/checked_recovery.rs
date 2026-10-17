@@ -74,7 +74,7 @@ async fn append_one(provider: &MemoryStream, ledger: &mut Vec<CommitId>) -> Test
     provider
         .append(AppendRequest {
             path: StreamPath::new("events")?,
-            records: vec![OwnedBytes::from(vec![sequence as u8])],
+            records: vec![OwnedBytes::from(vec![sequence.to_le_bytes()[0]])],
             if_tail: Some(sequence as u64),
             idempotency_key: None,
         })
@@ -102,6 +102,46 @@ async fn buffered(received: &Received, generation: u64, next: u64, tail: u64) ->
         tokio::time::timeout(Duration::from_secs(1), changed).await?;
     }
 }
+/// Wait for `target` to resume follow 1 at `generation`, from the last yielded commit.
+async fn assert_resumed(
+    target: &Fixture,
+    generation: u64,
+    next: u64,
+    ledger: &[CommitId],
+) -> TestResult {
+    loop {
+        let changed = target.counts.changed.notified();
+        let resume = target
+            .counts
+            .resumes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, current, _)| *id == 1 && *current == generation)
+            .copied();
+        let guard = target
+            .counts
+            .guards
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(id, current, _)| *id == 1 && *current == generation)
+            .cloned();
+        if let (Some((_, _, resume)), Some((_, _, guard))) = (resume, guard) {
+            assert_eq!(resume, next, "checked ALL must resume the last yielded cut");
+            let yielded = ledger
+                .get(usize::try_from(next - 1)?)
+                .ok_or("unyielded cut")?;
+            assert_eq!(
+                guard.as_ref(),
+                yielded.as_bytes(),
+                "checked ALL must resume the last yielded commit, never the last received commit"
+            );
+            return Ok(());
+        }
+        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+    }
+}
 async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let mut ledger = Vec::new();
@@ -124,7 +164,9 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             wire::SessionFollow {
                 path: "events".into(),
                 delivery: wire::SessionDelivery::All as i32,
-                preceding_commit_id: Bytes::copy_from_slice(ledger[0].as_bytes()),
+                preceding_commit_id: Bytes::copy_from_slice(
+                    ledger.first().ok_or("empty ledger")?.as_bytes(),
+                ),
             },
             1,
         )
@@ -160,36 +202,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             // An unpolled cursor still owns its old-generation deliveries.
             // Recovery cannot refill their credit until next() discards them.
             can_buffer = false;
-            let target = if moved { &new } else { &old };
-            loop {
-                let changed = target.counts.changed.notified();
-                let resume = target
-                    .counts
-                    .resumes
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|(id, current, _)| *id == 1 && *current == generation)
-                    .copied();
-                let guard = target
-                    .counts
-                    .guards
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|(id, current, _)| *id == 1 && *current == generation)
-                    .cloned();
-                if let (Some((_, _, resume)), Some((_, _, guard))) = (resume, guard) {
-                    assert_eq!(resume, next, "checked ALL must resume the last yielded cut");
-                    assert_eq!(
-                        guard.as_ref(),
-                        ledger[next as usize - 1].as_bytes(),
-                        "checked ALL must resume the last yielded commit, never the last received commit"
-                    );
-                    break;
-                }
-                tokio::time::timeout(Duration::from_secs(1), changed).await?;
-            }
+            assert_resumed(if moved { &new } else { &old }, generation, next, &ledger).await?;
         }
         if let Some(append) = actions.get(index) {
             if *append {
@@ -202,7 +215,10 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
                     return Err("ALL returned another item".into());
                 };
                 assert_eq!(record.sequence, next);
-                assert_eq!(record.commit_id.as_ref(), ledger[next as usize].as_bytes());
+                let expected = ledger
+                    .get(usize::try_from(next)?)
+                    .ok_or("unappended record")?;
+                assert_eq!(record.commit_id.as_ref(), expected.as_bytes());
                 assert_eq!(frame.after.as_ref().map(|after| after.next), Some(next + 1));
                 next += 1;
                 can_buffer = true;

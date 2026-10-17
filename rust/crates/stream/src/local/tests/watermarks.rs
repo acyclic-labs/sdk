@@ -22,14 +22,19 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
                 }
                 selected => {
                     let selected = usize::from(selected);
+                    let (Some(path), Some(count)) =
+                        (paths.get(selected), accepted.get_mut(selected))
+                    else {
+                        return Err("operation names no path".into());
+                    };
                     deferring_durability(provider.append(AppendRequest {
-                        path: paths[selected].clone(),
+                        path: path.clone(),
                         records: vec![Bytes::from_static(b"accepted")],
                         if_tail: None,
                         idempotency_key: None,
                     }))
                     .await?;
-                    accepted[selected] += 1;
+                    *count += 1;
                     frames += 1;
                 }
             }
@@ -50,21 +55,21 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
             if early_durable {
                 provider.inner.synced.send_replace(frames);
             }
-            for index in 0..3 {
-                if accepted[index] == 0 {
+            for ((path, accepted), durable) in paths.iter().zip(accepted).zip(&mut durable) {
+                if accepted == 0 {
                     assert_eq!(
-                        provider.watermarks(paths[index].clone()).await,
+                        provider.watermarks(path.clone()).await,
                         Err(StreamError::NotFound)
                     );
                     continue;
                 }
                 if flushed == frames {
-                    durable[index] = accepted[index];
+                    *durable = accepted;
                 }
-                let actual = provider.watermarks(paths[index].clone()).await?;
-                assert_eq!(actual.accepted, accepted[index]);
+                let actual = provider.watermarks(path.clone()).await?;
+                assert_eq!(actual.accepted, accepted);
                 assert_eq!(
-                    actual.durable, durable[index],
+                    actual.durable, *durable,
                     "durable watermark must reflect only a completed device cut"
                 );
                 assert!(actual.durable <= actual.accepted);

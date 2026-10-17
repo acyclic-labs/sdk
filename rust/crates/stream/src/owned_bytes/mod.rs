@@ -377,7 +377,8 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
         <Vec<u8> as serde::Deserialize<'de>>::deserialize(deserializer).map(Self::from)
     }
 }
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 #[inline]
@@ -388,25 +389,30 @@ pub(crate) fn compare_bytes(mut left: &[u8], mut right: &[u8]) -> Ordering {
     if OLD_BYTE_COMPARE.get() {
         return compare_suffix(left, right);
     }
-    if let (Some(a), Some(b)) = (left.first_chunk::<16>(), right.first_chunk::<16>()) {
+    if let (Some((a, left)), Some((b, right))) = (
+        left.split_first_chunk::<16>(),
+        right.split_first_chunk::<16>(),
+    ) {
         let order = u128::from_be_bytes(*a).cmp(&u128::from_be_bytes(*b));
         if order != Ordering::Equal {
             return order;
         }
-        return compare_suffix(&left[16..], &right[16..]);
+        return compare_suffix(left, right);
     }
     // Short keys stay inline. Every load consumes a disjoint prefix; equal
     // prefixes are never examined again by the remaining comparison.
     macro_rules! word {
         ($size:literal, $integer:ty) => {
-            if let (Some(a), Some(b)) = (left.first_chunk::<$size>(), right.first_chunk::<$size>())
-            {
+            if let (Some((a, rest_left)), Some((b, rest_right))) = (
+                left.split_first_chunk::<$size>(),
+                right.split_first_chunk::<$size>(),
+            ) {
                 let order = <$integer>::from_be_bytes(*a).cmp(&<$integer>::from_be_bytes(*b));
                 if order != Ordering::Equal {
                     return order;
                 }
-                left = &left[$size..];
-                right = &right[$size..];
+                left = rest_left;
+                right = rest_right;
             }
         };
     }
@@ -434,7 +440,8 @@ std::thread_local! {
 }
 #[cfg(test)]
 use std::cell::Cell;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod comparison_work;
 
 #[inline]

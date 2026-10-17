@@ -60,7 +60,7 @@ proptest! {
             prop_assert_eq!(left == right, left.as_str() == right.as_str());
             let map = std::collections::BTreeMap::from([(left.clone(), 7)]);
             prop_assert_eq!(map.get(left.as_str()), Some(&7));
-            prop_assert_eq!(StreamPath::new(left.as_str()).unwrap(), left.clone());
+            prop_assert_eq!(&StreamPath::new(left.as_str()).unwrap(), &left);
             #[cfg(feature = "serde")]
             {
                 let bytes = serde_json::to_vec(&left).unwrap();
@@ -73,9 +73,9 @@ proptest! {
     fn ancestors_only_expose_complete_validated_segments(text in "[a-z]{1,12}(/[a-z]{1,12}){1,8}", other in input()) {
         let path = StreamPath::new(&text).unwrap();
         for end in 0..=text.len() {
-            let candidate = &text[..end];
+            let candidate = text.get(..end).unwrap();
             let ancestor = path.ancestor(candidate);
-            prop_assert_eq!(ancestor.is_some(), end > 0 && (end == text.len() || text.as_bytes()[end] == b'/'));
+            prop_assert_eq!(ancestor.is_some(), end > 0 && text.as_bytes().get(end).is_none_or(|byte| *byte == b'/'));
             if let Some(ancestor) = ancestor {
                 prop_assert_eq!(ancestor.as_str(), candidate);
                 prop_assert_eq!(StreamPath::new(candidate).unwrap(), ancestor);

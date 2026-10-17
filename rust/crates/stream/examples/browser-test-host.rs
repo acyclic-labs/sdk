@@ -51,35 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connections: Arc::new(AtomicUsize::new(0)),
         refusals: Arc::new(AtomicUsize::new(0)),
     };
-    let online = host.online.clone();
-    let fail_next = host.fail_next.clone();
-    let service = wire::stream_service_server::StreamServiceServer::with_interceptor(
-        grpc::Service::new(host.streams.clone()),
-        move |request: tonic::Request<()>| {
-            if request
-                .metadata()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                != Some("Bearer browser-test")
-            {
-                return Err(tonic::Status::unauthenticated("test credential"));
-            }
-            if fail_next
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
-                    left.checked_sub(1)
-                })
-                .is_ok()
-            {
-                return Err(tonic::Status::unavailable("one failed HTTP request"));
-            }
-            if !online.load(Ordering::Acquire) {
-                return Err(tonic::Status::unavailable("injected outage"));
-            }
-            Ok(request)
-        },
-    );
-    let routes = tonic::service::Routes::new(tonic_web::GrpcWebLayer::new().layer(service))
-        .into_axum_router();
+    let routes = grpc_routes(&host);
     let app = Router::new()
         .route("/v1/stream/session", get(upgrade))
         .route(
@@ -115,15 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = host.saved.send(None);
             }),
         )
-        .route(
-            "/fixture/save-outbox",
-            post(|State(host): State<Host>| async move {
-                let path = acyclic_stream::StreamPath::new("remote-outbox/files").unwrap();
-                let accepted = host.streams.tail(path).await.unwrap();
-                host.streams.outbox_saved.store(accepted, Ordering::Release);
-                let _ = host.saved.send(Some("remote-outbox/files".into()));
-            }),
-        )
+        .route("/fixture/save-outbox", post(save_outbox))
         .route(
             "/fixture/outbox-consumed/{position}",
             get(
@@ -158,6 +122,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
     Ok(())
 }
+/// Saves the outbox at its accepted tail, then announces that path's watermarks.
+async fn save_outbox(State(host): State<Host>) -> Result<(), String> {
+    let path = acyclic_stream::StreamPath::new("remote-outbox/files")
+        .map_err(|error| format!("{error:?}"))?;
+    let accepted = host
+        .streams
+        .tail(path)
+        .await
+        .map_err(|error| format!("{error:?}"))?;
+    host.streams.outbox_saved.store(accepted, Ordering::Release);
+    let _ = host.saved.send(Some("remote-outbox/files".into()));
+    Ok(())
+}
+/// The unary gRPC-web service behind the test credential and injected outages.
+fn grpc_routes(host: &Host) -> Router {
+    let online = host.online.clone();
+    let fail_next = host.fail_next.clone();
+    let service = wire::stream_service_server::StreamServiceServer::with_interceptor(
+        grpc::Service::new(host.streams.clone()),
+        move |request: tonic::Request<()>| {
+            if request
+                .metadata()
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                != Some("Bearer browser-test")
+            {
+                return Err(tonic::Status::unauthenticated("test credential"));
+            }
+            if fail_next
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(tonic::Status::unavailable("one failed HTTP request"));
+            }
+            if !online.load(Ordering::Acquire) {
+                return Err(tonic::Status::unavailable("injected outage"));
+            }
+            Ok(request)
+        },
+    );
+    tonic::service::Routes::new(tonic_web::GrpcWebLayer::new().layer(service)).into_axum_router()
+}
 async fn upgrade(
     State(host): State<Host>,
     headers: axum::http::HeaderMap,
@@ -188,11 +196,67 @@ async fn upgrade(
         .max_message_size(acyclic_stream::MAX_COMMAND_BYTES)
         .on_upgrade(move |socket| serve(host, socket)))
 }
+/// Each followed channel: generation, path, opened, and the next granted position.
+type Routes = BTreeMap<u64, (u64, String, bool, u64)>;
+/// Track follows and their consumption from one inbound client frame.
+fn observe(routes: &mut Routes, progress: &Host, frame: &wire::SessionFrame) {
+    match &frame.body {
+        Some(wire::session_frame::Body::Interest(interest)) => {
+            for remove in &interest.remove {
+                routes.remove(&remove.channel_id);
+            }
+            for subscription in &interest.upsert {
+                if let (Some(channel), Some(wire::session_subscription::Kind::Follow(follow))) =
+                    (&subscription.channel, &subscription.kind)
+                {
+                    let next = subscription.resume.as_ref().map_or(0, |cursor| cursor.next);
+                    routes.insert(
+                        channel.channel_id,
+                        (channel.generation, follow.path.clone(), false, next),
+                    );
+                }
+            }
+        }
+        Some(wire::session_frame::Body::Window(window)) => {
+            if let Some((_, path, opened, next)) = routes.get_mut(&frame.channel_id) {
+                if *opened {
+                    *next += u64::from(window.frames);
+                    let consumed = match path.as_str() {
+                        "durable/files" => Some(&progress.consumed),
+                        "remote-outbox/files" => Some(&progress.outbox_consumed),
+                        _ => None,
+                    };
+                    if let Some(consumed) = consumed {
+                        consumed.fetch_max(*next, Ordering::AcqRel);
+                        progress.consumed_changed.notify_waiters();
+                    }
+                } else {
+                    *opened = true;
+                }
+            }
+        }
+        Some(wire::session_frame::Body::Ack(ack)) => {
+            let consumed = match routes
+                .get(&frame.channel_id)
+                .map(|(_, path, _, _)| path.as_str())
+            {
+                Some("durable/files") => &progress.consumed,
+                Some("remote-outbox/files") => &progress.outbox_consumed,
+                _ => return,
+            };
+            if let Some(applied) = &ack.applied {
+                consumed.fetch_max(applied.next, Ordering::AcqRel);
+                progress.consumed_changed.notify_waiters();
+            }
+        }
+        _ => {}
+    }
+}
 async fn serve(host: Host, socket: WebSocket) {
     host.connections.fetch_add(1, Ordering::AcqRel);
     let (mut sender, incoming) = socket.split();
     // Test observation lock only. Never nested or held across I/O/await.
-    let routes = Arc::new(Mutex::new(BTreeMap::<u64, (u64, String, bool, u64)>::new()));
+    let routes = Arc::new(Mutex::new(Routes::new()));
     let observing = routes.clone();
     let progress = host.clone();
     let mut saved = host.saved.subscribe();
@@ -205,71 +269,10 @@ async fn serve(host: Host, socket: WebSocket) {
             }
         })
         .inspect(move |frame| {
-            if let Ok(frame) = frame {
-                let mut routes = observing.lock().expect("test routes poisoned");
-                match &frame.body {
-                    Some(wire::session_frame::Body::Interest(interest)) => {
-                        for remove in &interest.remove {
-                            routes.remove(&remove.channel_id);
-                        }
-                        for subscription in &interest.upsert {
-                            if let (
-                                Some(channel),
-                                Some(wire::session_subscription::Kind::Follow(follow)),
-                            ) = (&subscription.channel, &subscription.kind)
-                            {
-                                routes.insert(
-                                    channel.channel_id,
-                                    (
-                                        channel.generation,
-                                        follow.path.clone(),
-                                        false,
-                                        subscription
-                                            .resume
-                                            .as_ref()
-                                            .map_or(0, |cursor| cursor.next),
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                    Some(wire::session_frame::Body::Window(window)) => {
-                        if let Some((_, path, opened, next)) = routes.get_mut(&frame.channel_id) {
-                            if *opened {
-                                *next += u64::from(window.frames);
-                                let consumed = match path.as_str() {
-                                    "durable/files" => Some(&progress.consumed),
-                                    "remote-outbox/files" => Some(&progress.outbox_consumed),
-                                    _ => None,
-                                };
-                                if let Some(consumed) = consumed {
-                                    consumed.fetch_max(*next, Ordering::AcqRel);
-                                    progress.consumed_changed.notify_waiters();
-                                }
-                            } else {
-                                *opened = true;
-                            }
-                        }
-                    }
-                    Some(wire::session_frame::Body::Ack(ack))
-                        if routes
-                            .get(&frame.channel_id)
-                            .is_some_and(|(_, path, _, _)| {
-                                matches!(path.as_str(), "durable/files" | "remote-outbox/files")
-                            }) =>
-                    {
-                        if let Some(applied) = &ack.applied {
-                            let consumed = if routes[&frame.channel_id].1 == "remote-outbox/files" {
-                                &progress.outbox_consumed
-                            } else {
-                                &progress.consumed
-                            };
-                            consumed.fetch_max(applied.next, Ordering::AcqRel);
-                            progress.consumed_changed.notify_waiters();
-                        }
-                    }
-                    _ => {}
-                }
+            if let Ok(frame) = frame
+                && let Ok(mut routes) = observing.lock()
+            {
+                observe(&mut routes, &progress, frame);
             }
         })
         .boxed();
@@ -287,10 +290,11 @@ async fn serve(host: Host, socket: WebSocket) {
             changed = saved.changed() => {
                 if changed.is_err() { break; }
                 let only = saved.borrow_and_update().clone();
-                let subscriptions = routes.lock().expect("test routes poisoned").clone();
+                let Ok(subscriptions) = routes.lock().map(|routes| routes.clone()) else { break; };
                 for (channel_id, (generation, path, _, _)) in subscriptions {
                     if only.as_ref().is_some_and(|only| only != &path) { continue; }
-                    let Ok(marks) = host.streams.watermarks(acyclic_stream::StreamPath::new(path).unwrap()).await else { continue; };
+                    let Ok(path) = acyclic_stream::StreamPath::new(path) else { continue; };
+                    let Ok(marks) = host.streams.watermarks(path).await else { continue; };
                     let frame = wire::SessionFrame { channel_id, generation,
                         body: Some(wire::session_frame::Body::Watermark(wire::SessionWatermark { accepted: marks.accepted, durable: marks.durable })) };
                     if sender.send(Message::Binary(frame.encode_to_vec().into())).await.is_err() { return; }

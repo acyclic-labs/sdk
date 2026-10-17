@@ -9,11 +9,13 @@ use std::future::Future;
 use thiserror::Error;
 
 pub mod conformance;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod follow_tests;
 #[cfg(feature = "grpc")]
 pub mod grpc;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod head_tests;
 pub mod http_response;
 pub mod persistence;
@@ -165,9 +167,11 @@ pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
     PreparedNativeCommit,
 };
-#[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod test_latency;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod test_meter;
 #[cfg(all(
     test,

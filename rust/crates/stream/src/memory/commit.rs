@@ -210,7 +210,9 @@ impl MemoryStream {
             let (changed, _) = watch::channel(0);
             paths.push((
                 destination
-                    .ancestor(&destination.as_str()[..end])
+                    .as_str()
+                    .get(..end)
+                    .and_then(|ancestor| destination.ancestor(ancestor))
                     .ok_or(StreamError::InvalidPath)?,
                 PathState {
                     children: ChildIndex::default(),

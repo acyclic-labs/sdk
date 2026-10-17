@@ -48,7 +48,9 @@ fn inputs() -> impl Strategy<Value = (i32, u64, wire::SessionData)> {
                 2 => {
                     if let Some(Item::Record(record)) = &mut data.item {
                         record.sequence += 1;
-                        data.after.as_mut().unwrap().next += 1;
+                        if let Some(after) = data.after.as_mut() {
+                            after.next += 1;
+                        }
                     }
                 }
                 3 => {
@@ -57,7 +59,11 @@ fn inputs() -> impl Strategy<Value = (i32, u64, wire::SessionData)> {
                     }
                 }
                 4 | 5 => data.durable = data.accepted + 1,
-                6 | 7 => data.after.as_mut().unwrap().opaque = vec![1].into(),
+                6 | 7 => {
+                    if let Some(after) = data.after.as_mut() {
+                        after.opaque = vec![1].into();
+                    }
+                }
                 8 => {
                     if let Some(Item::Record(record)) = &mut data.item {
                         record.commit_id = anchor[..31].to_vec().into();
@@ -243,10 +249,10 @@ fn browser_corpus_uses_the_shared_rust_codec_and_exact_outcomes() {
         assert_eq!((data.accepted, data.durable), (accepted, durable), "{name}");
         match &data.item {
             Some(Item::LatestValue(value)) if delivery == 2 => {
-                assert_eq!(value.key.len(), length, "{name}")
+                assert_eq!(value.key.len(), length, "{name}");
             }
             Some(Item::Record(record)) if delivery == 1 => {
-                assert_eq!(record.commit_id.len(), length, "{name}")
+                assert_eq!(record.commit_id.len(), length, "{name}");
             }
             _ => panic!("{name} has the wrong item"),
         }

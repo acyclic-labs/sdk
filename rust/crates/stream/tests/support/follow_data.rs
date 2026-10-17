@@ -80,7 +80,7 @@ pub(super) fn check(
                     && after.next > next.saturating_add(1)
                     && actual.is_ok() =>
             {
-                actual = Err(StreamError::Unavailable)
+                actual = Err(StreamError::Unavailable);
             }
             Fault::SkipAll if delivery == SessionDelivery::All as i32 => {
                 if let Some(Item::Record(record)) = &data.item
@@ -91,12 +91,11 @@ pub(super) fn check(
                 }
             }
             Fault::EmptyKey | Fault::WrongMode if after.next > next => {
-                if let Some(Item::LatestValue(value)) = &data.item {
-                    if (fault == Fault::EmptyKey && value.key.is_empty() && delivery == 2)
-                        || (fault == Fault::WrongMode && delivery == 1)
-                    {
-                        actual = Ok(after.next - 1);
-                    }
+                if let Some(Item::LatestValue(value)) = &data.item
+                    && ((fault == Fault::EmptyKey && value.key.is_empty() && delivery == 2)
+                        || (fault == Fault::WrongMode && delivery == 1))
+                {
+                    actual = Ok(after.next - 1);
                 }
             }
             _ => {}
@@ -112,8 +111,8 @@ pub(super) fn check(
 pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
     if let Ok(subscription) = wire::SessionSubscription::decode(payload) {
         assert_eq!(
-            wire::SessionSubscription::decode(subscription.encode_to_vec().as_slice()).unwrap(),
-            subscription
+            wire::SessionSubscription::decode(subscription.encode_to_vec().as_slice()).as_ref(),
+            Ok(&subscription)
         );
         if let (Some(wire::session_subscription::Kind::Follow(follow)), Some(resume)) =
             (&subscription.kind, &subscription.resume)
@@ -121,7 +120,7 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
             let _ = validate_follow(follow, resume);
         }
     }
-    let next = next % (u64::MAX - u16::MAX as u64 - 1);
+    let next = next % (u64::MAX - u64::from(u16::MAX) - 1);
     let gap = u64::from(gap) + 1;
     let mut follow = wire::SessionFollow {
         path: "agents/status".into(),
@@ -143,25 +142,24 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
             },
         )),
     };
-    check(
-        follow.delivery,
-        next,
-        &data,
-        if broken {
-            Fault::StrictLatest
-        } else {
-            Fault::None
-        },
-    )
-    .expect("LATEST accepts a conflated cursor");
+    let fault = if broken {
+        Fault::StrictLatest
+    } else {
+        Fault::None
+    };
     assert_eq!(
-        follow_sequence(follow.delivery, next, &data).unwrap(),
-        next + gap - 1
+        check(follow.delivery, next, &data, fault),
+        Ok(()),
+        "LATEST accepts a conflated cursor"
+    );
+    assert_eq!(
+        follow_sequence(follow.delivery, next, &data),
+        Ok(next + gap - 1)
     );
     let canonical = data.encode_to_vec();
     assert_eq!(
-        wire::SessionData::decode(canonical.as_slice()).unwrap(),
-        data
+        wire::SessionData::decode(canonical.as_slice()).as_ref(),
+        Ok(&data)
     );
     data.durable = data.accepted + 1;
     assert!(follow_sequence(follow.delivery, next, &data).is_err());
@@ -177,14 +175,14 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
         next: next + 1,
         opaque: Bytes::new(),
     };
-    validate_follow(&follow, &resume).unwrap();
+    assert_eq!(validate_follow(&follow, &resume), Ok(()));
     follow.preceding_commit_id = Bytes::from_static(&[7; 31]);
     assert!(validate_follow(&follow, &resume).is_err());
     follow.preceding_commit_id = Bytes::from_static(&[7; 32]);
     follow.delivery = wire::SessionDelivery::Latest as i32;
     assert!(validate_follow(&follow, &resume).is_err());
     follow.preceding_commit_id = Bytes::new();
-    validate_follow(&follow, &resume).unwrap();
+    assert_eq!(validate_follow(&follow, &resume), Ok(()));
 
     data.item = Some(wire::session_data::Item::Record(wire::Record {
         sequence: next,
@@ -192,13 +190,19 @@ pub fn exercise(next: u64, gap: u16, payload: &[u8], broken: bool) {
         commit_id: Bytes::from_static(&[7; 32]),
         ..Default::default()
     }));
-    data.after.as_mut().unwrap().next = next + 1;
+    data.after = Some(wire::SessionCursor {
+        next: next + 1,
+        opaque: Bytes::new(),
+    });
     assert_eq!(
-        follow_sequence(wire::SessionDelivery::All as i32, next, &data).unwrap(),
-        next
+        follow_sequence(wire::SessionDelivery::All as i32, next, &data),
+        Ok(next)
     );
-    data.after.as_mut().unwrap().next += 1;
-    data.accepted = data.after.as_ref().unwrap().next;
+    data.after = Some(wire::SessionCursor {
+        next: next + 2,
+        opaque: Bytes::new(),
+    });
+    data.accepted = next + 2;
     assert!(follow_sequence(wire::SessionDelivery::All as i32, next, &data).is_err());
     if let Some(Item::Record(record)) = &mut data.item {
         record.sequence += 1;

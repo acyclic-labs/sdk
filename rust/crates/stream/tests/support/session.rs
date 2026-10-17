@@ -65,6 +65,90 @@ pub(super) struct Counts {
     pub(super) resumes: Mutex<Vec<(u64, u64, u64)>>,
     pub(super) guards: Mutex<Vec<(u64, u64, Bytes)>>,
 }
+impl Counts {
+    /// Count one inbound frame of `session` before the server consumes it.
+    fn observe_input(&self, session: usize, frame: &wire::SessionFrame) -> Result<(), StreamError> {
+        // Uncompressed gRPC message prefix plus the complete protobuf.
+        self.received_bytes
+            .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
+        match &frame.body {
+            Some(Body::Interest(interest)) => self.observe_interest(interest)?,
+            Some(Body::Ack(_)) => {
+                self.acknowledgements.fetch_add(1, Ordering::Relaxed);
+            }
+            Some(Body::Window(grant)) if frame.channel_id != 0 => {
+                let mut traffic = self.traffic.lock().map_err(|_| StreamError::Unavailable)?;
+                let flow = traffic
+                    .entry((session, frame.channel_id, frame.generation))
+                    .or_default();
+                flow.granted_frames += u64::from(grant.frames);
+                flow.granted_bytes += grant.bytes;
+                drop(traffic);
+                self.windows.fetch_add(1, Ordering::Relaxed);
+                self.changed.notify_one();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn observe_interest(&self, interest: &wire::SessionInterest) -> Result<(), StreamError> {
+        self.removals
+            .fetch_add(interest.remove.len(), Ordering::Relaxed);
+        self.changed.notify_one();
+        for subscription in &interest.upsert {
+            if matches!(subscription.kind, Some(Kind::Children(_))) {
+                self.children.fetch_add(1, Ordering::Relaxed);
+            }
+            match subscription.kind {
+                Some(Kind::Follow(_) | Kind::Children(_)) => {
+                    self.follows.fetch_add(1, Ordering::Relaxed);
+                    if let (Some(channel), Some(resume)) =
+                        (subscription.channel, subscription.resume.as_ref())
+                    {
+                        self.resumes
+                            .lock()
+                            .map_err(|_| StreamError::Unavailable)?
+                            .push((channel.channel_id, channel.generation, resume.next));
+                    }
+                    self.changed.notify_one();
+                    if let (Some(channel), Some(Kind::Follow(follow))) =
+                        (subscription.channel, &subscription.kind)
+                    {
+                        self.guards
+                            .lock()
+                            .map_err(|_| StreamError::Unavailable)?
+                            .push((
+                                channel.channel_id,
+                                channel.generation,
+                                follow.preceding_commit_id.clone(),
+                            ));
+                    }
+                }
+                Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => {
+                    self.actors.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    /// Count one outbound data frame of `session`.
+    fn observe_output(&self, session: usize, frame: &wire::SessionFrame) {
+        let Some(Body::Data(data)) = &frame.body else {
+            return;
+        };
+        let mut traffic = self.traffic.lock().expect("fixture traffic poisoned");
+        let flow = traffic
+            .entry((session, frame.channel_id, frame.generation))
+            .or_default();
+        flow.positions
+            .push(data.after.as_ref().expect("data cursor").next);
+        flow.sent_bytes += frame.encoded_len() as u64;
+        drop(traffic);
+        self.sent.fetch_add(1, Ordering::Relaxed);
+        self.changed.notify_one();
+    }
+}
 struct CountSessionDrop(Arc<Counts>);
 impl Drop for CountSessionDrop {
     fn drop(&mut self) {
@@ -114,94 +198,7 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
             .into_inner()
             .map(move |input| {
                 if let Ok(frame) = &input {
-                    // Uncompressed gRPC message prefix plus the complete protobuf.
-                    counts
-                        .received_bytes
-                        .fetch_add(5 + frame.encoded_len(), Ordering::Relaxed);
-                }
-                if let Ok(wire::SessionFrame {
-                    body: Some(Body::Interest(interest)),
-                    ..
-                }) = &input
-                {
-                    counts
-                        .removals
-                        .fetch_add(interest.remove.len(), Ordering::Relaxed);
-                    counts.changed.notify_one();
-                    for subscription in &interest.upsert {
-                        if matches!(subscription.kind, Some(Kind::Children(_))) {
-                            counts.children.fetch_add(1, Ordering::Relaxed);
-                        }
-                        match subscription.kind {
-                            Some(Kind::Follow(_) | Kind::Children(_)) => {
-                                counts.follows.fetch_add(1, Ordering::Relaxed);
-                                if let (Some(channel), Some(resume)) =
-                                    (subscription.channel, subscription.resume.as_ref())
-                                {
-                                    counts
-                                        .resumes
-                                        .lock()
-                                        .map_err(|_| StreamError::Unavailable)?
-                                        .push((
-                                            channel.channel_id,
-                                            channel.generation,
-                                            resume.next,
-                                        ));
-                                }
-                                counts.changed.notify_one();
-                                if let (Some(channel), Some(Kind::Follow(follow))) =
-                                    (subscription.channel, &subscription.kind)
-                                {
-                                    counts
-                                        .guards
-                                        .lock()
-                                        .map_err(|_| StreamError::Unavailable)?
-                                        .push((
-                                            channel.channel_id,
-                                            channel.generation,
-                                            follow.preceding_commit_id.clone(),
-                                        ));
-                                }
-                            }
-                            Some(Kind::ActorSocket(_) | Kind::ActorCall(_)) => {
-                                counts.actors.fetch_add(1, Ordering::Relaxed);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                if matches!(
-                    &input,
-                    Ok(wire::SessionFrame {
-                        body: Some(Body::Ack(_)),
-                        ..
-                    })
-                ) {
-                    counts.acknowledgements.fetch_add(1, Ordering::Relaxed);
-                }
-                if matches!(&input, Ok(wire::SessionFrame {
-                    channel_id, body: Some(Body::Window(_)), ..
-                }) if *channel_id != 0)
-                {
-                    if let Ok(wire::SessionFrame {
-                        channel_id,
-                        generation,
-                        body: Some(Body::Window(grant)),
-                        ..
-                    }) = &input
-                    {
-                        let mut traffic = counts
-                            .traffic
-                            .lock()
-                            .map_err(|_| StreamError::Unavailable)?;
-                        let flow = traffic
-                            .entry((session, *channel_id, *generation))
-                            .or_default();
-                        flow.granted_frames += u64::from(grant.frames);
-                        flow.granted_bytes += grant.bytes;
-                    }
-                    counts.windows.fetch_add(1, Ordering::Relaxed);
-                    counts.changed.notify_one();
+                    counts.observe_input(session, frame)?;
                 }
                 input.map_err(|_| StreamError::Unavailable)
             })
@@ -230,29 +227,8 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
                     {
                         opened.preceding_commit_id = Bytes::new();
                     }
-                    if item
-                        .as_ref()
-                        .is_ok_and(|value| matches!(value.body, Some(Body::Data(_))))
-                    {
-                        if let Ok(wire::SessionFrame {
-                            channel_id,
-                            generation,
-                            body: Some(Body::Data(data)),
-                            ..
-                        }) = &item
-                        {
-                            let mut traffic =
-                                sent.traffic.lock().expect("fixture traffic poisoned");
-                            let flow = traffic
-                                .entry((session, *channel_id, *generation))
-                                .or_default();
-                            flow.positions
-                                .push(data.after.as_ref().expect("data cursor").next);
-                            flow.sent_bytes +=
-                                item.as_ref().expect("data frame").encoded_len() as u64;
-                        }
-                        sent.sent.fetch_add(1, Ordering::Relaxed);
-                        sent.changed.notify_one();
+                    if let Ok(frame) = &item {
+                        sent.observe_output(session, frame);
                     }
                     item.map_err(|error| Status::failed_precondition(error.code()))
                 }),

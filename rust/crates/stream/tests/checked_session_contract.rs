@@ -13,10 +13,8 @@ mod checks {
 }
 use checks::{Fault, check};
 
-fn tagged(kind: u8, value: impl Message) -> Vec<u8> {
-    let mut bytes = vec![kind];
-    value.encode(&mut bytes).unwrap();
-    bytes
+fn tagged(kind: u8, value: &impl Message) -> Vec<u8> {
+    [vec![kind], value.encode_to_vec()].concat()
 }
 fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
     let guards =
@@ -25,7 +23,7 @@ fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
             guard.resize(length, 0);
             tagged(
                 0,
-                wire::SessionSubscription {
+                &wire::SessionSubscription {
                     resume: Some(wire::SessionCursor {
                         next,
                         ..Default::default()
@@ -44,14 +42,14 @@ fn contract_inputs() -> impl Strategy<Value = Vec<u8>> {
     let snapshots = (any::<[u8; 32]>(), 1_u64..=u64::MAX).prop_map(|(anchor, next)| {
         tagged(
             1,
-            wire::SessionCursor {
+            &wire::SessionCursor {
                 next,
                 opaque: anchor.to_vec().into(),
             },
         )
     });
     let watermarks = (any::<u64>(), prop::option::of(any::<u64>()))
-        .prop_map(|(tail, durable)| tagged(2, wire::TailResponse { tail, durable }));
+        .prop_map(|(tail, durable)| tagged(2, &wire::TailResponse { tail, durable }));
     prop_oneof![guards, snapshots, watermarks]
 }
 
@@ -146,16 +144,19 @@ fn reject_mutant(fault: Fault, invariant: &str) {
     let result = runner.run(&contract_inputs(), |input| {
         check(&input, fault).map_err(TestCaseError::fail)
     });
-    let Err(TestError::Fail(reason, input)) = result else {
-        panic!("mutant {fault:?} escaped the shared property/fuzz driver")
-    };
-    assert_eq!(reason.to_string(), invariant);
-    assert_eq!(
-        check(&input, Fault::None),
-        Ok(()),
-        "shrunk counterexample must pass the production codecs"
+    assert!(
+        matches!(result, Err(TestError::Fail(..))),
+        "mutant {fault:?} escaped the shared property/fuzz driver"
     );
-    assert_eq!(check(&input, fault), Err(invariant));
+    if let Err(TestError::Fail(reason, input)) = result {
+        assert_eq!(reason.to_string(), invariant);
+        assert_eq!(
+            check(&input, Fault::None),
+            Ok(()),
+            "shrunk counterexample must pass the production codecs"
+        );
+        assert_eq!(check(&input, fault), Err(invariant));
+    }
 }
 
 #[test]

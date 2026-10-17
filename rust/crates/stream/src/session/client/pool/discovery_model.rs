@@ -11,7 +11,7 @@ pub fn verify_discovery_admission(live: bool, bypass_delivery: bool) {
     let _entered = runtime.enter();
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, _) = fixture(channel.clone());
+        let (mut pool, _) = fixture(&channel);
         for (id, route) in &mut pool.routes {
             route.node = "good".into();
             route.kind = Kind::Follow(wire::SessionFollow {

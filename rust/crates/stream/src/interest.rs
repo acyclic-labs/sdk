@@ -139,6 +139,7 @@ impl Refresh {
     }
 }
 
-#[cfg(all(test, acyclic_stream_loom))]
+#[cfg(test)]
+#[cfg(acyclic_stream_loom)]
 #[path = "../publication-models/interest.rs"]
 mod models;

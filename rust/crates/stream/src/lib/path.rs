@@ -128,7 +128,8 @@ impl StreamPath {
             #[cfg(not(target_arch = "wasm32"))]
             PathText::Native(text) => &text.text,
         };
-        &text[..self.length]
+        // `length` always ends on a segment boundary of `text`.
+        text.get(..self.length).unwrap_or(text)
     }
 
     fn prefix(&self, length: usize) -> Self {
@@ -145,7 +146,10 @@ impl StreamPath {
         if ancestor.is_empty()
             || ancestor.len() > path.len()
             || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
-            || (ancestor.len() < path.len() && path.as_bytes()[ancestor.len()] != b'/')
+            || path
+                .as_bytes()
+                .get(ancestor.len())
+                .is_some_and(|byte| *byte != b'/')
         {
             return None;
         }

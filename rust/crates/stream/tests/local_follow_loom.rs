@@ -1,4 +1,4 @@
-//! Run with RUSTFLAGS="--cfg acyclic_loom" and --features local,http.
+//! Run with `RUSTFLAGS="--cfg acyclic_loom"` and `--features local,http`.
 #![cfg(all(acyclic_loom, feature = "local"))]
 
 #[test]

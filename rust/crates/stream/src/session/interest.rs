@@ -43,8 +43,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         }
         for (identity, channel, source) in opened {
             self.remove(identity.channel_id)?;
+            let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
-            let mode = self.channels[&identity.channel_id].source_mode();
             self.sources.insert(identity, source, mode);
         }
         self.revision = interest.revision;

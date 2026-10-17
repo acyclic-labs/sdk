@@ -22,7 +22,7 @@ fn ordered_prefixes_avoid_general_comparisons_at_n_and_two_n() {
             }
             let a = vec![b'a'; length];
             let mut b = a.clone();
-            b[if late { length - 1 } else { 8 }] = b'b';
+            *b.get_mut(if late { length - 1 } else { 8 }).unwrap() = b'b';
             let expected = a.cmp(&b);
             let left = OwnedBytes::copy_from_slice(&a);
             let right = OwnedBytes::copy_from_slice(&b);
@@ -79,7 +79,7 @@ proptest! {
         let end = cut.min(a.len());
         let short = left.slice(..end);
         acyclic_test_support::differential(
-            || (a.clone(), b.clone(), a.cmp(&b), a[..end].cmp(&b)),
+            || (a.clone(), b.clone(), a.cmp(&b), a.get(..end).unwrap().cmp(&b)),
             || (left.to_vec(), right.to_vec(), left.cmp(&right), short.cmp(&right)),
         );
     }
@@ -94,7 +94,7 @@ proptest! {
         let start = from.min(a.len());
         let end = start.max(to.min(a.len()));
         let alias = left.slice(start..end);
-        let expected = a[start..end].to_vec();
+        let expected = a.get(start..end).unwrap().to_vec();
         let _ = acyclic_test_support::differential(
             || (a.clone(), b.clone(), a.cmp(&b), expected.cmp(&a), expected == a),
             || (left.to_vec(), right.to_vec(), left.cmp(&right), alias.cmp(&left), alias == left),
@@ -150,7 +150,7 @@ proptest! {
         for (bytes, expected_checks) in [(&ordinary, 0), (&retained, 1)] {
             RANGE_CHECKS.with(|count| count.set(0));
             let allocation = acyclic_test_support::measure(|| {
-                assert_eq!(bytes.as_slice(), &data[start..end]);
+                assert_eq!(bytes.as_slice(), data.get(start..end).unwrap());
             });
             prop_assert_eq!(RANGE_CHECKS.with(Cell::get), expected_checks);
             prop_assert_eq!(allocation.count_total, 0);

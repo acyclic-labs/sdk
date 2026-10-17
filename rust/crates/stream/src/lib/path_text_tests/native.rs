@@ -14,7 +14,10 @@ fn clone_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
     let output_bytes = text.len() + text.rfind('/').unwrap();
     // Two identical output Strings, plus one shared text allocation.
     assert_eq!(heap.count_total, 3);
-    assert_eq!(heap.bytes_total as usize, text_allocation(text) + output_bytes);
+    assert_eq!(
+        usize::try_from(heap.bytes_total).unwrap(),
+        text_allocation(text) + output_bytes
+    );
 }
 fn cloned_output(text: &str) -> (String, String) {
     let path = StreamPath::new(text).unwrap();
@@ -69,26 +72,28 @@ fn chain(old: bool, text: &str) -> (usize, u64) {
         let mut path = BaselinePath::new(text).unwrap();
         loop {
             let cloned = path.clone();
-            assert_eq!(cloned.as_str(), &text[..end]);
+            let prefix = text.get(..end).unwrap();
+            assert_eq!(cloned.as_str(), prefix);
             cloned.as_str().hash(&mut hash);
             count += 1;
             let parent = cloned.parent();
-            assert_eq!(parent.is_some(), text[..end].contains('/'));
+            assert_eq!(parent.is_some(), prefix.contains('/'));
             let Some(parent) = parent else { break };
-            end = text[..end].rfind('/').unwrap();
+            end = prefix.rfind('/').unwrap();
             path = parent;
         }
     } else {
         let mut path = StreamPath::new(text).unwrap();
         loop {
             let cloned = path.clone();
-            assert_eq!(cloned.as_str(), &text[..end]);
+            let prefix = text.get(..end).unwrap();
+            assert_eq!(cloned.as_str(), prefix);
             cloned.as_str().hash(&mut hash);
             count += 1;
             let parent = cloned.parent();
-            assert_eq!(parent.is_some(), text[..end].contains('/'));
+            assert_eq!(parent.is_some(), prefix.contains('/'));
             let Some(parent) = parent else { break };
-            end = text[..end].rfind('/').unwrap();
+            end = prefix.rfind('/').unwrap();
             path = parent;
         }
     }
@@ -98,8 +103,14 @@ fn chain(old: bool, text: &str) -> (usize, u64) {
 fn chain_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
     assert_eq!(heap.count_total, 1);
     assert_eq!(heap.count_max, 1);
-    assert_eq!(heap.bytes_total as usize, text_allocation(text));
-    assert_eq!(heap.bytes_max as usize, text_allocation(text));
+    assert_eq!(
+        usize::try_from(heap.bytes_total).unwrap(),
+        text_allocation(text)
+    );
+    assert_eq!(
+        usize::try_from(heap.bytes_max).unwrap(),
+        text_allocation(text)
+    );
     assert_eq!(heap.count_current, 0);
     assert_eq!(heap.bytes_current, 0);
 }
@@ -108,14 +119,12 @@ fn chain_heap_bound(heap: acyclic_test_support::AllocationInfo, text: &str) {
 fn n_and_two_n_long_paths_and_deep_chains_allocate_one_owner_and_reject_copies() {
     for (width, depth) in [(16, 4), (32, 4), (8, 16), (8, 32)] {
         let text = vec!["a".repeat(width); depth].join("/");
-        let (expected, [before, after]) = acyclic_test_support::differential(
-            || chain(true, &text),
-            || chain(false, &text),
-        );
+        let (expected, [before, after]) =
+            acyclic_test_support::differential(|| chain(true, &text), || chain(false, &text));
         assert_eq!(expected.0, depth);
         assert_eq!(before.count_total, 2);
         assert_eq!(
-            before.bytes_total as usize,
+            usize::try_from(before.bytes_total).unwrap(),
             text.len() + 3 * std::mem::size_of::<usize>()
         );
         chain_heap_bound(after, &text);
@@ -124,13 +133,16 @@ fn n_and_two_n_long_paths_and_deep_chains_allocate_one_owner_and_reject_copies()
         let heap = acyclic_test_support::measure(|| broken = Some(chain(false, &text)));
         drop(restore);
         assert_eq!(broken, Some(expected));
-        assert_eq!(heap.count_total as usize, depth + 1);
+        assert_eq!(usize::try_from(heap.count_total).unwrap(), depth + 1);
         let copied: usize = text
             .match_indices('/')
-            .map(|(end, _)| text_allocation(&text[..end]))
+            .map(|(end, _)| text_allocation(text.get(..end).unwrap()))
             .chain(std::iter::once(text_allocation(&text)))
             .sum();
-        assert_eq!(heap.bytes_total as usize, text_allocation(&text) + copied);
+        assert_eq!(
+            usize::try_from(heap.bytes_total).unwrap(),
+            text_allocation(&text) + copied
+        );
         assert!(std::panic::catch_unwind(|| chain_heap_bound(heap, &text)).is_err());
     }
 }

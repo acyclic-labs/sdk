@@ -10,7 +10,7 @@ fn source(identity: wire::SessionChannel) -> Source {
             .chain((0..2).map(|sequence| {
                 Ok(Event::Record(crate::Record {
                     sequence,
-                    value: vec![sequence as u8].into(),
+                    value: vec![sequence.to_le_bytes()[0]].into(),
                     commit_id: crate::CommitId::from_bytes([1; 32]),
                     committed_at_micros: 0,
                 }))
@@ -26,7 +26,9 @@ fn partition(sources: &Sources) -> Result<(), TestCaseError> {
         let mut next = queue.first;
         while let Some(id) = next {
             prop_assert!(seen.insert(id), "duplicate or cyclic source {id}");
-            let entry = &sources.entries[&id];
+            let Some(entry) = sources.entries.get(&id) else {
+                return Err(TestCaseError::fail("queued source has no entry"));
+            };
             let Some(links) = entry.links else {
                 return Err(TestCaseError::fail("linked source has no links"));
             };
@@ -61,6 +63,12 @@ fn mode(value: u8) -> Option<usize> {
         _ => Some(EITHER),
     }
 }
+/// The channel `selected` names, or a failed case.
+fn slot<T>(values: &mut [T], selected: usize) -> Result<&mut T, TestCaseError> {
+    values
+        .get_mut(selected)
+        .ok_or_else(|| TestCaseError::fail(format!("no channel {selected}")))
+}
 fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseError> {
     let mut sources = Sources::new();
     let mut generations = [1; 3];
@@ -78,16 +86,17 @@ fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseErr
         Poll::Ready(Ok(Some(_)))
     ));
     for &(action, selected, value) in operations {
+        let id = u64::from(selected % 3) + 1;
         let selected = usize::from(selected % 3);
-        let id = selected as u64 + 1;
         match action % 5 {
             0 => {
-                generations[selected] += 1;
-                delivered[selected] = 0;
+                let generation = slot(&mut generations, selected)?;
+                *generation += 1;
                 let identity = wire::SessionChannel {
                     channel_id: id,
-                    generation: generations[selected],
+                    generation: *generation,
                 };
+                *slot(&mut delivered, selected)? = 0;
                 sources.insert(identity, source(identity), mode(value));
             }
             1 => {
@@ -110,14 +119,18 @@ fn exercise(operations: &[(u8, u8, u8)], broken: bool) -> Result<(), TestCaseErr
                 if let Poll::Ready(Ok(Some((identity, Ok(Event::Record(record)))))) =
                     sources.poll(room, &mut cx)
                 {
-                    let selected = identity.channel_id as usize - 1;
-                    prop_assert_eq!(record.sequence, delivered[selected]);
-                    delivered[selected] += 1;
-                    let class = sources.entries[&identity.channel_id].mode.unwrap();
+                    let selected = usize::try_from(identity.channel_id - 1)?;
+                    let delivered = slot(&mut delivered, selected)?;
+                    prop_assert_eq!(record.sequence, *delivered);
+                    *delivered += 1;
+                    let class = sources
+                        .entries
+                        .get(&identity.channel_id)
+                        .and_then(|entry| entry.mode);
                     let permitted = match class {
-                        ALL => room.1 && room.2,
-                        LATEST => room.0,
-                        EITHER => room.0 || (room.1 && room.2),
+                        Some(ALL) => room.1 && room.2,
+                        Some(LATEST) => room.0,
+                        Some(EITHER) => room.0 || (room.1 && room.2),
                         _ => false,
                     };
                     prop_assert!(permitted);
@@ -237,7 +250,7 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
         generation: 1,
     };
     sources.insert(old, source(old), Some(ALL));
-    let stale = sources.entries[&1].wake.clone();
+    let stale = sources.entries.get(&1).map(|entry| entry.wake.clone());
     let new = wire::SessionChannel {
         generation: 2,
         ..old
@@ -250,9 +263,15 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
     let mut cx = Context::from_waker(&waker);
     assert!(sources.poll((true, true, true), &mut cx).is_ready());
     assert!(sources.poll((true, true, true), &mut cx).is_pending());
+    let Some(stale) = stale else {
+        panic!("the replaced source had an entry");
+    };
     Wake::wake_by_ref(&stale);
     assert!(sources.poll((true, true, true), &mut cx).is_pending());
-    assert!(!sources.entries[&1].ready);
+    assert_eq!(
+        sources.entries.get(&1).map(|entry| entry.ready),
+        Some(false)
+    );
     partition(&sources).unwrap();
 }
 

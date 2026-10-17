@@ -205,7 +205,8 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     bytes(out, 3, request.idempotency_key.as_bytes());
 }
 
-#[cfg(all(test, feature = "http", not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use prost::Message;

@@ -141,18 +141,21 @@ fn assert_overlap(capture: &Capture) {
         .iter()
         .filter(|span| span.name == "stream.session")
         .collect::<Vec<_>>();
-    assert_eq!(sessions.len(), 1);
-    let session = sessions[0];
+    let [session] = sessions.as_slice() else {
+        panic!("expected one physical session, found {}", sessions.len());
+    };
     assert_eq!(session.parent_id, None, "a physical session must be a root");
     assert!(!session.closed, "B must retain the physical session");
     for name in ["first.request", "second.request"] {
         assert!(
             session.follows_from.iter().any(|index| {
-                let cause = &history[*index];
-                cause.name == "stream.session.channel"
-                    && cause
-                        .parent
-                        .is_some_and(|parent| history[parent].name == name)
+                history.get(*index).is_some_and(|cause| {
+                    cause.name == "stream.session.channel"
+                        && cause
+                            .parent
+                            .and_then(|parent| history.get(parent))
+                            .is_some_and(|parent| parent.name == name)
+                })
             }),
             "each joined interest must have a causal link"
         );
@@ -282,12 +285,12 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         .build()?;
     runtime.block_on(async {
         let fixture = Fixture::open(Arc::new(MemoryStream::default()), "good").await?;
-        let (mut pool, healthy) = pool::fixture::fixture(fixture._channel.clone());
+        let (mut pool, healthy) = pool::fixture::fixture(&fixture._channel);
         pool.links.remove("bad");
         let a_origin = origin(&a_dispatch, true);
         let b_origin = origin(&b_dispatch, false);
         let (sender, receiver) = mpsc::channel(2);
-        let a_progress = Arc::clone(&pool.routes[&1].progress);
+        let a_progress = Arc::clone(&pool.routes.get(&1).unwrap().progress);
         let a = pool.routes.get_mut(&1).unwrap();
         a.records = sender;
         a.node = "good".into();
@@ -307,19 +310,21 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             abandoned: Arc::clone(&pool.abandoned),
         };
         let a = client.cursor(1, a_progress, receiver)?;
-        let _b = client.cursor(3, Arc::clone(&pool.routes[&3].progress), healthy)?;
+        let b_progress = Arc::clone(&pool.routes.get(&3).unwrap().progress);
+        let _b = client.cursor(3, b_progress, healthy)?;
         drop(a);
         // Deliberately assign the stale origin to the successor to test the
         // subscriber oracle independently of span-retirement assertions.
         if broken {
-            pool.routes.get_mut(&3).unwrap().observation = pool.routes[&1].observation.clone();
+            let stale = pool.routes.get(&1).unwrap().observation.clone();
+            pool.routes.get_mut(&3).unwrap().observation = stale;
         }
         pool.reconnect("good")?;
         assert_eq!(pool.routes.len(), 2, "A's removal must still be queued");
         let (node, epoch, ready) = future::poll_fn(|cx| pool::poll_dials(&mut pool.dials, cx))
             .await
             .ok_or("dial ended")?;
-        pool.dial_ready(node, epoch, ready)?;
+        pool.dial_ready(&node, epoch, ready)?;
         pool.subscribe(3)?;
         assert_reconnect_subscriber(&first, &second);
         Ok(())
@@ -589,7 +594,14 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
             1,
             "foreign interest must not add an aliased causal edge"
         );
-        assert_eq!(a_history[physical.follows_from[0]].id, a_channel.id);
+        assert_eq!(
+            physical
+                .follows_from
+                .first()
+                .and_then(|index| a_history.get(*index))
+                .map(|span| span.id),
+            Some(a_channel.id)
+        );
         assert_eq!(second.all("stream.session").len(), 0);
         drop(a);
         drop(a_origin);

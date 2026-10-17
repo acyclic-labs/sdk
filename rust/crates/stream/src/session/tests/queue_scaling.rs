@@ -90,7 +90,10 @@ fn credited_tail_selection_visits_one_head_independent_of_stalled_follows() {
                 bytes: crate::MAX_COMMAND_BYTES as u64,
             };
             session.channels.get_mut(&target).unwrap().credit = session.credit;
-            *before.back_mut().unwrap() = session.channels[&target]
+            *before.back_mut().unwrap() = session
+                .channels
+                .get(&target)
+                .unwrap()
                 .pending
                 .front()
                 .unwrap()
@@ -141,7 +144,7 @@ fn global_byte_credit_selects_fitting_heads_without_overtaking_a_channel() {
     };
     session.channels.insert(3, other);
     for (id, size) in [(1, 1000), (1, 1), (3, 1)] {
-        let sequence = session.channels[&id].pending.len() as u64;
+        let sequence = session.channels.get(&id).unwrap().pending.len() as u64;
         let Event::Record(mut entry) = record(sequence) else {
             unreachable!()
         };

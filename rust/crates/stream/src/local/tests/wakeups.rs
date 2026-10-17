@@ -22,6 +22,27 @@ async fn append(provider: &LocalStream, path: StreamPath) -> Result<(), StreamEr
     .await?;
     Ok(())
 }
+/// Poll `stream` once under a fresh probe; nothing may be ready yet.
+fn probe<S: futures::Stream + ?Sized>(stream: std::pin::Pin<&mut S>) -> Arc<Push> {
+    let probe = Arc::new(Push::default());
+    let wake = Waker::from(probe.clone());
+    assert!(futures::Stream::poll_next(stream, &mut Context::from_waker(&wake)).is_pending());
+    probe
+}
+/// Every subscription ends with one `Unavailable` once the provider fails.
+async fn assert_failed<S, T>(streams: &mut [S]) -> Result<(), Box<dyn std::error::Error>>
+where
+    S: futures::Stream<Item = Result<T, StreamError>> + Unpin,
+{
+    for stream in streams {
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.next()).await?,
+            Some(Err(StreamError::Unavailable))
+        ));
+        assert!(stream.next().await.is_none());
+    }
+    Ok(())
+}
 async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
@@ -34,16 +55,8 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
         let path = StreamPath::new(format!("{}/data", parent.as_str()))?;
         append(&provider, path.clone()).await?;
         let mut follow = provider.follow(path, 1).await?;
-        let probe = Arc::new(Push::default());
-        let wake = Waker::from(probe.clone());
-        assert!(
-            follow
-                .as_mut()
-                .poll_next(&mut Context::from_waker(&wake))
-                .is_pending()
-        );
+        wakes.push(probe(follow.as_mut()));
         records.push(follow);
-        wakes.push(probe);
         let mut discovery = provider
             .children(ChildrenRequest {
                 parent: Some(parent),
@@ -51,16 +64,8 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             })
             .await?;
         assert!(discovery.next().await.is_some());
-        let probe = Arc::new(Push::default());
-        let wake = Waker::from(probe.clone());
-        assert!(
-            discovery
-                .as_mut()
-                .poll_next(&mut Context::from_waker(&wake))
-                .is_pending()
-        );
+        child_wakes.push(probe(discovery.as_mut()));
         children.push(discovery);
-        child_wakes.push(probe);
     }
     // Seeding must not have woken earlier, unrelated subscriptions either.
     assert!(
@@ -78,25 +83,28 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
         // Restore the old provider-wide publication wake without poisoning.
         provider.inner.failed.send_modify(|_| {});
     }
+    let ([woken, unrelated @ ..], Some(follow)) = (wakes.as_slice(), records.first_mut()) else {
+        return Err("no subscriptions were seeded".into());
+    };
     assert!(
-        wakes[1..]
+        unrelated
             .iter()
             .chain(&child_wakes)
             .all(|wake| wake.0.load(Ordering::SeqCst) == 0),
         "append woke unrelated subscriptions"
     );
     assert_eq!(
-        wakes[0].0.load(Ordering::SeqCst),
+        woken.0.load(Ordering::SeqCst),
         1,
         "accepted append must wake its follower once"
     );
-    let record = tokio::time::timeout(std::time::Duration::from_secs(1), records[0].next())
+    let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
         .await?
         .ok_or("follow ended")??;
     assert_eq!(record.sequence, 1);
-    let wake = Waker::from(wakes[0].clone());
+    let wake = Waker::from(woken.clone());
     assert!(
-        records[0]
+        follow
             .as_mut()
             .poll_next(&mut Context::from_waker(&wake))
             .is_pending()
@@ -108,20 +116,8 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
             .chain(&child_wakes)
             .all(|wake| wake.0.load(Ordering::SeqCst) > 0)
     );
-    for follow in &mut records {
-        assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), follow.next()).await?,
-            Some(Err(StreamError::Unavailable))
-        );
-        assert!(follow.next().await.is_none());
-    }
-    for discovery in &mut children {
-        assert!(matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(1), discovery.next()).await?,
-            Some(Err(StreamError::Unavailable))
-        ));
-        assert!(discovery.next().await.is_none());
-    }
+    assert_failed(&mut records).await?;
+    assert_failed(&mut children).await?;
     assert_eq!(provider.inner.failed.receiver_count(), 0);
     eprintln!(
         "local_push subscriptions=64 accepted_record_wakes=1 unrelated_wakes=0 failure_wakes=64"
