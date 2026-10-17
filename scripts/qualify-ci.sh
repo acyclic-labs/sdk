@@ -178,6 +178,20 @@ pinned_pi() {
   )
 }
 
+# Every shipped browser feature set, with its unit and integration tests,
+# compiles warning-free on wasm32; test-only code is not exempt.
+web_warning_closures() {
+  local features
+  for features in browser wasm browser,test-support; do
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+      cargo check --locked -p acyclic-harness --no-default-features \
+        --features "$features" --target wasm32-unknown-unknown --lib --tests
+  done
+  RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
+    cargo check --locked -p acyclic-harness --no-default-features \
+      --target wasm32-unknown-unknown --lib
+}
+
 harness_tests() {
   cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
   grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
@@ -383,6 +397,10 @@ case "$lane" in
       "$TOOLS_DIR/cargo-deny-0.19.0" cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny 1
     "$TOOLS_DIR/cargo-deny-0.19.0/cargo-deny" check
     ;;
+  web-warnings)
+    # The web lane's compile-only closures, runnable without browsers.
+    web_warning_closures
+    ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
     # The host clippy run cannot see code that only the browser build
@@ -402,14 +420,7 @@ case "$lane" in
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
-    for features in browser wasm; do
-      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-        cargo check --locked -p acyclic-harness --no-default-features \
-          --features "$features" --target wasm32-unknown-unknown --lib
-    done
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      cargo check --locked -p acyclic-harness --no-default-features \
-        --target wasm32-unknown-unknown --lib
+    web_warning_closures
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \

@@ -243,6 +243,39 @@ for mode in missing mixed; do
   fi
 done
 
+web_warning_calls() {
+  : >"$gate/cargo.log"
+  : >"$gate/flags.log"
+  (
+    cd "$root"
+    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+      FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
+      bash "$1" web-warnings
+  )
+  mapfile -t cargo_calls <"$gate/cargo.log"
+  mapfile -t flags <"$gate/flags.log"
+  [[ "${#cargo_calls[@]}" -eq 4 ]] || return 1
+  local index features=(browser wasm browser,test-support)
+  for index in 0 1 2; do
+    [[ "${cargo_calls[index]}" == "check --locked -p acyclic-harness --no-default-features --features ${features[index]} --target wasm32-unknown-unknown --lib --tests" ]] || return 1
+  done
+  [[ "${cargo_calls[3]}" == 'check --locked -p acyclic-harness --no-default-features --target wasm32-unknown-unknown --lib' ]] || return 1
+  for index in 0 1 2 3; do [[ "${flags[index]}" == *-Dwarnings* ]] || return 1; done
+}
+web_warning_calls scripts/qualify-ci.sh
+# Controls: the pin rejects a lane without test closures or warning denial.
+for mutation in 's/ --lib --tests$/ --lib/' 's/^    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" /    RUSTFLAGS="${RUSTFLAGS:-}" /'; do
+  sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
+  if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
+    echo "web warning control did not apply: $mutation" >&2
+    exit 1
+  fi
+  if web_warning_calls "$gate/qualify-mutated.sh"; then
+    echo "web warning closures accepted: $mutation" >&2
+    exit 1
+  fi
+done
+
 for lane in docs generation; do
   : >"$gate/cargo.log"
   (
