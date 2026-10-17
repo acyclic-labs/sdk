@@ -1,5 +1,6 @@
 use super::{SearchRequest, SearchResponse};
 use crate::{Result, filesystem::UploadRecord};
+#[cfg(feature = "test-support")]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 pub(crate) fn labels() -> u64 {
