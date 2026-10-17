@@ -76,7 +76,7 @@ pub(super) struct Rules {
 }
 pub(super) const RULES: Rules = Rules {
     boundary: sequence::user_boundary,
-    order: super::gemini_results::order,
+    order,
     normalize: super::text::normalize,
 };
 
@@ -122,9 +122,7 @@ pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rul
             if !(rules.boundary)(messages.first().map(role)) {
                 messages.insert(0, continuation(adapter));
             }
-            if adapter == Adapter::Gemini {
-                (rules.order)(messages);
-            }
+            (rules.order)(messages);
             // Joining turns around a removed empty one, or moving results
             // ahead of text, can leave a blank fragment beside text: normalize
             // the final runs once so a single pass is the fixed point. Both
@@ -149,6 +147,22 @@ pub(super) fn finish_with(adapter: Adapter, messages: &mut Vec<Message<'_>>, rul
         }
         _ => {}
     }
+}
+/// ANT-TOOL-05 and GEM-TOOL-05/06: results answer their calls ahead of any
+/// other content in the turn. Anthropic results move to the front, keeping
+/// the relative order of both groups; Gemini results also follow call order.
+fn order(messages: &mut [Message<'_>]) {
+    for message in messages.iter_mut() {
+        if let Message::Anthropic { content, .. } = message
+            && !sequence::results_lead(content.iter().map(tool_result))
+        {
+            content.sort_by_key(|item| !tool_result(item));
+        }
+    }
+    super::gemini_results::order(messages);
+}
+fn tool_result(item: &Item<'_>) -> bool {
+    matches!(item, Item::Json(value) if sequence::tool_result(value))
 }
 fn role(message: &Message<'_>) -> &'static str {
     match message {
