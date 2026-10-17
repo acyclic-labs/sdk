@@ -4,10 +4,8 @@ use ratatui::{Terminal, backend::TestBackend};
 fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
     let transcript = vec![Line::raw("retained history"); length];
     let help = [Line::raw("Help")];
-    let input = PromptInput {
-        busy: true,
-        ..PromptInput::default()
-    };
+    let mut input = PromptInput::default();
+    input.busy = true;
     let screen = Screen {
         transcript: &transcript,
         feedback: hidden == 1,
