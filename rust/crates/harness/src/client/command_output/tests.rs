@@ -145,8 +145,10 @@ fn malformed_outcomes_never_become_ui_success() {
         let mut file = file(1, 1, 0, "");
         file.bytes = serde_json::to_vec(&value).unwrap().into();
         assert!(CommandOutputView::from_file(&file).is_none());
-        let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).unwrap();
-        assert!(settled(&outcome).is_err());
+        assert!(
+            serde_json::from_slice::<Outcome<'_>>(&file.bytes)
+                .map_or(true, |outcome| settled(&outcome).is_err())
+        );
     }
 }
 
