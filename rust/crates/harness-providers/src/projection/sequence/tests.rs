@@ -192,6 +192,21 @@ mod turns {
             turn_repair_violation(Adapter::Gemini, &batch, &broken),
             Some("unordered responses")
         );
+        // Greptile: responses already in call order but behind text still
+        // interrupt the exchange; production moves them to the front.
+        let mut interrupted = batch.clone();
+        interrupted[2]["parts"].as_array_mut().unwrap().swap(1, 2);
+        let healthy = replay_turns_with(Adapter::Gemini, &interrupted, RULES).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Gemini, &interrupted, &healthy),
+            None
+        );
+        assert_eq!(healthy[2]["parts"][2]["text"], "interrupt");
+        let broken = replay_turns_with(Adapter::Gemini, &interrupted, unordered).unwrap();
+        assert_eq!(
+            turn_repair_violation(Adapter::Gemini, &interrupted, &broken),
+            Some("unordered responses")
+        );
         // Review counterexamples (seed 856): removing an empty turn joins its
         // neighbours, and ordering an unanswered but complete batch moves a
         // result ahead of a blank fragment;
@@ -240,6 +255,7 @@ mod turns {
             include_bytes!("../../../fuzz/corpus/turns/gemini-joined-blank-text").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/anthropic-joined-blank-text").as_slice(),
             include_bytes!("../../../fuzz/corpus/turns/gemini-result-moved-past-blank").as_slice(),
+            include_bytes!("../../../fuzz/corpus/turns/gemini-ordered-behind-text").as_slice(),
         ] {
             assert_turns(bytes);
         }

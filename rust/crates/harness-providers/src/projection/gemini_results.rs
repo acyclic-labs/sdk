@@ -41,12 +41,14 @@ fn order_results(calls: &[Item<'_>], results: &mut [Item<'_>]) {
         Item::Call(call) => Some((Some(call.name.as_ref()), Some(call.id.as_str()))),
         Item::Native(_) => None,
     });
-    // The answered path borrows both sequences and allocates nothing.
-    if answered(calls.clone(), results.iter().filter_map(response)) {
-        return;
-    }
     let count = calls.clone().count();
     if count == 0 || count > results.len() {
+        return;
+    }
+    // Already answered: the raw leading parts are exactly the responses in
+    // call order, so text never interrupts the exchange. This path borrows
+    // both sequences and allocates nothing.
+    if answered(calls.clone(), results[..count].iter().map_while(response)) {
         return;
     }
     let positions: HashMap<_, _> = calls

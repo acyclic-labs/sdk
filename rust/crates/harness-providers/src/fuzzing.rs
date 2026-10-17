@@ -640,7 +640,8 @@ fn unanswered_exchange(contents: &[serde_json::Value]) -> bool {
 }
 
 /// A model turn whose distinct calls each have exactly one response in the
-/// next user turn must be answered first and in call order.
+/// next user turn must be answered first and in call order: its raw leading
+/// parts are exactly those responses, with no text ahead of them.
 fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
     let (Some(calls), Some(responses)) = (model["parts"].as_array(), user["parts"].as_array())
     else {
@@ -650,6 +651,12 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
         return false;
     }
     let calls = keys(calls, "functionCall");
+    // The raw leading parts, text included, must be the responses.
+    let leading: Vec<_> = responses
+        .iter()
+        .take(calls.len())
+        .map_while(|part| keys(std::slice::from_ref(part), "functionResponse").pop())
+        .collect();
     let responses = keys(responses, "functionResponse");
     let distinct = calls
         .iter()
@@ -662,5 +669,5 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
             .count()
             == 1
     });
-    !calls.is_empty() && distinct && complete && responses[..calls.len()] != calls[..]
+    !calls.is_empty() && distinct && complete && leading != calls
 }
