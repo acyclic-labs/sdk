@@ -63,6 +63,7 @@ pub struct FileQueryView {
     storage: super::FileViews,
     rows: BTreeMap<FileKey, Arc<[String]>>,
     models: ViewIndex<super::ModelFileView>,
+    pub(super) notifications: BTreeMap<FileKey, super::NotificationFileView>,
     rejected_models: BTreeSet<FileKey>,
     goal: GoalFileView,
     goal_revision: Option<crate::OperationId>,
@@ -173,6 +174,7 @@ impl FileQueryView {
             storage,
             rows: BTreeMap::new(),
             models,
+            notifications: BTreeMap::new(),
             rejected_models,
             goal: GoalFileView::Missing,
             goal_revision: None,
@@ -201,6 +203,15 @@ impl FileQueryView {
                 }
                 FileKey::RequestHead => {
                     view.progress = super::GoalProgress::from_file(Some(&value))
+                }
+                FileKey::Task {
+                    file: crate::task_volume::TaskFile::Notification(_),
+                    ..
+                } => {
+                    view.notifications.insert(
+                        value.key.clone(),
+                        super::NotificationFileView::from_file(&value),
+                    );
                 }
                 FileKey::Plan(_) => {
                     view.rows.insert(value.key.clone(), plan_rows(&value));
@@ -311,6 +322,7 @@ impl FileQueryView {
             }
             self.rows.remove(key);
             self.models.remove(key);
+            self.notifications.remove(key);
             self.rejected_models.remove(key);
         }
         for file in change.file.iter().chain(&change.files) {
@@ -333,6 +345,13 @@ impl FileQueryView {
             }
             if matches!(file.key, FileKey::Plan(_)) && !self.matches_head(&file) {
                 self.rows.insert(file.key.clone(), plan_rows(&file));
+            }
+            if super::notification_view::identity(&file.key).is_some() && !self.matches_head(&file)
+            {
+                self.notifications.insert(
+                    file.key.clone(),
+                    super::NotificationFileView::from_file(&file),
+                );
             }
             if super::model_view::turn_request(&file.key).is_some() && !self.matches_head(&file) {
                 self.models
@@ -483,6 +502,7 @@ impl FileQueryView {
 fn semantic(key: &FileKey) -> bool {
     matches!(key, FileKey::Goal | FileKey::Plan(_) | FileKey::RequestHead)
         || super::model_view::turn_request(key).is_some()
+        || super::notification_view::identity(key).is_some()
 }
 
 fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {

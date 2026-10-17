@@ -3,9 +3,12 @@
 mod limits;
 #[path = "../support/swarm_membership.rs"]
 mod membership;
+#[path = "../support/notification_files.rs"]
+mod notifications;
 #[path = "../support/swarm_views.rs"]
 mod oracle;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    notifications::exercise(bytes);
     membership::exercise(bytes);
     membership::query(bytes, false);
     limits::exercise(bytes, false);

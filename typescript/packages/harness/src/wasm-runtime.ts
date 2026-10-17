@@ -36,7 +36,7 @@ const REQUIRED_WASM_CONTENT_EXPORTS = [
 ] as const;
 
 const HYPOTHESIS_METHODS = ["advance", "begin", "discard", "observe", "release", "residency", "status", "view", "free"] as const;
-const CLIENT_VIEW_METHODS = ["models", "goals", "plans", "agents", "layout", "status", "cursor", "files", "segments", "free"] as const;
+const CLIENT_VIEW_METHODS = ["notifications", "models", "goals", "plans", "agents", "layout", "status", "cursor", "files", "segments", "free"] as const;
 
 function hasClass(exports: Record<string, unknown>, name: string, prefix: string, methods: readonly string[]): boolean {
   return typeof exports[name] === "function"

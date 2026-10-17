@@ -10,6 +10,7 @@ use std::{
 /// Attention events owned by task/goal records, never inferred from renderer text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum AttentionEvent {
     /// Task has settled and is waiting for input.
     TaskSettled,
@@ -17,6 +18,10 @@ pub enum AttentionEvent {
     TaskFailed,
     /// Task is blocked.
     TaskBlocked,
+    /// An immutable tool binding needs a decision.
+    NeedsApproval,
+    /// The file-driven goal cannot make progress without input.
+    GoalBlocked,
     /// The file-driven goal reached done.
     GoalDone,
 }
@@ -24,6 +29,8 @@ pub enum AttentionEvent {
 /// One notification in ClientViews; identity is its task and source stream offset.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct AttentionNotification {
     /// Stable task identity supplied by the followed stream.
     pub task: String,
@@ -62,12 +69,15 @@ impl AttentionNotification {
             AttentionEvent::TaskSettled => "Task settled",
             AttentionEvent::TaskFailed => "Task failed",
             AttentionEvent::TaskBlocked => "Task blocked",
+            AttentionEvent::NeedsApproval => "Approval needed",
+            AttentionEvent::GoalBlocked => "Goal blocked",
             AttentionEvent::GoalDone => "Goal done",
         }
     }
 }
 
-/// Bounded notification component of ClientViews. A full queue returns backpressure
+/// Bounded terminal-presentation queue. ClientViews reads authoritative files.
+/// A full queue returns backpressure
 /// before acknowledging a source offset, so a caller can resume from that record.
 #[derive(Clone, Debug, Serialize)]
 pub struct NotificationView {

@@ -198,6 +198,13 @@ impl WasmClientViews {
             .read(|views| to_js(&views.models().collect::<Vec<_>>()))
             .map_err(error)?
     }
+    /// Notification files from the same native fold; rendering adds no queue.
+    #[wasm_bindgen(unchecked_return_type = "NotificationQueryView[]")]
+    pub fn notifications(&self) -> Result<JsValue, JsValue> {
+        self.views
+            .read(|views| to_js(&views.notifications().collect::<Vec<_>>()))
+            .map_err(error)?
+    }
     /// Goals and request progress from the same followed files and cursors.
     #[wasm_bindgen(unchecked_return_type = "GoalQueryView[]")]
     pub fn goals(&self) -> Result<JsValue, JsValue> {
