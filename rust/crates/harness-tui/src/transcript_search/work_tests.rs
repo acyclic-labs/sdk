@@ -181,3 +181,22 @@ fn background_prefix_rescan_negative_control() {
         "background must not rescan prefixes"
     );
 }
+
+#[test]
+fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
+    let source = [Line::raw("one one".repeat(1000))];
+    let mut projection = WrappedLines::default();
+    projection.update(&source, 0, 80);
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, "one", 0, Style::default());
+    finish(&mut search, &projection);
+    let count = search.count();
+    let generation = search.generation;
+    projection.update(&source, source.len(), 40);
+    search.update(&projection, "one", 0, Style::default());
+    search.prepare(&projection, 1, 10);
+    assert!(!search.pending());
+    assert_eq!(search.count(), count);
+    assert_eq!(search.generation, generation);
+    assert_eq!(search.viewport.unwrap().1, projection.revision());
+}

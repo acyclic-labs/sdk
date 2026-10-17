@@ -44,7 +44,7 @@ fn paint(
         .collect()
 }
 
-async fn scenario<const BOUND: bool>(query: &str) {
+async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
     let volume = Arc::new(
         TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -136,6 +136,18 @@ async fn scenario<const BOUND: bool>(query: &str) {
             .unwrap();
     }
     assert!(files.take_request().is_none());
+    let first = paint(&mut renderer, &files, &input, 80);
+    if renderer.search.pending() {
+        assert!(
+            first.contains("… matches"),
+            "partial count must be explicit"
+        );
+    }
+    if BACKGROUND {
+        while renderer.search.pending() {
+            renderer.search_progress().await;
+        }
+    }
     let text = paint(&mut renderer, &files, &input, 80);
     assert!(
         text.contains("2/2 matches"),
@@ -256,12 +268,18 @@ async fn scenario<const BOUND: bool>(query: &str) {
 #[test]
 fn find_form_navigates_reopens_resizes_and_restores_chat() {
     for query in ["strasse", "STRASSE", "Strasse"] {
-        futures::executor::block_on(scenario::<true>(query));
+        futures::executor::block_on(scenario::<true, true>(query));
     }
 }
 
 #[test]
 #[should_panic(expected = "search must navigate instead of submitting chat")]
 fn missing_input_binding_is_detected_negative_control() {
-    futures::executor::block_on(scenario::<false>("strasse"));
+    futures::executor::block_on(scenario::<false, true>("strasse"));
+}
+
+#[test]
+#[should_panic(expected = "Unicode matches must reach the composed status")]
+fn missing_background_search_binding_negative_control() {
+    futures::executor::block_on(scenario::<true, false>("strasse"));
 }

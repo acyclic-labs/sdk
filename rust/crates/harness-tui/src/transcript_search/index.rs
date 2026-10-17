@@ -5,11 +5,16 @@ use std::ops::Range;
 #[derive(Default)]
 pub(crate) struct Index {
     pub text: String,
+    pub revision: u64,
     origins: Vec<Range<usize>>,
 }
 
 impl Index {
     pub fn replace_suffix(&mut self, source: &str, at: usize) {
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("search index revision overflow");
         let cut = self.origins.partition_point(|origin| origin.end <= at);
         self.text.truncate(cut);
         self.origins.truncate(cut);

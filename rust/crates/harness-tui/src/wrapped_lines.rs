@@ -35,6 +35,7 @@ pub struct WrappedLines {
 impl WrappedLines {
     /// Reflow changed rows, or the whole projection after a width change.
     pub fn update(&mut self, source: &[Line<'_>], changed: usize, width: u16) {
+        let data_changed = changed < source.len() || source.len() != self.sources.len();
         let reflow = self.width != Some(width);
         let changed = if !reflow {
             changed.min(source.len()).min(self.starts.len())
@@ -107,7 +108,9 @@ impl WrappedLines {
             self.sources.push(source);
         }
         let text = &self.text[..self.text.len().saturating_sub(1)];
-        self.index.replace_suffix(text, at.min(text.len()));
+        if data_changed {
+            self.index.replace_suffix(text, at.min(text.len()));
+        }
         self.source_rows.resize(text.len() + 1, 0);
         for (row_index, range) in self.ranges.iter().enumerate().skip(row) {
             let end = self

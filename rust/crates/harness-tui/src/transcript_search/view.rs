@@ -34,7 +34,7 @@ pub struct TranscriptSearch {
     refine: bool,
     complete: bool,
     generation: u64,
-    viewport: Option<(u64, usize, usize)>,
+    viewport: Option<(u64, u64, usize, usize)>,
     nearest: Option<Range<usize>>,
     probe: Option<Range<usize>>,
     index: i64,
@@ -45,10 +45,10 @@ pub struct TranscriptSearch {
 impl TranscriptSearch {
     /// Reserve reusable query storage with transcript updates, never per key.
     pub fn project(&mut self, projection: &WrappedLines) {
-        if self.revision == Some(projection.revision()) {
+        if self.revision == Some(projection.index.revision) {
             return;
         }
-        self.revision = Some(projection.revision());
+        self.revision = Some(projection.index.revision);
         let size = projection.index.text.len();
         for positions in [&mut self.positions, &mut self.previous] {
             positions.reserve(size.saturating_sub(positions.len()));
@@ -112,7 +112,7 @@ impl TranscriptSearch {
 
     /// Search only the viewport (plus needle overlap) before the next frame.
     pub fn prepare(&mut self, projection: &WrappedLines, first: usize, height: usize) {
-        let cut = (self.generation, first, height);
+        let cut = (self.generation, projection.revision(), first, height);
         if self.viewport == Some(cut) {
             return;
         }
