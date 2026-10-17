@@ -14,6 +14,7 @@ struct ToolRows {
     out: Vec<Line<'static>>,
     err: Vec<Line<'static>>,
     rows: Vec<Line<'static>>,
+    streamed: bool,
 }
 #[derive(Default)]
 pub(super) struct TaskRows {
@@ -147,10 +148,12 @@ impl TaskRows {
                 .update_tool(&tool, true, 20 - cached.stdout.tool_lines());
             let request = tool.request();
             let result = tool.result();
+            let streamed = tool.stdout().next().is_some() || tool.stderr().next().is_some();
             let metadata_changed =
                 cached.request.as_ref() != request || cached.result.as_ref() != result;
             if metadata_changed
                 || details_changed
+                || cached.streamed != streamed
                 || stdout < cached.out.len()
                 || cached.stdout.len() != cached.out.len()
                 || stderr < cached.err.len()
@@ -168,7 +171,7 @@ impl TaskRows {
                     cached.rows.truncate(1);
                 }
                 if details {
-                    if tool.stdout().next().is_some() || tool.stderr().next().is_some() {
+                    if streamed {
                         cached
                             .rows
                             .extend(cached.out.iter().chain(&cached.err).take(20).cloned());
@@ -178,6 +181,7 @@ impl TaskRows {
                 }
                 cached.request = request.cloned();
                 cached.result = result.cloned();
+                cached.streamed = streamed;
                 tool_changed = true;
             }
         }

@@ -133,3 +133,31 @@ fn result_echo_negative_control() {
     completed(21, 7, 3, false, false);
     assert!(std::panic::catch_unwind(|| completed(21, 7, 3, false, true)).is_err());
 }
+
+#[test]
+fn stream_admission_retires_a_nonstreaming_fallback_before_its_first_byte() {
+    let mut views = crate::test_support::empty_client_views();
+    put(
+        &mut views,
+        ToolFile::Request,
+        br#"{"name":"read"}"#.to_vec(),
+    );
+    put(&mut views, ToolFile::Result, br#""result body""#.to_vec());
+    let task = Component::new("task").unwrap();
+    let mut rows = TaskRows::default();
+    let render = |rows: &mut TaskRows, views: &ClientViews| {
+        rows.update(
+            Some(views.selections().next().unwrap().1.task(&task)),
+            true,
+            false,
+        );
+    };
+    render(&mut rows, &views);
+    assert_eq!(rows.rows().len(), 2);
+    put(&mut views, ToolFile::Stdout(0), Vec::new());
+    render(&mut rows, &views);
+    assert_eq!(rows.rows().len(), 1);
+    put(&mut views, ToolFile::Stdout(1), b"streamed body".to_vec());
+    render(&mut rows, &views);
+    assert_eq!(rows.rows()[1].to_string(), "streamed body");
+}
