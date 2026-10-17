@@ -182,3 +182,36 @@ fn a_failing_healthy_case_and_zero_selection_are_rejected() {
         Some("oracle selected zero healthy cases")
     );
 }
+
+// Production doubles its input, except that the fault and input 9 add one.
+fn doubling() -> Oracle<u8, (), (u8, u8)> {
+    Oracle::declare(|input: &u8, fault: Option<&()>, see| {
+        let mut state = *input;
+        let produced = see.compare(
+            input * 2,
+            || {
+                state = state * 2 + u8::from(fault.is_some() || *input == 9);
+                state
+            },
+            |expected, actual| (*actual, expected),
+        )?;
+        assert_eq!(produced, state, "compare returns the call's output");
+        Ok(())
+    })
+    .invariant("double", |&(actual, expected)| {
+        (actual == expected)
+            .then_some(())
+            .ok_or_else(|| format!("{actual} != {expected}"))
+    })
+    .control("double", 3, ())
+    .build()
+}
+
+#[test]
+fn compare_fixes_the_reference_before_the_call_and_reports_the_exposing_event() {
+    let oracle = doubling();
+    oracle.check(&5);
+    let panic = catch_unwind(AssertUnwindSafe(|| oracle.check(&9))).expect_err("9 passed");
+    let message = panic.downcast_ref::<String>().expect("formatted message");
+    assert!(message.contains("at Some((19, 18))"), "{message}");
+}

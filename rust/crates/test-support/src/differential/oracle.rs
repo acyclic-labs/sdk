@@ -16,9 +16,14 @@
 //! every control first, once per oracle, and an oracle dropped after zero
 //! healthy cases fails.
 //!
-//! The helper cannot establish that an invariant is semantically right, that
-//! expected values in events derive only from inputs (fixtures must compute
-//! them before calling the candidate), or that a fault models a real defect.
+//! [`Observer::compare`] takes the reference value before it runs the
+//! production call, so an expectation can't be adopted from the output it
+//! judges. The helper still cannot establish that an invariant is semantically
+//! right, that a reference avoids every earlier production output, or that a
+//! fault models a real defect.
+//!
+//! A run retains only its event count and latest event, so long histories cost
+//! memory linear in one event rather than in the whole run.
 //!
 //! ```
 //! use acyclic_test_support::differential::oracle::Oracle;
@@ -67,14 +72,15 @@ use std::{
 pub struct Stop;
 
 type Check<E> = fn(&E) -> Result<(), String>;
-type Run<I, F, E> = Box<dyn Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop>>;
+type Fixture<I, F, E> = Box<dyn Fn(&I, Option<&F>, &mut Observer<'_, E>) -> Result<(), Stop>>;
 
 /// Ordered event sink for one run.
 pub struct Observer<'a, E> {
     invariants: &'a [(&'static str, Check<E>)],
     deleted: Option<&'a str>,
     suppressed: usize,
-    events: Vec<E>,
+    seen: usize,
+    last: Option<E>,
     violated: Vec<(&'static str, String)>,
 }
 
@@ -97,13 +103,40 @@ impl<E> Observer<'_, E> {
                 }
             }
         }
-        self.events.push(event);
+        self.seen += 1;
+        self.last = Some(event);
         if self.violated.is_empty() {
             Ok(())
         } else {
             Err(Stop)
         }
     }
+
+    /// Fixes `expected` before running the production `call`, then records
+    /// `event(expected, &actual)` and returns the actual value.
+    ///
+    /// The reference is a value bound before the call runs, so it cannot be
+    /// derived from the output it is compared against.
+    ///
+    /// # Panics
+    /// Panics if the fixture ignored an earlier [`Stop`].
+    pub fn compare<R, A>(
+        &mut self,
+        expected: R,
+        call: impl FnOnce() -> A,
+        event: impl FnOnce(R, &A) -> E,
+    ) -> Result<A, Stop> {
+        let actual = call();
+        self.see(event(expected, &actual))?;
+        Ok(actual)
+    }
+}
+
+/// What one run left behind: its event count, latest event and violations.
+struct Run<E> {
+    seen: usize,
+    last: Option<E>,
+    violated: Vec<(&'static str, String)>,
 }
 
 /// Typestate: an oracle without controls has no `build`.
@@ -115,7 +148,7 @@ pub struct Controlled;
 pub struct Builder<I, F, E, S> {
     invariants: Vec<(&'static str, Check<E>)>,
     controls: Vec<(&'static str, I, F)>,
-    run: Run<I, F, E>,
+    run: Fixture<I, F, E>,
     state: PhantomData<S>,
 }
 
@@ -123,7 +156,7 @@ pub struct Builder<I, F, E, S> {
 pub struct Oracle<I, F, E> {
     invariants: Vec<(&'static str, Check<E>)>,
     controls: Vec<(&'static str, I, F)>,
-    run: Run<I, F, E>,
+    run: Fixture<I, F, E>,
     verified: OnceCell<()>,
     healthy: Cell<usize>,
 }
@@ -148,54 +181,50 @@ impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
     /// Panics if any control or the case fails, or the fixture panics.
     pub fn check(&self, input: &I) {
         self.verified.get_or_init(|| self.verify_controls());
-        let (events, violated) = self.observe(input, None, None, "healthy case");
+        let run = self.observe(input, None, None, "healthy case");
         assert!(
-            violated.is_empty(),
-            "healthy case {input:?} violated {violated:?} at {:?}",
-            events.last()
+            run.violated.is_empty(),
+            "healthy case {input:?} violated {:?} at {:?}",
+            run.violated,
+            run.last
         );
-        assert!(
-            !events.is_empty(),
-            "healthy case {input:?} observed nothing"
-        );
+        assert!(run.seen > 0, "healthy case {input:?} observed nothing");
         self.healthy.set(self.healthy.get() + 1);
     }
 
     fn verify_controls(&self) {
         for (target, input, fault) in &self.controls {
             let label = format!("control {fault:?} for {target}");
-            let (clean, violated) = self.observe(input, None, None, &label);
+            let clean = self.observe(input, None, None, &label);
             assert!(
-                violated.is_empty() && !clean.is_empty(),
-                "{label}: its input is not a clean nonempty case: {violated:?}"
+                clean.violated.is_empty() && clean.seen > 0,
+                "{label}: its input is not a clean nonempty case: {:?}",
+                clean.violated
             );
-            let (exposed, violated) = self.observe(input, Some(fault), None, &label);
+            let exposed = self.observe(input, Some(fault), None, &label);
             assert!(
-                violated.iter().any(|(name, _)| name == target),
-                "{label}: the mutant was not detected by its target ({violated:?} at {:?})",
-                exposed.last()
+                exposed.violated.iter().any(|(name, _)| name == target),
+                "{label}: the mutant was not detected by its target ({:?} at {:?})",
+                exposed.violated,
+                exposed.last
             );
-            let (events, violated) = self.observe(input, Some(fault), Some(target), &label);
+            let deleted = self.observe(input, Some(fault), Some(target), &label);
             assert!(
-                violated.is_empty() || events.len() > exposed.len(),
-                "{label}: still detected after deleting {target}: {violated:?} at {:?}",
-                events.last()
+                deleted.violated.is_empty() || deleted.seen > exposed.seen,
+                "{label}: still detected after deleting {target}: {:?} at {:?}",
+                deleted.violated,
+                deleted.last
             );
         }
     }
 
-    fn observe(
-        &self,
-        input: &I,
-        fault: Option<&F>,
-        deleted: Option<&str>,
-        label: &str,
-    ) -> (Vec<E>, Vec<(&'static str, String)>) {
+    fn observe(&self, input: &I, fault: Option<&F>, deleted: Option<&str>, label: &str) -> Run<E> {
         let mut observer = Observer {
             invariants: &self.invariants,
             deleted,
             suppressed: 0,
-            events: Vec::new(),
+            seen: 0,
+            last: None,
             violated: Vec::new(),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| (self.run)(input, fault, &mut observer)));
@@ -219,7 +248,11 @@ impl<I: Debug, F: Debug, E: Debug> Oracle<I, F, E> {
                 panic!("{label}: infrastructure failure, not a detection: {message}");
             }
         }
-        (observer.events, observer.violated)
+        Run {
+            seen: observer.seen,
+            last: observer.last,
+            violated: observer.violated,
+        }
     }
 }
 

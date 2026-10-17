@@ -48,6 +48,8 @@ enum Fault {
     AcceptStale,
     /// Applies an exact indeterminate retry a second time.
     ReplayAgain,
+    /// Rewrites a failure message before the attestation is signed.
+    CorruptStatus,
 }
 
 /// Effect state as the independent history predicts it or as a reducer shows it.
@@ -174,6 +176,7 @@ fn oracle() -> Oracle<Case, Fault, Seen> {
             _ => Ok(()),
         })
         .control("history", history(0, 1), Fault::DuplicateAttempt)
+        .control("history", history(0, 1), Fault::CorruptStatus)
         .control("inert", history(0, 1), Fault::ReplayAgain)
         .control("boundary", history(1, 1), Fault::WidenRetry)
         .control("rejection", history(0, 1), Fault::AcceptStale)
@@ -303,19 +306,26 @@ fn guarantee(index: u8) -> EffectGuarantee {
     }
 }
 
-// Update from the submitted input before calling any production reducer API.
-fn expect_transition(history: &mut History, action: &Action) {
-    let status = match action {
-        Action::PlanEffect { guarantee, .. } => {
+/// One requested effect transition, as the case's input states it.
+enum Step<'a> {
+    Plan(EffectGuarantee, &'a [u8]),
+    Dispatch(EffectAttemptId),
+    Resolve(EffectAttemptId, EffectStatus),
+}
+
+// The reference transition comes from the requested step alone, before any
+// production API (including attestation) produces the submitted action.
+fn expect_transition(history: &mut History, step: &Step<'_>) {
+    let status = match step {
+        Step::Plan(guarantee, _) => {
             history.guarantee = Some(*guarantee);
             EffectStatus::Planned
         }
-        Action::MarkEffectDispatched { attempt_id, .. } => {
-            history.attempts.push(*attempt_id);
+        Step::Dispatch(attempt) => {
+            history.attempts.push(*attempt);
             EffectStatus::Dispatched
         }
-        Action::ResolveEffect { observation } => observation.status.clone(),
-        _ => unreachable!("only effect transitions are recorded"),
+        Step::Resolve(_, status) => status.clone(),
     };
     history.revision += 1;
     history.status = Some(status);
@@ -327,19 +337,26 @@ fn observe(
     reducer: &Reducer,
     expected: &History,
 ) -> std::result::Result<(), Stop> {
-    let effect = reducer.effect(EFFECT);
-    see.see(Seen::History {
-        view,
-        actual: History {
-            revision: reducer.revision(),
-            attempts: effect
-                .map(|effect| effect.attempts.clone())
-                .unwrap_or_default(),
-            status: effect.map(|effect| effect.status.clone()),
-            guarantee: effect.map(|effect| effect.guarantee),
+    see.compare(
+        expected.clone(),
+        || {
+            let effect = reducer.effect(EFFECT);
+            History {
+                revision: reducer.revision(),
+                attempts: effect
+                    .map(|effect| effect.attempts.clone())
+                    .unwrap_or_default(),
+                status: effect.map(|effect| effect.status.clone()),
+                guarantee: effect.map(|effect| effect.guarantee),
+            }
         },
-        expected: expected.clone(),
-    })
+        |expected, actual| Seen::History {
+            view,
+            actual: actual.clone(),
+            expected,
+        },
+    )
+    .map(drop)
 }
 
 struct Effects {
@@ -359,20 +376,30 @@ impl Effects {
         }
     }
 
-    fn commit(&mut self, see: See<'_, '_>, action: Action) -> std::result::Result<(), Stop> {
+    // Commits one requested step and returns the action it submitted.
+    fn commit(&mut self, see: See<'_, '_>, step: Step<'_>) -> std::result::Result<Action, Stop> {
+        observe(see, "live", &self.reducer, &self.history)?;
+        let revision = self.history.revision;
+        expect_transition(&mut self.history, &step);
+        let action = match step {
+            Step::Plan(guarantee, payload) => plan_effect(guarantee, payload),
+            Step::Dispatch(attempt) => dispatch(attempt),
+            Step::Resolve(attempt, mut status) => {
+                if self.fault == Some(Fault::CorruptStatus)
+                    && let EffectStatus::Failed { message } = &mut status
+                {
+                    message.push_str(" (rewritten)");
+                }
+                resolve(self.attest(attempt, status))
+            }
+        };
         let Self {
             reducer,
             replay,
             history,
             fault,
         } = self;
-        observe(see, "live", reducer, history)?;
-        let cmd = command(
-            operation(history.revision as u8 + 1),
-            history.revision,
-            action,
-        );
-        expect_transition(history, &cmd.action);
+        let cmd = command(operation(revision as u8 + 1), revision, action);
         let before = reducer.copy(&mut None).unwrap();
         let planned = ok(see, "fresh planning", reducer.plan(&cmd))?;
         see.see(Seen::Inert {
@@ -429,7 +456,8 @@ impl Effects {
             what: "exact effect retry",
             unchanged: matches!(retried, ApplyResult::Replayed { .. }) && *reducer == settled,
         })?;
-        observe(see, "retried", reducer, history)
+        observe(see, "retried", reducer, history)?;
+        Ok(cmd.action)
     }
 
     // Plans, applies and replays an authenticated committed event for an
@@ -526,8 +554,8 @@ fn attestation_fields(
     let verifier = issuer().verifier(&mut None).unwrap();
     let attempt = EffectAttemptId::from_bytes([10; 16]);
     let mut effects = Effects::new(fault);
-    effects.commit(see, plan_effect(EffectGuarantee::IdempotentRetry, payload))?;
-    effects.commit(see, dispatch(attempt))?;
+    effects.commit(see, Step::Plan(EffectGuarantee::IdempotentRetry, payload))?;
+    effects.commit(see, Step::Dispatch(attempt))?;
     let original = effects.attest(attempt, EffectStatus::Indeterminate);
     verifier.verify_effect(&original, &mut None).unwrap();
     for field in 0..8 {
@@ -556,7 +584,9 @@ fn attestation_fields(
         })?;
         effects.rejected(see, 200, resolve(candidate))?;
     }
-    effects.commit(see, resolve(original))
+    effects
+        .commit(see, Step::Resolve(attempt, EffectStatus::Indeterminate))
+        .map(drop)
 }
 
 fn effect_history(
@@ -570,12 +600,11 @@ fn effect_history(
     let guarantee = guarantee(index);
     let retryable = guarantee == EffectGuarantee::IdempotentRetry;
     let mut effects = Effects::new(fault);
-    effects.commit(see, plan_effect(guarantee, payload))?;
+    effects.commit(see, Step::Plan(guarantee, payload))?;
     let mut attempt = EffectAttemptId::from_bytes([10; 16]);
-    effects.commit(see, dispatch(attempt))?;
+    effects.commit(see, Step::Dispatch(attempt))?;
     for round in 0..retries {
-        let observation = effects.attest(attempt, EffectStatus::Indeterminate);
-        effects.commit(see, resolve(observation))?;
+        effects.commit(see, Step::Resolve(attempt, EffectStatus::Indeterminate))?;
         if retryable {
             effects.rejected(see, 200, dispatch(attempt))?;
         }
@@ -595,7 +624,7 @@ fn effect_history(
             effects.rejected(see, revision as u8 + 1, cmd.action)?;
             break;
         }
-        effects.commit(see, cmd.action)?;
+        effects.commit(see, Step::Dispatch(next))?;
         attempt = next;
         let stale = effects.attest(
             previous,
@@ -627,9 +656,8 @@ fn effect_history(
             message: "definite failure".into(),
         }
     };
-    let observation = effects.attest(attempt, status);
-    effects.commit(see, resolve(observation.clone()))?;
-    effects.rejected(see, 200, resolve(observation))?;
+    let resolved = effects.commit(see, Step::Resolve(attempt, status))?;
+    effects.rejected(see, 200, resolved)?;
     effects.rejected(see, 200, dispatch(EffectAttemptId::from_bytes([99; 16])))
 }
 
