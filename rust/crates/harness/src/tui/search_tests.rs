@@ -171,6 +171,45 @@ async fn scenario<const BOUND: bool>(query: &str) {
         files.take_request().is_some(),
         "closing find must restore ordinary submission"
     );
+    let catalog: Vec<_> = files
+        .catalog()
+        .commands()
+        .filter(|spec| {
+            spec.action
+                != crate::client::CommandAction::Select {
+                    query: crate::client::CommandQuery::Find,
+                }
+        })
+        .cloned()
+        .collect();
+    files
+        .install_catalog(serde_json::to_vec(&catalog).unwrap())
+        .await
+        .unwrap();
+    file_tui_input(
+        &mut files,
+        &NoFiles,
+        InputEffect::Host(Action::App(AppAction::Find)),
+        20,
+        0,
+    )
+    .await
+    .unwrap();
+    assert!(
+        files
+            .state(CommandFileRoot::Session, "layout.json")
+            .unwrap()
+            .unwrap()["open_view"]
+            .is_null()
+    );
+    assert!(!files.catalog().commands().any(|spec| spec.action
+        == crate::client::CommandAction::Select {
+            query: crate::client::CommandQuery::Find
+        }));
+    assert!(
+        files.take_request().is_none(),
+        "a removed search command cannot dispatch work"
+    );
 }
 
 #[test]
