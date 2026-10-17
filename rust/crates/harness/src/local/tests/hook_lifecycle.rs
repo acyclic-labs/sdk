@@ -445,3 +445,61 @@ async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolve
     assert!(provider.requests().is_empty());
     Ok(())
 }
+
+/// Names below the checkout's `.volumes/`; an absent or empty directory is not
+/// visible to `git status`, while a mount registry or projection is.
+fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
+    match std::fs::read_dir(workspace.join(".volumes")) {
+        Ok(entries) => entries
+            .map(|entry| {
+                Ok(entry
+                    .map_err(super::super::storage)?
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned())
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(super::super::storage(error)),
+    }
+}
+
+// Hooks run in the checkout itself and never request volume projections; only
+// bash does. A hook-only turn therefore leaves no mount registry or projection
+// in the user's checkout. The bash turn is the detector's positive control.
+#[tokio::test]
+async fn hook_turns_leave_no_volume_projection_in_the_checkout() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let script = root.path().join("hook.sh");
+    std::fs::write(&script, "cat >/dev/null
+printf '%s' \"$1\"
+")
+        .map_err(super::super::storage)?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        settings(&script, "hook-ran").to_string(),
+    )
+    .map_err(super::super::storage)?;
+    for (name, bash, projected) in [("hooked", false, false), ("bash", true, true)] {
+        let workspace = root.path().join(name);
+        std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+        let turns = bash
+            .then(|| super::checked_commands::call(0, "bash", "printf ran"))
+            .into_iter()
+            .chain([ScriptedTurn::Text("done".into())]);
+        let provider = scripted(turns);
+        let harness = LocalHarness::open(
+            checkout_config(&workspace, (model()?, provider.clone()))?
+                .state_directory(root.path().join(format!("state-{name}")))
+                .settings(SettingsConfig::new(&workspace, &home).codex_home(home.join(".codex"))),
+        )
+        .await?;
+        harness.run("go").await?;
+        assert!(request_has(&provider, 0, "hook-ran")?);
+        harness.disconnect().await?;
+        assert_eq!(!volume_residue(&workspace)?.is_empty(), projected, "{name}");
+    }
+    Ok(())
+}

@@ -124,7 +124,9 @@ impl CheckoutTools {
                 )
                 .await?;
             }
-            workspace::volumes::project(&state.mounts).await?;
+            // Hooks run in the checkout and never start a volume projection:
+            // only bash requests one, so hook-only turns leave the checkout's
+            // `.volumes/` without a mount registry or projection directory.
             // Each blocking worker retains this guard through cancellation and
             // child-tree reaping; dropping the caller cannot switch its view.
             let check_workspace = Arc::clone(&workspace);
