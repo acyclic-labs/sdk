@@ -190,12 +190,23 @@ mod tests {
     use rustix::fs::{OFlags, fcntl_getfl};
     use rustix::termios::{LocalModes, tcgetattr};
 
+    /// The descriptor's settable status flags. Darwin also reports
+    /// `FWASWRITTEN` (0x10000) from `F_GETFL` once the open file has been
+    /// written; it is kernel bookkeeping that `F_SETFL` can neither set nor
+    /// clear, so it is not part of the state a session saves and restores.
+    fn status_flags(file: &File) -> io::Result<OFlags> {
+        let flags = fcntl_getfl(file)?;
+        #[cfg(target_vendor = "apple")]
+        let flags = flags.difference(OFlags::from_bits_retain(0x0001_0000));
+        Ok(flags)
+    }
+
     #[test]
     fn delayed_old_state_drop_preserves_reopened_pty() -> io::Result<()> {
         let pty = rustix_openpty::openpty(None, None)?;
         let observer = File::from(pty.user);
         let original = tcgetattr(&observer)?;
-        let flags = fcntl_getfl(&observer)?;
+        let flags = status_flags(&observer)?;
         let mut old = Tty::from_file(observer.try_clone()?)?;
         let mut master = File::from(pty.controller);
         master.write_all(b"/delegate say hello\r\n\x1b[?1;2c")?;
@@ -237,7 +248,7 @@ mod tests {
                 .local_modes
                 .contains(LocalModes::ICANON)
         );
-        assert_eq!(fcntl_getfl(&observer)?, flags | OFlags::NONBLOCK);
+        assert_eq!(status_flags(&observer)?, flags | OFlags::NONBLOCK);
         drop(new);
         let restored = tcgetattr(&observer)?;
         assert_eq!(restored.input_modes, original.input_modes);
@@ -250,7 +261,7 @@ mod tests {
         );
         assert_eq!(restored.input_speed(), original.input_speed());
         assert_eq!(restored.output_speed(), original.output_speed());
-        assert_eq!(fcntl_getfl(&observer)?, flags);
+        assert_eq!(status_flags(&observer)?, flags);
         Ok(())
     }
 }
