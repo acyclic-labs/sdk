@@ -169,7 +169,8 @@ impl From<GenerationForm> for Generation {
 }
 
 /// A materialized head is one logical file: its segments travel as the single
-/// byte value they spell, and its length is that value's length.
+/// byte value they spell, and its length is that value's length. A contiguous
+/// head is borrowed; only a fragmented head is joined.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Head<'a> {
@@ -177,7 +178,7 @@ pub(super) struct Head<'a> {
     channel: Option<Channel>,
     publication: Option<OperationId>,
     #[serde(with = "bytes")]
-    bytes: Vec<u8>,
+    bytes: Cow<'a, [u8]>,
     through_sequence: Option<u64>,
 }
 
@@ -195,10 +196,17 @@ impl<'a> From<&'a HeadFile> for Head<'a> {
             key: Cow::Borrowed(key),
             channel: *channel,
             publication: *publication,
-            bytes: segments
-                .iter()
-                .flat_map(|segment| segment.iter().copied())
-                .collect(),
+            bytes: match segments.as_slice() {
+                [] => Cow::Borrowed(&[]),
+                [segment] => Cow::Borrowed(segment.as_slice()),
+                fragments => Cow::Owned(
+                    fragments
+                        .iter()
+                        .map(|segment| segment.as_slice())
+                        .collect::<Vec<_>>()
+                        .concat(),
+                ),
+            },
             through_sequence: *through_sequence,
         }
     }
@@ -218,7 +226,7 @@ impl From<Head<'_>> for HeadFile {
             channel,
             publication,
             length: bytes.len() as u64,
-            segments: vec![bytes.into()],
+            segments: vec![bytes.into_owned().into()],
             through_sequence,
         }
     }
@@ -302,5 +310,49 @@ impl From<ChangeForm<'_>> for Change {
             removed: removed.into_owned(),
             cursor: cursor.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Head;
+    use crate::task_volume::{FileKey, HeadFile};
+    use std::borrow::Cow;
+
+    fn head(segments: &[&[u8]]) -> HeadFile {
+        HeadFile {
+            key: FileKey::parse("commands/head.json").unwrap(),
+            channel: None,
+            publication: None,
+            segments: segments
+                .iter()
+                .map(|segment| segment.to_vec().into())
+                .collect(),
+            length: segments.iter().map(|segment| segment.len() as u64).sum(),
+            through_sequence: None,
+        }
+    }
+
+    // A contiguous head is spelled from its own storage: no allocation and the
+    // very same bytes. The negative control is a fragmented head, which must
+    // be joined into one owned value of the full length.
+    #[test]
+    fn contiguous_heads_are_borrowed_and_only_fragments_are_joined() {
+        let payload = vec![b'x'; 1 << 16];
+        let contiguous = head(&[&payload]);
+        let mut wire = None;
+        let allocated = acyclic_test_support::measure(|| wire = Some(Head::from(&contiguous)));
+        let wire = wire.unwrap();
+        assert_eq!(allocated.bytes_total, 0);
+        assert!(
+            matches!(&wire.bytes, Cow::Borrowed(bytes) if bytes.as_ptr() == contiguous.segments[0].as_ptr())
+        );
+
+        let fragmented = head(&[&payload[..1], &payload[1..]]);
+        let mut wire = None;
+        let allocated = acyclic_test_support::measure(|| wire = Some(Head::from(&fragmented)));
+        let wire = wire.unwrap();
+        assert!(allocated.bytes_total >= payload.len() as u64);
+        assert!(matches!(&wire.bytes, Cow::Owned(bytes) if *bytes == payload));
     }
 }

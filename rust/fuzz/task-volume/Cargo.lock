@@ -1750,6 +1750,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness",
  "acyclic-stream",
+ "base64 0.22.1",
  "libfuzzer-sys",
  "prost",
  "serde_json",
