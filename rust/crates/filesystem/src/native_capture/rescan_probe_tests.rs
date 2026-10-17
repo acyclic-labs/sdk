@@ -255,6 +255,61 @@ fn run(
 }
 
 #[test]
+fn counting_sort_changes_only_comparison_work_in_a_complete_rescan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _subscriber =
+        tracing::subscriber::set_default(tracing::subscriber::NoSubscriber::default());
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    #[cfg(target_os = "linux")]
+    let fallback = crate::native_host::stat_probe::uses_fallback(&std::fs::File::open(".")?);
+    #[cfg(windows)]
+    let fallback = false;
+    for (limit, cancelled) in [(u64::MAX, false), (0, false), (4, false), (u64::MAX, true)] {
+        let [
+            ((mut before, before_heap), old_trace),
+            ((mut after, after_heap), trace),
+        ] = differential::pair::<_, _, &'static str>(
+            || fixture(&runtime),
+            |state, previous| {
+                let _sort = super::state_order_tests::previous_sort(previous);
+                // Both sides use today's metadata path; only the sort differs.
+                run(&runtime, state, false, 0, limit, cancelled)
+            },
+        );
+        assert_eq!(before.result, after.result);
+        assert_eq!(before.bytes, after.bytes);
+        assert_eq!(after.bytes, [vec![], vec![0x5a; 96]]);
+        assert!(before.unchanged_root && after.unchanged_root);
+        assert_eq!(before.live_before, before.live_after);
+        assert_eq!(after.live_before, after.live_after);
+        assert_eq!(before_heap, after_heap);
+        assert_eq!(old_trace, trace);
+        for output in [&mut before, &mut after] {
+            output.work["itemsExamined"] = serde_json::json!(
+                output.work["itemsExamined"].as_u64().unwrap() - output.health_items
+            );
+        }
+        if after.result.is_ok() {
+            let expected = if cfg!(windows) { 434 } else { 329 };
+            let oracle = |heap, events: &[&str], items| {
+                minimal_rescan(heap, events, fallback) && items == expected
+            };
+            let items = after.work["itemsExamined"].as_u64().unwrap();
+            let previous_items = before.work["itemsExamined"].as_u64().unwrap();
+            assert!(oracle(after_heap, &trace, items));
+            assert_eq!(previous_items, expected + 2);
+            // Restoring the removed comparisons fails this same heap/work oracle.
+            assert!(!oracle(before_heap, &old_trace, previous_items));
+            before.work["itemsExamined"] = serde_json::json!(expected);
+        }
+        assert_eq!(before.work, after.work);
+    }
+    Ok(())
+}
+
+#[test]
 fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
 -> Result<(), Box<dyn std::error::Error>> {
     let _subscriber =
@@ -302,9 +357,11 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             );
             if after.result.is_ok() {
                 assert!(before.health_items > 0 && after.health_items > 0);
+                // Ordering the path-sorted states by one counting pass charges
+                // 2 fewer items than the heapsort's comparisons.
                 assert_eq!(
                     after.work["itemsExamined"],
-                    if cfg!(windows) { 436 } else { 331 }
+                    if cfg!(windows) { 434 } else { 329 }
                 );
             }
             assert_eq!(before.result, after.result);

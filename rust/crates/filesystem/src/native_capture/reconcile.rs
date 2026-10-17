@@ -87,40 +87,6 @@ pub(super) async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObject
     Ok(states)
 }
 
-pub(super) fn sort_capture_states(
-    states: &mut [CapturePathState],
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    capture_sort_by(
-        states,
-        |(left, left_path, left_current), (right, right_path, right_current)| {
-            let rank =
-                |observation: &Option<HostStat>, current: &Option<FileRecord>| match observation {
-                    None => 0,
-                    Some(observation) if observation.is_dir() => 1,
-                    Some(_) if current.is_some() => 2,
-                    Some(_) => 3,
-                };
-            let left_rank = rank(left, left_current);
-            let right_rank = rank(right, right_current);
-            left_rank.cmp(&right_rank).then_with(|| {
-                if left_rank == 0 {
-                    right_path
-                        .depth()
-                        .cmp(&left_path.depth())
-                        .then_with(|| left_path.cmp(right_path))
-                } else {
-                    left_path
-                        .depth()
-                        .cmp(&right_path.depth())
-                        .then_with(|| left_path.cmp(right_path))
-                }
-            })
-        },
-        meter,
-    )
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum CaptureIntent {
     MetadataOnly,
