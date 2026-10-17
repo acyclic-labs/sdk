@@ -247,9 +247,18 @@ pub(super) fn append(views: &mut ClientViews, file: &FileValue) -> usize {
         TaskFile::Completion(turn) => {
             if let Some(fold) = views.task_folds.get_mut(&key) {
                 for channel in [Channel::Text, Channel::Reasoning] {
+                    let latest = fold
+                        .streams
+                        .keys()
+                        .rev()
+                        .find_map(|(turn, found)| (*found == channel).then_some(*turn));
                     if let Some(tail) = fold.streams.get_mut(&(*turn, channel)) {
                         tail.frozen = true;
-                        if let Some(transcript) = views.transcripts.get_mut(&key) {
+                        if let Some(transcript) = views
+                            .transcripts
+                            .get_mut(&key)
+                            .filter(|_| latest == Some(*turn))
+                        {
                             if channel == Channel::Text {
                                 transcript.text_pending = 0;
                             } else {

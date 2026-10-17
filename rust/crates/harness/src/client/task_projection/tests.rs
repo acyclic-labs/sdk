@@ -99,3 +99,38 @@ fn tool_channels_keep_utf8_boundaries_independent_of_interleaving() {
         ]
     );
 }
+
+#[test]
+fn older_completion_does_not_commit_the_current_turns_provisional_suffix() {
+    let mut first = chunk("attempts", 0, b"old");
+    let mut next = chunk("attempts", 1, &[0xe6]);
+    if let FileKey::Task {
+        file: TaskFile::Chunk { turn, .. },
+        ..
+    } = &mut next.key
+    {
+        *turn = 1;
+    }
+    let completion = FileValue::new(
+        FileKey::Task {
+            task: crate::task_volume::Component::new("attempts").unwrap(),
+            file: TaskFile::Completion(0),
+        },
+        b"{}".to_vec(),
+    );
+    for channel in [Channel::Text, Channel::Reasoning] {
+        first.channel = Some(channel);
+        next.channel = Some(channel);
+        let mut live = ClientViews::default();
+        for file in [&first, &completion, &next] {
+            append(&mut live, file);
+        }
+        let mut reopened = ClientViews::default();
+        for file in [&first, &next, &completion] {
+            append(&mut reopened, file);
+        }
+        assert_eq!(live.transcripts, reopened.transcripts);
+        let transcript = &live.transcripts["AGGREGATE_KIND_TASK:attempts"];
+        assert_eq!(transcript.pending(channel == Channel::Reasoning), 3);
+    }
+}
