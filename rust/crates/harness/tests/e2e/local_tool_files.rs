@@ -57,6 +57,9 @@ pub(super) async fn verify(
     results: &BTreeMap<String, Value>,
 ) -> TestResult {
     let selected = query(task)?;
+    if observation.reset {
+        return Err("initial tool query unexpectedly reset".into());
+    }
     let initial = observation.snapshot.take().ok_or("missing tool snapshot")?;
     let target = harness
         .task_files()
@@ -71,9 +74,12 @@ pub(super) async fn verify(
             .next()
             .await
             .ok_or("tool follow ended")??;
-        if change.cursor.position > target.cursor.position || !view.apply(change)? {
+        if change.cursor.position <= view.cursor().position
+            || change.cursor.position > target.cursor.position
+        {
             return Err("tool follow did not advance to the known cut".into());
         }
+        view.apply(change)?;
     }
     if view.cursor().commit != target.cursor.commit || view.files().values().ne(target.files.iter())
     {
