@@ -24,9 +24,6 @@ struct LocalInner {
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
     #[cfg(feature = "test-support")]
     persistence_cut: std::sync::OnceLock<Arc<dyn PersistenceCut>>,
-    /// Journal bytes known flushed while a cut is installed.
-    #[cfg(feature = "test-support")]
-    durable_len: std::sync::atomic::AtomicU64,
 }
 
 impl LocalInner {

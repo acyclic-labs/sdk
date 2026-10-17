@@ -201,7 +201,8 @@ async fn cuts() -> Vec<(Option<Cut>, Recovered)> {
         },
         |stream| recover(stream, dispatched.get()),
     )
-    .await;
+    .await
+    .expect("every crash is simulated faithfully");
     // Completion volume, claim, retained response, result.
     assert_eq!(found.writes, 4, "settlement durable boundaries changed");
     std::iter::once((None, found.clean))

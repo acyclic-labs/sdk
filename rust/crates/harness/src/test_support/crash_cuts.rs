@@ -14,13 +14,14 @@
 //! power loss: a written but unflushed frame does not survive. A crash
 //! poisons the provider, so every later call fails. All handles are
 //! dropped, an independent provider reopens the directory, and `recover`
-//! observes it.
-use acyclic_stream::{LocalStream, PersistenceCut};
+//! observes it. A crash the provider could not simulate faithfully fails
+//! the enumeration.
+use acyclic_stream::{CutSimulationError, LocalStream, LocalStreamLimits, PersistenceCut};
 use std::{
     future::Future,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -45,6 +46,7 @@ struct Cutter {
     cut: Option<Cut>,
     landed: AtomicUsize,
     crashed: AtomicBool,
+    unfaithful: Mutex<Option<CutSimulationError>>,
 }
 
 impl Cutter {
@@ -75,6 +77,15 @@ impl PersistenceCut for Cutter {
         let landed = self.landed.fetch_add(1, Ordering::SeqCst) + 1;
         !self.fires(Cut::LostAck(landed))
     }
+
+    fn crashed(&self, simulation: Result<(), CutSimulationError>) {
+        if let Err(error) = simulation {
+            self.unfaithful
+                .lock()
+                .expect("simulation failure slot")
+                .get_or_insert(error);
+        }
+    }
 }
 
 pub(crate) struct CrashCuts<O> {
@@ -86,20 +97,21 @@ pub(crate) struct CrashCuts<O> {
     pub(crate) cuts: Vec<(Cut, O)>,
 }
 
-async fn open(root: &Path) -> Arc<LocalStream> {
+async fn open(root: &Path, limits: LocalStreamLimits) -> Arc<LocalStream> {
     Arc::new(
-        LocalStream::open(root, Default::default())
+        LocalStream::open(root, limits)
             .await
             .expect("crash-cut provider opens; every prior handle must be dropped"),
     )
 }
 
 async fn once<O, S, SF, R, RF, V, VF>(
+    limits: LocalStreamLimits,
     cut: Option<Cut>,
     setup: &S,
     run: &R,
     recover: &V,
-) -> (usize, O)
+) -> Result<(usize, O), CutSimulationError>
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
@@ -109,31 +121,35 @@ where
     VF: Future<Output = O>,
 {
     let directory = tempfile::tempdir().expect("crash-cut directory");
-    let stream = open(directory.path()).await;
+    let stream = open(directory.path(), limits).await;
     setup(stream.clone()).await;
     let cutter = Arc::new(Cutter {
         cut,
         landed: AtomicUsize::new(0),
         crashed: AtomicBool::new(false),
+        unfaithful: Mutex::new(None),
     });
     stream.cut_persistence(cutter.clone());
     run(stream.clone()).await;
+    let unfaithful = cutter.unfaithful.lock().expect("simulation slot").take();
+    if let Some(error) = unfaithful {
+        return Err(error);
+    }
     let writes = cutter.landed.load(Ordering::SeqCst);
     let Ok(stream) = Arc::try_unwrap(stream) else {
         panic!("operation retained the crashed provider");
     };
     drop(stream);
-    let observed = recover(open(directory.path()).await).await;
-    (writes, observed)
+    let observed = recover(open(directory.path(), limits).await).await;
+    Ok((writes, observed))
 }
 
-/// Runs `setup` uncounted, then `run` once cleanly and once per durable cut.
-/// `run` must ignore its own result; `recover` reopens and observes.
+/// [`enumerate_with`] under the default limits, which never compact.
 pub(crate) async fn enumerate<O, S, SF, R, RF, V, VF>(
     setup: S,
     run: R,
     recover: V,
-) -> CrashCuts<O>
+) -> Result<CrashCuts<O>, CutSimulationError>
 where
     S: Fn(Arc<LocalStream>) -> SF,
     SF: Future<Output = ()>,
@@ -142,7 +158,27 @@ where
     V: Fn(Arc<LocalStream>) -> VF,
     VF: Future<Output = O>,
 {
-    let (writes, clean) = once(None, &setup, &run, &recover).await;
+    enumerate_with(LocalStreamLimits::default(), setup, run, recover).await
+}
+
+/// Runs `setup` uncounted, then `run` once cleanly and once per durable cut,
+/// every provider opened with `limits`. `run` must ignore its own result;
+/// `recover` reopens and observes.
+pub(crate) async fn enumerate_with<O, S, SF, R, RF, V, VF>(
+    limits: LocalStreamLimits,
+    setup: S,
+    run: R,
+    recover: V,
+) -> Result<CrashCuts<O>, CutSimulationError>
+where
+    S: Fn(Arc<LocalStream>) -> SF,
+    SF: Future<Output = ()>,
+    R: Fn(Arc<LocalStream>) -> RF,
+    RF: Future<Output = ()>,
+    V: Fn(Arc<LocalStream>) -> VF,
+    VF: Future<Output = O>,
+{
+    let (writes, clean) = once(limits, None, &setup, &run, &recover).await?;
     assert!(writes > 0, "operation made no durable write to cut");
     let mut cuts = Vec::with_capacity(2 * writes + 1);
     for landed in 0..=writes {
@@ -151,7 +187,7 @@ where
             boundary.insert(0, Cut::LostAck(landed));
         }
         for cut in boundary {
-            let (reached, observed) = once(Some(cut), &setup, &run, &recover).await;
+            let (reached, observed) = once(limits, Some(cut), &setup, &run, &recover).await?;
             // Every cut lands exactly its own writes. BeforeWrite(writes)
             // never fires, so it replays the clean run's durable state.
             let expected = match cut {
@@ -161,9 +197,9 @@ where
             cuts.push((cut, observed));
         }
     }
-    CrashCuts {
+    Ok(CrashCuts {
         writes,
         clean,
         cuts,
-    }
+    })
 }
