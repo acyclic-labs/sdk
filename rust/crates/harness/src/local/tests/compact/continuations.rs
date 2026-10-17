@@ -288,3 +288,83 @@ async fn active_child_inherits_only_checkpoint_references_and_the_pinned_model()
     local.close().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn completed_turns_continue_one_conversation_without_compaction() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted(
+        ["FIRST_ANSWER", "SECOND_ANSWER", "THIRD_ANSWER"]
+            .map(|text| ScriptedTurn::Text(text.into())),
+    );
+    let config = || {
+        volume_config(directory.path(), project.clone(), provider.clone())
+            .map(|config| config.without_default_tools())
+    };
+    let mut local = LocalHarness::open(config()?).await?;
+    let first = admitted(local.submit(OperationId::new(), "FIRST_PROMPT").await?);
+    local.resume(first).await?;
+    // Negative control: nothing selects the completed turn's history, the
+    // state in which the scheduler refused it as a terminal parent.
+    assert!(local.selected_checkpoint(first).await?.is_none());
+    let second = OperationId::new();
+    let continued = admitted(
+        local
+            .submit_to(second, Some(first), "SECOND_PROMPT")
+            .await?,
+    );
+    // A retry after reopening reuses the retained checkpoint and admission.
+    local.close().await?;
+    local = LocalHarness::open(config()?).await?;
+    assert_eq!(
+        admitted(
+            local
+                .submit_to(second, Some(first), "SECOND_PROMPT")
+                .await?
+        ),
+        continued
+    );
+    assert_eq!(
+        local
+            .runtime
+            .task_host()
+            .observe_admission(continued)
+            .await?
+            .parent,
+        None,
+        "a completed turn was parented"
+    );
+    local.resume(continued).await?;
+    // The interface selects each new turn, so the third prompt continues the second.
+    let third = admitted(
+        local
+            .submit_to(OperationId::new(), Some(continued), "THIRD_PROMPT")
+            .await?,
+    );
+    assert_eq!(local.resume(third).await?.text, "THIRD_ANSWER");
+    let requests = provider.requests();
+    assert_eq!(requests.len(), 3);
+    let history = |index: usize| serde_json::to_string(&requests[index]).unwrap();
+    for (index, retained) in [
+        &["FIRST_PROMPT", "FIRST_ANSWER", "SECOND_PROMPT"][..],
+        &[
+            "FIRST_PROMPT",
+            "FIRST_ANSWER",
+            "SECOND_PROMPT",
+            "SECOND_ANSWER",
+            "THIRD_PROMPT",
+        ],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for text in retained {
+            assert!(
+                history(index + 1).contains(text),
+                "request {} lacks {text}",
+                index + 1
+            );
+        }
+    }
+    Ok(())
+}

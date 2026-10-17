@@ -2898,6 +2898,7 @@ dependencies = [
  "clap",
  "futures",
  "proptest",
+ "rustix-openpty",
  "serde",
  "serde_json",
  "tempfile",

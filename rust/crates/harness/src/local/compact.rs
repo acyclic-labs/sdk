@@ -56,52 +56,14 @@ impl LocalHarness {
         instructions: &str,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        let mut hash = blake3::Hasher::new();
-        hash.update(b"acyclic.local.compact-source/v1\0");
-        hash.update(&operation.into_bytes());
-        let mut id = [0; 16];
-        id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-        let source_operation = OperationId::from_bytes(id);
-        let (retained, _) = publisher
-            .observe_staged_once(source_operation, self.limits.file_bytes, None)?
+        let (source, captured) = self
+            .staged_source(
+                staged_id(b"compact-source", operation),
+                operation,
+                target,
+                publisher,
+            )
             .await?;
-        let (source, captured) = match retained {
-            Some(file) => {
-                let bytes = self
-                    .files
-                    .read_content(
-                        &file,
-                        &self.read_grant(&self.journal)?,
-                        self.limits.file_bytes,
-                        None,
-                    )
-                    .await?;
-                let captured: crate::context::SummarySource =
-                    serde_json::from_slice(&bytes).map_err(storage)?;
-                (file, captured)
-            }
-            None => {
-                let captured = self.summary_source(target).await?;
-                let bytes = serde_json::to_vec(&captured).map_err(storage)?;
-                let file = publisher
-                    .stage_once(
-                        source_operation,
-                        &format!("inputs/{operation}.summary-source.json"),
-                        &bytes,
-                        "application/json",
-                        "summary source",
-                        None,
-                    )?
-                    .await?
-                    .0;
-                (file, captured)
-            }
-        };
-        if captured.boundary.task != target {
-            return Err(Error::Conflict(
-                "summary source belongs to another task".into(),
-            ));
-        }
         let manifest = captured.boundary.manifest;
         let mut context = captured.context;
         self.retain_settings(operation, &json!({"model":captured.boundary.model}))
@@ -160,6 +122,125 @@ impl LocalHarness {
             .await?
             .0;
         self.finish_turn_inputs(operation, payload, publisher).await
+    }
+}
+
+/// One staged input per purpose, derived from the operation that owns it.
+fn staged_id(purpose: &[u8], operation: OperationId) -> OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.");
+    hash.update(purpose);
+    hash.update(b"/v1\0");
+    hash.update(&operation.into_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(id)
+}
+
+impl LocalHarness {
+    /// Captures `target`'s history once; a retry reads the retained capture.
+    async fn staged_source(
+        &self,
+        staged: OperationId,
+        operation: OperationId,
+        target: TaskId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(crate::conversation::FileRef, crate::context::SummarySource)> {
+        let (retained, _) = publisher
+            .observe_staged_once(staged, self.limits.file_bytes, None)?
+            .await?;
+        let (source, captured) = match retained {
+            Some(file) => {
+                let bytes = self
+                    .files
+                    .read_content(
+                        &file,
+                        &self.read_grant(&self.journal)?,
+                        self.limits.file_bytes,
+                        None,
+                    )
+                    .await?;
+                let captured: crate::context::SummarySource =
+                    serde_json::from_slice(&bytes).map_err(storage)?;
+                (file, captured)
+            }
+            None => {
+                let captured = self.summary_source(target).await?;
+                let bytes = serde_json::to_vec(&captured).map_err(storage)?;
+                let file = publisher
+                    .stage_once(
+                        staged,
+                        &format!("inputs/{operation}.summary-source.json"),
+                        &bytes,
+                        "application/json",
+                        "summary source",
+                        None,
+                    )?
+                    .await?
+                    .0;
+                (file, captured)
+            }
+        };
+        if captured.boundary.task != target {
+            return Err(Error::Conflict(
+                "summary source belongs to another task".into(),
+            ));
+        }
+        Ok((source, captured))
+    }
+
+    /// Checkpoints a completed conversation that was never compacted. Its
+    /// summary is the captured history itself, so a continuation retains every
+    /// prompt, answer and outcome through the same selection as a compaction.
+    pub(super) async fn checkpoint_history(
+        &self,
+        operation: OperationId,
+        target: TaskId,
+    ) -> Result<()> {
+        let publisher = self.input_publisher()?;
+        let checkpoint = staged_id(b"history-checkpoint", operation);
+        let (source, captured) = self
+            .staged_source(
+                staged_id(b"history-source", operation),
+                operation,
+                target,
+                publisher.as_ref(),
+            )
+            .await?;
+        let [
+            ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text(history),
+            },
+        ] = captured.context.messages.as_slice()
+        else {
+            return Err(Error::Invalid(
+                "history source is not one text message".into(),
+            ));
+        };
+        let summary = publisher
+            .stage_once(
+                checkpoint,
+                &format!("inputs/{operation}.history.txt"),
+                history.as_bytes(),
+                "text/plain",
+                "conversation history",
+                None,
+            )?
+            .await?
+            .0;
+        self.publish_checkpoint(
+            checkpoint,
+            target,
+            &crate::context::SummaryCheckpoint {
+                operation: checkpoint,
+                boundary: captured.boundary,
+                source,
+                summary,
+            },
+        )
+        .await?;
+        Ok(())
     }
 }
 

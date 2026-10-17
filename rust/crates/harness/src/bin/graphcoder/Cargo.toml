@@ -34,6 +34,13 @@ acyclic-test-support = { path = "../../../../test-support" }
 name = "cli"
 path = "tests/cli.rs"
 
+[[test]]
+name = "tui"
+path = "tests/tui.rs"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix-openpty = "0.2"
+
 [dev-dependencies.axum]
 workspace = true
 
