@@ -53,6 +53,46 @@ fn negative_control_omitting_a_swarm_bound_is_rejected() {
     assert!(std::panic::catch_unwind(|| limits::exercise(b"", true)).is_err());
 }
 
+// Swarm bounds are admitted without any transport feature; every broken
+// relation is rejected by the same rule SwarmClient::new applies.
+#[test]
+fn every_out_of_range_swarm_bound_is_rejected_without_a_transport() {
+    use acyclic_harness::client::{ClientViewLimits, QueryViewLimits, SwarmClientLimits};
+    let limits = SwarmClientLimits {
+        agents: 2,
+        selected: 1,
+        layout_bytes: 1,
+        config_files: 1,
+        snapshot_files: 1,
+    };
+    let views = ClientViewLimits {
+        agents: 2,
+        selected: 1,
+        overview_values: 4,
+        overview_bytes: 512,
+        query: QueryViewLimits {
+            files: 1,
+            segments: 1,
+            bytes: 1,
+        },
+    };
+    limits.validate(&views).expect("valid bounds");
+    let broken: [fn(&mut SwarmClientLimits, &mut ClientViewLimits); 7] = [
+        |l, _| l.agents = 0,
+        |l, _| l.selected = 3,
+        |l, _| l.layout_bytes = 0,
+        |l, _| l.config_files = 0,
+        |l, _| l.snapshot_files = 0,
+        |_, v| v.agents = 1,
+        |_, v| v.selected = 0,
+    ];
+    for breaking in broken {
+        let (mut l, mut v) = (limits, views);
+        breaking(&mut l, &mut v);
+        assert!(l.validate(&v).is_err(), "{l:?} {v:?}");
+    }
+}
+
 #[path = "client_swarm_views_files.rs"]
 mod files;
 

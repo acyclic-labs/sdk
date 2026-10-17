@@ -1,5 +1,5 @@
 //! Admission schemas round-trip, reject unknown metadata and retain all bounds.
-use acyclic_harness::client::{ClientViewLimits, QueryViewLimits, SwarmClient, SwarmClientLimits};
+use acyclic_harness::client::{ClientViewLimits, ClientViews, QueryViewLimits, SwarmClientLimits};
 use acyclic_stream::StreamPath;
 
 pub fn exercise(bytes: &[u8], omit_bound: bool) {
@@ -23,7 +23,8 @@ pub fn exercise(bytes: &[u8], omit_bound: bool) {
             bytes: 1 + byte(6) as u64,
         },
     };
-    SwarmClient::new(StreamPath::new("swarm").unwrap(), limits, views).expect("valid bounds");
+    limits.validate(&views).expect("valid bounds");
+    ClientViews::new(StreamPath::new("swarm").unwrap(), views).expect("valid views");
     let mut encoded = serde_json::to_value((limits, views)).unwrap();
     if omit_bound {
         encoded[0].as_object_mut().unwrap().remove("snapshot_files");

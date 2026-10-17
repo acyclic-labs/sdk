@@ -31,16 +31,7 @@ impl SwarmClient {
         limits: SwarmClientLimits,
         view_limits: ClientViewLimits,
     ) -> Result<Self> {
-        if limits.agents == 0
-            || limits.selected > limits.agents
-            || limits.layout_bytes == 0
-            || limits.config_files == 0
-            || limits.snapshot_files == 0
-            || view_limits.agents < limits.agents
-            || view_limits.selected < limits.selected
-        {
-            return Err(Error::Invalid("invalid swarm client bounds".into()));
-        }
+        limits.validate(&view_limits)?;
         StreamPath::new(format!("{}/agent/files", root.as_str()))
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let views = ClientViewHandle::new(ClientViews::new(root.clone(), view_limits)?);

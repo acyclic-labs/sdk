@@ -1,5 +1,5 @@
 //! File-derived swarm demand and canonical update data.
-use super::ClientInterests;
+use super::{ClientInterests, ClientViewLimits};
 use crate::task_volume::HeadSnapshot;
 use acyclic_stream::{StreamPath, wire};
 #[cfg(any(
@@ -29,6 +29,25 @@ pub struct SwarmClientLimits {
     pub config_files: usize,
     /// Maximum logical files in each selected snapshot.
     pub snapshot_files: usize,
+}
+
+impl SwarmClientLimits {
+    /// The one admission rule for swarm bounds, independent of the transport
+    /// that later follows them: positive capacities, selection within the
+    /// swarm, and renderer views at least as wide as admission.
+    pub fn validate(&self, views: &ClientViewLimits) -> crate::Result<()> {
+        if self.agents == 0
+            || self.selected > self.agents
+            || self.layout_bytes == 0
+            || self.config_files == 0
+            || self.snapshot_files == 0
+            || views.agents < self.agents
+            || views.selected < self.selected
+        {
+            return Err(crate::Error::Invalid("invalid swarm client bounds".into()));
+        }
+        Ok(())
+    }
 }
 
 /// Inputs for the shared ClientViews fold; no renderer or second wire schema.
