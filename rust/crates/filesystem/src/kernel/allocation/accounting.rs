@@ -325,6 +325,8 @@ impl<'a> KernelAccounting<'a> {
     /// Records and checks bounded work.
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        charge_tests::redundant_allocation();
         match self {
             Self::Standalone {
                 work,
