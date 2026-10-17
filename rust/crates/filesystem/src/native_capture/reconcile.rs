@@ -15,8 +15,10 @@ pub(super) async fn capture_observed_paths_from_root<
     let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
     let bytes = vector_bytes(&states);
     let count = states.len();
+    let aliases = CaptureAliasPlan::new(&states, meter)?;
     let mut batch = CaptureBatch {
         source_root,
+        detachment_base: checkout.root().file_table.digest,
         watch_epoch: None,
         baseline,
         maximum_extent_spans,
@@ -26,18 +28,24 @@ pub(super) async fn capture_observed_paths_from_root<
         receipt: CaptureReceipt::default(),
     };
     for (index, (observation, path, current)) in states.into_iter().enumerate() {
+        let intent = if aliases.requires_detach(current, meter)?
+            || observation.is_none()
+                && current
+                    .is_some_and(|record| record.kind == FileKind::Regular && record.link_count > 1)
+        {
+            CaptureIntent::Detach
+        } else {
+            CaptureIntent::Complete
+        };
         batch
-            .prepare(
-                checkout,
-                (observation, path, current),
-                CaptureIntent::Complete,
-            )
+            .prepare(checkout, (observation, path, current), intent)
             .await?;
         if (index + 1) % batch_size == 0 && index + 1 < count {
             apply_capture_transaction(checkout, std::mem::take(&mut batch.mutations), meter)
                 .await?;
         }
     }
+    aliases.release(meter)?;
     meter.clone().release(bytes).map_err(capture_demand_error)?;
     apply_capture_transaction(checkout, batch.mutations, meter).await?;
     release_host_links(batch.host_links, meter)?;
@@ -128,10 +136,13 @@ pub(super) enum CaptureIntent {
     /// As `Complete`, for a name a rename bound: a directory's subtree is new.
     Arrived,
     Replace,
+    /// Capture a separate regular-file identity while retaining unobserved metadata.
+    Detach,
 }
 
 pub(super) struct CaptureBatch<'a> {
     pub(super) source_root: &'a HostRoot,
+    pub(super) detachment_base: crate::foundation::Digest,
     pub(super) watch_epoch: Option<u64>,
     pub(super) baseline: Option<&'a NativeViewBaseline>,
     pub(super) maximum_extent_spans: u32,
@@ -139,6 +150,13 @@ pub(super) struct CaptureBatch<'a> {
     pub(super) host_links: Vec<([u8; 16], NamespacePath)>,
     pub(super) mutations: Vec<AuthoredMutation>,
     pub(super) receipt: CaptureReceipt,
+}
+
+#[derive(Clone, Copy)]
+struct CaptureFileState {
+    record: Option<FileRecord>,
+    metadata_unchanged: bool,
+    detached_identity: Option<crate::FileId>,
 }
 
 impl CaptureBatch<'_> {
@@ -213,6 +231,17 @@ impl CaptureBatch<'_> {
         let linked_regular = host_kind == FileKind::Regular
             && checkout.volume_config().hard_links
             && metadata.nlink() > 1;
+        if host_kind == FileKind::Regular
+            && current
+                .is_some_and(|record| record.kind == FileKind::Regular && record.link_count > 1)
+            && let Some(epoch) = self.watch_epoch
+        {
+            // A single-link host inode can have replaced one name of an earlier shared SDK record.
+            return Err(CaptureError::RescanRequired {
+                epoch,
+                reason: WatchInvalidationReason::NativeRescanRequired,
+            });
+        }
         if linked_regular {
             if let Some(index) = self.link_position(&metadata)? {
                 return self.hard_link(index, path, current, host_path, &metadata);
@@ -226,9 +255,10 @@ impl CaptureBatch<'_> {
             }
         }
         // Created files replace identity; same-kind directories retain identity while reconciling children.
-        let replace = intent == CaptureIntent::Replace
-            && !(host_kind == FileKind::Directory
-                && current.is_some_and(|record| record.kind == FileKind::Directory));
+        let replace = intent == CaptureIntent::Detach
+            || intent == CaptureIntent::Replace
+                && !(host_kind == FileKind::Directory
+                    && current.is_some_and(|record| record.kind == FileKind::Directory));
         if let Some(record) = current
             && (record.kind != host_kind || replace)
         {
@@ -249,8 +279,11 @@ impl CaptureBatch<'_> {
             });
         }
         let exists_with_kind = !replace && current.is_some_and(|record| record.kind == host_kind);
+        let preserve_metadata = exists_with_kind
+            || intent == CaptureIntent::Detach
+                && current.is_some_and(|record| record.kind == host_kind);
         let (canonical_metadata, prior_metadata) = self
-            .canonical_metadata(checkout, current, host_kind, exists_with_kind, &metadata)
+            .canonical_metadata(checkout, current, host_kind, preserve_metadata, &metadata)
             .await?;
         // A directory's timestamps follow what happens to its entries, each captured through its own path, and to reads of it: a change to them alone is no change of the directory's.
         if host_kind == FileKind::Directory
@@ -278,16 +311,30 @@ impl CaptureBatch<'_> {
             capture_drop_host_path(host_path, self.meter)?;
             true
         } else if host_kind == FileKind::Regular {
+            let detached_identity = current
+                .filter(|_| intent == CaptureIntent::Detach)
+                .map(|record| {
+                    detached_file_id(
+                        self.detachment_base,
+                        record.file_id,
+                        &metadata,
+                        &path,
+                        self.meter,
+                    )
+                })
+                .transpose()?;
             self.regular(
                 checkout,
                 path,
                 host_path,
                 &metadata,
                 canonical_metadata,
-                (
-                    current.filter(|_| exists_with_kind),
-                    !linked_regular && prior_metadata == Some(canonical_metadata),
-                ),
+                CaptureFileState {
+                    record: current.filter(|_| exists_with_kind),
+                    metadata_unchanged: !linked_regular
+                        && prior_metadata == Some(canonical_metadata),
+                    detached_identity,
+                },
             )
             .await?
         } else {
@@ -387,7 +434,7 @@ impl CaptureBatch<'_> {
         host_path: CaptureHostPath,
         metadata: &HostStat,
         canonical_metadata: FileMetadata,
-        existing: (Option<FileRecord>, bool),
+        existing: CaptureFileState,
     ) -> Result<bool, CaptureError> {
         // Staging opens the file once and proves it is still the observed node before reading a byte.
         let staged = stage_regular_body(
@@ -407,16 +454,18 @@ impl CaptureBatch<'_> {
             ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
         let unchanged = if logical_bytes == 0
             && ranges.is_empty()
-            && existing.1
-            && existing.0.is_some_and(|record| record.link_count == 1)
-            && existing.0.is_some_and(|record| match record.payload {
+            && existing.metadata_unchanged
+            && existing.record.is_some_and(|record| record.link_count == 1)
+            && existing.record.is_some_and(|record| match record.payload {
                 crate::kernel::FilePayload::InlineRegular(data) => data.as_bytes().is_empty(),
                 _ => false,
             }) {
             true
-        } else if let (Some(record), true, [(range, content)]) =
-            (existing.0, existing.1, ranges.as_slice())
-            && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
+        } else if let (Some(record), true, [(range, content)]) = (
+            existing.record,
+            existing.metadata_unchanged,
+            ranges.as_slice(),
+        ) && matches!(record.payload, crate::kernel::FilePayload::Regular { logical_bytes: prior, .. } if prior == logical_bytes)
             && range.offset == 0
             && range.length == logical_bytes
             && content.logical_bytes() == logical_bytes
@@ -479,11 +528,31 @@ impl CaptureBatch<'_> {
             .checked_add(2 + usize::from(logical_bytes != 0))
             .ok_or(CaptureError::from(WorkError::Overflow))?;
         capture_reserve(&mut self.mutations, count, self.meter)?;
-        if existing.0.is_some() {
+        if existing.record.is_some() {
             self.mutations.push(AuthoredMutation::Resize {
                 path: clone_capture_path(&path, self.meter)?,
                 logical_bytes: 0,
             });
+        } else if let Some(file_id) = existing.detached_identity {
+            let mut empty: &[u8] = &[];
+            let content = checkout
+                .stage_content_with_accounting(
+                    &mut empty,
+                    1,
+                    &mut crate::kernel::KernelAccounting::native(
+                        self.meter,
+                        self.meter.cancellation(),
+                    ),
+                    self.meter.cancellation(),
+                )
+                .await?;
+            self.mutations
+                .push(AuthoredMutation::CreateFileFromContent {
+                    path: clone_capture_path(&path, self.meter)?,
+                    content,
+                    metadata: canonical_metadata,
+                    file_id: Some(file_id),
+                });
         } else {
             self.mutations.push(AuthoredMutation::CreateFile {
                 path: clone_capture_path(&path, self.meter)?,

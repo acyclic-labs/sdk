@@ -95,6 +95,11 @@ path = "tests/workspace_reads.rs"
 required-features = ["memory"]
 
 [[test]]
+name = "native_capture_links"
+path = "tests/native_capture_links.rs"
+required-features = ["memory", "native-mount"]
+
+[[test]]
 name = "native_owner_notifications"
 path = "tests/native_owner_notifications.rs"
 required-features = ["native-watch"]

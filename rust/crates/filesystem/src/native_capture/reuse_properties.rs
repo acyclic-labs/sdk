@@ -111,6 +111,10 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                         )
                         .await
                         .unwrap();
+                    // A mounted checkout can retain one authored operation across
+                    // initial capture and later alias splits. Replacement IDs must
+                    // be fresh without losing determinism between these candidates.
+                    initial.bind_authored_operation(crate::OperationId::new());
                     let path = NamespacePath::from_portable(
                         &crate::path::PortablePath::parse("/file", initial.volume_config().limits)
                             .unwrap(),

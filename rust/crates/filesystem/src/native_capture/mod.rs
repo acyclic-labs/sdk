@@ -46,6 +46,8 @@ use host_walk::*;
 mod host_observation_tests;
 mod reconcile;
 use reconcile::*;
+mod aliases;
+use aliases::*;
 mod checkout_walk;
 use checkout_walk::*;
 mod watch_replay;

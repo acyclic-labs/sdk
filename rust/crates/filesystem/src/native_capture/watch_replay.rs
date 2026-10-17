@@ -350,6 +350,7 @@ pub async fn capture_watch_batch<
         let rename_mutations = std::mem::take(&mut mutations);
         let mut batch = CaptureBatch {
             source_root: &source_root,
+            detachment_base: checkout.root().file_table.digest,
             watch_epoch: Some(epoch),
             baseline: None,
             maximum_extent_spans: options.maximum_extent_spans,

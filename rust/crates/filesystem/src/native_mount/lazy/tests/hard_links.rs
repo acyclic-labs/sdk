@@ -170,6 +170,75 @@ async fn source_directory_renames_keep_subsequent_writes_working()
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn host_capture_splits_aliases_created_under_a_retained_operation()
+-> Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    for complete in [false, true] {
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let source = tempfile::tempdir()?;
+        std::fs::write(source.path().join("seed"), b"source")?;
+        let view = mounted_view(source.path(), "capture-retained-operation").await?;
+
+        // Promotion binds an operation on the long-lived checkout. The new file
+        // below receives an authored ID derived from that operation and its path.
+        view.open_file(&mounted(&["seed"]))?
+            .write_range(0, Bytes::from_static(b"promoted"))?;
+        let operation = view
+            .authored
+            .shared_checkout()
+            .lock()
+            .await
+            .bound_authored_operation_id()
+            .ok_or("promotion did not bind an authored operation")?;
+        let paths = [mounted(&["a"]), mounted(&["z"])];
+        let created = view.create_file(&paths[0], FileMetadata::default(), None, &work)?;
+        view.write_range(&paths[0], 0, Bytes::from_static(b"before"))?;
+        view.hard_link(&paths[0], &paths[1], &work)?;
+        assert_eq!(
+            view.lookup(&paths[1])?.ok_or("missing alias")?.node.file_id,
+            created.node.file_id
+        );
+
+        let host = tempfile::tempdir()?;
+        std::fs::write(host.path().join("a"), b"before")?;
+        std::fs::hard_link(host.path().join("a"), host.path().join("z"))?;
+        std::fs::write(host.path().join("save.tmp"), b"after!")?;
+        std::fs::rename(host.path().join("save.tmp"), host.path().join("a"))?;
+        let captured = if complete {
+            paths.as_slice()
+        } else {
+            &paths[..1]
+        };
+        view.capture_host_paths(host.path(), captured)?;
+
+        let changed = view.open_file(&paths[0])?;
+        let unchanged = view.open_file(&paths[1])?;
+        assert_eq!(changed.read_range(0, 6)?.as_ref(), b"after!");
+        assert_eq!(unchanged.read_range(0, 6)?.as_ref(), b"before");
+        assert_ne!(
+            changed.lookup()?.node.file_id,
+            unchanged.lookup()?.node.file_id,
+            "complete={complete}"
+        );
+        if !complete {
+            assert_eq!(unchanged.lookup()?.node.file_id, created.node.file_id);
+        }
+        assert_eq!(
+            view.authored
+                .shared_checkout()
+                .lock()
+                .await
+                .bound_authored_operation_id(),
+            Some(operation),
+            "capture must retain the original authored operation"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn promotions_preserve_ancestor_and_alias_identities_for_generated_writes()
 -> Result<(), Box<dyn std::error::Error>> {
