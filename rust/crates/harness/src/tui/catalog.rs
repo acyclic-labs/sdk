@@ -17,6 +17,7 @@ fn query_supported(query: CommandQuery) -> bool {
             | CommandQuery::Goal
             | CommandQuery::Plan
             | CommandQuery::Feedback
+            | CommandQuery::Tree
     )
 }
 

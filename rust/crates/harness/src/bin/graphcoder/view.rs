@@ -45,7 +45,11 @@ pub async fn run(
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
-    let mut documents = client::local_documents(&local, &authority).await?;
+    let mut documents: futures::stream::BoxStream<'static, _> = Box::pin(futures::stream::select(
+        client::local_documents(&local, &authority).await?,
+        client::local_task_overviews(&local).await?,
+    ));
+    let mut agents = tui::AgentPanel::default();
     loop {
         client
             .follow_task(
@@ -68,6 +72,7 @@ pub async fn run(
         let back = client::tui_scroll(&commands)?;
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
+        agents.update(client.views(), &commands)?;
         input.busy = renderer.is_busy();
         let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
@@ -76,6 +81,7 @@ pub async fn run(
             maximum_scroll = screen.tail_scroll(frame.area(), &input);
             let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
+            agents.render(frame, areas.transcript, &input.theme);
         })?;
         let Some(event) = client::next_file_tui_event(
             &mut client,
@@ -98,6 +104,9 @@ pub async fn run(
             now,
         );
         for effect in effects {
+            let Some(effect) = agents.input(&mut commands, effect).await? else {
+                continue;
+            };
             client::file_tui_input(
                 &mut commands,
                 reader.as_ref(),

@@ -3,7 +3,7 @@ use super::*;
 use crate::Outcome;
 use crate::{
     runtime::TaskStateProvider,
-    task_volume::{Component, FileKey, FileValue, Query, TaskFile},
+    task_volume::{Component, FileKey, FileValue, Query, TaskFile, TaskState, TaskStatus},
 };
 use serde_json::{Value, json};
 
@@ -25,11 +25,11 @@ impl LocalHarness {
                 .await
                 .map_err(storage)?;
             let mut state = match self.runtime.task_host().terminal_status(task).await? {
-                Some(Outcome::Succeeded(_)) => "completed",
-                Some(Outcome::Failed { .. }) => "failed",
-                Some(Outcome::Cancelled) => "cancelled",
-                Some(Outcome::Indeterminate { .. }) => "indeterminate",
-                None => "pending",
+                Some(Outcome::Succeeded(_)) => TaskState::Completed,
+                Some(Outcome::Failed { .. }) => TaskState::Failed,
+                Some(Outcome::Cancelled) => TaskState::Cancelled,
+                Some(Outcome::Indeterminate { .. }) => TaskState::Indeterminate,
+                None => TaskState::Pending,
             };
             let settings_key =
                 FileKey::parse(&format!(".ui/task-{task}/settings.json")).map_err(storage)?;
@@ -46,12 +46,22 @@ impl LocalHarness {
                 .transpose()?
                 .is_some_and(|value| value["deleted"] == true)
             {
-                state = "deleted";
+                state = TaskState::Deleted;
             }
             let attention = admission.task.name == "acyclic.stock_turn"
-                && matches!(state, "completed" | "failed" | "indeterminate");
-            let value = json!({"task":task,"parent":admission.parent,"state":state,"attention":attention,"owner_agent":self.signed.agent()});
-            let bytes = serde_json::to_vec(&value).map_err(storage)?;
+                && matches!(
+                    state,
+                    TaskState::Completed | TaskState::Failed | TaskState::Indeterminate
+                );
+            let bytes = TaskStatus {
+                task,
+                parent: admission.parent,
+                state,
+                attention,
+                owner_agent: self.signed.agent(),
+            }
+            .encode()
+            .map_err(storage)?;
             match self
                 .task_files
                 .inner
@@ -98,9 +108,9 @@ impl LocalHarness {
             let attention = status
                 .files
                 .first()
-                .map(|file| serde_json::from_slice::<Value>(&file.bytes).map_err(storage))
+                .map(|file| TaskStatus::parse(&file.bytes).map_err(storage))
                 .transpose()?
-                .is_some_and(|value| value["attention"] == true);
+                .is_some_and(|status| status.attention);
             tasks.retain(|old| *old != task);
             if attention {
                 tasks.push(task);

@@ -38,6 +38,17 @@ pub enum ViewUpdate {
         /// Authenticated file; non-document files leave document panels unchanged.
         file: crate::task_volume::FileValue,
     },
+    /// Atomic snapshot that installs one bounded shared file-query fold.
+    QuerySnapshot {
+        /// The selection whose files the fold retains.
+        query: crate::task_volume::Query,
+        /// Authenticated atomic snapshot from that query.
+        snapshot: crate::task_volume::Snapshot,
+        /// Maximum retained files.
+        maximum_files: usize,
+        /// Maximum retained payload bytes.
+        maximum_bytes: usize,
+    },
     /// A shared file slice or cursor checkpoint from the volume query follow.
     File(crate::task_volume::Change),
     /// One provider-neutral model event.

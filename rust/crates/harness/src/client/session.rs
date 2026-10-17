@@ -281,6 +281,12 @@ impl<S: ClientStateStore> ClientSession<S> {
     /// durable wire outbox and acknowledgements.
     pub fn apply_update(&mut self, update: super::ViewUpdate) -> Result<()> {
         match update {
+            super::ViewUpdate::QuerySnapshot {
+                query,
+                snapshot,
+                maximum_files,
+                maximum_bytes,
+            } => self.query_snapshot(query, snapshot, maximum_files, maximum_bytes),
             super::ViewUpdate::File(change) => self.query_change(change).map(|_| ()),
             super::ViewUpdate::DocumentChange { authority, change } => {
                 self.apply_documents(&authority, |documents| documents.apply_change(&change))

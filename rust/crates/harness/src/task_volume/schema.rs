@@ -444,7 +444,7 @@ impl FileKey {
 
 #[path = "query.rs"]
 mod query;
-pub use query::Query;
+pub use query::{Query, QueryScope};
 
 /// Assistant channel; tools derive their channel from their logical key.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

@@ -30,6 +30,8 @@ mod content;
 mod document_files;
 mod documents;
 pub use document_files::document_files;
+mod overview_files;
+pub use overview_files::task_overview_files;
 pub use documents::DocumentViews;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
@@ -178,7 +180,9 @@ pub use journal_model::verify_journal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, disconnect_local, local_documents, local_prompt};
+pub use local::{
+    connect_local, disconnect_local, local_documents, local_prompt, local_task_overviews,
+};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",

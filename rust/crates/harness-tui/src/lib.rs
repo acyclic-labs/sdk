@@ -1,5 +1,9 @@
 //! Grapheme-safe prompt editing without a terminal or application dependency.
 
+#[cfg(feature = "tui")]
+mod agent_tree;
+#[cfg(feature = "tui")]
+pub use agent_tree::{AgentState, AgentStatus, AgentTree, AgentTreeView};
 mod buffer;
 #[cfg(feature = "tui")]
 mod completion;
