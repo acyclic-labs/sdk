@@ -4,10 +4,13 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
 
-/// One real TypeScript process per bounded model; callers serialize commands.
+/// One real TypeScript process per bounded model; callers serialize commands. The process lives exactly as long as
+/// its stdin (test/model-driver.ts), so it ends with this owner however the owner ends, including a static driver
+/// that is never dropped and a test process that is killed. Dropping the driver takes that same path: it closes
+/// stdin and waits, so every model run proves the process ends on its own.
 pub struct Driver {
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
 }
 impl Driver {
@@ -33,17 +36,23 @@ impl Driver {
         let output = BufReader::new(child.stdout.take().expect("driver stdout"));
         Self {
             child,
-            input,
+            input: Some(input),
             output,
         }
     }
+    /// Sends one command without waiting for its result.
+    pub fn send(&mut self, request: serde_json::Value) {
+        let input = self.input.as_mut().expect("model stdin is open");
+        writeln!(input, "{request}").expect("write model action");
+        input.flush().expect("flush model action");
+    }
     pub fn call(&mut self, request: serde_json::Value) -> serde_json::Value {
-        writeln!(self.input, "{request}").expect("write model action");
-        self.input.flush().expect("flush model action");
+        self.send(request);
         let mut line = String::new();
         assert_ne!(
             self.output.read_line(&mut line).expect("read model result"),
-            0
+            0,
+            "model process exited before answering (step budget exhausted or crashed)"
         );
         let value: serde_json::Value = serde_json::from_str(&line).expect("model JSON result");
         assert!(value.get("error").is_none(), "{value}");
@@ -52,7 +61,7 @@ impl Driver {
 }
 impl Drop for Driver {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        drop(self.input.take());
         let _ = self.child.wait();
     }
 }

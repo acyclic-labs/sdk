@@ -1,12 +1,12 @@
-import { createInterface } from "node:readline";
 import { plugin } from "bun";
 import { Code, ConnectError } from "@connectrpc/connect";
+import { MODEL_STEPS, serve } from "./model-driver.js";
 import { SessionNode, checkpoint } from "./session-node.js";
 
 // Only the transport factory is substituted: the public raw-follow wrapper,
 // StreamSessions, and Connect's deadline/link helpers run unchanged. The clock
 // fires the real helper callback, without wall time or a second implementation.
-const peer = new SessionNode();
+const peer = new SessionNode(MODEL_STEPS);
 const fault = process.env.STREAM_SESSION_FAULT;
 const requestedScenario = process.env.STREAM_SESSION_SCENARIO ?? "deadline";
 const children = requestedScenario.endsWith("-children");
@@ -178,8 +178,4 @@ async function command(action: string): Promise<unknown> {
     active: peer.active, outstanding: peer.outstandingFrames, connections: peer.connections.length, connecting,
     timerActive, timerCreated, timerCleaned, deadlineCode: Code.DeadlineExceeded };
 }
-for await (const line of createInterface({ input: process.stdin })) {
-  try { const input = JSON.parse(line); process.stdout.write(`${JSON.stringify(await command(input.action))}\n`); }
-  catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
-}
-cancel.abort(); siblingCancel.abort();
+await serve((input: { action: string }) => command(input.action));

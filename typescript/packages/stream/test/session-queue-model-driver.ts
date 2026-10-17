@@ -1,5 +1,5 @@
-import { createInterface } from "node:readline";
 import { plugin } from "bun";
+import { serve } from "./model-driver.js";
 
 plugin({ name: "queue-cancellation-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session-queue\.ts$/ }, async args => {
@@ -58,8 +58,4 @@ async function command(action: string): Promise<unknown> {
   return { settled, accepted, acceptedAtAbort, healthySettled, seen, available: queue.available,
     waiting: (queue as unknown as { modelWaiting: number }).modelWaiting };
 }
-for await (const line of createInterface({ input: process.stdin })) {
-  try { process.stdout.write(`${JSON.stringify(await command(JSON.parse(line).action))}\n`); }
-  catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
-}
-cancel.abort(); queue.end();
+await serve((input: { action: string }) => command(input.action));

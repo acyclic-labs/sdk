@@ -36,6 +36,20 @@ fn child_selection(fault: &str) {
     }
 }
 #[test]
+fn a_model_process_exits_when_its_owner_closes_stdin_mid_command() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    let mut driver = driver::Driver::configured(&root, "move", "");
+    driver.send(json!({"action":"park"}));
+    // Drop closes stdin and waits: this returns only if the parked process exits on its own.
+    drop(driver);
+}
+#[test]
+#[should_panic(expected = "model process exited before answering")]
+fn a_reconnecting_model_ends_at_its_step_budget() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..");
+    driver::Driver::configured(&root, "move", "").call(json!({"action":"storm"}));
+}
+#[test]
 fn default_child_selection_and_cancellation_are_independent() {
     child_selection("");
 }

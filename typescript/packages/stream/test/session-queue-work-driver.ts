@@ -1,5 +1,5 @@
-import { createInterface } from "node:readline";
 import { plugin } from "bun";
+import { serve } from "./model-driver.js";
 
 plugin({ name: "queue-work-model", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]session-queue\.ts$/ }, async args => {
@@ -70,7 +70,4 @@ async function command(request: { action: string; capacity: number; operations?:
   await reader.return(undefined);
   return rows;
 }
-for await (const line of createInterface({ input: process.stdin })) {
-  try { process.stdout.write(`${JSON.stringify(await command(JSON.parse(line)))}\n`); }
-  catch (error) { process.stdout.write(`${JSON.stringify({ error: String(error) })}\n`); }
-}
+await serve(command);

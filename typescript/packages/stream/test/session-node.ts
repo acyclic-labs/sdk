@@ -13,6 +13,16 @@ export const checkpoint = (): Promise<void> => new Promise(resolve => setImmedia
 
 /** Protocol peer for client tests, with finite aggregate and channel credit. */
 export class SessionNode {
+  /**
+   * Model drivers pass a step budget: every connection and every received frame spends one step. A client that keeps
+   * reconnecting or sending ends the process (its Rust owner then fails on the closed pipe) instead of spinning.
+   */
+  constructor(private steps = Infinity) {}
+  private spend(): void {
+    if (--this.steps >= 0) return;
+    process.stderr.write("session model step budget exhausted\n");
+    process.exit(70);
+  }
   readonly latest = new Map<string, wire.SessionData[]>();
   readonly history = new Map<string, WireRecord[]>();
   readonly paths = new Set<string>();
@@ -32,6 +42,7 @@ export class SessionNode {
   actorChannels = 0;
   beforeConnect: ((node: string) => Promise<void>) | undefined;
   readonly connect: SessionConnect = async node => {
+    this.spend();
     const name = node?.nodeId ?? "home";
     await this.beforeConnect?.(name);
     if (this.connections.some(connection => connection.node === name && !connection.closed)) throw new Error("duplicate physical node connection");
@@ -88,6 +99,7 @@ export class SessionNode {
   get active(): number { return this.connections.reduce((sum, connection) => sum + connection.routes.size, 0); }
   get outstandingFrames(): number { return this.connections.filter(connection => !connection.closed).reduce((sum, connection) => sum + StreamLimit.MAX_ITEMS - connection.credit.frames, 0); }
   receive(connection: Connection, input: wire.SessionFrame): void {
+    this.spend();
     if (connection.closed) throw new StreamError("unavailable", "test connection closed");
     this.received.push(input);
     switch (input.body.case) {
