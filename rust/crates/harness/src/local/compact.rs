@@ -109,7 +109,8 @@ impl LocalHarness {
         let model = self
             .command_model(Some(crate::runtime::task_id_for_admission(operation)))
             .await?;
-        let capacity = self.provider.context_capacity(&model)?;
+        let (_, provider) = self.model_binding()?;
+        let capacity = provider.context_capacity(&model)?;
         let ceiling =
             crate::context::ThresholdCompaction::for_capacity(capacity, 0)?.response_reserve_tokens;
         let input = ModelContent::Text(format!(
@@ -130,7 +131,7 @@ impl LocalHarness {
                 self.limits,
                 None,
             )?;
-            let count = self.provider.count_tokens(&request).await?;
+            let count = provider.count_tokens(&request).await?;
             summary_output_budget(
                 capacity.context_tokens,
                 ceiling,

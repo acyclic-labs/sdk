@@ -31,6 +31,7 @@ pub fn isolated_state(command: &mut Command, root: &Path) {
     command.env("XDG_DATA_HOME", root.join("data"));
     command.env("LOCALAPPDATA", root.join("local"));
     command.env("CODEX_HOME", root.join("codex"));
+    command.env("ACYCLIC_LOCAL_OWNER_DIR", root.join("owner"));
 }
 
 pub fn output_with_stdin(command: &mut Command, input: &[u8]) -> Output {

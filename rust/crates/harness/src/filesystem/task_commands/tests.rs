@@ -34,5 +34,22 @@ fn command_dispatch_future_stays_bounded() {
             .execute_observed(context, fence, command, Value::Null, false, None)
     });
     eprintln!("command dispatch future: {bytes} bytes");
-    assert!(bytes <= 16_384, "command dispatch future is {bytes} bytes");
+    assert!(bytes <= 8192, "command dispatch future is {bytes} bytes");
+}
+
+#[test]
+fn command_journal_future_stays_bounded() {
+    let arguments: Option<(&Commands<'_>, &LeaseFence, &Arc<TaskContext>)> = None;
+    let bytes = future_bytes(|| {
+        let (commands, fence, context) = arguments.unwrap();
+        commands.command_journal(
+            TaskId::from_bytes([1; 16]),
+            fence,
+            OperationId::from_bytes([2; 16]),
+            context,
+            None,
+        )
+    });
+    eprintln!("command journal future: {bytes} bytes");
+    assert!(bytes <= 4096, "command journal future is {bytes} bytes");
 }

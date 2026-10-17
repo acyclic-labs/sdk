@@ -2,17 +2,6 @@
 
 use super::*;
 
-pub(crate) fn read_json_object(path: &Path) -> Result<serde_json::Map<String, Value>, String> {
-    if !path.exists() {
-        return Ok(serde_json::Map::new());
-    }
-    serde_json::from_slice::<Value>(&fs::read(path).map_err(display)?)
-        .map_err(display)?
-        .as_object()
-        .cloned()
-        .ok_or_else(|| format!("{} must contain a JSON object", path.display()))
-}
-
 pub(crate) fn object_entry<'a>(
     document: &'a mut serde_json::Map<String, Value>,
     key: &str,
@@ -89,24 +78,4 @@ pub(crate) fn home_directory() -> Result<PathBuf, String> {
     env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .ok_or_else(|| "cannot locate the per-user configuration directory".to_owned())
-}
-
-pub(crate) fn config_directory() -> Result<PathBuf, String> {
-    if cfg!(windows) {
-        env::var_os("APPDATA")
-            .map(PathBuf::from)
-            .ok_or_else(|| "APPDATA is unavailable".to_owned())
-    } else {
-        Ok(env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or(home_directory()?.join(".config")))
-    }
-}
-
-pub(crate) fn claude_desktop_config() -> Result<PathBuf, String> {
-    if cfg!(target_os = "macos") {
-        Ok(home_directory()?.join("Library/Application Support/Claude/claude_desktop_config.json"))
-    } else {
-        Ok(config_directory()?.join("Claude/claude_desktop_config.json"))
-    }
 }

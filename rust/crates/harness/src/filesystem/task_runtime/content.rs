@@ -6,6 +6,48 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(super) fn bind_default_output(
+        &self,
+        context: TaskContext,
+    ) -> impl Future<Output = Result<TaskContext>> + '_ {
+        Box::pin(async move {
+            if context
+                .content_binding(None)
+                .is_some_and(|binding| binding.writer.is_some())
+                || !context.scope().resource_proofs().is_empty()
+                || !context.scope().grants().contains(
+                    &self
+                        .volume
+                        .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
+                )
+            {
+                return Ok(context);
+            }
+            let context = context
+                .into_shared()?
+                .with_output_bindings(ContentBindings {
+                    reader: FilesystemContentVerifier::new(
+                        self.filesystem.clone(),
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
+                    )?,
+                    writer: Some(FilesystemContentPublisher::new(
+                        self.filesystem.clone(),
+                        &self.volume,
+                        &self.verifier,
+                        &self.signed,
+                        self.maximum_payload_bytes,
+                        None,
+                    )?),
+                })
+                .await?;
+            Ok(Arc::try_unwrap(context)
+                .unwrap_or_else(|_| unreachable!("fresh context is unshared")))
+        })
+    }
+
     pub(crate) fn with_task_files(
         mut self,
         files: Arc<crate::task_volume::TaskFiles<dyn StreamProvider>>,

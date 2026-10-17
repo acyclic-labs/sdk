@@ -12,6 +12,21 @@ use std::{
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
 #[test]
+fn hard_link_count_tracks_aliases_through_a_metadata_only_handle() -> io::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("original");
+    let alias = directory.path().join("alias");
+    std::fs::write(&path, b"contents")?;
+    let file = OpenOptions::new().access_mode(0).open(&path)?;
+    assert_eq!(hard_link_count(&file)?, 1);
+    std::fs::hard_link(&path, &alias)?;
+    assert_eq!(hard_link_count(&file)?, 2);
+    std::fs::remove_file(&alias)?;
+    assert_eq!(hard_link_count(&file)?, 1);
+    Ok(())
+}
+
+#[test]
 fn borrowed_positional_io_uses_an_overlapped_handle_directly() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let open = |name, flags| {

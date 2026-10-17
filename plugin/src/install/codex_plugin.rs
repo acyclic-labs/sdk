@@ -198,7 +198,7 @@ pub(crate) fn discover_plugin_root(executable: &Path, installed: &Path) -> Optio
         .take(4)
         .chain(std::iter::once(installed))
         .find(|root| {
-            root.join("plugin.json").is_file()
+            root.join(".codex-plugin/plugin.json").is_file()
                 && root.join(".agents/plugins/marketplace.json").is_file()
         })
         .map(Path::to_path_buf)
@@ -219,4 +219,21 @@ pub(crate) fn installed_plugin_root() -> Result<PathBuf, String> {
             .unwrap_or(home_directory()?.join(".local/share"));
         Ok(data.join("acyclic/plugin"))
     }
+}
+
+pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new("codex").args(arguments),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Codex plugin manager exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(display)
 }

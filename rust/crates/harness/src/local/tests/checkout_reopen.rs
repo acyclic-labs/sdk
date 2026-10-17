@@ -12,7 +12,11 @@ async fn immediate_reopen_after_drop_and_close_has_no_retiring_fence() -> Result
     let harness = LocalHarness::open(config()?).await?;
     drop(harness);
     let harness = LocalHarness::open(config()?).await?;
-    harness.close().await?;
+    let closing = harness.close();
+    let size = std::mem::size_of_val(&closing);
+    eprintln!("local harness close future: {size} bytes");
+    assert!(size < 16 * 1024, "local close future grew to {size} bytes");
+    closing.await?;
     LocalHarness::open(config()?).await?.close().await?;
     Ok(())
 }

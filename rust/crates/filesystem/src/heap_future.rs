@@ -36,6 +36,32 @@ pub(crate) fn in_heap_admitted<C, F: Future, E>(
     Ok((in_heap(move || create(state)), bytes))
 }
 
+/// Keeps the future and its allocation on the caller's original native ledger.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn in_native_heap<T, F, E>(
+    work: &crate::NativeMaterializationWork,
+    create: impl FnOnce() -> F,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    E: From<crate::NativeTreeMaterializationError>,
+{
+    let mut custody = None;
+    let (mut future, _) = in_heap_admitted(
+        &mut custody,
+        |custody, bytes| {
+            **custody =
+                Some(work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::default())?);
+            Ok::<(), crate::NativeTreeMaterializationError>(())
+        },
+        |_| create(),
+    )?;
+    let result = future.as_mut().await;
+    drop(future);
+    drop(custody);
+    result
+}
+
 /// Known logical ownership of the existing boxed future, not proof DATA.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum HeapFutureEvent {

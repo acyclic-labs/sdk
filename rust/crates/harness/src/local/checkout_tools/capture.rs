@@ -11,7 +11,7 @@ use std::time::Duration;
 
 mod arrivals;
 
-const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system", ".volumes"];
+use crate::filesystem::workspace_policy::RESERVED_DIRECTORIES as EXCLUDED;
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 

@@ -49,7 +49,7 @@ impl TaskRunLimits {
         Ok(())
     }
 
-    pub(super) fn allows(&self, child: &Self) -> bool {
+    pub(crate) fn allows(&self, child: &Self) -> bool {
         [
             (
                 self.concurrency.map(|value| value as u64),

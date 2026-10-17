@@ -158,6 +158,10 @@ path = "tests/e2e/main.rs"
 required-features = ["filesystem-local", "native-execution", "test-support", "grpc"]
 
 [[test]]
+name = "external_hooks"
+path = "tests/external_hooks.rs"
+
+[[test]]
 name = "search-http-codec"
 path = "tests/search_http_codec.rs"
 required-features = ["filesystem", "search-http", "test-support"]
@@ -196,9 +200,9 @@ wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsif
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
 # Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
+native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "grpc", "dep:fs2", "dep:rcgen", "dep:http-body-util"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
-hooks = ["dep:regex-lite", "dep:toml"]
+hooks = ["dep:regex-lite", "dep:toml", "acyclic-stream/http", "rmcp/server", "tokio/io-std"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml"]
 mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which"]
@@ -258,6 +262,8 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+fs2 = { version = "0.4.3", optional = true }
+rcgen = { version = "0.14.10", optional = true }
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }
 getrandom = { workspace = true, optional = true }

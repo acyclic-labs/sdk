@@ -220,6 +220,7 @@ impl Fixture {
         Ok(LocalHarness {
             issuer: Some(self.issuer.clone()),
             task_files,
+            external_bindings: Default::default(),
             files: files.clone(),
             runtime,
             project: self.volumes[if matches!(self.scenario, Scenario::EffectAndContinuation) {
@@ -232,13 +233,15 @@ impl Fixture {
             journal: self.volumes[2].clone(),
             verifier,
             signed,
-            model: Model::new(
-                "scripted".into(),
-                "test".into(),
-                "1".into(),
-                serde_json::Value::Null,
-            )?,
-            provider: self.provider.clone(),
+            model: Some((
+                Model::new(
+                    "scripted".into(),
+                    "test".into(),
+                    "1".into(),
+                    serde_json::Value::Null,
+                )?,
+                self.provider.clone(),
+            )),
             context_manifest: None,
             context_read_observer: None,
             #[cfg(feature = "hooks")]

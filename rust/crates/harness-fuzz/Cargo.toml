@@ -123,6 +123,22 @@ test = false
 doc = false
 bench = false
 
+
+[[bin]]
+name = "external-hooks"
+path = "fuzz_targets/external_hooks.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin-install"
+path = "fuzz_targets/plugin_install.rs"
+test = false
+doc = false
+bench = false
+
+
 [[bin]]
 name = "input_paths"
 path = "fuzz_targets/input_paths.rs"

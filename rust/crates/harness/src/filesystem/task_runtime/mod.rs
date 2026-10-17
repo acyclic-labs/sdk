@@ -38,6 +38,7 @@ mod deadline;
 mod inspection;
 mod reconciliation;
 pub use inspection::TaskSourceInspection;
+mod admission_input;
 mod command_input;
 pub(super) mod observed;
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -582,37 +583,52 @@ where
             native_custody: None,
         }));
         context.bind_ordinary_created_owner(owner)?;
-        if context.scope().resource_proofs().is_empty()
-            && context.scope().grants().contains(
-                &self
-                    .volume
-                    .capability(crate::conversation::VolumeOperation::Write, &mut None)?,
-            )
+        self.bind_default_output(context).await
+    }
+
+    pub(in crate::filesystem) async fn bind_task_owner(
+        &self,
+        context: TaskContext,
+        task: TaskId,
+        fence: LeaseFence,
+    ) -> Result<TaskContext> {
+        let cancellation = context
+            .owned_mailbox
+            .as_ref()
+            .and_then(|owner| owner.invocation_cancellation())
+            .cloned();
+        self.bind_task_owner_cancellable(context, task, fence, cancellation.as_ref())
+            .await
+    }
+
+    pub(in crate::filesystem) async fn bind_task_owner_cancellable(
+        &self,
+        mut context: TaskContext,
+        task: TaskId,
+        fence: LeaseFence,
+        cancellation: Option<&acyclic_fs::CancellationToken>,
+    ) -> Result<TaskContext> {
+        if context.durable_task_id() != Some(task) || !Arc::ptr_eq(&context.harness, &self.harness)
         {
-            let context = context
-                .into_shared()?
-                .with_output_bindings(ContentBindings {
-                    reader: FilesystemContentVerifier::new(
-                        self.filesystem.clone(),
-                        &self.verifier,
-                        &self.signed,
-                        self.maximum_payload_bytes,
-                        None,
-                    )?,
-                    writer: Some(FilesystemContentPublisher::new(
-                        self.filesystem.clone(),
-                        &self.volume,
-                        &self.verifier,
-                        &self.signed,
-                        self.maximum_payload_bytes,
-                        None,
-                    )?),
-                })
-                .await?;
-            return Ok(Arc::try_unwrap(context)
-                .unwrap_or_else(|_| unreachable!("fresh context is unshared")));
+            return Err(Error::Unauthorized(
+                "execution owner differs from task context".into(),
+            ));
         }
-        Ok(context)
+        let owner = self.host.journal_owner(task, &fence, None).await?;
+        let owner = Arc::new(match cancellation {
+            Some(cancellation) => owner.with_invocation_cancellation(cancellation),
+            None => owner,
+        });
+        let mailbox = Arc::new(TaskJournalMailbox {
+            host: Arc::clone(&self.host),
+            owner: Arc::clone(&owner),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
+        });
+        mailbox.validate_scope(context.scope(), None)?;
+        context.owned_mailbox = Some(mailbox);
+        context.bind_ordinary_created_owner(owner)?;
+        self.bind_default_output(context).await
     }
 
     /// Issues the stock runtime's genuine current-owner native task context.

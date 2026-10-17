@@ -22,25 +22,28 @@ where
         Arc<super::super::FilesystemExecutionJournal<P, A, O>>,
         OperationId,
     )> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            return self
-                .runtime
-                .execution_journal_with_native_context(
-                    task,
-                    fence,
-                    turn,
-                    work,
-                    Some(Arc::clone(_native_context)),
-                )
-                .await;
-        }
-        Ok((
-            self.runtime
-                .execution_journal(task, fence.clone(), turn)
-                .await?,
-            super::super::task_runtime::execution_operation(task, turn, io)?,
-        ))
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.and_then(PreparationIo::original_native_work) {
+                return self
+                    .runtime
+                    .execution_journal_with_native_context(
+                        task,
+                        fence,
+                        turn,
+                        work,
+                        Some(Arc::clone(_native_context)),
+                    )
+                    .await;
+            }
+            Ok((
+                self.runtime
+                    .execution_journal(task, fence.clone(), turn)
+                    .await?,
+                super::super::task_runtime::execution_operation(task, turn, io)?,
+            ))
+        })?
+        .await
     }
 
     pub(super) async fn tool_command(
@@ -56,11 +59,6 @@ where
         payload: Value,
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
-        let context = if io.is_none() {
-            Arc::new(self.runtime.task_context(task, fence.clone()).await?)
-        } else {
-            Arc::clone(context)
-        };
         let turn = command.operation_id;
         let input: ToolTaskCommand = mail::decode_command(payload, io)?;
         let definition = self
@@ -75,9 +73,7 @@ where
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        let (journal, operation) = self
-            .command_journal(task, fence, turn, &context, io)
-            .await?;
+        let (journal, operation) = self.command_journal(task, fence, turn, context, io).await?;
         if reconciliation_only
             && !was_dispatched(journal.as_ref(), operation, TOOL_TASK_COMMAND_KIND, io).await?
         {
@@ -86,7 +82,7 @@ where
         let invocation =
             tool_invocation(context.as_ref(), operation, definition, input.arguments, io)?;
         let limits = context.as_ref().scope().limits();
-        let context = ToolContext::new(context, operation, &invocation.call_id, io)?;
+        let context = ToolContext::new(Arc::clone(context), operation, &invocation.call_id, io)?;
         let context = 'context: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = work {
@@ -99,11 +95,16 @@ where
                     work,
                 )?;
             }
-            let task_context = self.runtime.bind_context_interactions(
+            let task_context = Box::pin(self.runtime.bind_task_owner_cancellable(
                 context.task().clone(),
                 task,
-                Arc::clone(&journal),
-            )?;
+                fence.clone(),
+                self.execution_cancellation,
+            ))
+            .await?;
+            let task_context =
+                self.runtime
+                    .bind_context_interactions(task_context, task, Arc::clone(&journal))?;
             break 'context ToolContext::new(
                 Arc::new(task_context),
                 operation,

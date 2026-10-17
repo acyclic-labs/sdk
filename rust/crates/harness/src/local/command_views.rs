@@ -3,7 +3,7 @@ use super::*;
 use crate::Outcome;
 use crate::{
     runtime::TaskStateProvider,
-    task_volume::{Component, FileKey, FileValue, Query, TaskFile},
+    task_volume::{Component, FileKey, FileValue, Query, Snapshot, TaskFile, TaskVolume},
 };
 use serde_json::{Value, json};
 
@@ -52,11 +52,12 @@ impl LocalHarness {
                 && matches!(state, "completed" | "failed" | "indeterminate");
             let value = json!({"task":task,"parent":admission.parent,"state":state,"attention":attention,"owner_agent":self.signed.agent()});
             let bytes = serde_json::to_vec(&value).map_err(storage)?;
-            match self
-                .task_files
-                .inner
-                .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
-                .await
+            match publish_changed(
+                &self.task_files.inner,
+                &snapshot,
+                &FileValue::new(key.clone(), bytes),
+            )
+            .await
             {
                 Ok(_) => {
                     self.project_attention(task).await?;
@@ -111,11 +112,12 @@ impl LocalHarness {
             if bytes.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid("attention exceeds owner byte bound".into()));
             }
-            match self
-                .task_files
-                .inner
-                .append(snapshot.generation, &FileValue::new(key.clone(), bytes))
-                .await
+            match publish_changed(
+                &self.task_files.inner,
+                &snapshot,
+                &FileValue::new(key.clone(), bytes),
+            )
+            .await
             {
                 Ok(_) => return Ok(()),
                 Err(crate::task_volume::Error::Conflict(_)) => continue,
@@ -124,3 +126,22 @@ impl LocalHarness {
         }
     }
 }
+
+// An unchanged projection linearizes at its original snapshot cut. A changed
+// projection must retain that cut: a conflict makes the caller re-read canonical
+// state, rather than publish an old value against a newer generation.
+async fn publish_changed<P: acyclic_stream::StreamProvider + ?Sized>(
+    volume: &TaskVolume<P>,
+    snapshot: &Snapshot,
+    file: &FileValue,
+) -> crate::task_volume::Result<()> {
+    if snapshot.files.len() == 1 && snapshot.files.first() == Some(file) {
+        return Ok(());
+    }
+    volume.append(snapshot.generation, file).await.map(|_| ())
+}
+
+#[cfg(all(test, acyclic_harness_loom))]
+mod models;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;

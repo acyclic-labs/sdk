@@ -85,8 +85,12 @@ where
                     .await?;
                 return reconciled(io);
             }
-            host.send_mail(task, fence, input.recipient, message, input.payload, io)
-                .await?;
+            if let Err(error) = host
+                .send_mail_with_preflight(task, fence, input.recipient, message, input.payload, io)
+                .await?
+            {
+                return query::failure(error, io);
+            }
             return ready(Outcome::Succeeded(Value::Null), io);
         }
         if reconciliation_only {

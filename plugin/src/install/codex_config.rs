@@ -59,48 +59,6 @@ pub(crate) fn codex_config_path() -> Result<PathBuf, String> {
         .join("config.toml"))
 }
 
-pub(crate) fn codex_plugin_configuration_matches(
-    ownership: &CodexPluginOwnership,
-    packaged_root: &Path,
-) -> bool {
-    let Some(config_path) = ownership.config_path.as_ref() else {
-        return false;
-    };
-    let Ok(document) = fs::read_to_string(config_path)
-        .map_err(display)
-        .and_then(|text| text.parse::<toml_edit::DocumentMut>().map_err(display))
-    else {
-        return false;
-    };
-    let marketplace = document
-        .get("marketplaces")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|marketplaces| marketplaces.get("acyclic"))
-        .and_then(toml_edit::Item::as_table);
-    let configured_root = marketplace
-        .and_then(|marketplace| marketplace.get("source"))
-        .and_then(toml_edit::Item::as_str)
-        .map(Path::new);
-    let source_is_local = marketplace
-        .and_then(|marketplace| marketplace.get("source_type"))
-        .and_then(toml_edit::Item::as_str)
-        == Some("local");
-    let enabled = document
-        .get("plugins")
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|plugins| plugins.get("acyclic@acyclic"))
-        .and_then(toml_edit::Item::as_table)
-        .and_then(|plugin| plugin.get("enabled"))
-        .and_then(toml_edit::Item::as_bool)
-        == Some(true);
-    source_is_local
-        && enabled
-        && configured_root
-            .and_then(|configured| configured.canonicalize().ok())
-            .zip(packaged_root.canonicalize().ok())
-            .is_some_and(|(configured, packaged)| configured == packaged)
-}
-
 pub(crate) fn read_optional_text(path: &Path) -> Result<Option<String>, String> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
@@ -131,11 +89,6 @@ pub(crate) fn codex_permission_profile(
         data.join("w").to_string_lossy().as_ref(),
         toml_edit::value(true),
     );
-    #[cfg(unix)]
-    {
-        let runtime = unix_control_runtime_directory();
-        roots.insert(runtime.to_string_lossy().as_ref(), toml_edit::value(true));
-    }
     #[cfg(windows)]
     {
         let filesystem = toml_table(&mut profile, "filesystem")?;
@@ -155,17 +108,12 @@ pub(crate) fn codex_profile_matches(
         .and_then(toml_edit::Item::as_table);
     #[cfg(unix)]
     {
-        let runtime = unix_control_runtime_directory();
         profile.len() == 2
             && profile.get("extends").and_then(toml_edit::Item::as_str) == Some(base_profile)
             && roots.is_some_and(|roots| {
-                roots.len() == 2
+                roots.len() == 1
                     && roots
                         .get(data.join("w").to_string_lossy().as_ref())
-                        .and_then(toml_edit::Item::as_bool)
-                        == Some(true)
-                    && roots
-                        .get(runtime.to_string_lossy().as_ref())
                         .and_then(toml_edit::Item::as_bool)
                         == Some(true)
             })

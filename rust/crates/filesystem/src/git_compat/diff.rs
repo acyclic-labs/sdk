@@ -9,11 +9,12 @@ pub struct GitDiffCounts {
     pub binding_changes: usize,
 }
 
-/// Compares exact generations using the ignore policy belonging to each side.
+/// Compares exact generations using each side's ignores and caller-reserved roots.
 pub async fn git_compatible_diff_counts<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
     already_tracked: &BTreeSet<String>,
+    excluded_roots: &[&str],
     maximum_changes: u32,
     cancellation: &CancellationToken,
 ) -> Result<GitDiffCounts, GitCaptureError>
@@ -38,6 +39,11 @@ where
     for change in paths {
         cancellation.check().map_err(WorkspaceError::from)?;
         let path = portable_changed_path(&change.path)?;
+        if !already_tracked.contains(&path)
+            && path.split('/').next().is_some_and(|root| excluded_roots.contains(&root))
+        {
+            continue;
+        }
         let record = change.after.or(change.before);
         let Some(record) = record else { continue };
         if record.kind == FileKind::Directory {

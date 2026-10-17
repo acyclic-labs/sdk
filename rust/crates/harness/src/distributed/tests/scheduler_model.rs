@@ -66,6 +66,17 @@ impl ContentResidencyVerifier for Contents {
 }
 
 impl SchedulerPayloadStore for Contents {
+    fn stage_input<'a>(
+        &'a self,
+        operation: OperationId,
+        key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        // This model's content-addressed flat store has no directory namespace.
+        self.stage(operation, key, bytes, io)
+    }
+
     fn stage<'a>(
         &'a self,
         _: OperationId,

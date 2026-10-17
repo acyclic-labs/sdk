@@ -11,8 +11,22 @@ pub(super) type LocalLazyWorkspace = LazyWorkspace<
     NativeDemandSource,
     LocalCoreStateStore,
 >;
-/// Reserved SDK metadata excluded from compatibility commits.
-pub(crate) const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n";
+/// SDK-owned roots excluded from coding diffs, commits and native publication.
+pub(crate) const RESERVED_DIRECTORIES: &[&str] = &[".git", ".acyclic-sdk", ".system", ".volumes"];
+
+pub(crate) fn ignore_policy(contents: &str) -> GitIgnorePolicy {
+    let mut rules = String::with_capacity(
+        contents.len()
+            + RESERVED_DIRECTORIES.iter().map(|name| name.len() + 2).sum::<usize>(),
+    );
+    rules.push_str(contents);
+    for directory in RESERVED_DIRECTORIES {
+        rules.push('\n');
+        rules.push_str(directory);
+        rules.push('/');
+    }
+    GitIgnorePolicy::parse(&rules)
+}
 
 /// Loads text merge drivers and workspace attributes.
 pub(crate) async fn merge_drivers_for<'a>(
@@ -48,7 +62,29 @@ pub(crate) async fn ignore_for<'a>(
         .await?
         .unwrap_or_default();
     let ignore_text = String::from_utf8_lossy(&bytes);
-    Ok(GitIgnorePolicy::parse(&format!(
-        "{ignore_text}\n{RESERVED_IGNORE_RULES}"
-    )))
+    Ok(ignore_policy(&ignore_text))
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        // Each reserved namespace stays excluded even when the project asks
+        // to include it; a component sharing only its prefix stays ordinary.
+        #[test]
+        fn reserved_metadata_policy_is_shared_and_component_exact(name in "[a-z]{1,16}") {
+            for root in RESERVED_DIRECTORIES {
+                let policy = ignore_policy(&format!("!{root}/\n!{root}/**"));
+                let path = format!("{root}/{name}");
+                let ordinary = format!("{root}-project/{name}");
+                prop_assert!(!policy.eligible(root, true, false));
+                prop_assert!(!policy.eligible(&path, false, false));
+                prop_assert!(policy.eligible(&ordinary, false, false));
+                prop_assert!(policy.eligible(&path, false, true));
+            }
+        }
+    }
 }

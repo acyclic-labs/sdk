@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"00000000-0000-0000-0000-000000000001","timestamp":"2026-10-17T00:00:00Z","cwd":"/project"}
+{"id":"u","parentId":null,"timestamp":"now","type":"message","message":{"role":"user","content":"retained instruction","timestamp":1}}
+{"id":"a","parentId":"u","timestamp":"now","type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"read","name":"read","arguments":{"path":"source.txt"}}],"timestamp":1}}
+{"id":"r","parentId":"a","timestamp":"now","type":"message","message":{"role":"toolResult","toolCallId":"read","toolName":"read","content":[{"type":"text","text":"source bytes"}],"isError":false,"timestamp":1}}
+{"id":"c","parentId":"r","timestamp":"now","type":"compaction","firstKeptEntryId":"u","summary":"native summary","tokensBefore":20000,"details":{"provenance":"original"}}
+{"id":"e","parentId":"c","timestamp":"now","type":"context_edit","targetId":"u","replacement":{"content":"edited instruction"}}
+{"id":"s","parentId":"e","timestamp":"now","type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"spawn","name":"acyclic_spawn","arguments":{"id":"child","prompt":"fresh"}}],"timestamp":2}}

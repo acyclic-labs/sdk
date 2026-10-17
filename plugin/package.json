@@ -5,8 +5,27 @@
   "description": "Acyclic distributed workspaces and Git compatibility for coding agents",
   "license": "Apache-2.0",
   "repository": "github:acyclic-labs/sdk",
-  "bin": { "acyclic-plugin": "bin/acyclic" },
-  "files": ["bin", "certification", "plugin.json", ".agents", ".codex-plugin", ".mcp.json", "hooks", "pi", "README.md", "identity-api.md", "identity-mcp.md", "CHANGELOG.md"],
-  "scripts": { "postinstall": "node bin/install.js" },
-  "engines": { "node": ">=18" }
+  "bin": {
+    "acyclic-plugin": "bin/acyclic"
+  },
+  "files": [
+    "bin",
+    "certification",
+    "mcp.json",
+    ".agents",
+    ".codex-plugin",
+    "hooks",
+    "pi",
+    "claude",
+    "README.md",
+    "identity-api.md",
+    "identity-mcp.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
 }

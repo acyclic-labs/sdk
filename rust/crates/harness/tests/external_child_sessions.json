@@ -1,0 +1,4 @@
+[
+  {"host":"pi","event":"subagent_start","input":{"sessionId":"parent","agentId":"fresh-label","childSession":{"host":"pi","session_id":"fresh-native","caller":null}},"action":{"action":"fork","child_id":"fresh-label","kind":null,"child_session":{"host":"pi","session_id":"fresh-native","caller":null}}},
+  {"host":"pi","event":"subagent_stop","input":{"sessionId":"parent","agentId":"fresh-label","childSession":{"host":"pi","session_id":"fresh-native","caller":null}},"action":{"action":"join","child_id":"fresh-label","child_session":{"host":"pi","session_id":"fresh-native","caller":null}}}
+]

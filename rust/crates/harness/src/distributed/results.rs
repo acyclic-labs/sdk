@@ -10,6 +10,16 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
         bytes: &'a [u8],
         io: Option<&'a crate::conversation::ContentIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
+
+    /// Stages a workflow input within its journal read grant. Forwarding stores
+    /// must preserve this purpose independently of scheduler result placement.
+    fn stage_input<'a>(
+        &'a self,
+        operation_id: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>>;
 }
 
 /// Code-first registry for exact durable reducer implementations.

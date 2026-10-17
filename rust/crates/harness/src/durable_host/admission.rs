@@ -199,6 +199,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 operation_id.into_bytes(),
             ))),
             Err(Error::Indeterminate(_)) => Ok(Admission::Indeterminate { operation_id }),
+            Err(Error::AdmissionRejected(reason)) => Ok(Admission::Rejected { reason }),
             Err(error) => Err(error),
         }
     }

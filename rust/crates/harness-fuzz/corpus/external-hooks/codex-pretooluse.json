@@ -1,0 +1,1 @@
+{"input":{"session_id":"session","tool_use_id":"call","tool_name":"exec_command","tool_input":{"cmd":"pwd"}},"host":"codex","event":"PreToolUse"}

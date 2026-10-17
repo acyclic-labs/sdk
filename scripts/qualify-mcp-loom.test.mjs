@@ -2,10 +2,60 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyFsRetryLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("filesystem qualification instruments both real lock shims and requires every restore model", () => {
+  for (const [passed, ignored] of [[1, 0], [0, 0], [1, 1], [2, 0]]) {
+    const calls = [];
+    const run = (command, args, options) => {
+      calls.push([command, args]);
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom(?: |$)/);
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} }) };
+      }
+      assert.equal(options.timeout, 9500);
+      return { status: 0, stderr: "", stdout: summary(calls.length === 3 ? 6 : calls.length === 4 ? 2 : passed, ignored, 100) };
+    };
+    if (passed === 1 && ignored === 0) qualifyFsRetryLoom(run);
+    else assert.throws(() => qualifyFsRetryLoom(run), /requires a nonzero/);
+    const expected = [
+      ["cargo", ["test", "--locked", "--message-format=json", "-p", "acyclic-fs", "--lib", "--no-run", "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch"]],
+      ["model-binary", ["distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity", "--exact"]],
+    ];
+    if (passed === 1 && ignored === 0) expected.push(
+      ["model-binary", ["git_compat::tests::model::"]],
+      ["model-binary", ["native_mount::fuse::handles::model::"]],
+    );
+    assert.deepEqual(calls, expected);
+  }
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-retry/);
+});
+
+test("filesystem qualification rejects missing restore models and negative controls", () => {
+  for (const passed of [0, 1, 2, 3, 4, 5]) {
+    assert.throws(() => qualifyFsRetryLoom((command, args) => ({
+      status: 0, stderr: "", stdout: command === "cargo"
+        ? JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} })
+        : summary(args[0] === "git_compat::tests::model::" ? passed : 1, 0, 100),
+    })), /requires a nonzero/);
+  }
+});
+
+test("filesystem qualification requires both deferred-open models", () => {
+  for (const passed of [0, 1, 3]) {
+    assert.throws(() => qualifyFsRetryLoom((command, args) => ({
+      status: 0, stderr: "", stdout: command === "cargo"
+        ? JSON.stringify({ ...artifact, target: {name:"acyclic_fs"} })
+        : summary(args[0] === "native_mount::fuse::handles::model::" ? passed
+          : args[0] === "git_compat::tests::model::" ? 6 : 1, 0, 100),
+    })), /requires a nonzero/);
+  }
+});
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
   for (const missing of [null, 1, 2]) {
@@ -129,21 +179,39 @@ test("memory accounting instruments dependency cancellation and the real ledger 
 });
 
 test("coordinator qualification instruments real Stream locks and rejects skipped models", () => {
-  for (const passed of [0, 1]) {
+  const suites = [
+    ["distributed::tests::model_checking::origin_publication_fences_competing_writers", 1],
+    ["external_executor::task_bindings::model::tests::", 3],
+    ["external_executor::local_owner::registry::model::tests::", 2],
+    ["external_executor::local_owner::workers::model::tests::", 2],
+    ["local::command_views::models::", 1],
+    ["local::children::preparation::models::", 1],
+    ["external_executor::local_owner::response::model::tests::", 2],
+    ["external_executor::local_owner::request_feed::model::tests::", 4],
+    ["external_executor::native_context::source::models::", 1],
+    ["task_volume::publication::models::", 2],
+  ];
+  for (const broken of [-1, ...suites.keys()]) {
     const calls = [];
     const run = (command, args, options) => {
       calls.push([command, args]);
       if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_harness_loom(?: |$)/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_fs_loom(?: |$)/);
         assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
         assert.ok(args.includes("--lib"));
+        assert.ok(args.includes("filesystem-local,native-execution,terminal,mcp-http,grpc,test-support"));
       }
+      const suite = calls.length - 2;
       return { status: 0, stderr: "", stdout: command === "cargo"
         ? JSON.stringify({ ...artifact, target: { name: "acyclic_harness" } })
-        : summary(passed, 0, 100) };
+        : summary(suite === broken ? 0 : suites[suite][1], 0, 100) };
     };
-    if (passed) qualifyCoordinatorOriginsLoom(undefined, run);
+    if (broken === -1) qualifyCoordinatorOriginsLoom(undefined, run);
     else assert.throws(() => qualifyCoordinatorOriginsLoom(undefined, run), /requires a nonzero/);
-    assert.deepEqual(calls[1][1], ["distributed::tests::model_checking::origin_publication_fences_competing_writers", "--exact"]);
+    assert.equal(calls.filter(([command]) => command === "cargo").length, 1);
+    assert.deepEqual(calls.slice(1), suites.slice(0, broken === -1 ? suites.length : broken + 1)
+      .map(([filter], index) => ["model-binary", [filter, ...(index === 0 ? ["--exact"] : [])]]));
   }
 });
 

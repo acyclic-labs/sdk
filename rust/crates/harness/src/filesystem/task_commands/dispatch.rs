@@ -94,31 +94,34 @@ where
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         invocation: CommandInvocation<'_>,
     ) -> Result<()> {
-        let CommandInvocation {
-            admission,
-            fence,
-            reconciliation_only,
-            io,
-            ..
-        } = invocation;
-        match owner {
-            Some(owner) => {
-                owner
-                    .verify(
-                        reconciliation_only,
-                        &mut io
-                            .map(|io| io.history_io())
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                    )
-                    .await
+        BoundedContentFuture::new(invocation.io, || async move {
+            let CommandInvocation {
+                admission,
+                fence,
+                reconciliation_only,
+                io,
+                ..
+            } = invocation;
+            match owner {
+                Some(owner) => {
+                    owner
+                        .verify(
+                            reconciliation_only,
+                            &mut io
+                                .map(|io| io.history_io())
+                                .as_mut()
+                                .map(|work| work as &mut dyn crate::store::HistoryIo),
+                        )
+                        .await
+                }
+                None => {
+                    self.runtime
+                        .owner_observed(admission.task_id(), fence, reconciliation_only, io)
+                        .await
+                }
             }
-            None => {
-                self.runtime
-                    .owner_observed(admission.task_id(), fence, reconciliation_only, io)
-                    .await
-            }
-        }
+        })?
+        .await
     }
 
     fn dispatch_command<'a>(
@@ -150,7 +153,10 @@ where
             MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
                 BoundedContentFuture::new(io, || self.mail_command(invocation, payload))
             }
-            TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
+            TASK_ADMIT_COMMAND_KIND
+            | TASK_OBSERVE_COMMAND_KIND
+            | TASK_INSPECT_COMMAND_KIND
+            | TASK_JOIN_COMMAND_KIND => {
                 BoundedContentFuture::new(io, || self.task_command(invocation, payload))
             }
             FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
@@ -254,6 +260,13 @@ where
                 let input: TaskObserveCommand = mail::decode_command(payload, io)?;
                 Ok(
                     matches!(self.observe_child(task, input.admission_operation, io).await?,
+                    Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
+                )
+            }
+            TASK_JOIN_COMMAND_KIND => {
+                let input: TaskJoinCommand = mail::decode_command(payload, io)?;
+                Ok(
+                    matches!(self.observe_direct_child(task, input.child, io).await?,
                     Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
                 )
             }

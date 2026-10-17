@@ -770,11 +770,13 @@ impl ModelProvider for PendingModel {
 mod mail_tests;
 
 mod admission;
+mod owner_binding;
 mod future_sizes;
 mod manifest;
 mod model;
 mod settlement;
 mod worker;
+mod wake;
 
 #[cfg(all(windows, feature = "native-execution"))]
 mod native_mount;

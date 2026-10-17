@@ -37,7 +37,7 @@ pub(super) fn state_directory(project: &LocalProject) -> Result<PathBuf> {
     Ok(directory)
 }
 
-pub(super) fn directory(path: &Path) -> Result<PathBuf> {
+pub(crate) fn directory(path: &Path) -> Result<PathBuf> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

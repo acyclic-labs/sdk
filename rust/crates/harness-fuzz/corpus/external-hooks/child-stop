@@ -1,0 +1,1 @@
+{"host":"claude-code","event":"SubagentStop","input":{"sessionId":"lifecycle","agentId":"child","parentAgentId":"parent"}}

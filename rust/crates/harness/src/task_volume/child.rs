@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-#[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 pub struct ChildStatus {
     /// Current or most recently settled turn.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]

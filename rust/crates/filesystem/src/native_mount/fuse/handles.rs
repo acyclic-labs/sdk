@@ -73,7 +73,9 @@ pub(super) struct DeferredOpenFile {
     pub(super) source: Arc<dyn MountFilesystem>,
     pub(super) path: FuseOwned<MountPath>,
     pub(super) file_id: crate::FileId,
-    pub(super) file: RankedMutex<Option<FuseFile>, FILE>,
+    // Initialization invokes the source's view/cache locks. It precedes VIEW;
+    // callers release projection state before resolving a deferred handle.
+    pub(super) file: RankedMutex<Option<FuseFile>, DEFERRED_OPEN>,
     pub(super) _allocation: crate::NativeAllocation,
 }
 
@@ -82,18 +84,31 @@ impl DeferredOpenFile {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<FuseFile, MountSourceError> {
-        let mut file = self.file.lock().map_err(|_| MountSourceError::Stale)?;
-        if let Some(file) = file.as_ref() {
-            return Ok(Arc::clone(file));
-        }
-        let opened = fuse_open_file(self.source.open_file_with_meter(&self.path, work)?, work)?;
-        if opened.lookup_with_meter(work)?.node.file_id != self.file_id {
-            return Err(MountSourceError::Stale);
-        }
-        *file = Some(Arc::clone(&opened));
-        Ok(opened)
+        initialize(&self.file, || {
+            let opened = fuse_open_file(self.source.open_file_with_meter(&self.path, work)?, work)?;
+            if opened.lookup_with_meter(work)?.node.file_id != self.file_id {
+                return Err(MountSourceError::Stale);
+            }
+            Ok(opened)
+        })
     }
 }
+
+fn initialize<T: Clone, const RANK: u16>(
+    state: &RankedMutex<Option<T>, RANK>,
+    open: impl FnOnce() -> Result<T, MountSourceError>,
+) -> Result<T, MountSourceError> {
+    let mut file = state.lock().map_err(|_| MountSourceError::Stale)?;
+    if let Some(file) = file.as_ref() {
+        return Ok(file.clone());
+    }
+    let opened = open()?;
+    *file = Some(opened.clone());
+    Ok(opened)
+}
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod model;
 
 pub(super) fn changes_content(flags: i32) -> bool {
     flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_TRUNC != 0

@@ -14,6 +14,7 @@ pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 
 pub(super) struct Output {
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
+    pub(super) cancellation: Option<acyclic_fs::CancellationToken>,
     volume: Arc<TaskFiles<acyclic_stream::LocalStream>>,
     generation: Generation,
     task: Component,
@@ -37,6 +38,12 @@ impl Output {
         let generation = volume.inner.head().await?;
         let mut output = Self {
             owner,
+            cancellation: context
+                .task()
+                .owned_mailbox
+                .as_ref()
+                .and_then(|owner| owner.invocation_cancellation())
+                .cloned(),
             volume,
             generation,
             task,

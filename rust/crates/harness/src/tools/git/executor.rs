@@ -253,6 +253,7 @@ where
                         &from,
                         &to,
                         tracked_paths,
+                        crate::filesystem::workspace_policy::RESERVED_DIRECTORIES,
                         100_000,
                         &CancellationToken::new(),
                     )

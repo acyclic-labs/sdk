@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "acyclic": {
+      "type": "stdio",
+      "command": "acyclic-plugin",
+      "args": ["__tools"],
+      "env_vars": ["ACYCLIC_HARNESS_BINDING", "ACYCLIC_LOCAL_OWNER_DIR", "XDG_DATA_HOME", "LOCALAPPDATA"]
+    }
+  }
+}

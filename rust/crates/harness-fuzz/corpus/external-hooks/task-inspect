@@ -1,0 +1,1 @@
+{"host":"pi","event":"tool_call","input":{"sessionId":"recursive","toolCallId":"inspect","toolName":"acyclic_inspect","input":{"task":"01010101-0101-0101-0101-010101010101"}}}

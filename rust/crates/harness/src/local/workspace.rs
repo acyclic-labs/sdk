@@ -5,6 +5,7 @@ use acyclic_fs::{
     demand::native::NativeDemandSource, kernel::KernelAccounting,
 };
 mod bootstrap;
+pub(super) mod lifecycle;
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod performance_tests;
 
@@ -257,6 +258,12 @@ pub(super) async fn open(
         .load_lazy_workspace(id, &mut accounting)
         .await
         .map_err(storage)?;
+    if native_mounts && original.is_some() {
+        lifecycle::recover(&path, directory)?;
+    }
+    if native_mounts && original.is_some() {
+        lifecycle::recover(&path, directory)?;
+    }
     let selected = if original.is_some() || existing {
         Some(
             filesystem

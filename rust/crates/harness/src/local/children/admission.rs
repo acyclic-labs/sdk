@@ -6,11 +6,22 @@ use crate::{
     fork::{ForkPreparation, ForkRequest, ForkSelection, ResourceRevision},
     resource_preparation::ResourcePreparationRequest,
     resources::{GenerationRef, ProviderRef, ResourceKind, ResourceRef},
-    runtime::TaskStateProvider,
-    task_volume::{ChildFile, ChildRequest, FileKey, FileValue, Query, TaskFiles},
+    runtime::{TaskAdmissionRecord, TaskContext, TaskStateProvider},
+    task_volume::{ChildFile, ChildRequest, Component, FileKey, FileValue, Query, TaskFiles},
 };
 use acyclic_fs::facade::FsWork as _;
 use acyclic_stream::StreamProvider;
+
+pub(super) enum ChildInput<'a> {
+    Request(&'a FileValue),
+    Native {
+        context: &'a TaskContext,
+        fence: &'a LeaseFence,
+        child: TaskAdmissionRecord,
+        inputs: Vec<crate::conversation::FileRef>,
+        reconcile: bool,
+    },
+}
 
 impl LocalHarness {
     pub(in crate::local) async fn admit_child_task<P: StreamProvider + ?Sized>(
@@ -40,35 +51,57 @@ impl LocalHarness {
         let parent = file.requester.ok_or_else(|| {
             Error::Unauthorized("child request has no authenticated parent".into())
         })?;
-        let operation = child_operation(files.volume(), reference.as_str(), b"child")?;
-        let admitted = match self
-            .runtime
-            .task_host()
-            .observe_admission(TaskId::from_bytes(operation.into_bytes()))
+        self.admit_child(files, reference, parent, ChildInput::Request(file))
             .await
-        {
-            Ok(record) => Some(record),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
-        if let Some(admitted) = admitted {
-            if !crate::filesystem::child_agent::is_child(&admitted) {
-                return Err(Error::Conflict(
-                    "child request task definition changed".into(),
-                ));
-            }
-            if admitted.parent != Some(parent) {
-                return Err(Error::Conflict("child parent changed".into()));
-            }
-            return Ok(admitted.task_id());
-        }
+    }
 
+    pub(super) fn admit_child<'a, P: StreamProvider + ?Sized>(
+        &'a self,
+        files: &'a TaskFiles<P>,
+        reference: &'a Component,
+        parent: TaskId,
+        input: ChildInput<'a>,
+    ) -> impl Future<Output = Result<TaskId>> + Send + 'a {
+        Box::pin(self.prepare_child_admission(files, reference, parent, input))
+    }
+
+    async fn prepare_child_admission<P: StreamProvider + ?Sized>(
+        &self,
+        files: &TaskFiles<P>,
+        reference: &Component,
+        parent: TaskId,
+        input: ChildInput<'_>,
+    ) -> Result<TaskId> {
+        let (bound, mut template, file) = match input {
+            ChildInput::Request(file) => (None, None, Some(file)),
+            ChildInput::Native {
+                context,
+                fence,
+                child,
+                inputs,
+                reconcile,
+            } => (
+                Some((context, fence, reconcile)),
+                Some((child, inputs)),
+                None,
+            ),
+        };
+        let operation = template.as_ref().map_or_else(
+            || child_operation(files.volume(), reference.as_str(), b"child"),
+            |(child, _)| Ok(child.operation_id),
+        )?;
+        let native_reference = operation.to_string();
+        let phase_reference = if template.is_some() {
+            native_reference.as_str()
+        } else {
+            reference.as_str()
+        };
         let preparation_operation =
-            child_operation(files.volume(), reference.as_str(), b"preparation")?;
-        let fork_operation = child_operation(files.volume(), reference.as_str(), b"fork")?;
-        let checkpoint_operation = child_operation(files.volume(), reference.as_str(), b"source")?;
+            child_operation(files.volume(), phase_reference, b"preparation")?;
+        let fork_operation = child_operation(files.volume(), phase_reference, b"fork")?;
+        let checkpoint_operation = child_operation(files.volume(), phase_reference, b"source")?;
         let child_agent = AgentId::from_bytes(
-            child_operation(files.volume(), reference.as_str(), b"agent")?.into_bytes(),
+            child_operation(files.volume(), phase_reference, b"agent")?.into_bytes(),
         );
         let project = VolumeRef::new(
             self.project.provider().clone(),
@@ -84,6 +117,50 @@ impl LocalHarness {
             VolumeOwner::Agent(child_agent),
             &mut None,
         )?;
+        let admitted = match self
+            .runtime
+            .task_host()
+            .observe_admission(TaskId::from_bytes(operation.into_bytes()))
+            .await
+        {
+            Ok(record) => Some(record),
+            Err(Error::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(admitted) = admitted {
+            if let Some((template, inputs)) = &template {
+                let (_, preparation) = self
+                    .runtime
+                    .task_host()
+                    .reconcile_admission(preparation_operation)
+                    .await?
+                    .ok_or_else(|| Error::Conflict("native child preparation missing".into()))?;
+                let prepared: ResourcePreparationRequest =
+                    serde_json::from_value(preparation.input).map_err(storage)?;
+                let (context, _, _) = bound.ok_or_else(|| {
+                    Error::Unauthorized("native child has no parent owner".into())
+                })?;
+                let (source_project, source_private) =
+                    source_volumes(context, &self.project, &self.scratch)?;
+                native::verify_retained(
+                    context,
+                    template,
+                    inputs,
+                    &admitted,
+                    &prepared,
+                    [&source_project, &source_private, &project, &private],
+                )?;
+            } else if !crate::filesystem::child_agent::is_child(&admitted) {
+                return Err(Error::Conflict(
+                    "child request task definition changed".into(),
+                ));
+            }
+            if admitted.parent != Some(parent) {
+                return Err(Error::Conflict("child parent changed".into()));
+            }
+            return Ok(admitted.task_id());
+        }
+
         let workspace = self
             .workspace
             .as_ref()
@@ -94,39 +171,51 @@ impl LocalHarness {
             acyclic_fs::performance::work_budget(65_536, self.limits.file_bytes),
             &cancellation,
         )?;
-
         let io_ref = &io;
-
         let host = self.runtime.task_host();
-        let WorkPull::Claimed(parent_lease) = host.recover_work(parent, &mut None).await? else {
-            return Err(Error::Unauthorized(
-                "child request parent has no live lease".into(),
-            ));
+        let recovered;
+        let (context, fence) = if let Some((context, fence, _)) = bound {
+            (context, fence.clone())
+        } else {
+            let WorkPull::Claimed(parent_lease) = host.recover_work(parent, &mut None).await?
+            else {
+                return Err(Error::Unauthorized(
+                    "child request parent has no live lease".into(),
+                ));
+            };
+            let fence = LeaseFence::from(&parent_lease.reservation);
+            recovered = self.runtime.task_context(parent, fence.clone()).await?;
+            (&recovered, fence)
         };
-        let fence = LeaseFence::from(&parent_lease.reservation);
-        let context = self.runtime.task_context(parent, fence.clone()).await?;
-        let binding = files.for_created_task(&context, context.scope()).await?;
-        let expected_volume = binding
-            .as_ref()
-            .map_or_else(|| self.task_files.volume(), TaskFiles::volume);
-        if files.volume() != expected_volume {
-            return Err(Error::Unauthorized(
-                "child request belongs to another private volume".into(),
-            ));
+        if template.is_none() {
+            let binding = files.for_created_task(context, context.scope()).await?;
+            let expected_volume = binding
+                .as_ref()
+                .map_or_else(|| self.task_files.volume(), TaskFiles::volume);
+            if files.volume() != expected_volume {
+                return Err(Error::Unauthorized(
+                    "child request belongs to another private volume".into(),
+                ));
+            }
         }
-        let request = ChildRequest::parse(&file.bytes, context.scope().limits().file_bytes)?;
-        if !context.scope().grants().contains("tool:call:spawn") {
-            return Err(Error::Unauthorized(
-                "child parent lacks the spawn capability".into(),
-            ));
-        }
-        let narrowed = crate::task_volume::child_scope(
-            context.scope(),
-            request.tools.as_deref(),
-            request.grants.as_deref(),
-        )?;
+        let narrowed = if let Some((child, _)) = &template {
+            native::validate_template(context, child)?
+        } else {
+            let file = file.ok_or_else(|| Error::Invalid("child request missing".into()))?;
+            let request = ChildRequest::parse(&file.bytes, context.scope().limits().file_bytes)?;
+            if !context.scope().grants().contains("tool:call:spawn") {
+                return Err(Error::Unauthorized(
+                    "child parent lacks the spawn capability".into(),
+                ));
+            }
+            crate::task_volume::child_scope(
+                context.scope(),
+                request.tools.as_deref(),
+                request.grants.as_deref(),
+            )?
+        };
         let (source_project, source_private) =
-            source_volumes(&context, &self.project, &self.scratch)?;
+            source_volumes(context, &self.project, &self.scratch)?;
         let source_agent = match source_private.owner() {
             VolumeOwner::Agent(agent) => *agent,
             _ => {
@@ -187,6 +276,12 @@ impl LocalHarness {
         drop(accounting);
 
         let retained = host.reconcile_admission(preparation_operation).await?;
+        if retained.is_none() && bound.is_some_and(|(_, _, reconcile)| reconcile) {
+            host.journal_owner(parent, &fence, None)
+                .await?
+                .verify(false, &mut None)
+                .await?;
+        }
         // Staging has no external execution: retain every input immediately,
         // then fence their authority log together before admitting preparation.
         let (preparation_record, preparation_request, cut) = preparation::fenced_inputs(
@@ -197,6 +292,16 @@ impl LocalHarness {
                     }
                     let request: ResourcePreparationRequest =
                         serde_json::from_value(record.input.clone()).map_err(storage)?;
+                    if let Some((template, inputs)) = &template {
+                        native::verify_retained(
+                            context,
+                            template,
+                            inputs,
+                            &request.child,
+                            &request,
+                            [&source_project, &source_private, &project, &private],
+                        )?;
+                    }
                     let checkpoint = request
                         .source_checkpoint
                         .as_ref()
@@ -294,75 +399,45 @@ impl LocalHarness {
                             },
                         ],
                     };
-                    let (receive, model, manifest) = self
-                        .stage_turn_with_output(
-                            operation,
-                            "Follow the received child request.",
-                            narrowed.limits(),
-                            Some(&project),
-                        )
-                        .await?;
-                    let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
-                    let definition = self
-                        .runtime
-                        .harness()
-                        .task::<serde_json::Value, serde_json::Value>("acyclic.child_agent@1")?;
-                    let mut child = self
-                        .runtime
-                        .harness()
-                        .registered_admission(
-                            operation,
-                            &definition.identity().name,
-                            &definition.identity().version,
-                            serde_json::json!({"receive":receive,"model":model}),
-                            Some((parent, context.scope())),
-                            None,
-                            None,
-                        )?
-                        .0;
-                    let mut excluded = [&source_project, &source_private]
-                        .into_iter()
-                        .flat_map(|volume| {
-                            [VolumeOperation::Read, VolumeOperation::Write]
-                                .into_iter()
-                                .map(move |operation| volume.capability(operation, &mut None))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    for volume in [&source_project, &source_private] {
-                        excluded.push(volume.directory_read_capability("", &mut None)?);
-                    }
-                    // New preparation proofs authenticate this child's own inputs.
-                    // Ancestor-only input readers belong to the parent's proof set.
-                    if let Some(access) = context.scope().created_access.as_ref() {
-                        for (file, _) in &access.references {
-                            excluded.push(file.read_capability(&mut None)?);
-                        }
-                    }
-                    child.grants = Capabilities::new(
-                        narrowed
-                            .grants()
-                            .iter()
-                            .filter(|grant| !excluded.iter().any(|denied| denied == grant))
-                            .map(str::to_owned)
-                            .chain(
-                                [&project, &private]
-                                    .into_iter()
-                                    .flat_map(|volume| {
-                                        [VolumeOperation::Read, VolumeOperation::Write]
-                                            .into_iter()
-                                            .map(move |operation| {
-                                                volume.capability(operation, &mut None)
-                                            })
-                                    })
-                                    .collect::<Result<Vec<_>>>()?,
+                    let (mut child, inputs) = if let Some((child, inputs)) = template.take() {
+                        (child, inputs)
+                    } else {
+                        let (receive, model, manifest) = self
+                            .stage_turn_with_output(
+                                operation,
+                                "Follow the received child request.",
+                                narrowed.limits(),
+                                Some(&project),
                             )
-                            .chain(
-                                inputs
-                                    .iter()
-                                    .map(|file| file.read_capability(&mut None))
-                                    .collect::<Result<Vec<_>>>()?,
-                            ),
-                    );
+                            .await?;
+                        let inputs = vec![receive.payload.clone(), model.payload.clone(), manifest];
+                        let definition = self
+                            .runtime
+                            .harness()
+                            .task::<serde_json::Value, serde_json::Value>(
+                                "acyclic.child_agent@1",
+                            )?;
+                        let child = self
+                            .runtime
+                            .harness()
+                            .registered_admission(
+                                operation,
+                                &definition.identity().name,
+                                &definition.identity().version,
+                                serde_json::json!({"receive":receive,"model":model}),
+                                Some((parent, context.scope())),
+                                None,
+                                None,
+                            )?
+                            .0;
+                        (child, inputs)
+                    };
+                    child.grants = child_grants(
+                        context,
+                        &narrowed,
+                        [&source_project, &source_private, &project, &private],
+                        &inputs,
+                    )?;
                     child = child.with_resource_proofs(preparer.creation_allocations(
                         &fork,
                         TaskId::from_bytes(preparation_operation.into_bytes()),
@@ -429,9 +504,11 @@ impl LocalHarness {
             },
         )
         .await?;
+        #[cfg(all(test, not(acyclic_harness_loom)))]
+        super::cuts::stop("inputs", operation)?;
         match host.admit_owned(preparation_record, fence.clone()).await? {
             Admission::Accepted(_) => {}
-            Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
+            Admission::Rejected { reason } => return Err(Error::AdmissionRejected(reason)),
             Admission::Indeterminate { operation_id } => {
                 return Err(Error::Indeterminate(operation_id));
             }
@@ -474,7 +551,7 @@ impl LocalHarness {
             .map_err(storage)?;
         let task = match host.admit_owned(preparation_request.child, fence).await? {
             Admission::Accepted(task) => task,
-            Admission::Rejected { reason } => return Err(Error::Conflict(reason)),
+            Admission::Rejected { reason } => return Err(Error::AdmissionRejected(reason)),
             Admission::Indeterminate { operation_id } => {
                 return Err(Error::Indeterminate(operation_id));
             }
@@ -490,6 +567,11 @@ impl LocalHarness {
         file: &FileValue,
     ) -> Result<(TaskId, workspace::View)> {
         let task = self.admit_child_task(files, file).await?;
+        Ok((task, self.child_project_view(task).await?))
+    }
+
+    #[cfg(test)]
+    pub(super) async fn child_project_view(&self, task: TaskId) -> Result<workspace::View> {
         let workspace = self.workspace.as_ref().unwrap();
         let project = VolumeRef::new(
             self.project.provider().clone(),
@@ -519,7 +601,7 @@ impl LocalHarness {
             "view-allocations",
             work.allocation_operations,
         ));
-        Ok((task, view))
+        Ok(view)
     }
 }
 
@@ -567,5 +649,53 @@ fn source_volumes(
     ))
 }
 
+pub(super) fn child_grants(
+    context: &TaskContext,
+    narrowed: &RuntimeScope,
+    [source_project, source_private, project, private]: [&VolumeRef; 4],
+    inputs: &[crate::conversation::FileRef],
+) -> Result<Capabilities> {
+    let mut excluded = [&source_project, &source_private]
+        .into_iter()
+        .flat_map(|volume| {
+            [VolumeOperation::Read, VolumeOperation::Write]
+                .into_iter()
+                .map(move |operation| volume.capability(operation, &mut None))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for volume in [&source_project, &source_private] {
+        excluded.push(volume.directory_read_capability("", &mut None)?);
+    }
+    // New preparation proofs authenticate this child's own inputs.
+    // Ancestor-only input readers belong to the parent's proof set.
+    if let Some(access) = context.scope().created_access.as_ref() {
+        for (file, _) in &access.references {
+            excluded.push(file.read_capability(&mut None)?);
+        }
+    }
+    Ok(Capabilities::new(
+        narrowed
+            .grants()
+            .iter()
+            .filter(|grant| !excluded.iter().any(|denied| denied == grant))
+            .map(str::to_owned)
+            .chain(
+                [&project, &private]
+                    .into_iter()
+                    .flat_map(|volume| {
+                        [VolumeOperation::Read, VolumeOperation::Write]
+                            .into_iter()
+                            .map(move |operation| volume.capability(operation, &mut None))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            )
+            .chain(
+                inputs
+                    .iter()
+                    .map(|file| file.read_capability(&mut None))
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+    ))
+}
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod work_tests;

@@ -1,0 +1,23 @@
+[
+  {"host":"codex","event":"SessionStart","input":{"session_id":"session","cwd":"/project"},"action":{"action":"attach","workspace":"/project"}},
+  {"host":"claude-code","event":"SessionStart","input":{"session_id":"session","cwd":"/project"},"action":{"action":"attach","workspace":"/project"}},
+  {"host":"pi","event":"session_start","input":{"sessionId":"session","cwd":"/project"},"action":{"action":"attach","workspace":"/project"}},
+  {"host":"codex","event":"PreToolUse","input":{"session_id":"session","tool_use_id":"call","tool_name":"exec_command","tool_input":{"cmd":"pwd"}},"action":{"action":"run_tool","call_id":"call","name":"exec_command","arguments":{"cmd":"pwd"}}},
+  {"host":"claude-code","event":"PreToolUse","input":{"session_id":"session","tool_use_id":"call","tool_name":"Bash","tool_input":{"command":"pwd"}},"action":{"action":"run_tool","call_id":"call","name":"Bash","arguments":{"command":"pwd"}}},
+  {"host":"pi","event":"tool_call","input":{"sessionId":"session","toolCallId":"call","toolName":"bash","input":{"command":"pwd"}},"action":{"action":"run_tool","call_id":"call","name":"bash","arguments":{"command":"pwd"}}},
+  {"host":"codex","event":"PostToolUse","input":{"session_id":"session","tool_use_id":"call"},"action":{"action":"tool_finished","call_id":"call","failed":false,"result":null}},
+  {"host":"claude-code","event":"PostToolUse","input":{"session_id":"session","tool_use_id":"call-success","tool_response":{"stdout":"done"}},"action":{"action":"tool_finished","call_id":"call-success","failed":false,"result":{"stdout":"done"}}},
+  {"host":"claude-code","event":"PostToolUseFailure","input":{"session_id":"session","tool_use_id":"call","error":"Exit code 1\nfailed","is_interrupt":false},"action":{"action":"tool_finished","call_id":"call","failed":true,"result":"Exit code 1\nfailed"}},
+  {"host":"pi","event":"tool_result","input":{"sessionId":"session","toolCallId":"call","isError":true,"content":[{"type":"text","text":"failed"}],"details":{"exitCode":1},"structuredContent":{"ok":false},"usage":{"input":1,"output":2}},"action":{"action":"tool_finished","call_id":"call","failed":true,"result":{"content":[{"type":"text","text":"failed"}],"details":{"exitCode":1},"structuredContent":{"ok":false},"usage":{"input":1,"output":2}}}},
+  {"host":"codex","event":"SubagentStart","input":{"session_id":"session","agent_id":"child","agent_type":"worker"},"action":{"action":"fork","child_id":"child","kind":"worker","child_session":{"host":"codex","session_id":"session","caller":"child"}}},
+  {"host":"claude-code","event":"SubagentStart","input":{"session_id":"session","agent_id":"child","agent_type":"worker"},"action":{"action":"fork","child_id":"child","kind":"worker","child_session":{"host":"claude-code","session_id":"session","caller":"child"}}},
+  {"host":"pi","event":"subagent_start","input":{"sessionId":"session","agentId":"child","agentType":"worker"},"action":{"action":"fork","child_id":"child","kind":"worker","child_session":{"host":"pi","session_id":"session","caller":"child"}}},
+  {"host":"codex","event":"SubagentStop","input":{"session_id":"session","agent_id":"child"},"action":{"action":"join","child_id":"child","child_session":{"host":"codex","session_id":"session","caller":"child"}}},
+  {"host":"claude-code","event":"SubagentStop","input":{"session_id":"session","agent_id":"child"},"action":{"action":"join","child_id":"child","child_session":{"host":"claude-code","session_id":"session","caller":"child"}}},
+  {"host":"pi","event":"subagent_stop","input":{"sessionId":"session","agentId":"child"},"action":{"action":"join","child_id":"child","child_session":{"host":"pi","session_id":"session","caller":"child"}}},
+  {"host":"codex","event":"SessionEnd","input":{"session_id":"session"},"action":{"action":"detach"}},
+  {"host":"claude-code","event":"SessionEnd","input":{"session_id":"session"},"action":{"action":"detach"}},
+  {"host":"pi","event":"session_shutdown","input":{"sessionId":"session"},"action":{"action":"detach"}},
+  {"host":"pi","event":"tool_cancel","input":{"sessionId":"session","toolCallId":"call"},
+    "action":{"action":"cancel_tool","call_id":"call"}}
+]

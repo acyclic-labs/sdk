@@ -12,4 +12,6 @@ mod cuts;
 #[cfg(feature = "native-execution")]
 mod lazy;
 #[cfg(feature = "native-execution")]
+mod native;
+#[cfg(feature = "native-execution")]
 mod preparation;

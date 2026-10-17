@@ -1,8 +1,8 @@
 //! SDK merge planning and compatibility history for agent publication.
-use super::workspace_policy::{LocalLazyWorkspace, RESERVED_IGNORE_RULES, ignore_for};
+use super::workspace_policy::{LocalLazyWorkspace, ignore_for, ignore_policy};
 use crate::{Error, Result};
 use acyclic_fs::{
-    CancellationToken, GitCompatRepository, GitIgnorePolicy, GitPublicationRecord, GitTreeRef,
+    CancellationToken, GitCompatRepository, GitPublicationRecord, GitTreeRef,
     LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, MultiRootMergeRoot,
     MultiRootPublication, OperationId, WorkBudget, Workspace, WorkspaceError, WorkspaceGraph,
     WorkspaceId, WorkspaceRootId, capture_git_compatible_generation_at,
@@ -141,7 +141,7 @@ pub async fn record_agent_publication(
             Err(WorkspaceError::NotFound) => String::new(),
             Err(error) => return Err(Error::from(error)),
         };
-        let ignore = GitIgnorePolicy::parse(&format!("{ignore_text}\n{}", RESERVED_IGNORE_RULES));
+        let ignore = ignore_policy(&ignore_text);
         let repository = GitCompatRepository::new(parent_repository_id, state.clone());
         let tracked = repository.tracked_paths().await.map_err(Error::from)?;
         let source_head = GitCompatRepository::new(child_repository_id, state.clone())

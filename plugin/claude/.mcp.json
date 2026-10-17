@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "acyclic": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/../bin/acyclic",
+      "args": ["__tools"]
+    }
+  }
+}

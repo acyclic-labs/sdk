@@ -12,7 +12,7 @@ use acyclic_fs::facade::FsWork as _;
 use std::cell::Cell;
 
 thread_local! {
-    static CUT: Cell<Option<&'static str>> = const { Cell::new(None) };
+    pub(super) static CUT: Cell<Option<&'static str>> = const { Cell::new(None) };
 }
 
 pub(super) fn arm(point: &'static str) {

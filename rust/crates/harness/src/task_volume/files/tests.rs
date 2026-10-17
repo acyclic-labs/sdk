@@ -1,6 +1,5 @@
 use super::*;
 use crate::AgentId;
-use crate::task_volume::FileQuerySource;
 use acyclic_stream::{MemoryStream, StreamError};
 use proptest::prelude::*;
 
@@ -144,14 +143,11 @@ async fn every_owner_scope_pair_is_checked_before_storage() {
 }
 
 fn files() -> Vec<(FileKey, bool)> {
-    use crate::task_volume::{Channel, Component, InputPath, TaskFile, ToolFile};
+    use crate::task_volume::{Channel, Component, InputPath, PlanName, TaskFile, ToolFile};
     let id = Component::new("id").unwrap();
     let mut files = vec![
         (FileKey::Goal, true),
-        (
-            FileKey::Plan(crate::task_volume::PlanName::new(id.as_str()).unwrap()),
-            true,
-        ),
+        (FileKey::Plan(PlanName::new("id").unwrap()), true),
         (
             FileKey::Input(InputPath::try_from("workspace/note.txt".to_owned()).unwrap()),
             true,
@@ -260,6 +256,7 @@ proptest! {
 
 #[tokio::test]
 async fn authorized_queries_bound_snapshot_and_follow_content() {
+    use crate::task_volume::FileQuerySource;
     use futures::StreamExt as _;
     let agent = AgentId::from_bytes([4; 16]);
     let volume = volume(agent);

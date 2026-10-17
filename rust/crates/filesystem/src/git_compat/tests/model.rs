@@ -21,6 +21,81 @@ fn ready<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
     }
 }
 
+struct InterruptedRestore(loom::sync::Mutex<Vec<(OperationId, GitFilesystemAction)>>);
+
+impl GitFilesystemExecutor for InterruptedRestore {
+    type Error = TestExecutorError;
+
+    async fn validate_merge_resolution(
+        &self,
+        _: OperationId,
+        _: &GitFilesystemAction,
+        _: GitTreeRef,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        Err(TestExecutorError)
+    }
+
+    async fn execute(
+        &self,
+        operation: OperationId,
+        action: &GitFilesystemAction,
+    ) -> Result<GitFilesystemResult, Self::Error> {
+        // Leaf trace lock, never held across a repository or authority call.
+        self.0.lock().unwrap().push((operation, action.clone()));
+        Err(TestExecutorError)
+    }
+}
+
+#[test]
+fn overlapping_published_restores_retain_one_atomic_source_selection() {
+    restores(MemoryGitCompatStore::default);
+}
+
+#[test]
+#[should_panic(expected = "overlapping restore replaced the pending selection")]
+fn restore_model_detects_unconditional_replacement() {
+    restores(super::model_store::UncheckedStore::default);
+}
+
+fn restores<S: GitCompatStore + 'static>(store: impl Fn() -> S + Send + Sync + 'static) {
+    loom::model(move || {
+        let repository = loom::sync::Arc::new(GitCompatRepository::new(workspace(), store()));
+        let executor = loom::sync::Arc::new(InterruptedRestore(loom::sync::Mutex::new(Vec::new())));
+        let writers = [2, 3].map(|source| {
+            let repository = repository.clone();
+            let executor = executor.clone();
+            loom::thread::spawn(move || {
+                let result = ready(Box::pin(repository.restore_paths_from(
+                    tree(source),
+                    vec![format!("/source-{source}")],
+                    tree(1),
+                    executor.as_ref(),
+                )));
+                assert!(matches!(
+                    result,
+                    Err(GitCompatRunError::Executor(_))
+                        | Err(GitCompatRunError::Compat(
+                            GitCompatError::TransitionPending(_)
+                        ))
+                ));
+            })
+        });
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let pending = ready(Box::pin(repository.pending_transition()))
+            .unwrap()
+            .unwrap();
+        let trace = executor.0.lock().unwrap();
+        assert_eq!(
+            trace.len(),
+            1,
+            "overlapping restore replaced the pending selection"
+        );
+        assert_eq!(trace[0], (pending.id.operation_id(), pending.action));
+    });
+}
+
 #[test]
 fn concurrent_branch_registration_preserves_both_atomic_updates() {
     registrations(MemoryGitCompatStore::default);

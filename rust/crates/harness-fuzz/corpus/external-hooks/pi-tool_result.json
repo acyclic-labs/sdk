@@ -1,0 +1,1 @@
+{"input":{"sessionId":"session","toolCallId":"call","isError":true,"content":[{"type":"text","text":"failed"}],"details":{"exitCode":1},"structuredContent":{"ok":false},"usage":{"input":1,"output":2}},"host":"pi","event":"tool_result"}

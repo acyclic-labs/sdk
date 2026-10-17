@@ -31,7 +31,7 @@ use linux::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 #[path = "apple_terminal.rs"]
 pub mod terminal;
 #[cfg(windows)]
-pub use windows::terminal;
+pub use windows::{hard_link_count, terminal};
 #[cfg(windows)]
 use windows::{read_at as read_at_impl, write_all_at as write_all_at_impl};
 

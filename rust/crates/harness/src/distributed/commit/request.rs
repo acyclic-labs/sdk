@@ -48,7 +48,7 @@ pub(crate) fn journal_request<'a, 'b, const FENCE: bool>(
     work: &'a mut Option<&'b mut dyn HistoryIo>,
 ) -> Result<(acyclic_stream::CommitRequest, CodecQuota<'a, 'b>)> {
     let mut request = commit_request(key, retained_key_bytes, work);
-    if FENCE || !cfg!(all(test, acyclic_harness_loom, acyclic_loom)) {
+    if FENCE || !cfg!(test) {
         add_condition(&mut request, owner)?;
     }
     add_condition(&mut request, target)?;

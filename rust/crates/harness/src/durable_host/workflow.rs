@@ -1,6 +1,9 @@
 //! Main durable task operations.
 use super::*;
 
+#[cfg(feature = "filesystem")]
+mod idle;
+
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Suspends the exact lease with optional atomic execution and workflow guards.
     pub async fn suspend_workflow<'a, 'w: 'a>(
@@ -164,7 +167,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
-        self.read_workflow_suspension(task, false, work).await
+        Ok(self
+            .workflow_slot(
+                task,
+                Some(crate::scheduler::OperationPhase::Suspended),
+                work,
+            )
+            .await?
+            .map(|(_, slot)| slot))
     }
 
     /// Reads a retained receive cut after cancellation released execution ownership.
@@ -174,16 +184,42 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
-        self.read_workflow_suspension(task, true, work).await
+        Ok(self
+            .read_workflow_slot(task, None, true, work)
+            .await?
+            .map(|(_, slot)| slot))
+    }
+
+    /// Reads the existing input slot, including an accepted but unclaimed resume.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn workflow_slot(
+        &self,
+        task: TaskId,
+        required_phase: Option<crate::scheduler::OperationPhase>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<
+        Option<(
+            crate::scheduler::OperationPhase,
+            crate::scheduler::WorkflowSuspension,
+        )>,
+    > {
+        self.read_workflow_slot(task, required_phase, false, work)
+            .await
     }
 
     #[cfg(feature = "filesystem")]
-    async fn read_workflow_suspension(
+    async fn read_workflow_slot(
         &self,
         task: TaskId,
+        required_phase: Option<crate::scheduler::OperationPhase>,
         cancelled: bool,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
+    ) -> Result<
+        Option<(
+            crate::scheduler::OperationPhase,
+            crate::scheduler::WorkflowSuspension,
+        )>,
+    > {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(work).await?;
         let operation = coordinator.observe_operation(
@@ -198,8 +234,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 && matches!(operation.outcome, Some(Outcome::Cancelled))
                 && operation.reservation.is_none()
         } else {
-            operation.phase == crate::scheduler::OperationPhase::Suspended
-                && !operation.cancellation_requested
+            !operation.cancellation_requested
+                && required_phase.is_none_or(|phase| operation.phase == phase)
         };
         if !readable {
             return Ok(None);
@@ -207,13 +243,43 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation
             .workflow
             .as_ref()
-            .map(|slot| slot.clone_with_work(work))
+            .map(|slot| {
+                slot.clone_with_work(work)
+                    .map(|slot| (operation.phase, slot))
+            })
             .transpose()
     }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn workflow_stream(&self) -> Arc<P> {
         self.stream.clone()
+    }
+
+    /// Follows from the coordinator's exact observed cut. The guard is released
+    /// before the returned follow waits, so other tasks can publish the wake.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn workflow_changes(&self) -> Result<acyclic_stream::RecordStream> {
+        self.coordinator.lock().await.changes().await
+    }
+
+    /// Authenticated scheduler cursor and workflow slot, kept distinct at input admission.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn idle_workflow(&self, task: TaskId) -> Result<Option<idle::IdleWorkflow>> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh(&mut None).await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+            &mut None,
+        )?;
+        Ok(idle::snapshot(
+            operation.revision,
+            operation.phase,
+            operation.cancellation_requested,
+            operation.workflow.as_ref(),
+        ))
     }
 
     /// Wakes the exact command wait with its stable null input.
@@ -233,7 +299,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let io = operation_io(work)?;
         let input = self
             .payloads
-            .stage(operation, &text, b"null", io.as_ref())?
+            .stage_input(operation, &text, b"null", io.as_ref())?
             .await?;
         let admission = self.admission(operation, work).await?;
         admission.limits.validate_file(&input, work)?;

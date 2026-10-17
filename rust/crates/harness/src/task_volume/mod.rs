@@ -157,6 +157,13 @@ pub struct FileValue {
 pub type Write = FileValue;
 
 impl FileValue {
+    /// Encodes one file event for a platform Stream append or actor outbox.
+    /// Uses the same bounded segment codec and optional ledger as volume writes.
+    pub fn record_value(&self, work: crate::NativeWork<'_>) -> Result<OwnedBytes> {
+        self.validate()?;
+        segment::encode(self, work).map(|(bytes, _)| bytes)
+    }
+
     /// Original requesting task for an owner-published child request.
     pub fn requester(&self) -> Option<crate::TaskId> {
         self.requester
@@ -278,7 +285,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         &self.path
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[cfg(feature = "filesystem")]
     pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
     }

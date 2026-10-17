@@ -1,4 +1,4 @@
-// Synchronous callback lock order: operation -> view state -> open file ->
+// Synchronous callback lock order: operation -> deferred open -> view state -> open file ->
 // observer registry -> source cursor -> original demand leaf -> view gate counters.
 // View gate counters never acquire the leaf. Resource allowances follow the leaf:
 // ancestor resource -> descendant resource (materializer/allowance.rs).
@@ -10,6 +10,8 @@
     )
 ))]
 pub(crate) const OPERATION: u16 = 10;
+#[cfg(all(feature = "native-mount", target_os = "linux"))]
+pub(crate) const DEFERRED_OPEN: u16 = 15;
 pub(crate) const VIEW: u16 = 20;
 #[cfg(all(
     feature = "native-mount",

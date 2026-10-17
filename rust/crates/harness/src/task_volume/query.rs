@@ -275,9 +275,11 @@ impl Query {
             }) => chunks(task, *turn),
             Self::Tools { task, turn } => tools(task, *turn, &minimum, &maximum),
             Self::Tool { task, turn, call } => tools(task, *turn, call, call),
-            Self::Requests(task) => {
-                range(task, TaskFile::Request(minimum), TaskFile::Request(maximum))
-            }
+            Self::Requests(task) => range(
+                task,
+                TaskFile::Request(minimum),
+                TaskFile::RequestResult(maximum),
+            ),
             Self::Executions(task) => range(
                 task,
                 TaskFile::ExecutionClaim(minimum),
@@ -445,7 +447,11 @@ impl Query {
                 Self::Requests(t),
                 FileKey::Task {
                     task,
-                    file: TaskFile::Request(_),
+                    file:
+                        TaskFile::Request(_)
+                        | TaskFile::RequestStarted(_)
+                        | TaskFile::RequestReady(_)
+                        | TaskFile::RequestResult(_),
                 },
             )
             | (

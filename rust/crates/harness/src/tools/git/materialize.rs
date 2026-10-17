@@ -160,7 +160,7 @@ where
             operation_id,
             from: from.id(),
             to,
-            excluded_names: &[".git", ".system", ".volumes"],
+            excluded_names: crate::filesystem::workspace_policy::RESERVED_DIRECTORIES,
             options: &options,
             budget: WorkBudget::UNBOUNDED,
             cancellation: &cancellation,

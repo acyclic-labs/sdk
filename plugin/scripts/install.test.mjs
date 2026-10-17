@@ -362,24 +362,29 @@ test("same version cannot be replaced with different bytes", () => {
   }
 });
 
-test("the published package declares the Codex hook MCP server on the installed command", () => {
-  // npm 12 keys the report by package name; earlier npm returns an array.
+test("the published package contains only native hook shims", () => {
   const [packed] = Object.values(JSON.parse(run("npm pack --dry-run --json --ignore-scripts", plugin)));
   const files = packed.files.map(file => file.path.replaceAll("\\", "/"));
-  for (const path of [".mcp.json", ".codex-plugin/plugin.json", "hooks/hooks.json", "bin/acyclic"]) {
+  for (const path of [".codex-plugin/plugin.json", "claude/.claude-plugin/plugin.json", "pi/index.ts", "pi/package.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
   }
-  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
-  const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"), "utf8")).mcpServers;
-  assert.deepEqual(Object.keys(servers), ["acyclic-hooks"]);
-  // Codex starts the server from the plugin root. `bin/acyclic` is the
-  // native executable on Unix; on Windows the installer removes it, so Codex
-  // resolves the command through PATHEXT to `bin/acyclic.exe` (checked for
-  // every package manager below).
-  assert.equal(servers["acyclic-hooks"].cwd, ".");
-  assert.equal(servers["acyclic-hooks"].command, "./bin/acyclic");
-  assert.deepEqual(servers["acyclic-hooks"].args, ["__mcp"]);
-  assert.equal(servers["acyclic-hooks"].required, true);
+  for (const path of ["mcp.json","claude/.mcp.json"]) {
+    assert.ok(files.includes(path));
+    const servers = JSON.parse(readFileSync(join(plugin,path),"utf8")).mcpServers;
+    assert.deepEqual(servers.acyclic.args,["__tools"]);
+  }
+  const mcp = JSON.parse(readFileSync(join(plugin, "mcp.json"), "utf8"));
+  assert.ok(!files.includes("plugin.json"), "standard manifests suppress Codex's local hooks");
+  assert.equal(mcp.mcpServers.acyclic.type, "stdio");
+  assert.equal(mcp.mcpServers.acyclic.command, "acyclic-plugin");
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./mcp.json");
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).hooks, "./hooks/hooks.json");
+  const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8")).hooks;
+  assert.deepEqual(Object.keys(hooks), ["SessionStart", "PreToolUse", "PostToolUse", "SubagentStart", "SubagentStop", "SessionEnd"]);
+  for (const [event, groups] of Object.entries(hooks)) {
+    assert.equal(groups[0].hooks[0].type, "command");
+    assert.ok(groups[0].hooks[0].command.endsWith(`__hook codex ${event}`));
+  }
 });
 
 // Installs a package whose "native executable" is this Node binary with each

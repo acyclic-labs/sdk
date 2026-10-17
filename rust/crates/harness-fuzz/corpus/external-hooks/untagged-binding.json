@@ -1,0 +1,1 @@
+{"endpoint":"http://127.0.0.1:8000","bearer_file":"token","requests":"actors/task/requests","results":"actors/task/results","task":"task"}

@@ -472,3 +472,24 @@ pub(crate) fn file_identity(file: &File) -> io::Result<crate::FileIdentity> {
     }
     Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
+
+/// Returns the kernel-reported hard-link count for a held Windows file handle.
+pub fn hard_link_count(file: &File) -> io::Result<u32> {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_STANDARD_INFO, FileStandardInfo};
+    let mut info = std::mem::MaybeUninit::<FILE_STANDARD_INFO>::uninit();
+    // SAFETY: the live handle and correctly sized output remain valid through the call.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileStandardInfo,
+            info.as_mut_ptr().cast(),
+            u32::try_from(std::mem::size_of::<FILE_STANDARD_INFO>())
+                .map_err(|_| io::ErrorKind::InvalidInput)?,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the successful call initialized the complete output structure.
+    Ok(unsafe { info.assume_init() }.NumberOfLinks)
+}

@@ -238,12 +238,22 @@ where
     ) -> Result<TaskCommandProgress> {
         let task = admission.task_id();
         if command.kind == TASK_ADMIT_COMMAND_KIND {
-            let input: TaskAdmitCommand = mail::decode_command(payload, io)?;
+            let mut input: TaskAdmitCommand = mail::decode_command(payload, io)?;
             let operation = super::super::recursive::derive_operation(
                 b"harness/v2/task-child\0",
                 &[task.into_bytes(), command.operation_id.into_bytes()],
                 io,
             )?;
+            if let Err(error) = self
+                .runtime
+                .stage_initial_command(context, operation, &mut input, io)
+                .await
+            {
+                if let Error::Invalid(message) = error {
+                    return ready(Outcome::<Value>::Failed { message }, io);
+                }
+                return query::failure(error, io);
+            }
             let admission = 'admission: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
@@ -274,19 +284,27 @@ where
                     )?;
                     break 'admission admission;
                 }
-                break 'admission self
-                    .runtime
-                    .harness()
-                    .registered_admission(
-                        operation,
-                        &input.name,
-                        &input.version,
-                        input.input,
-                        Some((task, context.scope())),
-                        None,
-                        None,
-                    )?
-                    .0;
+                break 'admission match self.runtime.harness().registered_admission(
+                    operation,
+                    &input.name,
+                    &input.version,
+                    input.input,
+                    Some((task, context.scope())),
+                    None,
+                    None,
+                ) {
+                    Ok((admission, _)) => admission,
+                    // Registration is synchronous validation: no admission,
+                    // allocation or effect has been attempted at this point.
+                    Err(error) => {
+                        return ready(
+                            Outcome::<Value>::Failed {
+                                message: error.to_string(),
+                            },
+                            None,
+                        );
+                    }
+                }
             };
             return self
                 .admit(
@@ -299,14 +317,52 @@ where
                 )
                 .await;
         }
+        if command.kind == TASK_INSPECT_COMMAND_KIND {
+            let input: TaskInspectCommand = mail::decode_command(payload, io)?;
+            if !context.scope().grants().contains("operation:observe") {
+                return query::failure(
+                    boundary(io, ErrorCode::Unauthorized, "task lacks operation:observe"),
+                    io,
+                );
+            }
+            let source = match self.runtime.admission_observed(input.task, io).await {
+                Ok(source) => source,
+                Err(error) => return query::failure(error, io),
+            };
+            let outcome = match self.runtime.outcome_observed(input.task, io).await {
+                Ok(outcome) => outcome,
+                Err(error) => return query::failure(error, io),
+            };
+            #[derive(Serialize)]
+            struct Inspection<'a> {
+                task: TaskId,
+                admission: &'a TaskAdmissionRecord,
+                outcome: Option<Outcome<Value>>,
+            }
+            return ready(
+                Outcome::Succeeded(Inspection {
+                    task: input.task,
+                    admission: &source,
+                    outcome,
+                }),
+                io,
+            );
+        }
         if reconciliation_only {
             return mail::reconciled(io);
         }
-        let input: TaskObserveCommand = mail::decode_command(payload, io)?;
-        match self
-            .observe_child(task, input.admission_operation, io)
-            .await?
-        {
+        let outcome = if command.kind == TASK_JOIN_COMMAND_KIND {
+            let input: TaskJoinCommand = mail::decode_command(payload, io)?;
+            match self.observe_direct_child(task, input.child, io).await {
+                Ok(outcome) => outcome,
+                Err(error) => return query::failure(error, io),
+            }
+        } else {
+            let input: TaskObserveCommand = mail::decode_command(payload, io)?;
+            self.observe_child(task, input.admission_operation, io)
+                .await?
+        };
+        match outcome {
             None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
             Some(outcome) => ready(outcome, io),
         }
@@ -326,6 +382,15 @@ where
             )?
             .into_bytes(),
         );
+        self.observe_direct_child(task, child, io).await
+    }
+
+    pub(super) async fn observe_direct_child(
+        &self,
+        task: TaskId,
+        child: TaskId,
+        io: Option<&PreparationIo>,
+    ) -> Result<Option<Outcome<Value>>> {
         if self.runtime.admission_observed(child, io).await?.parent != Some(task) {
             return Err(boundary(
                 io,

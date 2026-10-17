@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
-description = "One Acyclic CLI, service, hook runner, MCP bridge, and installer"
+description = "Native hook clients and manifests over the Acyclic harness"
 homepage = "https://github.com/acyclic-labs/sdk"
 documentation = "https://docs.rs/acyclic-plugin"
 readme = "README.md"
@@ -18,16 +18,12 @@ name = "acyclic"
 path = "src/main.rs"
 
 [dependencies]
-acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["filesystem-local", "native-execution"] }
-acyclic-stream = { path = "../rust/crates/stream", version = "=0.2.0", default-features = false, features = ["local"] }
-acyclic-fs = { path = "../rust/crates/filesystem", version = "=0.2.0", features = ["local", "native-watch", "native-mount"] }
-acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0" }
+acyclic-harness = { path = "../rust/crates/harness", version = "=0.2.0", default-features = false, features = ["hooks", "filesystem-local", "native-execution"] }
+acyclic-native-runtime = { path = "../rust/crates/native-runtime", version = "=0.2.0", default-features = false }
 base64 = "0.23.1"
 blake3.workspace = true
 fs2.workspace = true
-hex.workspace = true
 libc = "0.2.177"
-notify.workspace = true
 reqwest.workspace = true
 ring = "0.17.14"
 serde.workspace = true
@@ -35,9 +31,6 @@ serde_json.workspace = true
 sha2.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 toml_edit = "0.25.15"
-tracing.workspace = true
-tracing-chrome.workspace = true
-tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -52,10 +45,13 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Threading",
 ] }
 
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+acyclic-stream = { path = "../rust/crates/stream", features = ["grpc"] }
+hex.workspace = true
+proptest.workspace = true
+acyclic-fs = { path = "../rust/crates/filesystem", features = ["local", "native-mount"] }
+acyclic-harness = { path = "../rust/crates/harness", features = ["terminal", "filesystem-local", "native-execution", "grpc", "test-support"] }
 async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true

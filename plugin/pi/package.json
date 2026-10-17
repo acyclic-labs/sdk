@@ -1,0 +1,70 @@
+{
+  "name": "@acyclic-labs/pi-hooks",
+  "version": "0.2.0",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "acyclic": {
+    "hooks": {
+      "session_start": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "session_start"
+        ]
+      },
+      "tool_call": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "tool_call"
+        ]
+      },
+      "tool_result": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "tool_result"
+        ]
+      },
+      "tool_cancel": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "tool_cancel"
+        ]
+      },
+      "subagent_start": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "subagent_start"
+        ]
+      },
+      "subagent_stop": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "subagent_stop"
+        ]
+      },
+      "session_shutdown": {
+        "command": "acyclic",
+        "args": [
+          "__hook",
+          "pi",
+          "session_shutdown"
+        ]
+      }
+    }
+  }
+}

@@ -18,13 +18,20 @@ impl LocalHarness {
         >,
     > {
         let model = self.command_model(task).await?;
+        let (_, provider) = self.model_binding()?;
         self.runtime
             .commands()
-            .with_model(&model, self.provider.clone(), &self.compaction, None)
+            .with_model(&model, provider.clone(), &self.compaction, None)
+    }
+
+    pub(super) fn model_binding(&self) -> Result<&(Model, Arc<dyn ModelProvider>)> {
+        self.model.as_ref().ok_or_else(|| {
+            Error::Unsupported("this local harness uses an external model executor".into())
+        })
     }
 
     pub(super) async fn command_model(&self, task: Option<TaskId>) -> Result<Model> {
-        let mut model = self.model.clone();
+        let mut model = self.model_binding()?.0.clone();
         let settings = self
             .task_files
             .inner
@@ -217,6 +224,11 @@ impl LocalHarness {
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
         Box::pin(async move {
+            if self.model.is_none() {
+                return Err(Error::Unsupported(
+                    "this local harness uses an external model executor".into(),
+                ));
+            }
             if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
                 return Err(Error::Invalid(
                     "local prompt is empty or exceeds the file limit".into(),

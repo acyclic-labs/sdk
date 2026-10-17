@@ -1,0 +1,1 @@
+{"host":"pi","event":"subagent_start","input":{"sessionId":"parent","agentId":"worker-label","childSession":{"host":"pi","session_id":"fresh-child-uuid","caller":null}}}

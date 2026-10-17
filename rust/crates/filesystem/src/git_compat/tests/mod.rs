@@ -23,7 +23,7 @@ impl TestExecutor {
         }
     }
 
-    fn failing() -> Self {
+    pub(super) fn failing() -> Self {
         Self {
             result: Err(TestExecutorError),
             operations: Mutex::new(Vec::new()),
@@ -302,6 +302,7 @@ async fn publish_fixture(
 
 mod argv;
 mod capture;
+mod diff;
 mod history;
 mod incremental;
 #[cfg(acyclic_fs_loom)]

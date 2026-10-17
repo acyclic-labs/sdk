@@ -83,10 +83,19 @@ where
                 root: workspace.root,
                 source_root_identity: identity,
             },
+            &executor,
         )
         .await?
     } else {
-        execute(&workspace, args, tree, patch.as_deref(), &executor).await?
+        execute(
+            &workspace,
+            args,
+            tree,
+            patch.as_deref(),
+            &executor,
+            &executor,
+        )
+        .await?
     };
     Ok(Output {
         command,
@@ -94,21 +103,27 @@ where
     })
 }
 
-async fn execute<E: GitFilesystemExecutor<Error = Error>>(
+async fn execute<E, F, Fut>(
     workspace: &Workspace<'_>,
     args: &[String],
     tree: GitTreeRef,
     patch: Option<&[u8]>,
     executor: &E,
-) -> crate::Result<Option<GitCommandOutput>> {
-    run_git_command(
-        &GitCompatRepository::new(workspace.repository, workspace.store.clone()),
-        args,
-        tree,
-        patch,
-        workspace.author,
-        workspace.authored_at_seconds,
-        executor,
-    )
-    .await
+    working: &WorkspaceGitExecutor<'_, F>,
+) -> crate::Result<Option<GitCommandOutput>>
+where
+    E: GitFilesystemExecutor<Error = Error>,
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = crate::Result<()>> + Send,
+{
+    working
+        .run_git_command(
+            args,
+            tree,
+            patch,
+            workspace.author,
+            workspace.authored_at_seconds,
+            executor,
+        )
+        .await
 }

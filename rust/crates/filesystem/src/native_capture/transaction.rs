@@ -103,10 +103,13 @@ pub(super) async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncOb
     );
     let cancellation = meter.cancellation();
     let mut accounting = crate::kernel::allocation::KernelAccounting::native(meter, cancellation);
-    checkout
-        .apply_authored_bulk_transaction_with_accounting(input, &mut accounting, cancellation)
-        .await?;
-    Ok(())
+    crate::heap_future::in_native_heap(meter, || async {
+        checkout
+            .apply_authored_bulk_transaction_with_accounting(input, &mut accounting, cancellation)
+            .await?;
+        Ok(())
+    })
+    .await
 }
 
 pub(super) fn checked_increment(value: u64) -> Result<u64, CaptureError> {

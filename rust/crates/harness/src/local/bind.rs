@@ -40,16 +40,20 @@ impl LocalHarness {
         }
         #[cfg(feature = "hooks")]
         let settings = settings::configuration(&config.project, config.settings)?;
-        let (model, provider) = config.model;
-        model.validate()?;
-        let compaction = compaction::select(
-            config.compaction,
-            &model,
-            provider.as_ref(),
-            runtime.tool_registry(),
-            config.limits,
-        )
-        .await?;
+        let compaction = match &config.model {
+            Some((model, provider)) => {
+                model.validate()?;
+                compaction::select(
+                    config.compaction,
+                    model,
+                    provider.as_ref(),
+                    runtime.tool_registry(),
+                    config.limits,
+                )
+                .await?
+            }
+            None => crate::context::CompactionPolicy::Disabled,
+        };
         let (filesystem, stream) = storage;
         let task_files = Arc::new(
             crate::task_volume::TaskFiles::open(
@@ -120,14 +124,14 @@ impl LocalHarness {
             files,
             runtime: Arc::new(runtime),
             task_files,
+            external_bindings: Default::default(),
             project: volume.clone(),
             scratch: volume.clone(),
             journal: volume.clone(),
             verifier: verifier.clone(),
             issuer: None,
             signed: signed.clone(),
-            model,
-            provider,
+            model: config.model,
             context_manifest: config.context_manifest,
             #[cfg(feature = "hooks")]
             settings,
@@ -144,18 +148,26 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
         };
-        if let Some(provider) = local
-            .provider
-            .bind_content(local.context_reader()?, local.limits.file_bytes)
-        {
-            local.provider = provider;
-        }
+        local.bind_provider_content()?;
         Ok(local)
     }
 
     /// The same task runtime used by request-file consumers and SDK queries.
     pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
         &self.runtime
+    }
+
+    pub(super) fn bind_provider_content(&mut self) -> Result<()> {
+        let bound = match &self.model {
+            Some((_, provider)) => {
+                provider.bind_content(self.context_reader()?, self.limits.file_bytes)
+            }
+            None => None,
+        };
+        if let (Some((_, provider)), Some(bound)) = (&mut self.model, bound) {
+            *provider = bound;
+        }
+        Ok(())
     }
 }
 

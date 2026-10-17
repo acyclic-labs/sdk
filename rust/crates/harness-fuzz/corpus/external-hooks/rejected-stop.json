@@ -1,0 +1,1 @@
+[{"stage":"waiting","operation_id":"01010101-0101-0101-0101-010101010101","terminal":true},{"commands":[{"operation_id":"01010101-0101-0101-0101-010101010101","value":{"Failed":{"message":"rejected stop"}}}]}]

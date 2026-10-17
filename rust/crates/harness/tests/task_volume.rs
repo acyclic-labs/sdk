@@ -28,6 +28,8 @@ mod plan_name;
 mod properties;
 #[path = "task_volume/recovery.rs"]
 mod recovery;
+#[path = "task_volume/schema.rs"]
+mod schema;
 #[path = "task_volume/session.rs"]
 mod session;
 #[path = "task_volume/source.rs"]

@@ -367,6 +367,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
         &before,
         &after,
         &BTreeSet::new(),
+        &[],
         100,
         &CancellationToken::new(),
     )
@@ -388,6 +389,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
         &before,
         &after,
         &BTreeSet::from(["src/drop.tmp".to_owned()]),
+        &[],
         100,
         &CancellationToken::new(),
     )
@@ -452,6 +454,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
         &before,
         &after,
         &BTreeSet::new(),
+        &[],
         100,
         &CancellationToken::new(),
     )
@@ -497,6 +500,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
         &before,
         &after,
         &BTreeSet::new(),
+        &[],
         100,
         &CancellationToken::new(),
     )

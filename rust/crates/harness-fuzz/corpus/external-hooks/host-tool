@@ -1,0 +1,1 @@
+{"host":"claude-code","event":"PreToolUse","input":{"session_id":"session","tool_use_id":"foreign","tool_name":"mcp__configured__lookup","tool_input":{"query":"native"},"hostExecuted":true}}

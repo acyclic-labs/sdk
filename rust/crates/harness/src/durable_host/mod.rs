@@ -230,6 +230,8 @@ use created_consume::consume_receipts;
 mod dispatch;
 mod host;
 mod journal;
+#[cfg(feature = "filesystem")]
+mod journal_append;
 mod lifecycle;
 mod mail;
 mod observations;
@@ -237,6 +239,8 @@ mod observations;
 mod owner_access;
 #[cfg(feature = "filesystem")]
 mod preparation;
+#[cfg(feature = "filesystem")]
+mod publication;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod readonly;
 mod received_mail;

@@ -1,0 +1,1 @@
+{"host":"pi","event":"tool_call","input":{"sessionId":"options","toolCallId":"bash","toolName":"bash","input":{"command":"pwd","cwd":"nested","timeout":30}}}

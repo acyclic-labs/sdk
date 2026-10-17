@@ -8,10 +8,21 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
   });
 }
 
-export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
+export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,grpc,test-support"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filter: "distributed::tests::model_checking::origin_publication_fences_competing_writers",
-    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+    suites: [
+      { filter: "external_executor::task_bindings::model::tests::", exact: false, expected: 3, timeout: 9500 },
+      { filter: "external_executor::local_owner::registry::model::tests::", exact: false, expected: 2, timeout: 9500 },
+      { filter: "external_executor::local_owner::workers::model::tests::", exact: false, expected: 2, timeout: 9500 },
+      { filter: "local::command_views::models::", exact: false, expected: 1, timeout: 9500 },
+      { filter: "local::children::preparation::models::", exact: false, expected: 1, timeout: 9500 },
+      { filter: "external_executor::local_owner::response::model::tests::", exact: false, expected: 2, timeout: 9500 },
+      { filter: "external_executor::local_owner::request_feed::model::tests::", exact: false, expected: 4, timeout: 9500 },
+      { filter: "external_executor::native_context::source::models::", exact: false, expected: 1, timeout: 9500 },
+      { filter: "task_volume::publication::models::", exact: false, expected: 2, timeout: 9500 },
+    ],
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }
 
@@ -51,6 +62,20 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   });
 }
 
+export function qualifyFsRetryLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "acyclic_fs", [
+    "--features", "default,distributed,local,memory,model-checking,native-mount,native-watch",
+  ], run, {
+    kind: "--lib", filter: "distributed::tests::append_retry::a_lost_cas_does_not_poison_the_rebased_operation_identity",
+    timeout: 9500,
+    suites: [
+      { filter: "git_compat::tests::model::", exact: false, expected: 6, timeout: 9500 },
+      { filter: "native_mount::fuse::handles::model::", exact: false, expected: 2, timeout: 9500 },
+    ],
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_fs_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
 export function qualifyMemoryAccountingLoom(run = spawnSync) {
   return qualifyLoom("acyclic-harness", "memory-accounting-model", [
     "--features", "filesystem,acyclic-fs/model-checking",
@@ -83,16 +108,18 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
-  for (const filter of options.filters ?? [options.filter]) {
-    const result = run(binaries[0], filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
+  const suites = options.filters
+    ? options.filters.map(filter => ({ ...options, filter }))
+    : [options, ...(options.suites ?? [])];
+  for (const suite of suites) {
+    const result = run(binaries[0], suite.filter ? [suite.filter, ...(suite.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(suite.timeout ? { timeout: suite.timeout } : {}) });
     if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
-    const complete = options.exact === false
-      ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-      : filter
-      ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+    const expected = suite.expected ?? (suite.exact === false ? 4 : 1);
+    const complete = suite.filter
+      ? new RegExp(`^test result: ok\\. ${expected} passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;`, "m")
       : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
     if (!complete.test(result.stdout)) {
       throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
@@ -109,5 +136,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
   else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
   else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
+  else if (features.length === 1 && features[0] === "--fs-retry") qualifyFsRetryLoom();
   else qualifyMcpLoom(features.length ? features : undefined);
 }

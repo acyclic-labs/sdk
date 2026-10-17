@@ -73,6 +73,34 @@ impl Clone for TaskContext {
 
 impl TaskContext {
     #[cfg(feature = "filesystem")]
+    pub(crate) fn with_created_project_output(mut self) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.native_custody.is_some() {
+            return Err(Error::Unauthorized(
+                "ordinary project selection requires an ordinary context".into(),
+            ));
+        }
+        let Some(access) = self.scope.created_access.as_ref() else {
+            return Ok(self);
+        };
+        let mut projects = access
+            .content
+            .iter()
+            .filter(|binding| binding.volume.class() == crate::conversation::VolumeClass::Project);
+        let Some(project) = projects.next() else {
+            return Ok(self);
+        };
+        if projects.next().is_some() {
+            return Err(Error::Unauthorized(
+                "created project output is ambiguous".into(),
+            ));
+        }
+        bound_content_writer(Some(&project.binding), &self.scope, None)?;
+        self.output_content = Some(project.binding.clone());
+        Ok(self)
+    }
+
+    #[cfg(feature = "filesystem")]
     pub(crate) fn invocation_cancellation(&self) -> Option<&acyclic_fs::CancellationToken> {
         self.owned_mailbox
             .as_ref()

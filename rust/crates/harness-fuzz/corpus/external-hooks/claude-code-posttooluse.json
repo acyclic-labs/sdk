@@ -1,0 +1,1 @@
+{"input":{"session_id":"session","tool_use_id":"call-success","tool_response":{"stdout":"done"}},"host":"claude-code","event":"PostToolUse"}

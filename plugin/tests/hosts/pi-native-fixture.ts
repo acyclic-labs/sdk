@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { VERSION, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -40,32 +40,47 @@ export async function installedNativeFixture(
   manager.appendMessage({ role: "user", content: "original native recursive instruction ROOT_ONLY_NATIVE_INSTRUCTION", timestamp: 1 });
   const session = manager.getSessionFile();
   assert.ok(session);
-  const data = process.platform === "win32" ? join(directory, "local", "Acyclic", "state-v5")
-    : join(directory, "state", "acyclic", "state-v5");
-  mkdirSync(data, { recursive: true });
   let service: ChildProcess | undefined;
   const start = async () => {
-    const marker = join(data, "service.identity");
-    const previous = existsSync(marker) ? readFileSync(marker, "utf8") : "";
     const {promise, resolve, reject} = Promise.withResolvers<void>();
-    const timeout = setTimeout(() => reject(new Error("original native service did not publish readiness within its allowance")), 30_000);
-    let watcher: FSWatcher | undefined;
+    const timeout = setTimeout(() => reject(new Error("SDK owner did not signal readiness")), 3000);
     try {
-      watcher = watch(data, (_event, filename) => {
-        if (String(filename) === "service.identity" && existsSync(marker) && readFileSync(marker, "utf8") !== previous) resolve();
+      service = spawn(binary, ["__service", "--signal-ready"], {
+        cwd: project, env: environment, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
       });
-      service = spawn(binary, ["__service"], { cwd: project, env: environment, windowsHide: true, stdio: "ignore" });
+      service.stdout!.once("data", () => resolve());
+      service.stderr!.on("data", chunk => process.stderr.write(chunk));
       service.once("error", reject);
       service.once("exit", code => reject(new Error(`original native service exited before readiness: ${code}`)));
       await promise;
-    } finally { clearTimeout(timeout); watcher?.close(); }
-    const status = JSON.parse((await command(["__service-status"])).stdout);
-    assert.equal(typeof status.reachableIdentity, "string");
-    assert.ok(status.reachableIdentity.length > 0);
-    assert.equal(status.reachableIdentity, status.markerIdentity);
-    assert.equal(status.lockAcquirable, false);
+    } finally { clearTimeout(timeout); }
+    // An ordinary hook proves authenticated append/follow after readiness.
+    const answer = JSON.parse((await command(["__hook", "pi", "session_start"], JSON.stringify({
+      cwd:project,sessionId:manager.getSessionId(),
+    }))).stdout);
+    const attached = answer;
+    assert.equal(typeof attached.task,"string");
+    environment.ACYCLIC_NATIVE_TASK = attached.task;
   };
   const servicePid = () => service?.pid;
+  const resources = () => {
+    if (process.platform !== "linux") return { mounts:[], processes:[] };
+    const mounts=readFileSync("/proc/self/mountinfo","utf8").split("\n")
+      .filter(line=>line.split(" ")[4]?.startsWith(`${directory}/`));
+    const processes: Array<{pid:string,parent:string,cwd:string}> = [];
+    for (const pid of readdirSync("/proc").filter(name=>/^\d+$/.test(name))) {
+      try {
+        const cwd=readlinkSync(`/proc/${pid}/cwd`);
+        if (cwd === directory || cwd.startsWith(`${directory}/`)) {
+          const parent=readFileSync(`/proc/${pid}/status`,"utf8").match(/^PPid:\s+(\d+)/m)?.[1] ?? "unknown";
+          processes.push({pid,parent,cwd});
+        }
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && ["ENOENT","EACCES","EPERM"].includes(String(error.code)))) throw error;
+      }
+    }
+    return {mounts,processes};
+  };
   const kill = async () => {
     const current = service;
     if (!current || current.exitCode !== null || current.signalCode !== null) { service = undefined; return; }
@@ -84,7 +99,7 @@ export async function installedNativeFixture(
     const current = service;
     try {
       if (current && current.exitCode === null && current.signalCode === null) {
-        await Promise.all([command(["__service-drain"]), waitForNativeServiceExit(current)]);
+        await Promise.all([command(["__owner-stop"]), waitForNativeServiceExit(current)]);
         assert.equal(current.exitCode, 0, "original native service drain did not exit successfully");
       }
     } catch (error) { originalFailure = error; }
@@ -139,7 +154,7 @@ export async function installedNativeFixture(
       invocation.child.stdout?.off("data", consume);
     }
   };
-  return { project, environment, extension, provider, session, manager, command, start, kill, close, servicePid, run, runJson };
+  return { project, environment, extension, provider, session, manager, command, start, kill, close, servicePid, resources, run, runJson };
 }
 
 function waitForNativeServiceExit(service: ChildProcess): Promise<void> {

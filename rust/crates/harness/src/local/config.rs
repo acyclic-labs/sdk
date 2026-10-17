@@ -13,12 +13,12 @@ pub(super) enum LocalProject {
     },
 }
 
-/// Durable local composition with a required model binding.
+/// Durable local composition with an optional stock model binding.
 pub struct LocalHarnessConfig {
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
-    pub(super) model: (Model, Arc<dyn ModelProvider>),
+    pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
@@ -48,11 +48,20 @@ impl LocalHarnessConfig {
     /// Selects a checkout path and its stock model binding.
     #[must_use]
     pub fn new(workspace: impl Into<PathBuf>, model: (Model, Arc<dyn ModelProvider>)) -> Self {
+        let mut config = Self::external(workspace);
+        config.model = Some(model);
+        config.goal_continuations = Some(Default::default());
+        config
+    }
+
+    /// Hosts a native executor; that host owns its model and additive tools.
+    #[must_use]
+    pub fn external(workspace: impl Into<PathBuf>) -> Self {
         Self {
-            goal_continuations: Some(Default::default()),
+            goal_continuations: None,
             project: LocalProject::Workspace(workspace.into()),
             state_directory: None,
-            model,
+            model: None,
             context_manifest: None,
             tools: Vec::new(),
             default_tools: true,

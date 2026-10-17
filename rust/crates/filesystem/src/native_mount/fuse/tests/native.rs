@@ -534,6 +534,29 @@ fn an_open_drops_the_size_of_any_version_it_does_not_read() -> Result<(), Box<dy
         7
     );
     assert_eq!(projection.node_attributes(inode, None, &work)?.0.size, 7);
+    let deferred = {
+        let _names = core.names().map_err(std::io::Error::from_raw_os_error)?;
+        projection.open_node(inode, libc::O_RDONLY, &work)?.0
+    };
+    assert!(matches!(
+        core.state()
+            .map_err(std::io::Error::from_raw_os_error)?
+            .file_handle(inode, deferred)
+            .map_err(std::io::Error::from_raw_os_error)?
+            .open_file,
+        crate::native_mount::fuse::FuseOpenFile::Deferred(_)
+    ));
+    assert_eq!(
+        projection
+            .read_handle(inode, deferred, 0, 64, &work)?
+            .bytes
+            .len(),
+        7,
+        "resolving the cached handle must open the real source before taking its view locks"
+    );
+    core.state_to_finish()
+        .discard_file_handle(inode, deferred)
+        .map_err(std::io::Error::from_raw_os_error)?;
     core.state_to_finish()
         .discard_file_handle(inode, handle)
         .map_err(std::io::Error::from_raw_os_error)?;

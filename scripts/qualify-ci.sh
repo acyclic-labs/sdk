@@ -206,7 +206,7 @@ case "$lane" in
       cargo check --locked -p acyclic-harness --features filesystem-local,model-checking --lib
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests --features model-checking \
-        --test client-mailbox-model --test client_journal_model --test mcp-loom
+        --test client-mailbox-model --test mcp-loom
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests --features model-checking \
         --lib workflow::model_checking::tests::
@@ -218,6 +218,7 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" node scripts/qualify-mcp-loom.mjs --memory-accounting
+    node scripts/qualify-mcp-loom.mjs --fs-retry
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;

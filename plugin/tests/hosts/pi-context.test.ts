@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "bun:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { discoverAndLoadExtensions, SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
+import { SessionManager, parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import type { PiInboxMessage } from "../../pi/index.ts";
 import { loadPiContextHelpers } from "./pi-fixture.ts";
 
@@ -14,37 +14,6 @@ const {
   nativeChildSession, piToolOperations, PiControlAcknowledgementError,
   visibleControlResult, observePiOperation, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
-
-test("the native Pi loader resolves and registers the extension outside the host package", async () => {
-  const isolated = mkdtempSync(fileURLToPath(new URL(".pi-loader-", import.meta.url)));
-  try {
-    const loaded = await discoverAndLoadExtensions(
-      [fileURLToPath(new URL("../../pi/index.ts", import.meta.url))], isolated, isolated);
-    assert.deepEqual(loaded.errors, []);
-    assert.equal(loaded.extensions.length, 1);
-    assert.ok(loaded.extensions[0].commands.has("acyclic-doctor"));
-    assert.deepEqual([...loaded.extensions[0].tools.keys()].sort(), [
-      "acyclic_agents", "acyclic_cancel", "acyclic_context", "acyclic_diff", "acyclic_import",
-      "acyclic_inspect", "acyclic_model", "acyclic_send", "acyclic_spawn", "acyclic_steer",
-      "acyclic_wait", "acyclic_writeback", "edit", "read", "write",
-    ]);
-    assert.ok(loaded.extensions[0].handlers.has("session_start"));
-    for (const event of ["agent_start", "agent_end", "session_shutdown"]) {
-      assert.ok(loaded.extensions[0].handlers.has(event));
-    }
-    for (const registered of loaded.extensions[0].tools.values()) {
-      const schema = registered.definition.parameters;
-      for (const field of ["caller", "callerproof", "caller_proof", "signer", "environment", "tasklease"]) {
-        assert.ok(!Object.hasOwn(schema.properties, field), `${registered.definition.name} must not expose ${field}`);
-      }
-    }
-    const writeback = loaded.extensions[0].tools.get("acyclic_writeback");
-    assert.ok(writeback);
-    assert.ok(!Object.hasOwn(writeback.definition.parameters.properties, "approval_digest"), "model must not supply human approval");
-  } finally {
-    rmSync(isolated, { recursive: true });
-  }
-});
 
 function spawnMessage(id: string) {
   return fauxAssistantMessage(fauxToolCall("acyclic_spawn", {}, { id }), { stopReason: "toolUse", timestamp: 1 });

@@ -229,22 +229,24 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         payload: FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        require_original(io)?;
-        let owner = self.journal_owner(sender, fence, io).await?;
-        self.send_from_owner(&owner, recipient, message, payload, io)
-            .await
+        self.send_mail_with_preflight(sender, fence, recipient, message, payload, io)
+            .await?
     }
 
+    // Only the inner error rejects the parcel before any publication. Owner,
+    // accounting and publication errors retain their original outer channel.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn send_from_owner(
-        &self,
-        owner: &TaskJournalOwner<P>,
+    pub(crate) async fn send_mail_with_preflight(
+        self: &Arc<Self>,
+        sender: TaskId,
+        fence: &crate::scheduler::LeaseFence,
         recipient: TaskId,
         message: OperationId,
         payload: FileRef,
         io: Option<&PreparationIo>,
-    ) -> Result<FileRef> {
+    ) -> Result<Result<FileRef>> {
         require_original(io)?;
+        let owner = self.journal_owner(sender, fence, io).await?;
         if !owner.original_host_binding_matches(self) {
             return Err(boundary(
                 io,
@@ -255,7 +257,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|io| io as &mut dyn HistoryIo);
         owner.verify(false, &mut work).await?;
-        let (bytes, payload) = self
+        let (bytes, payload) = match self
             .prepare_mail(
                 (owner.task_id(), owner.admission()),
                 recipient,
@@ -263,17 +265,22 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 payload,
                 io,
             )
-            .await?;
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error @ (Error::Unauthorized(_) | Error::NotFound(_))) => return Ok(Err(error)),
+            Err(error) => return Err(error),
+        };
         self.publish_mail(
             (owner.task_id(), owner.admission()),
             recipient,
             message,
             bytes,
-            Some(owner),
+            Some(&owner),
             io,
         )
         .await?;
-        Ok(payload)
+        Ok(Ok(payload))
     }
 
     #[cfg(feature = "filesystem")]

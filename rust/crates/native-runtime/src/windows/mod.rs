@@ -7,6 +7,7 @@
 mod driver;
 mod io;
 mod service;
+pub use io::hard_link_count;
 pub mod terminal;
 
 pub(super) use driver::{submit_read, submit_write};

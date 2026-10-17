@@ -8,7 +8,7 @@ impl CheckoutTools {
         input: crate::tools::BashInput,
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
-        files: output::Output,
+        mut files: output::Output,
     ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
         workspace::volumes::project(&state.mounts).await?;
         let workspace = state
@@ -29,18 +29,29 @@ impl CheckoutTools {
             standard_input: None,
             mcp_stdio: None,
         };
-        let invocation = native_process::bash::prepare(
-            input,
-            &state.mounts,
-            invocation,
-            self.clock.now_unix_millis() / 1000,
-        )?;
+        // A native cwd can be a demand-backed mount served by this runtime.
+        // Resolving it on the runtime thread would block its own FUSE reply.
+        let now = self.clock.now_unix_millis() / 1000;
+        let (invocation, state) = tokio::task::spawn_blocking(move || {
+            native_process::capture::with_custody(state, |state| {
+                native_process::bash::prepare(input, &state.mounts, invocation, now)
+            })
+        })
+        .await
+        .map_err(storage)?;
+        let invocation = invocation?;
         let check_owner = Arc::clone(&files.owner);
+        let cancellation = files.cancellation.take();
         let runtime = tokio::runtime::Handle::current();
         let (output, (state, files)) = native_process::capture::capture_with_custody(
             invocation,
             |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
             move || {
+                if let Some(cancellation) = &cancellation {
+                    cancellation
+                        .check()
+                        .map_err(native_process::capture::control_error)?;
+                }
                 if acyclic_fs::capture_root_identity(&workspace.path)
                     .map_err(std::io::Error::other)?
                     != workspace.identity

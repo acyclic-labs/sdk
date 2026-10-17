@@ -1,0 +1,1 @@
+{"input":{"sessionId":"session","toolCallId":"call","toolName":"bash","input":{"command":"pwd"}},"host":"pi","event":"tool_call"}

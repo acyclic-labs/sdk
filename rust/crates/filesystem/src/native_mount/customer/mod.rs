@@ -41,6 +41,8 @@ pub use options::{MountOptions, MountPublication};
 pub use publication::NativeMountPublicationFailure;
 pub use working_set::NativeWorkingSet;
 
+#[cfg(all(test, feature = "local"))]
+mod future_sizes;
 #[cfg(test)]
 mod mounted_tests;
 #[cfg(test)]

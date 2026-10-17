@@ -1,0 +1,1 @@
+{"host":"pi","event":"tool_call","input":{"sessionId":"session","toolCallId":"call","toolName":"write","input":{"path":"src/main.rs","content":"fn main() {}"}}}

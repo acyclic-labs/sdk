@@ -1,0 +1,1 @@
+{"host":"pi","event":"tool_call","input":{"sessionId":"recursive","toolCallId":"spawn","toolName":"acyclic_spawn","input":{"name":"acyclic.command_session","version":"1","input":{}}}}

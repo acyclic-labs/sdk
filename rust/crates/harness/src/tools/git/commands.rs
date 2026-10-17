@@ -19,40 +19,52 @@ pub(crate) fn git_transition_command(argv: &[String]) -> bool {
 }
 
 /// Recovers a pending transition or executes one facade command.
-pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
-    repository: &GitCompatRepository<LocalCoreStateStore>,
-    argv: &[String],
-    workspace_tree: GitTreeRef,
-    patch: Option<&[u8]>,
-    author: &str,
-    authored_at_seconds: i64,
-    executor: &E,
-) -> Result<Option<GitCommandOutput>, Error> {
-    if !git_transition_command(argv)
-        && repository
-            .resume(executor)
-            .await
-            .map_err(super::errors::run_error)?
-            .is_some()
-    {
-        return Ok(None);
+impl<F, Fut> WorkspaceGitExecutor<'_, F>
+where
+    F: Fn() -> Fut + Send + Sync,
+    Fut: Future<Output = Result<(), Error>> + Send,
+{
+    pub(super) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
+        &self,
+        argv: &[String],
+        workspace_tree: GitTreeRef,
+        patch: Option<&[u8]>,
+        author: &str,
+        authored_at_seconds: i64,
+        executor: &E,
+    ) -> Result<Option<GitCommandOutput>, Error> {
+        let repository = GitCompatRepository::new(self.repository_id, self.store.clone());
+        if !git_transition_command(argv)
+            && repository
+                .resume(executor)
+                .await
+                .map_err(super::errors::run_error)?
+                .is_some()
+        {
+            return Ok(None);
+        }
+        let command = if let Some(patch) = patch {
+            GitCommand::Apply {
+                patch: patch.to_vec(),
+            }
+        } else {
+            acyclic_fs::git_compat::parse_git_argv(argv, author, authored_at_seconds)
+                .map_err(super::errors::compat_error)?
+        };
+        let output = match command {
+            GitCommand::Restore {
+                source: Some(source),
+                paths,
+            } if source.starts_with("agents/") => {
+                let (tree, _) = self.agent_tree(&source, workspace_tree).await?;
+                repository
+                    .restore_paths_from(tree, paths, workspace_tree, executor)
+                    .await
+            }
+            command => repository.run(command, workspace_tree, executor).await,
+        };
+        output.map(Some).map_err(super::errors::run_error)
     }
-    let output = if let Some(patch) = patch {
-        repository
-            .run(
-                GitCommand::Apply {
-                    patch: patch.to_vec(),
-                },
-                workspace_tree,
-                executor,
-            )
-            .await
-    } else {
-        repository
-            .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
-            .await
-    };
-    output.map(Some).map_err(super::errors::run_error)
 }
 
 /// Reads a patch file from the managed workspace.

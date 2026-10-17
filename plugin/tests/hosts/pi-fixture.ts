@@ -3,8 +3,19 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 
 const execute = promisify(execFile);
+
+/** Pi's bundled loader supplies real SDK modules rather than requiring ESM-only exports. */
+export async function loadPiExtension(path: string) {
+  const { createJiti } = createRequire(import.meta.url)("jiti");
+  const modules = await Promise.all(["@earendil-works/pi-tui", "@earendil-works/pi-coding-agent"]
+    .map(async name => [name, await import(name)]));
+  return await createJiti(import.meta.url, {
+    tryNative: false, virtualModules: Object.fromEntries(modules),
+  }).import(path) as typeof import("../../pi/index.ts");
+}
 export const nodeExecutable = Bun.which("node") ?? "node";
 export const pinnedPiCli = fileURLToPath(new URL(
   "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js", import.meta.url,
@@ -16,6 +27,7 @@ export function piEnvironment(directory: string): NodeJS.ProcessEnv {
     HOME: directory, USERPROFILE: directory, PI_CODING_AGENT_DIR: join(directory, "agent"),
     LOCALAPPDATA: join(directory, "local"), APPDATA: join(directory, "config"),
     XDG_STATE_HOME: join(directory, "state"), XDG_CONFIG_HOME: join(directory, "config"),
+    ACYCLIC_LOCAL_OWNER_DIR: join(directory, "owner"),
   };
   for (const name of ["SystemRoot", "TEMP", "TMP"]) {
     if (process.env[name]) environment[name] = process.env[name];

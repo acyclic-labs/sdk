@@ -1,0 +1,1 @@
+{"input":{"session_id":"session","tool_use_id":"call","error":"Exit code 1\nfailed","is_interrupt":false},"host":"claude-code","event":"PostToolUseFailure"}

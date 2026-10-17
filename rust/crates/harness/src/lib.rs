@@ -42,6 +42,7 @@ pub mod effect_host;
 pub mod effects;
 pub mod executor;
 pub mod extension;
+pub mod external_executor;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
 pub mod fork;

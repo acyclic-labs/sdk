@@ -51,6 +51,17 @@ pub(in crate::local) struct State {
 }
 
 impl State {
+    pub(in crate::local) fn workspaces(&self) -> impl Iterator<Item = Arc<LocalWorkspace>> + '_ {
+        self.workspace
+            .iter()
+            .map(|(_, workspace)| Arc::clone(workspace))
+            .chain(
+                self.children
+                    .values()
+                    .map(|tools| Arc::clone(&tools.workspace)),
+            )
+    }
+
     pub(in crate::local) fn new(
         initial_view: acyclic_fs::WorkspaceId,
         mounts: Arc<workspace::Mounts>,

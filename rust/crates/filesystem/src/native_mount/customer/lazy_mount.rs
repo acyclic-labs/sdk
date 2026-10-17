@@ -133,12 +133,15 @@ where
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         let work = self.native_work()?;
-        self.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
-            std::future::ready(Ok::<(), MountLifecycleError>(()))
+        crate::heap_future::in_native_heap(&work, || async {
+            self.sync_with_permit(PublicationPermit::Unrestricted, &work, |_| {
+                std::future::ready(Ok::<(), MountLifecycleError>(()))
+            })
+            .await
+            .map(|_| ())
+            .map_err(|failure| failure.cause)
         })
         .await
-        .map(|_| ())
-        .map_err(|failure| failure.cause)
     }
 
     /// Publishes through the original allowance and retains the genuine SDK ACK.

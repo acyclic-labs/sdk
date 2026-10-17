@@ -3,6 +3,11 @@ use acyclic_stream::BoxProviderStream;
 use futures::stream;
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn changes(&self) -> Result<acyclic_stream::RecordStream> {
+        Ok(self.stream.0.follow(self.revision).await?)
+    }
+
     /// Snapshots an operation and follows scheduler changes without a replay/subscription gap.
     pub async fn operation_changes(
         self,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::conversation::BoundedContentFuture;
 
 #[derive(Serialize)]
 struct BorrowedObservation<'a> {
@@ -34,44 +35,16 @@ where
         loop {
             let before = io.map(PreparationIo::owned_bytes).transpose()?;
             let (page_hold, page) = {
-                let page = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) if io.original_native_work().is_some() => {
-                        let work = io.original_native_work().ok_or_else(|| {
-                            io.invalid("execution replay requires original native work")
-                        })?;
-                        crate::NativeFutureBundle::new(work, || {
-                            self.replay_page(
-                                operation,
-                                summary.tail,
-                                EXECUTION_REPLAY_PAGE_RECORDS,
-                                true,
-                                Some(io),
-                            )
-                        })?
-                        .await?
-                    }
-                    Some(io) => {
-                        Box::pin(self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            Some(io),
-                        ))
-                        .await?
-                    }
-                    None => {
-                        self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            None,
-                        )
-                        .await?
-                    }
-                };
+                let page = BoundedContentFuture::new(io, || {
+                    self.replay_page(
+                        operation,
+                        summary.tail,
+                        EXECUTION_REPLAY_PAGE_RECORDS,
+                        true,
+                        io,
+                    )
+                })?
+                .await?;
                 let page_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                     _ => None,
@@ -238,170 +211,181 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<bool> {
-        self.require_operation(operation_id, io)?;
-        if claim_id.is_empty() {
-            return Err(stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "execution journal compare-and-append is invalid",
-            ));
-        }
-        let owner = self.owner.as_ref().map(|(owner, _)| owner);
-        let model = self.verify_event_refs_with_io(event, io).await?;
-        let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
-        self.verify_canonical_publication_with_io(operation_id, event, limits, io)
-            .await?;
-        let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(64)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 64,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let retry_digest = digest.to_hex().to_string();
-        let observation = BorrowedObservation {
-            version: OBSERVATION_VERSION,
-            operation_id,
-            turn_operation: self.turn_operation(operation_id),
-            retry_digest: &retry_digest,
-            event,
-        };
-        let body_hold;
-        let bytes = if let Some(io) = io {
-            let encoded =
-                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-            body_hold = io.guard_bytes(&encoded)?;
-            encoded
-        } else {
-            body_hold = None;
-            let encoded = serde_json::to_vec(&observation)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "execution journal observation exceeds Stream limit".into(),
+        BoundedContentFuture::new(io, || async {
+            self.require_operation(operation_id, io)?;
+            if claim_id.is_empty() {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "execution journal compare-and-append is invalid",
                 ));
             }
-            encoded.into()
-        };
-        let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
-        if let Some(io) = io {
-            io.allocation_attempt(32)?;
-            let copying = acyclic_fs::WorkCounters {
-                bytes_copied: 32,
-                ..Default::default()
-            };
-            io.preflight(copying)?;
-            io.charge(copying)?;
-        }
-        let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Error::NativeStream {
-                    code: crate::wire::ErrorCode::Invalid,
-                    source: error,
-                    custody: None,
-                };
-            }
-            Error::Invalid(error.to_string())
-        })?;
-        let retry_hashing = acyclic_fs::WorkCounters {
-            bytes_hashed: 64,
-            ..Default::default()
-        };
-        if let Some(io) = io {
-            io.preflight(retry_hashing)?;
-            io.charge(retry_hashing)?;
-        }
-        let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                event,
-                if io.is_some() {
-                    acyclic_stream::MAX_RECORD_BYTES as u64
-                } else {
-                    u64::MAX
-                },
-                work,
-            )
-        })?;
-        let mut shared = if io.is_none() {
-            Some(self.verified.lock().await)
-        } else {
-            None
-        };
-        let mut transient = ExecutionSummary::default();
-        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-        loop {
-            self.refresh_summary(operation_id, summary, io).await?;
-            if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .verify_execution(
-                        operation_id,
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
+            let owner = self.owner.as_ref().map(|(owner, _)| owner);
+            let model =
+                BoundedContentFuture::new(io, || self.verify_event_refs_with_io(event, io))?
                     .await?;
+            let limits = owner.map_or_else(Limits::default, TaskJournalOwner::input_limits);
+            BoundedContentFuture::new(io, || {
+                self.verify_canonical_publication_with_io(operation_id, event, limits, io)
+            })?
+            .await?;
+            let digest = super::content::operation_digest(operation_id, claim_id, io)?;
+            let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
+            if let Some(io) = io {
+                io.allocation_attempt(64)?;
+                let copying = acyclic_fs::WorkCounters {
+                    bytes_copied: 64,
+                    ..Default::default()
+                };
+                io.preflight(copying)?;
+                io.charge(copying)?;
             }
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
-                if *previous != event_digest {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Conflict,
-                            reason: "execution journal retry identity reused",
-                        });
-                    }
-                    return Err(Error::Conflict(
-                        "execution journal retry identity reused".into(),
+            let retry_digest = digest.to_hex().to_string();
+            let observation = BorrowedObservation {
+                version: OBSERVATION_VERSION,
+                operation_id,
+                turn_operation: self.turn_operation(operation_id),
+                retry_digest: &retry_digest,
+                event,
+            };
+            let body_hold;
+            let bytes = if let Some(io) = io {
+                let encoded =
+                    io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+                body_hold = io.guard_bytes(&encoded)?;
+                encoded
+            } else {
+                body_hold = None;
+                let encoded = serde_json::to_vec(&observation)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                if encoded.len() > acyclic_stream::MAX_RECORD_BYTES {
+                    return Err(Error::Invalid(
+                        "execution journal observation exceeds Stream limit".into(),
                     ));
                 }
-                return Ok(expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence)));
+                encoded.into()
+            };
+            let key_hold = io.map(|io| io.reserve_decode(32)).transpose()?;
+            if let Some(io) = io {
+                io.allocation_attempt(32)?;
+                let copying = acyclic_fs::WorkCounters {
+                    bytes_copied: 32,
+                    ..Default::default()
+                };
+                io.preflight(copying)?;
+                io.charge(copying)?;
             }
-            if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(false);
+            let key =
+                StreamKey::new(Bytes::copy_from_slice(digest.as_bytes())).map_err(|error| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if io.is_some() {
+                        return Error::NativeStream {
+                            code: crate::wire::ErrorCode::Invalid,
+                            source: error,
+                            custody: None,
+                        };
+                    }
+                    Error::Invalid(error.to_string())
+                })?;
+            let retry_hashing = acyclic_fs::WorkCounters {
+                bytes_hashed: 64,
+                ..Default::default()
+            };
+            if let Some(io) = io {
+                io.preflight(retry_hashing)?;
+                io.charge(retry_hashing)?;
             }
-            summary.validate_next(event, model.as_ref(), limits, io)?;
-            let committed = if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .append_execution(
-                        operation_id,
+            let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
+            let event_digest = crate::executor::with_history_io(io, |work| {
+                crate::executor::json::canonical_json_digest(
+                    event,
+                    if io.is_some() {
+                        acyclic_stream::MAX_RECORD_BYTES as u64
+                    } else {
+                        u64::MAX
+                    },
+                    work,
+                )
+            })?;
+            let mut shared = if io.is_none() {
+                Some(self.verified.lock().await)
+            } else {
+                None
+            };
+            let mut transient = ExecutionSummary::default();
+            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            loop {
+                BoundedContentFuture::new(io, || self.refresh_summary(operation_id, summary, io))?
+                    .await?;
+                if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .verify_execution(
+                            operation_id,
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await?;
+                }
+                if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+                    if *previous != event_digest {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if io.is_some() {
+                            return Err(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Conflict,
+                                reason: "execution journal retry identity reused",
+                            });
+                        }
+                        return Err(Error::Conflict(
+                            "execution journal retry identity reused".into(),
+                        ));
+                    }
+                    return Ok(
+                        expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence))
+                    );
+                }
+                if expected_tail.is_some_and(|tail| tail != summary.tail) {
+                    return Ok(false);
+                }
+                summary.validate_next(event, model.as_ref(), limits, io)?;
+                let committed = if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    owner
+                        .append_execution(
+                            operation_id,
+                            summary.tail,
+                            &key,
+                            bytes.clone(),
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                        .await?
+                } else {
+                    self.append_local_with_io(
+                        &observation,
                         summary.tail,
-                        &key,
+                        key.clone(),
                         bytes.clone(),
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        io,
                     )
                     .await?
-            } else {
-                self.append_local_with_io(
-                    &observation,
-                    summary.tail,
-                    key.clone(),
-                    bytes.clone(),
-                    io,
-                )
-                .await?
-            };
-            if committed {
-                drop(key);
-                drop(key_hold);
-                drop(bytes);
-                drop(body_hold);
-                drop(retry_digest);
-                drop(retry_hold);
-                return Ok(true);
+                };
+                if committed {
+                    drop(key);
+                    drop(key_hold);
+                    drop(bytes);
+                    drop(body_hold);
+                    drop(retry_digest);
+                    drop(retry_hold);
+                    return Ok(true);
+                }
             }
-        }
+        })?
+        .await
     }
 
     async fn append_local_with_io(

@@ -6,14 +6,18 @@
     "name": "Acyclic Labs"
   },
   "license": "Apache-2.0",
-  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Acyclic",
     "shortDescription": "Isolate and reconcile recursive subagents.",
     "longDescription": "Gives native subagents recursively forked distributed-filesystem workspaces and a Git-shaped local CLI without changing filesystem semantics.",
     "developerName": "Acyclic Labs",
     "category": "Developer Tools",
-    "capabilities": ["Interactive", "Write"],
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
     "defaultPrompt": "Use Acyclic workspaces for parallel, speculative, exploratory, and debugging subagent work."
-  }
+  },
+  "mcpServers": "./mcp.json",
+  "hooks": "./hooks/hooks.json"
 }

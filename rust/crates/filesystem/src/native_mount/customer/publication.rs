@@ -14,3 +14,16 @@ pub struct NativeMountPublicationFailure<E> {
     /// Qualified source metadata retained through finalization failure.
     pub publication: Option<Box<crate::NativePublicationSnapshot>>,
 }
+
+impl<E: From<MountLifecycleError>> From<crate::NativeTreeMaterializationError>
+    for NativeMountPublicationFailure<E>
+{
+    fn from(cause: crate::NativeTreeMaterializationError) -> Self {
+        Self {
+            cause: E::from(MountLifecycleError::from(cause)),
+            accounting_failure: None,
+            source_acknowledged: false,
+            publication: None,
+        }
+    }
+}

@@ -127,34 +127,37 @@ where
         turn: OperationId,
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, &(fence), None).await?,
-            execution_operation(task, turn, None)?,
-            turn,
-            self.filesystem.clone(),
-            crate::filesystem::FilesystemJournalBinding {
-                volume: &self.volume,
-                verifier: &self.verifier,
-                scope: &self.signed,
-                maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                io: None,
-            },
-        )?;
-        let journal = journal.with_task_files(self.task_files.clone());
-        if admission
-            .grants
-            .contains(crate::contract::capability::INTERACTION_ROUTE)
-            && let Some(owner) = &self.interaction_owner
-        {
-            return journal.with_interaction_owner(
-                &owner.verifier,
-                &owner.schemas,
-                &owner.scope,
-                &owner.volume,
-                None,
-            );
-        }
-        Ok(journal)
+        crate::conversation::BoundedContentFuture::new(None, || async move {
+            let journal = FilesystemExecutionJournal::for_task(
+                self.host.journal_owner(task, &(fence), None).await?,
+                execution_operation(task, turn, None)?,
+                turn,
+                self.filesystem.clone(),
+                crate::filesystem::FilesystemJournalBinding {
+                    volume: &self.volume,
+                    verifier: &self.verifier,
+                    scope: &self.signed,
+                    maximum_bytes: self.maximum_payload_bytes.min(admission.limits.file_bytes),
+                    io: None,
+                },
+            )?;
+            let journal = journal.with_task_files(self.task_files.clone());
+            if admission
+                .grants
+                .contains(crate::contract::capability::INTERACTION_ROUTE)
+                && let Some(owner) = &self.interaction_owner
+            {
+                return journal.with_interaction_owner(
+                    &owner.verifier,
+                    &owner.schemas,
+                    &owner.scope,
+                    &owner.volume,
+                    None,
+                );
+            }
+            Ok(journal)
+        })?
+        .await
     }
 
     /// Opens the canonical tool-effect workflow under the original caller reservation.
@@ -343,5 +346,38 @@ where
                 io: Some(&super::super::PreparationIo::from_native_work(work)?),
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod future_sizes {
+    use super::*;
+
+    #[test]
+    fn execution_journal_open_future_stays_bounded() {
+        type Runtime = FilesystemTaskRuntime<
+            acyclic_stream::MemoryStream,
+            acyclic_fs::MemoryAuthorityBackend,
+            acyclic_fs::MemoryObjectBackend,
+        >;
+        // This unpolled wrapper includes the concrete journal-opening future.
+        let arguments: Option<(&Runtime, LeaseFence, &TaskAdmissionRecord)> = None;
+        let future = async move {
+            let (runtime, fence, admission) = arguments.unwrap();
+            runtime
+                .open_execution_journal(
+                    TaskId::from_bytes([1; 16]),
+                    fence,
+                    OperationId::from_bytes([2; 16]),
+                    admission,
+                )
+                .await
+        };
+        let bytes = std::mem::size_of_val(&future);
+        eprintln!("execution journal opener future: {bytes} bytes");
+        assert!(
+            bytes < 4096,
+            "execution journal opener future: {bytes} bytes"
+        );
     }
 }

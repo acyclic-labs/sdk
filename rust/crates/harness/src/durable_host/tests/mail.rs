@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(not(acyclic_harness_loom))]
+mod preflight;
+
 #[tokio::test]
 async fn b08_one_intent_keeps_recipient_and_payload() -> Result<()> {
     let stream = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());

@@ -82,6 +82,10 @@ impl Outcome<FileRef> {
     }
 }
 impl WorkflowSuspension {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.waiting_command.is_none() && self.input.is_none()
+    }
+
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.input
             .as_ref()

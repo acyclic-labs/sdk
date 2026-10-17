@@ -43,7 +43,7 @@ where
         if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
-        options::in_native_heap(work, || async move {
+        crate::heap_future::in_native_heap(work, || async move {
             if !options.destination.is_absolute() || mount.publication != MountPublication::Manual {
                 return Err(MountLifecycleError::NativePolicy(
                     "native working set requires an absolute root and manual publication",

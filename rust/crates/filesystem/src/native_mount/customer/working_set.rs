@@ -122,26 +122,29 @@ where
         scope: HostCaptureScope,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        work.cancellation()
-            .check()
-            .map_err(|_| MountSourceError::Cancelled)?;
-        self.source
-            .capture_host(
-                &self.source_root,
-                paths,
-                self.source_identity,
-                scope,
-                Some(NativeViewBaseline::new(
+        crate::heap_future::in_native_heap(work, || async {
+            work.cancellation()
+                .check()
+                .map_err(|_| MountSourceError::Cancelled)?;
+            self.source
+                .capture_host(
+                    &self.source_root,
+                    paths,
                     self.source_identity,
-                    !self.writable,
-                )),
-                work,
-            )
-            .await?;
-        work.cancellation()
-            .check()
-            .map_err(|_| MountSourceError::Cancelled)?;
-        Ok(())
+                    scope,
+                    Some(NativeViewBaseline::new(
+                        self.source_identity,
+                        !self.writable,
+                    )),
+                    work,
+                )
+                .await?;
+            work.cancellation()
+                .check()
+                .map_err(|_| MountSourceError::Cancelled)?;
+            Ok(())
+        })
+        .await
     }
 
     /// Reconciles and publishes under the operation permit and owner guard.
@@ -160,59 +163,62 @@ where
         F: for<'m> FnMut(&'m NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let mut acknowledged = None;
-        let result = async {
-            if !self.writable {
-                return Err((
-                    E::from(MountLifecycleError::NativePolicy(
-                        "read-only native view cannot publish",
-                    )),
-                    None,
-                ));
-            }
-            let cancellation = work.cancellation();
-            let current = super::super::adapter::await_lock(
-                self.source.shared_checkout().lock(),
-                &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                cancellation,
-                Some(self.source.cancellation()),
-            )
-            .await
-            .map_err(|cause| (E::from(cause), None))?
-            .generation_id();
-            let head = self
-                .workspace
-                .head(work, cancellation)
-                .await
-                .map_err(|cause| (E::from(MountLifecycleError::Workspace(cause)), None))?;
-            if head.id() != current {
-                return Err((E::from(MountSourceError::Stale), None));
-            }
-            self.capture_host_subtree(&MountPath::root(), work)
-                .await
-                .map_err(|cause| (E::from(cause), None))?;
-            self.source
-                .shared_checkout()
-                .publish(
-                    permit,
-                    crate::kernel::KernelAccounting::native(work, cancellation),
+        crate::heap_future::in_native_heap(work, || async {
+            let mut acknowledged = None;
+            let result = async {
+                if !self.writable {
+                    return Err((
+                        E::from(MountLifecycleError::NativePolicy(
+                            "read-only native view cannot publish",
+                        )),
+                        None,
+                    ));
+                }
+                let cancellation = work.cancellation();
+                let current = super::super::adapter::await_lock(
+                    self.source.shared_checkout().lock(),
+                    &mut super::super::adapter::NativeDemandCarrier::Native(work),
+                    cancellation,
                     Some(self.source.cancellation()),
-                    &mut before_publication,
-                    Some(self.snapshot_context()),
-                    &mut acknowledged,
                 )
-                .await?;
-            acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
-        }
-        .await;
-        result.map_err(
-            |(cause, accounting_failure)| NativeMountPublicationFailure {
-                cause,
-                accounting_failure: accounting_failure.map(Box::new),
-                source_acknowledged: acknowledged.is_some(),
-                publication: acknowledged.map(Box::new),
-            },
-        )
+                .await
+                .map_err(|cause| (E::from(cause), None))?
+                .generation_id();
+                let head = self
+                    .workspace
+                    .head(work, cancellation)
+                    .await
+                    .map_err(|cause| (E::from(MountLifecycleError::Workspace(cause)), None))?;
+                if head.id() != current {
+                    return Err((E::from(MountSourceError::Stale), None));
+                }
+                self.capture_host_subtree(&MountPath::root(), work)
+                    .await
+                    .map_err(|cause| (E::from(cause), None))?;
+                self.source
+                    .shared_checkout()
+                    .publish(
+                        permit,
+                        crate::kernel::KernelAccounting::native(work, cancellation),
+                        Some(self.source.cancellation()),
+                        &mut before_publication,
+                        Some(self.snapshot_context()),
+                        &mut acknowledged,
+                    )
+                    .await?;
+                acknowledged.ok_or_else(|| (E::from(MountSourceError::Indeterminate), None))
+            }
+            .await;
+            result.map_err(
+                |(cause, accounting_failure)| NativeMountPublicationFailure {
+                    cause,
+                    accounting_failure: accounting_failure.map(Box::new),
+                    source_acknowledged: acknowledged.is_some(),
+                    publication: acknowledged.map(Box::new),
+                },
+            )
+        })
+        .await
     }
 
     /// Verifies the full baseline and returns its immutable SDK qualification.

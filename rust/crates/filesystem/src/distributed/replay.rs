@@ -173,78 +173,126 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
+        self.operation_attempt(authority, operation, work)
+            .await
+            .map(|(_, _, record)| record)
+    }
+
+    pub(super) async fn operation_attempt(
+        &self,
+        authority: AuthorityId,
+        operation: OperationId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(u64, acyclic_stream::IdempotencyKey, Option<DurableCommit>), AuthorityStoreError>
+    {
         work.check()?;
         self.authority_require_live(authority, work).await?;
-        let key = work.key(
-            b"operation\0",
-            &[&authority.into_bytes(), &operation.into_bytes()],
-        )?;
-        let observed = self.authority_inspect(key, work).await;
-        if !work.is_native() {
-            work.check()?;
-        }
-        let observation = observed?;
-        if work.is_native() {
-            work.check()?;
-        }
-        let Some(observation) = &observation.0 else {
-            return Ok(None);
-        };
-        let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
-            return Err(authority_corrupt(
-                "operation identity retained another Stream mutation family",
-                work,
-            ));
-        };
-        let CommitOutcome::Committed(envelope) = outcome else {
-            return Ok(None);
-        };
-        let path = work.path(authority, "/records", None)?;
-        let mut output = None;
-        for mutation in &envelope.mutations {
-            let acyclic_stream::CommittedMutation::Append(append) = mutation else {
+        let mut attempt = 0_u64;
+        loop {
+            let key = operation_key(authority, operation, attempt, work)?;
+            let observed = self.authority_inspect(key.clone(), work).await;
+            if !work.is_native() {
+                work.check()?;
+            }
+            let observation = observed?;
+            if work.is_native() {
+                work.check()?;
+            }
+            let Some(observation) = &observation.0 else {
+                return Ok((attempt, key, None));
+            };
+            let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+                return Err(authority_corrupt(
+                    "operation identity retained another Stream mutation family",
+                    work,
+                ));
+            };
+            let CommitOutcome::Committed(envelope) = outcome else {
+                #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
+                if super::tests::append_retry::reuse_operation_key() {
+                    return Ok((attempt, key, None));
+                }
+                // A retained failed CAS is immutable history, not a committed
+                // filesystem operation. Advance through those existing provider
+                // records without replacing the logical operation's primary key.
+                attempt = attempt
+                    .checked_add(1)
+                    .ok_or(AuthorityStoreError::SequenceExhausted)?;
                 continue;
             };
-            if append.path != path {
-                continue;
-            }
-            let record = match append.records.as_slice() {
-                [record] => record,
-                [genesis, record] => {
-                    work.decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
-                    record
+            let path = work.path(authority, "/records", None)?;
+            let mut output = None;
+            for mutation in &envelope.mutations {
+                let acyclic_stream::CommittedMutation::Append(append) = mutation else {
+                    continue;
+                };
+                if append.path != path {
+                    continue;
                 }
-                _ => {
+                let record = match append.records.as_slice() {
+                    [record] => record,
+                    [genesis, record] => {
+                        work.decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
+                        record
+                    }
+                    _ => {
+                        return Err(authority_corrupt(
+                            "operation appended an invalid authority record count",
+                            work,
+                        ));
+                    }
+                };
+                let reading = WorkCounters {
+                    authority_records_read: 1,
+                    authority_bytes_read: record.value.len() as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                work.admit(reading)?;
+                work.charge(reading)?;
+                let durable = authority_decode_borrowed(authority, &record.value, work)?;
+                if durable.operation_id != operation || output.is_some() {
                     return Err(authority_corrupt(
-                        "operation appended an invalid authority record count",
+                        "operation envelope does not bind its authority operation",
                         work,
                     ));
                 }
-            };
-            let reading = WorkCounters {
-                authority_records_read: 1,
-                authority_bytes_read: record.value.len() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.admit(reading)?;
-            work.charge(reading)?;
-            let durable = authority_decode_borrowed(authority, &record.value, work)?;
-            if durable.operation_id != operation || output.is_some() {
+                let payload = work.bytes(durable.payload)?;
+                output = Some(durable_commit(durable, record.committed_at_micros, payload));
+            }
+            if output.is_none() {
                 return Err(authority_corrupt(
-                    "operation envelope does not bind its authority operation",
+                    "operation envelope omits its authority record",
                     work,
                 ));
             }
-            let payload = work.bytes(durable.payload)?;
-            output = Some(durable_commit(durable, record.committed_at_micros, payload));
+            work.check()?;
+            return Ok((attempt, key, output));
         }
-        if output.is_none() {
-            return Err(authority_corrupt(
-                "operation envelope omits its authority record",
-                work,
-            ));
-        }
-        work.check()?;
-        Ok(output)
     }
 }
+
+pub(super) fn operation_key(
+    authority: AuthorityId,
+    operation: OperationId,
+    attempt: u64,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::IdempotencyKey, AuthorityStoreError> {
+    if attempt == 0 {
+        work.key(
+            b"operation\0",
+            &[&authority.into_bytes(), &operation.into_bytes()],
+        )
+    } else {
+        work.key(
+            b"operation-attempt\0",
+            &[
+                &authority.into_bytes(),
+                &operation.into_bytes(),
+                &attempt.to_le_bytes(),
+            ],
+        )
+    }
+}
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod key_tests;

@@ -82,13 +82,14 @@ mkdirSync(join(plugin, "bin"), { recursive: true });
 for (const script of ["acyclic", "install.js", "verify.js", "targets.json"]) {
   copyFileSync(join(root, "bin", script), join(plugin, "bin", script));
 }
-for (const name of ["plugin.json", ".mcp.json", "package.json", "README.md", "CHANGELOG.md"]) {
+for (const name of ["mcp.json", "package.json", "README.md", "CHANGELOG.md"]) {
   copyFileSync(join(root, name), join(plugin, name));
 }
 cpSync(join(root, ".codex-plugin"), join(plugin, ".codex-plugin"), { recursive: true });
 cpSync(join(root, ".agents"), join(plugin, ".agents"), { recursive: true });
 cpSync(join(root, "hooks"), join(plugin, "hooks"), { recursive: true });
 cpSync(join(root, "pi"), join(plugin, "pi"), { recursive: true });
+cpSync(join(root, "claude"), join(plugin, "claude"), { recursive: true });
 
 const targetSchema = JSON.parse(readFileSync(join(root, "bin", "targets.json"), "utf8"));
 if (targetSchema.version !== 1 || !targetSchema.targets || Array.isArray(targetSchema.targets)) {

@@ -325,6 +325,7 @@ dependencies = [
  "bytes",
  "diffy",
  "dirs",
+ "fs2",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -711,19 +712,15 @@ dependencies = [
  "futures",
  "hex",
  "libc",
- "notify",
+ "proptest",
  "reqwest 0.12.28",
  "ring",
- "rustix 1.1.5",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "tokio",
  "toml_edit",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -5449,8 +5446,10 @@ dependencies = [
  "futures",
  "indexmap",
  "oauth2",
+ "pastey",
  "pin-project-lite",
  "reqwest 0.13.5",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -5459,6 +5458,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -5805,6 +5805,7 @@ version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",

@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"00000000-0000-0000-0000-000000000001","timestamp":"2026-10-17T00:00:00Z","cwd":"/project"}
+{"type":"message","id":"c","parentId":null,"timestamp":"now","message":{"role":"assistant","content":[{"type":"toolCall","id":"read","name":"read","arguments":{}}]}}
+{"type":"message","id":"u","parentId":"c","timestamp":"now","message":{"role":"user","content":"intervening turn"}}
+{"type":"message","id":"r","parentId":"u","timestamp":"now","message":{"role":"toolResult","toolCallId":"read","toolName":"read","content":[]}}
+{"type":"message","id":"s","parentId":"r","timestamp":"now","message":{"role":"assistant","content":[{"type":"toolCall","id":"spawn","name":"acyclic_spawn","arguments":{}}]}}

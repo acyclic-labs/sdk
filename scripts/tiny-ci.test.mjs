@@ -20,11 +20,11 @@ test('Linux host qualification uses the smallest registered runner and retains e
  for(const platform of job.strategy.matrix.platform)assert.ok(registered.includes(platform.runner));
  assert.equal(job['runs-on'],'${{ matrix.platform.runner }}');
  const scenarios=[
-  ['Build host scenario',undefined,'cargo test -p acyclic-plugin --test e2e --no-run --locked'],
+  ['Build host scenario',undefined,'cargo test -p acyclic-plugin --test qualification --no-run --locked'],
   ['Run Pi installed diagnostics and native context qualification',undefined,
    'suffix="" if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" cd plugin/tests/hosts bun run test:pi-context bun run test:pi-context-mail bun run test:pi-bootstrap bun run test:pi-session bun run test:pi-installation bun run test:pi-service bun run test:pi-native-recursive bun run test:pi-context-fresh bun run test:pi-context-pages bun run test:pi-builtin-paths'],
-  ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test e2e actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
-  ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test e2e actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
+  ['Run codex scenario',undefined,'cargo test -p acyclic-plugin --test qualification actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
+  ['Run claude scenario','success() || failure()','cargo test -p acyclic-plugin --test qualification actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture'],
  ];
  /** @param {ReturnType<typeof YAML.parse>} document */
  const verify=document=>{

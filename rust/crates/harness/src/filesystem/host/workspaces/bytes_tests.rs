@@ -170,6 +170,39 @@ proptest! {
     }
 }
 
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+    // A stale base may merge or conflict, but cannot erase a newer sibling.
+    #[test]
+    fn stale_publication_preserves_newer_files(payload in prop::collection::vec(any::<u8>(), 0..256)) {
+        runtime().unwrap().block_on(async move {
+            for accounted in [false, true] {
+                let (host, reference) = fixture().await?;
+                let old = host.resolve(&reference, None).await?.generation;
+                let fresh = [WorkspaceMutation::PutFile {
+                    path:"/newer".into(), bytes:b"newer".to_vec().into(),
+                }];
+                host.apply_generation(&reference, None, &fresh, IdempotencyKey::new("fresh")?, None, None)?.await?;
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let io = PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation,
+                )?;
+                let stale = [WorkspaceMutation::PutFile {
+                    path:"/late".into(), bytes:payload.clone().into(),
+                }];
+                let result = host.apply_generation(&reference, Some(&old), &stale,
+                    IdempotencyKey::new("stale")?, accounted.then_some(&io), None)?.await;
+                if let Err(error) = &result { assert!(matches!(error, Error::Conflict(_)), "{error:?}"); }
+                assert_eq!(&*host.read(&reference, None, "/newer", 4096, None).await?, b"newer");
+                if result.is_ok() {
+                    assert_eq!(&*host.read(&reference, None, "/late", 4096, None).await?, &payload);
+                }
+            }
+            Ok::<_, Error>(())
+        }).unwrap();
+    }
+}
+
 async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Result<()> {
     let (host, reference) = fixture().await?;
     let mut backing = vec![42; prefix];

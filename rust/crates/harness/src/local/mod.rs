@@ -35,9 +35,12 @@ mod compact;
 mod compaction;
 mod config;
 mod context;
+pub(crate) mod external;
 mod files;
 mod inheritance;
 mod owner;
+#[cfg(feature = "native-execution")]
+pub(crate) use owner::directory as private_directory;
 mod owner_record;
 mod runtime;
 #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
@@ -63,14 +66,15 @@ pub struct LocalHarness {
     files: Arc<LocalFilesystem>,
     runtime: Arc<LocalTaskRuntime>,
     task_files: Arc<crate::task_volume::TaskFiles<acyclic_stream::LocalStream>>,
+    external_bindings:
+        crate::external_executor::task_bindings::TaskBindings<Option<Arc<external::Volumes>>>,
     project: VolumeRef,
     scratch: VolumeRef,
     journal: VolumeRef,
     verifier: AuthorityVerifier,
     issuer: Option<AuthorityIssuer>,
     signed: Scope,
-    model: Model,
-    provider: Arc<dyn ModelProvider>,
+    model: Option<(Model, Arc<dyn ModelProvider>)>,
     context_manifest: Option<crate::conversation::FileRef>,
     #[cfg(feature = "hooks")]
     settings: Arc<crate::native_settings::SettingsConfig>,
@@ -92,7 +96,6 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
     }
@@ -105,8 +108,9 @@ impl LocalHarness {
             if config.concurrency == 0 {
                 return Err(Error::Invalid("local concurrency is zero".into()));
             }
-            let (model, provider) = config.model;
-            model.validate()?;
+            if let Some((model, _)) = &config.model {
+                model.validate()?;
+            }
             let mut tools = ToolRegistry::default();
             if config.default_tools {
                 crate::tools::bind_defaults(
@@ -123,27 +127,38 @@ impl LocalHarness {
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             let settings_configuration = settings::configuration(&config.project, config.settings)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let mcp = crate::native_settings::NativeSettings::load_mcp(Arc::clone(
-                &settings_configuration,
-            ))
-            .await?;
-            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let mcp_workspace =
                 std::fs::canonicalize(config.project.root()).map_err(Error::process_io)?;
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
-            let installation = mcp
+            let installation = if config.model.is_some() {
+                crate::native_settings::NativeSettings::load_mcp(Arc::clone(
+                    &settings_configuration,
+                ))
+                .await?
                 .install(tools, &mcp_workspace, config.mcp_limits)
-                .await?;
+                .await?
+            } else {
+                crate::mcp::McpInstallation {
+                    tools,
+                    capabilities: Capabilities::default(),
+                    diagnostics: Vec::new(),
+                }
+            };
             #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
             let tools = installation.tools;
-            let compaction = compaction::select(
-                config.compaction,
-                &model,
-                provider.as_ref(),
-                &tools,
-                config.limits,
-            )
-            .await?;
+            let compaction = match &config.model {
+                Some((model, provider)) => {
+                    compaction::select(
+                        config.compaction,
+                        model,
+                        provider.as_ref(),
+                        &tools,
+                        config.limits,
+                    )
+                    .await?
+                }
+                None => crate::context::CompactionPolicy::Disabled,
+            };
             #[cfg(feature = "native-execution")]
             let native_mounts = tools.get("bash", None, None)?.is_some();
             acyclic_native_runtime::initialize_native_io_services().map_err(storage)?;
@@ -303,14 +318,14 @@ impl LocalHarness {
                 files,
                 runtime,
                 task_files,
+                external_bindings: Default::default(),
                 project: owner.project.clone(),
                 scratch,
                 journal,
                 verifier,
                 issuer: Some(issuer),
                 signed,
-                model,
-                provider,
+                model: config.model,
                 context_manifest: config.context_manifest,
                 #[cfg(test)]
                 context_read_observer: None,
@@ -327,12 +342,7 @@ impl LocalHarness {
                 #[cfg(feature = "native-execution")]
                 workspace,
             };
-            if let Some(provider) = local
-                .provider
-                .bind_content(local.context_reader()?, local.limits.file_bytes)
-            {
-                local.provider = provider;
-            }
+            local.bind_provider_content()?;
             Ok(local)
         })
     }

@@ -24,6 +24,8 @@ pub struct BoundedContentFuture<'a, T> {
 
 impl<'a, T> BoundedContentFuture<'a, T> {
     /// Admits the concrete future before invoking its builder.
+    // Finish construction in this frame before the caller polls the future.
+    #[inline(never)]
     pub fn new<F>(io: Option<&'a ContentIo>, build: impl FnOnce() -> F) -> Result<Self>
     where
         F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,

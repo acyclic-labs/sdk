@@ -69,15 +69,20 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self,
         request: crate::GuardedAppend,
         work: &mut AuthorityWork<'_>,
-        guard: Option<&mut G>,
+        mut guard: Option<&mut G>,
     ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
-        let mut child = work.operation()?;
-        let result = self
-            .append(request, &mut child, guard)
-            .await
-            .and_then(|value| child.finish(value).map_err(Into::into));
-        work.record(child.spent())?;
-        result
+        loop {
+            let mut child = work.operation()?;
+            let result = self
+                .append(&request, &mut child, guard.as_deref_mut())
+                .await
+                .and_then(|value| child.finish(value).map_err(Into::into));
+            work.record(child.spent())?;
+            if !matches!(&result, Ok(FsAppendOutcome::Conflict { actual }) if *actual == request.expected)
+            {
+                return result;
+            }
+        }
     }
 
     async fn head(

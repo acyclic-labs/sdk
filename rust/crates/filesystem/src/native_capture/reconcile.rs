@@ -12,37 +12,40 @@ pub(super) async fn capture_observed_paths_from_root<
     baseline: Option<&NativeViewBaseline>,
     meter: &NativeMaterializationWork,
 ) -> Result<CaptureReceipt, CaptureError> {
-    let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
-    let bytes = vector_bytes(&states);
-    let count = states.len();
-    let mut batch = CaptureBatch {
-        source_root,
-        watch_epoch: None,
-        baseline,
-        maximum_extent_spans,
-        meter,
-        host_links: Vec::new(),
-        mutations: Vec::new(),
-        receipt: CaptureReceipt::default(),
-    };
-    for (index, (observation, path, current)) in states.into_iter().enumerate() {
-        batch
-            .prepare(
-                checkout,
-                (observation, path, current),
-                CaptureIntent::Complete,
-            )
-            .await?;
-        if (index + 1) % batch_size == 0 && index + 1 < count {
-            apply_capture_transaction(checkout, std::mem::take(&mut batch.mutations), meter)
+    crate::heap_future::in_native_heap(meter, || async {
+        let states = lookup_capture_states(checkout, observed, batch_size, meter).await?;
+        let bytes = vector_bytes(&states);
+        let count = states.len();
+        let mut batch = CaptureBatch {
+            source_root,
+            watch_epoch: None,
+            baseline,
+            maximum_extent_spans,
+            meter,
+            host_links: Vec::new(),
+            mutations: Vec::new(),
+            receipt: CaptureReceipt::default(),
+        };
+        for (index, (observation, path, current)) in states.into_iter().enumerate() {
+            batch
+                .prepare(
+                    checkout,
+                    (observation, path, current),
+                    CaptureIntent::Complete,
+                )
                 .await?;
+            if (index + 1) % batch_size == 0 && index + 1 < count {
+                apply_capture_transaction(checkout, std::mem::take(&mut batch.mutations), meter)
+                    .await?;
+            }
         }
-    }
-    meter.clone().release(bytes).map_err(capture_demand_error)?;
-    apply_capture_transaction(checkout, batch.mutations, meter).await?;
-    release_host_links(batch.host_links, meter)?;
-    meter.clone().check().map_err(capture_demand_error)?;
-    Ok(batch.receipt)
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        apply_capture_transaction(checkout, batch.mutations, meter).await?;
+        release_host_links(batch.host_links, meter)?;
+        meter.clone().check().map_err(capture_demand_error)?;
+        Ok(batch.receipt)
+    })
+    .await
 }
 
 pub(super) type CapturePathState = (Option<HostStat>, NamespacePath, Option<FileRecord>);

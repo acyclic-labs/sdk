@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {
+      "reason": null,
+      "status": "passed",
+      "name": "real-mount-mutation-matrix"
+    },
+    {
+      "reason": null,
+      "status": "passed",
+      "name": "crash-detach-recovery"
+    },
+    {
+      "reason": null,
+      "status": "passed",
+      "name": "checkout-and-git-untouched"
+    }
+  ],
+  "coverage": [
+    "create-read-write",
+    "atomic-save",
+    "rename-delete",
+    "rename-before-hydration",
+    "nested-paths",
+    "large-directory-paging",
+    "concurrent-handles",
+    "watchers",
+    "crash-detach-recovery",
+    "mount-restoration",
+    "hard-links",
+    "symbolic-links-reparse-points",
+    "metadata",
+    "case-behavior",
+    "escape-attempts",
+    "root-checkout-untouched",
+    "git-administration-untouched"
+  ],
+  "release_version": "0.2.0",
+  "capability": {
+    "kind": "linux-fuse",
+    "available": true,
+    "unavailable_reason": null,
+    "writable": true,
+    "session_isolation": "SharedProcess",
+    "provider_process_io_observable": true
+  },
+  "arch": "x86_64",
+  "executable_blake3": "0000000000000000000000000000000000000000000000000000000000000000",
+  "schema": "acyclic-native-mount-qualification-v2",
+  "passed": true,
+  "os": "linux",
+  "required_kind": "linux-fuse"
+}

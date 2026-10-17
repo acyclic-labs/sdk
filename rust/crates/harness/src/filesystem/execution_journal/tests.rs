@@ -75,6 +75,11 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         .append(operation, "start", &event, None)?
         .await?;
     let reopened = open(operation, turn)?;
+    let append = reopened.append_validated(operation, Some(1), "size", &event, None);
+    let bytes = std::mem::size_of_val(&append);
+    eprintln!("validated journal append future: {bytes} bytes");
+    assert!(bytes < 16 * 1024, "validated append future: {bytes}");
+    drop(append);
     let records = reopened.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records.first().map(|record| &record.event), Some(&event));

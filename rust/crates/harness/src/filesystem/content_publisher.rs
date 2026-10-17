@@ -11,6 +11,9 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use std::sync::Arc;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 /// Owner-bound content staging through the existing Filesystem publication path.
 pub struct FilesystemContentPublisher<A, O> {
     host: Arc<FilesystemHost<A, O>>,
@@ -85,6 +88,46 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         bytes: &'a [u8],
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        self.stage_at(
+            "scheduler/results",
+            "scheduler-result",
+            operation,
+            idempotency_key,
+            bytes,
+            io,
+        )
+    }
+
+    fn stage_input<'a>(
+        &'a self,
+        operation: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
+        self.stage_at(
+            "inputs",
+            "workflow-input",
+            operation,
+            idempotency_key,
+            bytes,
+            io,
+        )
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
+    FilesystemContentPublisher<A, O>
+{
+    fn stage_at<'a>(
+        &'a self,
+        directory: &'static str,
+        retry_prefix: &'static str,
+        operation: OperationId,
+        idempotency_key: &'a str,
+        bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, FileRef>> {
         if self.volume.class() != crate::conversation::VolumeClass::AgentPrivate
             || self.volume.provider() != &self.host.provider
         {
@@ -111,7 +154,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (path_hold, path) = {
                 let path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
-                        format_args!("scheduler/results/{operation}/{key}.json"),
+                        format_args!("{directory}/{operation}/{key}.json"),
                         work,
                     )
                 })?;
@@ -123,7 +166,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (retry_hold, retry) = {
                 let retry = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(
-                        format_args!("scheduler-result:{operation}:{key}"),
+                        format_args!("{retry_prefix}:{operation}:{key}"),
                         work,
                     )
                 })?;

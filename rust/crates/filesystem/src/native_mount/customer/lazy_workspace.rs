@@ -24,7 +24,7 @@ where
                 "native working-set root must be absolute",
             ));
         }
-        options::in_native_heap(work, || async move {
+        crate::heap_future::in_native_heap(work, || async move {
             let exact = self
                 .exactify(
                     subdirectory,

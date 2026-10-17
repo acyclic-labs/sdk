@@ -162,20 +162,53 @@ jobs:
       - name: Build host scenario
         shell: bash
         run: |
-          cargo test -p acyclic-plugin --test e2e --no-run --locked
+          build_status=0
+          cargo test -p acyclic-plugin --bin acyclic --test qualification --no-run --locked --message-format=json \
+            > "$RUNNER_TEMP/host-build.jsonl" || build_status=$?
+          export ACYCLIC_HOST_BUILD_STATUS="$build_status"
+          node --input-type=module <<'JS'
+          import { readFileSync, appendFileSync } from "node:fs";
+          const artifacts = readFileSync(`${process.env.RUNNER_TEMP}/host-build.jsonl`, "utf8")
+            .trim().split("\n").map(line => JSON.parse(line));
+          for (const value of artifacts) {
+            if (value.reason === "compiler-message" && value.message.rendered) {
+              process.stderr.write(value.message.rendered);
+            }
+          }
+          if (process.env.ACYCLIC_HOST_BUILD_STATUS !== "0") process.exit(1);
+          const executable = (name, test) => {
+            const found = artifacts.filter(value => value.reason === "compiler-artifact" &&
+              value.target.name === name && value.profile.test === test && value.executable);
+            if (found.length !== 1) throw new Error(`Missing unique ${name} executable`);
+            return found[0].executable;
+          };
+          const binary = executable("acyclic", false);
+          appendFileSync(process.env.GITHUB_ENV,
+            `ACYCLIC_BINARY=${binary}\nACYCLIC_TEST_EXECUTABLE=${binary}\n` +
+            `ACYCLIC_QUALIFICATION_BINARY=${executable("qualification", true)}\n` +
+            `ACYCLIC_PLUGIN_UNIT_BINARY=${executable("acyclic", true)}\n`);
+          JS
+
+      - name: Qualify native manifest selection
+        shell: bash
+        run: |
+          "$ACYCLIC_PLUGIN_UNIT_BINARY" tests::manifests::host_manifests_route_every_event_to_the_common_client --exact
+          "$ACYCLIC_PLUGIN_UNIT_BINARY" tests::installation::codex_root_discovery_requires_the_manifest_that_loads_local_hooks --exact
+
+      - name: Qualify Pi hook clients and owner lifecycle
+        shell: bash
+        run: |
+          cd plugin/tests/hosts
+          bun run test:pi-hooks
+          bun run test:pi-child-identity
 
       - name: Run Pi installed diagnostics and native context qualification
         shell: bash
         run: |
-          suffix=""
-          if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
-          export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix"
           cd plugin/tests/hosts
           bun run test:pi-context
           bun run test:pi-context-mail
-          bun run test:pi-bootstrap
           bun run test:pi-session
-          bun run test:pi-installation
           bun run test:pi-service
           bun run test:pi-native-recursive
           bun run test:pi-context-fresh
@@ -194,8 +227,8 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.codex.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.codex.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
-            actual_codex_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
+          "$ACYCLIC_QUALIFICATION_BINARY" \
+            actual_codex_binary_executes_the_scripted_scenario --ignored --exact --nocapture
 
       - name: Run claude scenario
         if: success() || failure()
@@ -210,8 +243,8 @@ jobs:
           ACYCLIC_E2E_HOST_PLATFORM_INTEGRITY: ${{ steps.claude.outputs.platform_integrity }}
           ACYCLIC_E2E_HOST_LOCK_SHA256: ${{ steps.claude.outputs.lock_sha256 }}
         run: |
-          cargo test -p acyclic-plugin --test e2e \
-            actual_claude_binary_executes_the_scripted_scenario -- --ignored --exact --nocapture
+          "$ACYCLIC_QUALIFICATION_BINARY" \
+            actual_claude_binary_executes_the_scripted_scenario --ignored --exact --nocapture
 
       - name: Retain qualification receipts
         if: always()

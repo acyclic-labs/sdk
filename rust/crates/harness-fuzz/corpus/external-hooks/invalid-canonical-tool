@@ -1,0 +1,1 @@
+{"host":"codex","event":"PreToolUse","input":{"session_id":"session","tool_use_id":"schema","tool_name":"write","tool_input":{"path":"incomplete.txt"}}}

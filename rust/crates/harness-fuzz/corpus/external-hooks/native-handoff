@@ -1,0 +1,1 @@
+{"host":"codex","event":"PreToolUse","input":{"session_id":"session","tool_use_id":"handoff","tool_name":"bash","tool_input":{"command":"printf owned"}}}

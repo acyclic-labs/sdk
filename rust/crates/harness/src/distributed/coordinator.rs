@@ -14,6 +14,52 @@ pub struct DistributedCoordinator<P> {
     pub(super) payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
 
+// Called only at scheduler validation, before constructing an append. Provider
+// errors and failures after an attempted commit must retain their uncertainty.
+fn declaration_validation_error(error: Error, declaration: bool) -> Error {
+    match (declaration, error) {
+        (true, Error::Invalid(reason)) => Error::AdmissionRejected(reason),
+        (_, error) => error,
+    }
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod rejection_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(48))]
+        // Only pre-append declaration validation may become a rejection.
+        // Storage/commit uncertainty and native accounting keep their variants.
+        #[test]
+        fn rejection_classification_preserves_phase_and_uncertainty(
+            declaration in any::<bool>(), message in ".{0,64}", id in any::<[u8;16]>(),
+        ) {
+            let result = declaration_validation_error(Error::Invalid(message.clone()), declaration);
+            match result {
+                Error::AdmissionRejected(reason) => {
+                    prop_assert!(declaration);
+                    prop_assert_eq!(reason, message.clone());
+                }
+                Error::Invalid(reason) => {
+                    prop_assert!(!declaration);
+                    prop_assert_eq!(reason, message.clone());
+                }
+                other => prop_assert!(false, "unexpected classification: {other}"),
+            }
+            prop_assert!(matches!(declaration_validation_error(Error::Storage(message), declaration), Error::Storage(_)));
+            let operation = OperationId::from_bytes(id);
+            prop_assert!(matches!(declaration_validation_error(Error::Indeterminate(operation), declaration),
+                Error::Indeterminate(retained) if retained == operation));
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            prop_assert!(matches!(declaration_validation_error(Error::NativeBoundary {
+                code:wire::ErrorCode::Invalid, reason:"original work",
+            }, declaration), Error::NativeBoundary { .. }), "native accounting must retain its original error");
+        }
+    }
+}
+
 impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Opens and replays the coordinator history.
     pub async fn open(
@@ -359,7 +405,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     self.verify_content(&spec.state, custody.work()).await?;
                 }
                 self.verify_published_result(&event, custody.work()).await?;
-                self.scheduler.validate_event(&event, custody.work())?;
+                self.scheduler
+                    .validate_event(&event, custody.work())
+                    .map_err(|error| {
+                        declaration_validation_error(
+                            error,
+                            matches!(event, SchedulerEvent::Declared { .. }),
+                        )
+                    })?;
                 let revision = next_revision(self.revision)?;
                 let committed_at_ms = self.next_commit_time(custody.work())?;
                 custody.transfer();

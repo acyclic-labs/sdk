@@ -82,3 +82,49 @@ fn check(recovering_orphan: bool) {
         .unwrap_or("");
     assert!(message.contains("double admission"), "{message}");
 }
+
+#[test]
+fn native_delivery_waits_for_the_previous_slot_to_settle() {
+    fn race(broken: bool) {
+        let gate = StateArc::new(Mutex::new(()));
+        // Lock order matches production: outer admission -> provider state.
+        let state = StateArc::new(DataMutex::new((false, 0)));
+        let tasks: Vec<_> = (0..2)
+            .map(|_| {
+                let gate = gate.clone();
+                let state = state.clone();
+                thread::spawn(move || {
+                    let delivery = async || {
+                        {
+                            let mut state = state.lock().unwrap();
+                            assert!(!state.0, "overlapping native inputs");
+                            state.0 = true;
+                        }
+                        thread::yield_now();
+                        let mut state = state.lock().unwrap();
+                        state.0 = false;
+                        state.1 += 1;
+                    };
+                    if broken {
+                        complete(delivery());
+                    } else {
+                        complete(serialized(&gate, delivery));
+                    }
+                })
+            })
+            .collect();
+        for task in tasks {
+            task.join().unwrap();
+        }
+        assert_eq!(*state.lock().unwrap(), (false, 2));
+    }
+    loom::model(|| race(false));
+    let failure = std::panic::catch_unwind(|| loom::model(|| race(true)))
+        .expect_err("unserialized native negative control did not fail");
+    let message = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("overlapping native inputs"), "{message}");
+}
