@@ -330,3 +330,8 @@ required-features = ["model-checking"]
 name = "query-model"
 path = "tests/query_model.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "local-cloud-actors"
+path = "tests/local_cloud_actors/main.rs"
+required-features = ["test-support", "grpc"]

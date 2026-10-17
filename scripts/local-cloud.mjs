@@ -58,6 +58,11 @@ export function endpoints(topology, products = TOPOLOGIES.identity.products) {
     if (typeof address !== "string" || !address) throw new Error(`topology has no ${product} Edge`);
     if (typeof bearer !== "string" || !bearer) throw new Error(`topology has no ${product} bearer`);
     out[product] = { endpoint: `https://${address}`, bearer, ca_file };
+    if (product === "actors") {
+      const migration = topology.bearers?.["actors-migration"];
+      if (typeof migration !== "string" || !migration) throw new Error("topology has no actors-migration bearer");
+      out[product].migration_bearer = migration;
+    }
   }
   return out;
 }
