@@ -14,6 +14,8 @@ pub struct PromptFiles {
     draft: Option<FileValue>,
     history: Option<FileValue>,
     keymap: Option<FileValue>,
+    layout: Option<FileValue>,
+    settings: Option<FileValue>,
 }
 
 fn history(file: Option<&FileValue>) -> Result<PromptHistory> {
@@ -61,10 +63,38 @@ impl PromptFiles {
         let draft = files.state_file(CommandFileRoot::Session, "draft.json")?;
         let entries = files.state_file(CommandFileRoot::Config, "history.json")?;
         let bindings = files.state_file(CommandFileRoot::Config, "keymap.json")?;
+        let settings_file = files.state_file(CommandFileRoot::Config, "settings.json")?;
+        let settings_changed = self.settings.as_ref() != settings_file;
+        let layout_file = files.state_file(CommandFileRoot::Session, "layout.json")?;
+        let layout_changed = self.layout.as_ref() != layout_file;
+        let layout = files
+            .state(CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_default();
+        let search = layout["open_view"] == "find" && layout["view_input"] == "find";
+        let mode_changed = input.transcript_search() != search;
+        let query = if search {
+            layout
+                .get("search_query")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .ok_or_else(|| Error::Invalid("search query must be text".into()))
+                })
+                .transpose()?
+                .unwrap_or("")
+        } else {
+            ""
+        };
         let draft_changed = self.draft.as_ref() != draft;
         let history_changed = self.history.as_ref() != entries;
         let keymap_changed = self.keymap.as_ref() != bindings;
-        if !draft_changed && !history_changed && !keymap_changed {
+        if !draft_changed
+            && !history_changed
+            && !keymap_changed
+            && !layout_changed
+            && !mode_changed
+            && !settings_changed
+        {
             return Ok(());
         }
         // Decode in isolation; malformed bytes must leave all caches and input
@@ -79,18 +109,43 @@ impl PromptFiles {
             })
             .transpose()?
             .unwrap_or_default();
-        if draft_changed {
-            input.editor.set_text(decoded.editor.text(), 0);
+        let settings: serde_json::Value = settings_file
+            .map(|file| serde_json::from_slice(&file.bytes))
+            .transpose()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !settings.is_object() {
+            return Err(Error::Invalid("settings must be an object".into()));
         }
+        let reduced_motion = settings
+            .get("reduced_motion")
+            .map(|value| {
+                value
+                    .as_bool()
+                    .ok_or_else(|| Error::Invalid("reduced_motion must be a boolean".into()))
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if draft_changed {
+            input.set_chat_draft(decoded.editor.text());
+        }
+        input.set_transcript_search(search.then_some(query));
         if history_changed {
             input.replace_history(history(entries)?);
         }
         if keymap_changed {
             input.set_keymap(keymap);
         }
+        if settings_changed {
+            let mut preferences = *input.editor.settings();
+            preferences.reduced_motion = reduced_motion;
+            input.set_settings(preferences);
+        }
+        self.settings = settings_file.cloned();
         self.keymap = bindings.cloned();
         self.draft = draft.cloned();
         self.history = entries.cloned();
+        self.layout = layout_file.cloned();
         Ok(())
     }
 
@@ -103,6 +158,22 @@ impl PromptFiles {
         files: &mut CommandSession<P>,
         input: &mut PromptInput,
     ) -> Result<()> {
+        if input.transcript_search() {
+            let mut layout = files
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or_default();
+            if layout["open_view"] == "find"
+                && layout["view_input"] == "find"
+                && layout["search_query"].as_str() != Some(input.editor.text())
+            {
+                layout["search_query"] = serde_json::json!(input.editor.text());
+                layout["search_index"] = serde_json::json!(0);
+                files
+                    .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+                    .await?;
+            }
+            return Ok(());
+        }
         let before = history(self.history.as_ref())?;
         let appended = input
             .history()

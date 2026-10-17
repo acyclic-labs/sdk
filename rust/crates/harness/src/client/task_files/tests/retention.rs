@@ -3,7 +3,11 @@ use crate::tui::{
     ClientRenderer, PromptInput, Viewport,
     ratatui::{Terminal, backend::TestBackend},
 };
-fn picture(renderer: &mut ClientRenderer, views: &TaskFileViews, owner: &wire::Authority) -> String {
+fn picture(
+    renderer: &mut ClientRenderer,
+    views: &TaskFileViews,
+    owner: &wire::Authority,
+) -> String {
     renderer.update(views, owner);
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     terminal
@@ -42,6 +46,7 @@ fn query(task: crate::TaskId, recent: u32) -> Query {
 }
 fn chunk(task: crate::TaskId, sequence: u64, bytes: &[u8]) -> FileValue {
     FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),

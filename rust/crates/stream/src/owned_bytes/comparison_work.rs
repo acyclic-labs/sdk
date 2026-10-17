@@ -26,26 +26,35 @@ fn ordered_prefixes_avoid_general_comparisons_at_n_and_two_n() {
             let expected = a.cmp(&b);
             let left = OwnedBytes::copy_from_slice(&a);
             let right = OwnedBytes::copy_from_slice(&b);
+            let paths = [a.as_slice(), b.as_slice()]
+                .map(|bytes| crate::StreamPath::new(std::str::from_utf8(bytes).unwrap()).unwrap());
             for count in [1024, 2048] {
-                for old in [false, true] {
-                    let _restore = OriginalComparison::enter(old);
-                    FALLBACK_COMPARISONS.set(0);
-                    FALLBACK_BYTES.set(0);
-                    let allocation = acyclic_test_support::measure(|| {
-                        for _ in 0..count {
-                            assert_eq!(left.cmp(&right), expected);
-                        }
-                    });
-                    let calls = FALLBACK_COMPARISONS.get();
-                    let bytes = FALLBACK_BYTES.get();
-                    let expected_calls = if late { count } else { 0 };
-                    let expected_bytes = if late { (length - 16) * count } else { 0 };
-                    assert_eq!(calls, if old { count } else { expected_calls });
-                    assert_eq!(bytes, if old { length * count } else { expected_bytes });
-                    let bounded = calls == expected_calls && bytes == expected_bytes;
-                    assert_eq!(std::panic::catch_unwind(|| assert!(bounded)).is_ok(), !old);
-                    assert_eq!(allocation.count_total, 0);
-                    assert_eq!(allocation.bytes_total, 0);
+                for path_keys in [false, true] {
+                    for old in [false, true] {
+                        let _restore = OriginalComparison::enter(old);
+                        FALLBACK_COMPARISONS.set(0);
+                        FALLBACK_BYTES.set(0);
+                        let allocation = acyclic_test_support::measure(|| {
+                            for _ in 0..count {
+                                let order = if path_keys {
+                                    paths[0].cmp(&paths[1])
+                                } else {
+                                    left.cmp(&right)
+                                };
+                                assert_eq!(order, expected);
+                            }
+                        });
+                        let calls = FALLBACK_COMPARISONS.get();
+                        let bytes = FALLBACK_BYTES.get();
+                        let expected_calls = if late { count } else { 0 };
+                        let expected_bytes = if late { (length - 16) * count } else { 0 };
+                        assert_eq!(calls, if old { count } else { expected_calls });
+                        assert_eq!(bytes, if old { length * count } else { expected_bytes });
+                        let bounded = calls == expected_calls && bytes == expected_bytes;
+                        assert_eq!(std::panic::catch_unwind(|| assert!(bounded)).is_ok(), !old);
+                        assert_eq!(allocation.count_total, 0);
+                        assert_eq!(allocation.bytes_total, 0);
+                    }
                 }
             }
         }

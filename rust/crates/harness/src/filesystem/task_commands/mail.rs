@@ -60,6 +60,7 @@ where
     pub(super) async fn mail_command(
         &self,
         CommandInvocation {
+            context,
             admission,
             fence,
             command,
@@ -92,7 +93,13 @@ where
             return reconciled(io);
         }
         let input: MailReceiveTaskCommand = decode_command(payload, io)?;
-        match self.inbox(task, input.after, io).await?.into_iter().next() {
+        let after = if super::super::child_agent::is_child(admission) {
+            self.child_mail_after(context, task, fence, command, io)
+                .await?
+        } else {
+            input.after
+        };
+        match self.inbox(task, after, io).await?.into_iter().next() {
             Some(item) => ready(Outcome::Succeeded(item), io),
             None if select_only => ready(Outcome::Succeeded(Value::Null), io),
             None => Ok(TaskCommandProgress::Pending),

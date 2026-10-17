@@ -227,9 +227,9 @@ where
                 ExecutionEvent::ToolCompleted {
                     result, projection, ..
                 } => [Some(result), Some(projection), None],
-                ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => {
-                    [None, None, None]
-                }
+                ExecutionEvent::Started { .. }
+                | ExecutionEvent::ModelStopped { .. }
+                | ExecutionEvent::ToolFailed { .. } => [None, None, None],
             };
             let mut model = None;
             for reference in refs.into_iter().flatten() {

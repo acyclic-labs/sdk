@@ -39,6 +39,15 @@ impl RetiredProactor {
         };
         self.key.is_none()
     }
+
+    /// Blocks on the ring until the retained request is terminal, without a wall-clock bound.
+    #[cfg(test)]
+    pub(super) fn wait_terminal(&mut self) -> io::Result<()> {
+        while !self.poll_terminal() {
+            self.driver.poll(None)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

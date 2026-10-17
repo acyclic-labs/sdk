@@ -2,6 +2,7 @@ use super::*;
 use proptest::prelude::*;
 fn chunk(task: &str, sequence: u64, bytes: &[u8]) -> FileValue {
     FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: crate::task_volume::Component::new(task).unwrap(),

@@ -356,8 +356,16 @@ impl Error {
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]
     pub(crate) fn process_io(error: std::io::Error) -> Self {
+        Self::process_exit(error, None)
+    }
+
+    /// Classifies a process failure that may have observed an exit status.
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+    ))]
+    pub(crate) fn process_exit(error: std::io::Error, exit_code: Option<i32>) -> Self {
         let message = error.to_string();
-        let exit_code = None;
         Self::Process(match error.kind() {
             std::io::ErrorKind::TimedOut => crate::ProcessError::Timeout { exit_code, message },
             std::io::ErrorKind::NotFound => crate::ProcessError::NotFound { exit_code, message },

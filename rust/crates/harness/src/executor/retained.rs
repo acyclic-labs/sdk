@@ -98,6 +98,13 @@ pub(crate) async fn retained_model_step<'a>(
                 ..Default::default()
             })?;
         }
+        if matches!(&record.event, ExecutionEvent::ModelStopped { step: recorded, purpose: recorded_purpose }
+            if *recorded == step && *recorded_purpose == purpose)
+        {
+            return Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ));
+        }
         if started.is_none()
             && let ExecutionEvent::ModelStarted {
                 step: event_step,

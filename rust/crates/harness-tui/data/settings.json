@@ -18,5 +18,6 @@
   "completion_max_width": 60,
   "completion_max_height": 12,
   "image_max_dimension": 1568,
-  "image_quality": 85
+  "image_quality": 85,
+  "reduced_motion": false
 }

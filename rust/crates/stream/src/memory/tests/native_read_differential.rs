@@ -1,5 +1,5 @@
-use super::*;
 use super::cursor_work::BaselineCursor;
+use super::*;
 use crate::test_meter::{Meter, trace as meter_trace};
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -86,19 +86,6 @@ impl<M> ProcessError<M> {
         }
     }
 
-    pub(crate) fn set_exit_code(&mut self, code: Option<i32>) {
-        match self {
-            Self::NotFound { exit_code, .. }
-            | Self::Timeout { exit_code, .. }
-            | Self::PermissionDenied { exit_code, .. }
-            | Self::Io { exit_code, .. }
-            | Self::Exit { exit_code, .. }
-            | Self::InvalidOutput { exit_code, .. }
-            | Self::Cancelled { exit_code, .. }
-            | Self::OutputLimit { exit_code, .. } => *exit_code = code,
-        }
-    }
-
     /// Fallibly change message ownership without converting the cause.
     pub fn try_map_message<N, E>(
         self,

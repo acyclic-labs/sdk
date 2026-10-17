@@ -39,6 +39,8 @@ impl Journal {
             syncing: false,
             root: root.to_path_buf(),
             torn_tail: None,
+            #[cfg(feature = "test-support")]
+            flushed: 0,
         };
         let header_bytes =
             u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
@@ -174,6 +176,10 @@ impl Journal {
         self.bytes = u64::try_from(HEADER_BYTES).map_err(|_| LocalStreamError::InvalidLimits)?;
         // The header was synchronized after the snapshot holding every frame.
         self.synced = self.appended;
+        #[cfg(feature = "test-support")]
+        {
+            self.flushed = self.bytes;
+        }
         Ok(())
     }
 

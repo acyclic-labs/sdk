@@ -292,6 +292,19 @@ impl StockExecution<'_> {
                     work,
                 )?
                 .await?;
+            } else if let Some(context) = self.original_context()
+                && let Some(owner) = &context.owned_mailbox
+            {
+                if !context.original_task_binding_matches(*task, fence)
+                    || !context
+                        .harness
+                        .original_host_binding_matches(host.as_ref(), self.stock.policy.as_deref())
+                {
+                    return Err(Error::Unauthorized(
+                        "model claim owner differs from its executor".into(),
+                    ));
+                }
+                owner.claim_model_dispatch(context, dispatch, fence).await?;
             } else {
                 host.claim_model_dispatch(
                     *task,
@@ -328,7 +341,53 @@ impl StockExecution<'_> {
         let io = self.io;
         {
             let mut stream = stream;
-            while let Some(event) = stream.next().await {
+            loop {
+                #[cfg(feature = "filesystem")]
+                let next = if let Some(cancellation) = self
+                    .original_context()
+                    .and_then(crate::runtime::TaskContext::invocation_cancellation)
+                {
+                    let next = {
+                        let cancelled = std::pin::pin!(cancellation.cancelled());
+                        let event = std::pin::pin!(stream.next());
+                        match futures::future::select(cancelled, event).await {
+                            Either::Left(_) => None,
+                            Either::Right((event, _)) => Some(event),
+                        }
+                    };
+                    match next {
+                        Some(event) => event,
+                        None => {
+                            drop(stream);
+                            if !admission.completed {
+                                let key = with_history_io(io, |work| {
+                                    preparation_format(
+                                        format_args!("{purpose_key}:{step}:stopped"),
+                                        work,
+                                    )
+                                })?;
+                                journal
+                                    .append(
+                                        operation_id,
+                                        &key,
+                                        &ExecutionEvent::ModelStopped { step, purpose },
+                                        io,
+                                    )?
+                                    .await?;
+                            }
+                            return Err(Error::InteractionRejected(
+                                crate::InteractionRejection::Cancelled,
+                            ));
+                        }
+                    }
+                } else {
+                    stream.next().await
+                };
+                #[cfg(not(feature = "filesystem"))]
+                let next = stream.next().await;
+                let Some(event) = next else {
+                    break;
+                };
                 let event = event?;
                 let index = observed.len();
                 let key = with_history_io(io, |work| {
@@ -375,6 +434,16 @@ impl StockExecution<'_> {
             }
         }
         let _ = io;
+        #[cfg(feature = "filesystem")]
+        if self
+            .original_context()
+            .and_then(crate::runtime::TaskContext::invocation_cancellation)
+            .is_some_and(acyclic_fs::CancellationToken::is_cancelled)
+        {
+            return Err(Error::InteractionRejected(
+                crate::InteractionRejection::Cancelled,
+            ));
+        }
         self.verify_execution_owner().await
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

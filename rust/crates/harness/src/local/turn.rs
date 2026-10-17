@@ -242,6 +242,52 @@ impl LocalHarness {
         prompt: &str,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let (receive, model, _) = self
+            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+            .await?;
+        Ok((receive, model))
+    }
+
+    pub(super) async fn stage_turn_with_limits(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let (receive, model, _) = self
+            .stage_turn_with_output(operation, prompt, limits, None)
+            .await?;
+        Ok((receive, model))
+    }
+
+    pub(super) async fn stage_turn_with_output(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+        output: Option<&VolumeRef>,
+    ) -> Result<(
+        WorkflowCommand,
+        WorkflowCommand,
+        crate::conversation::FileRef,
+    )> {
+        let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
+        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
+            .await
+    }
+
+    async fn stage_turn_with_output_using(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+        output: Option<&VolumeRef>,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(
+        WorkflowCommand,
+        WorkflowCommand,
+        crate::conversation::FileRef,
+    )> {
         let manifest = match &self.context_manifest {
             Some(reference) => reference.clone(),
             None => {
@@ -249,8 +295,17 @@ impl LocalHarness {
                     .await?
             }
         };
-        self.stage_bound_turn(operation, prompt, manifest, publisher)
-            .await
+        let (receive, model) = self
+            .stage_bound_turn_using(
+                operation,
+                prompt,
+                limits,
+                output,
+                manifest.clone(),
+                publisher,
+            )
+            .await?;
+        Ok((receive, model, manifest))
     }
 
     pub(super) async fn stage_bound_turn(
@@ -260,11 +315,24 @@ impl LocalHarness {
         manifest: crate::conversation::FileRef,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        self.stage_bound_turn_using(operation, prompt, self.limits, None, manifest, publisher)
+            .await
+    }
+
+    async fn stage_bound_turn_using(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        limits: Limits,
+        output: Option<&VolumeRef>,
+        manifest: crate::conversation::FileRef,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<(WorkflowCommand, WorkflowCommand)> {
         context::binding::retain(
             &self.task_files.inner,
             crate::runtime::task_id_for_admission(operation),
             &manifest,
-            self.limits.file_bytes,
+            limits.file_bytes,
         )
         .await?;
         let model = crate::filesystem::ModelTaskCommand {
@@ -272,11 +340,11 @@ impl LocalHarness {
             context_manifest: manifest,
             input: ModelContent::Text(prompt.into()),
             selected_context: None,
-            max_steps: u32::try_from(self.limits.model_steps)
+            max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
             max_output_tokens: None,
             mailbox_operation: None,
-            selected_output_volume: None,
+            selected_output_volume: output.cloned(),
         };
         let bytes = serde_json::to_vec(&model).map_err(storage)?;
         let payload = publisher
@@ -290,18 +358,28 @@ impl LocalHarness {
             )?
             .await?
             .0;
-        self.finish_turn_inputs(operation, payload, publisher).await
+        let (receive, model) = self
+            .finish_turn_inputs(operation, payload, publisher)
+            .await?;
+        Ok((receive, model))
     }
 
     pub(super) fn input_publisher(
         &self,
+    ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
+        self.input_publisher_with_limit(self.limits.file_bytes)
+    }
+
+    pub(super) fn input_publisher_with_limit(
+        &self,
+        maximum_bytes: u64,
     ) -> Result<Arc<FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>>> {
         FilesystemContentPublisher::new(
             self.files.clone(),
             &self.journal,
             &self.verifier,
             &self.signed,
-            self.limits.file_bytes,
+            maximum_bytes,
             None,
         )
     }
@@ -407,6 +485,20 @@ impl LocalHarness {
         task: TaskId,
         commands: &dyn crate::filesystem::TaskCommandHost,
     ) -> Result<()> {
+        self.advance_while(task, commands, || async { Ok(true) })
+            .await
+    }
+
+    pub(super) async fn advance_while<F, Fut>(
+        &self,
+        task: TaskId,
+        commands: &dyn crate::filesystem::TaskCommandHost,
+        continue_work: F,
+    ) -> Result<()>
+    where
+        F: Fn() -> Fut + Send + Sync,
+        Fut: Future<Output = Result<bool>> + Send,
+    {
         let worker = crate::distributed::Worker {
             id: format!("local-{}", uuid::Uuid::new_v4()),
             available: Default::default(),
@@ -448,6 +540,9 @@ impl LocalHarness {
                 Some(crate::filesystem::TaskWorkerAttempt::Progress(
                     crate::filesystem::TaskWorkerOutcome::Suspended { .. },
                 )) => {
+                    if !continue_work().await? {
+                        break;
+                    }
                     // Only an authenticated wake makes a passive command claimable.
                     // Without one, run_operation returns None and yields control.
                     attempt = self
@@ -500,12 +595,19 @@ impl LocalHarness {
         );
         if !terminal {
             let commands = self.commands()?;
+            #[cfg(feature = "native-execution")]
+            self.advance_with_children(task, &commands, self.task_files.clone(), None)
+                .await?;
+            #[cfg(not(feature = "native-execution"))]
             Box::pin(self.advance(task, &commands)).await?;
             if self.runtime.task_host().outcome(task).await?.is_none() {
                 let admission = self.runtime.task_host().observe_admission(task).await?;
                 return Err(Error::Indeterminate(admission.operation_id));
             }
         } else {
+            #[cfg(feature = "native-execution")]
+            self.advance_with_children(task, &self.commands()?, self.task_files.clone(), None)
+                .await?;
             // Advance already refreshes projections; terminal recovery must repair them.
             self.refresh_command_task(task).await?;
         }

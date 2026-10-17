@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{TaskFileViews, CommandFileRoot, CommandSession},
+    client::{CommandFileRoot, CommandSession, TaskFileViews},
     model::ModelEvent,
     task_volume::TaskVolume,
     tui::{

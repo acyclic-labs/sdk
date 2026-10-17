@@ -1,0 +1,159 @@
+{
+  "driver": "agents",
+  "prompt": "Send a followup to a settled worker",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "original work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "send",
+          "name": "send",
+          "arguments": {
+            "agent": "worker",
+            "message": "followup work"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "first finished",
+      "followup finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 5,
+      "worker": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 2
+      }
+    },
+    "model_requests": {
+      "worker": [
+        {},
+        {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {
+                  "kind": "file",
+                  "policy": "bounded_full",
+                  "file": {
+                    "descriptor": {
+                      "byte_length": 13,
+                      "media_type": "text/plain",
+                      "sha256": [
+                        115,
+                        173,
+                        41,
+                        69,
+                        147,
+                        180,
+                        255,
+                        197,
+                        75,
+                        159,
+                        95,
+                        53,
+                        58,
+                        27,
+                        1,
+                        151,
+                        44,
+                        232,
+                        105,
+                        9,
+                        172,
+                        119,
+                        146,
+                        231,
+                        92,
+                        153,
+                        218,
+                        166,
+                        99,
+                        53,
+                        120,
+                        231
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "routes": {
+    "original work": "worker",
+    "followup work": "worker"
+  }
+}

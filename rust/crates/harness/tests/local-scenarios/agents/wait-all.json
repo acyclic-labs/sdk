@@ -1,0 +1,149 @@
+{
+  "driver": "agents",
+  "prompt": "Wait for both delegated answers",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn-first",
+          "name": "spawn",
+          "arguments": {
+            "task": "Answer first",
+            "name": "first"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn-second",
+          "name": "spawn",
+          "arguments": {
+            "task": "Answer second",
+            "name": "second"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait-both",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "first",
+              "second"
+            ],
+            "mode": "all"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "first": [
+      "first answer"
+    ],
+    "second": [
+      "second answer"
+    ]
+  },
+  "routes": {
+    "Answer first": "first",
+    "Answer second": "second"
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 4,
+      "first": 1,
+      "second": 1
+    },
+    "task_files": {
+      "agents/first/results/1.json": {
+        "outcome": {
+          "Succeeded": {
+            "text": "first answer"
+          }
+        }
+      },
+      "agents/second/results/1.json": {
+        "outcome": {
+          "Succeeded": {
+            "text": "second answer"
+          }
+        }
+      }
+    },
+    "model_requests": {
+      "parent": [
+        {},
+        {},
+        {},
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "wait-both",
+                "name": "wait",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "agents": [
+                      {
+                        "reference": "first",
+                        "result": {
+                          "file": {
+                            "path": ".volumes/agents/first/results/1.json"
+                          },
+                          "outcome": {
+                            "Succeeded": {
+                              "text": "first answer"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "reference": "second",
+                        "result": {
+                          "file": {
+                            "path": ".volumes/agents/second/results/1.json"
+                          },
+                          "outcome": {
+                            "Succeeded": {
+                              "text": "second answer"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
