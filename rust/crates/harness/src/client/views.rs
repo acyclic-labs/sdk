@@ -129,6 +129,10 @@ pub enum SwarmChange {
 pub struct ClientViewHandle(Rc<RefCell<ClientViews>>);
 
 impl ClientViewHandle {
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn new(views: ClientViews) -> Self {
         Self(Rc::new(RefCell::new(views)))
     }
@@ -140,6 +144,10 @@ impl ClientViewHandle {
             .map_err(|error| Error::Conflict(error.to_string()))?;
         Ok(render(&views))
     }
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn apply(&self, update: SwarmUpdate) -> Result<SwarmChange> {
         self.0
             .try_borrow_mut()
