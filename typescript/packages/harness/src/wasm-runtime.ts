@@ -55,12 +55,13 @@ export function assertHarnessWasmExports(value: unknown): void {
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
   const clientViews = hasClass(exports, "WasmClientViews", "wasmclientviews", CLIENT_VIEW_METHODS);
+  const stream = hasClass(exports, "WasmStream", "wasmstream", [], true);
   const hypotheses = hasClass(exports, "WasmHypothesisClient", "wasmhypothesisclient", HYPOTHESIS_METHODS, true);
   const swarm = hasClass(exports, "WasmSwarmClient", "wasmswarmclient", ["views", "follow", "free"], true);
   const reducer = hasClass(exports, "WasmReducer", "wasmreducer", ["prepareInheritedModelRequest", "prepareForkRequest"], true);
   const providers = typeof exports.WasmProviderRegistry === "function"
     || typeof exports.wasmproviderregistry_new === "function";
-  if (!contentStore || !clientViews || !hypotheses || !swarm || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  if (!contentStore || !clientViews || !stream || !hypotheses || !swarm || !reducer || !providers || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

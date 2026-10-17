@@ -342,6 +342,7 @@ test("stale WASM modules fail compatibility checks before model dispatch", () =>
 
 const constructedWasmClasses = [
   ["WasmContentStore", "wasmcontentstore_new"],
+  ["WasmStream", "wasmstream_new"],
   ["WasmHypothesisClient", "wasmhypothesisclient_new"],
   ["WasmSwarmClient", "wasmswarmclient_new"],
   ["WasmReducer", "wasmreducer_new"],
