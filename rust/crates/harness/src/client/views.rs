@@ -1,5 +1,5 @@
 //! One disposable fold for overview status and selected full-fidelity files.
-#[cfg(all(test, not(acyclic_harness_loom)))]
+#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
 mod retention;
 
 use super::{ClientInterests, FileViews, InterestTier, QueryViewLimits, SwarmUpdate, query_error};
