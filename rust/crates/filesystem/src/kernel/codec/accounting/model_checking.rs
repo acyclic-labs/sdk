@@ -43,29 +43,41 @@ fn encode<const BROKEN: bool>(
     cancellation: &CancellationToken,
     actual: Arc<AtomicU64>,
     pages: bool,
+    page: Option<PageStorage>,
 ) {
     EFFECT.with(|witness| *witness.borrow_mut() = Some((actual, pages)));
     OMIT_RESERVATION.with(|flag| flag.set(BROKEN));
     let mut accounting = allocation::KernelAccounting::native(work, cancellation);
     if pages {
-        let page = crate::kernel::BlobPage {
-            first_offset: 0,
-            end_offset: 1,
-            node: crate::kernel::BlobNode::Leaf(vec![crate::kernel::BlobChunkRef {
-                first_offset: 0,
-                end_offset: 1,
-                chunk: crate::ObjectId {
-                    kind: crate::ObjectKind::BlobChunk,
-                    digest: crate::Digest::from_bytes([1; 32]),
-                },
-            }]),
+        let (wire, mut output, owner) = page.unwrap();
+        let mut observer = EncodeAccounting {
+            accounting: &mut accounting,
+            owned_bytes: output.len() as u64,
+            allocation: Some(allocation::KernelOwnedAllocation::NativeOriginal(owner)),
+            pending: WorkCounters::UNCHARGED,
         };
-        let result =
-            crate::kernel::blob::encode_blob_page_with_accounting(&page, 1, &mut accounting);
-        if let Ok(owner) = result {
-            drop(owner.value);
-            drop(owner.custody);
+        let delta = WorkCounters {
+            bytes_encoded: wire.len() as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        // Bound the model to the protected page effect. Storage is funded
+        // before contention, as in the read-credit model. Admission, page-step
+        // mapping, completion and refund are the production observer paths;
+        // full writer/capacity callback sequences are covered by the byte oracle.
+        if observer
+            .observe(&crate::kernel::blob::page_write_step(
+                EncodeWorkStep::Admit(delta),
+            ))
+            .is_ok()
+        {
+            output.copy_from_slice(&wire);
+            assert_eq!(output, wire);
+            let _ = observer.observe(&crate::kernel::blob::page_write_step(
+                EncodeWorkStep::Completed(delta),
+            ));
         }
+        drop(output);
+        drop(observer);
     } else {
         let mut observer = EncodeAccounting::new(&mut accounting);
         let result = Encoder::with_exact_capacity(
@@ -83,6 +95,35 @@ fn encode<const BROKEN: bool>(
         }
     }
     EFFECT.with(|witness| *witness.borrow_mut() = None);
+}
+
+type PageStorage = (Vec<u8>, Vec<u8>, crate::NativeAllocation);
+
+fn page_storage(work: &NativeMaterializationWork) -> PageStorage {
+    let page = crate::kernel::BlobPage {
+        first_offset: 0,
+        end_offset: 1,
+        node: crate::kernel::BlobNode::Leaf(vec![crate::kernel::BlobChunkRef {
+            first_offset: 0,
+            end_offset: 1,
+            chunk: crate::ObjectId {
+                kind: crate::ObjectKind::BlobChunk,
+                digest: crate::Digest::from_bytes([1; 32]),
+            },
+        }]),
+    };
+    let wire = crate::kernel::encode_blob_page(
+        &page,
+        1,
+        |_| Ok::<_, CanonicalDecodeError>(()),
+        |_| CanonicalDecodeError::AllocationFailed,
+    )
+    .unwrap();
+    let owner = work
+        .claim(wire.len() as u64, 1, WorkCounters::UNCHARGED)
+        .unwrap();
+    let output = vec![0; wire.len()];
+    (wire, output, owner)
 }
 
 fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
@@ -114,6 +155,8 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
             original.clone()
         };
         let baseline = original.live_allocation_bytes();
+        let worker_page = pages.then(|| page_storage(&work));
+        let local_page = pages.then(|| page_storage(&work));
         // Standard Arc only transports owners pinned through join. All mutable
         // production leaf/resource/cancellation state and the witness use sync.
         let actual = Arc::new(AtomicU64::new(0));
@@ -121,12 +164,18 @@ fn race<const BROKEN: bool, const ASSERT_LIMIT: bool>(
         let worker_cancel = cancellation.clone();
         let worker_actual = actual.clone();
         let worker = loom::thread::spawn(move || {
-            encode::<BROKEN>(&worker_work, &worker_cancel, worker_actual, pages)
+            encode::<BROKEN>(
+                &worker_work,
+                &worker_cancel,
+                worker_actual,
+                pages,
+                worker_page,
+            )
         });
         if cancel {
             cancellation.cancel();
         } else {
-            encode::<BROKEN>(&work, &cancellation, actual.clone(), pages);
+            encode::<BROKEN>(&work, &cancellation, actual.clone(), pages, local_page);
         }
         worker.join().unwrap();
         let completed = actual.load(Ordering::Relaxed);
@@ -226,7 +275,7 @@ fn refund_model<const OMIT: bool>(action: u8) {
         let worker_cancel = cancellation.clone();
         let worker_actual = actual.clone();
         let worker = loom::thread::spawn(move || {
-            encode::<false>(&worker_root, &worker_cancel, worker_actual, false)
+            encode::<false>(&worker_root, &worker_cancel, worker_actual, false, None)
         });
         let completed = if action == 3 { 4 } else { 0 };
         if completed != 0 {
