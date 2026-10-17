@@ -13,6 +13,8 @@ categories = ["filesystem"]
 
 [features]
 test-support = ["dep:tokio"]
+# Windows process input awaited on the runtime (overlapped pipes on its IOCP).
+async-stdin = ["dep:tokio", "tokio/net"]
 
 [dependencies]
 bytes.workspace = true

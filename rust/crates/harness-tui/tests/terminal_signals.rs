@@ -7,6 +7,8 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use futures_core::Stream;
+
 use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
 use acyclic_harness_tui::term::{
     ColourDepth, Environment, ImageProtocol, KeyboardProtocol, Multiplexer, ScreenMode, Tty,
@@ -49,73 +51,90 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tty.write_all(b"READY\n")?;
     }
-    if mode != "read" && mode != "handoff" && mode != "escape" && mode != "rejected-paste" {
+    if !matches!(
+        mode.as_str(),
+        "read" | "handoff" | "escape" | "rejected-paste" | "resize"
+    ) {
         loop {
             std::thread::park();
         }
     }
+    let (tty, mut output) = tty.split();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut events = runtime.block_on(async { tty.events() })?;
+    if mode == "resize" {
+        output.write_all(b"INPUT_READY\n")?;
+    }
     let mut received = Vec::new();
     let mut rejected = false;
     loop {
-        let events = match tty.read_events(Instant::now() + Duration::from_millis(20)) {
+        let next = std::future::poll_fn(|cx| std::pin::Pin::new(&mut events).poll_next(cx));
+        let event = match runtime
+            .block_on(next)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
+        {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
             {
                 assert!(!rejected);
                 rejected = true;
-                tty.write_all(b"REJECTED\n")?;
+                output.write_all(b"REJECTED\n")?;
                 continue;
             }
-            events => events?,
+            event => event?,
         };
-        for event in events {
-            if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
-                received.push(event.clone());
+        if mode == "resize" {
+            if let InputEvent::Resize(width, height) = event {
+                writeln!(output, "RESIZED {width} {height}")?;
             }
-            if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc)
-            {
-                tty.write_all(b"ESC\n")?;
+        }
+        if mode == "handoff" || mode == "escape" || mode == "rejected-paste" {
+            received.push(event.clone());
+        }
+        if mode == "escape" && matches!(event, InputEvent::Key(key) if key.code == KeyCode::Esc) {
+            output.write_all(b"ESC\n")?;
+        }
+        if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
+            if mode == "rejected-paste" {
+                assert!(rejected);
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
             }
-            if matches!(event, InputEvent::Key(key) if key.code == KeyCode::Char('q')) {
-                if mode == "rejected-paste" {
-                    assert!(rejected);
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::F(5), KeyModifiers::CONTROL)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                if mode == "handoff" {
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(
-                                KeyCode::Enter,
-                                KeyModifiers::SHIFT | KeyModifiers::CONTROL
-                            )),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                if mode == "escape" {
-                    assert_eq!(
-                        received,
-                        vec![
-                            InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
-                            InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
-                        ]
-                    );
-                }
-                return Ok(());
+            if mode == "handoff" {
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(
+                            KeyCode::Enter,
+                            KeyModifiers::SHIFT | KeyModifiers::CONTROL
+                        )),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
             }
+            if mode == "escape" {
+                assert_eq!(
+                    received,
+                    vec![
+                        InputEvent::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                        InputEvent::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+                    ]
+                );
+            }
+            return Ok(());
         }
     }
 }
@@ -398,5 +417,45 @@ fn suspend_and_raw_ctrl_z_restore_then_resume_reapplies() -> Result<(), Box<dyn 
         }
         process.restored()?;
     }
+    Ok(())
+}
+
+#[test]
+fn resume_observes_a_resize_without_sigwinch_or_a_key() -> Result<(), Box<dyn std::error::Error>> {
+    let mut process = Process::start("resize")?;
+    process.until(|process| Ok(process.bytes.windows(11).any(|b| b == b"INPUT_READY")))?;
+    let pid = process.pid()?;
+    kill_process(pid, Signal::TSTP)?;
+    process.until(|_| {
+        Ok(
+            waitpid(Some(pid), WaitOptions::UNTRACED | WaitOptions::NOHANG)?
+                .is_some_and(|(_, status)| status.stopped()),
+        )
+    })?;
+    process.restored()?;
+    // This PTY is not a controlling terminal, so the kernel sends no WINCH.
+    rustix::termios::tcsetwinsize(
+        &process.master,
+        rustix::termios::Winsize {
+            ws_col: 101,
+            ws_row: 37,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        },
+    )?;
+    kill_process(pid, Signal::CONT)?;
+    let marker = b"RESIZED 101 37";
+    process.until(|process| Ok(process.bytes.windows(marker.len()).any(|b| b == marker)))?;
+    process.master.write_all(b"q")?;
+    process.until(|process| Ok(process.child.try_wait()?.is_some()))?;
+    assert_eq!(
+        process
+            .bytes
+            .windows(marker.len())
+            .filter(|b| *b == marker)
+            .count(),
+        1
+    );
+    process.restored()?;
     Ok(())
 }

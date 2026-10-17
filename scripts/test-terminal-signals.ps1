@@ -23,6 +23,7 @@ public static class TerminalSignalConPty {
     [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr process,thread; public uint pid,tid; }
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,IntPtr security,uint size);
     [DllImport("kernel32.dll")] static extern int CreatePseudoConsole(Coord size,IntPtr input,IntPtr output,uint flags,out IntPtr console);
+    [DllImport("kernel32.dll")] static extern int ResizePseudoConsole(IntPtr console,Coord size);
     [DllImport("kernel32.dll")] static extern void ClosePseudoConsole(IntPtr console);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list,int count,uint flags,ref IntPtr size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list,uint flags,IntPtr attribute,IntPtr value,IntPtr size,IntPtr previous,IntPtr returned);
@@ -36,7 +37,30 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process,uint exit);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int kind);
     [DllImport("kernel32.dll")] static extern bool SetStdHandle(int kind,IntPtr handle);
+    [DllImport("kernel32.dll")] static extern void GetSystemTimePreciseAsFileTime(out long time);
     static void Require(bool ok,string name) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error(),name); }
+
+    // Types one key at a time into ConPTY and compares each send time with
+    // the time the child's input stream yielded that key. Both sides read the
+    // system precise clock. Keys are spaced so each one starts from idle.
+    static void MeasureLatency(IntPtr input,IntPtr process,string report) {
+        int count=int.Parse(File.ReadAllText(Path.ChangeExtension(report,"latency-count")).Trim());
+        long[] sent=new long[count]; byte[] key=new byte[]{(byte)'a'}; uint written;
+        for(int i=0;i<count;i++) {
+            var spacing=Stopwatch.StartNew();
+            while(spacing.ElapsedTicks<Stopwatch.Frequency*3/1000) Thread.SpinWait(64);
+            GetSystemTimePreciseAsFileTime(out sent[i]);
+            Require(WriteFile(input,key,1,out written,IntPtr.Zero)&&written==1,"latency key write");
+        }
+        Require(WaitForSingleObject(process,1500)==0,"latency child exit deadline");
+        string[] lines=File.ReadAllText(Path.ChangeExtension(report,"latency-child")).Split((char)10);
+        Require(lines.Length==count,"latency samples");
+        double[] micros=new double[count];
+        for(int i=0;i<count;i++) micros[i]=(long.Parse(lines[i])-(sent[i]-116444736000000000L))/10.0;
+        Array.Sort(micros);
+        Console.WriteLine(String.Format("ConPTY input-to-stream latency over {0} keys: p50 {1:F1} us, p99 {2:F1} us, max {3:F1} us",
+            count,micros[count/2],micros[(count*99)/100],micros[count-1]));
+    }
 
     public static void Run(string binary,string scenario,string report) {
         IntPtr ir=IntPtr.Zero,iw=IntPtr.Zero,orr=IntPtr.Zero,ow=IntPtr.Zero,console=IntPtr.Zero,attributes=IntPtr.Zero;
@@ -96,6 +120,14 @@ public static class TerminalSignalConPty {
                 if(File.Exists(logPath)) using(var read=new StreamReader(new FileStream(logPath,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) log=read.ReadToEnd();
                 throw new Exception("terminal setup deadline: "+log.Substring(Math.Max(0,log.Length-1400)));
             }
+            if(scenario=="latency") { MeasureLatency(iw,process.process,report); return; }
+            if(scenario=="resize") {
+                Require(ResizePseudoConsole(console,new Coord { x=101,y=37 })==0,"resize pseudo console");
+                Require(WaitForSingleObject(process.process,1500)==0,"resize child exit deadline");
+                Require(File.ReadAllText(Path.ChangeExtension(report,"resize"))=="101 37","window dimensions reach stream");
+                Console.WriteLine("ConPTY resize: stream received 101 x 37 without a key");
+                return;
+            }
             if(scenario=="blocked") {
                 draining.Set();
                 File.WriteAllText(Path.ChangeExtension(report,"draining"),"draining");
@@ -128,8 +160,9 @@ public static class TerminalSignalConPty {
 $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
 try {
-    foreach ($scenario in @('break','close','blocked')) {
+    foreach ($scenario in @('break','close','blocked','latency','resize')) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
+        if ($scenario -eq 'latency') { Set-Content -LiteralPath ([IO.Path]::ChangeExtension($report,'latency-count')) -Value '200' }
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report
         $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $scenario
         [TerminalSignalConPty]::Run($Binary,$scenario,$report)
