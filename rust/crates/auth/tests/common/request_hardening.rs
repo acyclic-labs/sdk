@@ -1,4 +1,4 @@
-use super::common::{limits, root};
+use super::{common::root, limits::limits};
 use acyclic_auth::{
     authority::{Deny, PolicyDecision, Request, Target, attenuate},
     contract::{Block, Limits, RecordAttributes},
@@ -51,7 +51,8 @@ pub fn request_property(
     prop_assert!(!valid_resource(name));
     let root = vec![root()];
     let blocks = if child {
-        attenuate(&root, vec![], vec![6; 32]).unwrap()
+        attenuate(&root, vec![], vec![6; 32])
+            .map_err(|error| TestCaseError::fail(format!("attenuation failed: {error:?}")))?
     } else {
         root
     };

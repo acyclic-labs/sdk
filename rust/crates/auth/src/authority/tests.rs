@@ -1,8 +1,5 @@
 use super::*;
-#[path = "../../tests/common/mod.rs"]
-mod common;
-#[path = "../../tests/common/request_hardening.rs"]
-mod hardening;
+use crate::fixtures::hardening;
 use proptest::{
     prelude::*,
     test_runner::{TestError, TestRunner},

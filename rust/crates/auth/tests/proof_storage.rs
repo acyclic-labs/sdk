@@ -77,7 +77,7 @@ fn scrub_child() {
         }
         "bad-key" => {
             let end = bytes.len() - 3;
-            bytes[end] = 5;
+            *bytes.get_mut(end).unwrap() = 5;
         }
         _ => {}
     }

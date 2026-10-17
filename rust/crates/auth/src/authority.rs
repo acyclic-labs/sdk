@@ -106,7 +106,7 @@ pub fn decode_capability(bytes: &[u8]) -> Result<Capability, Error> {
     Ok(value)
 }
 
-/// Root is index zero; each max_depth is an absolute terminal index ceiling.
+/// Root is index zero; each `max_depth` is an absolute terminal index ceiling.
 /// The minimum across every block applies. Sealing has no block and no cost.
 pub fn valid_chain(blocks: &[Block]) -> bool {
     let Some(root) = blocks.first() else {
@@ -134,7 +134,7 @@ pub fn attenuate(
         caveats,
         next_public_key,
     };
-    let wire: BlockProto = appended.clone().into();
+    let wire: BlockProto = appended.into();
     let appended = Block::try_from(wire)?;
     let mut result = blocks.to_vec();
     result.push(appended);
@@ -208,8 +208,9 @@ fn limits_allow(ceiling: &Limits, usage: &Limits) -> bool {
         .all(|(max, n)| max.is_none_or(|max| n.unwrap_or(0) <= max))
 }
 fn acting<'a>(principal: &'a Principal, blocks: &'a [Block], through: usize) -> &'a str {
-    blocks[..=through]
+    blocks
         .iter()
+        .take(through + 1)
         .rev()
         .flat_map(|b| b.caveats.iter().rev())
         .find_map(|c| {
@@ -224,7 +225,7 @@ fn acting<'a>(principal: &'a Principal, blocks: &'a [Block], through: usize) -> 
 }
 fn ancestor(principal: &Principal, blocks: &[Block], through: usize, value: &[u8]) -> bool {
     principal.id.as_bytes() == value || principal.lineage.iter().any(|id| id.as_bytes() == value)
-        || blocks[..=through].iter().flat_map(|b| &b.caveats).any(|c| matches!(&c.kind, CaveatKind::LineageAppend(l) if l.ids.iter().any(|id| id.as_bytes() == value)))
+        || blocks.iter().take(through + 1).flat_map(|b| &b.caveats).any(|c| matches!(&c.kind, CaveatKind::LineageAppend(l) if l.ids.iter().any(|id| id.as_bytes() == value)))
 }
 fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i: usize) -> bool {
     (f.keys.is_empty()
@@ -272,7 +273,7 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>) -> bool {
     if !valid_chain(blocks) {
         return false;
     }
-    let Some(certificates) = &blocks[0].certificates else {
+    let Some(certificates) = blocks.first().and_then(|block| block.certificates.as_ref()) else {
         return false;
     };
     let Some(leaf) = certificates.keys.last() else {

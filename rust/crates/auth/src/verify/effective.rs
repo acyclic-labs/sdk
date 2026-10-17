@@ -29,8 +29,11 @@ impl<'a> ScopedFilter<'a> {
     }
     /// Acting identity frozen at the declaring block, unaffected by later appends.
     pub fn subject_id(&self) -> &'a str {
-        self.principal.lineage[..self.visible_lineage]
-            .last()
+        self.principal
+            .lineage
+            .iter()
+            .take(self.visible_lineage)
+            .next_back()
             .map_or(self.principal.id.as_str(), String::as_str)
     }
 }
@@ -47,9 +50,9 @@ impl<'a> Effective<'a> {
     }
     /// Every returned union is a ceiling; all unions must allow the request.
     pub fn grants(&self) -> impl Iterator<Item = &'a GrantSet> {
-        self.capability.blocks[0]
-            .certificates
-            .iter()
+        self.capability
+            .root_certificates()
+            .into_iter()
             .flat_map(|certificates| &certificates.keys)
             .map(|cert| &cert.key.grants)
             .chain(
@@ -65,9 +68,9 @@ impl<'a> Effective<'a> {
     }
     /// Every returned filter must hold, using its declaring-block identity.
     pub fn filters(&self) -> impl Iterator<Item = ScopedFilter<'a>> {
-        let mut visible_lineage = self.capability.blocks[0]
-            .certificates
-            .as_ref()
+        let mut visible_lineage = self
+            .capability
+            .root_certificates()
             .and_then(|certificates| certificates.keys.last())
             .map_or(0, |certificate| certificate.key.principal.lineage.len());
         self.capability
@@ -158,7 +161,7 @@ impl VerifiedCapability {
         self.limits = unbounded_limits();
         self.not_before = 0;
         self.expires_at = u64::MAX;
-        if let Some(certificates) = &self.blocks[0].certificates {
+        if let Some(certificates) = self.blocks.first().and_then(|b| b.certificates.as_ref()) {
             self.not_before = certificates.birth.birth.issued_at_unix_seconds;
             if let Some(leaf) = certificates.keys.last() {
                 self.principal = leaf.key.principal.clone();
@@ -176,13 +179,13 @@ impl VerifiedCapability {
             for caveat in &block.caveats {
                 match &caveat.kind {
                     CaveatKind::LineageAppend(lineage) => {
-                        self.principal.lineage.extend(lineage.ids.iter().cloned())
+                        self.principal.lineage.extend(lineage.ids.iter().cloned());
                     }
                     CaveatKind::NotBeforeUnixSeconds(time) => {
-                        self.not_before = self.not_before.max(*time)
+                        self.not_before = self.not_before.max(*time);
                     }
                     CaveatKind::ExpiresAtUnixSeconds(time) => {
-                        self.expires_at = self.expires_at.min(*time)
+                        self.expires_at = self.expires_at.min(*time);
                     }
                     CaveatKind::Limits(limits) => intersect(&mut self.limits, limits),
                     _ => (),

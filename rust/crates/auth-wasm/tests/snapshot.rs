@@ -30,7 +30,7 @@ proptest! {
         prop_assert_eq!(block_ids(&bytes).is_ok(), bytes.len() % 32 == 0);
         if bytes.len() % 32 != 0 {
             // A deliberately truncated decoder accepts what this property rejects.
-            let broken: Vec<_> = bytes.chunks_exact(32).collect();
+            let (broken, _) = bytes.as_chunks::<32>();
             prop_assert_eq!(broken.len(), bytes.len() / 32);
         }
     }
@@ -38,14 +38,20 @@ proptest! {
     #[test]
     fn fresh_snapshot_revocation_invalidates_every_descendant(depth in 1..6u8, revoked in 0..6usize) {
         let mut trust = snapshot();
+        // The verifier's reference trust is the oracle for the holder adapter.
+        let mut reference = signed::Snapshot::default();
         let mut holder = verify(&signed::root(|_| {}), &trust, signed::NOW).unwrap();
         for index in 1..depth {
             holder = holder.attenuate(vec![], &[index + 4; 32]).unwrap();
         }
         let ancestor = revoked % holder.block_ids().len();
         prop_assert!(holder.check(&trust, signed::NOW).is_ok());
-        trust.revoked_block_ids.insert(holder.block_ids()[ancestor]);
+        prop_assert!(holder.check(&reference, signed::NOW).is_ok());
+        let revoked = holder.block_ids().get(ancestor).copied().unwrap();
+        trust.revoked_block_ids.insert(revoked);
+        reference.revoked_blocks.push(revoked);
         prop_assert_eq!(holder.check(&trust, signed::NOW), Err(VerifyError::Revoked));
+        prop_assert_eq!(holder.check(&reference, signed::NOW), Err(VerifyError::Revoked));
         // Broken revocation hooks returning false would accept the same holder.
         trust.revoked_block_ids.clear();
         prop_assert!(holder.check(&trust, signed::NOW).is_ok());

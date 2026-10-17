@@ -110,15 +110,14 @@ pub(crate) fn key_certificate(v: &KeyCertificate) -> Result<(), Error> {
 pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
     require(!v.keys.is_empty())?;
     let mut key_ids = HashSet::with_capacity(v.keys.len());
-    for (i, cert) in v.keys.iter().enumerate() {
+    let mut parent: Option<&CertifiedKey> = None;
+    for cert in &v.keys {
         require(
             cert.key.account_id == v.birth.birth.account_id
-                && cert.key.parent_key_id.as_deref()
-                    == i.checked_sub(1).map(|p| v.keys[p].key.key_id.as_str())
+                && cert.key.parent_key_id.as_deref() == parent.map(|key| key.key_id.as_str())
                 && key_ids.insert(cert.key.key_id.as_str()),
         )?;
-        if i > 0 {
-            let parent = &v.keys[i - 1].key;
+        if let Some(parent) = parent {
             require(
                 principal_narrows(&parent.principal, &cert.key.principal)
                     && cert.key.validity.not_before_unix_seconds
@@ -131,6 +130,7 @@ pub(crate) fn certificates(v: &CertificateChain) -> Result<(), Error> {
                     ),
             )?;
         }
+        parent = Some(&cert.key);
     }
     Ok(())
 }

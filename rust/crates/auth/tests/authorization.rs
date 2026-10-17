@@ -28,14 +28,14 @@ proptest! {
         let ext=pool.get_extension_by_name("acyclic.validation.v1.auth").unwrap();
         let options=pool.get_service_by_name("test.Test").unwrap().methods().next().unwrap().options();
         let rules=options.get_extension(&ext);
-        let actions=rules.as_list().unwrap()[0].as_message().unwrap().get_field_by_name("action").unwrap();
-        prop_assert_eq!(actions.as_list().unwrap()[0].as_str(),Some(value.as_str()));
-        prop_assert_eq!(actions.as_list().unwrap()[1].as_str(),Some("fs/read"));
+        let rule=rules.as_list().unwrap().first().unwrap().as_message().unwrap().get_field_by_name("action").unwrap();
+        let actions=rule.as_list().unwrap().iter().map(|action| action.as_str()).collect::<Vec<_>>();
+        prop_assert_eq!(actions,vec![Some(value.as_str()),Some("fs/read")]);
     }
     #[test]
     fn arbitrary_authorization_input_never_panics(text in ".{0,1024}") {
         let mut result=None;
         let parsed=syn::meta::parser(|meta| {result=Some(authorization::fields(&meta)?);Ok(())}).parse_str(&text);
-        if parsed.is_ok() { if let Some(declaration)=result { prop_assert!(!declaration.is_empty()); } }
+        if parsed.is_ok() && let Some(declaration)=result { prop_assert!(!declaration.is_empty()); }
     }
 }
