@@ -158,10 +158,10 @@ impl McpConfig {
 }
 
 fn startup_timeout() -> Error {
-    Error::Process {
-        kind: "timeout",
+    Error::Process(crate::ProcessError::Timeout {
+        exit_code: None,
         message: "MCP startup deadline elapsed".into(),
-    }
+    })
 }
 
 async fn register_before<T: Send + 'static>(

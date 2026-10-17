@@ -56,6 +56,62 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
         assert!(tree.is_reaped());
     }
 }
+/// The child exits after a write found its stdin full, and the same capture
+/// pass sees its output end and its exit before any later write could meet
+/// the closed pipe. The exchange still fails: its input never reached the
+/// child.
+#[cfg(unix)]
+#[test]
+fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
+    use std::process::Stdio;
+    let mut command = std::process::Command::new("/bin/sh");
+    command
+        .args(["-c", "exec sleep 60"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut tree = ProcessTree::spawn(&mut command)?;
+    let pid = tree
+        .child
+        .as_ref()
+        .map(std::process::Child::id)
+        .ok_or(io::ErrorKind::NotFound)?;
+    let input = vec![b'x'; 1 << 20];
+    let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    meter.blocked_write = Some(Box::new(move || {
+        // SAFETY: the unreaped direct child reserves this pid.
+        assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+        while super::platform::observe_exit_id(pid, None)
+            .expect("observe the killed child")
+            .is_none()
+        {
+            std::thread::yield_now();
+        }
+    }));
+    let failure = tree
+        .wait_with_output(
+            std::time::Duration::from_secs(5),
+            16,
+            Some(crate::CaptureInput::Exchange {
+                initial: &input,
+                maximum: input.len(),
+            }),
+            || Ok(()),
+            |_| Ok(crate::ProcessInput::default()),
+            Some(&meter),
+            Some([
+                Vec::with_capacity(16),
+                Vec::with_capacity(16),
+                Vec::with_capacity(input.len()),
+            ]),
+        )
+        .expect_err("undelivered exchange input must fail");
+    assert_eq!(failure.error.kind(), io::ErrorKind::BrokenPipe);
+    assert!(failure.status.is_some());
+    assert!(failure.cleanup_completed);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -> std::io::Result<()>

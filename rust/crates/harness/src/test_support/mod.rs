@@ -6,6 +6,8 @@ pub(crate) mod accounted;
 pub(crate) mod admission_work;
 mod client_views;
 pub use client_views::empty_client_views;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod crash_cuts;
 mod scripted;
 mod search;
 #[cfg(feature = "test-support")]

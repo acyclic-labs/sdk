@@ -23,6 +23,16 @@ export function qualifySummaryCheckpointsLoom(features = ["--features", "filesys
   });
 }
 
+export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
+  return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
+    kind: "--lib", filters: [
+      "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
+      "local::checkout_tools::hooks::models::cancellation_keeps_hook_workers_inside_the_selected_workspace",
+    ], timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
 export function qualifyTimerLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "timer_loom", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
@@ -73,24 +83,27 @@ function qualifyLoom(crate, target, features, run, options = {}) {
       && record.profile.test && record.executable) binaries.push(record.executable);
   }
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
-  const result = run(binaries[0], options.filter ? [options.filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
-  if (result.error) throw result.error;
-  process.stdout.write(result.stdout ?? "");
-  process.stderr.write(result.stderr ?? "");
-  if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
-  const complete = options.exact === false
-    ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-    : options.filter
-    ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
-    : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
-  if (!complete.test(result.stdout)) {
-    throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
+  for (const filter of options.filters ?? [options.filter]) {
+    const result = run(binaries[0], filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
+    if (result.error) throw result.error;
+    process.stdout.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+    if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
+    const complete = options.exact === false
+      ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+      : filter
+      ? /^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
+      : /^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;/m;
+    if (!complete.test(result.stdout)) {
+      throw new Error("MCP Loom qualification requires a nonzero, complete test suite");
+    }
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
-  if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
+  if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
+  else if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();

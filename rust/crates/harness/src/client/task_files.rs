@@ -17,6 +17,7 @@ pub struct TaskFileClient {
     task_selection: ([u8; 32], [u8; 32]),
     selected: Option<crate::TaskId>,
     bounds: (usize, usize),
+    presentation_revision: u64,
 }
 impl TaskFileClient {
     /// Observe the authorized task folder at one atomic cut.
@@ -67,6 +68,7 @@ impl TaskFileClient {
             task_selection,
             selected: None,
             bounds: (maximum_files, maximum_bytes),
+            presentation_revision: 0,
         })
     }
     /// Retain only the selected task's bounded display tail.
@@ -122,6 +124,7 @@ impl TaskFileClient {
         self.task_selection = identity;
         self.changes = observed.changes;
         self.selected = Some(task);
+        self.advance_presentation();
         Ok(())
     }
     /// Follow the existing UI session's files, including its retained outcomes.
@@ -143,19 +146,36 @@ impl TaskFileClient {
         }
         self.command_selection = Some(identity);
         self.commands = Some(observed.changes);
+        self.advance_presentation();
         Ok(())
     }
     /// The exact fold exposed through the followed WASM handle too.
     pub fn views(&self) -> &ClientViews {
         &self.views
     }
+    /// Ephemeral revision of accepted presentation files, excluding checkpoints.
+    pub fn presentation_revision(&self) -> u64 {
+        self.presentation_revision
+    }
+    fn advance_presentation(&mut self) {
+        self.presentation_revision = self
+            .presentation_revision
+            .checked_add(1)
+            .expect("presentation revision overflow");
+    }
     /// Bind another authorized ordinary-file snapshot/follow to the same fold.
     pub fn views_mut(&mut self) -> &mut ClientViews {
+        self.advance_presentation();
         &mut self.views
     }
     /// Apply a pushed ordinary-file publication with its original cursor.
     pub fn apply_change(&mut self, change: Change) -> Result<()> {
-        self.views.query_change(change).map(|_| ())
+        let visible =
+            change.file.is_some() || !change.files.is_empty() || !change.removed.is_empty();
+        if self.views.query_change(change)? && visible {
+            self.advance_presentation();
+        }
+        Ok(())
     }
     /// Select only push sources; consuming a source and folding it cannot be cancelled apart.
     pub async fn next_change(&mut self) -> Result<()> {
@@ -172,8 +192,7 @@ impl TaskFileClient {
         let change = futures::select! { change = task => change, change = command => change };
         let change = change
             .ok_or_else(|| Error::Conflict("file follow ended; reopen snapshot".into()))??;
-        self.views.query_change(change)?;
-        Ok(())
+        self.apply_change(change)
     }
 }
 #[cfg(all(test, not(acyclic_harness_loom)))]

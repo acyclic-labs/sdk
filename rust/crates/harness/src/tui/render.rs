@@ -19,6 +19,10 @@ use stream_text::StreamText;
 /// and the followed files; this cache is never serialized or written back.
 #[derive(Default)]
 pub struct ClientRenderer {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    file_cut: Option<(u64, String)>,
+    #[cfg(test)]
+    folded_views: usize,
     key: String,
     help: super::help::Help,
     busy: bool,
@@ -59,6 +63,24 @@ impl ClientRenderer {
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
     }
+    /// Reuse the accepted file projection across input, scroll and timer frames.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub fn update_files(
+        &mut self,
+        client: &crate::client::TaskFileClient,
+        authority: &wire::Authority,
+    ) {
+        let cut = (
+            client.presentation_revision(),
+            crate::client::authority_key(authority),
+        );
+        if self.file_cut.as_ref() == Some(&cut) {
+            return;
+        }
+        self.update(client.views(), authority);
+        self.file_cut = Some(cut);
+    }
+
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
     pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
@@ -69,6 +91,10 @@ impl ClientRenderer {
                 tool_details: self.tool_details,
                 ..Self::default()
             };
+        }
+        #[cfg(test)]
+        {
+            self.folded_views += 1;
         }
         self.wrapped = false;
         self.side_wrapped = false;
@@ -419,3 +445,15 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
 mod tail_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "thinking_tests.rs"]
+mod thinking_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "frame_tests.rs"]
+mod frame_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "thinking_frame_tests.rs"]
+mod thinking_frame_tests;

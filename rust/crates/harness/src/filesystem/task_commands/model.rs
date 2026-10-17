@@ -120,6 +120,29 @@ where
             )
             .await?
         {
+            #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+            if io.is_none()
+                && let Some(executor) = &context.harness.workspace_tools
+            {
+                // Hook dispatch precedes provider dispatch. Cancellation must
+                // retain a claimed hook even when no model request was sent.
+                let issued = ToolContext::new(
+                    Arc::new(self.runtime.task_context(task, fence.clone()).await?),
+                    operation,
+                    "session-start",
+                    None,
+                )?;
+                executor
+                    .run_hooks(
+                        (&crate::hooks::Hooks::default(), [0; 32]),
+                        crate::hooks::HookEvent::SessionStart,
+                        Value::Null,
+                        &crate::tool::ToolRegistry::default(),
+                        issued,
+                        true,
+                    )
+                    .await?;
+            }
             return mail::reconciled(io);
         }
         if let Some(steering) = steering {
@@ -141,6 +164,8 @@ where
                     .saturating_sub(std::mem::size_of::<ModelTaskCommand>()) as u64,
             )?;
         }
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let manifest_digest = *command.context_manifest.descriptor().sha256();
         let (pipeline, tools) = BoundedContentFuture::new(io, || async {
             if command.summary_source.is_some() {
                 Ok((
@@ -153,6 +178,21 @@ where
             }
         })?
         .await?;
+        #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+        let pipeline = if command.summary_source.is_none() {
+            BoundedContentFuture::new(io, || {
+                self.session_start(
+                    pipeline,
+                    &tools,
+                    Arc::clone(&context),
+                    (fence, operation, reconciliation_only, manifest_digest),
+                    io,
+                )
+            })?
+            .await?
+        } else {
+            pipeline
+        };
         let input = TurnInput {
             operation_id: operation,
             input: command.input,

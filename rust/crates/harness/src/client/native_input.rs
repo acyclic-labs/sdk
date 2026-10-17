@@ -21,9 +21,11 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    animation: bool,
     documents: &mut crate::task_volume::ChangeStream,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
+        _ = animation_frame::<true>(animation) => Ok(None),
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {
@@ -37,6 +39,21 @@ pub async fn next_file_tui_event(
         },
     }
 }
+
+#[cfg(feature = "tui")]
+async fn animation_frame<const ENABLED: bool>(busy: bool) {
+    if !ENABLED || !busy {
+        return std::future::pending().await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(
+        crate::tui::Thinking::FRAME_MS,
+    ))
+    .await;
+}
+
+#[cfg(all(test, feature = "tui", not(acyclic_harness_loom)))]
+#[path = "native_input/animation.rs"]
+mod animation;
 
 /// Follow controlling-terminal input through the decoder retained by negotiation.
 /// Terminal waits use Tokio's blocking executor, never the bounded filesystem

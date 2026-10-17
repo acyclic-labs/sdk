@@ -1,6 +1,81 @@
 use super::*;
 use proptest::prelude::*;
 
+struct OriginalComparison(bool);
+impl OriginalComparison {
+    fn enter(old: bool) -> Self {
+        Self(OLD_BYTE_COMPARE.replace(old))
+    }
+}
+impl Drop for OriginalComparison {
+    fn drop(&mut self) {
+        OLD_BYTE_COMPARE.set(self.0);
+    }
+}
+
+#[test]
+fn ordered_prefixes_avoid_general_comparisons_at_n_and_two_n() {
+    for length in [12, 24, 64, 128] {
+        for late in [false, true] {
+            if late && length < 24 {
+                continue;
+            }
+            let a = vec![b'a'; length];
+            let mut b = a.clone();
+            b[if late { length - 1 } else { 8 }] = b'b';
+            let expected = a.cmp(&b);
+            let left = OwnedBytes::copy_from_slice(&a);
+            let right = OwnedBytes::copy_from_slice(&b);
+            for count in [1024, 2048] {
+                for old in [false, true] {
+                    let _restore = OriginalComparison::enter(old);
+                    FALLBACK_COMPARISONS.set(0);
+                    FALLBACK_BYTES.set(0);
+                    let allocation = acyclic_test_support::measure(|| {
+                        for _ in 0..count {
+                            assert_eq!(left.cmp(&right), expected);
+                        }
+                    });
+                    let calls = FALLBACK_COMPARISONS.get();
+                    let bytes = FALLBACK_BYTES.get();
+                    let expected_calls = if late { count } else { 0 };
+                    let expected_bytes = if late { (length - 16) * count } else { 0 };
+                    assert_eq!(calls, if old { count } else { expected_calls });
+                    assert_eq!(bytes, if old { length * count } else { expected_bytes });
+                    let bounded = calls == expected_calls && bytes == expected_bytes;
+                    assert_eq!(std::panic::catch_unwind(|| assert!(bounded)).is_ok(), !old);
+                    assert_eq!(allocation.count_total, 0);
+                    assert_eq!(allocation.bytes_total, 0);
+                }
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(128))]
+    // Integer prefixes must preserve byte ordering, including common prefixes,
+    // embedded zeroes, partial words, unequal lengths, and retained slices.
+    #[test]
+    fn word_comparisons_equal_independent_byte_order(
+        prefix in prop::collection::vec(any::<u8>(), 0..65),
+        a in prop::collection::vec(any::<u8>(), 0..65),
+        b in prop::collection::vec(any::<u8>(), 0..65),
+        cut in 0usize..129,
+    ) {
+        let a = [prefix.as_slice(), a.as_slice()].concat();
+        let b = [prefix.as_slice(), b.as_slice()].concat();
+        let left = OwnedBytes::from(a.clone());
+        let right = OwnedBytes::copy_from_slice(&b);
+        let end = cut.min(a.len());
+        let short = left.slice(..end);
+        acyclic_test_support::differential(
+            || (a.clone(), b.clone(), a.cmp(&b), a[..end].cmp(&b)),
+            || (left.to_vec(), right.to_vec(), left.cmp(&right), short.cmp(&right)),
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
     #[test]

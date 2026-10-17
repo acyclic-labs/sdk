@@ -22,6 +22,8 @@ struct LocalInner {
     omit_follow_wake: bool,
     // Lock order: publication -> durable_tails, after releasing provider state and journal.
     durable_tails: Mutex<std::collections::BTreeMap<StreamPath, u64>>,
+    #[cfg(feature = "test-support")]
+    persistence_cut: std::sync::OnceLock<Arc<dyn PersistenceCut>>,
 }
 
 impl LocalInner {

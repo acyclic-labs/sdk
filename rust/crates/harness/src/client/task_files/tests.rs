@@ -380,31 +380,70 @@ fn retained_task_selection_negative_control() {
     );
 }
 
-
 async fn replace_ui_sessions(sessions: &[u8], retain: bool) {
-    let volume=Arc::new(TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("sessions").unwrap()).await.unwrap());
-    let owner=wire::Authority { kind:wire::AggregateKind::Task as i32,id:"root".into() };
-    let mut client=TaskFileClient::observe(volume.as_ref(),&owner,128,65_536).await.unwrap();
-    let mut previous=None;
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("sessions").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "root".into(),
+    };
+    let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    let mut previous = None;
     for number in sessions {
-        let number=u128::from(*number);
-        let commands=crate::client::CommandSession::open(volume.clone(),uuid::Uuid::from_u128(number),65_536,128).await.unwrap();
-        let old=if let Some(identity)=previous {
-            let query=client.views().selection(&identity).unwrap().query().clone();
-            Some((identity,query.clone(),volume.snapshot(&query,128).await.unwrap()))
-        } else { None };
+        let number = u128::from(*number);
+        let commands = crate::client::CommandSession::open(
+            volume.clone(),
+            uuid::Uuid::from_u128(number),
+            65_536,
+            128,
+        )
+        .await
+        .unwrap();
+        let old = if let Some(identity) = previous {
+            let query = client.views().selection(&identity).unwrap().query().clone();
+            Some((
+                identity,
+                query.clone(),
+                volume.snapshot(&query, 128).await.unwrap(),
+            ))
+        } else {
+            None
+        };
         client.follow_commands(&commands).await.unwrap();
-        if let Some((identity,query,snapshot))=old {
-            if Some(identity)!=client.command_selection {
-                if retain { client.views.query_snapshot(query,snapshot,128,65_536).unwrap(); }
+        if let Some((identity, query, snapshot)) = old {
+            if Some(identity) != client.command_selection {
+                if retain {
+                    client
+                        .views
+                        .query_snapshot(query, snapshot, 128, 65_536)
+                        .unwrap();
+                }
                 assert!(client.views().selection(&identity).is_none());
             }
         }
-        let selection=client.views().selections().filter(|(_,files)|matches!(files.query(),Query::CommandSession { .. })).collect::<Vec<_>>();
-        assert_eq!(selection.len(),1);
-        assert_eq!(selection[0].1.query(), &Query::CommandSession {session:Component::new(uuid::Uuid::from_u128(number).to_string()).unwrap(),recent:32});
+        let selection = client
+            .views()
+            .selections()
+            .filter(|(_, files)| matches!(files.query(), Query::CommandSession { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(selection.len(), 1);
+        assert_eq!(
+            selection[0].1.query(),
+            &Query::CommandSession {
+                session: Component::new(uuid::Uuid::from_u128(number).to_string()).unwrap(),
+                recent: 32
+            }
+        );
         assert!(client.views().selection(&client.task_selection).is_some());
-        previous=Some(*selection[0].0);
+        previous = Some(*selection[0].0);
     }
 }
 proptest! {
@@ -418,6 +457,116 @@ proptest! {
 }
 #[test]
 fn retained_ui_session_projection_negative_control() {
-    futures::executor::block_on(replace_ui_sessions(&[1,2,1],false));
-    assert!(std::panic::catch_unwind(||futures::executor::block_on(replace_ui_sessions(&[1,2,1],true))).is_err());
+    futures::executor::block_on(replace_ui_sessions(&[1, 2, 1], false));
+    assert!(
+        std::panic::catch_unwind(|| futures::executor::block_on(replace_ui_sessions(
+            &[1, 2, 1],
+            true
+        )))
+        .is_err()
+    );
+}
+
+async fn checkpoint_model<const BROKEN: bool>() {
+    use futures::StreamExt as _;
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("checkpoint-frame").unwrap(),
+    )
+    .await
+    .unwrap();
+    let task = crate::TaskId::from_bytes([34; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let mut client = TaskFileClient::observe(&volume, &owner, 128, 65536)
+        .await
+        .unwrap();
+    let revision = client.presentation_revision();
+    let ignored = FileValue::new(FileKey::Goal, b"unrelated".to_vec());
+    volume
+        .append(volume.head().await.unwrap(), &ignored)
+        .await
+        .unwrap();
+    client.next_change().await.unwrap();
+    if BROKEN {
+        client.advance_presentation();
+    }
+    assert_eq!(
+        client.presentation_revision(),
+        revision,
+        "checkpoints must not invalidate presentation"
+    );
+    // The alternate File input path consumes another real checkpoint as well.
+    volume
+        .append(
+            volume.head().await.unwrap(),
+            &FileValue::new(FileKey::Goal, b"other".to_vec()),
+        )
+        .await
+        .unwrap();
+    let change = client.changes.next().await.unwrap().unwrap();
+    client.apply_change(change).unwrap();
+    assert_eq!(client.presentation_revision(), revision);
+    let query = Query::File(FileKey::Goal);
+    let mut documents = volume.observe(query.clone(), None, 128).await.unwrap();
+    client
+        .views_mut()
+        .query_snapshot(query, documents.snapshot.take().unwrap(), 128, 65536)
+        .unwrap();
+    let revision = client.presentation_revision();
+    let other = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Request(Component::new("draft").unwrap()),
+        },
+        b"draft".to_vec(),
+    );
+    volume
+        .append(volume.head().await.unwrap(), &other)
+        .await
+        .unwrap();
+    let change = documents.changes.next().await.unwrap().unwrap();
+    assert!(
+        change.file.is_none(),
+        "the authorized document query filters task writes"
+    );
+    let cursor = change.cursor.clone();
+    client.apply_change(change).unwrap();
+    client
+        .apply_change(crate::task_volume::Change {
+            cursor,
+            file: None,
+            files: vec![],
+            removed: vec![],
+        })
+        .unwrap();
+    assert_eq!(
+        client.presentation_revision(),
+        revision,
+        "non-document writes must not invalidate presentation"
+    );
+    volume
+        .append(
+            volume.head().await.unwrap(),
+            &FileValue::new(FileKey::Goal, b"visible goal".to_vec()),
+        )
+        .await
+        .unwrap();
+    client
+        .apply_change(documents.changes.next().await.unwrap().unwrap())
+        .unwrap();
+    assert!(client.presentation_revision() > revision);
+}
+
+#[test]
+fn filtered_checkpoints_and_non_document_writes_preserve_the_render_cut() {
+    futures::executor::block_on(checkpoint_model::<false>());
+}
+
+#[test]
+#[should_panic(expected = "checkpoints must not invalidate presentation")]
+fn checkpoint_invalidation_negative_control() {
+    futures::executor::block_on(checkpoint_model::<true>());
 }

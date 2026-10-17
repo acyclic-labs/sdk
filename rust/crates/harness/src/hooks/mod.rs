@@ -6,7 +6,11 @@ use serde_json::Value;
 use std::{future::Future, sync::Arc};
 
 pub(crate) mod imports;
-use imports::Document;
+pub(crate) use imports::Document;
+mod budget;
+#[cfg(feature = "filesystem")]
+pub(crate) mod effects;
+mod plan;
 mod snapshot;
 mod spec;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
@@ -38,6 +42,9 @@ pub struct Hooks {
 }
 
 impl Hooks {
+    pub(crate) fn append(&mut self, other: Self) {
+        self.bindings.extend(other.bindings);
+    }
     /// Media type for normalized rules retained as a configuration file.
     pub const MEDIA_TYPE: &'static str = "application/vnd.acyclic.hooks+json";
 
@@ -106,12 +113,12 @@ impl Hooks {
         Ok(())
     }
 
-    fn commands<'a>(
+    pub(crate) fn commands<'a>(
         &'a self,
         event: HookEvent,
         input: &'a Value,
         registry: &'a ToolRegistry,
-    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>>> {
+    ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
         let subject = match event {
             HookEvent::SessionStart => input.get("source"),
             HookEvent::PreToolUse | HookEvent::PostToolUse => input.get("tool_name"),
@@ -145,29 +152,43 @@ impl Hooks {
         event: HookEvent,
         input: &Value,
         registry: &ToolRegistry,
+        maximum_bytes: u64,
         mut execute: F,
     ) -> Result<HookOutput>
     where
-        F: FnMut(&Arc<HookSpec>) -> Fut,
+        F: FnMut(&Arc<HookSpec>, usize) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
-        let results =
-            futures::future::join_all(self.commands(event, input, registry)?.map(|hook| {
-                let execution = execute(hook);
-                async move { (hook.failure, execution.await) }
-            }))
-            .await;
+        let commands = self.commands(event, input, registry)?;
+        let count = commands.clone().count();
+        let quota = capture_quota(maximum_bytes, count);
+        let mut budget = budget::Budget::new(maximum_bytes)?;
+        let results = futures::future::join_all(commands.map(|hook| {
+            let execution = execute(hook, quota);
+            async move { (hook.failure, execution.await) }
+        }))
+        .await;
         let mut output = HookOutput::default();
         for (failure, result) in results {
-            output.apply(event, failure, result);
+            budget.apply(&mut output, event, failure, result);
         }
+        budget.finish(&mut output);
         Ok(output)
     }
 }
 
+// A static partition keeps total live capture storage bounded without a lock,
+// scheduling-dependent output truncation, or delaying concurrent hook dispatch.
+fn capture_quota(maximum: u64, count: usize) -> usize {
+    usize::try_from(maximum / (count.max(1) as u64))
+        .unwrap_or(usize::MAX)
+        .min(65_536)
+}
+
 mod output;
-pub use output::HookOutput;
+pub use output::{HookDiagnostic, HookOutput};
 
 mod native;
+pub(crate) use native::HookCheck;
 #[cfg(test)]
 mod tests;

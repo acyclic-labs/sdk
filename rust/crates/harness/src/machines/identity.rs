@@ -28,23 +28,18 @@ pub(super) fn machines_key(key: &IdempotencyKey) -> Result<MachinesKey> {
     .map_err(|error| Error::Invalid(error.to_string()))
 }
 
+/// Keeps the provider cause; only an uncertain mutation with a known operation becomes a receipt.
 pub(super) fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
-    match error {
-        ProviderError::NotFound(value) => Error::NotFound(value),
-        ProviderError::Conflict(value) => Error::Conflict(value),
-        ProviderError::Unsupported(value) => Error::Unsupported(value),
-        ProviderError::Invalid(value) | ProviderError::Rejected(value) => Error::Invalid(value),
-        ProviderError::Indeterminate(_) | ProviderError::Unavailable => operation.map_or_else(
-            || Error::Storage("Machines outcome is unknown".into()),
-            Error::Indeterminate,
-        ),
-        ProviderError::OperationIndeterminate(operation) => {
+    match (error, operation) {
+        (ProviderError::OperationIndeterminate(operation), _) => {
             Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
         }
-        ProviderError::CommandIndeterminate(machine) => Error::Storage(format!(
-            "Machines guest command outcome is unknown on machine {machine}"
-        )),
-        ProviderError::Failed => Error::Storage("Machines operation failed".into()),
-        ProviderError::Cancelled => Error::Cancelled,
+        (
+            ProviderError::Indeterminate(_)
+            | ProviderError::Unavailable
+            | ProviderError::CommandIndeterminate(_),
+            Some(operation),
+        ) => Error::Indeterminate(operation),
+        (cause, _) => Error::Machines(cause),
     }
 }

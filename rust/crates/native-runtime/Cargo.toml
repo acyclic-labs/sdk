@@ -45,6 +45,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 tempfile = "3.27.0"
 loom = "=0.7.2"
 

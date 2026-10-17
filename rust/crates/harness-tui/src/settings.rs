@@ -19,6 +19,8 @@ pub enum NotificationPolicy {
 pub struct UiSettings {
     /// scrollback lines.
     pub scrollback_lines: usize,
+    /// Render activity labels without animation.
+    pub reduced_motion: bool,
     /// wrap.
     pub wrap: bool,
     /// notifications.
