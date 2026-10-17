@@ -117,7 +117,7 @@ proptest! {
         let mut view = TranscriptSearch::default();
         let mut wrapped=crate::WrappedLines::default();
         wrapped.update(&source,0,width);
-        view.update(&mut wrapped,&query,0,selection());
+        view.update(&wrapped,&query,0,selection());
     settle(&mut view, &wrapped);
         prop_assert_eq!(view.count(),reference(&text,&query).len());
         let actual: String=painted(&view,&wrapped).iter().flat_map(|line| &line.spans).map(|span|span.content.as_ref()).collect();
@@ -158,7 +158,7 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
     ];
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
-    view.update(&mut wrapped, "strasse", 0, selection());
+    view.update(&wrapped, "strasse", 0, selection());
     settle(&mut view, &wrapped);
     let painted_rows = painted(&view, &wrapped);
     assert_eq!(view.count(), 2);
@@ -188,7 +188,7 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
         ["Straße", "STRASSE"]
     );
     wrapped.update(&source, 0, 3);
-    view.update(&mut wrapped, "strasse", 0, selection());
+    view.update(&wrapped, "strasse", 0, selection());
     settle(&mut view, &wrapped);
     assert_eq!(view.count(), 2, "wrapping must not split the search needle");
     assert!(view.selected_row(&wrapped, 1) > 0);
@@ -243,7 +243,7 @@ fn clearing_highlights_restores_the_same_wrapped_rows() {
     wrapped.update(&source, 0, 5);
     let ordinary = wrapped.rows().to_vec();
     let mut search = TranscriptSearch::default();
-    search.update(&mut wrapped, "strasse", 0, selection());
+    search.update(&wrapped, "strasse", 0, selection());
     settle(&mut search, &wrapped);
     assert_eq!(search.count(), 2);
     assert_ne!(painted(&search, &wrapped), ordinary);
@@ -265,7 +265,7 @@ fn partial_matches_preserve_every_style_boundary() {
     let mut wrapped = crate::WrappedLines::default();
     wrapped.update(&source, 0, 80);
     let mut search = TranscriptSearch::default();
-    search.update(&mut wrapped, "bc", 0, selection());
+    search.update(&wrapped, "bc", 0, selection());
     settle(&mut search, &wrapped);
     let rows = painted(&search, &wrapped);
     let spans = &rows[0].spans;
@@ -301,7 +301,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     wrapped.update(&[Line::raw("one one")], 0, 80);
     let mut search = TranscriptSearch::default();
     let red = Style::default().fg(Color::Red);
-    search.update(&mut wrapped, "one", 0, red);
+    search.update(&wrapped, "one", 0, red);
     settle(&mut search, &wrapped);
     assert_eq!(search.position(0), 1);
     assert!(
@@ -310,7 +310,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
             .add_modifier
             .contains(Modifier::REVERSED)
     );
-    search.update(&mut wrapped, "one", if INDEX { 1 } else { 0 }, red);
+    search.update(&wrapped, "one", if INDEX { 1 } else { 0 }, red);
     settle(&mut search, &wrapped);
     assert!(
         !painted(&search, &wrapped)[0].spans[0]
@@ -334,7 +334,7 @@ fn selected_theme_model<const INDEX: bool, const THEME: bool>() {
     );
     assert_eq!(search.position(1), 2);
     let blue = Style::default().fg(Color::Blue).bg(Color::Yellow);
-    search.update(&mut wrapped, "one", 1, if THEME { blue } else { red });
+    search.update(&wrapped, "one", 1, if THEME { blue } else { red });
     settle(&mut search, &wrapped);
     assert_eq!(
         painted(&search, &wrapped)[0].spans[0].style.fg,

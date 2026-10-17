@@ -1,4 +1,4 @@
-//! Shared widgets and TaskFileViews presentation for native clients.
+//! Shared widgets and ClientViews presentation for native clients.
 pub use acyclic_harness_tui::*;
 #[cfg(feature = "terminal")]
 mod render;

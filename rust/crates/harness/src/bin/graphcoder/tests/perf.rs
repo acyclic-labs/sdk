@@ -1,9 +1,8 @@
 //! Headless render-loop measurement over the executable's real composition:
-//! TaskFileViews, ClientRenderer, followed command files and CrosstermBackend.
+//! ClientViews, ClientRenderer, followed command files and CrosstermBackend.
 use acyclic_harness::{
     OperationId, client,
-    client::{CommandSession, TaskFileViews},
-    model::ModelEvent,
+    client::{ClientViews, CommandSession},
     task_volume::TaskVolume,
     tui::{
         ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
@@ -105,7 +104,7 @@ pub(super) fn transcript(lines: usize) -> String {
 pub(super) struct Rig {
     runtime: tokio::runtime::Runtime,
     owner: wire::Authority,
-    pub views: TaskFileViews,
+    pub views: ClientViews,
     files: CommandSession<MemoryStream>,
     renderer: ClientRenderer,
     pub input: PromptInput,
@@ -178,16 +177,8 @@ impl Rig {
             kind: wire::AggregateKind::Task as i32,
             id: "task".into(),
         };
-        let mut views = TaskFileViews::default();
-        views
-            .model_event(
-                &owner,
-                OperationId::from_bytes([1; 16]),
-                ModelEvent::Content {
-                    delta: transcript(lines),
-                },
-            )
-            .unwrap();
+        let mut views = super::file_views::empty();
+        super::file_views::append_text(&mut views, &owner.id, false, &transcript(lines));
         let output = Counter::default();
         let mut rig = Self {
             runtime,
@@ -323,15 +314,7 @@ impl Rig {
     }
 
     pub fn stream(&mut self, delta: &str) {
-        self.views
-            .model_event(
-                &self.owner,
-                OperationId::from_bytes([1; 16]),
-                ModelEvent::Content {
-                    delta: delta.into(),
-                },
-            )
-            .unwrap();
+        super::file_views::append_text(&mut self.views, &self.owner.id, false, delta);
     }
 
     pub fn measure(&mut self, run: impl FnOnce(&mut Self)) -> Work {

@@ -7,7 +7,7 @@ pub(super) struct Probe {
 
 impl TranscriptSearch {
     /// Navigate by source identity. A partial viewport never establishes a wrap.
-    pub(super) fn navigate(&mut self, projection: &WrappedLines, budget: usize) {
+    pub(super) fn navigate(&mut self, projection: TranscriptRows<'_>, budget: usize) {
         if self.steps == 0 || self.selected.is_none() {
             return;
         }
@@ -39,10 +39,12 @@ impl TranscriptSearch {
             }
         }
         let backwards = self.steps < 0;
-        let len = projection.index.text.len();
+        let len = projection.folded_len();
         let probe = self.navigation.get_or_insert_with(|| {
-            let row = projection.source_rows[anchor.start];
-            let folded = &projection.folded_rows[row];
+            let row = projection
+                .source_row(anchor.start)
+                .expect("match source row");
+            let folded = projection.folded_row(row).expect("match folded row");
             Probe {
                 range: if backwards {
                     0..folded.end
@@ -74,7 +76,7 @@ impl TranscriptSearch {
             range.clone(),
             true,
             |at| {
-                let found = projection.index.source(at, self.needle.len());
+                let found = projection.source(at, self.needle.len());
                 let eligible = probe.wrapped
                     || if backwards {
                         (found.start, found.end) < (anchor.start, anchor.end)

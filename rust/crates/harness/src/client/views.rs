@@ -251,6 +251,24 @@ impl ClientViews {
         self.selections()
             .find_map(|(key, files)| (key == identity).then_some(files))
     }
+    /// Retires a query's files and derived projections together.
+    pub fn remove_selection(&mut self, identity: &([u8; 32], [u8; 32])) {
+        if let Some(path) = std::iter::once(self.layout.root())
+            .chain(self.layout.full_fidelity())
+            .find(|path| {
+                self.agents
+                    .get(*path)
+                    .is_some_and(|agent| agent.files.contains_key(identity))
+            })
+            .cloned()
+        {
+            if let Some(agent) = self.agents.get_mut(&path) {
+                agent.files.remove(identity);
+            }
+            self.goal_sources
+                .retain(|goal, request| goal != identity && request != identity);
+        }
+    }
     pub(super) fn selection_mut(
         &mut self,
         identity: &([u8; 32], [u8; 32]),
