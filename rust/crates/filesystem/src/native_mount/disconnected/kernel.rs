@@ -21,9 +21,10 @@ pub(in crate::native_mount) struct Kernel {
     fixture: std::sync::OnceLock<Fixture>,
     pinned: std::sync::OnceLock<(RawFd, u64)>,
     state: Mutex<State>,
-    locks: Mutex<HashMap<(u64, u64), RawFd>>,
+    // Registry and destination flock state/wakeups are independent OS resources.
+    locks: [Mutex<HashMap<(u64, u64), RawFd>>; 2],
     gate: Mutex<bool>,
-    unlocked: Condvar,
+    unlocked: [Condvar; 2],
     acquired: Condvar,
 }
 struct Fixture {
@@ -53,9 +54,9 @@ impl Kernel {
                 live_detaches: 0,
                 mount_before_exit: 0,
             }),
-            locks: Mutex::new(HashMap::new()),
+            locks: std::array::from_fn(|_| Mutex::new(HashMap::new())),
             gate: Mutex::new(false),
-            unlocked: Condvar::new(),
+            unlocked: std::array::from_fn(|_| Condvar::new()),
             acquired: Condvar::new(),
         }
     }
@@ -110,9 +111,16 @@ impl Kernel {
         (metadata.dev(), metadata.ino())
     }
 
-    pub(in crate::native_mount) fn try_lock(&self, file: &File) -> io::Result<()> {
+    pub(in crate::native_mount) fn lock_domain(file: &File) -> usize {
+        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+        usize::from(
+            path.file_name() != Some(std::ffi::OsStr::new(super::super::NATIVE_REGISTRY_NAME)),
+        )
+    }
+
+    pub(in crate::native_mount) fn try_lock(&self, file: &File, domain: usize) -> io::Result<()> {
         let identity = Self::identity(file);
-        let mut locks = self.locks.lock().unwrap();
+        let mut locks = self.locks[domain].lock().unwrap();
         if let Some(owner) = locks.get(&identity) {
             if *owner == file.as_raw_fd() {
                 return Ok(());
@@ -124,10 +132,7 @@ impl Kernel {
         // Start the competing opener at the successful fence syscall. Its
         // opposite acquisition order is checked separately, avoiding schedules
         // that differ only in unrelated constructor/accounting instructions.
-        let path = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd()))?;
-        if path.file_name().is_some_and(|name| {
-            name.as_encoded_bytes().len() == super::super::NATIVE_FENCE_NAME_BYTES
-        }) {
+        if domain == 1 {
             *self.gate.lock().unwrap() = true;
             self.acquired.notify_all();
         }
@@ -142,29 +147,31 @@ impl Kernel {
     }
 
     pub(super) fn wait_for_retirement(&self) {
-        let mut locks = self.locks.lock().unwrap();
-        while !locks.is_empty() {
-            locks = self.unlocked.wait(locks).unwrap();
+        for (locks, unlocked) in self.locks.iter().zip(&self.unlocked) {
+            let mut owners = locks.lock().unwrap();
+            while !owners.is_empty() {
+                owners = unlocked.wait(owners).unwrap();
+            }
         }
     }
 
-    pub(in crate::native_mount) fn unlock(&self, file: &File) {
+    pub(in crate::native_mount) fn unlock(&self, file: &File, domain: usize) {
         let identity = Self::identity(file);
-        let mut locks = self.locks.lock().unwrap();
+        let mut locks = self.locks[domain].lock().unwrap();
         if locks.get(&identity) == Some(&file.as_raw_fd()) {
             locks.remove(&identity);
-            self.unlocked.notify_all();
+            self.unlocked[domain].notify_all();
         }
     }
 
-    pub(in crate::native_mount) fn wait_for_unlock(&self, file: &File) {
+    pub(in crate::native_mount) fn wait_for_unlock(&self, file: &File, domain: usize) {
         let identity = Self::identity(file);
-        let mut locks = self.locks.lock().unwrap();
+        let mut locks = self.locks[domain].lock().unwrap();
         while locks
             .get(&identity)
             .is_some_and(|fd| *fd != file.as_raw_fd())
         {
-            locks = self.unlocked.wait(locks).unwrap();
+            locks = self.unlocked[domain].wait(locks).unwrap();
         }
     }
 
