@@ -30,6 +30,8 @@ pub struct Screen<'a> {
     pub overlay: &'a [Line<'a>],
     /// Catalog-owned title of the selected modal view.
     pub overlay_title: &'a str,
+    /// The followed layout selects the local feedback input form.
+    pub feedback: bool,
     /// Status hints and model/usage summary.
     pub status: Line<'a>,
 }
@@ -67,7 +69,9 @@ impl Screen<'_> {
     /// Default follow-tail position; a followed layout file may override it.
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
         let height = self.areas(area, input).transcript.height;
-        if self.overlay.is_empty() {
+        if self.feedback {
+            0
+        } else if self.overlay.is_empty() {
             (self.reasoning.len() + self.transcript.len()).saturating_sub(usize::from(height))
         } else {
             self.overlay
@@ -166,7 +170,9 @@ impl Screen<'_> {
     ) -> ScreenAreas {
         let areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
-        if self.overlay.is_empty() {
+        if self.feedback {
+            frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
+        } else if self.overlay.is_empty() {
             for (row, line) in self
                 .reasoning
                 .iter()

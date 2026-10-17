@@ -142,7 +142,9 @@ const RESCAN_CALLS: &[&str] = &[
 ];
 
 fn minimal_rescan(heap: AllocationInfo, trace: &[&str]) -> bool {
-    heap.count_total == if cfg!(windows) { 330 } else { 337 } && trace == RESCAN_CALLS
+    // Main's lazy append-error change removes one discarded error allocation
+    // for each of the three host names and three checkout names in this fixture.
+    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace == RESCAN_CALLS
 }
 
 fn run(

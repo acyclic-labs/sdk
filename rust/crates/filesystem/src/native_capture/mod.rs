@@ -34,6 +34,8 @@ mod sparse_scan;
 use sparse::*;
 mod paths;
 use paths::*;
+#[cfg(all(test, feature = "memory"))]
+mod path_error_tests;
 mod names;
 use names::*;
 mod host_walk;

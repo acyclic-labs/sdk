@@ -325,17 +325,69 @@ impl<'a> KernelAccounting<'a> {
     /// Records and checks bounded work.
     #[inline]
     pub fn charge(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
-        self.check()?;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        charge_tests::redundant_allocation();
         match self {
-            Self::Standalone { work, budget, .. } => {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge(&delta, budget).map_err(Into::into)
             }
-            Self::BorrowedStandalone { work, budget, .. } => {
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
                 work.charge(&delta, budget).map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.charge(delta).map_err(Into::into),
+            Self::NativeOriginal { work, cancellation } => {
+                #[cfg(all(test, acyclic_fs_loom))]
+                if charge_model::split_charge() {
+                    work.admit(WorkCounters::UNCHARGED)?;
+                    cancellation.check()?;
+                    work.admit(delta)?;
+                    loom::thread::yield_now();
+                    return work.record_admitted(delta).map_err(Into::into);
+                }
+                work.state(|state| {
+                    // Preserve ledger failure, caller cancellation, proposed
+                    // work failure priority while keeping the leaf held.
+                    let native = crate::materializer::native_materialization_work_error;
+                    state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+                    cancellation.check()?;
+                    state.charge(delta).map_err(native).map_err(Into::into)
+                })
+            }
         }
+    }
+
+    pub(crate) fn perform<T>(
+        &mut self,
+        delta: WorkCounters,
+        effect: impl FnOnce() -> T,
+    ) -> Result<T, crate::FsError> {
+        #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
+        if super::effects::broken_reservation() {
+            self.admit(delta)?;
+            let output = effect();
+            self.record_completed(delta)?;
+            return Ok(output);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Self::NativeOriginal { work, cancellation } = self {
+            return super::effects::perform(work, cancellation, delta, effect);
+        }
+        self.admit(delta)?;
+        let output = effect();
+        self.record_completed(delta)?;
+        Ok(output)
     }
 
     /// Checks work before performing it.
@@ -428,3 +480,9 @@ impl<'a> KernelAccounting<'a> {
 #[cfg(test)]
 #[path = "accounting_tests.rs"]
 mod tests;
+
+#[cfg(all(test, not(target_arch = "wasm32"), not(acyclic_fs_loom)))]
+mod charge_tests;
+
+#[cfg(all(test, acyclic_fs_loom))]
+mod charge_model;

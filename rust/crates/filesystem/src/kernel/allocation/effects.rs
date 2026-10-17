@@ -11,6 +11,27 @@ pub(crate) fn broken_reservation() -> bool {
     OMIT_RESERVATION.with(std::cell::Cell::get)
 }
 
+pub(crate) fn perform<T>(
+    work: &NativeMaterializationWork,
+    cancellation: &CancellationToken,
+    delta: WorkCounters,
+    effect: impl FnOnce() -> T,
+) -> Result<T, FsError> {
+    struct Reserved<'a>(&'a NativeMaterializationWork, WorkCounters);
+    impl Drop for Reserved<'_> {
+        fn drop(&mut self) {
+            refund(self.0, &mut self.1);
+        }
+    }
+    let mut reserved = Reserved(work, WorkCounters::UNCHARGED);
+    reserve(work, cancellation, &mut reserved.1, delta, false)?;
+    // The effect runs outside the original leaf and ancestor resource locks.
+    // A panic returns unused credit; completion stays charged if cancelled.
+    let output = effect();
+    complete(work, cancellation, &mut reserved.1, delta)?;
+    Ok(output)
+}
+
 pub(crate) fn reserve(
     work: &NativeMaterializationWork,
     cancellation: &CancellationToken,
