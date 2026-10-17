@@ -6,6 +6,9 @@ mod discovery;
 mod drivers;
 mod execution;
 mod expectations;
+mod goal_execution;
+mod goals;
+mod goals_tests;
 mod limits_tests;
 mod local_admission;
 mod local_case;
@@ -48,7 +51,10 @@ use acyclic_harness::context::CompactionPolicy;
 use drivers::run_execution as run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
-use std::{path::Path, time::Instant};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use scenario_data::discover;
 
@@ -313,7 +319,7 @@ async fn run_scenarios(started: Instant) -> TestResult {
             let case_path = path.clone();
             let result: TestResult = tokio::spawn(async move {
                 let case = scenario::load_value(&root, &case_path)?;
-                drivers::run(case).await?;
+                tokio::time::timeout(Duration::from_secs(5), drivers::run(case)).await??;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await

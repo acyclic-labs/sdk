@@ -1,0 +1,3 @@
+{"expect":{"view":{"status":"blocked","reason":"Waiting for service."},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: Waiting for service.\n---\nShip the change\n"}},"seed":{"GOAL.md":
+    "---\nstatus: blocked\nreason: Waiting for service.\n---\nShip the change\n"},"policy":{"max_continuations":2}}

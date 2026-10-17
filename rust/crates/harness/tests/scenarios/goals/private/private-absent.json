@@ -1,0 +1,2 @@
+{"turns":["settle-0"],"expect":{"text":"settle-0","result":{"tasks":1,"continuations":0,"requests":1},"files":{"GOAL.md"
+    :null},"view":null,"view_error":"not found"}}

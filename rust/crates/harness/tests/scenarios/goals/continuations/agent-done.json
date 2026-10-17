@@ -1,0 +1,4 @@
+{"turns":["settled-0",[{"type":"event","kind":"tool_call","call_id":"goal-write","name":"write","arguments":{"path":".volumes/scratch/GOAL.md",
+    "text":"---\nstatus: done\n---\nShip the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event",
+    "kind":"completed","metadata":null}],"Settled"],"expect":{"result":{"tasks":2,"continuations":1,"requests":3},"view":{"status":
+    "done"},"files":{"GOAL.md":"---\nstatus: done\n---\nShip the change\n"}},"max_steps":2}

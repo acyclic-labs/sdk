@@ -1,0 +1,6 @@
+{"prompt":"Include tests in the goal","turns":[[{"type":"event","kind":"tool_call","call_id":"write-0","name":"write","arguments":{
+    "path":".volumes/scratch/GOAL.md","text":"---\nstatus: active\n---\nShip the change and its tests\n","media_type":"text/markdown","display_name":
+    "GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"expect":{"request_prompt":
+    "Include tests in the goal","result":{"requests":2},"view":{"markdown":"Ship the change and its tests\n"},"files":{"GOAL.md":
+    "---\nstatus: active\n---\nShip the change and its tests\n"}},"seed":{"GOAL.md":"Ship the change\n"},"max_steps":2,"policy":
+    null}

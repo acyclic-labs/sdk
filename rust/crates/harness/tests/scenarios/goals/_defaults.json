@@ -1,0 +1,9 @@
+{"driver":"goal-local","prompt":"Continue working toward GOAL.md.","turns":["Settled"],
+ "policy":{},"expect":{"text":"Settled","request_prompt":"Continue working toward GOAL.md.",
+ "result":{"tasks":1,"continuations":0,"requests":1},
+ "frames":[{"canonical_event_json":{"kind":"declared"}},
+   {"canonical_event_json":{"kind":"completed","outcome":{"Succeeded":{}}}}],
+ "statuses":[{"state":"pending","attention":false,"parent":null},
+   {"state":"completed","attention":true,"parent":null}],
+ "view":{"status":"active","markdown":"Ship the change\n","reason":null},
+ "files":{"GOAL.md":"Ship the change\n"},"runtime_error":null,"view_error":null}}

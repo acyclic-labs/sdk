@@ -205,40 +205,33 @@ async fn bash_family_rejects_corrupted_stdout_with_the_same_persisted_bytes() ->
     reject_changed_command(
         "default-tools/bash/stdout.json",
         "printf changed > plans/a.md; printf CORRUPTED",
+        "model tool result",
     )
     .await
 }
 
 #[tokio::test]
 async fn fs_family_rejects_executing_a_rejected_command() -> crate::TestResult {
-    reject_changed_command("default-tools/fs/whitespace.json", "add plans/a.md").await
+    reject_changed_command(
+        "default-tools/fs/whitespace.json",
+        "add plans/a.md",
+        "model tool result",
+    )
+    .await
 }
 
 #[tokio::test]
 async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
-    let baseline = super::scenario::load_value(&root, &root.join("default-tools/fs/empty.json"))?;
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(baseline.clone()),
+    // A valid command distinguishes dispatch from the original schema rejection.
+    reject_changed_command(
+        "default-tools/fs/empty.json",
+        "add plans/a.md",
+        "scripted model turns",
     )
-    .await??;
-    let mut broken = baseline;
-    broken["turns"][0][0]["arguments"]["command"] = " \t\n".into();
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        super::drivers::run(broken),
-    )
-    .await?
-    .expect_err("parser dispatch passed unchanged schema-rejection expectations");
-    assert!(
-        error.to_string().contains("scripted model turns"),
-        "{error}"
-    );
-    Ok(())
+    .await
 }
 
-async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult {
+async fn reject_changed_command(path: &str, command: &str, expected: &str) -> crate::TestResult {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = super::scenario::load_value(&root, &root.join(path))?;
     tokio::time::timeout(
@@ -254,7 +247,7 @@ async fn reject_changed_command(path: &str, command: &str) -> crate::TestResult 
     )
     .await?
     .expect_err("a different command passed unchanged family expectations");
-    assert!(error.to_string().contains("model tool result"), "{error}");
+    assert!(error.to_string().contains(expected), "{error}");
     Ok(())
 }
 

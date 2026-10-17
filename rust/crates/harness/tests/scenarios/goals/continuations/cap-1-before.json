@@ -1,0 +1,4 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"finish-before-cap","name":"write","arguments":{"path":".volumes/scratch/GOAL.md","text":
+    "---\nstatus: done\n---\nShip the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":
+    "completed","metadata":null}],"Settled"],"expect":{"result":{"requests":2},"view":{"status":"done"},"files":{"GOAL.md":
+    "---\nstatus: done\n---\nShip the change\n"}},"policy":{"max_continuations":1},"max_steps":2}

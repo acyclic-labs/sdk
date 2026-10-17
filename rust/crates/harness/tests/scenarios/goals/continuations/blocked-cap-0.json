@@ -1,0 +1,3 @@
+{"expect":{"view":{"status":"blocked","reason":"Keep the original reason."},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: Keep the original reason.\n---\nShip the change\n"}},"seed":{"GOAL.md":
+    "---\nstatus: blocked\nreason: Keep the original reason.\n---\nShip the change\n"},"policy":{"max_continuations":0}}
