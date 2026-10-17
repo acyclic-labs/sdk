@@ -1,14 +1,18 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::{ReadOperations, WriteOperations};
 use crate::native_host::unix_name;
+#[cfg(all(test, acyclic_fs_loom))]
+use crate::native_mount::disconnected::kernel::Helper as RecoveryHelper;
 use crate::{NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
+#[cfg(not(all(test, acyclic_fs_loom)))]
+use acyclic_native_runtime::ProcessTree as RecoveryHelper;
 use std::ffi::CStr;
 use std::time::Instant;
 
 /// Crash recovery paired with the original destination fence.
 #[derive(Default)]
 pub(in crate::native_mount) struct FuseRecoveryControl {
-    pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
+    pub(super) helper: Option<RecoveryHelper>,
     pub(super) detached: bool,
     pub(in crate::native_mount) pinned: Option<std::fs::File>,
     pub(in crate::native_mount) pinned_parent: Option<std::fs::File>,
@@ -65,7 +69,7 @@ impl FuseRecoveryControl {
         }
         let program = fuse_recovery_helper(work)?;
         unix_name(destination.as_os_str(), &mut &*work, |path, work| {
-            acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+            RecoveryHelper::spawn_closed_measured(
                 program,
                 &[c"-u", c"-q", c"-z", c"--", path],
                 work.runtime_meter().as_ref(),
@@ -133,12 +137,13 @@ impl FuseRecoveryControl {
         let path = CStr::from_bytes_with_nul(&buffer[..length])
             .map_err(|_| NativeMountError::InvalidDestination)?;
         work.charge(WriteOperations.delta(1))?;
-        // SAFETY: the descriptor and its terminated proc pathname remain held.
-        if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
-            self.detached = true;
-            return Ok(());
-        }
-        let error = std::io::Error::last_os_error();
+        let error = match pinned_umount(path) {
+            Ok(()) => {
+                self.detached = true;
+                return Ok(());
+            }
+            Err(error) => error,
+        };
         if error.raw_os_error() == Some(libc::EINVAL) {
             self.detached = true;
             return Ok(());
@@ -172,7 +177,7 @@ impl FuseRecoveryControl {
         let path = CStr::from_bytes_with_nul(&buffer[..length])
             .map_err(|_| NativeMountError::InvalidDestination)?;
         let program = fuse_recovery_helper(work)?;
-        acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+        RecoveryHelper::spawn_closed_measured(
             program,
             &[c"-u", c"-q", c"-z", c"--", path],
             work.runtime_meter().as_ref(),
@@ -195,12 +200,30 @@ pub(super) fn fuse_recovery_stat(
     path: &CStr,
     work: &mut &NativeMaterializationWork,
 ) -> Result<rustix::fs::Stat, NativeTreeMaterializationError> {
+    #[cfg(all(test, acyclic_fs_loom))]
+    if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
+        return Ok(kernel.helper_stat());
+    }
     loop {
         work.charge(ReadOperations.delta(1))?;
         match rustix::fs::stat(path) {
             Err(rustix::io::Errno::INTR) => continue,
             result => return result.map_err(|error| std::io::Error::from(error).into()),
         }
+    }
+}
+
+fn pinned_umount(path: &CStr) -> std::io::Result<()> {
+    #[cfg(all(test, acyclic_fs_loom))]
+    if crate::native_mount::disconnected::kernel::current().is_some() {
+        // Force the unprivileged helper path, whose fence must span helper exit.
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    // SAFETY: the caller retains the descriptor and terminated pathname.
+    if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 

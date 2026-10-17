@@ -10,6 +10,10 @@ pub(super) struct Pinned {
 }
 
 fn stat(file: impl std::os::fd::AsFd, flags: AtFlags) -> std::io::Result<rustix::fs::Statx> {
+    #[cfg(all(test, acyclic_fs_loom))]
+    if let Some(kernel) = super::kernel::current() {
+        return kernel.stat(file.as_fd().as_raw_fd(), flags);
+    }
     rustix::fs::statx(
         file,
         c"",
@@ -61,10 +65,8 @@ impl Pinned {
     }
 }
 
-impl Destination for Pinned {
-    type Fence<'a> = NativeMountRecoveryOwner;
-
-    fn disconnected(&self) -> Result<bool, NativeMountError> {
+impl Pinned {
+    pub(super) fn disconnected(&self) -> Result<bool, NativeMountError> {
         match stat(&self.file, AtFlags::STATX_FORCE_SYNC) {
             Ok(_) => Ok(false),
             Err(error) if error.kind() == std::io::ErrorKind::NotConnected => Ok(true),
@@ -72,11 +74,15 @@ impl Destination for Pinned {
         }
     }
 
-    fn acquire(&self) -> Result<Self::Fence<'_>, NativeMountError> {
+    pub(super) fn acquire(&self) -> Result<NativeMountRecoveryOwner, NativeMountError> {
         NativeMountRecoveryOwner::acquire_in_parent(&self.path, &self.parent)
     }
 
-    fn still_current(&self) -> Result<bool, NativeMountError> {
+    pub(super) fn still_current(&self) -> Result<bool, NativeMountError> {
+        #[cfg(all(test, acyclic_fs_loom))]
+        if let Some(kernel) = super::kernel::current() {
+            return Ok(kernel.current_stat().stx_mnt_id == self.mount);
+        }
         let metadata = match rustix::fs::statx(
             &self.parent,
             self.path
@@ -95,7 +101,10 @@ impl Destination for Pinned {
         Ok(metadata.stx_mask & StatxFlags::MNT_ID.bits() != 0 && metadata.stx_mnt_id == self.mount)
     }
 
-    fn detach(&self, mut fence: Self::Fence<'_>) -> Result<(), NativeMountError> {
+    pub(super) fn detach(
+        &self,
+        mut fence: NativeMountRecoveryOwner,
+    ) -> Result<(), NativeMountError> {
         let work = NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),

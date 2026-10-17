@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::{Arc as RecoveryArc, Condvar, Mutex, RetirementSender};
 
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -82,17 +83,19 @@ pub(super) struct NativeRecoveryState {
 
 pub(super) struct NativeRecoveryShared {
     destination: PathBuf,
-    pub(super) state: std::sync::Mutex<Option<NativeRecoveryState>>,
-    wake: std::sync::Condvar,
+    // Lock order: recovery state -> work ledger -> native syscall boundary.
+    // The retirement worker and helper never acquire this lock in reverse.
+    pub(super) state: Mutex<Option<NativeRecoveryState>>,
+    wake: Condvar,
     // Path and state data retire before their allocation.
     _custody: crate::NativeAllocation,
 }
 
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
-    pub(super) shared: Arc<NativeRecoveryShared>,
+    pub(super) shared: RecoveryArc<NativeRecoveryShared>,
     // Closing the only sender asks the prestarted worker to retire the owner.
-    retirement: std::sync::mpsc::SyncSender<()>,
+    retirement: RetirementSender,
 }
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
@@ -101,6 +104,12 @@ impl std::fmt::Debug for NativeMountRecoveryOwner {
             .debug_struct("NativeMountRecoveryOwner")
             .field("cleanup", &self.cleanup_state())
             .finish()
+    }
+}
+
+impl Drop for NativeMountRecoveryOwner {
+    fn drop(&mut self) {
+        let _ = self.retirement.send(());
     }
 }
 
@@ -148,8 +157,8 @@ impl NativeMountRecoveryOwner {
             .grow(std::mem::size_of::<NativeRecoveryShared>() as u64)?;
         let closure = original.claim(
             std::mem::size_of::<(
-                Arc<NativeRecoveryShared>,
-                std::sync::mpsc::Receiver<()>,
+                RecoveryArc<NativeRecoveryShared>,
+                crate::sync::mpsc::Receiver<()>,
                 crate::NativeAllocation,
             )>() as u64,
             1,
@@ -165,9 +174,9 @@ impl NativeMountRecoveryOwner {
             backend_write_operations: 1,
             ..Default::default()
         })?;
-        let shared = Arc::new(NativeRecoveryShared {
+        let shared = RecoveryArc::new(NativeRecoveryShared {
             destination: destination.0,
-            state: std::sync::Mutex::new(Some(NativeRecoveryState {
+            state: Mutex::new(Some(NativeRecoveryState {
                 identity: None,
                 #[cfg(windows)]
                 destination_identity: None,
@@ -178,11 +187,11 @@ impl NativeMountRecoveryOwner {
                 measured_cleanup_failed: false,
                 final_close,
             })),
-            wake: std::sync::Condvar::new(),
+            wake: Condvar::new(),
             _custody: destination.1,
         });
-        let (retirement, receiver) = std::sync::mpsc::sync_channel(1);
-        let worker = (Arc::clone(&shared), receiver, closure);
+        let (retirement, receiver) = crate::sync::retirement_channel();
+        let worker = (RecoveryArc::clone(&shared), receiver, closure);
         crate::native_host::NativeHostWork::started_io(
             &mut worker.2.work(),
             crate::WorkCounters {
@@ -190,7 +199,7 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(std::thread::Builder::new().spawn(move || {
+        drop(crate::sync::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?);
         let owner = Self { shared, retirement };
@@ -428,6 +437,13 @@ impl NativeRecoveryState {
             if self.guard.is_none() {
                 return Ok(false);
             }
+            #[cfg(all(test, acyclic_fs_loom, target_os = "linux"))]
+            if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release) {
+                self.guard
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?
+                    .release(&mut &*work)?;
+            }
             if !self.driver_step_complete {
                 recover_driver_with_work(&mut self.control, destination, remove_destination, work)?;
                 if self.control.controls_pending() {
@@ -522,8 +538,8 @@ pub(super) fn remove_empty_recovery_destination(
 
 fn retire_recovery(
     (shared, receiver, _closure): (
-        Arc<NativeRecoveryShared>,
-        std::sync::mpsc::Receiver<()>,
+        RecoveryArc<NativeRecoveryShared>,
+        crate::sync::mpsc::Receiver<()>,
         crate::NativeAllocation,
     ),
 ) {

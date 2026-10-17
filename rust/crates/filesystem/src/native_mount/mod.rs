@@ -268,6 +268,7 @@ mod filesystem;
 pub use filesystem::*;
 mod error;
 pub use error::*;
+mod fence_io;
 mod recovery;
 pub use recovery::*;
 mod startup;
