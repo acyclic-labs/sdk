@@ -70,7 +70,7 @@ pub struct Output {
 }
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(4096)].to_vec();
+        let bytes = bytes.to_vec();
         Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
             guard.writer().write(&bytes)
         })
@@ -173,7 +173,7 @@ impl Tty {
         Ok(self.decoder.take_events())
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(4096)].to_vec();
+        let bytes = bytes.to_vec();
         Owner::run(&self.owner, deadline, move |guard| {
             guard.writer().write(&bytes)
         })

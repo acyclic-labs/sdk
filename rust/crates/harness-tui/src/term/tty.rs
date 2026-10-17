@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
@@ -70,7 +70,9 @@ impl RawTty {
                 return Err(io::ErrorKind::TimedOut.into());
             }
             match self.file.write(bytes) {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause(deadline),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    writable(&self.file, deadline)?;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 result => return result,
             }
@@ -107,17 +109,46 @@ impl Write for RawTty {
     }
 }
 
-// Nonblocking reads work on /dev/tty on macOS, where poll(2) is unsupported.
-// A single owner and bounded 1 ms waits avoid a reader thread or global lock.
-fn pause(deadline: Instant) {
-    std::thread::sleep(
-        Duration::from_millis(1).min(deadline.saturating_duration_since(Instant::now())),
-    );
+// Wait for the terminal to drain instead of sleeping: a frame larger than the
+// PTY queue (1 KiB on macOS) otherwise pays a fixed sleep per partial write.
+#[cfg(not(target_vendor = "apple"))]
+fn writable(file: &File, deadline: Instant) -> io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let timeout = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| io::ErrorKind::InvalidInput)?;
+    match poll(&mut [PollFd::new(file, PollFlags::OUT)], Some(&timeout)) {
+        Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+// Darwin's poll(2) reports POLLNVAL for /dev/tty; select(2) supports it.
+#[cfg(target_vendor = "apple")]
+fn writable(file: &File, deadline: Instant) -> io::Result<()> {
+    use nix::sys::{
+        select::{FD_SETSIZE, FdSet, select},
+        time::{TimeVal, TimeValLike},
+    };
+    use std::os::fd::{AsFd, AsRawFd};
+    if usize::try_from(file.as_raw_fd()).ok().is_none_or(|fd| fd >= FD_SETSIZE) {
+        // Not representable in an fd_set: retry the write without waiting.
+        std::thread::yield_now();
+        return Ok(());
+    }
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let mut timeout = TimeVal::microseconds(i64::try_from(remaining.as_micros()).unwrap_or(i64::MAX));
+    let mut set = FdSet::new();
+    set.insert(file.as_fd());
+    match select(None, None, &mut set, None, &mut timeout) {
+        Ok(_) | Err(nix::errno::Errno::EINTR) => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<()> {

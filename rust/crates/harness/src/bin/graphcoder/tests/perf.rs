@@ -1,0 +1,505 @@
+//! Headless render-loop measurement over the executable's real composition:
+//! TaskFileViews, ClientRenderer, followed command files and CrosstermBackend.
+use acyclic_harness::{
+    OperationId, client,
+    client::{CommandSession, TaskFileViews},
+    model::ModelEvent,
+    task_volume::TaskVolume,
+    tui::{
+        ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
+        key_event::{
+            InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+        },
+        ratatui::{
+            Frame, Terminal,
+            backend::{Backend, ClearType, CrosstermBackend, WindowSize},
+            buffer::Cell,
+            layout::{Position, Size},
+        },
+        term::FrameTerminal,
+    },
+    wire,
+};
+use acyclic_stream::{MemoryStream, StreamPath};
+use std::{cell::RefCell, io, rc::Rc, sync::Arc};
+
+struct NoFiles;
+impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+
+/// Bytes, write calls and flushes reaching the terminal output half.
+#[derive(Clone, Default)]
+struct Counter(Rc<RefCell<(Vec<u8>, u64, u64)>>);
+impl io::Write for Counter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut device = self.0.borrow_mut();
+        device.0.extend_from_slice(bytes);
+        device.1 += 1;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.borrow_mut().2 += 1;
+        Ok(())
+    }
+}
+
+/// The removed output path, kept as the independent baseline: CrosstermBackend
+/// writing every queued command to the device (size supplied, as in FrameTerminal).
+pub(super) struct PerCommand {
+    inner: CrosstermBackend<Counter>,
+    size: Size,
+}
+impl Backend for PerCommand {
+    type Error = io::Error;
+    fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
+        self.inner.draw(content)
+    }
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        Ok(Position::ORIGIN)
+    }
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+    fn size(&self) -> io::Result<Size> {
+        Ok(self.size)
+    }
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        Ok(WindowSize { columns_rows: self.size, pixels: Size::default() })
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+}
+
+/// Mixed Markdown: long wrapped prose, fenced code and tool-like output.
+pub(super) fn transcript(lines: usize) -> String {
+    let prose = "Streaming **markdown** prose with `inline code`, links and enough words to wrap several times at ordinary terminal widths; ".repeat(3);
+    let mut text = String::new();
+    let mut count = 0;
+    let mut block = 0;
+    while count < lines {
+        match block % 4 {
+            0 => text.push_str(&format!("## Section {block}\n\n{prose}\n\n")),
+            1 => text.push_str("```rust\nfn main() {\n    let value = compute(42);\n    println!(\"{value}\");\n}\n```\n\n"),
+            2 => text.push_str("```text\n$ cargo test\n   Compiling graphcoder v0.2.0\n    Finished test target\ntest result: ok. 12 passed\n```\n\n"),
+            _ => text.push_str(&format!("- item {block} with **bold** text\n- second item\n\n")),
+        }
+        count = text.bytes().filter(|byte| *byte == b'\n').count();
+        block += 1;
+    }
+    text
+}
+
+pub(super) struct Rig {
+    runtime: tokio::runtime::Runtime,
+    owner: wire::Authority,
+    pub views: TaskFileViews,
+    files: CommandSession<MemoryStream>,
+    renderer: ClientRenderer,
+    pub input: PromptInput,
+    prompt_files: client::PromptFiles,
+    viewport: Viewport,
+    screen: Output,
+    size: Size,
+    output: Counter,
+    areas: ScreenAreas,
+    maximum_scroll: usize,
+    pub frames: u64,
+}
+
+enum Output {
+    Frame(FrameTerminal<Counter>),
+    PerCommand(Terminal<PerCommand>),
+}
+
+impl Output {
+    fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) {
+        match self {
+            Self::Frame(terminal) => terminal.draw(size, render).unwrap(),
+            Self::PerCommand(terminal) => {
+                terminal.backend_mut().size = size;
+                terminal.draw(render).unwrap();
+            }
+        }
+    }
+}
+
+/// Totals for one measured interval.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Work {
+    pub frames: u64,
+    pub bytes: u64,
+    pub writes: u64,
+    pub flushes: u64,
+    pub allocations: u64,
+}
+
+impl Rig {
+    /// `per_command` selects the removed output path as an independent baseline.
+    pub fn with_output(lines: usize, width: u16, height: u16, per_command: bool) -> Self {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let files = runtime.block_on(async {
+            let volume = Arc::new(
+                TaskVolume::open(
+                    Arc::new(MemoryStream::default()),
+                    StreamPath::new("perf").unwrap(),
+                )
+                .await
+                .unwrap(),
+            );
+            CommandSession::open(
+                volume,
+                OperationId::from_bytes([7; 16]).to_string().parse().unwrap(),
+                1 << 20,
+                64,
+            )
+            .await
+            .unwrap()
+        });
+        let owner = wire::Authority {
+            kind: wire::AggregateKind::Task as i32,
+            id: "task".into(),
+        };
+        let mut views = TaskFileViews::default();
+        views
+            .model_event(
+                &owner,
+                OperationId::from_bytes([1; 16]),
+                ModelEvent::Content {
+                    delta: transcript(lines),
+                },
+            )
+            .unwrap();
+        let output = Counter::default();
+        let mut rig = Self {
+            runtime,
+            owner,
+            views,
+            files,
+            renderer: ClientRenderer::default(),
+            input: PromptInput::new(Editor::new("")),
+            prompt_files: client::PromptFiles::default(),
+            viewport: Viewport::default(),
+            screen: if per_command {
+                Output::PerCommand(
+                    Terminal::new(PerCommand {
+                        inner: CrosstermBackend::new(output.clone()),
+                        size: Size::new(width, height),
+                    })
+                    .unwrap(),
+                )
+            } else {
+                Output::Frame(
+                    FrameTerminal::new(output.clone(), Size::new(width, height), false).unwrap(),
+                )
+            },
+            size: Size::new(width, height),
+            output,
+            areas: ScreenAreas::default(),
+            maximum_scroll: 0,
+            frames: 0,
+        };
+        rig.frame();
+        rig
+    }
+
+    /// One iteration of view.rs before its event wait: fold, configure, lay out, draw.
+    pub fn frame(&mut self) {
+        let Self {
+            renderer,
+            views,
+            owner,
+            files,
+            input,
+            prompt_files,
+            screen,
+            viewport,
+            size,
+            ..
+        } = self;
+        renderer.update(views, owner);
+        prompt_files.refresh(files, input).unwrap();
+        input.refresh_completions();
+        let back = client::tui_scroll(files).unwrap();
+        renderer.configure(views, owner, files).unwrap();
+        input.busy = renderer.is_busy();
+        let size = *size;
+        renderer
+            .layout(files, input, size.width, size.height)
+            .unwrap();
+        let mut maximum_scroll = 0;
+        let mut areas = ScreenAreas::default();
+        let view = renderer.screen_for(files).unwrap();
+        screen.draw(size, |frame| {
+            maximum_scroll = view.tail_scroll(frame.area(), input);
+            let scroll = maximum_scroll.saturating_sub(back);
+            areas = view.render(frame, input, viewport, scroll, 1000);
+        });
+        self.areas = areas;
+        self.maximum_scroll = maximum_scroll;
+        self.frames += 1;
+    }
+
+    /// view.rs after its wait: prompt input, file effects, then prompt persistence.
+    pub fn apply(&mut self, event: InputEvent) {
+        let effects = self.input.event(
+            event,
+            PromptBox::input_area(self.areas.prompt),
+            &mut self.viewport,
+            1000,
+        );
+        let Self {
+            runtime,
+            files,
+            input,
+            prompt_files,
+            areas,
+            maximum_scroll,
+            ..
+        } = self;
+        runtime.block_on(async {
+            for effect in effects {
+                client::file_tui_input(
+                    files,
+                    &NoFiles,
+                    effect,
+                    usize::from(areas.transcript.height),
+                    *maximum_scroll,
+                )
+                .await
+                .unwrap();
+            }
+            prompt_files.save(files, input).await.unwrap();
+        });
+    }
+
+    /// The executable renders once per received event or file change.
+    pub fn deliver(&mut self, events: impl IntoIterator<Item = InputEvent>) {
+        for event in events {
+            self.apply(event);
+            self.frame();
+        }
+    }
+
+    pub fn resize(&mut self, width: u16, height: u16) {
+        self.size = Size::new(width, height);
+    }
+
+    pub fn scroll_back(&mut self, rows: u32) {
+        let Self { runtime, files, .. } = self;
+        runtime.block_on(async {
+            files
+                .write_state(
+                    client::CommandFileRoot::Session,
+                    "layout.json",
+                    &serde_json::json!({ "transcript_back": rows }),
+                )
+                .await
+                .unwrap();
+        });
+        self.frame();
+    }
+
+    pub fn stream(&mut self, delta: &str) {
+        self.views
+            .model_event(
+                &self.owner,
+                OperationId::from_bytes([1; 16]),
+                ModelEvent::Content {
+                    delta: delta.into(),
+                },
+            )
+            .unwrap();
+    }
+
+    pub fn measure(&mut self, run: impl FnOnce(&mut Self)) -> Work {
+        let (bytes, writes, flushes) = self.counts();
+        let frames = self.frames;
+        let allocations = acyclic_test_support::measure(|| run(self)).count_total;
+        let (b, w, f) = self.counts();
+        Work {
+            frames: self.frames - frames,
+            bytes: b - bytes,
+            writes: w - writes,
+            flushes: f - flushes,
+            allocations,
+        }
+    }
+
+    fn counts(&self) -> (u64, u64, u64) {
+        let device = self.output.0.borrow();
+        (device.0.len() as u64, device.1, device.2)
+    }
+
+    /// Every byte the device received since construction.
+    pub fn device_bytes(&self) -> Vec<u8> {
+        self.output.0.borrow().0.clone()
+    }
+}
+
+pub(super) fn wheel(up: bool) -> InputEvent {
+    InputEvent::Mouse(MouseEvent {
+        kind: if up {
+            MouseEventKind::ScrollUp
+        } else {
+            MouseEventKind::ScrollDown
+        },
+        column: 10,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+pub(super) fn key(code: KeyCode) -> InputEvent {
+    InputEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+type Scenario = (&'static str, usize, fn(&mut Rig));
+
+fn scenarios() -> Vec<Scenario> {
+    vec![
+        ("wheel burst x500", 500, |rig| {
+            rig.deliver((0..500).map(|_| wheel(true)))
+        }),
+        ("page up x50", 50, |rig| {
+            rig.deliver((0..50).map(|_| key(KeyCode::PageUp)))
+        }),
+        ("page down x50 (from top)", 50, |rig| {
+            rig.deliver((0..50).map(|_| key(KeyCode::PageDown)))
+        }),
+        ("type 200 keys, 4 KiB prompt", 200, |rig| {
+            rig.deliver((0..200).map(|i| key(KeyCode::Char((b'a' + (i % 26) as u8) as char))))
+        }),
+        ("resize x20 (100<->120 cols)", 20, |rig| {
+            for i in 0..20 {
+                rig.resize(if i % 2 == 0 { 120 } else { 100 }, 40);
+                rig.deliver([InputEvent::Resize(0, 0)]);
+            }
+        }),
+        ("stream 500 deltas, scrolled back", 500, |rig| {
+            for i in 0..500 {
+                rig.stream(if i % 25 == 24 { "word.\n\n" } else { "word " });
+                rig.frame();
+            }
+        }),
+        ("stream 500 deltas, at tail", 500, |rig| {
+            for i in 0..500 {
+                rig.stream(if i % 25 == 24 { "word.\n\n" } else { "word " });
+                rig.frame();
+            }
+        }),
+        ("idle frame x100 (no change)", 100, |rig| {
+            for _ in 0..100 {
+                rig.frame();
+            }
+        }),
+    ]
+}
+
+fn prepare(rig: &mut Rig, name: &str) {
+    if name.starts_with("type") {
+        rig.input.editor.set_text(&"prompt text ".repeat(340), 0);
+        rig.frame();
+    }
+    if name.contains("scrolled back") {
+        rig.scroll_back(100);
+    } else if name.contains("from top") {
+        rig.scroll_back(u32::MAX);
+    }
+}
+
+/// Release: `PERF_LINES=1000,10000,100000 cargo test --release -p graphcoder
+/// --bin graphcoder perf::baseline -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurement table, not an assertion"]
+fn baseline() {
+    let lines = std::env::var("PERF_LINES").unwrap_or_else(|_| "1000,10000".into());
+    println!("| scenario | lines | output | events | frames | bytes/event | writes/event | allocs/event | us/event |");
+    println!("|---|---|---|---|---|---|---|---|---|");
+    for lines in lines.split(',').map(|n| n.parse::<usize>().unwrap()) {
+        for per_command in [true, false] {
+            for (name, events, run) in scenarios() {
+                let mut rig = Rig::with_output(lines, 100, 40, per_command);
+                prepare(&mut rig, name);
+                let start = std::time::Instant::now();
+                let work = rig.measure(run);
+                let elapsed = start.elapsed();
+                let per = |value: u64| value as f64 / events as f64;
+                println!(
+                    "| {name} | {lines} | {} | {events} | {} | {:.0} | {:.1} | {:.0} | {:.1} |",
+                    if per_command { "per-command" } else { "frame" },
+                    work.frames,
+                    per(work.bytes),
+                    per(work.writes),
+                    per(work.allocations),
+                    elapsed.as_secs_f64() * 1e6 / events as f64,
+                );
+            }
+        }
+    }
+}
+
+/// Exact property of the production output path.
+fn assert_one_write_per_frame(work: &Work) {
+    assert_eq!(
+        work.writes, work.frames,
+        "device writes must equal frames: {work:?}"
+    );
+}
+
+/// Page, wheel, typing, resize and streaming frames through one rig.
+fn mixed(rig: &mut Rig) {
+    rig.deliver((0..4).map(|_| key(KeyCode::PageUp)));
+    rig.deliver((0..4).map(|_| wheel(true)));
+    rig.deliver((0..4).map(|_| key(KeyCode::PageDown)));
+    rig.deliver("typed".chars().map(|c| key(KeyCode::Char(c))));
+    rig.resize(90, 30);
+    rig.frame();
+    for _ in 0..4 {
+        rig.stream("streamed words ");
+        rig.frame();
+    }
+}
+
+#[test]
+fn every_frame_is_one_device_write_independent_of_transcript_length() {
+    let mut work = Vec::new();
+    for lines in [150, 300] {
+        // The removed per-command path is the independent baseline.
+        let mut old = Rig::with_output(lines, 100, 40, true);
+        let mut new = Rig::with_output(lines, 100, 40, false);
+        let before = old.measure(mixed);
+        let after = new.measure(mixed);
+        assert_eq!(new.device_bytes(), old.device_bytes(), "identical terminal bytes");
+        assert_eq!(after.frames, before.frames);
+        assert_eq!(after.bytes, before.bytes);
+        assert_eq!(after.allocations, before.allocations, "retained frame buffer");
+        assert!(before.writes > 10 * before.frames, "baseline issues per-command writes");
+        assert_one_write_per_frame(&after);
+        work.push(after);
+    }
+    assert_eq!(work[0].writes, work[1].writes);
+    assert_eq!(work[0].frames, work[1].frames);
+}
+
+#[test]
+#[should_panic(expected = "device writes must equal frames")]
+fn negative_control_per_command_output_is_detected() {
+    let mut rig = Rig::with_output(150, 100, 40, true);
+    let work = rig.measure(mixed);
+    assert_one_write_per_frame(&work);
+}
