@@ -8,7 +8,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::Arc;
 
-// Lock order: owner state -> either syscall domain. The namespace and flock
+// Lock order: owner state -> one namespace, flock or opener-gate lock. Kernel
 // locks never nest or call an owner/ledger. Fixture metadata is immutable before
 // actors start; it is not a synchronization dependency between syscalls.
 // Arc owns only the fake syscall fixture; all protocol synchronization, including
