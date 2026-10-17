@@ -4,7 +4,7 @@
 //! including the subagent family over a loopback Session. On the cloud, the
 //! executor families are compared and the subagent family's refusals pinned.
 use super::{
-    TestResult, execution,
+    TestResult, execution, remote_swarm,
     resume::{self, Remote},
     scenario::Scenario,
     scenario_data,
@@ -130,7 +130,7 @@ impl Drop for Loopback {
     }
 }
 
-async fn loopback(provider: Arc<MemoryStream>) -> TestResult<Loopback> {
+async fn loopback<P: StreamProvider + 'static>(provider: Arc<P>) -> TestResult<Loopback> {
     use acyclic_stream::{grpc, session, wire};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
@@ -412,8 +412,14 @@ async fn scenario_families_match_between_memory_and_local_cloud_streams() -> Tes
     if refused != cloud_refusals() {
         return Err(format!("the cloud's Streams now refuse {refused:?}").into());
     }
+    // A native SwarmClient on the cloud's Session is refused at discovery,
+    // with the pinned cause.
+    let swarm = remote_swarm::refused(remote.clone(), &remote.session_client()?, "swarm").await?;
+    if swarm.to_string() != swarm_refusal().to_string() {
+        return Err(format!("the cloud refused the swarm client with {swarm}").into());
+    }
     println!(
-        "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the subagent family is refused: {refused:?}",
+        "local cloud: Stream conformance passed; {} executor scenarios matched; a killed turn resumed from the cloud journal; the swarm client is refused ({swarm}); the subagent family is refused: {refused:?}",
         executor_cases.len()
     );
     Ok(())
@@ -438,4 +444,75 @@ async fn killed_turn_resumes_from_a_loopback_journal() -> TestResult {
     resume::kill_and_resume(&loopback.remote, loopback.client.clone()).await?;
     // Negative control: without a journaled prefix there is nothing to resume.
     resume::resume_unjournaled(loopback.client.clone()).await
+}
+
+/// How a harness SwarmClient reports the cloud's refusal of its live children
+/// discovery: the harness carries a Streams cause as `Error::Storage` text.
+fn swarm_refusal() -> acyclic_harness::Error {
+    StreamError::Unsupported.into()
+}
+
+#[tokio::test]
+async fn native_swarm_client_follows_a_loopback_session_and_detects_divergence() -> TestResult {
+    let reply = "Plan the work.";
+    let memory = Arc::new(MemoryStream::default());
+    let executor = Arc::new(acyclic_stream::session::runtime::PlatformExecutor);
+    let in_process = acyclic_stream::session::Client::in_process(memory.clone(), executor);
+    let left = remote_swarm::follow(memory, &in_process, "swarm", reply).await?;
+    let shared = loopback(Arc::new(MemoryStream::default())).await?;
+    let session = shared.client.session_client()?;
+    let right = remote_swarm::follow(shared.client.clone(), &session, "swarm", reply).await?;
+    if left != right {
+        return Err(format!(
+            "swarm views differ
+in process: {left}
+loopback: {right}"
+        )
+        .into());
+    }
+    // Negative controls: a different reply changes the views; agents
+    // publishing each other's reply and status, or a re-split reply, fail
+    // the oracle.
+    let changed = remote_swarm::follow(shared.client.clone(), &session, "other", "Do it.").await?;
+    if changed == right {
+        return Err("the swarm views ignore the reply".into());
+    }
+    let swapped = |id: usize| usize::from(id == 0);
+    let crossed = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "crossed",
+        reply,
+        (swapped, None),
+    )
+    .await;
+    if crossed.is_ok() {
+        return Err("agents publishing each other's payloads passed".into());
+    }
+    // The same reply delivered as two chunks is a different view.
+    let resplit = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "resplit",
+        reply,
+        (|id| id, Some(10)),
+    )
+    .await;
+    if resplit.is_ok() {
+        return Err("a re-split reply passed".into());
+    }
+    // A Session refusing discovery as the cloud does matches the pin; one
+    // refusing it for an unrelated cause does not.
+    for (cause, matches) in [
+        (StreamError::Unsupported, true),
+        (StreamError::AccessDenied, false),
+    ] {
+        let refusing = loopback(Arc::new(Refusing(MemoryStream::default(), cause.clone()))).await?;
+        let session = refusing.client.session_client()?;
+        let error = remote_swarm::refused(refusing.client.clone(), &session, "swarm").await?;
+        if (error.to_string() == swarm_refusal().to_string()) != matches {
+            return Err(format!("refusing with {cause:?} failed the swarm with {error}").into());
+        }
+    }
+    Ok(())
 }
