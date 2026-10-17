@@ -419,6 +419,7 @@ pub(super) fn clone_authored_path(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(test, feature = "native-watch"))]
 pub(super) fn clone_borrowed_authored_descriptor(
     authored: &AuthoredMutation,
     accounting: &mut KernelAccounting<'_>,

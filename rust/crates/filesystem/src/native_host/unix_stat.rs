@@ -1,5 +1,6 @@
 use super::*;
 
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn root_path_identity<W: NativeHostWork>(
     path: &Path,
     work: &mut W,

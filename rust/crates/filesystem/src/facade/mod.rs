@@ -186,7 +186,7 @@ mod workspace_creation;
 
 pub use attributes::NamedAttributeWriteMode;
 use authored_compile::clone_authored_path;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "native-watch")))]
 use authored_compile::clone_borrowed_authored_descriptor;
 use authored_compile::push_authored_operation;
 pub use authored_model::AuthoredMutation;

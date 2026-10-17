@@ -9,6 +9,7 @@ pub(crate) struct NativeCleanupWrite {
     >,
 }
 impl NativeCleanupWrite {
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn bind_current_work(
         &mut self,
         current: &NativeMaterializationWork,

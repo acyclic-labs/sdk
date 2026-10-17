@@ -43,6 +43,7 @@ impl CheckoutRoots {
         })
     }
 
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn replicate(
         &self,
         accounting: &mut KernelAccounting<'_>,

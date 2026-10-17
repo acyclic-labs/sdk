@@ -142,6 +142,7 @@ impl NativeMaterializationWork {
         work.capture_origin = None;
         self.retain_source(work)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn with_capture_custody(
         &self,
         capture: &Arc<crate::demand::CaptureTransientCustody>,

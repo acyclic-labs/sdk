@@ -11,12 +11,15 @@ pub(crate) trait SourceDemandReadWork:
         operation: impl FnOnce(&dyn acyclic_native_runtime::NativeReadMeter) -> T,
     ) -> T;
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T;
+    #[cfg(any(test, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<NativeMaterializationWork> {
         None
     }
+    #[cfg(any(test, feature = "native-watch"))]
     fn with_ordinary_work<T>(&mut self, _: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         None
     }
+    #[cfg(any(test, feature = "native-watch"))]
     fn is_native_original(&self) -> bool {
         self.native_source_work().is_some()
     }
@@ -48,9 +51,11 @@ pub(crate) trait SourceDemandReadWork:
         self.check()?;
         self.with_original_leaf(|work| work.claim_allocation(bytes, operations, delta))
     }
+    #[cfg(any(test, feature = "native-watch"))]
     fn remaining(&mut self) -> Result<WorkBudget, DemandError> {
         self.with_original_leaf(|work| work.remaining())
     }
+    #[cfg(any(test, feature = "native-watch"))]
     fn merge(&mut self, delta: WorkCounters) -> Result<(), DemandError> {
         self.with_original_leaf(|work| work.merge(delta, work.live_allocation_bytes()))
     }
@@ -60,6 +65,7 @@ impl SourceDemandReadWork for DemandWork {
     fn with_original_leaf<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> T {
         operation(self)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     fn with_ordinary_work<T>(&mut self, operation: impl FnOnce(&mut DemandWork) -> T) -> Option<T> {
         Some(operation(self))
     }
@@ -80,6 +86,7 @@ impl SourceDemandReadWork for DemandWork {
 }
 
 impl SourceDemandReadWork for NativeMaterializationWork {
+    #[cfg(any(test, feature = "native-watch"))]
     fn native_source_work(&self) -> Option<NativeMaterializationWork> {
         Some(self.clone())
     }
@@ -144,6 +151,7 @@ impl NativeHostWork for NativeMaterializationWork {
         self.with_original_leaf(NativeHostWork::reserve_cleanup_write)
     }
     #[cfg(any(target_os = "linux", all(test, unix)))]
+    #[cfg(any(test, feature = "native-watch"))]
     fn cancel_cleanup_write(&mut self, reservation: u64) {
         self.with_original_leaf(|work| work.cancel_cleanup_write(reservation));
     }

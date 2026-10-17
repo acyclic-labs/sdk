@@ -7,7 +7,9 @@ use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
 };
-use crate::performance::{WorkBudget, WorkCounters};
+#[cfg(any(test, feature = "native-watch"))]
+use crate::performance::WorkBudget;
+use crate::performance::WorkCounters;
 use cap_std::fs::Dir;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -50,7 +52,9 @@ use record::sync_held_descriptor_once;
 use record::windows_name_packet;
 mod work;
 pub(crate) use work::*;
+#[cfg(any(windows, test, feature = "native-watch"))]
 mod cwd;
+#[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use cwd::*;
 #[cfg(unix)]
 mod unix_path;
@@ -72,9 +76,9 @@ mod reader;
 pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "native-mount")))]
 mod unix_metadata;
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "native-mount")))]
 pub(crate) use unix_metadata::*;
 mod links;
 mod unix_stat;
@@ -92,6 +96,7 @@ pub(crate) use windows_metadata::*;
 mod sparse;
 mod tree;
 pub(crate) use sparse::*;
+#[cfg(any(windows, test, feature = "native-watch"))]
 mod ranges;
 #[cfg(windows)]
 mod yielding;
@@ -100,6 +105,7 @@ mod yielding;
     any(feature = "native-mount", test)
 ))]
 pub use metadata::NativeMetadataError;
+#[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::HostRoot;

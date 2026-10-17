@@ -1,6 +1,7 @@
 use super::*;
 
 impl HostRoot {
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn create_file<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -32,6 +33,7 @@ impl HostRoot {
             )
         })
     }
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
         path: &NativePath,
@@ -65,6 +67,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn symlink<W: SourceDemandReadWork>(
         &self,
         target: &OsStr,
@@ -120,6 +123,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn bind_unix_socket<W: SourceDemandReadWork>(
         &self,
         path: &Path,
@@ -223,6 +227,7 @@ impl HostRoot {
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "native-mount"))]
 fn bind_unix_socket_in<W: SourceDemandReadWork>(
     parent: &Dir,
     leaf: &std::ffi::CStr,

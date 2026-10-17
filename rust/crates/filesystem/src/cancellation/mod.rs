@@ -123,6 +123,7 @@ impl CancellationToken {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Self, crate::NativeTreeMaterializationError> {
@@ -229,6 +230,7 @@ impl CancellationToken {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn prepare_cancel_cleanup(
         &self,
         wait: Option<&Self>,
@@ -360,6 +362,7 @@ impl CancellationToken {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn prepare_cancelled_measured(
         &self,
         allocations: &mut crate::kernel::allocation::AllocationLedger,

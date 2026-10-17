@@ -99,6 +99,7 @@ fn exchange_kernel<W: SourceDemandReadWork>(
 }
 
 /// Recovers the exact entry request recorded under the held parent.
+#[cfg(any(windows, test, feature = "native-mount"))]
 pub(crate) fn recover_native_entry_exchange<W: SourceDemandReadWork>(
     parent: &cap_std::fs::Dir,
     name: &Path,

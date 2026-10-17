@@ -3,6 +3,7 @@ use super::*;
 pub(crate) enum NativeOpenOptions {
     Read,
     ReadWrite,
+    #[cfg(any(test, feature = "native-mount"))]
     CreateNew,
     #[cfg(feature = "local")]
     ReadWriteCreateNew,
@@ -131,6 +132,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         let disposition = match options {
             NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
             NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
+            #[cfg(any(test, feature = "local", feature = "native-mount"))]
             _ => nt::FILE_CREATE,
         };
         let access = if matches!(options, NativeOpenOptions::Read) {
@@ -159,6 +161,7 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
         let mode = match options {
             NativeOpenOptions::Read => libc::O_RDONLY,
             NativeOpenOptions::ReadWrite => libc::O_RDWR,
+            #[cfg(any(test, feature = "native-mount"))]
             NativeOpenOptions::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
             #[cfg(feature = "local")]
             NativeOpenOptions::ReadWriteCreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
@@ -265,6 +268,7 @@ pub(super) fn remove_unix_named_leaf<W: NativeHostWork>(
     })
 }
 
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn prepare_ascii_leaf<const N: usize>(
     bytes: [u8; N],
     work: &NativeMaterializationWork,
@@ -302,6 +306,7 @@ pub(crate) fn prepare_ascii_leaf<const N: usize>(
     Ok(name)
 }
 
+#[cfg(any(test, feature = "native-mount"))]
 pub(crate) fn remove_ascii_leaf<W: NativeHostWork, const N: usize>(
     parent: &Dir,
     name: &[NativeUnit; N],
