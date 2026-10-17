@@ -8,7 +8,7 @@ pub(crate) use tokio::sync::Mutex;
 mod primitives;
 #[cfg(any(
     test,
-    target_arch = "wasm32",
+    all(feature = "wasm", target_arch = "wasm32"),
     acyclic_harness_loom,
     feature = "filesystem",
     feature = "mcp-stdio",

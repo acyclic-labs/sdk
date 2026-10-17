@@ -139,7 +139,10 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
-#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+#[cfg(any(
+    all(feature = "wasm", target_arch = "wasm32"),
+    acyclic_harness_loom
+))]
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;

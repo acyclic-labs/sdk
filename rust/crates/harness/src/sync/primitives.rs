@@ -18,7 +18,7 @@ pub(crate) use loom::sync::atomic;
     not(acyclic_harness_loom),
     any(
         test,
-        target_arch = "wasm32",
+        all(feature = "wasm", target_arch = "wasm32"),
         feature = "filesystem",
         feature = "mcp-stdio",
         feature = "mcp-http"
