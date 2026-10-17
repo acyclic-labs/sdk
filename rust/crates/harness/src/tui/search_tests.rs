@@ -10,6 +10,7 @@ use crate::{
     },
 };
 use acyclic_stream::{MemoryStream, StreamPath};
+use proptest::prelude::*;
 use std::sync::Arc;
 struct NoFiles;
 impl crate::conversation::ContentResidencyVerifier for NoFiles {}
@@ -357,4 +358,151 @@ async fn enter_mid_count_keeps_the_selected_row_during_background_frames() {
         );
     }
     assert!(files.take_request().is_none());
+}
+
+async fn tool_scenario<const OMIT_TOOLS: bool>(needle: &str, width: u16) {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("tool-find").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let task = TaskId::from_bytes([46; 16]);
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: task.to_string(),
+    };
+    let root = format!(".tasks/{task}/turns/0");
+    for (path, bytes, channel) in [
+        (
+            format!("{root}/chunks/0"),
+            b"Answer text".to_vec(),
+            Some(Channel::Text),
+        ),
+        (
+            format!("{root}/tools/call/request.json"),
+            serde_json::to_vec(&serde_json::json!({"name":needle,"arguments":{}})).unwrap(),
+            None,
+        ),
+        (
+            format!("{root}/tools/call/stdout/0"),
+            format!("only {needle}\n").into_bytes(),
+            None,
+        ),
+        (
+            format!("{root}/tools/call/result.json"),
+            br#"{"success":true,"exit_code":0}"#.to_vec(),
+            None,
+        ),
+    ] {
+        let mut file = FileValue::new(FileKey::parse(&path).unwrap(), bytes);
+        file.channel = channel;
+        volume
+            .append(volume.head().await.unwrap(), &file)
+            .await
+            .unwrap();
+    }
+    let session = uuid::Uuid::from_bytes([47; 16]);
+    let mut files = CommandSession::open(volume.clone(), session, 65_536, 128)
+        .await
+        .unwrap();
+    files
+        .write_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"renderer":"ratatui","tool_details":true}),
+        )
+        .await
+        .unwrap();
+    files.write_state(CommandFileRoot::Session,"layout.json", &serde_json::json!({"open_view":"find","view_input":"find","search_query":needle,"search_index":0})).await.unwrap();
+    let client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    let mut renderer = ClientRenderer::default();
+    renderer.update(client.views(), &owner);
+    renderer.configure(client.views(), &owner, &files).unwrap();
+    let mut input = PromptInput::default();
+    PromptFiles::default().refresh(&files, &mut input).unwrap();
+    paint_frame(&mut renderer, &files, &input, width);
+    if OMIT_TOOLS {
+        // Previous production source: visible tools never enter the search.
+        renderer.search = super::super::TranscriptSearch::default();
+        renderer
+            .search
+            .update(&renderer.wrapped_transcript, needle, 0, Default::default());
+    }
+    while renderer.search.pending() {
+        if OMIT_TOOLS {
+            renderer.search.advance(&renderer.wrapped_transcript, 64);
+        } else {
+            renderer.search_progress().await;
+        }
+    }
+    assert_eq!(
+        renderer.search.count(),
+        2,
+        "Find must cover every rendered row"
+    );
+    let mut selected = Vec::new();
+    for index in [0, 1, 0] {
+        files.write_state(CommandFileRoot::Session,"layout.json", &serde_json::json!({"open_view":"find","view_input":"find","search_query":needle,"search_index":index})).await.unwrap();
+        let frame = paint_frame(&mut renderer, &files, &input, width);
+        let rows = super::super::TranscriptRows::new(
+            &renderer.wrapped_transcript,
+            &renderer.wrapped_tools,
+        );
+        let row = renderer.search.selected_row(rows, index);
+        assert!(
+            row >= renderer.wrapped_transcript.rows().len(),
+            "tool-only matches navigate into the tool tail"
+        );
+        selected.push(row);
+        assert!(
+            frame.content.iter().any(|cell| cell
+                .modifier
+                .contains(Modifier::UNDERLINED | Modifier::REVERSED)),
+            "tool matches must be painted by the same source"
+        );
+    }
+    assert!(selected[0] < selected[1]);
+    assert_eq!(selected[0], selected[2]);
+    let replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    let reopened = CommandSession::open(volume, session, 65_536, 128)
+        .await
+        .unwrap();
+    let mut restored = ClientRenderer::default();
+    restored.update(replay.views(), &owner);
+    restored
+        .configure(replay.views(), &owner, &reopened)
+        .unwrap();
+    assert_eq!(
+        paint_frame(&mut restored, &reopened, &input, width),
+        paint_frame(&mut renderer, &files, &input, width)
+    );
+    assert_eq!(restored.search.count(), 2);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    // Canonical tool request/output files must be searchable, navigable and
+    // highlighted through the real followed client, including after reopen.
+    #[test]
+    fn find_covers_followed_tool_headings_and_output(suffix in "[a-z]{0,8}", width in 40u16..90) {
+        futures::executor::block_on(tool_scenario::<false>(&format!("unique_{suffix}"), width));
+    }
+}
+
+#[test]
+fn unicode_tool_headings_and_output_share_the_find_source() {
+    futures::executor::block_on(tool_scenario::<false>("Straße", 60));
+}
+
+#[test]
+#[should_panic(expected = "Find must cover every rendered row")]
+fn omitted_followed_tool_source_negative_control() {
+    futures::executor::block_on(tool_scenario::<true>("unique_needle", 60));
 }

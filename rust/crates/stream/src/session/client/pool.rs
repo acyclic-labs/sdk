@@ -333,8 +333,7 @@ impl Pool {
             }
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
-                let error =
-                    StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
+                let error = StreamError::from_session_close(&closed.code);
                 if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
                     && let Some(ready) = route.ready.take()
                 {

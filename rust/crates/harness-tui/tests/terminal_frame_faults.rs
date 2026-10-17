@@ -45,7 +45,7 @@ impl Write for Faulty {
             } else {
                 buf.len().min(self.at - bytes.len())
             };
-            bytes.extend_from_slice(&buf[..room]);
+            bytes.extend_from_slice(buf.get(..room).unwrap_or(buf));
             return Ok(room);
         }
         drop(bytes);
@@ -57,7 +57,7 @@ impl Write for Faulty {
             Fault::Persistent => Err(io::ErrorKind::TimedOut.into()),
             Fault::Panic => {
                 self.spent = true;
-                panic!("injected writer panic");
+                std::panic::resume_unwind(Box::new("injected writer panic"));
             }
         }
     }
@@ -126,7 +126,7 @@ fn run<D: Present>(
     device: impl FnOnce(Faulty) -> D,
     at: usize,
     fault: Fault,
-) -> (Vec<u8>, bool, bool) {
+) -> io::Result<(Vec<u8>, bool, bool)> {
     let bytes = Rc::new(RefCell::new(Vec::new()));
     let healed = Rc::new(Cell::new(false));
     let faulty = Faulty {
@@ -136,7 +136,7 @@ fn run<D: Present>(
         spent: false,
         healed: Rc::clone(&healed),
     };
-    let mut terminal = FrameTerminal::new(device(faulty), SIZE).unwrap();
+    let mut terminal = FrameTerminal::new(device(faulty), SIZE)?;
     let mut failed = false;
     let mut closed_at_failure = true;
     for (index, cursor) in scenes().into_iter().enumerate() {
@@ -163,7 +163,7 @@ fn run<D: Present>(
     );
     assert!(!open, "teardown left a synchronized update open: {bytes:?}");
     assert!(visible, "teardown left the cursor hidden: {bytes:?}");
-    (bytes, failed, visible)
+    Ok((bytes, failed, visible))
 }
 
 fn journaled(faulty: Faulty) -> RestoreGuard<Faulty> {
@@ -172,11 +172,11 @@ fn journaled(faulty: Faulty) -> RestoreGuard<Faulty> {
 
 #[test]
 fn every_fault_at_every_byte_closes_the_update_and_shows_the_cursor() {
-    let (clean, failed, _) = run(journaled, usize::MAX, Fault::Transient);
+    let (clean, failed, _) = run(journaled, usize::MAX, Fault::Transient).unwrap();
     assert!(!failed);
     for fault in [Fault::Transient, Fault::Persistent, Fault::Panic] {
         for at in 0..=clean.len() {
-            run(journaled, at, fault);
+            run(journaled, at, fault).unwrap();
         }
     }
 }
@@ -203,10 +203,10 @@ fn normal_teardown_shows_a_hidden_cursor() {
 #[test]
 #[should_panic(expected = "left")]
 fn negative_control_unjournaled_frames_are_detected() {
-    let clean = run(Unjournaled, usize::MAX, Fault::Transient).0;
+    let clean = run(Unjournaled, usize::MAX, Fault::Transient).unwrap().0;
     for fault in [Fault::Transient, Fault::Persistent, Fault::Panic] {
         for at in 0..=clean.len() {
-            run(Unjournaled, at, fault);
+            run(Unjournaled, at, fault).unwrap();
         }
     }
 }

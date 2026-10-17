@@ -86,14 +86,15 @@ proptest! {
         let mut sequence = 0;
         for (index, &(key, size, phase)) in commands.iter().enumerate() {
             let key = format!("key-{key}");
-            let body = vec![index as u8; size];
+            let byte = index.to_le_bytes()[0];
+            let body = vec![byte; size];
             let before = contents(&state);
             let identity = Some(wire::MutationIdentity { idempotency_key: format!("attempt-{index}") });
-            let digest = [index as u8; 32];
+            let digest = [byte; 32];
             let mut expected = model.clone();
             expected.insert(key.clone(), body.clone());
             let bytes: usize = expected.values().map(Vec::len).sum();
-            let admitted = phase == 0 && bytes <= 24 && 1 + expected.len() + receipts + 1 <= 12;
+            let admitted = phase == 0 && bytes <= 24 && 1 + expected.len() + receipts < 12;
             let result: Result<wire::ObjectInfo, Error> = core.mutate_locked_engine(
                 &mut state, (digest, &identity), |_| unreachable!("fresh identity"),
                 |next| {

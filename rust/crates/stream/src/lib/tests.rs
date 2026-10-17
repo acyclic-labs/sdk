@@ -29,6 +29,31 @@ mod error_code_tests {
         }
         assert_eq!(StreamError::from_code("stream_not_found"), None);
     }
+
+    #[test]
+    fn session_close_codes_keep_refusals_typed() {
+        for error in StreamError::ALL {
+            assert_eq!(StreamError::from_session_close(error.code()), error);
+        }
+        for (code, error) in [
+            ("unimplemented", StreamError::Unsupported),
+            ("permission_denied", StreamError::AccessDenied),
+            ("unauthenticated", StreamError::AccessDenied),
+            ("resource_exhausted", StreamError::Capacity),
+            ("invalid_argument", StreamError::InvalidArgument),
+            ("not_found", StreamError::NotFound),
+        ] {
+            assert_eq!(StreamError::from_session_close(code), error, "{code}");
+        }
+        // Negative control: only an unknown code is unavailability.
+        for code in ["internal", "unknown", "", "stream_not_found"] {
+            assert_eq!(
+                StreamError::from_session_close(code),
+                StreamError::Unavailable,
+                "{code}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

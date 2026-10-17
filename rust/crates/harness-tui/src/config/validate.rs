@@ -23,7 +23,7 @@ pub(super) fn parse(file: ConfigFile, scope: Scope, text: &str) -> Result<Value,
     check(
         &value,
         &schema,
-        &schema["$defs"],
+        schema.get("$defs").unwrap_or(&Value::Null),
         "$",
         &mut |path, kind, detail| errors.push(error(path, kind, detail)),
     );
@@ -148,25 +148,24 @@ fn check(
             }
         }
     }
-    if let Some(number) = value.as_u64() {
-        if schema["minimum"].as_u64().is_some_and(|min| number < min)
-            || schema["maximum"].as_u64().is_some_and(|max| number > max)
-        {
-            emit(
-                path.into(),
-                DiagnosticKind::OutOfRange,
-                "value outside schema bounds".into(),
-            );
-        }
+    if let Some(number) = value.as_u64()
+        && (schema["minimum"].as_u64().is_some_and(|min| number < min)
+            || schema["maximum"].as_u64().is_some_and(|max| number > max))
+    {
+        emit(
+            path.into(),
+            DiagnosticKind::OutOfRange,
+            "value outside schema bounds".into(),
+        );
     }
-    if let Some(allowed) = schema["enum"].as_array() {
-        if !allowed.contains(value) {
-            emit(
-                path.into(),
-                DiagnosticKind::InvalidValue,
-                "unknown enum value".into(),
-            );
-        }
+    if let Some(allowed) = schema["enum"].as_array()
+        && !allowed.contains(value)
+    {
+        emit(
+            path.into(),
+            DiagnosticKind::InvalidValue,
+            "unknown enum value".into(),
+        );
     }
     if schema["format"] == "ui-color" && !value.as_str().is_some_and(super::theme::valid_color) {
         emit(

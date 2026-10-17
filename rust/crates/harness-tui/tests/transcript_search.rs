@@ -46,7 +46,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn complete_editor_round_trip(text in "[a-zß日€🦀\n]{1,80}", query in ".{0,20}", cursor in 0usize..300, select in any::<bool>()) {
-        round_trip::<true>(&format!("{}\n",text).repeat(20),&query,cursor,select);
+        round_trip::<true>(&format!("{text}\n").repeat(20),&query,cursor,select);
     }
 }
 
@@ -96,7 +96,7 @@ fn allocation_model<const COPIES: bool, const FULL: bool>() {
             }
             if COPIES {
                 for row in 10..20 {
-                    std::hint::black_box(projection.rows()[row].clone());
+                    std::hint::black_box(projection.rows().get(row).cloned());
                 }
             }
             if FULL {
@@ -286,7 +286,7 @@ proptest! {
         for text in frames {
             let actual = candidate.draw(|frame| frame.render_widget(Span::raw(&text), frame.area())).map(|_| ());
             let expected = baseline.draw(|frame| {
-                for cell in &mut frame.buffer_mut().content { *cell = Cell::EMPTY; }
+                frame.buffer_mut().content.fill(Cell::EMPTY);
                 frame.render_widget(Span::raw(&text), frame.area());
             }).map(|_| ());
             prop_assert_eq!(actual.map_err(|error| error.to_string()), expected.map_err(|error| error.to_string()));

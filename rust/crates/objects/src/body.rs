@@ -488,7 +488,7 @@ pub(crate) mod tests {
             for body in [&resident, &composite] {
                 let selected = futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary))
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                prop_assert_eq!(selected.as_slice(), &bytes[start..end]);
+                prop_assert_eq!(Some(selected.as_slice()), bytes.get(start..end));
                 for (start, end) in [(1, 0), (0, bytes.len() + 1)] {
                     prop_assert!(futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary)).is_err());
                 }

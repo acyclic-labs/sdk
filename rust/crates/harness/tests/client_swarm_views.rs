@@ -102,3 +102,6 @@ proptest::proptest! {
 fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
     assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
 }
+
+#[path = "client_task_files.rs"]
+mod task_files;

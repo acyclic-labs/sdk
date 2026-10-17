@@ -19,13 +19,15 @@ fn matches(text: &str, query: &str) -> (Vec<Range<usize>>, usize) {
     let mut work = needle.len();
     let mut prefix = vec![0; needle.len()];
     for end in 1..needle.len() {
-        let mut length = prefix[end - 1];
-        while length != 0 && needle[length] != needle[end] {
+        let mut length = prefix.get(end - 1).copied().unwrap_or(0);
+        while length != 0 && needle.get(length) != needle.get(end) {
             work += 1;
-            length = prefix[length - 1];
+            length = prefix.get(length - 1).copied().unwrap_or(0);
         }
         work += 1;
-        prefix[end] = length + usize::from(needle[length] == needle[end]);
+        if let Some(slot) = prefix.get_mut(end) {
+            *slot = length + usize::from(needle.get(length) == needle.get(end));
+        }
     }
     let mut origins = VecDeque::new();
     let mut found = Vec::new();
@@ -37,18 +39,21 @@ fn matches(text: &str, query: &str) -> (Vec<Range<usize>>, usize) {
                 origins.pop_front();
             }
             origins.push_back(start);
-            while length != 0 && needle[length] != folded {
+            while length != 0 && needle.get(length) != Some(&folded) {
                 work += 1;
-                length = prefix[length - 1];
+                length = prefix.get(length - 1).copied().unwrap_or(0);
             }
             work += 1;
-            length += usize::from(needle[length] == folded);
+            length += usize::from(needle.get(length) == Some(&folded));
             if length == needle.len() {
-                let range = *origins.front().expect("matched needle origin")..end;
+                let Some(&start) = origins.front() else {
+                    continue;
+                };
+                let range = start..end;
                 if found.last() != Some(&range) {
                     found.push(range);
                 }
-                length = prefix[length - 1];
+                length = prefix.get(length - 1).copied().unwrap_or(0);
             }
         }
     }

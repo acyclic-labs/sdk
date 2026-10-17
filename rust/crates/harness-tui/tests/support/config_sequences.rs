@@ -87,9 +87,8 @@ pub const INVARIANTS: [(&str, Check); 3] = [
 pub fn exercise(file: ConfigFile, bytes: &[u8]) {
     let judged = observe(file, bytes, |_, _| {}, &mut |seen| {
         for (name, check) in INVARIANTS {
-            if let Err(detail) = check(&seen) {
-                panic!("{name}: {detail}");
-            }
+            let result = check(&seen);
+            assert!(result.is_ok(), "{name}: {result:?}");
         }
         Ok::<(), std::convert::Infallible>(())
     });
@@ -113,14 +112,18 @@ pub fn observe<S>(
     see: &mut impl FnMut(Seen) -> Result<(), S>,
 ) -> Result<(), S> {
     if let Ok(value) = parse_bytes(file, Scope::User, bytes) {
-        let encoded = serde_json::to_vec(&value).unwrap();
+        let encoded = value.to_string().into_bytes();
         see(Seen::Reparsed {
             file,
             value: value.clone(),
             reparsed: parse(file, Stage::Reparsed, &encoded, tamper),
         })?;
         if file == ConfigFile::Keymap {
-            let map = InputKeymap::parse(std::str::from_utf8(&encoded).unwrap()).unwrap();
+            let parsed = InputKeymap::parse(&value.to_string());
+            assert!(parsed.is_ok(), "validated keymap must parse: {parsed:?}");
+            let Ok(map) = parsed else {
+                return Ok(());
+            };
             let canonical = map.encode();
             see(Seen::Canonical {
                 keymap: InputKeymap::parse(&canonical).ok() == Some(map),
@@ -129,11 +132,18 @@ pub fn observe<S>(
             })?;
         }
     }
-    let mut value: Value = serde_json::from_str(file.defaults()).unwrap();
-    value
-        .as_object_mut()
-        .unwrap()
-        .insert("unknown-ui-setting".into(), true.into());
+    let defaults: Result<Value, _> = serde_json::from_str(file.defaults());
+    assert!(defaults.is_ok(), "defaults must be JSON: {defaults:?}");
+    let Ok(mut value) = defaults else {
+        return Ok(());
+    };
+    assert!(
+        matches!(value, Value::Object(_)),
+        "defaults must be an object"
+    );
+    if let Value::Object(ref mut object) = value {
+        object.insert("unknown-ui-setting".into(), true.into());
+    }
     see(Seen::Unknown {
         file,
         parsed: parse(file, Stage::Unknown, value.to_string().as_bytes(), tamper),

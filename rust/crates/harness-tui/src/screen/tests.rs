@@ -2,7 +2,8 @@ use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 
 fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
-    let transcript = vec![Line::raw("retained history"); length];
+    let transcript = vec![Line::raw("retained history"); length / 2];
+    let tools = vec![Line::raw("retained tool"); length - transcript.len()];
     let help = [Line::raw("Help")];
     let mut input = PromptInput::default();
     input.busy = true;
@@ -21,6 +22,7 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
     }
     let screen = Screen {
         transcript: &transcript,
+        tools: &tools,
         feedback: hidden == 1,
         overlay: if hidden == 2 { &help } else { &[] },
         ..Screen::default()
@@ -36,7 +38,7 @@ fn model<const SCAN: bool, const UNGATED: bool>(length: usize, hidden: u8) {
                 .tail_scroll(frame.area(), &input)
                 .saturating_sub(usize::from(hidden == 3));
             if SCAN {
-                for _ in &transcript {
+                for _ in transcript.iter().chain(&tools) {
                     ROW_WORK.with(|work| work.set(work.get() + 1));
                 }
             }

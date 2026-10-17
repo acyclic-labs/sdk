@@ -88,17 +88,19 @@ impl<'a> Body<'a> {
         }
     }
 
-    pub(crate) fn borrowed_arguments(&self) -> Vec<&'a Value> {
+    /// Every wire call's argument reference, in message order: what final
+    /// serialization will read.
+    pub(crate) fn arguments(&mut self) -> Vec<&mut &'a Value> {
         let mut args = Vec::new();
-        for message in &self.messages {
+        for message in &mut self.messages {
             match message {
-                Message::Item(Item::Call(call)) => args.push(call.arguments),
+                Message::Item(Item::Call(call)) => args.push(&mut call.arguments),
                 Message::Chat(chat) => {
-                    args.extend(chat.tool_calls.iter().map(|call| call.arguments))
+                    args.extend(chat.tool_calls.iter_mut().map(|call| &mut call.arguments))
                 }
                 Message::Anthropic { content, .. } | Message::Gemini { parts: content, .. } => {
-                    args.extend(content.iter().filter_map(|item| match item {
-                        Item::Call(call) => Some(call.arguments),
+                    args.extend(content.iter_mut().filter_map(|item| match item {
+                        Item::Call(call) => Some(&mut call.arguments),
                         _ => None,
                     }));
                 }

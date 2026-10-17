@@ -62,10 +62,9 @@ pub fn check(manifest: &DeploymentManifest) -> Result<(), &'static str> {
                 timer_inbox: Some(inbox),
                 ..
             } = &entry.runtime
+                && !inbox_authorized(env, &entry.name, &inbox.binding, &inbox.stream)
             {
-                if !inbox_authorized(env, &entry.name, &inbox.binding, &inbox.stream) {
-                    return Err("inbox-authority");
-                }
+                return Err("inbox-authority");
             }
         }
         for asset in &env.assets {

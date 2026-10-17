@@ -22,6 +22,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
 {
     let transcript = [Line::from("streaming assistant")];
     let terminal_rows = [Line::from("shell output")];
+    let tools = [Line::from("retained tool output")];
     let diff = [Line::from("+new line")];
     let goal = [Line::from("finish rewrite")];
     let plans = [Line::from("implement layout")];
@@ -29,6 +30,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     let screen = Screen {
         header: Line::from("parent / ● current"),
         transcript: &transcript,
+        tools: &tools,
         terminal: &terminal_rows,
         diff: &diff,
         goal: &goal,
@@ -47,6 +49,7 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
     for expected in [
         "parent / ● current",
         "streaming assistant",
+        "retained tool output",
         "shell output",
         "+new line",
         "GOAL.md",
@@ -95,23 +98,24 @@ proptest! {
     // Property: every visible region stays inside the supplied viewport,
     // primary regions never overlap, and prompt growth stays bounded.
     #[test]
-    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100) {
+    fn layout_is_bounded_at_every_size(width in 0u16..160, height in 0u16..80, x in 0u16..10, y in 0u16..10, count in 0usize..100, tools in 0usize..100) {
         let rows = vec![Line::from("row"); count];
-        let screen = Screen { transcript: &rows, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
+        let tools = vec![Line::from("tool"); tools];
+        let screen = Screen { transcript: &rows, tools: &tools, terminal: &rows, diff: &rows, goal: &rows, plans: &rows, notifications: &rows, ..Screen::default() };
         let mut input = PromptInput::new(Editor::new(&format!("{}@row", "line\n".repeat(count))));
         input.completion.set_file("workspace/row", Some(b"source")).unwrap();
         input.refresh_completions();
         let outer = Rect::new(x, y, width, height);
         let areas = screen.areas(outer, &input);
         let scroll = screen.tail_scroll(outer, &input);
-        prop_assert_eq!(scroll, count.saturating_sub(usize::from(areas.transcript.height)));
+        prop_assert_eq!(scroll, (count + tools.len()).saturating_sub(usize::from(areas.transcript.height)));
         let primary = [areas.header, areas.transcript, areas.side, areas.terminal, areas.notifications, areas.prompt, areas.status];
         for area in primary.into_iter().chain([areas.completions]) {
             prop_assert!(area.x >= outer.x && area.y >= outer.y);
             prop_assert!(area.right() <= outer.right() && area.bottom() <= outer.bottom());
         }
         for (i, a) in primary.iter().enumerate() {
-            for b in &primary[i + 1..] {
+            for b in primary.iter().skip(i + 1) {
                 prop_assert!(a.intersection(*b).is_empty());
             }
         }

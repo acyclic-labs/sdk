@@ -9,15 +9,15 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
     #[test]
     fn history_file_and_keymap_overrides_round_trip(
-        text in "[a-z界\r\n]{0,48}", owner in "[a-z]{1,8}", target in 0usize..KEYMAP.len()
+        text in "[a-z界\r\n]{0,48}", owner in "[a-z]{1,8}", target in prop::sample::select(KEYMAP)
     ) {
         let raw = serde_json::to_string(&vec![format!("{owner}:{text}")])?;
         let history = parse_history(&raw)?;
         let expected = format_history(&history)?;
         prop_assert_eq!(format_history(&parse_history(&expected)?)?, expected);
-        prop_assert_eq!(&history.entries()[0], &format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n")));
+        prop_assert_eq!(history.entries().first(), Some(&format!("{owner}:{}", text.replace("\r\n", "\n").replace('\r', "\n"))));
         prop_assert!(history.entries().iter().all(|entry| !entry.contains('\r')));
-        let json = serde_json::json!({"bindings":{"Ctrl+l":KEYMAP[target].action.name()}}).to_string();
+        let json = serde_json::json!({"bindings":{"Ctrl+l":target.action.name()}}).to_string();
         let map = InputKeymap::parse(&json).unwrap();
         prop_assert_eq!(InputKeymap::parse(&map.encode()).unwrap(), map);
     }
