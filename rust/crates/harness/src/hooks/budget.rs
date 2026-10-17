@@ -36,6 +36,10 @@ struct DiagnosticRef<'a, M> {
 
 impl Budget {
     pub(super) fn new(maximum: u64) -> Result<Self> {
+        Self::existing(maximum, &HookOutput::default())
+    }
+
+    pub(super) fn existing(maximum: u64, output: &HookOutput) -> Result<Self> {
         // Reserve the largest exhausted representation before an external
         // effect starts; even overflow must have a publishable outcome.
         #[derive(Serialize)]
@@ -66,8 +70,8 @@ impl Budget {
         Ok(Self {
             maximum,
             state: State::Available {
-                used: encoded_size(&HookOutput::default(), maximum)?,
-                replacement: 4,
+                used: encoded_size(output, maximum)?,
+                replacement: encoded_size(&output.updated_input, maximum)?,
             },
         })
     }
@@ -221,7 +225,7 @@ impl Budget {
         }
     }
 
-    #[cfg(any(test, fuzzing))]
+    #[cfg(test)]
     pub(super) fn observe(
         &mut self,
         output: &mut HookOutput,
@@ -230,7 +234,7 @@ impl Budget {
         stdout: &[u8],
         stderr: &[u8],
     ) -> Result<bool> {
-        // This test/fuzz entry point starts with an existing outcome.
+        // This test entry point starts with an existing outcome.
         self.state = State::Available {
             used: encoded_size(output, self.maximum)?,
             replacement: encoded_size(&output.updated_input, self.maximum)?,
@@ -242,16 +246,6 @@ impl Budget {
             .map_err(|_| exceeded())?
             .commit(output)?;
         Ok(updated)
-    }
-
-    #[cfg(any(test, fuzzing))]
-    pub(super) fn existing(maximum: u64, output: &HookOutput) -> Result<Self> {
-        let mut budget = Self::new(maximum)?;
-        budget.state = State::Available {
-            used: encoded_size(output, maximum)?,
-            replacement: encoded_size(&output.updated_input, maximum)?,
-        };
-        Ok(budget)
     }
 }
 

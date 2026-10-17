@@ -348,3 +348,23 @@ proptest! {
         prop_assert_output_bound(&output,4096)?;
     }
 }
+
+proptest! {
+    // Property: the unconditional constructor charges existing output before
+    // any next merge. A fresh empty ledger fails the same accounting detector.
+    #[test]
+    fn unconditional_entrypoint_charges_nonempty_output(reason in ".{0,48}") {
+        let mut output = HookOutput { approval: Some(reason.clone()),
+            updated_input: Some(json!({"reason":reason})), ..Default::default() };
+        let before = serde_json::to_vec(&output)?;
+        let mut ledger = Budget::existing(4096,&output)?;
+        prop_assert!(matches!(ledger.state, State::Available { used, .. } if used == before.len() as u64),
+            "existing output was not charged");
+        let broken = Budget::new(4096)?;
+        prop_assert!(!matches!(broken.state, State::Available { used, .. } if used == before.len() as u64),
+            "same detector must reject an empty ledger for nonempty output");
+        ledger.apply(&mut output,HookEvent::PreToolUse,HookFailure::Report,Ok((Some(0),vec![],vec![])));
+        ledger.finish(&mut output);
+        prop_assert_eq!(serde_json::to_vec(&output)?,before);
+    }
+}

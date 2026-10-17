@@ -1,4 +1,4 @@
-#[cfg(any(test, fuzzing))]
+#[cfg(test)]
 use super::{HookEvent, HookFailure};
 use crate::{Error, Result};
 use serde_json::Value;
@@ -56,8 +56,8 @@ impl HookOutput {
         }
     }
 
-    // Tests and the pure fuzz target use the same reservation/merge choke point.
-    #[cfg(any(test, fuzzing))]
+    // Unit tests use the production reservation/merge choke point.
+    #[cfg(test)]
     pub(super) fn apply(
         &mut self,
         event: HookEvent,
@@ -69,7 +69,7 @@ impl HookOutput {
         budget.finish(self);
     }
 
-    #[cfg(any(test, fuzzing))]
+    #[cfg(test)]
     pub(super) fn observe(
         &mut self,
         event: HookEvent,
