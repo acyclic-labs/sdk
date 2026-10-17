@@ -58,7 +58,7 @@ test('PRs and main retain the static lock check, and tags/releases cannot start 
  const automatic=workflows.filter(name=>/^  (?:push|pull_request):/m.test(triggers(read(name))));
  assert.deepEqual(automatic,[STATIC]);
  const workflow=read(STATIC);
- assert.deepEqual(Object.keys(YAML.parse(workflow).jobs),['static','aarch64']);
+ assert.deepEqual(Object.keys(YAML.parse(workflow).jobs),['static','aarch64','harness']);
  const job=YAML.parse(workflow).jobs.static;
  assert.equal(job['timeout-minutes'],1);
  assert.equal(job['runs-on'],'ubuntu-24.04');
@@ -177,6 +177,29 @@ test('the required job checks Cargo lock consistency and committed lane artifact
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);
  assert.doesNotMatch(JSON.stringify(job),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
+});
+test('every PR and main push runs the whole Harness end-to-end integration target',()=>{
+ /** @param {ReturnType<typeof YAML.parse>} document */
+ const verify=document=>{
+  const job=document.jobs.harness??assert.fail('missing Harness integration job');
+  assert.equal(job['runs-on'],'ubuntu-24.04','free hosted runner');
+  assert.equal(job.if,undefined,'job condition');
+  assert.deepEqual(job.steps.filter(step=>step.run).map(step=>[step.if,step['continue-on-error'],step.run.trim()]),[
+   [undefined,undefined,'cargo test --locked -p acyclic-harness --features filesystem-local,test-support --test main'],
+  ],'command');
+ };
+ const workflow=YAML.parse(read(STATIC));
+ verify(workflow);
+ for(const [label,mutate] of [
+  ['command',job=>{job.steps.at(-1).run+=' effects::';}],
+  ['command',job=>{job.steps.at(-1)['continue-on-error']=true;}],
+  ['job condition',job=>{job.if="github.ref == 'refs/heads/main'";}],
+  ['free hosted runner',job=>{job['runs-on']='blacksmith-4vcpu-ubuntu-2404';}],
+ ]){
+  const altered=structuredClone(workflow);
+  mutate(altered.jobs.harness);
+  assert.throws(()=>verify(altered),new RegExp(label));
+ }
 });
 test('README approval guard runs on pull requests without manual dispatch',()=>{
  const guard=triggers(read('readme-guard.yml'));
