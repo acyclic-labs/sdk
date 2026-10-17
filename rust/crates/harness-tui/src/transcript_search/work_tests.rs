@@ -1,4 +1,5 @@
 use super::*;
+use crate::WrappedLines;
 use proptest::prelude::*;
 use ratatui::{text::Line, widgets::Widget};
 
@@ -202,7 +203,7 @@ fn resize_keeps_completed_matches_but_repaints_the_new_viewport() {
     assert!(!search.pending());
     assert_eq!(search.count(), count);
     assert_eq!(search.generation, generation);
-    assert_eq!(search.viewport.unwrap().1, projection.revision());
+    assert_eq!(search.viewport.unwrap().1, (projection.revision(), None));
 }
 
 #[test]

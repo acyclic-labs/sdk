@@ -284,30 +284,26 @@ impl ClientRenderer {
             .state(crate::client::CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
         self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
-        self.search
-            .project(&self.wrapped_transcript, self.search_open);
+        let rows = super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
+        self.search.project(rows, self.search_open);
         if self.search_open {
             self.search.update(
-                &self.wrapped_transcript,
+                rows,
                 layout["search_query"].as_str().unwrap_or(""),
                 layout["search_index"].as_i64().unwrap_or(0),
                 input.theme.style(super::config::ThemeRole::Selection),
             );
             let height = usize::from(areas.transcript.height);
             let first = if self.search.count() != 0 {
-                self.search.selected_row(
-                    &self.wrapped_transcript,
-                    layout["search_index"].as_i64().unwrap_or(0),
-                )
+                self.search
+                    .selected_row(rows, layout["search_index"].as_i64().unwrap_or(0))
             } else {
-                self.wrapped_transcript
-                    .rows()
-                    .len()
+                rows.len()
                     .saturating_sub(height)
                     .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
             }
-            .min(self.wrapped_transcript.rows().len().saturating_sub(height));
-            self.search.prepare(&self.wrapped_transcript, first, height);
+            .min(rows.len().saturating_sub(height));
+            self.search.prepare(rows, first, height);
         }
         Ok(())
     }
@@ -325,7 +321,10 @@ impl ClientRenderer {
             std::future::pending::<()>().await;
         }
         tokio::task::yield_now().await;
-        self.search.advance(&self.wrapped_transcript, 4096);
+        self.search.advance(
+            super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools),
+            4096,
+        );
     }
 
     fn compose_notices(&mut self) {
@@ -414,12 +413,12 @@ impl ClientRenderer {
                     .as_ref()
                     .and_then(|value| value["search_index"].as_i64())
                     .unwrap_or(0);
-                screen.transcript = self.wrapped_transcript.rows();
-                screen.transcript_search =
-                    (self.search.count() != 0).then_some((&self.wrapped_transcript, &self.search));
+                let rows =
+                    super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
+                screen.transcript_search = Some((rows, &self.search));
                 screen.reasoning = &[];
-                screen.search_row = (self.search.count() != 0)
-                    .then(|| self.search.selected_row(&self.wrapped_transcript, index));
+                screen.search_row =
+                    (self.search.count() != 0).then(|| self.search.selected_row(rows, index));
                 screen.status = Line::raw(format!(
                     "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
                     self.search.position(index),

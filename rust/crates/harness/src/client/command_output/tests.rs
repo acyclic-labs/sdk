@@ -121,7 +121,7 @@ proptest! {
         let row=CommandOutputView::from_file(&file).unwrap();
         prop_assert_eq!(row.sequence,sequence);
         prop_assert_eq!(row.text.as_deref(),Some(text.as_str()));
-        prop_assert_eq!(completion(&file.bytes).unwrap(),HeadlessOutcome::Completed);
+        prop_assert_eq!(row.completion,HeadlessOutcome::Completed);
     }
 }
 #[test]
@@ -145,7 +145,8 @@ fn malformed_outcomes_never_become_ui_success() {
         let mut file = file(1, 1, 0, "");
         file.bytes = serde_json::to_vec(&value).unwrap().into();
         assert!(CommandOutputView::from_file(&file).is_none());
-        assert!(completion(&file.bytes).is_err());
+        let outcome: Outcome<'_> = serde_json::from_slice(&file.bytes).unwrap();
+        assert!(settled(&outcome).is_err());
     }
 }
 
