@@ -34,6 +34,22 @@ proptest! {
             let reads = payloads.reads.load(Ordering::SeqCst);
             payloads.files.lock().unwrap().clear();
             let shared = pipeline.clone();
+            let allocation_free = |collect| {
+                let measured = acyclic_test_support::measure(|| {
+                    let matches = if collect {
+                        std::hint::black_box(pipeline.configuration_sources().collect::<Vec<_>>())
+                            .into_iter().eq(expected.iter())
+                    } else {
+                        pipeline.configuration_sources().eq(expected.iter())
+                    };
+                    assert!(matches);
+                });
+                (measured.count_total, measured.bytes_total) == (0, 0)
+            };
+            prop_assert!(allocation_free(false), "creating and consuming the iterator allocated");
+            if !expected.is_empty() {
+                prop_assert!(!allocation_free(true), "temporary Vec allocation escaped detection");
+            }
             let retained = pipeline.configuration_sources().collect::<Vec<_>>();
             prop_assert!(retained.iter().copied().eq(expected.iter()));
             for (original, cloned) in retained.iter().zip(shared.configuration_sources()) {
