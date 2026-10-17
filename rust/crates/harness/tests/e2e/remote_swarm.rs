@@ -269,9 +269,9 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
                 // chunk must arrive through the selected content subscription.
                 if !published && views.read(|views| ready(views, reply_of(0, reply).len()))? {
                     published = true;
-                    put(&volumes.agents[0], &live_chunk).await.map_err(|error| {
-                        acyclic_harness::Error::Storage(error.to_string())
-                    })?;
+                    put(&volumes.agents[0], &live_chunk)
+                        .await
+                        .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
                 }
                 if published
                     && views.read(|views| ready(views, reply_of(0, reply).len() + live.len()))?
