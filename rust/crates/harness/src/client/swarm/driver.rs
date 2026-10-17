@@ -112,28 +112,25 @@ impl SwarmClient {
         )
         .await?;
         loop {
-            futures::select_biased! {
+            let admission = futures::select_biased! {
                 completed = snapshots.next().fuse() => {
                     if let Some((agent, snapshot)) = snapshots.finish(completed) {
                         let snapshot = snapshot.map_err(|error| Error::Storage(error.to_string()))?;
                         follows.content(agent.clone(), &snapshot.cursor)?;
                         publish(SwarmUpdate::Snapshot { agent, snapshot }).await?;
                     }
+                    None
                 },
                 member = membership.next().fuse() => {
-                    if let Some((agent, active)) = member? {
-                        if active {
-                            if follows.discover(&demand, agent.clone(), self.limits.agents)? {
-                                publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
-                                if demand.tier(&agent).is_some_and(|tier| tier != crate::client::InterestTier::Overview) {
-                                    snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
-                                }
-                            }
-                        } else {
+                    match member? {
+                        Some((agent, true)) => Some(agent),
+                        Some((agent, false)) => {
                             snapshots.retire(&agent)?;
                             follows.retire(&agent);
                             publish(SwarmUpdate::Retired { agent }).await?;
+                            None
                         }
+                        None => None,
                     }
                 },
                 next = files.next().fuse() => {
@@ -149,6 +146,7 @@ impl SwarmClient {
                         let pending = heads(agent.clone(), self.limits.snapshot_files);
                         snapshots.start(agent, pending)?;
                     }
+                    None
                 },
                 routed = follows.next().fuse() => {
                     let routed = routed.ok_or_else(|| Error::Storage("swarm follows ended".into()))?;
@@ -164,26 +162,38 @@ impl SwarmClient {
                             if demand.tier(&agent).is_none() {
                                 return Err(Error::Invalid("discovered agent lies outside swarm".into()));
                             }
-                            if membership.discovered(&agent)
-                                && follows.discover(&demand, agent.clone(), self.limits.agents)? {
-                                publish(SwarmUpdate::Agent { agent: agent.clone() }).await?;
-                                if demand.tier(&agent).is_some_and(|tier| tier != crate::client::InterestTier::Overview) {
-                                    snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
-                                }
-                            }
+                            membership.discovered(&agent).then_some(agent)
                         }
                         (Some(agent), Some(wire::session_frame::Body::Data(data))) => {
                             publish(SwarmUpdate::Data { agent, overview: routed.overview, data }).await?;
+                            None
                         }
                         (Some(agent), Some(wire::session_frame::Body::Watermark(watermark))) => {
                             publish(SwarmUpdate::Watermark { agent, overview: routed.overview, watermark }).await?;
+                            None
                         }
                         (_, Some(wire::session_frame::Body::Closed(closed))) => {
                             return Err(Error::Storage(format!("swarm subscription closed: {}: {}", closed.code, closed.message)));
                         }
-                        _ => {}
+                        _ => None
                     }
                 },
+            };
+            // Snapshot children and live membership records share admission.
+            // Both arrive through the credit-paced platform session above.
+            if let Some(agent) = admission {
+                if follows.discover(&demand, agent.clone(), self.limits.agents)? {
+                    publish(SwarmUpdate::Agent {
+                        agent: agent.clone(),
+                    })
+                    .await?;
+                    if demand
+                        .tier(&agent)
+                        .is_some_and(|tier| tier != crate::client::InterestTier::Overview)
+                    {
+                        snapshots.start(agent.clone(), heads(agent, self.limits.snapshot_files))?;
+                    }
+                }
             }
         }
     }

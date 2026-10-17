@@ -3,7 +3,7 @@ use super::fixture::fixture;
 use super::*;
 
 /// Explores a transport drain racing snapshot or live membership admission.
-pub fn verify_discovery_admission(bypass_delivery: bool) {
+pub fn verify_discovery_admission(live: bool, bypass_delivery: bool) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -20,7 +20,21 @@ pub fn verify_discovery_admission(bypass_delivery: bool) {
                 ..Default::default()
             });
         }
-        // Smallest queue/interleaving that distinguishes snapshot flooding from
+        // The source subscription is a hierarchy snapshot or the checked ALL
+        // parent-volume follow. Both deliver before a status Open is admitted.
+        pool.routes.get_mut(&1).unwrap().kind = if live {
+            Kind::Follow(wire::SessionFollow {
+                path: "swarm/files".into(),
+                delivery: wire::SessionDelivery::All as i32,
+                preceding_commit_id: vec![0; 32].into(),
+            })
+        } else {
+            Kind::Children(wire::ChildrenRequest {
+                parent: Some("swarm".into()),
+                limit: 1,
+            })
+        };
+        // Smallest queue/interleaving that distinguishes snapshot or live flooding from
         // discovery-paced admission. These are the production Outbound locks,
         // pool subscription dispatcher and error paths, not a counter
         // standing in for a channel.

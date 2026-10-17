@@ -82,7 +82,8 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                             sub.resume = None
                         }
                         (Some(Kind::Follow(follow)), Fault::OpaqueContentAnchor)
-                            if follow.delivery == wire::SessionDelivery::All as i32 =>
+                            if follow.path == "swarm/a/files"
+                                && follow.delivery == wire::SessionDelivery::All as i32 =>
                         {
                             sub.resume.as_mut().unwrap().opaque =
                                 std::mem::take(&mut follow.preceding_commit_id);
@@ -210,7 +211,7 @@ async fn exercise(before: &[u8], after: &[u8], fault: Fault) {
                 })
                 .flatten()
                 .collect();
-            let content: Vec<_> = subscriptions.iter().filter(|sub| matches!(&sub.kind, Some(Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32)).collect();
+            let content: Vec<_> = subscriptions.iter().filter(|sub| matches!(&sub.kind, Some(Kind::Follow(follow)) if follow.path == "swarm/a/files" && follow.delivery == wire::SessionDelivery::All as i32)).collect();
             assert_eq!(content.len(), 1);
             let Some(Kind::Follow(follow)) = &content[0].kind else {
                 unreachable!()

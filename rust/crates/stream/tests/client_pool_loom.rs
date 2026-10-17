@@ -188,11 +188,21 @@ fn negative_control_initial_eof_retry_monopolizes_the_executor() {
 }
 
 #[test]
-fn discovery_and_live_membership_delivery_bound_status_admission() {
-    acyclic_stream::session::verify_discovery_admission(false);
+fn discovery_snapshot_delivery_bounds_status_admission() {
+    acyclic_stream::session::verify_discovery_admission(false, false);
 }
 #[test]
 #[should_panic(expected = "membership bypassed session delivery backpressure")]
 fn negative_control_membership_snapshot_bypasses_discovery_credit() {
-    acyclic_stream::session::verify_discovery_admission(true);
+    acyclic_stream::session::verify_discovery_admission(false, true);
+}
+
+#[test]
+fn discovery_live_membership_delivery_bounds_status_admission() {
+    acyclic_stream::session::verify_discovery_admission(true, false);
+}
+#[test]
+#[should_panic(expected = "membership bypassed session delivery backpressure")]
+fn negative_control_live_membership_bypasses_discovery_credit() {
+    acyclic_stream::session::verify_discovery_admission(true, true);
 }

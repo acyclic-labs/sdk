@@ -139,7 +139,7 @@ fn snapshot_cannot_be_spliced_into_recovered_history_at_the_same_position() {
         );
         let content: Vec<_> = std::iter::from_fn(|| observed.try_recv().ok()).filter_map(|frame| match frame.body {
             Some(wire::session_frame::Body::Interest(update)) => Some(update.upsert), _ => None,
-        }).flatten().filter(|sub| matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.delivery == wire::SessionDelivery::All as i32)).collect();
+        }).flatten().filter(|sub| matches!(&sub.kind, Some(wire::session_subscription::Kind::Follow(f)) if f.path == "swarm/a/files" && f.delivery == wire::SessionDelivery::All as i32)).collect();
         assert_eq!(content.len(), 1);
         let Some(wire::session_subscription::Kind::Follow(follow)) = &content[0].kind else {
             unreachable!()
