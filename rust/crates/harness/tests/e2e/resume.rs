@@ -288,7 +288,7 @@ impl ModelProvider for PausedPrefix {
             // append before requesting this next item. Verify that prefix once;
             // a producer prefetched before append must fail, never signal ready.
             match observed(self.journal.as_ref(), self.operation).await {
-                Ok(events) if events == expected()[..4] => {}
+                Ok(events) if events.as_slice() == &expected()[..4] => {}
                 result => {
                     return Some((
                         Err(acyclic_harness::Error::Storage(format!(
