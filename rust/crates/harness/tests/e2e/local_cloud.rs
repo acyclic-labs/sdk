@@ -446,18 +446,36 @@ loopback: {right}"
         )
         .into());
     }
-    // Negative controls: a different reply changes the views, and agents
-    // publishing each other's reply and status fail the oracle.
+    // Negative controls: a different reply changes the views; agents
+    // publishing each other's reply and status, or a re-split reply, fail
+    // the oracle.
     let changed = remote_swarm::follow(shared.client.clone(), &session, "other", "Do it.").await?;
     if changed == right {
         return Err("the swarm views ignore the reply".into());
     }
     let swapped = |id: usize| usize::from(id == 0);
-    let crossed =
-        remote_swarm::follow_publishing(shared.client.clone(), &session, "crossed", reply, swapped)
-            .await;
+    let crossed = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "crossed",
+        reply,
+        (swapped, None),
+    )
+    .await;
     if crossed.is_ok() {
         return Err("agents publishing each other's payloads passed".into());
+    }
+    // The same reply delivered as two chunks is a different view.
+    let resplit = remote_swarm::follow_publishing(
+        shared.client.clone(),
+        &session,
+        "resplit",
+        reply,
+        (|id| id, Some(10)),
+    )
+    .await;
+    if resplit.is_ok() {
+        return Err("a re-split reply passed".into());
     }
     // A Session refusing discovery as the cloud does matches the pin; one
     // refusing it for an unrelated cause does not.

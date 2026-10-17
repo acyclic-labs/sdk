@@ -57,11 +57,12 @@ fn expected(reply: &str) -> TestResult<Value> {
         "status": status,
         "selected": [{
             "key": head()?,
-            "text": reply_of(0, reply),
+            "segments": [reply_of(0, reply)],
         }],
     }))
 }
 
+const CHUNKS: &str = ".tasks/t/turns/1/chunks";
 const CHUNK: &str = ".tasks/t/turns/1/chunks/1";
 
 /// The Text head a client views `CHUNK` under.
@@ -137,21 +138,27 @@ async fn put<P: StreamProvider + ?Sized>(volume: &TaskVolume<P>, write: &Write) 
 
 /// Publishes every agent's membership, status and reply, and a layout
 /// selecting the first agent. Agent `id` publishes the payloads of agent
-/// `author(id)`, so a negative control can cross them.
+/// `author(id)`, so a negative control can cross them, and publishes its
+/// tagged reply as one chunk, or split at `split` bytes into two.
 async fn seed<P: StreamProvider + 'static>(
     stream: &Arc<P>,
     volumes: &Volumes<P>,
     root: &str,
     reply: &str,
-    author: impl Fn(usize) -> usize,
+    (author, split): (impl Fn(usize) -> usize, Option<usize>),
 ) -> TestResult {
     for (id, files) in volumes.agents.iter().enumerate() {
-        let mut chunk = Write::new(
-            FileKey::parse(CHUNK)?,
-            reply_of(author(id), reply).into_bytes(),
-        );
-        chunk.channel = Some(Channel::Text);
-        put(files, &chunk).await?;
+        let tagged = reply_of(author(id), reply);
+        let chunks = match split.and_then(|at| tagged.split_at_checked(at)) {
+            Some((first, second)) => vec![first, second],
+            None => vec![tagged.as_str()],
+        };
+        for (index, text) in chunks.into_iter().enumerate() {
+            let key = FileKey::parse(&format!("{CHUNKS}/{}", index + 1))?;
+            let mut chunk = Write::new(key, text.as_bytes().to_vec());
+            chunk.channel = Some(Channel::Text);
+            put(files, &chunk).await?;
+        }
         let status = wire::SessionLatestValue {
             key: b"status".to_vec().into(),
             value: status_of(author(id))?.into(),
@@ -201,19 +208,20 @@ pub(super) async fn follow<P: StreamProvider + 'static>(
     root: &str,
     reply: &str,
 ) -> TestResult<Value> {
-    follow_publishing(stream, session, root, reply, |id| id).await
+    follow_publishing(stream, session, root, reply, (|id| id, None)).await
 }
 
-/// `follow`, with agent `id` publishing the payloads of agent `author(id)`.
+/// `follow`, with agent `id` publishing the payloads of agent `author(id)`,
+/// its reply split at `split` bytes when given.
 pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
     stream: Arc<P>,
     session: &session::Client,
     root: &str,
     reply: &str,
-    author: impl Fn(usize) -> usize,
+    publish: (impl Fn(usize) -> usize, Option<usize>),
 ) -> TestResult<Value> {
     let volumes = volumes(&stream, root).await?;
-    seed(&stream, &volumes, root, reply, author).await?;
+    seed(&stream, &volumes, root, reply, publish).await?;
     let client = client(root)?;
     let views = client.views();
     let (done, completed) = oneshot::channel();
@@ -285,7 +293,7 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
             }).collect::<serde_json::Map<_, _>>(),
             "selected": views.files(&agents[0]).map(|file| json!({
                 "key": file.key,
-                "text": file.segments.iter().map(|segment| String::from_utf8_lossy(segment.as_ref()).into_owned()).collect::<String>(),
+                "segments": file.segments.iter().map(|segment| String::from_utf8_lossy(segment.as_ref()).into_owned()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         })
     })?;
