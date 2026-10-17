@@ -69,6 +69,7 @@ pub(super) async fn verify(
         .into_heads()?;
     let mut view = FileQueryView::from_snapshot(selected, initial, 64, 65_536)?;
     while view.cursor().position != target.cursor.position {
+        super::stall::waiting("tool file follow before the settled cut");
         let change = observation
             .changes
             .next()

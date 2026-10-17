@@ -29,6 +29,7 @@ mod quiescent;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+mod stall;
 mod swarm;
 mod swarm_case;
 mod swarm_provider;
@@ -48,6 +49,7 @@ use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
     path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -257,6 +259,22 @@ async fn scenario_bootstrap_rejects_an_already_running_runtime() {
     );
 }
 
+/// Scenarios admitted per available CPU. Each admitted scenario holds a harness, its stores and its native work, so
+/// admission follows the machine rather than the corpus: a larger corpus queues instead of exhausting fixtures.
+const SCENARIOS_PER_CPU: usize = 4;
+
+/// The admission bound; `E2E_SCENARIO_CAPACITY` overrides it for measurement.
+fn scenario_capacity() -> TestResult<usize> {
+    let capacity = match std::env::var("E2E_SCENARIO_CAPACITY") {
+        Ok(capacity) => capacity.parse()?,
+        Err(_) => std::thread::available_parallelism()?.get() * SCENARIOS_PER_CPU,
+    };
+    if capacity == 0 {
+        return Err("scenario capacity is zero".into());
+    }
+    Ok(capacity)
+}
+
 async fn run_scenarios(started: Instant) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
@@ -269,21 +287,31 @@ async fn run_scenarios(started: Instant) -> TestResult {
         return Err("no scenarios discovered".into());
     }
     let count = paths.len();
+    let capacity = scenario_capacity()?;
+    stall::report_on_termination()?;
+    let admitted = std::sync::Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
     let mut results = stream::iter(paths.into_iter().map(|path| {
         let root = root.clone();
+        let admitted = admitted.clone();
         async move {
             let case_path = path.clone();
+            let (running, peak) = &*admitted;
+            peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
             let result: TestResult = tokio::spawn(async move {
-                let case = scenario::load_value(&root, &case_path)?;
-                drivers::run(case).await?;
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                stall::admitted(&case_path.clone(), async move {
+                    let case = scenario::load_value(&root, &case_path)?;
+                    drivers::run(case).await?;
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                })
+                .await
             })
             .await
             .unwrap_or_else(|error| Err(Box::new(error)));
+            running.fetch_sub(1, Ordering::SeqCst);
             (path, result)
         }
     }))
-    .buffer_unordered(count);
+    .buffer_unordered(capacity);
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path.strip_prefix(&root)?.display();
@@ -295,12 +323,18 @@ async fn run_scenarios(started: Instant) -> TestResult {
             }
         }
     }
+    let peak = admitted.1.load(Ordering::SeqCst);
     println!(
-        "{} scenarios, {} failed, {:.3}s",
+        "{} scenarios, {} failed, peak {} admitted of capacity {}, {:.3}s",
         count,
         failures.len(),
+        peak,
+        capacity,
         started.elapsed().as_secs_f64()
     );
+    if peak > capacity {
+        return Err(format!("{peak} scenarios ran at once, over capacity {capacity}").into());
+    }
     if !failures.is_empty() {
         return Err(format!("{} scenarios failed", failures.len()).into());
     }

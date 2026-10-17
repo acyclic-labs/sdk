@@ -87,6 +87,7 @@ pub(super) async fn settled(
     let mut statuses = vec![serde_json::from_slice(&initial.files[0].bytes)?];
     let mut cursor = initial.cursor;
     while cursor.position != target.cursor.position {
+        super::stall::waiting("status follow before the settled cut");
         let change = observation
             .changes
             .next()

@@ -172,6 +172,7 @@ impl PlanQuery {
                 .ok_or("snapshot missing")?;
             while client.selection(&identity).unwrap().cursor().position < snapshot.cursor.position
             {
+                super::stall::waiting("plan selection follow");
                 let change = changes.next().await.ok_or("follow ended")??;
                 let cursor = change.cursor.clone();
                 let modified = client.query_change(change)?;
