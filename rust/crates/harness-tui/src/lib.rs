@@ -50,9 +50,13 @@ mod thinking;
 #[cfg(feature = "tui")]
 pub use thinking::Thinking;
 #[cfg(feature = "tui")]
+mod transcript_rows;
+#[cfg(feature = "tui")]
 mod widget;
 #[cfg(feature = "tui")]
 mod wrapped_lines;
+#[cfg(feature = "tui")]
+pub use transcript_rows::TranscriptRows;
 
 #[cfg(feature = "tui")]
 pub use completion::{

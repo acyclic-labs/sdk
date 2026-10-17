@@ -5,7 +5,7 @@ mod completion_edit;
 
 use crate::{
     Layout, PromptHistory,
-    buffer::{Buffer, normalize},
+    buffer::{Buffer, normalize, slice},
     history::{Delta, Edit},
 };
 
@@ -100,7 +100,7 @@ impl Editor {
     }
     /// Selected text, including the original contents of collapsed pastes.
     pub fn selected_text(&self) -> &str {
-        &self.text()[self.selection()]
+        slice(self.text(), self.selection())
     }
     /// Collapsed paste ranges in document order.
     pub fn collapsed_pastes(&self) -> &[Range<usize>] {
@@ -170,12 +170,17 @@ impl Editor {
 
     fn line_start(&self) -> usize {
         let layout = self.layout(usize::MAX);
-        layout.rows[layout.position(self.cursor()).0].start
+        let (row, _) = layout.position(self.cursor());
+        layout.rows.get(row).map_or(0, |row| row.start)
     }
 
     fn line_end(&self) -> usize {
         let layout = self.layout(usize::MAX);
-        layout.rows[layout.position(self.cursor()).0].end
+        let (row, _) = layout.position(self.cursor());
+        layout
+            .rows
+            .get(row)
+            .map_or(self.text().len(), |row| row.end)
     }
 
     /// Move in a display-width layout. Width zero is treated as one column.
@@ -314,7 +319,7 @@ impl Editor {
         if range.is_empty() {
             return;
         }
-        let killed = self.text()[range.clone()].to_owned();
+        let killed = slice(self.text(), range.clone()).to_owned();
         if self.kill_active {
             if let Some(last) = self.kills.last_mut() {
                 if backwards {
@@ -345,12 +350,13 @@ impl Editor {
     /// Rotate a preceding yank through the kill ring; unrelated edits cancel it.
     pub fn rotate_yank(&mut self, now_ms: u64) {
         if let Some((original, index)) = self.yank.clone() {
-            let index = if index == 0 {
-                self.kills.len() - 1
-            } else {
-                index - 1
+            // Rotation wraps from the oldest kill back to the newest.
+            let index = index
+                .checked_sub(1)
+                .unwrap_or_else(|| self.kills.len().saturating_sub(1));
+            let Some(text) = self.kills.get(index).cloned() else {
+                return;
             };
-            let text = self.kills[index].clone();
             let before = self.buffer.clone();
             self.buffer = original.clone();
             self.buffer.replace(original.selection(), &text, false);
@@ -384,11 +390,13 @@ impl Editor {
         if range.is_empty() && text.is_empty() {
             return;
         }
-        let size =
-            text.graphemes(true).count() + self.text()[range.clone()].graphemes(true).count();
+        let size = text.graphemes(true).count()
+            + slice(self.text(), range.clone()).graphemes(true).count();
         let boundary = atomic
             || text.chars().any(char::is_whitespace)
-            || self.text()[range.clone()].chars().any(char::is_whitespace);
+            || slice(self.text(), range.clone())
+                .chars()
+                .any(char::is_whitespace);
         let mut delta = Delta::capture(&self.buffer, range.clone(), text);
         self.buffer.replace(range, text, fold);
         delta.finish(&self.buffer);

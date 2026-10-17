@@ -3,6 +3,11 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::StatefulWidge
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+/// A cell count as a terminal coordinate, saturating at the largest one.
+pub(crate) fn cells(count: usize) -> u16 {
+    u16::try_from(count).unwrap_or(u16::MAX)
+}
+
 /// Rendering state, including the insertion cursor for host cursor/fade hooks.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
@@ -42,11 +47,13 @@ impl<'a> PromptWidget<'a> {
 
     /// Height requested by the input, bounded by the host's maximum height.
     pub fn height(&self, width: u16, maximum: u16) -> u16 {
-        self.editor
-            .layout(usize::from(width))
-            .rows
-            .len()
-            .min(usize::from(maximum)) as u16
+        cells(
+            self.editor
+                .layout(usize::from(width))
+                .rows
+                .len()
+                .min(usize::from(maximum)),
+        )
     }
 }
 
@@ -98,8 +105,8 @@ impl StatefulWidget for PromptWidget<'_> {
                     let width = UnicodeWidthStr::width(symbol);
                     if column >= state.horizontal && column + width <= right {
                         buffer.set_string(
-                            area.x + (column - state.horizontal) as u16,
-                            area.y + y as u16,
+                            area.x + cells(column - state.horizontal),
+                            area.y + cells(y),
                             symbol,
                             style,
                         );
@@ -125,8 +132,8 @@ impl StatefulWidget for PromptWidget<'_> {
             && column.saturating_sub(state.horizontal) < usize::from(area.width)
         {
             state.cursor = Some((
-                area.x + (column - state.horizontal) as u16,
-                area.y + (row - state.scroll) as u16,
+                area.x + cells(column - state.horizontal),
+                area.y + cells(row - state.scroll),
             ));
         }
     }

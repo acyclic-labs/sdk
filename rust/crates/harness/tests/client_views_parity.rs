@@ -63,6 +63,7 @@ fn same(
     native: &ClientViewHandle,
     browser: &WasmClientViews,
     drop_projection: bool,
+    drop_task: bool,
 ) -> Result<(), String> {
     let agents: Vec<String> = serde_wasm_bindgen::from_value(browser.agents().unwrap()).unwrap();
     let expected = native
@@ -98,8 +99,58 @@ fn same(
     }
     for agent in expected {
         let path = path(&agent);
+        let mut actual_task: serde_json::Value =
+            serde_wasm_bindgen::from_value(browser.task(&agent, "t").unwrap()).unwrap();
+        if drop_task && actual_task.is_object() {
+            actual_task["tools"] = serde_json::json!([]);
+        }
+        let expected_task=native.read(|views| {
+            let cursor=views.cursor(&path)?;
+            let task=acyclic_harness::task_volume::Component::new("t").unwrap();
+            let task=views.task(&(cursor.volume,cursor.query),&task)?;
+            Some(serde_json::json!({
+                "task":task.task,"cursor":task.cursor,
+                "text":task.text().map(|text|serde_json::json!({
+                    "turn":text.turn,"channel":text.channel,"file":file_info(text.file),
+                })).collect::<Vec<_>>(),
+                "tools":task.tools().map(|tool|serde_json::json!({
+                    "turn":tool.turn,"call":tool.call,
+                    "request":tool.request().map(file_info),"result":tool.result().map(file_info),
+                    "arguments":tool.arguments().map(file_info).collect::<Vec<_>>(),
+                    "stdout":tool.stdout().map(file_info).collect::<Vec<_>>(),
+                    "stderr":tool.stderr().map(file_info).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "completions":task.completions().map(|(turn,file)|serde_json::json!({
+                    "turn":turn,"file":file_info(file),
+                })).collect::<Vec<_>>(),
+            }))
+        }).unwrap().unwrap_or(serde_json::Value::Null);
+        if actual_task != expected_task {
+            return Err("view parity: task folders differ".into());
+        }
         let status: Option<Status> =
             serde_wasm_bindgen::from_value(browser.status(&agent).unwrap()).unwrap();
+        let owner = acyclic_harness::client::OutputOwner::Task(
+            acyclic_harness::task_volume::Component::new("t").unwrap(),
+        );
+        let actual_outcomes: serde_json::Value = serde_wasm_bindgen::from_value(
+            browser
+                .outcomes(&agent, serde_wasm_bindgen::to_value(&owner).unwrap(), 0)
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_outcomes = native
+            .read(|views| {
+                let Some(cursor) = views.cursor(&path) else {
+                    return serde_json::json!([]);
+                };
+                let files = views.selection(&(cursor.volume, cursor.query)).unwrap();
+                serde_json::to_value(files.outputs(&owner, 0).collect::<Vec<_>>()).unwrap()
+            })
+            .unwrap();
+        if actual_outcomes != expected_outcomes {
+            return Err("view parity: command outcomes differ".into());
+        }
         let expected_status = native
             .read(|v| {
                 v.status(&path).map(|s| Status {
@@ -175,7 +226,16 @@ fn same(
     }
     Ok(())
 }
-async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), String> {
+fn file_info(file: &acyclic_harness::task_volume::HeadFile) -> serde_json::Value {
+    serde_json::json!({"key":file.key,"length":file.length,
+        "through_sequence":file.through_sequence,"segments":file.segments.len()})
+}
+
+async fn exercise(
+    wrong_handle: bool,
+    drop_projection: bool,
+    drop_task: bool,
+) -> Result<(), String> {
     let provider = Arc::new(MemoryStream::default());
     let volume = TaskVolume::open(provider.clone(), path("swarm/a/files"))
         .await
@@ -207,6 +267,12 @@ async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), Strin
         &request("initial"),
     )
     .await;
+    put(
+        &volume,
+        ".tasks/t/executions/reply/result.json",
+        br#"{"sequence":9007199254740993,"ok":{"text":"completed answer"}}"#,
+    )
+    .await;
     let mut chunk = Write::new(
         FileKey::parse(".tasks/t/turns/9007199254740993/chunks/1").unwrap(),
         "\u{8abf}\u{67fb}".as_bytes(),
@@ -216,6 +282,26 @@ async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), Strin
         .append(volume.head().await.unwrap(), &chunk)
         .await
         .unwrap();
+    for (leaf, bytes) in [
+        ("request.json", b"request".as_slice()),
+        ("arguments/1", b"args"),
+        ("stdout/2", b"first"),
+        ("stdout/10", b"second"),
+        ("stderr/1", b"err"),
+    ] {
+        put(
+            &volume,
+            &format!(".tasks/t/turns/9007199254740993/tools/call/{leaf}"),
+            bytes,
+        )
+        .await;
+    }
+    put(
+        &volume,
+        ".tasks/t/turns/9007199254740993/completion.json",
+        b"completion",
+    )
+    .await;
     provider
         .append(acyclic_stream::AppendRequest {
             path: path("swarm/a/status"),
@@ -274,9 +360,11 @@ async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), Strin
                     put(&volume, "GOAL.md", b"---\nstatus: done\n---\nfinal goal").await;
                     put(&volume, "plans/main.md", b"- [x] final plan").await;
                     put(&volume, ".tasks/t/turns/9007199254740994/request.json", &request("final")).await;
+                    put(&volume,".tasks/t/turns/9007199254740993/tools/call/stdout/11",b"live").await;
+                    put(&volume,".tasks/t/turns/9007199254740993/tools/call/result.json",b"result").await;
                     target.set(Some(volume.head().await.unwrap().position));
                 }
-                same(&native, &browser, drop_projection).map_err(acyclic_harness::Error::Invalid)?;
+                same(&native, &browser, drop_projection, drop_task).map_err(acyclic_harness::Error::Invalid)?;
                 let ready = native
                     .read(|v| {
                         target.get().is_some_and(|target| v.cursor(&path("swarm/a")).is_some_and(|c| c.position == target))
@@ -305,12 +393,12 @@ async fn exercise(wrong_handle: bool, drop_projection: bool) -> Result<(), Strin
 }
 #[wasm_bindgen_test]
 async fn native_and_wasm_render_the_same_followed_files_and_full_width_cursor() {
-    exercise(false, false).await.unwrap();
+    exercise(false, false, false).await.unwrap();
 }
 #[wasm_bindgen_test]
 async fn negative_control_separate_browser_reducer_is_detected() {
     assert!(
-        exercise(true, false)
+        exercise(true, false, false)
             .await
             .unwrap_err()
             .contains("view parity")
@@ -320,7 +408,7 @@ async fn negative_control_separate_browser_reducer_is_detected() {
 #[wasm_bindgen_test]
 async fn negative_control_omitting_followed_model_projections_is_detected() {
     assert!(
-        exercise(false, true)
+        exercise(false, true, false)
             .await
             .unwrap_err()
             .contains("model projections")
@@ -353,4 +441,14 @@ fn request(name: &str) -> Vec<u8> {
         max_output_tokens: Some(32),
     })
     .unwrap()
+}
+
+#[wasm_bindgen_test]
+async fn negative_control_omitting_followed_task_tools_is_detected() {
+    assert!(
+        exercise(false, false, true)
+            .await
+            .unwrap_err()
+            .contains("task folders differ")
+    );
 }

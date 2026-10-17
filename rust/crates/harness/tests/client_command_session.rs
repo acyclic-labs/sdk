@@ -8,6 +8,8 @@ use acyclic_stream::{MemoryStream, StreamPath};
 use futures::FutureExt as _;
 use proptest::prelude::*;
 use std::sync::Arc;
+#[path = "client_command_activity.rs"]
+mod activity;
 #[path = "client_command_session_bounds.rs"]
 mod bounds;
 

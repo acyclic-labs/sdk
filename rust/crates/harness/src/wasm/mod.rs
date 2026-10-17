@@ -73,6 +73,7 @@ mod file_worker;
 mod query;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod swarm;
+mod task_views;
 mod wire;
 
 #[cfg(target_arch = "wasm32")]

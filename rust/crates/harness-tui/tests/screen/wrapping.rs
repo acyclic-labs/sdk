@@ -26,9 +26,30 @@ fn wrapped_graphemes_keep_style_and_exact_width_has_no_cursor_row() {
     cache.update(&source, 0, 2);
     assert_eq!(text(cache.rows()), "e\u{301}界👩‍💻");
     assert_eq!(cache.rows().len(), 3);
-    assert_eq!(cache.rows()[0].spans[0].style, red);
-    assert_eq!(cache.rows()[0].spans[0].content, "e\u{301}");
-    assert_eq!(cache.rows()[2].spans[0].content, "👩‍💻");
+    assert_eq!(
+        cache
+            .rows()
+            .first()
+            .and_then(|row| row.spans.first())
+            .map(|span| span.style),
+        Some(red)
+    );
+    assert_eq!(
+        cache
+            .rows()
+            .first()
+            .and_then(|row| row.spans.first())
+            .map(|span| span.content.as_ref()),
+        Some("e\u{301}")
+    );
+    assert_eq!(
+        cache
+            .rows()
+            .get(2)
+            .and_then(|row| row.spans.first())
+            .map(|span| span.content.as_ref()),
+        Some("👩‍💻")
+    );
     let allocations = acyclic_test_support::measure(|| cache.update(&source, source.len(), 2));
     assert_eq!(
         allocations.count_total, 0,
@@ -67,7 +88,14 @@ fn crlf_split_across_styles_is_one_line_break() {
     cache.update(&source, 0, 20);
     assert_eq!(cache.rows().len(), 2);
     assert_eq!(text(cache.rows()), "firstsecond");
-    assert_eq!(cache.rows()[1].spans[0].style.fg, Some(Color::Blue));
+    assert_eq!(
+        cache
+            .rows()
+            .get(1)
+            .and_then(|row| row.spans.first())
+            .map(|span| span.style.fg),
+        Some(Some(Color::Blue))
+    );
     cache.update(&source, source.len(), 5);
     assert_eq!(
         cache.rows().len(),
@@ -113,7 +141,8 @@ proptest! {
         let text = pieces.concat();
         let middle = text.char_indices().nth(cut).map_or(text.len(), |(index, _)| index);
         let source = [Line::from(vec![Span::raw(&text)])];
-        let split = [Line::from(vec![Span::raw(&text[..middle]), Span::raw(&text[middle..])])];
+        let (head, tail) = text.split_at_checked(middle).unwrap_or((&text, ""));
+        let split = [Line::from(vec![Span::raw(head), Span::raw(tail)])];
         let mut whole = WrappedLines::default();
         let mut divided = WrappedLines::default();
         whole.update(&source, 0, width);

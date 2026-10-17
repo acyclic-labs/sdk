@@ -62,25 +62,25 @@ fn fuzz_negative_control_rejects_a_dropped_mention_marker() {
 
 fn files(menu: &mut CompletionMenu) {
     for path in ["src/readme.md", "src/a b.rs", "界/👩‍💻.rs", "@memo.rs"] {
-        menu.set_file(&format!("workspace/{path}"), Some(b""))
-            .unwrap();
+        let result = menu.set_file(&format!("workspace/{path}"), Some(b""));
+        assert!(result.is_ok(), "{result:?}");
     }
 }
 fn commands(menu: &mut CompletionMenu) {
-    menu.set_file(
+    let result = menu.set_file(
         "commands/catalog.json",
         Some(
             br#"[
         {"name":"theme"},{"name":"think"},{"name":"thread","tool":true}
     ]"#,
         ),
-    )
-    .unwrap();
+    );
+    assert!(result.is_ok(), "{result:?}");
 }
 fn single(menu: &mut CompletionMenu, value: &str) {
     menu.clear_files();
-    menu.set_file(&format!("workspace/{value}"), Some(b""))
-        .unwrap();
+    let result = menu.set_file(&format!("workspace/{value}"), Some(b""));
+    assert!(result.is_ok(), "{result:?}");
 }
 fn refresh_files(menu: &mut CompletionMenu, editor: &Editor) {
     files(menu);
@@ -231,7 +231,8 @@ fn popup_keys_accept_without_submission_and_use_the_effective_keymap()
     let mut editor = Editor::new("/th");
     let mut menu = CompletionMenu::default();
     refresh_commands(&mut menu, &editor);
-    let map = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#).unwrap();
+    let map = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#)
+        .map_err(|errors| format!("{errors:?}"))?;
     assert!(menu.key(
         &mut editor,
         KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -455,14 +456,20 @@ fn completing_before_whitespace_starts_the_next_argument_and_preserves_pastes() 
     assert_eq!(editor.text(), format!("@src/readme.md {paste}"));
     assert_eq!(editor.collapsed_pastes().len(), 1);
     assert_eq!(
-        (editor.cursor(), editor.collapsed_pastes()[0].start),
-        (15, 15)
+        (
+            editor.cursor(),
+            editor.collapsed_pastes().first().map(|paste| paste.start)
+        ),
+        (15, Some(15))
     );
     assert!(editor.undo());
     assert_eq!(editor.text(), format!("@srm{paste}"));
     assert_eq!(
-        (editor.cursor(), editor.collapsed_pastes()[0].start),
-        (4, 4)
+        (
+            editor.cursor(),
+            editor.collapsed_pastes().first().map(|paste| paste.start)
+        ),
+        (4, Some(4))
     );
 }
 
@@ -533,27 +540,37 @@ proptest! {
 
 fn oracle_fold(text: &str) -> String {
     // Independent Unicode CaseFolding data, not the production folding library.
-    static TABLE: std::sync::OnceLock<std::collections::BTreeMap<char, String>> =
+    static TABLE: std::sync::OnceLock<Option<std::collections::BTreeMap<char, String>>> =
         std::sync::OnceLock::new();
     let table = TABLE.get_or_init(|| {
         include_str!("data/casefold.tsv")
             .lines()
             .filter(|line| !line.starts_with('#'))
             .flat_map(|line| line.split('|'))
-            .map(|line| {
-                let (from, to) = line.split_once(';').unwrap();
-                (
-                    char::from_u32(u32::from_str_radix(from, 16).unwrap()).unwrap(),
-                    to.split_whitespace()
-                        .map(|s| char::from_u32(u32::from_str_radix(s, 16).unwrap()).unwrap())
-                        .collect(),
-                )
-            })
+            .map(casefold_entry)
             .collect()
     });
+    assert!(table.is_some(), "data/casefold.tsv parses");
     text.chars()
-        .map(|c| table.get(&c).cloned().unwrap_or_else(|| c.to_string()))
+        .map(|c| {
+            table
+                .as_ref()
+                .and_then(|table| table.get(&c))
+                .cloned()
+                .unwrap_or_else(|| c.to_string())
+        })
         .collect()
+}
+
+/// One `code; folded codes` mapping of hexadecimal scalar values.
+fn casefold_entry(line: &str) -> Option<(char, String)> {
+    let scalar = |hex: &str| u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+    let (from, to) = line.split_once(';')?;
+    let folded = to
+        .split_whitespace()
+        .map(scalar)
+        .collect::<Option<String>>()?;
+    Some((scalar(from)?, folded))
 }
 
 #[test]

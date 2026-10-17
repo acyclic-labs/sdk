@@ -325,7 +325,10 @@ impl vte::Perform for ReplyHandler<'_> {
         }
         let values: Vec<_> = params
             .iter()
-            .filter_map(|p| (p.len() == 1).then(|| p[0]))
+            .filter_map(|parameter| match parameter {
+                [value] => Some(*value),
+                _ => None,
+            })
             .collect();
         match (action, intermediates, values.as_slice()) {
             ('c', b"?", [_, attributes @ ..]) => {

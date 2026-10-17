@@ -2,7 +2,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::Editor;
+use crate::{Editor, buffer::slice};
 #[cfg(test)]
 thread_local! { pub(crate) static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
@@ -66,10 +66,10 @@ impl Layout {
                     range.end,
                     format!(
                         "[Pasted {} lines]",
-                        editor.text()[range.clone()].split('\n').count()
+                        slice(editor.text(), range.clone()).split('\n').count()
                     ),
                 )
-            } else if let Some(grapheme) = editor.text()[offset..].graphemes(true).next() {
+            } else if let Some(grapheme) = slice(editor.text(), offset..).graphemes(true).next() {
                 (offset + grapheme.len(), grapheme.to_owned())
             } else {
                 break;
@@ -153,7 +153,9 @@ impl Layout {
             .iter()
             .rposition(|r| r.start <= offset)
             .unwrap_or(0);
-        let row = &self.rows[row_index];
+        let Some(row) = self.rows.get(row_index) else {
+            return (0, 0);
+        };
         for cell in &row.cells {
             if offset < cell.source.end {
                 return (row_index, cell.column);

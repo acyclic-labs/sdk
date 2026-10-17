@@ -4,9 +4,37 @@ use crate::{
     task_volume::{Channel, Component, FileKey, FileValue, TaskFile, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use futures::FutureExt as _;
 use proptest::prelude::*;
 use std::sync::Arc;
+fn selection(client: &TaskFileClient) -> &super::super::FileQueryView {
+    client.views().selection(&client.task_selection).unwrap()
+}
+fn joined_text(client: &TaskFileClient, task: &str, reasoning: bool) -> String {
+    let task = Component::new(task).unwrap();
+    let bytes: Vec<_> = selection(client)
+        .task(&task)
+        .text()
+        .filter(|text| {
+            text.channel
+                == if reasoning {
+                    Channel::Reasoning
+                } else {
+                    Channel::Text
+                }
+        })
+        .flat_map(|text| {
+            text.file
+                .segments
+                .iter()
+                .flat_map(|segment| segment.iter().copied())
+        })
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+fn same_files(left: &super::super::FileQueryView, right: &super::super::FileQueryView) {
+    assert_eq!(left.files(), right.files());
+    assert_eq!(left.cursor(), right.cursor());
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
@@ -21,7 +49,6 @@ proptest! {
             let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("file-client").unwrap()).await.unwrap();
             let task = crate::TaskId::from_bytes([1;16]);
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: task.to_string() };
-            let key = format!("AGGREGATE_KIND_TASK:{task}");
             let mut generation = volume.snapshot(&Query::Tasks, 32).await.unwrap().generation;
             let files: Vec<_> = chunks.iter().enumerate().map(|(index, bytes)| FileValue {
                 requester: None, publication: None,
@@ -38,13 +65,11 @@ proptest! {
                 prop_assert!(tokio::task::unconstrained(live.next_change()).now_or_never().is_none());
             }
             let replay = TaskFileClient::observe(&volume, &owner, 32, 4096).await.unwrap();
-            prop_assert_eq!(&live.views().transcripts, &replay.views().transcripts);
+            same_files(selection(&live),selection(&replay));
             let bytes: Vec<u8> = chunks.into_iter().flatten().collect();
-            let transcript = &live.views().transcripts[&key];
-            let text = if reasoning { &transcript.reasoning } else { &transcript.streaming_text };
             let expected = String::from_utf8_lossy(&bytes);
-            prop_assert_eq!(text.as_str(), expected.as_ref());
-            prop_assert_eq!(transcript.streaming_turn, Some(OperationId::from_bytes([0;16])));
+            prop_assert_eq!(joined_text(&live,&owner.id,reasoning), expected.as_ref());
+            prop_assert!(selection(&live).task(&Component::new(&owner.id).unwrap()).text().all(|text|text.turn==0));
             Ok(())
         })?;
     }
@@ -98,7 +123,7 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
         .await
         .unwrap();
     client
-        .session
+        .views
         .query_snapshot(
             Query::Tasks,
             volumes[1].0.snapshot(&Query::Tasks, 16).await.unwrap(),
@@ -106,10 +131,15 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
             4096,
         )
         .unwrap();
-    assert_eq!(client.views().transcripts.len(), 2);
-    let first = format!("AGGREGATE_KIND_TASK:{}", owners[0].id);
-    let second = format!("AGGREGATE_KIND_TASK:{}", owners[1].id);
-    let foreign = client.views().transcripts[&second].clone();
+    assert_eq!(client.views().selections().count(), 2);
+    let foreign_identity = client
+        .views()
+        .selections()
+        .find(|(id, _)| **id != client.task_selection)
+        .unwrap()
+        .0
+        .to_owned();
+    let foreign = client.views().selection(&foreign_identity).unwrap().clone();
     let (volume, empty) = volumes.remove(0);
     let cut = volume.snapshot(&Query::Tasks, 16).await.unwrap();
     // A caller may submit a request naming another task. That editable input
@@ -128,7 +158,10 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
         .await
         .unwrap();
     client.next_change().await.unwrap();
-    assert_eq!(client.views().transcripts[&second], foreign);
+    assert_eq!(
+        client.views().selection(&foreign_identity).unwrap(),
+        &foreign
+    );
     let cut = volume.snapshot(&Query::Tasks, 16).await.unwrap();
     volume
         .append(
@@ -150,14 +183,20 @@ async fn foreign_requests_and_resets(identity: [u8; 16]) {
         .await
         .unwrap();
     client.next_change().await.unwrap();
-    assert_eq!(client.views().transcripts[&first].streaming_text, "b!");
-    assert_eq!(client.views().transcripts[&second], foreign);
+    assert_eq!(joined_text(&client, &owners[0].id, false), "b!");
+    assert_eq!(
+        client.views().selection(&foreign_identity).unwrap(),
+        &foreign
+    );
     client
-        .session
+        .views
         .query_snapshot(Query::Tasks, empty, 16, 4096)
         .unwrap();
-    assert!(!client.views().transcripts.contains_key(&first));
-    assert_eq!(client.views().transcripts[&second], foreign);
+    assert!(selection(&client).files().is_empty());
+    assert_eq!(
+        client.views().selection(&foreign_identity).unwrap(),
+        &foreign
+    );
 }
 
 proptest! {
@@ -182,7 +221,6 @@ proptest! {
             let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("completed-commands").unwrap()).await.unwrap();
             let task = crate::TaskId::new();
             let owner = crate::wire::Authority { kind: crate::wire::AggregateKind::Task as i32, id: task.to_string() };
-            let key = format!("AGGREGATE_KIND_TASK:{task}");
             let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
             volume.append(cut.generation, &FileValue {
                 requester: None, publication: None,
@@ -190,7 +228,6 @@ proptest! {
                 channel: Some(Channel::Reasoning), bytes: b"reasoning".to_vec().into(),
             }).await.unwrap();
             let mut followed = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
-            let mut expected = String::new();
             for (index, message) in messages.iter().enumerate() {
                 let file = FileValue::new(FileKey::Task {
                     task: Component::new(task.to_string()).unwrap(),
@@ -199,12 +236,13 @@ proptest! {
                 let cut = volume.snapshot(&Query::Tasks, 32).await.unwrap();
                 volume.append(cut.generation, &file).await.unwrap();
                 followed.next_change().await.unwrap();
-                if !expected.is_empty() { expected.push_str("\n\n"); }
-                expected.push_str(message);
-                assert_eq!(followed.views().transcripts[&key].streaming_text, expected);
-                assert_eq!(followed.views().transcripts[&key].reasoning, "reasoning");
+                let expected=messages[..=index].join("\n\n");
+                let output_owner=super::super::OutputOwner::Task(Component::new(&owner.id).unwrap());
+                let actual=selection(&followed).outputs(&output_owner,0).map(|(_,row)|row.text.unwrap().into_owned()).collect::<Vec<_>>().join("\n\n");
+                assert_eq!(actual,expected);
+                assert_eq!(joined_text(&followed,&owner.id,true), "reasoning");
                 let reopened = TaskFileClient::observe(&volume, &owner, 32, 16_384).await.unwrap();
-                assert_eq!(reopened.views(), followed.views());
+                same_files(selection(&reopened),selection(&followed));
             }
         });
     }
@@ -254,16 +292,12 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
     };
     volume.append(generation, &file).await.unwrap();
     client.next_change().await.unwrap();
-    assert_eq!(
-        client.views().transcripts[&format!("AGGREGATE_KIND_TASK:{task}")].streaming_text,
-        "visible"
-    );
+    assert_eq!(joined_text(&client, &owner.id, false), "visible");
     assert_eq!(
         client
             .views()
-            .queries
-            .values()
-            .map(|query| query.files().len())
+            .selections()
+            .map(|(_, query)| query.files().len())
             .sum::<usize>(),
         1
     );
@@ -271,6 +305,170 @@ async fn current_task_tail_ignores_large_request_and_unrelated_task_archives() {
 
 #[cfg(all(feature = "tui", feature = "terminal"))]
 mod retention;
+
+async fn replacement_sequence(tasks: &[u8], retain_old: bool) {
+    let volume = TaskVolume::open(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("selected").unwrap(),
+    )
+    .await
+    .unwrap();
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: crate::TaskId::from_bytes([99; 16]).to_string(),
+    };
+    let mut client = TaskFileClient::observe(&volume, &owner, 16, 4096)
+        .await
+        .unwrap();
+    let goal = volume
+        .snapshot(&Query::File(FileKey::Goal), 1)
+        .await
+        .unwrap();
+    let goal_identity = (goal.cursor.volume, goal.cursor.query);
+    client
+        .views
+        .query_snapshot(Query::File(FileKey::Goal), goal, 1, 4096)
+        .unwrap();
+    for number in tasks {
+        let task = crate::TaskId::from_bytes([*number; 16]);
+        let before = client
+            .views()
+            .selection(&client.task_selection)
+            .unwrap()
+            .clone();
+        let old_query = before.query().clone();
+        let old_snapshot = volume.snapshot(&old_query, 16).await.unwrap();
+        client.follow_task(&volume, task).await.unwrap();
+        if retain_old && old_query != TaskFileClient::task_query(task).unwrap() {
+            client
+                .views
+                .query_snapshot(old_query, old_snapshot, 16, 4096)
+                .unwrap();
+        }
+        let selected: Vec<_> = client
+            .views()
+            .selections()
+            .filter(|(_, files)| !matches!(files.query(), Query::File(FileKey::Goal)))
+            .collect();
+        assert_eq!(
+            selected.len(),
+            1,
+            "retired query must release all its files"
+        );
+        assert_eq!(
+            selected[0].1.query(),
+            &TaskFileClient::task_query(task).unwrap()
+        );
+        assert!(
+            client.views().selection(&goal_identity).is_some(),
+            "unrelated document survives"
+        );
+    }
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn selected_task_replacement_releases_only_the_old_query(tasks in prop::collection::vec(0u8..4,1..8)) {
+        futures::executor::block_on(replacement_sequence(&tasks,false));
+    }
+}
+#[test]
+fn retained_task_selection_negative_control() {
+    assert!(
+        std::panic::catch_unwind(|| futures::executor::block_on(replacement_sequence(
+            &[1, 2],
+            true
+        )))
+        .is_err()
+    );
+}
+
+async fn replace_ui_sessions(sessions: &[u8], retain: bool) {
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("sessions").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "root".into(),
+    };
+    let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    let mut previous = None;
+    for number in sessions {
+        let number = u128::from(*number);
+        let commands = crate::client::CommandSession::open(
+            volume.clone(),
+            uuid::Uuid::from_u128(number),
+            65_536,
+            128,
+        )
+        .await
+        .unwrap();
+        let old = if let Some(identity) = previous {
+            let query = client.views().selection(&identity).unwrap().query().clone();
+            Some((
+                identity,
+                query.clone(),
+                volume.snapshot(&query, 128).await.unwrap(),
+            ))
+        } else {
+            None
+        };
+        client.follow_commands(&commands).await.unwrap();
+        if let Some((identity, query, snapshot)) = old {
+            if Some(identity) != client.command_selection {
+                if retain {
+                    client
+                        .views
+                        .query_snapshot(query, snapshot, 128, 65_536)
+                        .unwrap();
+                }
+                assert!(client.views().selection(&identity).is_none());
+            }
+        }
+        let selection = client
+            .views()
+            .selections()
+            .filter(|(_, files)| matches!(files.query(), Query::CommandSession { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(selection.len(), 1);
+        assert_eq!(
+            selection[0].1.query(),
+            &Query::CommandSession {
+                session: Component::new(uuid::Uuid::from_u128(number).to_string()).unwrap(),
+                recent: 32
+            }
+        );
+        assert!(client.views().selection(&client.task_selection).is_some());
+        previous = Some(*selection[0].0);
+    }
+}
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    // Rebinding replaces the whole command selection while the task follow
+    // remains intact; reopening the same session never creates a second slot.
+    #[test]
+    fn replacing_the_ui_session_retires_its_previous_projection(sessions in prop::collection::vec(1u8..5,1..7)) {
+        futures::executor::block_on(replace_ui_sessions(&sessions,false));
+    }
+}
+#[test]
+fn retained_ui_session_projection_negative_control() {
+    futures::executor::block_on(replace_ui_sessions(&[1, 2, 1], false));
+    assert!(
+        std::panic::catch_unwind(|| futures::executor::block_on(replace_ui_sessions(
+            &[1, 2, 1],
+            true
+        )))
+        .is_err()
+    );
+}
 
 async fn checkpoint_model<const BROKEN: bool>() {
     use futures::StreamExt as _;
@@ -303,7 +501,6 @@ async fn checkpoint_model<const BROKEN: bool>() {
         revision,
         "checkpoints must not invalidate presentation"
     );
-    assert!(!client.commands_dirty);
     // The alternate File input path consumes another real checkpoint as well.
     volume
         .append(
@@ -313,10 +510,15 @@ async fn checkpoint_model<const BROKEN: bool>() {
         .await
         .unwrap();
     let change = client.changes.next().await.unwrap().unwrap();
-    client
-        .apply_update(super::super::ViewUpdate::File(change))
-        .unwrap();
+    client.apply_change(change).unwrap();
     assert_eq!(client.presentation_revision(), revision);
+    let query = Query::File(FileKey::Goal);
+    let mut documents = volume.observe(query.clone(), None, 128).await.unwrap();
+    client
+        .views_mut()
+        .query_snapshot(query, documents.snapshot.take().unwrap(), 128, 65536)
+        .unwrap();
+    let revision = client.presentation_revision();
     let other = FileValue::new(
         FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -324,29 +526,23 @@ async fn checkpoint_model<const BROKEN: bool>() {
         },
         b"draft".to_vec(),
     );
-    client
-        .apply_update(super::super::ViewUpdate::DocumentFile {
-            authority: owner.clone(),
-            file: other.clone(),
-        })
+    volume
+        .append(volume.head().await.unwrap(), &other)
+        .await
         .unwrap();
-    let cursor = client
-        .views()
-        .queries
-        .values()
-        .next()
-        .unwrap()
-        .cursor()
-        .clone();
+    let change = documents.changes.next().await.unwrap().unwrap();
+    assert!(
+        change.file.is_none(),
+        "the authorized document query filters task writes"
+    );
+    let cursor = change.cursor.clone();
+    client.apply_change(change).unwrap();
     client
-        .apply_update(super::super::ViewUpdate::DocumentChange {
-            authority: owner.clone(),
-            change: crate::task_volume::Change {
-                file: Some(other),
-                files: vec![],
-                removed: vec![],
-                cursor,
-            },
+        .apply_change(crate::task_volume::Change {
+            cursor,
+            file: None,
+            files: vec![],
+            removed: vec![],
         })
         .unwrap();
     assert_eq!(
@@ -354,11 +550,15 @@ async fn checkpoint_model<const BROKEN: bool>() {
         revision,
         "non-document writes must not invalidate presentation"
     );
+    volume
+        .append(
+            volume.head().await.unwrap(),
+            &FileValue::new(FileKey::Goal, b"visible goal".to_vec()),
+        )
+        .await
+        .unwrap();
     client
-        .apply_update(super::super::ViewUpdate::DocumentFile {
-            authority: owner,
-            file: FileValue::new(FileKey::Goal, b"visible goal".to_vec()),
-        })
+        .apply_change(documents.changes.next().await.unwrap().unwrap())
         .unwrap();
     assert!(client.presentation_revision() > revision);
 }
