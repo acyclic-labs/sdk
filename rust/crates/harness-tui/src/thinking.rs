@@ -11,6 +11,7 @@ use ratatui::{
 pub struct Thinking<'a> {
     theme: &'a ThemeStyles,
     now_ms: u64,
+    reduced_motion: bool,
 }
 
 impl<'a> Thinking<'a> {
@@ -19,11 +20,24 @@ impl<'a> Thinking<'a> {
 
     /// Uses the same monotonic frame clock as the prompt cursor.
     pub fn new(theme: &'a ThemeStyles, now_ms: u64) -> Self {
-        Self { theme, now_ms }
+        Self {
+            theme,
+            now_ms,
+            reduced_motion: false,
+        }
+    }
+
+    /// Disable the moving highlight while retaining the activity label.
+    pub fn reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self
     }
 
     /// A stable label with a moving themed highlight, including monochrome.
     pub fn line(&self) -> Line<'static> {
+        if self.reduced_motion {
+            return Line::styled("Thinking…", self.theme.style(ThemeRole::Placeholder));
+        }
         let parts = ["T", "h", "i", "n", "k", "i", "n", "g", "…"];
         let phase = (self.now_ms / Self::FRAME_MS) % parts.len() as u64;
         Line::from(

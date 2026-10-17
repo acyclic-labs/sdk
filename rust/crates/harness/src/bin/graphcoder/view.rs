@@ -80,6 +80,7 @@ pub async fn run(
             &mut completions,
             &mut input,
             &mut commands,
+            areas.animation,
             &mut documents,
         )
         .await?

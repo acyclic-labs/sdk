@@ -22,10 +22,11 @@ pub async fn next_tui_event<S: super::ClientStateStore>(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    animation: bool,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     let delivery = tokio::select! {
-        _ = animation_frame::<true>(prompt.busy) => return Ok(None),
+        _ = animation_frame::<true>(animation) => return Ok(None),
         event = input.next() => return event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         delivery = client.read_delivery() => delivery?,
         update = documents.next() => {
@@ -53,10 +54,11 @@ pub async fn next_file_tui_event(
     completions: &mut crate::tui_files::CompletionFiles,
     prompt: &mut crate::tui::PromptInput,
     commands: &mut super::CommandSession<acyclic_stream::LocalStream>,
+    animation: bool,
     documents: &mut acyclic_stream::BoxProviderStream<'static, Result<super::ViewUpdate>>,
 ) -> Result<Option<crate::tui::key_event::InputEvent>> {
     tokio::select! {
-        _ = animation_frame::<true>(prompt.busy) => Ok(None),
+        _ = animation_frame::<true>(animation) => Ok(None),
         event = input.next() => event.transpose()?.map(Some).ok_or_else(|| Error::Storage("terminal input closed".into())),
         change = client.next_change() => { change?; Ok(None) },
         update = documents.next() => {

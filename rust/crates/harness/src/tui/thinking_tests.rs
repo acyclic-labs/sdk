@@ -14,13 +14,18 @@ use std::sync::Arc;
 struct NoFiles;
 impl crate::conversation::ContentResidencyVerifier for NoFiles {}
 
-fn paint<const BOUND: bool>(
+fn paint<const BOUND: bool, const PREFERENCES: bool>(
     renderer: &mut ClientRenderer,
     files: &CommandSession<MemoryStream>,
     now: u64,
 ) -> Buffer {
     let mut input = PromptInput::default();
     input.busy = BOUND && renderer.is_busy();
+    if PREFERENCES {
+        crate::client::PromptFiles::default()
+            .refresh(files, &mut input)
+            .unwrap();
+    }
     let screen = renderer.screen_for(files).unwrap();
     let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
     let scroll = screen.tail_scroll(
@@ -35,7 +40,7 @@ fn paint<const BOUND: bool>(
     terminal.backend().buffer().clone()
 }
 
-async fn followed_busy<const BOUND: bool>() {
+async fn followed_busy<const BOUND: bool, const PREFERENCES: bool>() {
     let volume = Arc::new(
         TaskVolume::open(
             Arc::new(MemoryStream::default()),
@@ -66,14 +71,17 @@ async fn followed_busy<const BOUND: bool>() {
             .map(|cell| cell.symbol())
             .collect::<String>()
     };
-    assert!(!text(&paint::<BOUND>(&mut renderer, &files, 0)).contains("Thinking…"));
+    assert!(
+        !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
+            .contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦")
+    );
     files.submit("hello", &NoFiles).await.unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
     let layout = files
         .state(CommandFileRoot::Session, "layout.json")
         .unwrap();
-    let first = paint::<BOUND>(&mut renderer, &files, 0);
-    let later = paint::<BOUND>(&mut renderer, &files, Thinking::FRAME_MS);
+    let first = paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0);
+    let later = paint::<BOUND, PREFERENCES>(&mut renderer, &files, Thinking::FRAME_MS);
     assert_eq!(
         files
             .state(CommandFileRoot::Session, "layout.json")
@@ -82,24 +90,58 @@ async fn followed_busy<const BOUND: bool>() {
         "animation must not publish layout state"
     );
     assert!(
-        text(&first).contains("Thinking…"),
+        text(&first).contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"),
         "followed busy state must render thinking"
     );
     let start = first
         .content
         .windows(9)
-        .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Thinking…")
+        .position(|cells| {
+            cells.iter().map(|cell| cell.symbol()).collect::<String>() == "ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦"
+        })
         .unwrap();
     assert_ne!(first.content[start].style(), later.content[start].style());
     assert_ne!(
         first.content[start + 1].style(),
         later.content[start + 1].style()
     );
+    files
+        .write_unchanged_state(
+            CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"reduced_motion":true}),
+        )
+        .await
+        .unwrap();
+    let static_first = paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0);
+    let static_later = paint::<BOUND, PREFERENCES>(&mut renderer, &files, Thinking::FRAME_MS);
+    assert!(text(&static_first).contains("ThinkingÃ¢â‚¬Â¦"));
+    assert_eq!(
+        static_first, static_later,
+        "followed reduced motion must freeze the label"
+    );
+    assert_ne!(first, static_first);
+    let mut projection = crate::client::PromptFiles::default();
+    let mut input = PromptInput::default();
+    input.editor.set_text("unsaved draft", 0);
+    for reduced in [true, false, true] {
+        files
+            .write_unchanged_state(
+                CommandFileRoot::Config,
+                "settings.json",
+                &serde_json::json!({"reduced_motion": reduced}),
+            )
+            .await
+            .unwrap();
+        projection.refresh(&files, &mut input).unwrap();
+        assert_eq!(input.editor.settings().reduced_motion, reduced);
+        assert_eq!(input.editor.text(), "unsaved draft");
+    }
     let reopened = CommandSession::open(volume, id, 65_536, 64).await.unwrap();
     renderer.configure(&views, &owner, &reopened).unwrap();
     assert_eq!(
-        paint::<BOUND>(&mut renderer, &files, 0),
-        paint::<BOUND>(&mut renderer, &reopened, 0)
+        paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0),
+        paint::<BOUND, PREFERENCES>(&mut renderer, &reopened, 0)
     );
     let request = files.take_request().unwrap();
     files
@@ -109,18 +151,21 @@ async fn followed_busy<const BOUND: bool>() {
         .await
         .unwrap();
     renderer.configure(&views, &owner, &files).unwrap();
-    assert!(!text(&paint::<BOUND>(&mut renderer, &files, 0)).contains("Thinking…"));
+    assert!(
+        !text(&paint::<BOUND, PREFERENCES>(&mut renderer, &files, 0))
+            .contains("ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦")
+    );
 }
 
 #[test]
 fn file_backed_busy_state_animates_replays_and_settles() {
-    futures::executor::block_on(followed_busy::<true>());
+    futures::executor::block_on(followed_busy::<true, true>());
 }
 
 #[test]
 #[should_panic(expected = "followed busy state must render thinking")]
 fn missing_busy_binding_is_detected_negative_control() {
-    futures::executor::block_on(followed_busy::<false>());
+    futures::executor::block_on(followed_busy::<false, true>());
 }
 
 proptest::proptest! {
@@ -129,7 +174,7 @@ proptest::proptest! {
     fn shimmer_text_and_phase_are_periodic(now in proptest::prelude::any::<u64>()) {
         let theme = super::super::config::ThemeStyles::default();
         let row = Thinking::new(&theme,now).line();
-        proptest::prop_assert_eq!(row.spans.iter().map(|span|span.content.as_ref()).collect::<String>(),"Thinking…");
+        proptest::prop_assert_eq!(row.spans.iter().map(|span|span.content.as_ref()).collect::<String>(),"ThinkingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦");
         let lit: Vec<_> = row.spans.iter().enumerate().filter(|(_,span)|span.style.add_modifier.contains(Modifier::BOLD)).map(|(i,_)|i).collect();
         proptest::prop_assert_eq!(lit,vec![((now/Thinking::FRAME_MS)%9) as usize]);
         let period = Thinking::FRAME_MS*9;
@@ -137,4 +182,10 @@ proptest::proptest! {
             proptest::prop_assert_eq!(row,Thinking::new(&theme,later).line());
         }
     }
+}
+
+#[test]
+#[should_panic(expected = "followed reduced motion must freeze the label")]
+fn missing_motion_preference_binding_negative_control() {
+    futures::executor::block_on(followed_busy::<true, false>());
 }

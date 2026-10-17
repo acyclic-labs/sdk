@@ -39,6 +39,8 @@ pub struct Screen<'a> {
 /// Areas shared by rendering and mouse routing, in absolute terminal cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScreenAreas {
+    /// Whether the painted activity label needs another animation frame.
+    pub animation: bool,
     /// Agent breadcrumb.
     pub header: Rect,
     /// Transcript viewport.
@@ -148,6 +150,7 @@ impl Screen<'_> {
             Rect::new(prompt.x, prompt.y, 0, 0)
         };
         ScreenAreas {
+            animation: false,
             header,
             transcript: remaining,
             terminal,
@@ -157,6 +160,28 @@ impl Screen<'_> {
             completions,
             status,
         }
+    }
+
+    /// Construct activity spans only when their row is inside the painted viewport.
+    pub fn thinking_line(
+        &self,
+        input: &PromptInput,
+        area: Rect,
+        scroll: usize,
+        now_ms: u64,
+    ) -> Option<Line<'static>> {
+        let row = self.reasoning.len() + self.transcript.len();
+        (input.busy
+            && !self.feedback
+            && self.overlay.is_empty()
+            && area.width > 0
+            && row >= scroll
+            && row - scroll < usize::from(area.height))
+        .then(|| {
+            crate::Thinking::new(&input.theme, now_ms)
+                .reduced_motion(input.editor.settings().reduced_motion)
+                .line()
+        })
     }
 
     /// Compose shared widgets without cloning TaskFileViews or their transcript.
@@ -169,11 +194,10 @@ impl Screen<'_> {
         transcript_scroll: usize,
         now_ms: u64,
     ) -> ScreenAreas {
-        let areas = self.areas(frame.area(), input);
+        let mut areas = self.areas(frame.area(), input);
         frame.render_widget(Paragraph::new(self.header.clone()), areas.header);
-        let thinking = input
-            .busy
-            .then(|| crate::Thinking::new(&input.theme, now_ms).line());
+        let thinking = self.thinking_line(input, areas.transcript, transcript_scroll, now_ms);
+        areas.animation = thinking.is_some() && !input.editor.settings().reduced_motion;
         if self.feedback {
             frame.render_widget(crate::Feedback(&input.theme), areas.transcript);
         } else if self.overlay.is_empty() {

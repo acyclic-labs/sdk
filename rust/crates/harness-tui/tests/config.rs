@@ -620,3 +620,25 @@ fn source_reads_reuse_the_parsed_projection() {
 fn source_work_negative_control_detects_reparsing() {
     source_reuses_parsed_file(true);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn reduced_motion_setting_round_trips_and_static_label_ignores_time(
+        reduced in any::<bool>(), now in any::<u64>(), later in any::<u64>()
+    ) {
+        let mut view = ConfigView::default();
+        let text = serde_json::json!({"reduced_motion": reduced}).to_string();
+        view.set_file(Scope::User, ConfigFile::Settings, Some(&text));
+        let preferences = view.settings().unwrap();
+        prop_assert_eq!(preferences.reduced_motion, reduced);
+        let encoded = serde_json::to_string(&preferences).unwrap();
+        let decoded: acyclic_harness_tui::UiSettings = serde_json::from_str(&encoded).unwrap();
+        prop_assert_eq!(preferences, decoded);
+        if reduced {
+            let theme = acyclic_harness_tui::config::ThemeStyles::default();
+            let label = |time| acyclic_harness_tui::Thinking::new(&theme,time).reduced_motion(reduced).line();
+            prop_assert_eq!(label(now),label(later));
+        }
+    }
+}
