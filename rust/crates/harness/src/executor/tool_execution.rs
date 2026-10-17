@@ -103,6 +103,13 @@ impl StockExecution<'_> {
             {
                 return Ok(progress);
             }
+            if tool.executor.uses_observed_files()
+                && let Some(bound) = context.take()
+            {
+                context = Some(
+                    bound.with_observed_files(self.observed_files(journal, operation_id).await?),
+                );
+            }
             self.execute_tool_invocation(
                 journal,
                 (operation_id, step),

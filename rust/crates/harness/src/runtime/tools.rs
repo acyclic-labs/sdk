@@ -237,6 +237,9 @@ pub struct ToolContext {
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
     pub(crate) model_step: u32,
+    /// Latest version per path the model observed in this turn's durable
+    /// tool results; `None` outside model-driven execution.
+    pub(super) observed_files: Option<Arc<[FileRef]>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -252,6 +255,7 @@ impl Clone for ToolContext {
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
             model_step: self.model_step,
+            observed_files: self.observed_files.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -329,6 +333,7 @@ impl ToolContext {
             operation_id,
             call_id,
             model_step: 0,
+            observed_files: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -621,16 +626,21 @@ impl ToolContext {
         Ok((file, bytes))
     }
 
-    /// Records `file` as the version this task's model last saw at its path.
-    pub(crate) fn pin_read(&self, file: &FileRef) {
-        let task = self.task();
-        task.harness.read_pins.record(task.task_id, file);
+    /// The version the model last observed at `file`'s path through a
+    /// durable successful tool result, or `None` when this call has no model
+    /// history or none of its results named that path.
+    pub(crate) fn observed_version(&self, file: &FileRef) -> Option<&FileRef> {
+        self.observed_files
+            .as_deref()?
+            .iter()
+            .find(|observed| observed.volume() == file.volume() && observed.path() == file.path())
     }
 
-    /// The version this task's model last saw at `file`'s path, if pinned.
-    pub(crate) fn read_pin(&self, file: &FileRef) -> Option<FileRef> {
-        let task = self.task();
-        task.harness.read_pins.get(task.task_id, file)
+    /// Binds the versions this call's model observed, derived from the
+    /// canonical journal of its turn rather than from in-memory state.
+    pub(crate) fn with_observed_files(mut self, observed: Vec<FileRef>) -> Self {
+        self.observed_files = Some(Arc::from(observed));
+        self
     }
 
     /// Observes this call's original replacement of `path`, so reconciling a

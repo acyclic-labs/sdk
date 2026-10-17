@@ -88,9 +88,6 @@ impl FileTool {
                 .await?
             }
         };
-        if matches!(self, Self::Write | Self::Edit) {
-            context.pin_read(&file.0);
-        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
@@ -193,7 +190,6 @@ impl FileTool {
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         let (file, bytes) = context.current_file(&input.0.path, io).await?;
-        context.pin_read(&file);
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("file read requires UTF-8 content"))?;
         let offset = input.0.offset.unwrap_or(1);
@@ -240,8 +236,8 @@ impl FileTool {
         // The exact version the model read: a change anywhere in the file
         // since then is a conflict, not an edit of content it never saw.
         if context
-            .read_pin(&file)
-            .is_some_and(|read| read.descriptor() != file.descriptor())
+            .observed_version(&file)
+            .is_some_and(|seen| seen.descriptor() != file.descriptor())
         {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
@@ -305,6 +301,19 @@ impl FileTool {
 }
 
 impl ToolExecutor for FileTool {
+    fn observed_file(&self, result: &ToolResult) -> Option<FileRef> {
+        // Every file tool except search returns the exact version it read or
+        // published under `file`.
+        if matches!(self, Self::Search { .. }) {
+            return None;
+        }
+        serde_json::from_value(result.value.get("file")?.clone()).ok()
+    }
+
+    fn uses_observed_files(&self) -> bool {
+        matches!(self, Self::Edit)
+    }
+
     fn authorize(
         &self,
         scope: Option<&RuntimeScope>,

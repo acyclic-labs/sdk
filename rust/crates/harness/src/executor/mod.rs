@@ -46,6 +46,7 @@ mod composition;
 mod content;
 mod dispatch;
 mod prefix;
+mod observed;
 mod records;
 mod request;
 mod response;
