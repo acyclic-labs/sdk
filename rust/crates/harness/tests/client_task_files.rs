@@ -268,14 +268,14 @@ fn numeric_chunks_missing_requests_and_full_width_turns_survive_reopen() {
             (0, 255, 1, 7),
             (1, 255, 0, 0),
         ],
-        false
+        Fault::None
     )));
 }
 #[test]
 fn negative_control_including_another_tasks_files_is_rejected() {
     assert!(!futures::executor::block_on(exercise(
         &[(1, 0, 0, 0), (0, 0, 1, 2)],
-        true
+        Fault::Foreign
     )));
 }
 
