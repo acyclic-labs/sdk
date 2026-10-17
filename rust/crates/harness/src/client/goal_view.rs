@@ -102,13 +102,20 @@ impl ClientViews {
     /// Re-derives the rendering from current source cuts; arrival order adds no state.
     pub fn goal_view(&self, volume: [u8; 32], query: [u8; 32]) -> Option<GoalQueryView<'_>> {
         let identity = (volume, query);
-        let file = self.selection(&identity)?;
+        self.goal_selection(&identity, self.selection(&identity)?)
+    }
+
+    pub(super) fn goal_selection<'a>(
+        &'a self,
+        identity: &([u8; 32], [u8; 32]),
+        file: &'a super::FileQueryView,
+    ) -> Option<GoalQueryView<'a>> {
         if !file.query().matches(&FileKey::Goal) {
             return None;
         }
         let request = self
             .goal_sources
-            .get(&identity)
+            .get(identity)
             .and_then(|key| self.selection(key))
             .or_else(|| file.query().matches(&FileKey::RequestHead).then_some(file));
         Some(GoalQueryView {
@@ -134,10 +141,6 @@ impl Serialize for Goals<'_> {
         &self,
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.collect_seq(
-            self.0
-                .selections()
-                .filter_map(|((volume, query), _)| self.0.goal_view(*volume, *query)),
-        )
+        serializer.collect_seq(self.0.goals())
     }
 }

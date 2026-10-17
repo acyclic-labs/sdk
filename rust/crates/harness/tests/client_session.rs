@@ -81,7 +81,7 @@ async fn plan_selection_follows_files_and_rejects_invalid_revisions_atomically()
         let cursor = change.cursor.clone();
         let payload = file.bytes.as_ptr();
         assert!(client.query_change(change).unwrap());
-        let view = &client.selection(&identity).unwrap();
+        let view = client.selection(&identity).unwrap();
         assert_eq!(view.files()[&file.key].segments[0].as_ptr(), payload);
         assert_eq!(
             view.plan_lines(),

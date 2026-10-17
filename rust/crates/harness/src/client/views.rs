@@ -223,26 +223,39 @@ impl ClientViews {
     /// Goal projections at the same cuts as the followed files.
     pub fn goals(&self) -> impl Iterator<Item = super::GoalQueryView<'_>> {
         self.selections()
-            .filter_map(|((volume, query), _)| self.goal_view(*volume, *query))
+            .filter_map(|(identity, files)| self.goal_selection(identity, files))
     }
 
     /// All followed file selections, including ordinary private-file queries.
     pub fn selections(&self) -> impl Iterator<Item = (&([u8; 32], [u8; 32]), &FileQueryView)> {
-        self.agents.values().flat_map(|agent| agent.files.iter())
+        self.agents
+            .get(self.layout.root())
+            .into_iter()
+            .chain(
+                self.layout
+                    .full_fidelity()
+                    .filter_map(|path| self.agents.get(path)),
+            )
+            .flat_map(|agent| agent.files.iter())
     }
     /// Borrows the agent-owned selection at an exact volume/query identity.
     pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
-        self.agents
-            .values()
-            .find_map(|agent| agent.files.get(identity))
+        self.selections()
+            .find_map(|(key, files)| (key == identity).then_some(files))
     }
     pub(super) fn selection_mut(
         &mut self,
         identity: &([u8; 32], [u8; 32]),
     ) -> Option<&mut FileQueryView> {
-        self.agents
-            .values_mut()
-            .find_map(|agent| agent.files.get_mut(identity))
+        let agent = std::iter::once(self.layout.root())
+            .chain(self.layout.full_fidelity())
+            .find(|path| {
+                self.agents
+                    .get(*path)
+                    .is_some_and(|agent| agent.files.contains_key(identity))
+            })?
+            .clone();
+        self.agents.get_mut(&agent)?.files.get_mut(identity)
     }
     pub(super) fn install_selection(&mut self, files: FileQueryView) {
         let cursor = files.cursor();
