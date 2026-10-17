@@ -213,6 +213,26 @@ async fn native_creation_and_fork_call_original_guard_without_publishing()
     Ok(())
 }
 
+/// The fork guard oracle: a source Reservation permit is rejected as a creation (lineage.rs admits only Unrestricted
+/// or a matching source Lease, #495), while the same fork under Unrestricted succeeds.
+fn check_fork_guard(
+    reserved: &Result<(), String>,
+    unrestricted: &Result<(), String>,
+) -> Result<(), String> {
+    let rejection = format!(
+        "{:?}",
+        WorkspaceError::Filesystem(FsError::CreationRejected)
+    );
+    if reserved.as_ref().err() != Some(&rejection) {
+        return Err(format!(
+            "a Reservation fork was not rejected as a creation: {reserved:?}"
+        ));
+    }
+    unrestricted
+        .clone()
+        .map_err(|error| format!("the guard also refused an Unrestricted fork: {error}"))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), Box<dyn Error>> {
@@ -236,10 +256,10 @@ async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), 
         gate_tail: reservation.gate_tail,
         expected: reservation.expected,
     };
-    let result = source
-        .fork::<_, _, WorkspaceError>(
-            "destination",
-            ForkOptions::from_generation(frozen, IdempotencyKey::new()),
+    let fork = |name: &'static str, permit: PublicationPermit| {
+        source.fork::<_, _, WorkspaceError>(
+            name,
+            ForkOptions::from_generation(frozen.clone(), IdempotencyKey::new()),
             permit,
             &original,
             &cancellation,
@@ -247,20 +267,29 @@ async fn fork_cannot_rebind_a_source_reservation_to_destination() -> Result<(), 
                 std::future::ready(Ok::<_, WorkspaceError>(()))
             }),
         )
-        .await;
-    // The authority admits only Unrestricted or a matching source Lease to a fork; a source Reservation is
-    // rejected as a creation (lineage.rs), before any destination exists.
-    assert!(
-        matches!(
-            result,
-            Err(WorkspaceError::Filesystem(FsError::CreationRejected))
-        ),
-        "{:?}",
-        result.as_ref().err()
-    );
+    };
+    let reserved = fork("destination", permit).await;
     assert!(unbounded!(fs, open_workspace("destination")).is_err());
     source
         .release_publication(reservation, &original, &cancellation)
         .await?;
+    // Positive control on the same source generation and authority path: only the Reservation permit is refused.
+    let unrestricted = fork("unrestricted-destination", PublicationPermit::Unrestricted).await;
+    let outcome = |result: &Result<_, WorkspaceError>| {
+        result
+            .as_ref()
+            .map(|_| ())
+            .map_err(|error| format!("{error:?}"))
+    };
+    check_fork_guard(&outcome(&reserved), &outcome(&unrestricted))?;
+    let forked = unbounded!(fs, open_workspace("unrestricted-destination"))?;
+    assert_eq!(unbounded!(forked, read("/value", 16))?.as_ref(), b"frozen");
+    // Negative controls: a guard that refuses every fork, and one that refuses none, both fail the oracle.
+    let rejected = Err(format!(
+        "{:?}",
+        WorkspaceError::Filesystem(FsError::CreationRejected)
+    ));
+    assert!(check_fork_guard(&rejected, &rejected).is_err());
+    assert!(check_fork_guard(&Ok(()), &Ok(())).is_err());
     Ok(())
 }
