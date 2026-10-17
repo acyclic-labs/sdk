@@ -31,9 +31,10 @@ impl FileProjectionPolicy {
         {
             return Err(invalid(work, "model file exceeds render limit"));
         }
-        if matches!(self, Self::ProjectInstructions) {
-            let mut remaining = limits.render_bytes;
-            InstructionSource::new(file).reserve(&mut remaining, None)?;
+        if matches!(self, Self::ProjectInstructions)
+            && InstructionSource::new(file).framed_bytes()? > limits.render_bytes
+        {
+            return Err(invalid(work, "project instructions exceed render bound"));
         }
         Ok(())
     }

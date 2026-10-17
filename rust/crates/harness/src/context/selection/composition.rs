@@ -159,7 +159,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    crate::executor::with_history_io(io, |work| {
+    let bytes = crate::executor::with_history_io(io, |work| {
         crate::executor::json::json_byte_length(
             &JoinedContext {
                 messages: ContextMessages {
@@ -173,8 +173,10 @@ fn preflight_context_composition(
             limits.render_bytes,
             work,
         )
-        .map(|_| ())
     })?;
+    let mut remaining = limits.render_bytes - bytes;
+    crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
+    crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)
 }
 
@@ -196,5 +198,6 @@ fn compose_context(
             append_context_messages(&mut context.messages, &mut contribution.messages, io)?;
         }
     }
+    crate::model::deduplicate_reads(&mut context.messages, io)?;
     Ok(context)
 }

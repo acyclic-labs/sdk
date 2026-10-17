@@ -105,8 +105,18 @@ impl DiscoveredContext {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        for file in &self.instructions {
+        for (index, file) in self.instructions.iter().enumerate() {
             file.validate(work)?;
+            if self.instructions[..index].iter().any(|prior| {
+                let source = crate::model::InstructionSource::new(prior);
+                source.same_identity(file) && !source.same_content(file)
+            }) {
+                return Err(discovery_error(
+                    work,
+                    ErrorCode::Conflict,
+                    "instruction source has conflicting contents",
+                ));
+            }
         }
         for skill in &self.skills {
             skill.validate(work)?;
@@ -157,7 +167,16 @@ impl DiscoveredContext {
         })?;
         crate::model::instruction_reservation(
             &self.instructions,
-            limits.render_bytes.saturating_sub(skill_bytes),
+            limits
+                .render_bytes
+                .checked_sub(skill_bytes)
+                .ok_or_else(|| {
+                    stock_boundary(
+                        io,
+                        ErrorCode::Invalid,
+                        "skill metadata exceeds render bound",
+                    )
+                })?,
             io,
         )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -171,7 +190,7 @@ impl DiscoveredContext {
             );
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(Error::from)?;
-            for file in &self.instructions {
+            for file in crate::model::instruction_files(&self.instructions) {
                 messages
                     .0
                     .push(crate::model::project_instruction(file, Some(io))?);
@@ -189,9 +208,7 @@ impl DiscoveredContext {
             return Ok(messages.0);
         }
         let _ = (io, skill_bytes);
-        let mut messages: Vec<_> = self
-            .instructions
-            .iter()
+        let mut messages: Vec<_> = crate::model::instruction_files(&self.instructions)
             .map(|file| crate::model::project_instruction(file, io))
             .collect::<Result<Vec<_>>>()?;
         if !self.skills.is_empty() {

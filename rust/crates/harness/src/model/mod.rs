@@ -2,10 +2,14 @@
 
 mod call_id;
 mod content;
+mod instruction_reads;
 mod instructions;
+pub(crate) use instruction_reads::deduplicate_reads;
 mod inventory;
 pub use instructions::InstructionSource;
-pub(crate) use instructions::{instruction_reservation, project_instruction};
+pub(crate) use instructions::{
+    instruction_files, instruction_reservation, project_instruction, reserve_instruction_bodies,
+};
 mod media;
 mod prefix;
 mod preparation;
@@ -14,6 +18,8 @@ mod reasoning;
 mod request;
 mod usage;
 pub(crate) use usage::accumulate_usage;
+#[cfg(test)]
+mod instruction_tests;
 #[cfg(test)]
 mod tests;
 mod tool_call;

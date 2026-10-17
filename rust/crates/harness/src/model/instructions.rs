@@ -79,11 +79,40 @@ impl<'a> InstructionSource<'a> {
     }
 
     pub(crate) fn same_content(self, other: &FileRef) -> bool {
-        self.0.volume() == other.volume()
-            && self.0.path() == other.path()
+        self.same_identity(other)
             && self.0.descriptor().sha256() == other.descriptor().sha256()
             && self.0.descriptor().byte_length() == other.descriptor().byte_length()
     }
+
+    pub(crate) fn same_identity(self, other: &FileRef) -> bool {
+        self.0.volume() == other.volume() && self.0.path() == other.path()
+    }
+}
+
+pub(crate) fn instruction_files(files: &[FileRef]) -> impl Iterator<Item = &FileRef> {
+    files.iter().enumerate().filter_map(|(index, file)| {
+        (!files[..index]
+            .iter()
+            .any(|prior| InstructionSource::new(prior).same_content(file)))
+        .then_some(file)
+    })
+}
+
+pub(crate) fn reserve_instruction_bodies(
+    messages: &[ModelMessage],
+    remaining: &mut u64,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    for part in messages.iter().flat_map(|message| message.content.parts()) {
+        if let ModelContentPart::File {
+            file,
+            policy: FileProjectionPolicy::ProjectInstructions,
+        } = part
+        {
+            InstructionSource::new(file).reserve(remaining, io)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn project_instruction(
@@ -106,7 +135,7 @@ pub(crate) fn instruction_reservation(
     io: Option<&PreparationIo>,
 ) -> Result<u64> {
     let mut remaining = maximum;
-    for file in files {
+    for file in instruction_files(files) {
         let metadata = crate::executor::with_history_io(io, |work| {
             crate::executor::json::json_byte_length(file, remaining, work)
         })?;

@@ -62,19 +62,25 @@ async fn check_instructions(
 ) -> Result<()> {
     let requests = provider.requests();
     let mut rendered = String::new();
-    for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {
-        let framed = format!("# {name} instructions\n\n<INSTRUCTIONS>\n{text}\n</INSTRUCTIONS>");
-        let message = requests[index]
-            .messages
-            .iter()
-            .find(|message| message.content == crate::model::ModelContent::Text(framed.clone()))
-            .expect("named, framed project instructions missing");
-        assert_eq!(message.role, crate::model::ModelRole::User);
-    }
+    let reader = harness.context_reader()?;
     for message in &requests[index].messages {
-        if let crate::model::ModelContent::Text(text) = &message.content {
-            rendered.push_str(text);
+        if let crate::model::ModelContent::Part(crate::model::ModelContentPart::File {
+            file,
+            policy: crate::model::FileProjectionPolicy::ProjectInstructions,
+        }) = &message.content
+        {
+            assert_eq!(message.role, crate::model::ModelRole::User);
+            let bytes = reader
+                .read(file, file.descriptor().byte_length(), None)?
+                .await?;
+            file.descriptor().verify(&bytes, &mut None)?;
+            rendered.push_str(&crate::model::InstructionSource::new(file).render(&bytes, None)?);
         }
+    }
+    for (name, text) in [("AGENTS.md", agents), ("CLAUDE.md", claude)] {
+        assert!(rendered.contains(&format!(
+            "# {name} instructions for .\n\n<INSTRUCTIONS>\n{text}\n</INSTRUCTIONS>"
+        )));
     }
     let agents = rendered
         .find(agents)

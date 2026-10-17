@@ -81,6 +81,7 @@ impl ContextManifest {
                     "manifest exceeds context byte bound",
                 )
             })?;
+        crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
         for name in manifest.selected_skills {
             let skill = manifest
                 .discovery
