@@ -177,46 +177,36 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         bytes,
                     });
                 }
-                // Only acknowledged objects leave staging, including on cancellation.
-                for write in &writes {
-                    work.accounting()
-                        .check()
-                        .map_err(crate::async_storage::object_error)?;
-                    self.collection.writing(unswept, [write.object_id]);
-                    self.inner
-                        .put(write.object_id, write.bytes.clone(), work)
-                        .await?;
-                    self.index_mut().acknowledge(write.object_id);
-                }
-            } else {
-                if !spilled.is_empty() {
-                    let bytes = spilled
-                        .iter()
-                        .fold(0_u64, |sum, &(_, _, length)| sum.saturating_add(length));
-                    work.accounting()
-                        .charge(WorkCounters {
-                            backend_read_operations: 1,
-                            object_bytes_read: bytes,
-                            bytes_hashed: bytes,
-                            ..WorkCounters::UNCHARGED
-                        })
-                        .map_err(crate::async_storage::object_error)?;
-                    writes.extend(
-                        self.read_spilled(&spilled)
-                            .await?
-                            .into_iter()
-                            .map(|object| {
-                                let (object_id, bytes) = object.into_parts();
-                                ObjectWrite { object_id, bytes }
-                            }),
-                    );
-                }
-                self.collection
-                    .writing(unswept, writes.iter().map(|write| write.object_id));
-                self.inner.put_many(&writes, work).await?;
-                for write in &writes {
-                    self.index_mut().acknowledge(write.object_id);
-                }
+            } else if !spilled.is_empty() {
+                let bytes = spilled
+                    .iter()
+                    .fold(0_u64, |sum, &(_, _, length)| sum.saturating_add(length));
+                work.accounting()
+                    .charge(WorkCounters {
+                        backend_read_operations: 1,
+                        object_bytes_read: bytes,
+                        bytes_hashed: bytes,
+                        ..WorkCounters::UNCHARGED
+                    })
+                    .map_err(crate::async_storage::object_error)?;
+                writes.extend(
+                    self.read_spilled(&spilled)
+                        .await?
+                        .into_iter()
+                        .map(|object| {
+                            let (object_id, bytes) = object.into_parts();
+                            ObjectWrite { object_id, bytes }
+                        }),
+                );
+            }
+            self.collection
+                .writing(unswept, writes.iter().map(|write| write.object_id));
+            // A failed batch may have written a prefix. Keep every member staged
+            // until the provider acknowledges the batch; immutable retries are safe.
+            self.inner.put_many(&writes, work).await?;
+            let mut index = self.index_mut();
+            for write in &writes {
+                index.acknowledge(write.object_id);
             }
         }
         let truncate = {

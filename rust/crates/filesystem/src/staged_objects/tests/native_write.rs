@@ -225,6 +225,21 @@ struct CancelAfterNativePut {
 }
 
 impl AsyncObjectStore for CancelAfterNativePut {
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        for write in writes {
+            context
+                .accounting()
+                .check()
+                .map_err(crate::async_storage::object_error)?;
+            self.put(write.object_id, write.bytes.clone(), context)
+                .await?;
+        }
+        Ok(())
+    }
     async fn put(
         &self,
         id: ObjectId,
@@ -349,7 +364,7 @@ impl AsyncObjectStore for CancelAfterNativePut {
 }
 
 #[tokio::test]
-async fn native_flush_cancellation_removes_successful_prefix_only()
+async fn native_flush_cancellation_retains_unacknowledged_batch_for_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let store = StagedObjects::open(
@@ -394,8 +409,28 @@ async fn native_flush_cancellation_removes_successful_prefix_only()
             crate::NativeTreeMaterializationError::Cancelled
         ))
     ));
-    assert!(!store.index().objects.contains_key(&first));
+    assert!(store.index().objects.contains_key(&first));
     assert!(store.index().objects.contains_key(&second));
+    assert!(
+        store
+            .inner()
+            .inner
+            .contains(
+                first,
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            )
+            .await?
+    );
+    assert!(
+        !store
+            .inner()
+            .inner
+            .contains(
+                second,
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            )
+            .await?
+    );
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert_eq!(
         work.receipt().object_bytes_written,
@@ -414,7 +449,7 @@ async fn native_flush_cancellation_removes_successful_prefix_only()
         )
         .await?;
     assert!(store.index().objects.is_empty());
-    assert_eq!(retry.receipt().backend_write_operations, 1);
+    assert_eq!(retry.receipt().backend_write_operations, 2);
     assert_eq!(work.receipt().backend_write_operations, 1);
     drop(hold);
     Ok(())
