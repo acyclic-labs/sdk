@@ -536,7 +536,7 @@ impl AuthorityVerifier {
             io.hashed_bytes(bytes)?;
         }
         #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(("effect-root-hash", bytes));
+        acyclic_test_support::differential::record(effect_root_tests::Observation::Hash(bytes));
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(domain);
         hasher.update(&[match self.audience.kind {
@@ -655,7 +655,7 @@ impl AuthorityVerifier {
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 #[path = "effect_root_tests.rs"]
-mod effect_root_tests;
+pub(crate) mod effect_root_tests;
 
 fn scope_proof(
     key: &[u8; 32],

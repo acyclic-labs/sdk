@@ -8,6 +8,9 @@ use futures::TryStreamExt as _;
 use std::sync::Arc;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod cut_workflow;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
