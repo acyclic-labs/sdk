@@ -11,7 +11,7 @@ pub enum GuestBody {
     Stream(Pin<Box<dyn Stream<Item = Result<Bytes, GuestError>> + Send>>),
 }
 
-/// Native Rust fetch input; TS uses a WHATWG Request with a ReadableStream body.
+/// Native Rust fetch input; TS uses a WHATWG Request with a `ReadableStream` body.
 pub type GuestStreamingRequest = http::Request<GuestBody>;
 /// Native Rust fetch output; TS uses a WHATWG Response, including SSE streams.
 pub type GuestStreamingResponse = http::Response<GuestBody>;
