@@ -103,7 +103,7 @@ impl WrappedLines {
                 self.origins.push((self.sources.len(), index));
                 self.ranges.push(offset + row.start..offset + row.end);
             }
-            paint(&source, &[], None, Style::default(), &mut self.rows);
+            paint(&source, &mut self.rows);
             self.sources.push(source);
         }
         let text = &self.text[..self.text.len().saturating_sub(1)];
@@ -136,26 +136,6 @@ impl WrappedLines {
         &self.ranges
     }
 
-    /// Paint just one visible row through the ordinary coalescing path.
-    pub fn highlighted_row(
-        &self,
-        row: usize,
-        matches: &[Range<usize>],
-        selected: Option<&Range<usize>>,
-        style: Style,
-    ) -> Line<'static> {
-        let (source, index) = self.origins[row];
-        let source = &self.sources[source];
-        row_line(
-            source,
-            &source.layout.rows[index],
-            Some(&self.rows[row]),
-            matches,
-            selected,
-            style,
-        )
-    }
-
     pub(crate) fn render_ranges(
         &self,
         row: usize,
@@ -165,8 +145,12 @@ impl WrappedLines {
         area: ratatui::layout::Rect,
         buffer: &mut ratatui::buffer::Buffer,
     ) {
-        use ratatui::widgets::Widget;
-        (&self.rows[row]).render(area, buffer);
+        let area = area.intersection(buffer.area);
+        if area.is_empty() {
+            return;
+        }
+        let base = &self.rows[row];
+        buffer.set_style(area, base.style);
         let (source, index) = self.origins[row];
         let source = &self.sources[source];
         let cells = &source.layout.rows[index].cells;
@@ -177,6 +161,7 @@ impl WrappedLines {
             work.set((rows + 1, count + cells.len(), layouts));
         });
         let mut next = 0;
+        let (mut displayed, mut base_span, mut base_end) = (0, 0, 0);
         let inset = match source.alignment.unwrap_or(ratatui::layout::Alignment::Left) {
             ratatui::layout::Alignment::Left => 0,
             ratatui::layout::Alignment::Center => {
@@ -191,11 +176,24 @@ impl WrappedLines {
             while matches.get(next).is_some_and(|range| range.end <= at) {
                 next += 1;
             }
-            let mut style = Style::default();
+            while base
+                .spans
+                .get(base_span)
+                .is_some_and(|span| displayed >= base_end + span.content.len())
+            {
+                base_end += base.spans[base_span].content.len();
+                base_span += 1;
+            }
+            let mut style = base.style.patch(
+                base.spans
+                    .get(base_span)
+                    .map_or(Style::default(), |span| span.style),
+            );
+            displayed += cell.symbol.len();
             if matches.get(next).is_some_and(|range| {
                 range.start < source.offset + cell.source.end && range.end > at
             }) {
-                style = selection.add_modifier(Modifier::UNDERLINED);
+                style = style.patch(selection).add_modifier(Modifier::UNDERLINED);
             }
             if selected.is_some_and(|range| {
                 range.start < source.offset + cell.source.end && range.end > at
@@ -207,13 +205,11 @@ impl WrappedLines {
                 .saturating_add(inset)
                 .saturating_add(cell.column as u16);
             if x < area.right() && area.height > 0 {
-                buffer.set_style(
-                    ratatui::layout::Rect::new(
-                        x,
-                        area.y,
-                        (cell.width as u16).min(area.right() - x),
-                        1,
-                    ),
+                buffer.set_stringn(
+                    x,
+                    area.y,
+                    &cell.symbol,
+                    usize::from(area.right() - x),
                     style,
                 );
             }
@@ -240,87 +236,38 @@ fn visible_rows(layout: &Layout) -> impl Iterator<Item = (usize, &crate::layout:
     })
 }
 
-// Ordinary wrapping and search use this single style/coalescing path.
-fn paint(
-    source: &Source,
-    matches: &[Range<usize>],
-    selected: Option<&Range<usize>>,
-    selection: Style,
-    output: &mut Vec<Line<'static>>,
-) {
+// Cache normal display spans once; search borrows their styles and symbols.
+fn paint(source: &Source, output: &mut Vec<Line<'static>>) {
     for (_, row) in visible_rows(&source.layout) {
-        output.push(row_line(source, row, None, matches, selected, selection));
-    }
-}
-
-fn row_line(
-    source: &Source,
-    row: &crate::layout::Row,
-    base: Option<&Line<'_>>,
-    matches: &[Range<usize>],
-    selected: Option<&Range<usize>>,
-    selection: Style,
-) -> Line<'static> {
-    #[cfg(test)]
-    WORK.with(|work| {
-        let (rows, cells, layouts) = work.get();
-        work.set((rows + 1, cells + row.cells.len(), layouts));
-    });
-    let mut next = 0;
-    let (mut displayed, mut base_span, mut base_end) = (0, 0, 0);
-    let mut spans = Vec::with_capacity(usize::from(!row.cells.is_empty()));
-    let mut group = 0;
-    let mut previous = None;
-    for (index, cell) in row.cells.iter().enumerate() {
-        let at = source.offset + cell.source.start;
-        while matches.get(next).is_some_and(|range| range.end <= at) {
-            next += 1;
-        }
-        let mut style = if let Some(base) = base {
-            while base
-                .spans
-                .get(base_span)
-                .is_some_and(|span| displayed >= base_end + span.content.len())
-            {
-                base_end += base.spans[base_span].content.len();
-                base_span += 1;
-            }
-            base.spans
-                .get(base_span)
-                .map_or(Style::default(), |span| span.style)
-        } else {
+        #[cfg(test)]
+        WORK.with(|work| {
+            let (rows, cells, layouts) = work.get();
+            work.set((rows + 1, cells + row.cells.len(), layouts));
+        });
+        let mut spans = Vec::with_capacity(usize::from(!row.cells.is_empty()));
+        let mut group = 0;
+        let mut previous = None;
+        for (index, cell) in row.cells.iter().enumerate() {
             let style_index = source
                 .styles
                 .partition_point(|(end, _)| *end <= cell.source.start);
-            source
+            let style = source
                 .styles
                 .get(style_index)
-                .map_or(Style::default(), |(_, style)| *style)
-        };
-        displayed += cell.symbol.len();
-        if matches
-            .get(next)
-            .is_some_and(|range| range.start < source.offset + cell.source.end && range.end > at)
-        {
-            style = style.patch(selection).add_modifier(Modifier::UNDERLINED);
+                .map_or(Style::default(), |(_, style)| *style);
+            if previous.is_some_and(|previous| previous != style) {
+                spans.push(span(&row.cells[group..index], previous.unwrap()));
+                group = index;
+            }
+            previous = Some(style);
         }
-        if selected
-            .is_some_and(|range| range.start < source.offset + cell.source.end && range.end > at)
-        {
-            style = style.add_modifier(Modifier::BOLD | Modifier::REVERSED);
+        if let Some(style) = previous {
+            spans.push(span(&row.cells[group..], style));
         }
-        if previous.is_some_and(|previous| previous != style) {
-            spans.push(span(&row.cells[group..index], previous.unwrap()));
-            group = index;
-        }
-        previous = Some(style);
+        let mut line = Line::from(spans).style(source.style);
+        line.alignment = source.alignment;
+        output.push(line);
     }
-    if let Some(style) = previous {
-        spans.push(span(&row.cells[group..], style));
-    }
-    let mut line = Line::from(spans).style(source.style);
-    line.alignment = source.alignment;
-    line
 }
 
 fn span(cells: &[crate::layout::Cell], style: Style) -> Span<'static> {

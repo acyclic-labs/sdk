@@ -120,3 +120,21 @@ fn nearest_direction_probe_precedes_the_full_count() {
         assert_eq!(search.nearest, Some(expected));
     }
 }
+
+#[test]
+fn refinement_checks_only_the_new_suffix_of_prior_candidates() {
+    let projection = projection(&"a".repeat(8192));
+    let mut search = TranscriptSearch::default();
+    search.update(&projection, &"a".repeat(128), 0, Style::default());
+    finish(&mut search, &projection);
+    let candidates = search.positions.len();
+    search.update(&projection, &"a".repeat(129), 0, Style::default());
+    search.prepare(&projection, 10, 10);
+    WORK.with(|work| work.set((0, 0)));
+    finish(&mut search, &projection);
+    assert!(
+        WORK.with(|work| work.get().1) <= 2 * candidates,
+        "refinement checks only the appended suffix"
+    );
+    assert_eq!(search.count(), 8192 - 128);
+}

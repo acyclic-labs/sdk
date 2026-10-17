@@ -87,7 +87,7 @@ pub struct ClientRenderer {
     key: String,
     help: super::help::Help,
     search: super::TranscriptSearch,
-    search_cut: Option<(String, u16, usize, i64, Style)>,
+    search_open: bool,
     busy: bool,
     tool_details: bool,
     seen: usize,
@@ -357,8 +357,6 @@ impl ClientRenderer {
         self.wrapped = false;
         let areas = self.screen_for(files)?.areas(area, input);
         let width = areas.transcript.width;
-        let search_changed = self.transcript_changed < self.transcript.len()
-            || self.wrapped_transcript.rows().is_empty();
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
         self.search.project(&self.wrapped_transcript);
@@ -381,19 +379,13 @@ impl ClientRenderer {
             .state(crate::client::CommandFileRoot::Session, "layout.json")?
             .unwrap_or_default();
         if layout["open_view"] == "find" && layout["view_input"] == "find" {
-            let query = layout["search_query"].as_str().unwrap_or("").to_owned();
-            let cut = (
-                query,
-                width,
-                self.transcript.len(),
+            self.search_open = true;
+            self.search.update(
+                &self.wrapped_transcript,
+                layout["search_query"].as_str().unwrap_or(""),
                 layout["search_index"].as_i64().unwrap_or(0),
                 input.theme.style(super::config::ThemeRole::Selection),
             );
-            if search_changed || self.search_cut.as_ref() != Some(&cut) {
-                self.search
-                    .update(&mut self.wrapped_transcript, &cut.0, cut.3, cut.4);
-                self.search_cut = Some(cut);
-            }
             let height = usize::from(areas.transcript.height);
             let first = if self.search.count() != 0 {
                 self.search.selected_row(
@@ -410,7 +402,7 @@ impl ClientRenderer {
             .min(self.wrapped_transcript.rows().len().saturating_sub(height));
             self.search.prepare(&self.wrapped_transcript, first, height);
         } else {
-            self.search_cut = None;
+            self.search_open = false;
         }
         Ok(())
     }
@@ -418,7 +410,7 @@ impl ClientRenderer {
     /// Yield before a bounded, cancellable full-search-count slice.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn search_progress(&mut self) {
-        if self.search_cut.is_none() || !self.search.pending() {
+        if !self.search_open || !self.search.pending() {
             std::future::pending::<()>().await;
         }
         tokio::task::yield_now().await;

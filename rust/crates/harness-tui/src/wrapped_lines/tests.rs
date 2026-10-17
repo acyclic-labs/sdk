@@ -15,13 +15,17 @@ fn viewport_model<const FULL: bool, const REFLOW: bool>(length: usize) {
     if REFLOW {
         std::hint::black_box(Layout::new(&Editor::new(projection.text()), 80));
     }
-    if FULL {
-        for row in 0..projection.rows().len() {
-            std::hint::black_box(projection.highlighted_row(row, &[], None, Style::default()));
-        }
-    }
     search.prepare(&projection, 10, 10);
     let mut buffer = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 80, 1));
+    if FULL {
+        for row in 0..projection.rows().len() {
+            ratatui::widgets::Widget::render(
+                search.row(&projection, row),
+                ratatui::layout::Rect::new(0, 0, 80, 1),
+                &mut buffer,
+            );
+        }
+    }
     for row in 10..20 {
         ratatui::widgets::Widget::render(
             search.row(&projection, row),

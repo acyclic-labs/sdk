@@ -194,18 +194,19 @@ impl TranscriptSearch {
             }
         }
         if self.refine {
+            let extension = &self.needle.as_bytes()[self.previous_needle.len()..];
             let end = self.previous.len().min(
                 self.cursor
-                    .saturating_add((budget / self.needle.len()).max(1)),
+                    .saturating_add((budget / extension.len()).max(1)),
             );
             for &at in &self.previous[self.cursor..end] {
-                charge(self.needle.len(), true);
+                charge(extension.len(), true);
                 if projection
                     .index
                     .text
                     .as_bytes()
-                    .get(at..at + self.needle.len())
-                    == Some(self.needle.as_bytes())
+                    .get(at + self.previous_needle.len()..at + self.needle.len())
+                    == Some(extension)
                 {
                     self.positions.push(at);
                     push_range(
