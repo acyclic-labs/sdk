@@ -56,16 +56,6 @@ impl Clone for TaskContext {
 }
 
 impl TaskContext {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn require_ordinary_metadata(&self) -> Result<()> {
-        if self.native_custody.is_some() {
-            return Err(Error::Unsupported(
-                "ordinary task files require ordinary ownership".into(),
-            ));
-        }
-        Ok(())
-    }
-
     pub(super) fn copy_with_scope(&self, scope: RuntimeScope) -> Self {
         Self {
             harness: Arc::clone(&self.harness),
@@ -205,6 +195,7 @@ impl TaskContext {
                 .is_some_and(|owner| owner.task_binding() == (task, fence))
     }
 
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) fn ancestors(
         &self,
         task: TaskId,
@@ -430,6 +421,10 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     ))
 }
 
+#[cfg(any(
+    all(test, not(acyclic_harness_loom)),
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 fn ancestor_stream<F, Fut>(task: TaskId, parent: F) -> impl futures::Stream<Item = Result<TaskId>>
 where
     F: FnMut(TaskId) -> Fut,

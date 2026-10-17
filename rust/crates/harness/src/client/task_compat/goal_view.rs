@@ -42,11 +42,13 @@ pub struct GoalQueryView<'a> {
     /// Retained counter; pending for blocked goals until the head acknowledges
     /// their exact write publication, or absent for a missing/invalid head.
     pub progress: Option<&'a GoalProgress>,
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     #[serde(skip)]
     pub(in crate::client) line_starts: &'a [usize],
 }
 
 impl GoalQueryView<'_> {
+    #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
     pub(in crate::client) fn lines(&self) -> impl Iterator<Item = &str> {
         let markdown = match self.goal {
             GoalFileView::Present { goal } => goal.markdown.as_str(),
@@ -119,6 +121,7 @@ impl ClientViews {
                         .goal_revision()
                         .is_some_and(|revision| progress.goal_revision == Some(revision))
             }),
+            #[cfg(any(feature = "tui", all(test, not(target_arch = "wasm32"))))]
             line_starts: file.goal_line_starts(),
         })
     }

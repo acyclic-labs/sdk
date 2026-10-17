@@ -92,6 +92,7 @@ pub struct JsonValueShape {
     origin: Origin,
 }
 impl JsonValueShape {
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) fn is_slice(self) -> bool {
         self.origin == Origin::Slice
     }

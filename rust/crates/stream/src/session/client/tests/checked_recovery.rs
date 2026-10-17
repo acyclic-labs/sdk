@@ -111,8 +111,8 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let old = Fixture::open(provider.clone(), "home").await?;
     let new = Fixture::open(provider.clone(), "owner").await?;
     let received = std::sync::Arc::new(Received::default());
-    let home = endpoint(old.channel.clone(), &received, broken);
-    let destination = endpoint(new.channel.clone(), &received, broken);
+    let home = endpoint(old._channel.clone(), &received, broken);
+    let destination = endpoint(new._channel.clone(), &received, broken);
     let connect = std::sync::Arc::new(move |_| {
         let destination = destination.clone();
         Box::pin(async move { Ok(destination) })

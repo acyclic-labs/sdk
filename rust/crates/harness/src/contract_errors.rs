@@ -60,6 +60,9 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// The invocation's cancellation token fired before the operation finished.
+    #[error("operation cancelled")]
+    Cancelled,
     /// A bound approval resolved without permission to execute.
     #[error("interaction {0}")]
     InteractionRejected(InteractionRejection),
@@ -325,8 +328,8 @@ pub(crate) fn native_work_error_code(
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
         Native::UnsupportedRename => ErrorCode::Unsupported,
+        Native::Cancelled => ErrorCode::Cancelled,
         Native::Io(_)
-        | Native::Cancelled
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
@@ -347,7 +350,8 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
         Machines::Indeterminate(_)
         | Machines::OperationIndeterminate(_)
         | Machines::CommandIndeterminate(_) => ErrorCode::Indeterminate,
-        Machines::Unavailable | Machines::Failed | Machines::Cancelled => ErrorCode::Storage,
+        Machines::Cancelled => ErrorCode::Cancelled,
+        Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
     }
 }
 
@@ -395,6 +399,7 @@ impl Error {
             }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined
             }
@@ -448,6 +453,14 @@ impl Error {
         self.code().as_str_name()
     }
 
+    /// An accepted effect that ended this way may have happened: reconcile it, never reject it.
+    pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
+        matches!(
+            self,
+            Self::Indeterminate(_) | Self::Storage(_) | Self::Cancelled
+        )
+    }
+
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
         #[cfg(feature = "machines")]
@@ -463,6 +476,7 @@ impl Error {
                 | Self::Invalid(_)
                 | Self::ToolRejected(_)
                 | Self::Unauthorized(_)
+                | Self::Cancelled
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
@@ -470,6 +484,13 @@ impl Error {
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
         )
+    }
+}
+
+/// The only conversion of a fired cancellation token into a harness error.
+impl From<acyclic_fs::CancellationError> for Error {
+    fn from(_: acyclic_fs::CancellationError) -> Self {
+        Self::Cancelled
     }
 }
 

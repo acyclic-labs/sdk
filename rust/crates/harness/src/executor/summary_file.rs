@@ -34,6 +34,7 @@ impl StockExecution<'_> {
         let bytes = journal.load(source, self.io)?.await?;
         #[cfg(feature = "filesystem")]
         let _bytes_hold = self.io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+        #[cfg(feature = "filesystem")]
         let source_hold: Option<crate::conversation::ContentHold<'_>>;
         let captured: crate::context::SummarySource = match self.io {
             #[cfg(feature = "filesystem")]
@@ -47,7 +48,10 @@ impl StockExecution<'_> {
                 source
             }
             _ => {
-                source_hold = None;
+                #[cfg(feature = "filesystem")]
+                {
+                    source_hold = None;
+                }
                 crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(error.to_string()))?
             }
@@ -93,6 +97,7 @@ impl StockExecution<'_> {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
         drop(checkpoint);
+        #[cfg(feature = "filesystem")]
         drop(source_hold);
         Ok(ExecutionProgress::Ready(TurnOutput {
             text,

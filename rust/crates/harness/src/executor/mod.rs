@@ -51,6 +51,7 @@ mod request;
 mod response;
 mod summary;
 mod summary_file;
+#[cfg(any(test, feature = "filesystem"))]
 pub(crate) mod summary_identity;
 mod tool_execution;
 mod tool_resolution;

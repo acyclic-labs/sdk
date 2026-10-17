@@ -62,6 +62,7 @@ where
         Ok(Some(record))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn prove_release_with_io(
         &self,
         io: &PreparationIo,
@@ -130,11 +131,14 @@ where
     }
 
     pub(super) fn observation_stream_error(
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
         source: StreamError,
     ) -> Error {
         #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
+        if _native_io
+            .and_then(PreparationIo::original_native_work)
+            .is_some()
+        {
             return Error::NativeStream {
                 code: crate::wire::ErrorCode::Storage,
                 source,

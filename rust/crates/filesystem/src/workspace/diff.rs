@@ -174,7 +174,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
             }
             for (_, records) in &search.0.records {
                 for (path, record) in records {
-                    accounting.charge(item_work(1))?;
+                    accounting.charge_items(1)?;
                     merge_changed_record(
                         &mut paths,
                         path,
@@ -193,7 +193,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
         let mut retained = 0;
         let mut retired_paths = 0_u64;
         for index in 0..paths.0.len() {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
             let changed = match (&entry.before, &entry.after) {
                 (Some(before), Some(after)) => {

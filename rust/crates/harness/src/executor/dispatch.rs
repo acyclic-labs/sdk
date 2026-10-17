@@ -65,6 +65,7 @@ impl StockExecution<'_> {
             ModelPurpose::Response => "model",
             ModelPurpose::Summary => "summary",
         };
+        #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
@@ -268,10 +269,10 @@ impl StockExecution<'_> {
         {
             Ok(true) => {}
             Err(error) if stock_is_native(io) => return Err(error),
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+            Ok(false) | Err(_) => {
                 return Err(Error::Indeterminate(input.operation_id));
             }
-            Err(error) => return Err(error),
         }
         Ok(())
     }
@@ -395,6 +396,7 @@ impl StockExecution<'_> {
         Ok(event)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn record_model_phase(&self, admission: &ModelEventAdmission, started: bool) {
         crate::obs::obs_record!(
             "phase" = match (admission.completed, started) {

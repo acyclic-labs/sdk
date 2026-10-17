@@ -212,13 +212,13 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
     status(&memory, 0, false).await?;
     let old = Fixture::open(Arc::clone(&memory), "old").await?;
     let new = Fixture::open(Arc::clone(&memory), "new").await?;
-    let target = new.channel.clone();
+    let target = new._channel.clone();
     let connect: Connect = std::sync::Arc::new(move |node| {
         assert_eq!(node.node_id, "new");
         Box::pin(future::ready(Ok(target.clone())))
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,

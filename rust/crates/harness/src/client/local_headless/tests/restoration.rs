@@ -67,7 +67,6 @@ async fn restored<const GATE_INPUT: bool>(completed: bool) {
     Box::pin(client.finish(Ok(HeadlessOutcome::Completed)))
         .await
         .unwrap();
-    drop(files);
     drop(local);
 }
 #[tokio::test]

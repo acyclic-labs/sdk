@@ -7,7 +7,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         after: ObjectId,
     ) -> Result<(crate::GenerationDiff, ProofGuard), crate::FsError> {
         let maximum = u32::try_from(self.limits.maximum_files).unwrap_or(u32::MAX);
-        let (diff, allocation) = match &self.meter {
+        let (diff, _allocation) = match &self.meter {
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeter::Native {
                 original,
@@ -61,7 +61,8 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                 result?
             }
         };
-        drop(allocation);
+        #[cfg(not(target_arch = "wasm32"))]
+        drop(_allocation);
         let bytes = (diff.files.capacity() * size_of::<crate::FileRecordChange>())
             .checked_add(diff.bindings.capacity() * size_of::<crate::DirectoryBindingChange>())
             .and_then(|bytes| {

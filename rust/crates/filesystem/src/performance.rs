@@ -299,6 +299,8 @@ impl WorkCounters {
         macro_rules! check {
             ($($field:ident),*) => {
                 $({
+                    #[cfg(test)]
+                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
                     let (value, overflowed) = self.$field.overflowing_add(delta.$field);
                     overflow |= overflowed;
                     within &= value <= budget.$field;
@@ -360,7 +362,11 @@ impl WorkCounters {
     fn add_admitted(&mut self, delta: &Self) {
         macro_rules! add_in_place {
             ($($field:ident),*) => {
-                $(self.$field = self.$field.wrapping_add(delta.$field);)*
+                $({
+                    #[cfg(test)]
+                    ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
+                    self.$field = self.$field.wrapping_add(delta.$field);
+                })*
             };
         }
         additive_counters!(add_in_place);
@@ -369,13 +375,15 @@ impl WorkCounters {
 
     /// Verifies every counter against an admitted hard budget.
     #[inline]
-    pub fn verify(self, budget: WorkBudget) -> Result<(), WorkError> {
+    pub fn verify(&self, budget: WorkBudget) -> Result<(), WorkError> {
         self.verify_within(&budget)
     }
 
     /// Charges `count` examined items in place.
     #[inline]
     pub fn charge_items(&mut self, count: u64, budget: &WorkBudget) -> Result<(), WorkError> {
+        #[cfg(test)]
+        ADDITIVE_STEPS.with(|count| count.set(count.get() + 1));
         let prior = self.items_examined;
         self.items_examined = add(prior, count)?;
         self.verify_within(budget).inspect_err(|_| {
@@ -402,7 +410,12 @@ impl WorkCounters {
     }
 
     #[inline]
-    fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
+    pub(crate) fn verify_within(&self, budget: &WorkBudget) -> Result<(), WorkError> {
+        #[cfg(test)]
+        {
+            VERIFICATION_PASSES.with(|count| count.set(count.get() + 1));
+            VERIFICATION_BUDGET.with(|address| address.set(std::ptr::from_ref(budget) as usize));
+        }
         // Charged once per examined item on hot paths: compare every counter
         // without branching and name the exceeded one only on failure.
         if (self.authority_records_read <= budget.authority_records_read)
@@ -598,3 +611,12 @@ pub enum WorkError {
 #[cfg(test)]
 #[path = "tests/performance.rs"]
 mod tests;
+
+#[cfg(test)]
+std::thread_local! { pub(crate) static VERIFICATION_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+std::thread_local! { pub(crate) static ADDITIVE_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+std::thread_local! { pub(crate) static VERIFICATION_BUDGET: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }

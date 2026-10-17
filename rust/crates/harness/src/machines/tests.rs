@@ -45,7 +45,7 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             false,
         ),
         (ProviderError::Failed, ErrorCode::Storage, false),
-        (ProviderError::Cancelled, ErrorCode::Storage, false),
+        (ProviderError::Cancelled, ErrorCode::Cancelled, false),
         (ProviderError::Unavailable, ErrorCode::Storage, true),
         (
             ProviderError::Indeterminate(MachinesKey::new()),

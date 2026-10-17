@@ -1,5 +1,4 @@
 use super::*;
-use crate::facade::FsWork as _;
 use std::process::{Child, Command, Stdio};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

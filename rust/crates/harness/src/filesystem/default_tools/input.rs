@@ -364,7 +364,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                     .absorb_native_custody(input_io.take_native_custody(retained)?)?;
                     break 'admission admission;
                 }
-                runtime
+                break 'admission runtime
                     .harness()
                     .registered_admission(
                         operation,
@@ -375,7 +375,7 @@ impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObje
                         None,
                         None,
                     )?
-                    .0
+                    .0;
             };
             Plan::Fork(recursive_box(
                 RecursiveForkToolPlan {

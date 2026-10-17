@@ -1,8 +1,10 @@
 //! The dedicated model command instruments the shared production scan and mutex.
 #![cfg(acyclic_harness_loom)]
 
-#[path = "../src/sync/primitives.rs"]
-mod primitives;
+mod primitives {
+    include!("../src/sync/arc.rs");
+    include!("../src/sync/mutex.rs");
+}
 mod sync {
     pub(crate) use crate::primitives::Mutex as SyncMutex;
 }

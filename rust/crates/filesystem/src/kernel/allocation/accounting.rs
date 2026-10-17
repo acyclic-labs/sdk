@@ -147,7 +147,7 @@ impl<'a> KernelAccounting<'a> {
                     .map_err(|error| {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
-                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                let verified = work.verify_within(budget).map_err(crate::FsError::from);
                 Ok((
                     KernelOwnedAllocation::Standalone,
                     verified.and_then(|()| cancellation.check().map_err(Into::into)),
@@ -164,7 +164,7 @@ impl<'a> KernelAccounting<'a> {
                     .map_err(|error| {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
-                let verified = work.verify(*budget).map_err(crate::FsError::from);
+                let verified = work.verify_within(budget).map_err(crate::FsError::from);
                 Ok((
                     KernelOwnedAllocation::Standalone,
                     verified.and_then(|()| cancellation.check().map_err(Into::into)),
@@ -210,7 +210,7 @@ impl<'a> KernelAccounting<'a> {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
                 }
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             (
@@ -233,7 +233,7 @@ impl<'a> KernelAccounting<'a> {
                         error.into_work_or(crate::FsError::PendingMutationAllocationFailed)
                     })?;
                 }
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -300,7 +300,7 @@ impl<'a> KernelAccounting<'a> {
                 ..
             } => {
                 work.try_add_assign(&delta)?;
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             Self::BorrowedStandalone {
@@ -310,7 +310,7 @@ impl<'a> KernelAccounting<'a> {
                 ..
             } => {
                 work.try_add_assign(&delta)?;
-                work.verify(*budget)?;
+                work.verify_within(budget)?;
                 cancellation.check().map_err(Into::into)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -388,6 +388,36 @@ impl<'a> KernelAccounting<'a> {
         let output = effect();
         self.record_completed(delta)?;
         Ok(output)
+    }
+
+    /// Charges an examined-item count without constructing or summing zero fields.
+    pub(crate) fn charge_items(&mut self, count: u64) -> Result<(), crate::FsError> {
+        match self {
+            Self::Standalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.charge_items(count, budget).map_err(Into::into)
+            }
+            Self::BorrowedStandalone {
+                work,
+                budget,
+                cancellation,
+                ..
+            } => {
+                cancellation.check()?;
+                work.charge_items(count, budget).map_err(Into::into)
+            }
+            // Keep native charges on the existing single-leaf admission path.
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::NativeOriginal { .. } => self.charge(WorkCounters {
+                items_examined: count,
+                ..WorkCounters::UNCHARGED
+            }),
+        }
     }
 
     /// Checks work before performing it.

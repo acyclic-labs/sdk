@@ -40,6 +40,7 @@ pub(crate) fn directory_identity<W: NativeHostWork>(
     })
 }
 
+#[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) fn file_identity_and_length<W: NativeHostWork>(
     file: &File,
     work: &mut W,

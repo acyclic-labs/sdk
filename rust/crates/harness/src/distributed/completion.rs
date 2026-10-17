@@ -167,7 +167,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             })?;
             charged?;
             let crate::filesystem::NativePreparationCompletionTemplate {
-                mut journal,
+                journal,
                 output,
                 mut custody,
                 ..

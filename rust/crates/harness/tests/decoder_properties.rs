@@ -1,3 +1,4 @@
+//! Shrinking properties for journal decoding and rejected-input cleanup.
 #![cfg(not(target_arch = "wasm32"))]
 
 #[path = "support/journal_input.rs"]

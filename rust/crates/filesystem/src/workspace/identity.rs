@@ -23,7 +23,7 @@ impl WorkspaceName {
         accounting.check()?;
         let (mut pending, mut maximum_pending, mut maximum_chunk) = (0_u64, 0_u64, 0_u64);
         for character in name.chars() {
-            accounting.charge(item_work(1))?;
+            accounting.charge_items(1)?;
             let mut chunk = 0_u64;
             let mut failure = None;
             unicode_normalization::char::decompose_canonical(character, |scalar| {
@@ -31,7 +31,7 @@ impl WorkspaceName {
                     return;
                 }
                 failure = (|| -> Result<(), WorkspaceError> {
-                    accounting.charge(item_work(1))?;
+                    accounting.charge_items(1)?;
                     chunk = chunk.checked_add(1).ok_or(crate::WorkError::Overflow)?;
                     if unicode_normalization::char::canonical_combining_class(scalar) == 0 {
                         pending = 0;

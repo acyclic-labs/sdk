@@ -518,6 +518,10 @@ pub fn assert_turns(input: &[u8]) {
     if adapter == Adapter::Anthropic {
         assert_eq!(errors.contains(&"ANT-SEQ-04"), !opens);
         assert_eq!(errors.contains(&"ANT-SEQ-06"), !closes);
+        assert_eq!(
+            errors.contains(&"ANT-TOOL-05"),
+            messages.iter().any(interrupted_results)
+        );
     } else {
         assert_eq!(errors.contains(&"GEM-SEQ-05"), !(opens && closes));
         assert_eq!(
@@ -591,6 +595,9 @@ pub(crate) fn turn_repair_violation(
     {
         return Some("fragmented text");
     }
+    if adapter == Adapter::Anthropic && output.iter().any(interrupted_results) {
+        return Some("interrupted results");
+    }
     if adapter == Adapter::Gemini && output.windows(2).any(|pair| unordered(&pair[0], &pair[1])) {
         return Some("unordered responses");
     }
@@ -611,6 +618,19 @@ fn turn_body(adapter: Adapter, messages: &[serde_json::Value]) -> serde_json::Va
 
 fn user_turn(message: Option<&serde_json::Value>) -> bool {
     message.is_some_and(|message| message["role"] == "user")
+}
+
+/// Independent reference, deliberately not `protocol::sequence`: some
+/// `tool_result` block comes after a block of any other kind.
+fn interrupted_results(message: &serde_json::Value) -> bool {
+    let Some(parts) = message["content"].as_array() else {
+        return false;
+    };
+    let result = |part: &serde_json::Value| part["type"].as_str() == Some("tool_result");
+    parts
+        .iter()
+        .position(|part| !result(part))
+        .is_some_and(|first| parts[first..].iter().any(result))
 }
 
 type Key<'a> = (Option<&'a str>, Option<&'a str>);

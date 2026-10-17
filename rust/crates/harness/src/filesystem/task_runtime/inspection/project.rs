@@ -6,8 +6,10 @@ use crate::durable_host::TaskJournalOwner;
 use crate::filesystem::fork_preparer::bounded_io;
 use crate::filesystem::{FilesystemHost, PreparationIo};
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_fs::LazySnapshotRef;
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
-use acyclic_fs::{Generation, LazySnapshotRef, WorkCounters};
+use acyclic_fs::{Generation, WorkCounters};
 
 /// One transient reader over an existing owner and immutable allocation.
 pub(super) struct ProjectSourceReader<P, A, O> {
@@ -187,13 +189,9 @@ where
             }
             return Ok(());
         }
-        io.cancellation()
-            .check()
-            .map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        io.cancellation().check()?;
         owner.verify(false, &mut None).await?;
-        io.cancellation()
-            .check()
-            .map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        io.cancellation().check().map_err(Error::from)
     }
 
     fn path(

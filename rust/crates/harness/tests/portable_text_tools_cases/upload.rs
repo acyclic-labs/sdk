@@ -1,9 +1,10 @@
+#![cfg(feature = "filesystem-local")]
+
 use super::*;
 
 const CONTENT_WORK_BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(100_000, 16_000_000);
 
-#[cfg(feature = "filesystem-local")]
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,

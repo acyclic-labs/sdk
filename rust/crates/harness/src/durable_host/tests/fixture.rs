@@ -13,10 +13,12 @@ pub(crate) struct Fixture<
     O = MemoryObjectBackend,
 > {
     pub(crate) stream: Arc<P>,
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) backend: Fs<A, O>,
     pub(crate) files: Arc<FilesystemHost<A, O>>,
     pub(crate) issuer: AuthorityIssuer,
     pub(crate) host: Arc<CoordinatorTaskHost<P>>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) destination: VolumeRef,
     pub(crate) storage: VolumeRef,
     pub(crate) reader: Arc<FilesystemContentVerifier<A, O>>,
@@ -281,10 +283,12 @@ where
         }
         Ok(Self {
             stream,
+            #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
             backend,
             files,
             issuer,
             host: Arc::new(host),
+            #[cfg(not(target_arch = "wasm32"))]
             destination,
             storage,
             reader,
