@@ -354,7 +354,18 @@ fn production_staging_preserves_bytes_errors_charges_and_final_path_checks()
                     bits
                 };
                 prop_assert_eq!(trace, oracle(old));
-                let expected_heap = strings + u64::from(!success);
+                // Each completed comparison converts both unavailable birth
+                // times through the existing three-allocation io::Error path.
+                let comparisons = [
+                    !cancelled && limit >= 2 + fallback_reads,
+                    !cancelled && edit != 3 && limit >= 3 + extra + 2 * fallback_reads,
+                    !cancelled && matches!(edit, 0 | 4) && limit >= 4 + extra + 3 * fallback_reads,
+                ]
+                .into_iter()
+                .filter(|completed| *completed)
+                .count() as u64;
+                let expected_heap =
+                    strings + u64::from(!success) + if fallback { 6 * comparisons } else { 0 };
                 prop_assert_eq!(
                     heap.count_total,
                     expected_heap,

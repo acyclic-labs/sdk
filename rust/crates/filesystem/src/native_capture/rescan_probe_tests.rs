@@ -149,7 +149,17 @@ fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool 
             .into_iter()
             .flatten()
     });
-    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace.iter().copied().eq(expected)
+    // Unavailable birth times construct the existing metadata errors during
+    // comparisons; the frozen implementation incurs the same 48 allocations.
+    heap.count_total
+        == if cfg!(windows) {
+            324
+        } else if fallback {
+            379
+        } else {
+            331
+        }
+        && trace.iter().copied().eq(expected)
 }
 
 fn run(
