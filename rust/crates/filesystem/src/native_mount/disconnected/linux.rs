@@ -10,7 +10,7 @@ pub(super) struct Pinned {
 }
 
 fn stat(file: impl std::os::fd::AsFd, flags: AtFlags) -> std::io::Result<rustix::fs::Statx> {
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(all(test, acyclic_fs_native_loom))]
     if let Some(kernel) = super::kernel::current() {
         return kernel.stat(file.as_fd().as_raw_fd(), flags);
     }
@@ -79,7 +79,7 @@ impl Pinned {
     }
 
     pub(super) fn still_current(&self) -> Result<bool, NativeMountError> {
-        #[cfg(all(test, acyclic_fs_loom))]
+        #[cfg(all(test, acyclic_fs_native_loom))]
         if let Some(kernel) = super::kernel::current() {
             return Ok(kernel.current_stat().stx_mnt_id == self.mount);
         }

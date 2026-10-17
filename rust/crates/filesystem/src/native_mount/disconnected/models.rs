@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::{Arc, Condvar, Mutex};
+use crate::sync::native::{Arc, Condvar, Mutex};
 
 fn remount(
     destination: &Path,
@@ -28,7 +28,7 @@ fn scenario(
     let pinned = linux::Pinned::open(destination).unwrap().unwrap();
     let finished = Arc::new((Mutex::new(false), Condvar::new()));
     let peer_finished = finished.clone();
-    let peer_kernel = kernel.clone();
+    let peer_kernel = kernel;
     let peer_destination = destination.to_path_buf();
     let peer = loom::thread::spawn(move || {
         let guard = match remount(&peer_destination, &peer_kernel) {

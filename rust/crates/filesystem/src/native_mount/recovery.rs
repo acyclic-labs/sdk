@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::{Arc as RecoveryArc, Condvar, Mutex, RetirementSender};
+use crate::sync::native::{Arc as RecoveryArc, Condvar, Mutex, RetirementSender};
 
 /// Real cleanup custody and driver evidence for one retained native session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -158,7 +158,7 @@ impl NativeMountRecoveryOwner {
         let closure = original.claim(
             std::mem::size_of::<(
                 RecoveryArc<NativeRecoveryShared>,
-                crate::sync::mpsc::Receiver<()>,
+                crate::sync::native::mpsc::Receiver<()>,
                 crate::NativeAllocation,
             )>() as u64,
             1,
@@ -190,7 +190,7 @@ impl NativeMountRecoveryOwner {
             wake: Condvar::new(),
             _custody: destination.1,
         });
-        let (retirement, receiver) = crate::sync::retirement_channel();
+        let (retirement, receiver) = crate::sync::native::retirement_channel();
         let worker = (RecoveryArc::clone(&shared), receiver, closure);
         crate::native_host::NativeHostWork::started_io(
             &mut worker.2.work(),
@@ -199,7 +199,7 @@ impl NativeMountRecoveryOwner {
                 ..Default::default()
             },
         )?;
-        drop(crate::sync::thread::Builder::new().spawn(move || {
+        drop(crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?);
         let owner = Self { shared, retirement };
@@ -437,8 +437,8 @@ impl NativeRecoveryState {
             if self.guard.is_none() {
                 return Ok(false);
             }
-            #[cfg(all(test, acyclic_fs_loom, target_os = "linux"))]
-            if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release) {
+            #[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+            if super::disconnected::kernel::current().is_some_and(|kernel| kernel.early_release()) {
                 self.guard
                     .as_mut()
                     .ok_or(NativeMountError::ControlPending)?
@@ -539,7 +539,7 @@ pub(super) fn remove_empty_recovery_destination(
 fn retire_recovery(
     (shared, receiver, _closure): (
         RecoveryArc<NativeRecoveryShared>,
-        crate::sync::mpsc::Receiver<()>,
+        crate::sync::native::mpsc::Receiver<()>,
         crate::NativeAllocation,
     ),
 ) {

@@ -3,24 +3,28 @@ pub(crate) use loom::sync::*;
 #[cfg(not(acyclic_fs_loom))]
 pub(crate) use std::sync::*;
 
-#[cfg(all(feature = "native-mount", acyclic_fs_loom))]
-pub(crate) use loom::thread;
-#[cfg(all(feature = "native-mount", not(acyclic_fs_loom)))]
-pub(crate) use std::thread;
-
-#[cfg(all(feature = "native-mount", acyclic_fs_loom))]
-pub(crate) type RetirementSender = loom::sync::mpsc::Sender<()>;
-#[cfg(all(feature = "native-mount", not(acyclic_fs_loom)))]
-pub(crate) type RetirementSender = std::sync::mpsc::SyncSender<()>;
-
-// The owner sends once on last drop. Constructor rejection waits for retirement
-// before last drop, so a second notification can only see a closed receiver.
+// Native namespace and helper coordination has a dedicated model domain.
+// The unchanged ledger uses the separate filesystem accounting proofs.
 #[cfg(feature = "native-mount")]
-pub(crate) fn retirement_channel() -> (RetirementSender, mpsc::Receiver<()>) {
-    #[cfg(acyclic_fs_loom)]
-    return loom::sync::mpsc::channel();
-    #[cfg(not(acyclic_fs_loom))]
-    std::sync::mpsc::sync_channel(1)
+pub(crate) mod native {
+    #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+    pub(crate) use loom::{sync::*, thread};
+    #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+    pub(crate) use std::{sync::*, thread};
+
+    #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+    pub(crate) type RetirementSender = loom::sync::mpsc::Sender<()>;
+    #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+    pub(crate) type RetirementSender = std::sync::mpsc::SyncSender<()>;
+
+    // A constructor rejection waits for retirement before last drop. Thus the
+    // second notification cannot fill an already occupied capacity-one slot.
+    pub(crate) fn retirement_channel() -> (RetirementSender, mpsc::Receiver<()>) {
+        #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
+        return loom::sync::mpsc::channel();
+        #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
+        std::sync::mpsc::sync_channel(1)
+    }
 }
 
 // Type identity checks compile in ordinary builds, including --all-features.

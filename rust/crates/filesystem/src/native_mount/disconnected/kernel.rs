@@ -1,4 +1,4 @@
-use crate::sync::{Arc, Condvar, Mutex};
+use crate::sync::native::{Condvar, Mutex};
 use rustix::fs::{AtFlags, Statx};
 use std::collections::HashMap;
 use std::fs::File;
@@ -7,21 +7,21 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::ExitStatusExt;
 
-// Lock order: owner state -> work ledger -> kernel state. The global context
-// lock is released before entering the kernel; no kernel callback enters an
-// owner or work ledger. Registry waits release the kernel lock atomically.
+// Lock order: owner state -> kernel state. No kernel callback enters an owner
+// or work ledger. Registry waits release the kernel lock atomically. The fixture
+// is installed before actors start and has no separate synchronization lock.
 loom::lazy_static! {
-    static ref CONTEXT: Mutex<Option<Arc<Kernel>>> = Mutex::new(None);
+    static ref CONTEXT: Kernel = Kernel::new();
 }
 
 pub(in crate::native_mount) struct Kernel {
-    base: Statx,
-    helper_stat: rustix::fs::Stat,
-    pub(in crate::native_mount) early_release: bool,
     state: Mutex<State>,
     unlocked: Condvar,
 }
 struct State {
+    base: Option<Statx>,
+    helper_stat: Option<rustix::fs::Stat>,
+    early_release: bool,
     mount: Option<u64>,
     pinned: HashMap<RawFd, u64>,
     locks: HashMap<(u64, u64), RawFd>,
@@ -30,21 +30,17 @@ struct State {
     mount_before_exit: usize,
 }
 
-pub(in crate::native_mount) fn current() -> Option<Arc<Kernel>> {
-    CONTEXT.lock().unwrap().clone()
+pub(in crate::native_mount) fn current() -> Option<&'static Kernel> {
+    Some(&CONTEXT)
 }
 
 impl Kernel {
-    pub(super) fn install(
-        base: Statx,
-        helper_stat: rustix::fs::Stat,
-        early_release: bool,
-    ) -> Arc<Self> {
-        let kernel = Arc::new(Self {
-            base,
-            helper_stat,
-            early_release,
+    fn new() -> Self {
+        Self {
             state: Mutex::new(State {
+                base: None,
+                helper_stat: None,
+                early_release: false,
                 mount: Some(0),
                 pinned: HashMap::new(),
                 locks: HashMap::new(),
@@ -53,9 +49,25 @@ impl Kernel {
                 mount_before_exit: 0,
             }),
             unlocked: Condvar::new(),
-        });
-        *CONTEXT.lock().unwrap() = Some(kernel.clone());
+        }
+    }
+
+    pub(super) fn install(
+        base: Statx,
+        helper_stat: rustix::fs::Stat,
+        early_release: bool,
+    ) -> &'static Self {
+        let kernel = &*CONTEXT;
+        let mut state = kernel.state.lock().unwrap();
+        state.base = Some(base);
+        state.helper_stat = Some(helper_stat);
+        state.early_release = early_release;
+        drop(state);
         kernel
+    }
+
+    pub(in crate::native_mount) fn early_release(&self) -> bool {
+        self.state.lock().unwrap().early_release
     }
 
     pub(in crate::native_mount) fn stat(&self, fd: RawFd, flags: AtFlags) -> io::Result<Statx> {
@@ -65,14 +77,15 @@ impl Kernel {
         if flags.contains(AtFlags::STATX_FORCE_SYNC) && mount == 0 {
             return Err(io::Error::from_raw_os_error(libc::ENOTCONN));
         }
-        let mut stat = self.base;
+        let mut stat = state.base.unwrap();
         stat.stx_mnt_id = mount;
         Ok(stat)
     }
 
     pub(in crate::native_mount) fn current_stat(&self) -> Statx {
-        let mut stat = self.base;
-        stat.stx_mnt_id = self.state.lock().unwrap().mount.unwrap_or(2);
+        let state = self.state.lock().unwrap();
+        let mut stat = state.base.unwrap();
+        stat.stx_mnt_id = state.mount.unwrap_or(2);
         stat
     }
 
@@ -145,16 +158,17 @@ impl Kernel {
     }
 
     pub(in crate::native_mount) fn helper_stat(&self) -> rustix::fs::Stat {
-        self.helper_stat
+        self.state.lock().unwrap().helper_stat.unwrap()
     }
 }
 
 // An OS-process handle at the existing closed-process syscall boundary. The
 // production FuseRecoveryControl still owns spawn, wait, terminate and custody.
 pub(in crate::native_mount) struct Helper {
-    kernel: Option<Arc<Kernel>>,
+    kernel: Option<&'static Kernel>,
     real: Option<acyclic_native_runtime::ProcessTree>,
     exited: bool,
+    unmounted: bool,
 }
 impl From<acyclic_native_runtime::ProcessTree> for Helper {
     fn from(real: acyclic_native_runtime::ProcessTree) -> Self {
@@ -162,6 +176,7 @@ impl From<acyclic_native_runtime::ProcessTree> for Helper {
             kernel: None,
             real: Some(real),
             exited: false,
+            unmounted: false,
         }
     }
 }
@@ -178,6 +193,7 @@ impl Helper {
             kernel: Some(kernel),
             real: None,
             exited: false,
+            unmounted: false,
         });
         Ok(())
     }
@@ -189,17 +205,20 @@ impl Helper {
         if let Some(real) = &mut self.real {
             return real.try_wait(meter);
         }
-        // Explore helper execution against a competing real fence acquirer.
+        // The child can finish umount while still alive. A pending observation
+        // makes the real wait loop retain custody across that interval.
         loom::thread::yield_now();
-        if !self.exited {
-            let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
+        if !self.unmounted {
+            let mut state = self.kernel.unwrap().state.lock().unwrap();
             if state.mount == Some(1) {
                 state.live_detaches += 1;
             }
             state.mount = None;
-            state.helper_running = false;
-            self.exited = true;
+            self.unmounted = true;
+            return Ok(None);
         }
+        self.kernel.unwrap().state.lock().unwrap().helper_running = false;
+        self.exited = true;
         Ok(Some(std::process::ExitStatus::from_raw(0)))
     }
 
