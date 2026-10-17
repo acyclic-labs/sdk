@@ -119,10 +119,6 @@ impl FileViews {
     }
 
     /// Last applied query cut.
-    #[cfg(any(
-        feature = "test-support",
-        all(feature = "wasm", target_arch = "wasm32")
-    ))]
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
     }
