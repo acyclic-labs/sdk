@@ -62,7 +62,13 @@ pub(crate) fn deduplicate_reads(
                 work,
             ) {
                 Ok(input) => input,
-                Err(error) if error.code() == crate::wire::ErrorCode::Invalid => continue,
+                Err(Error::Invalid(_)) => continue,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                Err(Error::NativeJson {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ref source,
+                    ..
+                }) if source.is_data() => continue,
                 Err(error) => return Err(error),
             };
             if input.0.range.is_some_and(|range| {
