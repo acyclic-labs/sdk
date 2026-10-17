@@ -111,15 +111,9 @@ impl CodexLogin {
         }
     }
 
-    /// Finds `$CODEX_HOME/auth.json` or the current user's `~/.codex/auth.json`.
-    pub fn discover() -> Option<Self> {
-        let root = std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-                    .map(|home| PathBuf::from(home).join(".codex"))
-            })?;
-        let path = root.join("auth.json");
+    /// Finds `auth.json` in the Codex home of explicitly enabled native sources.
+    pub(crate) fn discover(sources: &crate::credentials::NativeSources) -> Option<Self> {
+        let path = sources.codex_home()?.join("auth.json");
         path.is_file().then(|| Self::from_path(path))
     }
 

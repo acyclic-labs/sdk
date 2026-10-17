@@ -32,29 +32,58 @@ impl SearchBackend {
 }
 
 /// Host-only configuration. Deliberately neither Debug nor Serialize.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Native sources are never implicit: there is no `Default` or deserialization, so only
+/// [`SearchConfig::native`] reads the keychain or environment.
+///
+/// ```compile_fail
+/// let _: acyclic_harness::search::SearchConfig = Default::default();
+/// ```
 pub struct SearchConfig {
     /// Explicit provider, defaulting to Exa.
-    #[serde(default)]
     pub provider: SearchBackend,
     /// Config-file fallback keys, indexed by `exa` or `tinyfish`.
-    #[serde(default)]
     pub api_keys: BTreeMap<String, String>,
-    #[serde(skip, default = "native_sources")]
-    native_sources: bool,
+    native: Option<Sources>,
 }
 
-fn native_sources() -> bool {
-    true
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SearchFile {
+    #[serde(default)]
+    provider: SearchBackend,
+    #[serde(default)]
+    api_keys: BTreeMap<String, String>,
 }
 
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            provider: SearchBackend::default(),
-            api_keys: BTreeMap::new(),
-            native_sources: true,
+/// The only reader of host credential state. Test builds compile just the isolated
+/// variant, so fixtures cannot reach a real keychain or environment.
+enum Sources {
+    #[cfg(not(test))]
+    Current,
+    #[cfg(test)]
+    Isolated {
+        keychain: Box<dyn Fn(&str) -> Result<Option<String>> + Send + Sync>,
+        environment: Box<dyn Fn(&str) -> Result<Option<String>> + Send + Sync>,
+    },
+}
+
+impl Sources {
+    fn keychain(&self, provider: &str) -> Result<Option<String>> {
+        match self {
+            #[cfg(not(test))]
+            Self::Current => keychain(provider),
+            #[cfg(test)]
+            Self::Isolated { keychain, .. } => keychain(provider),
+        }
+    }
+
+    fn variable(&self, name: &str) -> Result<Option<String>> {
+        match self {
+            #[cfg(not(test))]
+            Self::Current => Ok(std::env::var(name).ok()),
+            #[cfg(test)]
+            Self::Isolated { environment, .. } => environment(name),
         }
     }
 }
@@ -65,34 +94,46 @@ impl SearchConfig {
         Self {
             provider,
             api_keys,
-            native_sources: false,
+            native: None,
         }
     }
 
-    /// Reads JSON configuration. Missing configuration means no file fallback.
+    /// Consults the current user's keychain, then the provider environment variable,
+    /// ahead of configured keys. Not compiled into this crate's tests.
+    #[cfg(not(test))]
+    #[must_use]
+    pub fn native(self) -> Self {
+        Self {
+            native: Some(Sources::Current),
+            ..self
+        }
+    }
+
+    /// Reads configured provider and keys from JSON. Missing configuration means none.
     pub fn from_file(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
+            Ok(bytes) => serde_json::from_slice::<SearchFile>(&bytes)
+                .map(|file| Self::explicit(file.provider, file.api_keys))
                 .map_err(|_| Error::Invalid("invalid search configuration".into())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(Self::explicit(SearchBackend::default(), BTreeMap::new()))
+            }
             Err(_) => Err(Error::Storage("cannot read search configuration".into())),
         }
     }
 
     fn key(&self) -> Result<Option<String>> {
-        self.resolve_with(keychain, |variable| Ok(std::env::var(variable).ok()))
-    }
-
-    fn resolve_with(
-        &self,
-        keychain: impl FnOnce(&str) -> Result<Option<String>>,
-        environment: impl FnOnce(&str) -> Result<Option<String>>,
-    ) -> Result<Option<String>> {
-        if self.native_sources {
-            if let Some(key) = keychain(self.provider.id())?.filter(|k| !k.trim().is_empty()) {
+        if let Some(native) = &self.native {
+            if let Some(key) = native
+                .keychain(self.provider.id())?
+                .filter(|k| !k.trim().is_empty())
+            {
                 return Ok(Some(key));
             }
-            if let Some(key) = environment(self.provider.env())?.filter(|k| !k.trim().is_empty()) {
+            if let Some(key) = native
+                .variable(self.provider.env())?
+                .filter(|k| !k.trim().is_empty())
+            {
                 return Ok(Some(key));
             }
         }
@@ -116,6 +157,7 @@ impl SearchConfig {
     }
 }
 
+#[cfg(not(test))]
 fn keychain(provider: &str) -> Result<Option<String>> {
     let entry = keyring::Entry::new("acyclic-harness", provider)
         .map_err(|_| Error::Storage("cannot open search keychain entry".into()))?;

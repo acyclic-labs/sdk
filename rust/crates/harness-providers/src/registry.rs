@@ -27,9 +27,8 @@ impl Registry {
             .collect();
         #[cfg(not(target_arch = "wasm32"))]
         let codex_login = credentials
-            .allows_native_sources()
-            .then(crate::CodexLogin::discover)
-            .flatten()
+            .native_sources()
+            .and_then(crate::CodexLogin::discover)
             .map(Arc::new);
         Self {
             providers,

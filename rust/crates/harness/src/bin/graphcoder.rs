@@ -40,13 +40,11 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         .as_deref()
         .map(OperationId::parse)
         .transpose()?;
-    let credentials = args
-        .credentials
-        .as_deref()
-        .map(Credentials::from_file)
-        .transpose()?
-        .unwrap_or_default();
-    let mut registry = Registry::new(credentials)?;
+    let configured = match args.credentials.as_deref() {
+        Some(path) => Credentials::from_file(path)?,
+        None => Credentials::explicit(Default::default()),
+    };
+    let mut registry = Registry::new(configured.native())?;
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
     }
