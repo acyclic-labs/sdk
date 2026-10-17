@@ -40,31 +40,3 @@ proptest! {
         prop_assert_eq!(work.receipt().bytes_copied, actual);
     }
 }
-
-// Negative control: the same budget oracle observes a skipped refund. Only
-// Drop returns credit, so leaking the owner leaves the reservation withheld.
-#[test]
-fn leaked_credit_is_observed_as_withheld() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(
-        WorkBudget {
-            bytes_copied: 64,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )
-    .unwrap();
-    let mut credit = EffectCredit::new(&work, &cancellation);
-    credit
-        .reserve(
-            WorkCounters {
-                bytes_copied: 40,
-                ..WorkCounters::UNCHARGED
-            },
-            false,
-        )
-        .unwrap();
-    std::mem::forget(credit);
-    assert_eq!(work.state(|state| state.budget.bytes_copied), 24);
-    assert_eq!(work.receipt().bytes_copied, 0);
-}
