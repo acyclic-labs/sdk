@@ -18,6 +18,8 @@ pub(super) struct File<'a> {
     key: Cow<'a, FileKey>,
     channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     publication: Option<OperationId>,
     #[serde(with = "bytes")]
     bytes: Cow<'a, [u8]>,
@@ -28,12 +30,14 @@ impl<'a> From<&'a FileValue> for File<'a> {
         let FileValue {
             key,
             channel,
+            requester,
             publication,
             bytes,
         } = file;
         Self {
             key: Cow::Borrowed(key),
             channel: *channel,
+            requester: *requester,
             publication: *publication,
             bytes: Cow::Borrowed(bytes.as_slice()),
         }
@@ -45,12 +49,14 @@ impl From<File<'_>> for FileValue {
         let File {
             key,
             channel,
+            requester,
             publication,
             bytes,
         } = file;
         Self {
             key: key.into_owned(),
             channel,
+            requester,
             publication,
             bytes: bytes.into_owned().into(),
         }
@@ -313,7 +319,7 @@ impl From<ChangeForm<'_>> for Change {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::Head;
     use crate::task_volume::{FileKey, HeadFile};

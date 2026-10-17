@@ -72,13 +72,21 @@ proptest! {
     // One canonical request-file codec preserves exact bytes and identities,
     // and spells the bytes in the single tagged form.
     #[test]
-    fn canonical_request_files_round_trip(bytes in bytes_strategy(), id in any::<[u8;16]>()) {
+    fn canonical_request_files_round_trip(
+        bytes in bytes_strategy(), id in any::<[u8;16]>(),
+        requester in prop::option::of(any::<[u8;16]>()),
+    ) {
         let operation = OperationId::from_bytes(id);
         let file = FileValue::new(request_key(operation), bytes.clone());
+        let mut stored = serde_json::to_value(&file).unwrap();
+        let requester = requester.map(acyclic_harness::TaskId::from_bytes);
+        stored["requester"] = json!(requester);
+        let file: FileValue = serde_json::from_value(stored).unwrap();
         let line = jsonl::request(&file).unwrap();
         prop_assert!(!line.contains('\n'));
         let value: Value = serde_json::from_str(&line).unwrap();
         prop_assert_eq!(&value["bytes"], &byte_form(&bytes));
+        prop_assert_eq!(&value["requester"], &json!(requester));
         prop_assert!(!integer_array(&value));
         prop_assert_eq!(jsonl::parse_request(&line).unwrap(), file);
     }
@@ -257,7 +265,7 @@ fn checked_in_wire_corpus() {
             .unwrap()
         };
     }
-    for line in [seed!("request-text"), seed!("request-base64")] {
+    for line in [seed!("request-text"), seed!("request-base64"), seed!("request-requester")] {
         assert_eq!(
             jsonl::request(&jsonl::parse_request(line).unwrap()).unwrap(),
             line
