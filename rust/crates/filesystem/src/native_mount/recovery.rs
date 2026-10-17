@@ -95,7 +95,7 @@ pub(super) struct NativeRecoveryShared {
 pub struct NativeMountRecoveryOwner {
     pub(super) shared: RecoveryArc<NativeRecoveryShared>,
     // Last drop notifies the prestarted worker to retire the owner.
-    retirement: RetirementSender,
+    retirement: Option<RetirementSender>,
 }
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
@@ -109,7 +109,9 @@ impl std::fmt::Debug for NativeMountRecoveryOwner {
 
 impl Drop for NativeMountRecoveryOwner {
     fn drop(&mut self) {
-        let _ = self.retirement.send(());
+        if let Some(retirement) = self.retirement.take() {
+            let _ = retirement.send(());
+        }
     }
 }
 
@@ -202,7 +204,10 @@ impl NativeMountRecoveryOwner {
         drop(crate::sync::native::thread::Builder::new().spawn(move || {
             retire_recovery(worker);
         })?);
-        let owner = Self { shared, retirement };
+        let mut owner = Self {
+            shared,
+            retirement: Some(retirement),
+        };
         let result = {
             let mut state = owner
                 .shared
@@ -228,7 +233,9 @@ impl NativeMountRecoveryOwner {
         };
         if let Err(error) = result {
             // Constructor rejection waits for the physical acquisition prefix to retire.
-            let _ = owner.retirement.send(());
+            if let Some(retirement) = owner.retirement.take() {
+                let _ = retirement.send(());
+            }
             let mut state = owner
                 .shared
                 .state

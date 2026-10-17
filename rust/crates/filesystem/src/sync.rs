@@ -17,8 +17,8 @@ pub(crate) mod native {
     #[cfg(not(any(acyclic_fs_loom, acyclic_fs_native_loom)))]
     pub(crate) type RetirementSender = std::sync::mpsc::SyncSender<()>;
 
-    // A constructor rejection waits for retirement before last drop. Thus the
-    // second notification cannot fill an already occupied capacity-one slot.
+    // Retirement consumes its sender, including constructor rejection. There
+    // is exactly one notification for the one worker receive.
     pub(crate) fn retirement_channel() -> (RetirementSender, mpsc::Receiver<()>) {
         #[cfg(any(acyclic_fs_loom, acyclic_fs_native_loom))]
         return loom::sync::mpsc::channel();
