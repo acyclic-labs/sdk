@@ -3,7 +3,7 @@ use crate::native_host::stat_probe::Probe;
 use acyclic_test_support::{AllocationInfo, differential, measure};
 
 struct Fixture {
-    source: tempfile::TempDir,
+    _source: tempfile::TempDir,
     checkout: crate::facade::MemoryCheckout,
     setup: NativeMaterializationWork,
     options: CaptureOptions,
@@ -57,7 +57,7 @@ fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
             .unwrap();
     }
     Fixture {
-        source,
+        _source: source,
         checkout,
         setup,
         options,
@@ -141,10 +141,15 @@ const RESCAN_CALLS: &[&str] = &[
     "NtQueryInformationByName",
 ];
 
-fn minimal_rescan(heap: AllocationInfo, trace: &[&str]) -> bool {
+fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool {
     // Main's lazy append-error change removes one discarded error allocation
     // for each of the three host names and three checkout names in this fixture.
-    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace == RESCAN_CALLS
+    let expected = RESCAN_CALLS.iter().copied().flat_map(|call| {
+        [Some(call), (fallback && call == "statx").then_some("fstat")]
+            .into_iter()
+            .flatten()
+    });
+    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace.iter().copied().eq(expected)
 }
 
 fn run(
@@ -155,21 +160,6 @@ fn run(
     limit: u64,
     cancelled: bool,
 ) -> (Output, AllocationInfo) {
-    // The process-global, unchanged weak health registry has an input-dependent
-    // binary-search depth. Measure that separate admission before the rescan;
-    // all remaining capture work is compared exactly, including allocation work.
-    let calibration =
-        NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap();
-    let calibrated = acyclic_native_runtime::NativeFile::from_file(
-        std::fs::File::open(fixture.source.path().join("d/body")).unwrap(),
-        Some(acyclic_native_runtime::NativeFileMeter::Owned(
-            calibration.runtime_meter(),
-        )),
-    )
-    .map_err(|(error, _)| error)
-    .unwrap();
-    drop(calibrated);
-    let health_items = calibration.receipt().items_examined;
     let (work, cancellation) = fixture
         .setup
         .native_volume_work(WorkBudget {
@@ -211,6 +201,9 @@ fn run(
         measure(|| result = Some(runtime.block_on(future.as_mut())))
     };
     probe.publish();
+    // This is the actual admitted search work, observed while the registry held
+    // its lock, rather than a calibration that parallel imports could invalidate.
+    let health_items = probe.examinations();
     drop(probe);
     let result = result
         .unwrap()
@@ -266,99 +259,124 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
     acyclic_native_runtime::initialize_native_io_services()?;
     let _inline = acyclic_native_runtime::InlineBlocking::enter();
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    for (limit, cancelled) in [(u64::MAX, false), (0, false), (4, false), (u64::MAX, true)] {
-        // Separate host roots, stores, caches, checkouts, cancellations and ledgers.
-        let paired = differential::pair::<_, _, &'static str>(
-            || fixture(&runtime),
-            |state, old| run(&runtime, state, old, 0, limit, cancelled),
-        );
-        for ((output, heap), trace) in &paired {
-            assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
-            assert!(output.unchanged_root);
-            assert_eq!(output.result.is_ok(), limit == u64::MAX && !cancelled);
-            assert_eq!(output.live_after, output.live_before);
-            eprintln!(
-                "RESCAN limit={limit} cancel={cancelled} heap={heap:?} work={:?} health={} trace={trace:?}",
-                output.work, output.health_items
-            );
+    for forced in [false, true] {
+        #[cfg(windows)]
+        if forced {
+            continue;
         }
-        let [
-            ((mut before, before_heap), old_trace),
-            ((mut after, after_heap), trace),
-        ] = paired;
-        if before.result.is_ok() {
+        #[cfg(target_os = "linux")]
+        let _fallback = crate::native_host::stat_probe::Fallback::enter(forced);
+        #[cfg(target_os = "linux")]
+        let fallback = crate::native_host::stat_probe::uses_fallback(&std::fs::File::open(".")?);
+        #[cfg(windows)]
+        let fallback = false;
+        for (limit, cancelled) in [(u64::MAX, false), (0, false), (4, false), (u64::MAX, true)] {
+            // Separate host roots, stores, caches, checkouts, cancellations and ledgers.
+            let paired = differential::pair::<_, _, &'static str>(
+                || fixture(&runtime),
+                |state, old| run(&runtime, state, old, 0, limit, cancelled),
+            );
+            for ((output, heap), trace) in &paired {
+                assert_eq!(output.bytes, [vec![], vec![0x5a; 96]]);
+                assert!(output.unchanged_root);
+                assert_eq!(output.result.is_ok(), limit == u64::MAX && !cancelled);
+                assert_eq!(output.live_after, output.live_before);
+                eprintln!(
+                    "RESCAN limit={limit} cancel={cancelled} heap={heap:?} work={:?} health={} trace={trace:?}",
+                    output.work, output.health_items
+                );
+            }
+            let [
+                ((mut before, before_heap), old_trace),
+                ((mut after, after_heap), trace),
+            ] = paired;
             before.work["itemsExamined"] = serde_json::json!(
                 before.work["itemsExamined"].as_u64().unwrap() - before.health_items
             );
             after.work["itemsExamined"] = serde_json::json!(
                 after.work["itemsExamined"].as_u64().unwrap() - after.health_items
             );
-        }
-        assert_eq!(before.result, after.result);
-        assert_eq!(before.work, after.work);
-        assert_eq!(before_heap, after_heap);
-        #[cfg(windows)]
-        if limit == u64::MAX && !cancelled {
-            assert!(minimal_rescan(after_heap, &trace));
-            assert!(minimal_rescan(before_heap, &old_trace));
-        }
-        #[cfg(target_os = "linux")]
-        {
-            if limit == u64::MAX && !cancelled {
-                assert!(minimal_rescan(after_heap, &trace));
-                assert!(!minimal_rescan(before_heap, &old_trace));
+            if after.result.is_ok() {
+                assert!(before.health_items > 0 && after.health_items > 0);
                 assert_eq!(
-                    old_trace.iter().filter(|event| **event == "handle").count(),
-                    10
-                );
-                assert_eq!(after.work["backendReadOperations"], 42);
-            } else if !cancelled {
-                assert_eq!(after_heap.count_total, if limit == 0 { 11 } else { 15 });
-                assert_eq!(
-                    trace,
-                    if limit == 0 {
-                        vec![]
-                    } else {
-                        vec!["openat", "fstat", "statx"]
-                    }
+                    after.work["itemsExamined"],
+                    if cfg!(windows) { 436 } else { 331 }
                 );
             }
-        }
-        assert_eq!(
-            old_trace
-                .iter()
-                .filter(|event| **event != "handle")
-                .collect::<Vec<_>>(),
-            trace.iter().collect::<Vec<_>>()
-        );
-        if limit == u64::MAX && !cancelled {
-            for fault in [1, 2, 3] {
-                if cfg!(windows) && fault == 1 {
-                    continue; // next_metadata already forwards to next on Windows.
-                }
-                let [_, ((broken, broken_heap), broken_trace)] =
-                    differential::pair::<_, _, &'static str>(
-                        || fixture(&runtime),
-                        |state, old| {
-                            run(
-                                &runtime,
-                                state,
-                                old,
-                                if old { 0 } else { fault },
-                                limit,
-                                false,
-                            )
-                        },
+            assert_eq!(before.result, after.result);
+            assert_eq!(before.work, after.work);
+            assert_eq!(before_heap, after_heap);
+            #[cfg(windows)]
+            if limit == u64::MAX && !cancelled {
+                assert!(minimal_rescan(after_heap, &trace, fallback));
+                assert!(minimal_rescan(before_heap, &old_trace, fallback));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if limit == u64::MAX && !cancelled {
+                    assert!(minimal_rescan(after_heap, &trace, fallback));
+                    assert_eq!(minimal_rescan(before_heap, &old_trace, fallback), fallback);
+                    assert_eq!(
+                        old_trace.iter().filter(|event| **event == "handle").count(),
+                        if fallback { 0 } else { 10 }
                     );
-                assert_eq!(broken.bytes, after.bytes);
-                assert_eq!(broken.result, after.result);
-                if (cfg!(target_os = "linux") && fault == 1) || fault == 2 {
-                    assert_ne!(broken_trace, trace);
+                    assert_eq!(
+                        after.work["backendReadOperations"],
+                        if fallback { 52 } else { 42 }
+                    );
+                } else if !cancelled {
+                    assert_eq!(after_heap.count_total, if limit == 0 { 11 } else { 15 });
+                    assert_eq!(
+                        trace,
+                        if limit == 0 {
+                            vec![]
+                        } else if fallback {
+                            vec!["openat", "fstat", "statx", "fstat"]
+                        } else {
+                            vec!["openat", "fstat", "statx"]
+                        }
+                    );
                 }
-                if fault == 3 {
-                    assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+            }
+            assert_eq!(
+                old_trace
+                    .iter()
+                    .filter(|event| **event != "handle")
+                    .collect::<Vec<_>>(),
+                trace.iter().collect::<Vec<_>>()
+            );
+            if limit == u64::MAX && !cancelled {
+                for fault in [1, 2, 3] {
+                    if cfg!(windows) && fault == 1 {
+                        continue; // next_metadata already forwards to next on Windows.
+                    }
+                    let [_, ((broken, broken_heap), broken_trace)] =
+                        differential::pair::<_, _, &'static str>(
+                            || fixture(&runtime),
+                            |state, old| {
+                                run(
+                                    &runtime,
+                                    state,
+                                    old,
+                                    if old { 0 } else { fault },
+                                    limit,
+                                    false,
+                                )
+                            },
+                        );
+                    assert_eq!(broken.bytes, after.bytes);
+                    assert_eq!(broken.result, after.result);
+                    if (cfg!(target_os = "linux") && fault == 1 && !fallback) || fault == 2 {
+                        assert_ne!(broken_trace, trace);
+                    }
+                    if fault == 3 {
+                        assert_eq!(broken_heap.count_total, after_heap.count_total + 1);
+                    }
+                    assert_eq!(
+                        minimal_rescan(broken_heap, &broken_trace, fallback),
+                        fallback && fault == 1
+                    );
                 }
-                assert!(!minimal_rescan(broken_heap, &broken_trace));
             }
         }
     }

@@ -9,6 +9,56 @@ thread_local! {
     static EVENTS: RefCell<Option<(usize, [&'static str; 512])>> = const { RefCell::new(None) };
     static DUPLICATE: Cell<bool> = const { Cell::new(false) };
     static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
+    static EXAMINATIONS: Cell<Option<u64>> = const { Cell::new(None) };
+    #[cfg(target_os = "linux")]
+    static FALLBACK: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct Fallback(bool);
+#[cfg(target_os = "linux")]
+impl Fallback {
+    pub(crate) fn enter(force: bool) -> Self {
+        Self(FALLBACK.replace(force))
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for Fallback {
+    fn drop(&mut self) {
+        FALLBACK.set(self.0);
+    }
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn statx_result<T>(
+    result: Result<T, rustix::io::Errno>,
+) -> Result<T, rustix::io::Errno> {
+    if FALLBACK.get() {
+        Err(rustix::io::Errno::NOSYS)
+    } else {
+        result
+    }
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn uses_fallback(file: &File) -> bool {
+    matches!(
+        statx_result(rustix::fs::statx(
+            file,
+            c"",
+            rustix::fs::AtFlags::EMPTY_PATH | rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
+        )),
+        Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM)
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn fstat_query() {
+    event("fstat");
+    if EVENTS.with_borrow(Option::is_none) {
+        if let Some((old, bits, count)) = STATE.get() {
+            STATE.set(Some((old, bits.checked_mul(2).unwrap(), count)));
+        }
+    }
 }
 
 pub(crate) struct Probe;
@@ -16,6 +66,7 @@ impl Probe {
     pub(crate) fn rescan(old: bool) -> Self {
         let probe = Self::new(old, None);
         EVENTS.set(Some((0, [""; 512])));
+        EXAMINATIONS.set(Some(0));
         probe
     }
     pub(crate) fn publish(&self) {
@@ -25,6 +76,9 @@ impl Probe {
                 acyclic_test_support::differential::record(*event);
             }
         });
+    }
+    pub(crate) fn examinations(&self) -> u64 {
+        EXAMINATIONS.get().unwrap()
     }
     pub(crate) fn duplicate_queries(&self) {
         DUPLICATE.set(true);
@@ -49,6 +103,7 @@ impl Drop for Probe {
         EVENTS.set(None);
         DUPLICATE.set(false);
         RESTORE_WALK.set(false);
+        EXAMINATIONS.set(None);
     }
 }
 pub(crate) fn old() -> bool {
@@ -85,6 +140,11 @@ pub(crate) fn event(event: &'static str) {
             *length += 1;
         }
     });
+}
+pub(crate) fn examined(items: u64) {
+    if let Some(examined) = EXAMINATIONS.get() {
+        EXAMINATIONS.set(Some(examined.checked_add(items).unwrap()));
+    }
 }
 #[cfg(target_os = "linux")]
 fn edit_at(point: u64) {
@@ -133,12 +193,12 @@ pub(crate) fn baseline_at<W: NativeHostWork>(
         loop {
             work.started_io(READ)?;
             query(false);
-            match rustix::fs::statx(
+            match statx_result(rustix::fs::statx(
                 directory,
                 name,
                 flags,
                 rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
-            ) {
+            )) {
                 Ok(stat) => {
                     let handle = file_handle_at(fd, name, flags);
                     return Ok(HostStat::from_statx(stat).with_handle(handle));

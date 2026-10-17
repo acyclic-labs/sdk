@@ -134,12 +134,15 @@ fn statx_at<W: NativeHostWork>(
         work.started_io(READ)?;
         #[cfg(test)]
         stat_probe::query(false);
-        match rustix::fs::statx(
+        let result = rustix::fs::statx(
             directory,
             name,
             flags,
             rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
-        ) {
+        );
+        #[cfg(test)]
+        let result = stat_probe::statx_result(result);
+        match result {
             Ok(stat) => {
                 let handle = if with_handle {
                     file_handle_at(fd, name, flags)
@@ -221,7 +224,7 @@ pub(super) fn fstat<W: NativeHostWork>(
 ) -> Result<libc::stat, W::Error> {
     retry_io(work, READ, || {
         #[cfg(all(test, target_os = "linux"))]
-        stat_probe::event("fstat");
+        stat_probe::fstat_query();
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
         // SAFETY: held descriptor, terminated name and complete output remain live.
         let result = unsafe {
