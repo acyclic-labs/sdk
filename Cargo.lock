@@ -612,6 +612,7 @@ name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
  "acyclic-grpc-observability",
+ "acyclic-test-support",
  "bytes",
  "compio-buf",
  "compio-driver",
