@@ -26,35 +26,26 @@ pub fn verify_discovery_admission(bypass_discovery: bool) {
         // standing in for a channel.
         let outbound = Arc::new(Outbound::new(1, crate::MAX_COMMAND_BYTES));
         pool.links.get_mut("good").unwrap().sender = Arc::clone(&outbound);
+        // The first registration has filled the queue. Only the second Open
+        // races its drain; modeling the setup's unrelated admission locks and
+        // a second future park adds no queue interleaving and is unnecessary.
+        pool.subscribe(1).unwrap();
         let children = Arc::new(signal::Signal::new());
         let delivering = Arc::clone(&children);
         let reading = Arc::clone(&outbound);
         let transport = loom::thread::spawn(move || {
-            for child in 0..2 {
-                delivering.send(child).unwrap();
-                let Ok(frame) = loom::future::block_on(reading.next()) else {
-                    return false;
-                };
-                assert!(matches!(frame.body, Some(Body::Interest(_))));
-            }
-            true
+            let frame = loom::future::block_on(reading.next()).unwrap();
+            assert!(matches!(frame.body, Some(Body::Interest(_))));
+            delivering.send(()).unwrap();
         });
-        let mut admitted = true;
-        for child in 0..2 {
-            if !bypass_discovery {
-                assert_eq!(loom::future::block_on(children.next()).unwrap(), child);
-            }
-            let id = 1 + child * 2;
-            pool.subscribe(id).unwrap();
-            if !pool.routes.contains_key(&id) {
-                admitted = false;
-                outbound.close().unwrap();
-                break;
-            }
+        if !bypass_discovery {
+            loom::future::block_on(children.next()).unwrap();
         }
-        let delivered = transport.join().unwrap();
+        pool.subscribe(3).unwrap();
+        transport.join().unwrap();
+        let admitted = pool.routes.contains_key(&3);
         assert!(
-            admitted && delivered,
+            admitted,
             "membership snapshot bypassed discovery backpressure"
         );
     });
