@@ -191,8 +191,8 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
             };
             renderer.update(&views, &owner());
             renderer.wrap_tools(80);
-            let tail = renderer.screen().tools.as_ptr();
-            let wrapped_tail = renderer.wrapped_tools.rows().as_ptr();
+            let tail = renderer.screen().tools.as_ptr().addr();
+            let wrapped_tail = renderer.wrapped_tools.rows().as_ptr().addr();
             let copies = renderer.task.tool_copies();
             let mut output = Vec::new();
             for sequence in 0..updates {
@@ -221,11 +221,11 @@ fn streaming(tools: usize, updates: usize, broken: bool) {
                     "borrowing the cached tool tail allocates nothing"
                 );
                 assert_eq!(
-                    renderer.screen().tools.as_ptr(),
+                    renderer.screen().tools.as_ptr().addr(),
                     tail,
                     "outer renderer borrows the same tail"
                 );
-                assert_eq!(renderer.wrapped_tools.rows().as_ptr(), wrapped_tail);
+                assert_eq!(renderer.wrapped_tools.rows().as_ptr().addr(), wrapped_tail);
                 output.push(displayed(&renderer, false));
                 acyclic_test_support::differential::record(sequence);
             }
