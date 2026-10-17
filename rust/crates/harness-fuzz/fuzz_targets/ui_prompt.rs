@@ -252,6 +252,13 @@ fuzz_target!(|data: &[u8]| {
             // Result metadata is untrusted; it may describe status but must
             // never copy the result's output into the transcript a second time.
             file_views::tool(&mut documents, &owner.id, "bash", "");
+            // Exercise the nonstreaming parser too; streaming output itself is
+            // covered by the shared chunk/replay property and live renderer.
+            file_views::remove(
+                &mut documents,
+                FileKey::parse(&format!(".tasks/{}/turns/0/tools/call/stdout/0", owner.id))
+                    .unwrap(),
+            );
             let result_key = FileKey::parse(&format!(
                 ".tasks/{}/turns/0/tools/call/result.json",
                 owner.id
@@ -327,6 +334,13 @@ fuzz_target!(|data: &[u8]| {
             renderer.update(&documents, &owner);
             renderer.configure(&documents, &owner, &files).unwrap();
             assert!(renderer.screen().transcript.len() <= 21);
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                if value.as_object().is_some_and(|fields| {
+                    fields.contains_key("stdout") || fields.contains_key("stderr")
+                }) {
+                    assert_eq!(renderer.screen().transcript.len(), 1);
+                }
+            }
             if let Some(bytes) = layout {
                 let expected = serde_json::from_slice::<serde_json::Value>(bytes)
                     .ok()

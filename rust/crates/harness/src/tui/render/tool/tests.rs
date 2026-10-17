@@ -32,6 +32,17 @@ fn put(views: &mut ClientViews, file: ToolFile, bytes: Vec<u8>) {
         .unwrap();
 }
 
+fn result_file(bytes: Vec<u8>) -> HeadFile {
+    HeadFile {
+        key: FileKey::parse(".tasks/task/turns/0/tools/call/result.json").unwrap(),
+        length: bytes.len() as u64,
+        segments: vec![bytes.into()],
+        channel: None,
+        publication: None,
+        through_sequence: None,
+    }
+}
+
 fn expected(text: &str, limit: usize) -> Vec<Line<'static>> {
     let mut parser = Markdown::default();
     parser.push(&text.lines().take(limit).collect::<Vec<_>>().join("\n"));
@@ -117,13 +128,24 @@ proptest! {
         prop_assert_eq!(serde_json::from_slice::<Status>(&encoded).unwrap(),value);
     }
 
+    // Even metadata rejected by the borrowed decoder cannot expose a second
+    // process-output source through the generic JSON fallback.
+    #[test]
+    fn process_fields_cannot_enter_fallback(text in ".*", stderr in any::<bool>()) {
+        let channel = if stderr {"stderr"} else {"stdout"};
+        let encoded = serde_json::to_string(&text).unwrap();
+        for source in [format!(r#"{{"{channel}":null}}"#), format!(r#"{{"{channel}":null,"{channel}":{encoded}}}"#)] {
+            let file = result_file(source.into_bytes());
+            prop_assert!(result_rows(Some(&file)).is_empty());
+        }
+    }
+
     // A nonstreaming tool keeps its canonical result, through the same source cap.
     #[test]
     fn nonstreaming_text_results_are_bounded(lines in 0usize..40) {
         let text = (0..lines).map(|n|format!("data{n:02}\n")).collect::<String>();
         let bytes=serde_json::to_vec(&text).unwrap();
-        let file = HeadFile {key:FileKey::parse(".tasks/task/turns/0/tools/call/result.json").unwrap(),
-            segments:vec![bytes.clone().into()],channel:None,publication:None,length:bytes.len() as u64,through_sequence:None};
+        let file = result_file(bytes);
         prop_assert_eq!(result_rows(Some(&file)),expected(&text,20));
     }
 }

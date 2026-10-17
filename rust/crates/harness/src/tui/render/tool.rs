@@ -44,6 +44,11 @@ pub(super) fn result_rows(result: Option<&HeadFile>) -> Vec<Line<'static>> {
         return Vec::new();
     };
     if let Some(fields) = value.as_object_mut() {
+        // Duplicate or null fields can bypass the borrowed fast path; they
+        // still must never turn captured process output into fallback rows.
+        if fields.contains_key("stdout") || fields.contains_key("stderr") {
+            return Vec::new();
+        }
         for name in ["success", "exit_code", "stop"] {
             fields.remove(name);
         }
