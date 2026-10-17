@@ -70,7 +70,13 @@ async fn streaming(bound: bool) -> Result<()> {
             result = boundary => result.expect("model dispatch"),
         }
         if bound {
+            // Snapshot acquisition can await a publication still owned by run.
+            // Drive the owner throughout presentation, as with_local_commands
+            // does, rather than only while waiting for the next file change.
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            tokio::select! {
+            result = &mut run => panic!("turn completed before intermediate frame: {result:?}"),
+            result = async {
             loop {
                 if let Some(task)=ui.active_task() {
                     views.follow_task(local.task_files().as_ref(),task).await?;
@@ -108,12 +114,11 @@ async fn streaming(bound: bool) -> Result<()> {
                     );
                     break;
                 }
-                tokio::select! {
-                    result = &mut run => panic!("turn completed before intermediate frame: {result:?}"),
-                    result = views.next_change() => result?,
-                }
+                views.next_change().await?;
             }
                 Ok::<(), Error>(())
+            } => result,
+            }
             }).await.expect("canonical chunk must reach the styled frame")?;
             // The same request publication used by Ctrl+C, not an injected status.
             // Accepted chunks may be observed before their publisher receives
