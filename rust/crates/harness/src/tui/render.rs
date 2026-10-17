@@ -454,7 +454,8 @@ impl ClientRenderer {
                     .unwrap_or(0);
                 screen.transcript = self.search.rows();
                 screen.reasoning = &[];
-                screen.search_row = Some(self.search.selected_row(index));
+                screen.search_row =
+                    (self.search.count() != 0).then(|| self.search.selected_row(index));
                 screen.status = Line::raw(format!(
                     "Find: {} matches · Enter next · Shift+Enter previous · Escape closes",
                     self.search.count()

@@ -56,17 +56,16 @@ pub(crate) async fn configure<P: StreamProvider + ?Sized>(
                     "shortcuts" | "diff" | "goal" | "plan" | "feedback" | "find"
                 )
             });
-        // Only a visible feedback form can intercept chat. Stale form pointers
+        // Only visible feedback/search forms can intercept chat. Stale pointers
         // from another frontend must never consume the next ordinary prompt.
         let form = layout
             .get("view_input")
             .is_some_and(|value| !value.is_null())
             && !((layout["open_view"] == "feedback" && layout["view_input"] == "feedback")
                 || (layout["open_view"] == "find" && layout["view_input"] == "find"));
-        let closed_feedback = (layout["open_view"] == "feedback"
-            && layout["view_input"] != "feedback")
+        let closed_form = (layout["open_view"] == "feedback" && layout["view_input"] != "feedback")
             || (layout["open_view"] == "find" && layout["view_input"] != "find");
-        if unsupported || form || closed_feedback {
+        if unsupported || form || closed_form {
             if let Some(object) = layout.as_object_mut() {
                 for key in ["open_view", "view_input", "view_request", "view_back"] {
                     object.remove(key);
