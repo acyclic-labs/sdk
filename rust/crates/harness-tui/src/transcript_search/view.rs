@@ -15,7 +15,7 @@ pub struct TranscriptSearch {
 impl TranscriptSearch {
     /// Rebuild after transcript content, wrapping, or the query changes.
     /// Match offsets refer to displayed UTF-8, including across styled spans.
-    pub fn update(&mut self, source: &[Line<'_>], query: &str) {
+    pub fn update(&mut self, source: &[Line<'_>], query: &str, width: u16) {
         self.rows.clear();
         self.locations.clear();
         let text = source
@@ -32,51 +32,54 @@ impl TranscriptSearch {
         let mut offset = 0;
         let mut next = 0;
         let mut located = 0;
-        for (row, line) in source.iter().enumerate() {
-            let mut spans = Vec::new();
+        for line in source {
+            let length = line
+                .spans
+                .iter()
+                .map(|span| span.content.len())
+                .sum::<usize>();
+            let input = &text[offset..offset + length];
+            let layout = crate::Layout::new(&crate::Editor::new(input), usize::from(width));
+            let mut styles = Vec::new();
+            let mut end = 0;
             for span in &line.spans {
-                let mut local = 0;
-                while local < span.content.len() {
-                    let at = offset + local;
-                    while next < matches.len() && matches[next].end <= at {
+                end += span.content.len();
+                styles.push((end, span.style));
+            }
+            for (index, row) in layout.rows.iter().enumerate() {
+                if row.cells.is_empty() && index > 0 && layout.rows[index - 1].end == row.start {
+                    continue;
+                }
+                let mut spans = Vec::new();
+                for cell in &row.cells {
+                    let at = offset + cell.source.start;
+                    while matches.get(next).is_some_and(|range| range.end <= at) {
                         next += 1;
                     }
-                    let matched = matches
-                        .get(next)
-                        .filter(|range| range.start <= at && at < range.end);
-                    let end = if let Some(range) = matched {
-                        range.end.min(offset + span.content.len())
-                    } else {
-                        matches
-                            .get(next)
-                            .map_or(offset + span.content.len(), |range| {
-                                range.start.min(offset + span.content.len())
-                            })
-                    };
-                    let style = if matched.is_some() {
-                        span.style
+                    let selected = matches.get(next).is_some_and(|range| {
+                        range.start < offset + cell.source.end && range.end > at
+                    });
+                    let style = styles
+                        .get(styles.partition_point(|(end, _)| *end <= cell.source.start))
+                        .map_or(ratatui::style::Style::default(), |(_, style)| *style);
+                    let style = if selected {
+                        style
                             .patch(default_style(ThemeRole::Selection))
                             .add_modifier(Modifier::UNDERLINED)
                     } else {
-                        span.style
+                        style
                     };
-                    spans.push(Span::styled(
-                        span.content[local..end - offset].to_owned(),
-                        style,
-                    ));
-                    local = end - offset;
+                    spans.push(Span::styled(cell.symbol.clone(), style));
                 }
-                offset += span.content.len();
+                while matches.get(located).is_some_and(|range| {
+                    range.start < offset + row.end || range.start == offset + row.start
+                }) {
+                    self.locations.push(self.rows.len());
+                    located += 1;
+                }
+                self.rows.push(Line::from(spans).style(line.style));
             }
-            while matches
-                .get(located)
-                .is_some_and(|range| range.start <= offset)
-            {
-                self.locations.push(row);
-                located += 1;
-            }
-            offset += 1;
-            self.rows.push(Line::from(spans).style(line.style));
+            offset += length + 1;
         }
     }
 

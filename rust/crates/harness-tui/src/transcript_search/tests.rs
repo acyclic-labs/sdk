@@ -76,7 +76,7 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
         ]),
         Line::raw("STRASSE"),
     ];
-    view.update(&source, "strasse");
+    view.update(&source, "strasse", 80);
     assert_eq!(view.count(), 2);
     assert_eq!(view.selected_row(-1), 1);
     assert_eq!(view.selected_row(2), 0);
@@ -103,6 +103,9 @@ fn highlighted_ranges_cross_spans_and_preserve_markdown_styles() {
             .collect::<Vec<_>>(),
         ["Straße", "STRASSE"]
     );
+    view.update(&source, "strasse", 3);
+    assert_eq!(view.count(), 2, "wrapping must not split the search needle");
+    assert!(view.selected_row(1) > 0);
 }
 
 #[test]

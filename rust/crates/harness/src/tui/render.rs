@@ -357,7 +357,7 @@ impl ClientRenderer {
             let query = layout["search_query"].as_str().unwrap_or("").to_owned();
             let cut = (query, width, self.transcript.len());
             if search_changed || self.search_cut.as_ref() != Some(&cut) {
-                self.search.update(self.wrapped_transcript.rows(), &cut.0);
+                self.search.update(&self.transcript, &cut.0, width);
                 self.search_cut = Some(cut);
             }
         } else {
