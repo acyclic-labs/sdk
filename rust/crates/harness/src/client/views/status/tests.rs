@@ -136,12 +136,18 @@ fn negative_control_forgetting_the_reservation_refund_fails_and_shrinks() {
     let abandoned = prop::collection::vec((0u8..3, 0u8..3, 0u8..32, Just(true)), 1..8);
     let result = runner.run(&abandoned, |commands| sequence(&commands, true));
     assert!(
-        matches!(result, Err(TestError::Fail(_, ref commands)) if commands.len() == 1),
+        matches!(result, Err(TestError::Fail(ref reason, ref commands))
+            if commands.len() == 1 && reason.to_string().contains("refusal or abandoned copy mutated the view")),
         "missing refund escaped or did not shrink: {result:?}"
     );
 }
 
 #[test]
 fn negative_control_retiring_rows_without_refunding_fails_the_same_property() {
-    assert!(sequence(&[(0, 0, 1, false), (0, 3, 0, false)], true).is_err());
+    let result = sequence(&[(0, 0, 1, false), (0, 3, 0, false)], true);
+    assert!(
+        matches!(result, Err(TestCaseError::Fail(ref reason))
+        if reason.to_string().contains("quota detached from rows")),
+        "{result:?}"
+    );
 }
