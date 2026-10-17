@@ -4,6 +4,29 @@ use crate::wire::ErrorCode::Unsupported;
 use futures::future::Either;
 
 impl StockExecution<'_> {
+    /// Cancellation covers preparation and response headers as well as chunks.
+    pub(super) async fn cancellable_model_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+        purpose: ModelPurpose,
+    ) -> Result<Vec<ModelEvent>> {
+        let cancellation = journal.model_cancellation();
+        let execution: acyclic_stream::BoxProviderFuture<'_, Result<Vec<ModelEvent>>> =
+            Box::pin(self.dispatch_model_step(journal, input, step, prior_messages, purpose));
+        match futures::future::select(cancellation, execution).await {
+            Either::Left((result, _)) => {
+                result?;
+                Err(Error::InteractionRejected(
+                    crate::InteractionRejection::Cancelled,
+                ))
+            }
+            Either::Right((result, _)) => result,
+        }
+    }
+
     /// Replays or resolves one model step.
     pub(super) async fn dispatch_model_step(
         &self,
@@ -42,6 +65,7 @@ impl StockExecution<'_> {
             ModelPurpose::Response => "model",
             ModelPurpose::Summary => "summary",
         };
+        #[cfg(not(target_arch = "wasm32"))]
         self.record_model_phase(&admission, started);
         if admission.completed {
             crate::obs::obs_record!("items" = replayed.len());
@@ -245,10 +269,10 @@ impl StockExecution<'_> {
         {
             Ok(true) => {}
             Err(error) if stock_is_native(io) => return Err(error),
-            Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+            Err(error) if !error.leaves_effect_uncertain() => return Err(error),
+            Ok(false) | Err(_) => {
                 return Err(Error::Indeterminate(input.operation_id));
             }
-            Err(error) => return Err(error),
         }
         Ok(())
     }
@@ -372,6 +396,7 @@ impl StockExecution<'_> {
         Ok(event)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn record_model_phase(&self, admission: &ModelEventAdmission, started: bool) {
         crate::obs::obs_record!(
             "phase" = match (admission.completed, started) {

@@ -1,8 +1,9 @@
+#![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+
 use super::*;
 
 use crate::model::{ModelContent, ModelMessage, ModelRole};
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn partial_field_copy_releases_original_custody_and_cancelled_copy_is_empty() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};

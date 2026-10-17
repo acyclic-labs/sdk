@@ -84,6 +84,8 @@ impl FileDescriptor {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("verify", bytes.len() as u64));
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
@@ -284,6 +286,7 @@ impl FileRef {
     }
 
     #[cfg(feature = "filesystem")]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn logical_clone_owned_bytes(&self) -> Result<u64> {
         let owner = match &self.volume.owner {
             VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,

@@ -109,7 +109,12 @@ macro_rules! demand_meter {
                 })
             }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
-                self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
+                let result = self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }));
+                #[cfg(all(test, any(target_os = "linux", windows)))]
+                if result.is_ok() {
+                    crate::native_host::stat_probe::examined(items);
+                }
+                result
             }
             fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
                 self.io(|state| state.admit(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
@@ -129,6 +134,7 @@ demand_meter!(@impl NativeInvocationView,
         _ => DemandWork::byte_credit(kind),
     },
     |view: &NativeInvocationView| match view.read_credit {
+        #[cfg(any(test, feature = "distributed"))]
         NativeResourceCredit::AuthorityReadBytes => Some(view.metadata.work().runtime_meter()),
         _ => None,
     }

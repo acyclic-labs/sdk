@@ -46,13 +46,4 @@ impl<J, C> StageState<J, C> {
     pub(super) fn into_inner(self) -> (Option<J>, Option<C>, bool) {
         self.0.into_inner().unwrap()
     }
-
-    #[cfg(acyclic_fs_loom)]
-    pub(super) fn assert_unlocked(&self) {
-        drop(
-            self.0
-                .try_lock()
-                .expect("phase lock spans an external call"),
-        );
-    }
 }

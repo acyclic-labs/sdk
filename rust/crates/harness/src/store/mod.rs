@@ -11,6 +11,7 @@ use forks::fork_child_binding_with_work;
 
 mod checkpoints;
 
+mod effect_certificate;
 mod effect_heads;
 
 mod effects;

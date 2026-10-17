@@ -1,6 +1,6 @@
 use super::*;
 
-#[cfg(any(test, acyclic_stream_loom))]
+#[cfg(all(any(test, acyclic_stream_loom), not(target_arch = "wasm32")))]
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;

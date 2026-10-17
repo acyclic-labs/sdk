@@ -21,8 +21,8 @@ use acyclic_harness::{
     resources::ProviderRef,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::MemoryStream;
-use futures::{TryStreamExt as _, future::BoxFuture};
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
+use futures::TryStreamExt as _;
 use std::{collections::BTreeSet, sync::Arc};
 
 struct ResultProvider(FileRef);
@@ -37,7 +37,10 @@ impl EffectProvider for ResultProvider {
     fn linearizable_reconciliation(&self) -> bool {
         false
     }
-    fn dispatch<'a>(&'a self, request: EffectDispatch) -> BoxFuture<'a, Result<EffectObservation>> {
+    fn dispatch<'a>(
+        &'a self,
+        request: EffectDispatch,
+    ) -> BoxProviderFuture<'a, Result<EffectObservation>> {
         Box::pin(async move {
             Ok(EffectObservation {
                 provider: request.provider,
@@ -54,7 +57,7 @@ impl EffectProvider for ResultProvider {
     fn reconcile<'a>(
         &'a self,
         _: EffectAttemptId,
-    ) -> BoxFuture<'a, Result<Option<EffectObservation>>> {
+    ) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
         Box::pin(async { Ok(None) })
     }
 }
@@ -449,8 +452,12 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     .map(|state| state.map(|(state, _)| state))?,
                 Some(completed.clone())
             );
-            let acyclic_harness::filesystem::PreparationIo::Owned { work, .. } = &io else {
-                unreachable!("standalone measurement")
+            let work = match &io {
+                acyclic_harness::filesystem::PreparationIo::Owned { work, .. } => work,
+                #[cfg(not(target_arch = "wasm32"))]
+                acyclic_harness::filesystem::PreparationIo::Native { .. } => {
+                    unreachable!("standalone measurement")
+                }
             };
             observations.push(work.lock().expect("work counters").0);
         }

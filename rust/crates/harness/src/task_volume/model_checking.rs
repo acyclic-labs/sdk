@@ -1,3 +1,4 @@
+//! Fault injection and assertions for the production task-file model.
 use super::*;
 use std::cell::Cell;
 

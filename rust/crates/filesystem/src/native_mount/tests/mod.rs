@@ -62,7 +62,7 @@ pub(super) fn portable_path(
 pub(super) fn await_recovery_worker(
     owner: NativeMountRecoveryOwner,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let shared = Arc::clone(&owner.shared);
+    let shared = owner.shared.clone();
     drop(owner);
     let deadline = Instant::now() + Duration::from_secs(5);
     while shared

@@ -81,17 +81,50 @@ pub(crate) fn traced<'a, T: 'a>(
     }
 }
 
+// The unmetered caller supplies the one required trait-erasure box. Keep the
+// existing boxed path above intact for admitted future layouts and charges.
+#[cfg(any(feature = "filesystem", all(test, not(target_arch = "wasm32"))))]
+#[inline(always)]
+pub(crate) fn traced_future<'a, T: 'a>(
+    span: OperationSpan,
+    future: impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a,
+) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let context = span.clone();
+        context.scope(async move {
+            let result = future.await;
+            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
+            if let Err(error) = &result {
+                span.record("error.kind", error.kind());
+            }
+            result
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let OperationSpan = span;
+        future
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[test]
 fn filtered_operation_cannot_record_failure_on_its_parent() {
     let (seen, _guard) = capture::install();
     let parent = obs_span!(INFO, "acyclic.harness.test.parent");
     parent.in_scope(|| {
-        let result = futures::executor::block_on(traced(
-            OperationSpan::new(tracing::Span::none()),
-            std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into()))),
-        ));
-        assert!(result.is_err());
+        for boxed in [false, true] {
+            let span = OperationSpan::new(tracing::Span::none());
+            let future =
+                std::future::ready(Err::<(), _>(crate::Error::Invalid("test failure".into())));
+            let result = if boxed {
+                futures::executor::block_on(traced(span, future))
+            } else {
+                futures::executor::block_on(traced_future(span, future))
+            };
+            assert!(result.is_err());
+        }
     });
     assert!(!capture::has(
         &seen,
@@ -142,9 +175,17 @@ pub(crate) mod capture {
             ));
         }
 
-        fn on_new_span(&self, attrs: &span::Attributes<'_>, _: &span::Id, _: Context<'_, S>) {
+        fn on_new_span(&self, attrs: &span::Attributes<'_>, id: &span::Id, ctx: Context<'_, S>) {
             let name = attrs.metadata().name();
+            let parent = ctx
+                .span(id)
+                .and_then(|span| span.parent())
+                .map(|span| span.metadata().name());
+            // Registry lookup precedes the capture lock, as in on_record.
             let mut seen = self.0.lock().unwrap();
+            if let Some(parent) = parent {
+                seen.push((name, "parent", parent.to_owned()));
+            }
             let fields = attrs.metadata().fields();
             seen.extend(fields.iter().map(|f| (name, f.name(), String::new())));
             attrs.record(&mut Fields(name, &mut seen));

@@ -1,305 +1,624 @@
-use super::*;
-use acyclic_harness::{OperationId, wire_api::current_protocol};
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
-use futures::{FutureExt as _, executor::block_on, stream};
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! Executable composition uses the real shared TaskFileViews and Markdown renderer.
+use acyclic_harness::{
+    OperationId,
+    client::TaskFileViews,
+    model::ModelEvent,
+    tui::{
+        ClientRenderer, PromptInput, Viewport,
+        ratatui::{Terminal, backend::TestBackend},
+    },
+    wire,
+};
 
-#[derive(Default)]
-struct Probe {
-    submit: AtomicUsize,
-    cancel: AtomicUsize,
-    authorize: AtomicUsize,
-    mismatch: bool,
-    events: usize,
-    idle: bool,
+fn painted(renderer: &ClientRenderer) -> Terminal<TestBackend> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            renderer.screen().render(
+                frame,
+                &PromptInput::default(),
+                &mut Viewport::default(),
+                0,
+                1000,
+            );
+        })
+        .unwrap();
+    terminal
 }
 
-impl HarnessWireApi for Probe {
-    fn acknowledge<'a>(&'a self, _: wire::Acknowledge) -> BoxProviderFuture<'a, Result<()>> {
-        Box::pin(async { Ok(()) })
-    }
-    fn handshake<'a>(
-        &'a self,
-        request: wire::HandshakeRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::HandshakeResponse>> {
-        async move { negotiate(&request, &wire::CapabilitySet::default()) }.boxed()
-    }
+fn picture(renderer: &ClientRenderer) -> String {
+    screen_text(&painted(renderer))
+}
 
-    fn submit<'a>(
-        &'a self,
-        command: wire::CommandEnvelope,
-    ) -> BoxProviderFuture<'a, Result<wire::Admission>> {
-        async move {
-            self.submit.fetch_add(1, Ordering::SeqCst);
-            if self.mismatch {
-                Ok(wire::Admission::default())
-            } else {
-                Err(Error::Indeterminate(OperationId::parse(
-                    &command
-                        .operation
-                        .ok_or_else(|| Error::Invalid("operation".into()))?
-                        .operation_id,
-                )?))
-            }
+fn screen_text(terminal: &Terminal<TestBackend>) -> String {
+    use acyclic_harness::tui::ratatui::text::Line;
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for row in buffer.content.chunks(usize::from(buffer.area.width).max(1)) {
+        let mut column = 0;
+        while let Some(cell) = row.get(column) {
+            text.push_str(cell.symbol());
+            column += Line::raw(cell.symbol()).width().max(1);
         }
-        .boxed()
+        text.push('\n');
     }
+    text
+}
 
-    fn replay<'a>(
-        &'a self,
-        _: wire::ResumeRequest,
-        mode: acyclic_harness::wire_api::ReplayMode,
-    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::Delivery>>>> {
-        async move {
-            if self.idle {
-                return Ok(match mode {
-                    acyclic_harness::wire_api::ReplayMode::Snapshot => Box::pin(stream::empty())
-                        as BoxProviderStream<'static, Result<wire::Delivery>>,
-                    acyclic_harness::wire_api::ReplayMode::Follow => Box::pin(stream::pending()),
-                });
-            }
-            let delivery = wire::Delivery {
-                events: vec![wire::EventEnvelope::default(); self.events],
-                ..wire::Delivery::default()
-            };
-            // A page request must return without waiting for stream completion.
-            Ok(
-                Box::pin(stream::once(async { Ok(delivery) }).chain(stream::pending()))
-                    as BoxProviderStream<'static, Result<wire::Delivery>>,
-            )
+#[test]
+fn shared_markdown_is_visible_and_snapshot_reset_removes_old_text() {
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = TaskFileViews::default();
+    let mut renderer = ClientRenderer::default();
+    views
+        .model_event(
+            &owner,
+            OperationId::from_bytes([1; 16]),
+            ModelEvent::Content {
+                delta: "# Heading\n**streamed answer**".into(),
+            },
+        )
+        .unwrap();
+    renderer.update(&views, &owner);
+    let visible = picture(&renderer);
+    assert!(visible.contains("Heading"));
+    assert!(visible.contains("streamed answer"));
+    assert!(!visible.contains("**streamed"));
+    renderer.update(&TaskFileViews::default(), &owner);
+    assert!(!picture(&renderer).contains("streamed answer"));
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Property: the composed cells after arbitrary Unicode delta boundaries
+    // equal the cells obtained by projecting the same complete TaskFileViews text.
+    #[test]
+    fn composed_markdown_is_independent_of_chunking(chunks in proptest::collection::vec(".{0,12}", 0..6)) {
+        let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
+        let operation = OperationId::from_bytes([1;16]);
+        let mut views = TaskFileViews::default();
+        let mut live = ClientRenderer::default();
+        live.update(&views, &owner);
+        for chunk in &chunks {
+            views.model_event(&owner, operation, ModelEvent::Content { delta: chunk.clone() }).unwrap();
+            live.update(&views, &owner);
         }
-        .boxed()
-    }
-
-    fn authorize_operation_control<'a>(
-        &'a self,
-        _: &'a acyclic_harness::wire_api::OperationControlRequest,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        self.authorize.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unauthorized("probe denied".into())) }.boxed()
-    }
-
-    fn observe<'a>(
-        &'a self,
-        _: wire::ObserveRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::OperationStatus>> {
-        async { Err(Error::Unsupported("unused".into())) }.boxed()
-    }
-
-    fn watch_operation<'a>(
-        &'a self,
-        _: wire::ObserveRequest,
-    ) -> BoxProviderFuture<'a, Result<BoxProviderStream<'static, Result<wire::OperationStatus>>>>
-    {
-        Box::pin(async { Err(Error::Unsupported("probe".into())) })
-    }
-    fn cancel<'a>(
-        &'a self,
-        _: wire::CancelRequest,
-    ) -> BoxProviderFuture<'a, Result<wire::CancelResponse>> {
-        self.cancel.fetch_add(1, Ordering::SeqCst);
-        async { Err(Error::Unsupported("must not dispatch".into())) }.boxed()
+        let mut replayed = ClientRenderer::default();
+        replayed.update(&views, &owner);
+        let live = painted(&live);
+        let replayed = painted(&replayed);
+        proptest::prop_assert_eq!(live.backend().buffer(), replayed.backend().buffer());
     }
 }
 
-fn command() -> wire::client_frame::Frame {
-    wire::client_frame::Frame::Command(wire::CommandEnvelope {
-        protocol: Some(current_protocol()),
-        operation: Some(wire::OperationIdentity {
-            operation_id: OperationId::from_bytes([7; 16]).to_string(),
-            idempotency_key: "unchanged-admission".into(),
-        }),
-        ..wire::CommandEnvelope::default()
-    })
-}
-
-fn resume(
-    api: &impl HarnessWireApi,
-    cursors: Vec<wire::ReplayCursor>,
-) -> Result<Option<wire::server_frame::Frame>> {
-    block_on(dispatch(
-        api,
-        wire::client_frame::Frame::Resume(wire::ResumeRequest {
-            protocol: Some(current_protocol()),
-            cursors,
-        }),
-    ))
-}
-
 #[test]
-fn uncertain_submit_is_not_replayed_and_mismatched_admission_is_rejected() {
-    let api = Probe::default();
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Indeterminate(_))
-    ));
-    assert_eq!(api.submit.load(Ordering::SeqCst), 1);
-    let api = Probe {
-        mismatch: true,
-        ..Probe::default()
+fn file_completions_render_in_the_composer_and_enter_only_accepts() {
+    use acyclic_harness::tui::{
+        Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
     };
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(api.submit.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn denied_control_does_not_call_cancel() {
-    let api = Probe::default();
-    let request = wire::CancelRequest {
-        protocol: Some(current_protocol()),
-        operation_id: OperationId::from_bytes([7; 16]).to_string(),
-        idempotency_key: "cancel-once".into(),
-        owner: Some(wire::Authority {
-            kind: wire::AggregateKind::Task as i32,
-            id: "probe".into(),
-        }),
-        scope: Some(wire::Scope {
-            id: "test-only-untrusted-scope".into(),
-            capabilities: vec!["operation:cancel".into()],
-            issuer: "probe".into(),
-            proof: vec![0; 32],
-            ..wire::Scope::default()
-        }),
-        ..wire::CancelRequest::default()
-    };
-    assert!(matches!(
-        block_on(dispatch(&api, wire::client_frame::Frame::Cancel(request))),
-        Err(Error::Unauthorized(_))
-    ));
-    assert_eq!(api.cancel.load(Ordering::SeqCst), 0);
-    assert_eq!(api.authorize.load(Ordering::SeqCst), 1);
-}
-
-#[test]
-fn replay_reads_one_delivery_and_renderer_rejects_oversized_pages() -> Result<()> {
-    assert!(matches!(
-        resume(&Probe::default(), vec![])?,
-        Some(wire::server_frame::Frame::Delivery(_))
-    ));
-    let api = Probe {
-        events: MAX_PAGE_EVENTS + 1,
-        ..Probe::default()
-    };
-    assert!(matches!(
-        render(&wire::ServerFrame {
-            frame: resume(&api, vec![])?
-        }),
-        Err(Error::Invalid(_))
-    ));
-    Ok(())
-}
-
-#[test]
-fn next_at_current_cut_finishes_without_waiting_for_a_live_append() {
-    let api = Probe {
-        idle: true,
-        ..Probe::default()
-    };
-    let request = wire::client_frame::Frame::Resume(wire::ResumeRequest {
-        protocol: Some(current_protocol()),
-        cursors: Vec::new(),
-    });
-    let result = dispatch(&api, request)
-        .now_or_never()
-        .expect("finite inspection must not wait on live replay");
-    assert!(matches!(result, Ok(None)));
-}
-
-#[test]
-fn display_escapes_terminal_controls_and_preserves_unknown_outcomes() -> Result<()> {
-    assert_eq!(
-        text("é\n\u{1b}]52;c;secret\u{7}\r"),
-        "é\n\\u{1b}]52;c;secret\\u{7}\\r"
-    );
-    let status = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Status(wire::OperationStatus {
-            state: 999,
-            error: Some(wire::Error {
-                message: "\u{1b}[2J".into(),
-                ..wire::Error::default()
-            }),
-            ..wire::OperationStatus::default()
-        })),
-    };
-    let output = render(&status)?;
-    assert!(output.contains("999"));
-    assert!(!output.contains('\u{1b}'));
-    assert!(matches!(
-        render(&wire::ServerFrame {
-            frame: Some(wire::server_frame::Frame::Error(wire::Error {
-                message: "x".repeat(MAX_FRAME_BYTES + 1),
-                ..wire::Error::default()
-            })),
-        }),
-        Err(Error::Invalid(_))
-    ));
-    Ok(())
-}
-
-#[test]
-fn fixture_enforces_cursors_read_only_access_and_typed_events() -> Result<()> {
-    let api = crate::fixture::WireFixture::load()?;
-    assert!(matches!(resume(&api, vec![]), Err(Error::Conflict(_))));
-    let Some(wire::server_frame::Frame::Delivery(delivery)) =
-        resume(&api, vec![api.start_cursor()])?
-    else {
-        panic!("fixture delivery missing");
-    };
-    assert_eq!(delivery.from_revision, api.start_cursor().revision);
-    assert_eq!(
-        delivery.from_revision.checked_add(1),
-        Some(delivery.through_revision)
-    );
+    let mut input = PromptInput::default();
+    input
+        .completion
+        .set_file(
+            "commands/tools.json",
+            Some(br#"[{"name":"read","description":"Read a file","tool":true}]"#),
+        )
+        .unwrap();
+    input.committed_text("/re", 0);
+    input.refresh_completions();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    let visible: String = screen_text(&terminal);
+    assert!(visible.contains("Completions"));
+    assert!(visible.contains("/read [tool]"));
+    assert!(visible.contains("Read a file"));
     assert!(
-        delivery
-            .events
-            .iter()
-            .all(|event| event.revision == delivery.through_revision)
+        input
+            .key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 1, 78)
+            .is_empty()
     );
-    let next = wire::ReplayCursor {
-        authority: delivery.authority.clone(),
-        generation: delivery.generation.clone(),
-        revision: delivery.through_revision,
-    };
-    assert!(resume(&api, vec![next])?.is_none());
-    assert!(matches!(
-        block_on(dispatch(&api, command())),
-        Err(Error::Unsupported(_))
-    ));
-    let mut response = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Delivery(delivery)),
-    };
-    render(&response)?;
-    let Some(wire::server_frame::Frame::Delivery(delivery)) = &mut response.frame else {
-        unreachable!()
-    };
-    delivery
-        .events
-        .first_mut()
-        .expect("fixture event")
-        .event_type = "interaction_opened".into();
-    assert!(matches!(render(&response), Err(Error::Storage(_))));
-    Ok(())
+    assert_eq!(input.editor.text(), "/read ");
+    input.refresh_completions();
+    assert!(!input.completion.active(&input.editor));
+    input.committed_text("@rea", 2);
+    input
+        .completion
+        .set_file("workspace/read me.rs", Some(b"source"))
+        .unwrap();
+    input.refresh_completions();
+    assert!(
+        input
+            .key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), 3, 78)
+            .is_empty()
+    );
+    assert_eq!(input.editor.text(), "/read @\"read me.rs\" ");
+    input.editor.undo();
+    assert_eq!(input.editor.text(), "/read @rea");
 }
 
 #[test]
-fn scrollback_evicts_by_pages_and_bytes_before_accepting_overflow() -> Result<()> {
-    let mut view = Scrollback::default();
-    assert!(view.page(usize::MAX).is_none());
-    for index in 0..=MAX_DISPLAY_PAGES {
-        view.push(index.to_string())?;
+fn followed_documents_and_owner_feedback_render_and_reset() {
+    use acyclic_harness::{
+        client::{DocumentViews, TaskView},
+        core::LifecycleState,
+        task_volume::{FileKey, PlanName, Write},
+    };
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
+    let mut documents = DocumentViews::default();
+    documents
+        .apply(&Write::new(FileKey::Goal, b"# Finish rewrite".to_vec()))
+        .unwrap();
+    documents
+        .apply(&Write::new(
+            FileKey::Plan(PlanName::new("layout").unwrap()),
+            b"**Compose widgets**".to_vec(),
+        ))
+        .unwrap();
+    let mut views = TaskFileViews::default();
+    views.documents.insert(key.clone(), documents);
+    views.tasks.insert(
+        key,
+        TaskView {
+            status: LifecycleState::Active,
+            lifecycle_operation_id: None,
+            reason: Some("owner feedback".into()),
+            parent: None,
+        },
+    );
+    let mut renderer = ClientRenderer::default();
+    renderer.update(&views, &owner);
+    assert!(renderer.is_busy());
+    let visible = picture(&renderer);
+    for text in [
+        "Finish rewrite",
+        "Compose widgets",
+        "owner feedback",
+        "GOAL.md",
+        "plans/",
+    ] {
+        assert!(visible.contains(text), "missing {text}");
     }
-    assert_eq!(view.page(0), Some(MAX_DISPLAY_PAGES.to_string().as_str()));
-    assert_eq!(view.page(MAX_DISPLAY_PAGES), None);
-    view.push("x".repeat(MAX_DISPLAY_BYTES))?;
-    assert_eq!(view.page(1), None);
-    assert!(matches!(
-        view.push("x".repeat(MAX_DISPLAY_BYTES + 1)),
-        Err(Error::Invalid(_))
-    ));
-    assert_eq!(view.page(0).map(str::len), Some(MAX_DISPLAY_BYTES));
-    Ok(())
+    renderer.update(&TaskFileViews::default(), &owner);
+    let visible = picture(&renderer);
+    for text in ["Finish rewrite", "Compose widgets", "owner feedback"] {
+        assert!(!visible.contains(text), "stale {text}");
+    }
 }
+
+#[tokio::test]
+async fn tool_output_deltas_repaint_without_a_new_committed_message() {
+    use acyclic_harness::model::ToolCall;
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "task".into(),
+    };
+    let mut views = TaskFileViews::default();
+    views
+        .model_event(
+            &owner,
+            OperationId::from_bytes([1; 16]),
+            ModelEvent::ToolCall(ToolCall::new(
+                "call".into(),
+                "read".into(),
+                Default::default(),
+            )),
+        )
+        .unwrap();
+    views.tool_output(&owner, "call", "first chunk");
+    let volume = std::sync::Arc::new(
+        acyclic_harness::task_volume::TaskVolume::open(
+            std::sync::Arc::new(acyclic_stream::MemoryStream::default()),
+            acyclic_stream::StreamPath::new("tool-details").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut files = acyclic_harness::client::CommandSession::open(
+        volume,
+        OperationId::from_bytes([1; 16])
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        64,
+    )
+    .await
+    .unwrap();
+    files
+        .write_state(
+            acyclic_harness::client::CommandFileRoot::Config,
+            "settings.json",
+            &serde_json::json!({"tool_details":true}),
+        )
+        .await
+        .unwrap();
+    let mut renderer = ClientRenderer::default();
+    renderer.configure(&views, &owner, &files).unwrap();
+    assert!(picture(&renderer).contains("first chunk"));
+    views.tool_output(&owner, "call", " second chunk");
+    renderer.update(&views, &owner);
+    let visible = picture(&renderer);
+    assert!(visible.contains("first chunk second chunk"));
+    assert!(!visible.contains("Parts {"));
+}
+
+#[test]
+fn follow_tail_keeps_new_output_visible_after_the_screen_fills() {
+    use acyclic_harness::tui::{Screen, ratatui::text::Line};
+    let rows: Vec<_> = (0..100)
+        .map(|n| Line::from(format!("message {n}")))
+        .collect();
+    let screen = Screen {
+        transcript: &rows,
+        ..Screen::default()
+    };
+    let input = PromptInput::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            let scroll = screen.tail_scroll(frame.area(), &input);
+            screen.render(frame, &input, &mut Viewport::default(), scroll, 0);
+        })
+        .unwrap();
+    let visible: String = screen_text(&terminal);
+    assert!(visible.contains("message 99"));
+    assert!(!visible.contains("message 0"));
+}
+
+#[test]
+fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
+    use acyclic_harness::tui::{
+        Editor, PromptHistory, Screen,
+        key_event::{KeyCode, KeyEvent, KeyModifiers},
+    };
+    let mut input = PromptInput::new(Editor::new("draft"));
+    let mut history = PromptHistory::default();
+    history.push("first 日本語".into());
+    history.push("second prompt".into());
+    input.replace_history(history);
+    input.key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        0,
+        78,
+    );
+    input.committed_text("日本語", 1);
+    assert_eq!(input.editor.text(), "first 日本語");
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    let mut viewport = Viewport::default();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 1);
+        })
+        .unwrap();
+    let visible: String = screen_text(&terminal);
+    assert!(visible.contains("first 日本語"));
+    input.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), 2, 78);
+    assert_eq!(input.editor.text(), "draft");
+    input.editor.select_all();
+    input.committed_text("日本語\n👩‍💻", 3);
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut viewport, 0, 3);
+        })
+        .unwrap();
+    let visible: String = screen_text(&terminal);
+    assert!(visible.contains("日本語"));
+    assert!(visible.contains("👩‍💻"));
+    assert!(!visible.contains("[Pasted"));
+    assert!(viewport.cursor.is_some());
+}
+
+#[path = "tests/diff.rs"]
+mod diff;
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    // Property: arbitrary agent tracking/snapshot order isolates each diff cut;
+    // a snapshot for an untracked agent leaves all projections unchanged.
+    #[test]
+    fn diff_snapshot_cuts_stay_with_their_tracked_agent(actions in proptest::collection::vec((0u8..4, proptest::bool::ANY, proptest::num::u8::ANY), 0..12)) {
+        use acyclic_harness::{AgentId, client::{ClientSession, MemoryClientState, DiffView}, conversation::{VolumeRef, VolumeClass, VolumeOwner}, resources::{ProviderRef, GenerationRef}};
+        let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None).unwrap();
+        let volume = VolumeRef::new(provider.clone(), "project".into(), VolumeClass::SessionShared, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
+        let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
+        let mut tracked = std::collections::BTreeSet::new();
+        let mut expected = std::collections::BTreeMap::new();
+        for (agent, track, generation) in actions {
+            let authority = wire::Authority { kind: wire::AggregateKind::Task as i32, id: agent.to_string() };
+            if track {
+                session.track(wire::ReplayCursor { authority: Some(authority.clone()), generation: "history".into(), revision: 0 }).unwrap();
+                tracked.insert(agent);
+            } else {
+                let cut = GenerationRef::new(&provider, &[generation], Some("1"), None).unwrap().0;
+                let view = DiffView::new(volume.clone(), cut).unwrap();
+                let before = session.views().clone();
+                let result = session.replace_diff(&authority, view);
+                if tracked.contains(&agent) {
+                    proptest::prop_assert!(result.is_ok());
+                    expected.insert(format!("{}:{agent}", wire::AggregateKind::Task.as_str_name()), generation);
+                } else {
+                    proptest::prop_assert!(result.is_err());
+                    proptest::prop_assert_eq!(session.views(), &before);
+                }
+            }
+            let actual: std::collections::BTreeMap<_,_> = session.views().diffs.iter().map(|(key, view)| (key.clone(), view.generation().as_resource().key()[0])).collect();
+            proptest::prop_assert_eq!(&actual, &expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn completion_popup_follows_real_task_volume_publications() {
+    use acyclic_harness::{
+        task_volume::{FileKey, Query, TaskVolume, Write},
+        tui::{Editor, Screen},
+        tui_files::CompletionFiles,
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    let volume = TaskVolume::open(
+        std::sync::Arc::new(MemoryStream::default()),
+        StreamPath::new("composer").unwrap(),
+    )
+    .await
+    .unwrap();
+    let mut input = PromptInput::new(Editor::new("@新"));
+    let mut files = CompletionFiles::observe(&volume, &mut input, None, 8)
+        .await
+        .unwrap();
+    assert!(!input.completion.active(&input.editor));
+    let cut = volume.snapshot(&Query::Inputs, 8).await.unwrap().generation;
+    volume
+        .append(
+            cut,
+            &Write::new(
+                FileKey::parse("workspace/新しい.rs").unwrap(),
+                b"source".to_vec(),
+            ),
+        )
+        .await
+        .unwrap();
+    let cursor = files.cursor.clone();
+    let change = files.read_change().await.unwrap();
+    assert_eq!(files.cursor, cursor);
+    assert!(!input.completion.active(&input.editor));
+    files.apply_change(change, &mut input).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &input, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    assert!(screen_text(&terminal).contains("新しい.rs"));
+    assert!(input.completion.accept(&mut input.editor, 1));
+    assert_eq!(input.editor.text(), "@新しい.rs ");
+}
+
+#[tokio::test]
+async fn submitted_commands_quit_and_drafts_use_real_query_files() {
+    use acyclic_harness::{
+        client::{
+            CommandFileRoot, CommandResolution, CommandSession, apply_tui_input,
+            restore_tui_prompt, save_tui_draft,
+        },
+        task_volume::{FileKey, Query, TaskFile, TaskVolume},
+        tui::{Editor, InputEffect, Screen},
+    };
+    use acyclic_stream::{MemoryStream, StreamPath};
+    struct NoFiles;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+    let volume = std::sync::Arc::new(
+        TaskVolume::open(
+            std::sync::Arc::new(MemoryStream::default()),
+            StreamPath::new("commands").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let identity = OperationId::from_bytes([7; 16]).to_string();
+    let mut files = CommandSession::open(volume.clone(), identity.parse().unwrap(), 65_536, 64)
+        .await
+        .unwrap();
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    let submit = |text: &str| InputEffect::Submit {
+        text: text.into(),
+        queued: false,
+        edit: None,
+    };
+    let error = apply_tui_input(&mut files, &NoFiles, submit("/not-a-command"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, acyclic_harness::Error::NotFound(message) if message == "Unknown command: /not-a-command")
+    );
+    let error = apply_tui_input(
+        &mut files,
+        &NoFiles,
+        InputEffect::Submit {
+            text: "replacement".into(),
+            queued: false,
+            edit: Some(OperationId::new().to_string()),
+        },
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(error, acyclic_harness::Error::NotFound(message) if message == "editable prompt request")
+    );
+    assert_eq!(
+        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    apply_tui_input(&mut files, &NoFiles, submit("/diff"))
+        .await
+        .unwrap();
+    assert_eq!(
+        files
+            .state(CommandFileRoot::Config, "settings.json")
+            .unwrap()
+            .unwrap()["diff_mode"],
+        "unified"
+    );
+    apply_tui_input(&mut files, &NoFiles, submit("ordinary chat"))
+        .await
+        .unwrap();
+    let request = files.take_request().unwrap();
+    assert!(matches!(
+        request.key,
+        FileKey::Session {
+            file: TaskFile::Request(_),
+            ..
+        }
+    ));
+    let decoded: CommandResolution = serde_json::from_slice(&request.bytes).unwrap();
+    assert!(matches!(decoded, CommandResolution::Prompt { text, .. } if text == "ordinary chat"));
+    let input = PromptInput::new(Editor::new("日本語 draft"));
+    save_tui_draft(&mut files, &input).await.unwrap();
+    let before = volume.snapshot(&Query::Root, 64).await.unwrap().generation;
+    save_tui_draft(&mut files, &input).await.unwrap();
+    assert_eq!(
+        volume.snapshot(&Query::Root, 64).await.unwrap().generation,
+        before
+    );
+    drop(files);
+    let mut files = CommandSession::open(volume, identity.parse().unwrap(), 65_536, 64)
+        .await
+        .unwrap();
+    let mut restored = PromptInput::default();
+    restore_tui_prompt(&files, &mut restored).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+    terminal
+        .draw(|frame| {
+            Screen::default().render(frame, &restored, &mut Viewport::default(), 0, 0);
+        })
+        .unwrap();
+    assert!(screen_text(&terminal).contains("日本語 draft"));
+    apply_tui_input(&mut files, &NoFiles, InputEffect::Quit)
+        .await
+        .unwrap();
+    assert!(files.exit_requested().unwrap());
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: malformed history cannot partially replace a valid draft; valid
+    // draft publication, replay and repeated restoration preserve normalized text.
+    #[test]
+    fn prompt_file_restore_is_atomic_and_round_trips(text in ".{0,24}", malformed_history in proptest::bool::ANY) {
+        use acyclic_harness::{client::{CommandSession, CommandFileRoot, restore_tui_prompt, save_tui_draft}, tui::Editor, task_volume::TaskVolume};
+        use acyclic_stream::{MemoryStream, StreamPath};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("prompt").unwrap()).await.unwrap());
+            let mut files = CommandSession::open(volume, OperationId::from_bytes([9;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
+            files.write_state(CommandFileRoot::Session, "draft.json", &serde_json::json!(text)).await.unwrap();
+            files.write_state(CommandFileRoot::Config, "history.json", &if malformed_history { serde_json::json!(false) } else { serde_json::json!(["prior"]) }).await.unwrap();
+            let mut input = PromptInput::new(Editor::new("original"));
+            let result = restore_tui_prompt(&files, &mut input);
+            if malformed_history {
+                proptest::prop_assert!(result.is_err());
+                proptest::prop_assert_eq!(input.editor.text(), "original");
+                proptest::prop_assert!(input.history().entries().is_empty());
+            } else {
+                proptest::prop_assert!(result.is_ok());
+                save_tui_draft(&mut files, &input).await.unwrap();
+                let mut replayed = PromptInput::default();
+                restore_tui_prompt(&files, &mut replayed).unwrap();
+                proptest::prop_assert_eq!(replayed.editor.text(), input.editor.text());
+                proptest::prop_assert_eq!(replayed.history().entries(), input.history().entries());
+            }
+            Ok(())
+        })?;
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: every accepted goal/plan layout publication selects only that
+    // document panel, without mutating or discarding the other query projection.
+    #[test]
+    fn followed_command_layout_selects_document_panels(sequence in proptest::collection::vec(proptest::bool::ANY, 1..8)) {
+        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession, DocumentViews}, task_volume::{PlanName, TaskVolume}};
+        use acyclic_stream::{MemoryStream, StreamPath};
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
+            let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
+            let mut views = TaskFileViews::default();
+            let mut documents = DocumentViews { goal: Some("Goal contents".into()), ..DocumentViews::default() };
+            documents.plans.insert(PlanName::new("layout").unwrap(), "Plan contents".into());
+            views.documents.insert(key, documents);
+            let mut renderer = ClientRenderer::default();
+            renderer.update(&views, &owner);
+            let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("panels").unwrap()).await.unwrap());
+            let mut files = CommandSession::open(volume, OperationId::from_bytes([8;16]).to_string().parse().unwrap(), 65_536, 64).await.unwrap();
+            for goal in sequence {
+                files.publish_resolution(CommandResolution::Select { query: if goal { CommandQuery::Goal } else { CommandQuery::Plan } }).await.unwrap();
+                let screen = renderer.screen_for(&files).unwrap();
+                proptest::prop_assert_eq!(!screen.goal.is_empty(), goal);
+                proptest::prop_assert_eq!(!screen.plans.is_empty(), !goal);
+                let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+                terminal.draw(|frame| { screen.render(frame, &PromptInput::default(), &mut Viewport::default(), 0, 0); }).unwrap();
+                let text = screen_text(&terminal);
+                proptest::prop_assert_eq!(text.contains("Goal contents"), goal);
+                proptest::prop_assert_eq!(text.contains("Plan contents"), !goal);
+            }
+            proptest::prop_assert!(!renderer.screen().goal.is_empty());
+            proptest::prop_assert!(!renderer.screen().plans.is_empty());
+            Ok(())
+        })?;
+    }
+}
+
+#[path = "tests/prompt_files.rs"]
+mod prompt_files;
+
+#[path = "tests/feedback.rs"]
+mod feedback;
+
+#[path = "tests/help.rs"]
+mod help;
+
+#[path = "tests/scroll.rs"]
+mod scroll;
+
+#[path = "tests/parity.rs"]
+mod parity;
+
+#[path = "tests/presentation.rs"]
+mod presentation;
+
+#[path = "tests/layout.rs"]
+mod layout;
+
+#[path = "tests/completion_files.rs"]
+mod completion_files;
+
+#[path = "tests/hostile_text.rs"]
+mod hostile_text;
+
+#[path = "tests/terminal_input.rs"]
+mod terminal_input;
+
+#[path = "tests/task_files.rs"]
+mod task_files;
+
+#[path = "tests/history_bounds.rs"]
+mod history_bounds;
+
+#[path = "tests/execution_feedback.rs"]
+mod execution_feedback;
+
+#[path = "tests/feedback_overlay.rs"]
+mod feedback_overlay;

@@ -516,11 +516,13 @@ pub(crate) fn retained_object_reads_bytes(
 }
 
 pub(crate) struct OriginalReadAccounting<'a, 'operation> {
+    // Declared first so unused copy credit is refunded before `allocation`
+    // drops; the refund releases the leaf before an owner can re-enter it.
+    #[cfg(not(target_arch = "wasm32"))]
+    credit: Option<super::allocation::effects::EffectCredit<'operation>>,
     accounting: &'a mut KernelAccounting<'operation>,
     allocation: KernelOwnedAllocation,
     owned_bytes: u64,
-    #[cfg(not(target_arch = "wasm32"))]
-    pending: WorkCounters,
 }
 
 mod accounting;

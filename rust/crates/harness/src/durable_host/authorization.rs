@@ -151,7 +151,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn retain_root_binding(
         &self,
         proof: crate::store::VerifiedRootBinding,
-        mut custody: Option<crate::runtime::NativeCustody>,
+        custody: Option<crate::runtime::NativeCustody>,
     ) -> Result<bool> {
         if !self.root()
             || proof.original_task() != self.task_id()
@@ -176,6 +176,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             proof.intent_digest(),
             &mut None,
         )?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut custody = custody;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(held) = &mut custody {
             if !self.native_shared_work_matches(held.work()) {

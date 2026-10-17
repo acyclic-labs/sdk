@@ -7,6 +7,7 @@ use crate::filesystem::{
 };
 use crate::resource_preparation::{ResourcePreparationRequest, TaskResourcePreparation};
 use crate::resources::ProviderRef;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::runtime::AgentHarness;
 use crate::workflow::ResumableMachine;
 use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
@@ -15,7 +16,9 @@ pub(crate) type MemoryFilesystem = FilesystemHost<MemoryAuthorityBackend, Memory
 
 pub(crate) struct CreationFixture {
     pub(crate) host: Arc<CoordinatorTaskHost<MemoryStream>>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) harness: Arc<AgentHarness>,
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) runtime:
         FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>,
     pub(crate) filesystem: Arc<MemoryFilesystem>,
@@ -45,7 +48,7 @@ pub(crate) fn test_registries(
     machine: Arc<dyn ResumableMachine>,
     input: Value,
     output: Value,
-    io: Option<&crate::filesystem::PreparationIo>,
+    _native_io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<(
     ComponentIdentity,
     MachineIdentity,
@@ -55,7 +58,9 @@ pub(crate) fn test_registries(
     let identity = machine.identity().clone();
     let definition = {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
+        if let Some(work) =
+            _native_io.and_then(crate::filesystem::PreparationIo::original_native_work)
+        {
             let (input, mut custody) = crate::tool::clone_value(&input, None, work)?;
             let (output, mut output_custody) = crate::tool::clone_value(&output, None, work)?;
             custody.absorb(&mut output_custody)?;

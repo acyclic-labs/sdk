@@ -17,6 +17,33 @@ impl CompletionMenu {
             .map(|bytes| parse_file(path, bytes))
             .transpose()?
             .unwrap_or_default();
+        self.set_entries(path, bytes.is_some(), entries);
+        Ok(())
+    }
+
+    /// Fold an atomic file publication, parsing every replacement before changing
+    /// any candidate. Unchanged files and their ranked entries are retained.
+    pub fn set_files<'a>(
+        &mut self,
+        files: impl IntoIterator<Item = (&'a str, Option<&'a [u8]>)>,
+    ) -> io::Result<()> {
+        let decoded = files
+            .into_iter()
+            .map(|(path, bytes)| {
+                let entries = bytes
+                    .map(|bytes| parse_file(path, bytes))
+                    .transpose()?
+                    .unwrap_or_default();
+                Ok((path, bytes.is_some(), entries))
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        for (path, present, entries) in decoded {
+            self.set_entries(path, present, entries);
+        }
+        Ok(())
+    }
+
+    fn set_entries(&mut self, path: &str, present: bool, entries: Vec<Entry>) {
         let order = self
             .files
             .get(path)
@@ -70,11 +97,10 @@ impl CompletionMenu {
             }
             self.rank_entry(order, index, entry);
         }
-        if bytes.is_some() {
+        if present {
             self.files.insert(path.to_owned(), (order, entries));
         }
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
-        Ok(())
     }
 
     /// Replace a lost query's disposable fold before applying its new snapshot.

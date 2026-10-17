@@ -1,21 +1,23 @@
 use super::ownership::accounting as mount_accounting;
 use super::*;
+#[cfg(any(test, feature = "native-mount"))]
 use crate::cancellation::{CancellationWaitError, Cancelled};
-use crate::kernel::{
-    ProofDataCustody,
-    allocation::{AllocationLedger, LogicalVecCapacity},
-};
+#[cfg(any(test, feature = "native-watch"))]
+use crate::kernel::allocation::AllocationLedger;
+use crate::kernel::{ProofDataCustody, allocation::LogicalVecCapacity};
 use crate::sync::atomic::{AtomicBool, AtomicU64, Ordering, fence};
 use std::sync::Arc;
 
 #[path = "admissions_accounting.rs"]
 mod accounting;
 pub(crate) use accounting::NativeProofAccounting;
+#[cfg(any(test, feature = "native-watch"))]
 pub(super) const SCAN: WorkCounters = WorkCounters {
     items_examined: 1,
     ..WorkCounters::UNCHARGED
 };
 
+#[cfg(any(test, feature = "native-watch"))]
 pub(super) fn insert<T>(
     (values, capacity): &mut (Vec<T>, LogicalVecCapacity),
     value: T,
@@ -108,6 +110,7 @@ impl Admissions {
     }
 }
 impl DemandWork {
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn admissions<T>(
         &mut self,
         select: fn(&mut Admissions) -> &mut T,
@@ -130,7 +133,7 @@ impl DemandWork {
             return Err(error.into_work_or(crate::WorkError::Overflow));
         }
         if accounting::acquire_final_owner(Arc::strong_count(shared)) {
-            let bytes = (std::mem::size_of::<NativeProofAccounting>() as u64)
+            let bytes = NativeProofAccounting::ALLOCATION_BYTES
                 .checked_add(self.roots.paid_non_native)
                 .and_then(|bytes| bytes.checked_add(shared.take_retired()))
                 .ok_or(crate::WorkError::Overflow)?;
@@ -287,11 +290,10 @@ impl DemandWork {
         if let Some(shared) = &self.roots.proof_accounting {
             return Ok(shared.clone());
         }
-        self.claim_allocation(
-            std::mem::size_of::<NativeProofAccounting>() as u64,
-            1,
-            WorkCounters::UNCHARGED,
-        )?;
+        let bytes = NativeProofAccounting::ALLOCATION_BYTES;
+        #[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+        let bytes = metadata_tests::admitted_bytes(bytes);
+        self.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
         let shared = Arc::new(NativeProofAccounting::default());
         self.roots.proof_accounting = Some(shared.clone());
         Ok(shared)
@@ -302,6 +304,7 @@ impl DemandWork {
             .as_ref()
             .is_some_and(|shared| token.is_registered_native_accounting(shared))
     }
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn prepare_cancelled(
         &mut self,
         token: &CancellationToken,
@@ -309,6 +312,7 @@ impl DemandWork {
         self.reconcile_cancellation_registry()?;
         token.prepare_cancelled_measured(&mut self.allocations, &mut self.work, self.budget)
     }
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn finish_cancelled(
         &mut self,
         prepared: Cancelled<'static>,
@@ -375,3 +379,7 @@ mod tests;
 #[cfg(all(test, acyclic_fs_loom, not(target_arch = "wasm32")))]
 #[path = "admissions_loom_tests.rs"]
 mod loom_tests;
+
+#[cfg(all(test, not(acyclic_fs_loom), not(target_arch = "wasm32")))]
+#[path = "admissions_metadata_tests.rs"]
+mod metadata_tests;

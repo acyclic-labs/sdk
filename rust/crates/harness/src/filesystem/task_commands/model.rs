@@ -50,7 +50,7 @@ where
                             .workflow_journal_with_native_work(task, fence, work)
                             .await?;
                     }
-                    self.runtime.workflow_journal(task, fence.clone()).await?
+                    break 'journal self.runtime.workflow_journal(task, fence.clone()).await?;
                 };
                 let latest = journal.observe_latest_record(io).await?.ok_or_else(|| {
                     boundary(io, ErrorCode::Unauthorized, "model checkpoint is absent")

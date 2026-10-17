@@ -34,6 +34,7 @@ mod compact;
 mod compaction;
 mod config;
 mod context;
+mod files;
 mod inheritance;
 mod owner;
 mod owner_record;
@@ -89,22 +90,6 @@ pub struct LocalHarness {
 }
 
 impl LocalHarness {
-    /// Publishes pending mount writes and awaits physical mount retirement.
-    /// Reopening after this completes can immediately acquire the destination.
-    pub async fn close(self) -> Result<()> {
-        #[cfg(feature = "native-execution")]
-        if let Some(workspace) = &self.workspace {
-            for (_, mount) in workspace.mounts.mounts() {
-                if let Some(source) = &mount.view.source {
-                    let native = source.native().await;
-                    if let Some(native) = native.as_ref() {
-                        native.unmount().await?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_stream(&self) -> Arc<LocalStream> {
         self.runtime.task_host().workflow_stream()
@@ -308,7 +293,7 @@ impl LocalHarness {
                 clock: config.clock,
             })
             .await?;
-            Ok(Self {
+            let mut local = Self {
                 files,
                 runtime,
                 task_files,
@@ -334,7 +319,14 @@ impl LocalHarness {
                 admission: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(())),
                 #[cfg(feature = "native-execution")]
                 workspace,
-            })
+            };
+            if let Some(provider) = local
+                .provider
+                .bind_content(local.context_reader()?, local.limits.file_bytes)
+            {
+                local.provider = provider;
+            }
+            Ok(local)
         })
     }
 

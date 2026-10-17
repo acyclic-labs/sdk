@@ -2,7 +2,9 @@ use super::*;
 
 pub(super) fn staging(directory: &Path) -> Result<PathBuf> {
     let path = directory.join(format!("project-initializing-{}", uuid::Uuid::new_v4()));
-    let mut builder = std::fs::DirBuilder::new();
+    let builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    let mut builder = builder;
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt as _;

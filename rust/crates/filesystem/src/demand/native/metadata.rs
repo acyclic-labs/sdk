@@ -75,8 +75,7 @@ fn file_identity(metadata: &HostStat) -> [u8; 32] {
         hash.update(handle);
     }
     if let Some(born) = metadata
-        .created()
-        .ok()
+        .birth_time()
         .and_then(|born| born.into_std().duration_since(std::time::UNIX_EPOCH).ok())
     {
         hash.update(&born.as_nanos().to_le_bytes());
@@ -130,7 +129,7 @@ fn device_identity(metadata: &HostStat, kind: SourceNodeKind) -> Option<(u32, u3
 
 fn source_metadata(metadata: &HostStat) -> SourceMetadata {
     let mut result = SourceMetadata {
-        created_ns: metadata.created().ok().and_then(system_time_nanos),
+        created_ns: metadata.birth_time().and_then(system_time_nanos),
         modified_ns: metadata.modified().ok().and_then(system_time_nanos),
         accessed_ns: metadata.accessed().ok().and_then(system_time_nanos),
         ..SourceMetadata::default()

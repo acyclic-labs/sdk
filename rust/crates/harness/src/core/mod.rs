@@ -20,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 mod authority;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use authority::effect_root_tests;
 mod copying;
 mod effects;
 mod extension_types;

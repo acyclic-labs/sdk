@@ -81,6 +81,10 @@ pub struct SummaryContinuation {
 
 // Capture starts at the selected summary, never at the discarded conversation.
 // The false variant is exercised by sequence properties as a deletion control.
+#[cfg(any(
+    test,
+    all(feature = "filesystem-local", not(target_arch = "wasm32"))
+))]
 pub(crate) fn retained_source<const KEEP: bool>(
     prior: Option<String>,
     input: Option<&ModelContent>,

@@ -113,7 +113,7 @@ impl LocalHarness {
         } else {
             runtime
         };
-        Ok(Self {
+        let mut local = Self {
             files,
             runtime: Arc::new(runtime),
             task_files,
@@ -139,7 +139,14 @@ impl LocalHarness {
             workspace,
             #[cfg(feature = "native-execution")]
             checkout_context: checkout.is_some(),
-        })
+        };
+        if let Some(provider) = local
+            .provider
+            .bind_content(local.context_reader()?, local.limits.file_bytes)
+        {
+            local.provider = provider;
+        }
+        Ok(local)
     }
 
     /// The same task runtime used by request-file consumers and SDK queries.

@@ -1,3 +1,4 @@
+//! Shrinking properties for portable filesystem path admission.
 #[path = "path_input.rs"]
 mod input;
 use proptest::prelude::*;

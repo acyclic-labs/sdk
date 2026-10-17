@@ -10,7 +10,7 @@ where
     pub(super) async fn authenticate<'a>(
         &'a self,
         context: &ToolContext,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+        _native_owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         project_read: bool,
         cancellation: &CancellationToken,
         io: Option<&PreparationIo>,
@@ -26,7 +26,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if io.and_then(PreparationIo::original_native_work).is_some() {
             let retained;
-            let owner = if let Some(owner) = owner {
+            let owner = if let Some(owner) = _native_owner {
                 owner
             } else {
                 retained = self.source_owner(context.task(), cancellation, io).await?;
@@ -250,18 +250,25 @@ where
         &self,
         context: &ToolContext,
         owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        io: Option<&PreparationIo>,
+        _native_io: Option<&PreparationIo>,
     ) -> Result<Arc<dyn crate::conversation::ContentResidencyVerifier>> {
         #[cfg(not(target_arch = "wasm32"))]
-        if io.and_then(PreparationIo::original_native_work).is_some() {
+        if _native_io
+            .and_then(PreparationIo::original_native_work)
+            .is_some()
+        {
             let context = context.native_task().ok_or_else(|| {
                 failure(
-                    io,
+                    _native_io,
                     ErrorCode::Unauthorized,
                     "native source requires its original shared task context",
                 )
             })?;
-            return crate::runtime::content_residency_verifier(Arc::clone(context), owner, io);
+            return crate::runtime::content_residency_verifier(
+                Arc::clone(context),
+                owner,
+                _native_io,
+            );
         }
         crate::runtime::content_residency_verifier(Arc::new(context.task().clone()), owner, None)
     }

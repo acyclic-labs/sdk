@@ -218,14 +218,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     }
 }
 
-pub(super) fn generation_from_head_record_value(
-    record: &DurableCommit,
-    volume_id: VolumeId,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<ObjectId, FsError> {
-    generation_from_head_payload(record.sequence, &record.payload, volume_id, accounting)
-}
-
 fn generation_from_head_payload(
     sequence: Sequence,
     payload: &[u8],
