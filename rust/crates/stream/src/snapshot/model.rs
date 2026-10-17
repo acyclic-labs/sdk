@@ -5,7 +5,7 @@ type Worker = Pin<Box<dyn Future<Output = ()> + Send>>;
 loom::thread_local! {
     // The model owns executor task storage, just as Tokio does. Dropping these
     // futures exercises the production Job's cancellation and ownership return.
-    static EXECUTOR: RefCell<Option<(bool, Vec<Worker>)>> = const { RefCell::new(None) };
+    static EXECUTOR: RefCell<Option<(bool, Vec<Worker>)>> = RefCell::new(None);
 }
 
 pub(crate) fn capture(discard_on_drop: bool) {
