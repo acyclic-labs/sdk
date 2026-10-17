@@ -348,7 +348,7 @@ proptest::proptest! {
     ) { futures::executor::block_on(notifications(&rows, false)); }
 }
 #[test]
-fn notification_file_fold_control_cannot_drop_settle_or_goal_blocked() {
+fn notification_file_fold_control_cannot_drop_settle_goal_or_approval() {
     assert!(
         std::panic::catch_unwind(|| futures::executor::block_on(notifications(
             &[(0, 0, "settled".into()), (1, 4, "goal blocked".into())],
@@ -360,7 +360,7 @@ fn notification_file_fold_control_cannot_drop_settle_or_goal_blocked() {
         &[
             (0, 0, "settled".into()),
             (1, 4, "goal blocked".into()),
-            (2, 0, "settled".into()),
+            (2, 5, "approval requested".into()),
         ],
         false,
     ));

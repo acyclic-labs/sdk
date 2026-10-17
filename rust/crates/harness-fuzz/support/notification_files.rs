@@ -9,12 +9,13 @@ pub fn encoded(event: u8, sequence: u64, detail: String) -> AttentionNotificatio
         task: "t".into(),
         sequence,
         detail,
-        event: match event % 5 {
+        event: match event % 6 {
             0 => AttentionEvent::TaskSettled,
             1 => AttentionEvent::TaskFailed,
             2 => AttentionEvent::TaskBlocked,
             3 => AttentionEvent::GoalDone,
-            _ => AttentionEvent::GoalBlocked,
+            4 => AttentionEvent::GoalBlocked,
+            _ => AttentionEvent::NeedsApproval,
         },
     }
 }
@@ -45,7 +46,7 @@ pub fn check(record: &AttentionNotification, dropped: bool) {
     }
 }
 pub fn exercise(bytes: &[u8]) {
-    for event in 0..5 {
+    for event in 0..6 {
         check(
             &encoded(event, 1, String::from_utf8_lossy(bytes).into_owned()),
             false,

@@ -212,11 +212,11 @@ proptest::proptest! {
     // the current file set; retrying presentation never changes that set.
     #[test]
     fn file_churn_matches_the_independent_terminal_oracle(
-        operations in proptest::collection::vec((0u8..4, 0u8..5, proptest::bool::ANY, ".{0,24}"), 0..24),
+        operations in proptest::collection::vec((0u8..4, 0u8..6, proptest::bool::ANY, ".{0,24}"), 0..24),
     ) {
         notification_history::verify(operations.into_iter().map(|(id,event,remove,detail)| {
             let mut record = notice(id as u64, [AttentionEvent::TaskSettled, AttentionEvent::TaskFailed,
-                AttentionEvent::TaskBlocked, AttentionEvent::GoalDone, AttentionEvent::GoalBlocked][event as usize]);
+                AttentionEvent::TaskBlocked, AttentionEvent::GoalDone, AttentionEvent::GoalBlocked, AttentionEvent::NeedsApproval][event as usize]);
             record.detail = detail;
             (record, remove)
         }), (NotificationMode::On, TerminalNotificationProtocol::Osc777, false), false);
@@ -253,4 +253,34 @@ fn file_removal_keeps_other_rows_and_advances_the_shared_cursor() {
     for row in projection.view.notifications() {
         assert_eq!(row.cursor, projection.view.cursor());
     }
+}
+
+#[test]
+fn harness_approval_attention_survives_file_follow_and_terminal_policy() {
+    let record = notice(1, AttentionEvent::NeedsApproval);
+    let mut projection = Projection::new();
+    projection.apply(&record, false).unwrap();
+    let expected = b"\x1b]9;Approval needed: task-1: Ready\x07";
+    for mode in [NotificationMode::On, NotificationMode::AttentionOnly] {
+        let mut bytes = Vec::new();
+        assert_eq!(
+            write_terminal_notifications(
+                projection.view.notifications(),
+                &mut bytes,
+                mode,
+                TerminalNotificationProtocol::Osc9,
+                false
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(bytes, expected);
+        assert_ne!(
+            bytes,
+            Vec::<u8>::new(),
+            "dropping approval attention must fail"
+        );
+    }
+    projection.apply(&record, true).unwrap();
+    assert_eq!(projection.view.notifications().count(), 0);
 }

@@ -8,7 +8,7 @@ fn record() -> impl Strategy<Value = AttentionNotification> {
     (
         0_u8..4,
         any::<u64>(),
-        0_u8..5,
+        0_u8..6,
         proptest::collection::vec(any::<char>(), 0..32),
     )
         .prop_map(|(task, sequence, event, detail)| AttentionNotification {
@@ -20,6 +20,7 @@ fn record() -> impl Strategy<Value = AttentionNotification> {
                 AttentionEvent::TaskBlocked,
                 AttentionEvent::GoalDone,
                 AttentionEvent::GoalBlocked,
+                AttentionEvent::NeedsApproval,
             ][usize::from(event)],
             detail: detail.into_iter().collect(),
         })

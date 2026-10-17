@@ -14,6 +14,8 @@ pub enum AttentionEvent {
     TaskFailed,
     /// Task is blocked.
     TaskBlocked,
+    /// A harness approval request is waiting for its configured approver.
+    NeedsApproval,
     /// The file-driven goal cannot make progress without input.
     GoalBlocked,
     /// The file-driven goal reached done.
@@ -63,6 +65,7 @@ impl AttentionNotification {
             AttentionEvent::TaskSettled => "Task settled",
             AttentionEvent::TaskFailed => "Task failed",
             AttentionEvent::TaskBlocked => "Task blocked",
+            AttentionEvent::NeedsApproval => "Approval needed",
             AttentionEvent::GoalBlocked => "Goal blocked",
             AttentionEvent::GoalDone => "Goal done",
         }

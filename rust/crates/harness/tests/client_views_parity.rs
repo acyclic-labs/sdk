@@ -218,7 +218,7 @@ async fn exercise(
     put(
         &volume,
         ".tasks/t/notifications/settled.json",
-        br#"{"task":"t","sequence":9007199254740993,"event":"goal_blocked","detail":"blocked"}"#,
+        br#"{"task":"t","sequence":9007199254740993,"event":"needs_approval","detail":"approval requested"}"#,
     )
     .await;
     put(&volume, "GOAL.md", b"initial goal").await;
