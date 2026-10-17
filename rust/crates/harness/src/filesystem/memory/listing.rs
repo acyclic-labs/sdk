@@ -9,9 +9,8 @@ struct ListFilesInput {
     maximum_entries: u32,
 }
 
-pub(super) struct LocalListFilesTool {
-    pub(super) verifier:
-        Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
+pub(super) struct LocalListFilesTool<A, O> {
+    pub(super) verifier: Arc<FilesystemContentVerifier<A, O>>,
     pub(super) volume: VolumeRef,
     pub(super) maximum_bytes: u64,
     pub(super) observed: tokio::sync::Mutex<BTreeMap<OperationId, ListFilesObservation>>,
@@ -122,7 +121,7 @@ impl crate::filesystem::UploadRecord for ListFilesInput {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl LocalListFilesTool {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListFilesTool<A, O> {
     fn native_result_copy(
         result: &ToolResult,
         maximum_bytes: u64,
@@ -273,7 +272,9 @@ fn require_volume_grant(
     Ok(())
 }
 
-impl ToolExecutor for LocalListFilesTool {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecutor
+    for LocalListFilesTool<A, O>
+{
     fn authorize(
         &self,
         scope: Option<&crate::runtime::RuntimeScope>,
@@ -482,7 +483,9 @@ impl ToolExecutor for LocalListFilesTool {
     }
 }
 
-impl ToolProjection for LocalListFilesTool {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjection
+    for LocalListFilesTool<A, O>
+{
     fn project(
         &self,
         _: &ToolInvocation,

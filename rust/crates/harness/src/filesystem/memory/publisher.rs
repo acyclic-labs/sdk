@@ -1,11 +1,13 @@
 use super::*;
 
-pub(super) struct MemoryContentPublisher {
-    pub(super) files: Arc<FilesystemContentPublisher<MemoryAuthorityBackend, MemoryObjectBackend>>,
+pub(super) struct MemoryContentPublisher<A, O> {
+    pub(super) files: Arc<FilesystemContentPublisher<A, O>>,
     pub(super) memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
-impl ContentPublisher for MemoryContentPublisher {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPublisher
+    for MemoryContentPublisher<A, O>
+{
     fn volume(&self) -> &VolumeRef {
         self.files.volume()
     }
@@ -80,7 +82,7 @@ impl ContentPublisher for MemoryContentPublisher {
     }
 }
 
-impl MemoryContentPublisher {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MemoryContentPublisher<A, O> {
     pub(super) fn retain(
         &self,
         persisted: &FileRef,

@@ -27,6 +27,7 @@ mod provider_tests;
 mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
+mod remote_files;
 mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
