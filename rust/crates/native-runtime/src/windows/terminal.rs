@@ -1,7 +1,7 @@
 //! Checked console operations. The terminal owner controls worker lifetimes.
 use std::io;
 use std::mem::zeroed;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::WaitForSingleObject,
+        Threading::{INFINITE, SetEvent, WaitForMultipleObjects},
     },
 };
 
@@ -113,26 +113,73 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     }
 }
 
-/// Read VT bytes without consuming beyond the caller's capacity.
-pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Result<Vec<u8>> {
-    // At most 1024 bytes, so the length always fits ReadFile's u32 count.
-    let length = u16::try_from(capacity).unwrap_or(u16::MAX).min(1024);
-    let mut bytes = vec![0; usize::from(length)];
-    if bytes.is_empty() {
-        return Ok(bytes);
+/// Manual-reset event that every unbounded console input wait includes, so
+/// closing the terminal releases a waiting reader without input arriving.
+pub struct ConsoleWake(OwnedHandle);
+
+impl ConsoleWake {
+    /// Create an unsignaled wake event.
+    pub fn new() -> io::Result<Self> {
+        super::io::create_event()
+            .map(Self)
+            .map_err(io::Error::from_raw_os_error)
     }
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(Vec::new());
+
+    /// Signal permanently; waits that include this event return `NotConnected`.
+    pub fn signal(&self) -> io::Result<()> {
+        // SAFETY: the owned event handle is live for this call.
+        if unsafe { SetEvent(self.0.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
         }
-        let timeout = u32::try_from((deadline - now).as_millis()).unwrap_or(u32::MAX - 1);
-        // SAFETY: the OS checks the handle; event and count are writable stack
-        // storage, and ReadFile receives the exact allocated slice capacity.
+        Ok(())
+    }
+}
+
+impl AsRawHandle for ConsoleWake {
+    fn as_raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.0.as_raw_handle()
+    }
+}
+
+/// Read VT bytes into `bytes` without consuming beyond its length. Without a
+/// deadline the wait ends only on input or `wake`; with one, zero reports the
+/// deadline. When input and `wake` are both signalled, `wake` wins.
+pub fn console_read(
+    input: usize,
+    bytes: &mut [u8],
+    deadline: Option<Instant>,
+    wake: Option<&ConsoleWake>,
+) -> io::Result<usize> {
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    let (handles, waits, first_input) = match wake {
+        Some(wake) => (
+            [wake.0.as_raw_handle() as HANDLE, input as HANDLE],
+            2,
+            WAIT_OBJECT_0 + 1,
+        ),
+        None => ([input as HANDLE, std::ptr::null_mut()], 1, WAIT_OBJECT_0),
+    };
+    loop {
+        let timeout = match deadline {
+            None => INFINITE,
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(0);
+                }
+                u32::try_from((deadline - now).as_millis()).unwrap_or(INFINITE - 1)
+            }
+        };
+        // SAFETY: the OS checks the handles; the first `waits` entries are live
+        // for this call. Event and count are writable stack storage, and
+        // ReadFile receives the caller's exact slice length.
         unsafe {
-            match WaitForSingleObject(input as HANDLE, timeout) {
-                WAIT_TIMEOUT => return Ok(Vec::new()),
-                WAIT_OBJECT_0 => {}
+            match WaitForMultipleObjects(waits, handles.as_ptr(), 0, timeout) {
+                WAIT_TIMEOUT => return Ok(0),
+                result if result == first_input => {}
+                WAIT_OBJECT_0 => return Err(io::ErrorKind::NotConnected.into()),
                 _ => return Err(io::Error::last_os_error()),
             }
             let mut event: INPUT_RECORD = zeroed();
@@ -153,15 +200,14 @@ pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Res
                 if ReadFile(
                     input as HANDLE,
                     bytes.as_mut_ptr(),
-                    u32::from(length),
+                    u32::try_from(bytes.len()).unwrap_or(u32::MAX),
                     &mut count,
                     std::ptr::null_mut(),
                 ) == 0
                 {
                     return Err(io::Error::last_os_error());
                 }
-                bytes.truncate(count as usize);
-                return Ok(bytes);
+                return Ok(count as usize);
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());

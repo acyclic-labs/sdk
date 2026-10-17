@@ -190,7 +190,7 @@ test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-r
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
-terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
+terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "dep:rustix", "tokio/net"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
@@ -274,6 +274,9 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring
 keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["event", "fs"], optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
