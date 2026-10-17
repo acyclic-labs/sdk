@@ -417,6 +417,19 @@ impl ToolContext {
         )
     }
 
+    /// Checks effective READ over a workspace path before it is resolved.
+    pub fn authorize_path_read_with_native_work(
+        &self,
+        path: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.task().authorize_path_read(
+            path,
+            self.effective_scope(),
+            Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+        )
+    }
+
     /// Checks effective WRITE through the original bound destination.
     pub fn authorize_content_publication_with_native_work(
         &self,
@@ -560,6 +573,12 @@ impl ToolContext {
         .await
     }
 
+    /// Checks READ on an exact file under this call's effective scope.
+    pub fn authorize_file_read(&self, file: &FileRef) -> Result<()> {
+        self.task()
+            .authorize_file_read(file, self.effective_scope(), None)
+    }
+
     /// Reads immutable content under the effective tool scope and caller IO limits.
     pub async fn read_file(
         &self,
@@ -575,15 +594,70 @@ impl ToolContext {
         )
         .await
     }
-    /// Reads one authenticated interval under this tool call's effective scope.
-    pub async fn read_file_range(
+    /// Resolves a workspace-relative path to the authenticated file this task
+    /// currently sees through its content writer's view, then checks READ on
+    /// that exact file under this call's effective scope.
+    pub async fn current_file(
         &self,
-        file: &FileRef,
-        range: acyclic_fs::ByteRange,
+        path: &str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let task = self.task();
+        let scope = self.effective_scope();
+        let (file, bytes, hold) = self
+            .path_writer(io)?
+            .current(self.operation_id, path, scope.limits.file_bytes, io)?
+            .await?;
+        task.authorize_file_read(&file, scope, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
+        Ok((file, bytes))
+    }
+
+    /// Observes this call's original replacement of `path`, so reconciling a
+    /// path-addressed edit returns its first publication instead of reapplying.
+    pub async fn observe_replacement(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let (file, hold) = self
+            .path_writer(io)?
+            .observe_replacement(
+                self.operation_id,
+                path,
+                self.effective_scope().limits.file_bytes,
+                io,
+            )?
+            .await?;
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let (retained, _) = (0, hold);
+        Ok((file, retained))
+    }
+
+    fn path_writer(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<&Arc<dyn crate::conversation::ContentPublisher>> {
         self.task()
-            .read_bound_range(file, range, self.effective_scope(), io)
-            .await
+            .content_binding(None)
+            .and_then(|binding| binding.writer.as_ref())
+            .ok_or_else(|| {
+                crate::conversation::content_error(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "path-addressed file tools require a bound task content volume",
+                )
+            })
     }
 }

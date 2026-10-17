@@ -7,7 +7,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     tool::{
         Tool, ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileProjection, FileResult, ReadFileInput},
+        files::{self, FileProjection, FileResult, ReadFileInput, ReadFileResult},
         schema::ProjectionMode,
         text::{self, SearchOptions, TextRange},
         text_files::{self, SearchInput, SearchResult},
@@ -47,12 +47,11 @@ fn invocation(name: &str, arguments: Value) -> ToolInvocation {
 fn definitions() -> Result<Vec<Value>> {
     let mut reference_read = files::read()?;
     let read_projector = FileProjection::Read(ProjectionMode::Reference);
-    reference_read.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
+    reference_read.definition.projection_schema = ProjectionMode::Reference.text_schema()?;
     reference_read.projection = std::sync::Arc::new(read_projector);
     let mut reference_write = files::write()?;
     let reference_projector = FileProjection::Publication(ProjectionMode::Reference);
-    reference_write.definition.projection_schema =
-        ProjectionMode::Reference.schema::<FileResult>()?;
+    reference_write.definition.projection_schema = ProjectionMode::Reference.text_schema()?;
     reference_write.projection = std::sync::Arc::new(reference_projector);
     Ok(vec![
         definition("exact_read_full", files::read()?)?,
@@ -96,10 +95,15 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         &mut None,
     )?;
     let read_input = ReadFileInput {
-        file: file.clone(),
-        range: Some(TextRange { start: 5, end: 9 }),
+        path: "source.txt".into(),
+        offset: Some(2),
+        limit: Some(1),
     };
-    let read = "🦀";
+    let read = ReadFileResult {
+        file: file.clone(),
+        offset: 2,
+        text: "🦀 abaaba\r\n".into(),
+    };
     let read_invocation = invocation("read", value(&read_input)?);
     let read_result = ToolResult {
         value: value(&read)?,
@@ -123,12 +127,17 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         value: value(&search)?,
     };
     let exact_input = ReadFileInput {
-        file: file.clone(),
-        range: None,
+        path: "source.txt".into(),
+        offset: None,
+        limit: None,
     };
     let exact_invocation = invocation("read", value(&exact_input)?);
     let exact_result = ToolResult {
-        value: value(source)?,
+        value: value(ReadFileResult {
+            file: file.clone(),
+            offset: 1,
+            text: source.into(),
+        })?,
     };
     let file_result = ToolResult {
         value: value(FileResult { file: file.clone() })?,

@@ -1,2 +1,1 @@
-{"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"tail"}}},"files":{"plans/a.md":"tail"}},
-  "seed":{"plans/a.md":"tail"}}
+{"seed":{"plans/a.md":"tail"},"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\ttail"}]}}},"files":{"plans/a.md":"tail"}}}

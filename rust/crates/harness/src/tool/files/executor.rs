@@ -65,8 +65,8 @@ impl FileTool {
                         invocation.operation_id,
                         &input.0.path,
                         input.0.text.as_bytes(),
-                        &input.0.media_type,
-                        &input.0.display_name,
+                        input.0.media_type(),
+                        input.0.display_name(),
                         io,
                     )
                     .await?
@@ -187,62 +187,28 @@ impl FileTool {
         };
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-        let length = input.0.file.descriptor().byte_length();
-        let empty = input.0.range.is_some_and(|range| range.start == range.end);
-        let bytes = if let Some(range) = input.0.range {
-            let count = range
-                .end
-                .checked_sub(range.start)
-                .ok_or_else(|| invalid("read range is reversed"))?;
-            if range.end > length {
-                return Err(invalid("read range exceeds the file"));
-            }
-            context
-                .read_file_range(
-                    &input.0.file,
-                    acyclic_fs::ByteRange {
-                        offset: range.start,
-                        // An empty interval still has to lie on a UTF-8 boundary.
-                        length: if empty && range.start < length {
-                            1
-                        } else {
-                            count
-                        },
-                    },
-                    io,
-                )
-                .await?
-        } else {
-            context.read_file(&input.0.file, io).await?
-        };
-        let source = if empty {
-            if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-                return Err(invalid("read range splits UTF-8"));
-            }
-            ""
-        } else {
-            std::str::from_utf8(bytes.as_ref())
-                .map_err(|_| invalid("file read requires UTF-8 content"))?
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = work {
-            let (text, mut custody) = work.display(source)?;
-            custody
-                .resize(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
-                .map_err(Error::from)?;
-            return Ok((
-                ToolResult {
-                    value: Value::String(text),
-                },
-                Some(custody),
+        let (file, bytes) = context.current_file(&input.0.path, io).await?;
+        let source = std::str::from_utf8(bytes.as_ref())
+            .map_err(|_| invalid("file read requires UTF-8 content"))?;
+        let offset = input.0.offset.unwrap_or(1);
+        let selected = super::lines::select(source, offset, input.0.limit)
+            .ok_or_else(|| invalid("read offset is past the end of the file"))?;
+        let limits = context.effective_scope().limits();
+        if super::lines::rendered_len(selected, offset) as u64
+            > limits.render_bytes.min(limits.file_bytes)
+        {
+            return Err(invalid(
+                "selected lines exceed the text rendering bound; read fewer lines with offset and limit",
             ));
         }
-        Ok((
-            ToolResult {
-                value: Value::String(source.to_owned()),
-            },
-            None,
-        ))
+        let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
+        let mut text = String::new();
+        super::edit::reserve_string(&mut allocation, &mut text, selected.len())?;
+        super::edit::charge(&allocation, selected.len() as u64, 0)?;
+        text.push_str(selected);
+        drop(bytes);
+        let encoded = super::value(&ReadFileResult { file, offset, text }, u64::MAX, work)?;
+        Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn edit(
         &self,
@@ -264,25 +230,56 @@ impl FileTool {
         if work.is_none() {
             super::edit::validate_edit_bound(maximum)?;
         }
-        let bytes = context.read_file(&input.0.file, io).await?;
+        let (file, bytes) = context.current_file(&input.0.path, io).await?;
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
-        let edited = super::edit::exact_replace(
-            source,
-            &input.0.old_text,
-            &input.0.new_text,
-            maximum,
-            &mut allocation,
-        )?;
+        let edited = if input.0.replace_all {
+            super::edit::replace_all(
+                source,
+                &input.0.old_string,
+                &input.0.new_string,
+                maximum,
+                &mut allocation,
+            )?
+            .0
+        } else {
+            super::edit::exact_replace(
+                source,
+                &input.0.old_string,
+                &input.0.new_string,
+                maximum,
+                &mut allocation,
+            )?
+        };
+        // Publication is pinned to the generation just read: a concurrent
+        // change between resolution and publication is a conflict, not a merge.
         context
-            .stage_file_at(
-                invocation.operation_id,
-                &input.0.file,
-                edited.as_bytes(),
-                io,
-            )
+            .stage_file_at(invocation.operation_id, &file, edited.as_bytes(), io)
             .await
+    }
+
+    /// Returns an already-published edit for this operation, if any, with the
+    /// observation's retained bytes when there is none.
+    async fn observed_edit(
+        &self,
+        context: &ToolContext,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<(ToolResult, crate::NativeCustody)>, u64)> {
+        let Self::Edit = self else {
+            return Ok((None, 0));
+        };
+        let input = decode::<EditFileInput>(&invocation.arguments, work)?;
+        let (file, retained) = context.observe_replacement(&input.0.path, io).await?;
+        let Some(file) = file else {
+            return Ok((None, retained));
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let _file_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        let encoded = super::value(&FileResult { file }, u64::MAX, work)?;
+        Ok((Some((ToolResult { value: encoded.0 }, encoded.1)), 0))
     }
 }
 
@@ -323,21 +320,34 @@ impl ToolExecutor for FileTool {
         let context = context.ok_or_else(unauthorized)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
-            return if self.is_read() {
-                context.authorize_file_read_with_native_work(
-                    file.as_ref().ok_or_else(|| Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Storage,
-                        reason: "file read source is missing",
-                    })?,
-                    work,
-                )
-            } else {
-                context.authorize_content_publication_with_native_work(path, file.as_ref(), work)
+            return match file.as_ref() {
+                Some(file) if self.is_read() => {
+                    context.authorize_file_read_with_native_work(file, work)
+                }
+                // Path reads need READ over the location now, and again on the
+                // exact file they resolve before any bytes reach the result.
+                None if self.is_read() => context.authorize_path_read_with_native_work(path, work),
+                // A path edit reads the location it replaces.
+                None if matches!(self, Self::Edit) => {
+                    context.authorize_path_read_with_native_work(path, work)?;
+                    context.authorize_content_publication_with_native_work(path, None, work)
+                }
+                file => context.authorize_content_publication_with_native_work(path, file, work),
             };
         }
         if self.is_read() {
-            Ok(())
+            match file.as_ref() {
+                Some(_) => Ok(()),
+                None => context
+                    .task()
+                    .authorize_path_read(path, context.effective_scope(), None),
+            }
         } else {
+            if file.is_none() && matches!(self, Self::Edit) {
+                context
+                    .task()
+                    .authorize_path_read(path, context.effective_scope(), None)?;
+            }
             context.task().authorize_content_publication(
                 path,
                 file.as_ref(),
@@ -400,6 +410,23 @@ impl ToolExecutor for FileTool {
             }
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
+            if let Self::Edit = self {
+                return Ok(
+                    match self
+                        .observed_edit(context, invocation, Some(work), Some(&io))
+                        .await?
+                    {
+                        (Some((result, custody)), _) => (
+                            Some(result),
+                            custody.ok_or(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Storage,
+                                reason: "native file result lacks custody",
+                            })?,
+                        ),
+                        (None, retained) => (None, io.take_native_custody(retained)?),
+                    },
+                );
+            }
             let receipt = context
                 .observe_staged_file_once(invocation.operation_id, Some(&io))
                 .await?;
@@ -452,6 +479,18 @@ impl ToolExecutor for FileTool {
         };
 
         Box::pin(async move {
+            self.authorize(
+                Some(context.effective_scope()),
+                Some(&context),
+                &invocation,
+                None,
+            )?;
+            if let (Some((result, _)), _) = self
+                .observed_edit(&context, &invocation, None, None)
+                .await?
+            {
+                return Ok(Some(result));
+            }
             self.run(&context, &invocation, None)
                 .await
                 .map(|result| Some(result.0))

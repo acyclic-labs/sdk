@@ -373,7 +373,7 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
     .await?;
     assert_eq!(harness.run("write into scratch").await?.text, "published");
     let requests = provider.requests();
-    let value = requests
+    let text = requests
         .last()
         .unwrap()
         .messages
@@ -382,16 +382,17 @@ async fn file_tool_mount_path_is_published_only_to_its_selected_volume() -> Resu
         .find_map(|part| match part {
             crate::model::ModelContentPart::ToolResult {
                 call_id,
-                content: crate::model::ToolResultContent::Json { value },
+                content: crate::model::ToolResultContent::Parts { parts },
                 ..
-            } if call_id == "mounted-write" => Some(value),
+            } if call_id == "mounted-write" => match parts.as_slice() {
+                [crate::model::ModelDataPart::Text { text }] => Some(text.clone()),
+                _ => None,
+            },
             _ => None,
         })
         .expect("write result");
-    let file: crate::conversation::FileRef =
-        serde_json::from_value(value["file"].clone()).map_err(super::super::storage)?;
-    assert_eq!(file.volume(), harness.scratch());
-    assert_eq!(file.path(), "note");
+    // The publication names the file inside its selected volume.
+    assert_eq!(text, "Updated note (13 bytes).");
     let workspace = harness.workspace().unwrap();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
     let stop = acyclic_fs::CancellationToken::new();

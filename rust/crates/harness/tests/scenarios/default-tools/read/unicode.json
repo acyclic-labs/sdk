@@ -1,0 +1,1 @@
+{"seed":{"plans/a.md":"αβ🦀z\n"},"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\tαβ🦀z"}]}}},"files":{"plans/a.md":"αβ🦀z\n"}}}

@@ -15,7 +15,10 @@ use acyclic_harness::{
     runtime::{Bindings, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext},
     tool::{
         ToolInvocation, ToolRegistry, ToolResult,
-        files::{self, EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput},
+        files::{
+            self, EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult,
+            WriteFileInput,
+        },
         schema::ProjectionMode,
         text::{SearchOptions, TextRange},
         text_files::{self, SearchInput, SearchResult},
@@ -93,7 +96,7 @@ impl ContentResidencyVerifier for ReaderSpy {
     clippy::too_many_lines,
     reason = "one actual admitted live task retains positive and pre-I/O negative controls"
 )]
-async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
+async fn admitted_live_task_reads_current_paths_and_preserves_projection_identity() -> Result<()> {
     let provider = ProviderRef::new(
         "text-variants".into(),
         "filesystem".into(),
@@ -172,7 +175,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         corrupt: AtomicBool::new(false),
     });
     let mut read_tool = files::read()?;
-    read_tool.definition.projection_schema = ProjectionMode::Reference.schema::<String>()?;
+    read_tool.definition.projection_schema = ProjectionMode::Reference.text_schema()?;
     read_tool.projection = Arc::new(files::FileProjection::Read(ProjectionMode::Reference));
     let search_tool = text_files::search_file(
         SearchOptions {
@@ -197,6 +200,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
         let source = source.clone();
+        let later = later.clone();
         let host = host.clone();
         let reader = captured_reader.clone();
         let executor = read_executor.clone();
@@ -205,12 +209,17 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         let search_projector = search_projector.clone();
         async move {
             let read = context.tool("read")?;
+            // Paths resolve to the current generation, not an earlier pin.
             let input = ReadFileInput {
-                file: source.clone(),
-                range: Some(TextRange { start: 5, end: 9 }),
+                path: "source.txt".into(),
+                offset: None,
+                limit: None,
             };
-            let result = context.call::<_, String>(&read, input.clone()).await?;
-            assert_eq!(result, "🦀");
+            let result = context
+                .call::<_, ReadFileResult>(&read, input.clone())
+                .await?;
+            assert_eq!(result.text, "later workspace content");
+            assert_eq!(result.file, later);
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(),
                 call_id: "retained-read".into(),
@@ -228,10 +237,10 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 panic!("reference parts")
             };
             assert!(
-                matches!(parts.get(1),Some(ModelDataPart::File { file,policy:FileProjectionPolicy::Reference }) if file==&source)
+                matches!(parts.get(1),Some(ModelDataPart::File { file,policy:FileProjectionPolicy::Reference }) if file==&later)
             );
             assert!(
-                matches!(parts.first(), Some(ModelDataPart::Text { text }) if text.contains("5 source bytes omitted before and 9 after"))
+                matches!(parts.first(), Some(ModelDataPart::Text { text }) if text.contains("Read 1 lines from line 1 of source.txt"))
             );
             assert_eq!(canonical, unchanged);
             let search = context.tool("acyclic.search_file")?;
@@ -268,30 +277,33 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     WriteFileInput {
                         path: "live.txt".into(),
                         text: "alpha\r\n🦀 omega\r\n".into(),
-                        media_type: "text/plain".into(),
-                        display_name: "live.txt".into(),
+                        media_type: None,
+                        display_name: None,
                     },
                 )
                 .await?;
-            assert_eq!(
-                context
-                    .call::<_, String>(
-                        &whole,
-                        ReadFileInput {
-                            file: written.file.clone(),
-                            range: None,
-                        }
-                    )
-                    .await?,
-                "alpha\r\n🦀 omega\r\n"
-            );
+            assert_eq!(written.file.display_name(), "live.txt");
+            assert_eq!(written.file.descriptor().media_type(), "text/plain");
+            let lines = context
+                .call::<_, ReadFileResult>(
+                    &whole,
+                    ReadFileInput {
+                        path: "live.txt".into(),
+                        offset: Some(2),
+                        limit: Some(1),
+                    },
+                )
+                .await?;
+            assert_eq!((lines.offset, lines.text.as_str()), (2, "🦀 omega\r\n"));
+            assert_eq!(lines.file, written.file);
             let edited = context
                 .call::<_, FileResult>(
                     &edit,
                     EditFileInput {
-                        file: written.file.clone(),
-                        old_text: "omega".into(),
-                        new_text: "done".into(),
+                        path: "live.txt".into(),
+                        old_string: "omega".into(),
+                        new_string: "done".into(),
+                        replace_all: false,
                     },
                 )
                 .await?;
@@ -330,9 +342,10 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                     .call::<_, FileResult>(
                         &edit,
                         EditFileInput {
-                            file: written.file.clone(),
-                            old_text: "omega".into(),
-                            new_text: "stale".into(),
+                            path: "live.txt".into(),
+                            old_string: "omega".into(),
+                            new_string: "stale".into(),
+                            replace_all: false,
                         }
                     )
                     .await,
@@ -356,8 +369,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                         WriteFileInput {
                             path: "denied.txt".into(),
                             text: "denied".into(),
-                            media_type: "text/plain".into(),
-                            display_name: "denied.txt".into(),
+                            media_type: Some("text/plain".into()),
+                            display_name: Some("denied.txt".into()),
                         }
                     )
                     .await,
@@ -378,16 +391,19 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             let before = reader.reads.load(Ordering::SeqCst);
             assert!(before >= 2);
             assert!(matches!(
-                restricted.call::<_, String>(&read, input.clone()).await,
+                restricted
+                    .call::<_, ReadFileResult>(&read, input.clone())
+                    .await,
                 Err(Error::Unauthorized(_))
             ));
             assert!(
                 context
-                    .call::<_, String>(
+                    .call::<_, ReadFileResult>(
                         &read,
                         ReadFileInput {
-                            file: source.clone(),
-                            range: Some(TextRange { start: 0, end: 19 })
+                            path: "source.txt".into(),
+                            offset: Some(2),
+                            limit: None,
                         }
                     )
                     .await
@@ -427,7 +443,18 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             }
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
             reader.corrupt.store(true, Ordering::SeqCst);
-            assert!(context.call::<_, String>(&read, input).await.is_err());
+            assert!(
+                context
+                    .call::<_, SearchResult>(
+                        &search,
+                        SearchInput {
+                            file: source.clone(),
+                            query: "aba".into(),
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
             assert_eq!(reader.reads.load(Ordering::SeqCst), before + 1);
             reader.corrupt.store(false, Ordering::SeqCst);
             Ok(())

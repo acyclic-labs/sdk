@@ -303,6 +303,38 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             "publication observation is unavailable",
         ))
     }
+    /// Resolves the file currently at a destination path through this writer's
+    /// task view, so path-addressed tools read and replace what the task sees.
+    fn current<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "path resolution is unavailable",
+        ))
+    }
+    /// Observes the replacement of `path` staged under `operation_id`, if any,
+    /// so a reconciled path-addressed edit never applies twice.
+    fn observe_replacement<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "replacement observation is unavailable",
+        ))
+    }
     /// Replaces bytes only at the immutable source generation.
     fn stage_at<'a>(
         &'a self,

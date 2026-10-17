@@ -117,20 +117,6 @@ async fn selection_case(body: Vec<u8>, a: u16, b: u16, mutate: bool) -> Result<(
         host.read_pinned_range(&file, range, None).await?.as_ref(),
         &body[start..end]
     );
-    let input = crate::tool::files::ReadFileInput {
-        file: file.clone(),
-        range: Some(crate::tool::text::TextRange {
-            start: range.offset,
-            end: range.offset + range.length,
-        }),
-    };
-    assert_eq!(
-        serde_json::from_slice::<crate::tool::files::ReadFileInput>(
-            &serde_json::to_vec(&input).expect("file input encodes")
-        )
-        .expect("encoded file input decodes"),
-        input
-    );
     let mut sha = *file.descriptor().sha256();
     sha[0] ^= 1;
     let forged = FileRef::new(

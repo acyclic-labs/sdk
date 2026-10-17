@@ -352,31 +352,41 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
-    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
-        || contains_content_grant_with_work(
-            grants,
-            file.volume(),
-            acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
-            work,
-        )?
-        || contains_content_grant_with_work(
-            grants,
-            &(file.volume(), ""),
-            acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            work,
-        )?
-    {
+    Ok(
+        contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)?
+            || path_read_granted_with_work(grants, file.volume(), file.path(), work)?,
+    )
+}
+
+/// Volume or directory READ covering `path`; exact-file grants never cover a
+/// path, because they name one immutable generation rather than a location.
+pub(crate) fn path_read_granted_with_work(
+    grants: &Capabilities,
+    volume: &crate::conversation::VolumeRef,
+    path: &str,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<bool> {
+    if contains_content_grant_with_work(
+        grants,
+        volume,
+        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
+        work,
+    )? || contains_content_grant_with_work(
+        grants,
+        &(volume, ""),
+        acyclic_fs::access::DIRECTORY_READ_PREFIX,
+        work,
+    )? {
         return Ok(true);
     }
-    for prefix in file
-        .path()
+    for prefix in path
         .match_indices('/')
-        .filter_map(|(slash, _)| file.path().get(..slash))
+        .filter_map(|(slash, _)| path.get(..slash))
     {
         if !crate::conversation::is_internal_path(prefix)
             && contains_content_grant_with_work(
                 grants,
-                &(file.volume(), prefix),
+                &(volume, prefix),
                 acyclic_fs::access::DIRECTORY_READ_PREFIX,
                 work,
             )?

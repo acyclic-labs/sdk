@@ -1,0 +1,1 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"plans/a.md","offset":2,"limit":50}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     2\ttwo\n     3\tthree"}]}}}}}

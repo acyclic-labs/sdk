@@ -1,2 +1,1 @@
-{"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"before\u0000after"}}},
-  "files":{"plans/a.md":"before\u0000after"}},"seed":{"plans/a.md":"before\u0000after"}}
+{"seed":{"plans/a.md":"before\u0000after"},"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\tbefore\u0000after"}]}}},"files":{"plans/a.md":"before\u0000after"}}}

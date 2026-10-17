@@ -180,7 +180,7 @@ pub(crate) fn exact_replace(
     charge(work, 0, 1)?;
     let start = source
         .find(old_text)
-        .ok_or_else(|| conflict(work, "exact edit text is missing"))?;
+        .ok_or_else(|| conflict(work, "edit old_string was not found in the current file"))?;
     let first_character_bytes = old_text.chars().next().map_or(0, char::len_utf8);
     let next_start = start + first_character_bytes;
     charge(work, 0, 1)?;
@@ -188,7 +188,10 @@ pub(crate) fn exact_replace(
         .get(next_start..)
         .is_some_and(|tail| tail.contains(old_text))
     {
-        return Err(conflict(work, "exact edit text is ambiguous"));
+        return Err(conflict(
+            work,
+            "edit old_string matches more than once; include more context or set replace_all",
+        ));
     }
     let output_bytes = source
         .len()
@@ -210,6 +213,53 @@ pub(crate) fn exact_replace(
     output.push_str(new_text);
     output.push_str(suffix);
     Ok(output)
+}
+
+/// Replaces every non-overlapping exact occurrence, returning the edit and its count.
+pub(crate) fn replace_all(
+    source: &str,
+    old_text: &str,
+    new_text: &str,
+    maximum_bytes: u64,
+    work: &mut NativeCustody,
+) -> Result<(String, usize)> {
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        return Err(invalid(work, "edit byte bound must be positive and finite"));
+    }
+    if source.len() as u64 > maximum_bytes
+        || old_text.len() as u64 > maximum_bytes
+        || new_text.len() as u64 > maximum_bytes
+        || old_text.is_empty()
+    {
+        return Err(invalid(work, "exact edit has invalid text or byte bounds"));
+    }
+    charge(work, 0, 1)?;
+    let count = source.matches(old_text).count();
+    if count == 0 {
+        return Err(conflict(
+            work,
+            "edit old_string was not found in the current file",
+        ));
+    }
+    let output_bytes = (source.len() - count * old_text.len())
+        .checked_add(
+            count
+                .checked_mul(new_text.len())
+                .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?,
+        )
+        .filter(|length| *length as u64 <= maximum_bytes)
+        .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
+    let mut output = String::new();
+    reserve_string(work, &mut output, output_bytes)?;
+    charge(work, output_bytes as u64, count as u64)?;
+    let mut copied = 0;
+    for (start, matched) in source.match_indices(old_text) {
+        output.push_str(&source[copied..start]);
+        output.push_str(new_text);
+        copied = start + matched.len();
+    }
+    output.push_str(&source[copied..]);
+    Ok((output, count))
 }
 
 #[cfg(test)]
@@ -238,6 +288,31 @@ mod tests {
         assert!(exact_replace("one one", "one", "two", 8, &mut work).is_err());
         assert!(exact_replace("one", "missing", "two", 8, &mut work).is_err());
         assert!(exact_replace("one", "", "two", 8, &mut work).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn replace_all_agrees_with_std_replace_on_every_small_input() -> Result<()> {
+        let mut work = None;
+        for alphabet in [['a', 'b'], ['é', '🦀']] {
+            for length in 0..=6 {
+                for bits in 0..(1 << length) {
+                    let source: String = (0..length)
+                        .map(|position| alphabet[(bits >> position) & 1])
+                        .collect();
+                    for needle in ["a", "aa", "ab", "é", "éé", "🦀é"] {
+                        let result = replace_all(&source, needle, "Xy", 64, &mut work);
+                        match source.matches(needle).count() {
+                            0 => assert!(matches!(result, Err(Error::Conflict(_)))),
+                            count => assert_eq!(result?, (source.replace(needle, "Xy"), count),),
+                        }
+                    }
+                }
+            }
+        }
+        assert!(replace_all("aaa", "a", "bb", 5, &mut work).is_err());
+        assert_eq!(replace_all("aaa", "a", "bb", 6, &mut work)?.1, 3);
+        assert!(replace_all("aaa", "", "b", 6, &mut work).is_err());
         Ok(())
     }
 

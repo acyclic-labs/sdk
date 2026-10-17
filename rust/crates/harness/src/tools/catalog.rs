@@ -4,7 +4,8 @@ use crate::{
     tool::{
         JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolProjection,
         files::{
-            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, WriteFileInput,
+            EditFileInput, FileProjection, FileResult, FileTool, ReadFileInput, ReadFileResult,
+            WriteFileInput,
         },
         schema::{self, ProjectionMode},
     },
@@ -119,39 +120,39 @@ static FS: ToolSpec = ToolSpec {
 
 pub(crate) static READ: ToolSpec = ToolSpec {
     name: "read",
-    revision: "portable-6",
-    description: "Read exact UTF-8 from an authorized immutable file, optionally selecting [start, end) byte offsets",
+    revision: "portable-7",
+    description: "Read a UTF-8 text file by workspace-relative path. Returns lines numbered from 1 in cat -n format; offset (one-based line) and limit select a range of a large file. Reads see the current workspace, including changes made by bash",
     hook_names: &["Read"],
     binding: ToolBinding::Volume,
     input: schema::input::<ReadFileInput>,
-    output: schema::output::<String>,
-    projection_schema: ProjectionMode::schema::<String>,
+    output: schema::output::<ReadFileResult>,
+    projection_schema: ProjectionMode::text_schema,
     executor: |_| Arc::new(FileTool::Read),
     projection: |mode| Arc::new(FileProjection::Read(mode)),
 };
 
 pub(crate) static WRITE: ToolSpec = ToolSpec {
     name: "write",
-    revision: "portable-5",
-    description: "Write bounded UTF-8 through the original owner-bound content publisher",
+    revision: "portable-6",
+    description: "Create or overwrite a UTF-8 text file at a workspace-relative path",
     hook_names: &["Write"],
     binding: ToolBinding::Volume,
     input: schema::input::<WriteFileInput>,
     output: schema::output::<FileResult>,
-    projection_schema: ProjectionMode::schema::<FileResult>,
+    projection_schema: ProjectionMode::text_schema,
     executor: |_| Arc::new(FileTool::Write),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
 };
 
 pub(crate) static EDIT: ToolSpec = ToolSpec {
     name: "edit",
-    revision: "portable-5",
-    description: "Replace one exact UTF-8 match at an authorized pinned source generation",
+    revision: "portable-6",
+    description: "Replace exact text in a workspace-relative UTF-8 file. old_string must match exactly once unless replace_all is set; read the file first and copy old_string without the line-number prefix. Fails without writing if the file changed since it was resolved",
     hook_names: &["Edit"],
     binding: ToolBinding::Volume,
     input: schema::input::<EditFileInput>,
     output: schema::output::<FileResult>,
-    projection_schema: ProjectionMode::schema::<FileResult>,
+    projection_schema: ProjectionMode::text_schema,
     executor: |_| Arc::new(FileTool::Edit),
     projection: |mode| Arc::new(FileProjection::Publication(mode)),
 };

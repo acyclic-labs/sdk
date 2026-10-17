@@ -1,3 +1,1 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"file":"plans/日本語.md"}},
-  {"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read",
-  "content":{"kind":"json","value":"こんにちは\n"}}},"files":{"plans/日本語.md":"こんにちは\n"}},"seed":{"plans/日本語.md":"こんにちは\n"}}
+{"seed":{"plans/日本語.md":"こんにちは\n"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"plans/日本語.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\tこんにちは"}]}}},"files":{"plans/日本語.md":"こんにちは\n"}}}

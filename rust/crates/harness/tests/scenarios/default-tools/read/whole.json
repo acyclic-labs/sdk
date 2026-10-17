@@ -1,1 +1,1 @@
-{"expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"αβ🦀z\n"}}}}}
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"path":"plans/a.md"}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"results":{"call":{"name":"read","content":{"kind":"parts","parts":[{"kind":"text","text":"     1\tone\n     2\ttwo\n     3\tthree"}]}}}}}

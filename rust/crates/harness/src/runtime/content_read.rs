@@ -274,6 +274,33 @@ impl TaskContext {
         })
     }
 
+    /// Checks READ for a workspace path before it is resolved. Path
+    /// addressing needs volume or directory authority over the location.
+    pub(crate) fn authorize_path_read(
+        &self,
+        path: &str,
+        scope: &RuntimeScope,
+        io: Option<&ContentIo>,
+    ) -> Result<()> {
+        let writer = super::content_write::content_writer(self.content_binding(None), io)?;
+        let (volume, relative) = writer.destination(None, path, io)?;
+        crate::executor::with_history_io(io, |work| {
+            if !super::task_context::path_read_granted_with_work(
+                &scope.grants,
+                volume,
+                &relative,
+                work,
+            )? {
+                return Err(content_error(
+                    io,
+                    ErrorCode::Unauthorized,
+                    "task scope cannot read this path",
+                ));
+            }
+            Ok(())
+        })
+    }
+
     /// Lists one authenticated private directory page.
     pub async fn list_private_directory(
         &self,

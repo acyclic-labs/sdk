@@ -1,4 +1,0 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"read","arguments":{"file":"plans/a.md",
-  "range":{"start":2,"end":7}}},{"type":"event","kind":"completed","metadata":null}],"done"],
-  "expect":{"results":{"call":{"name":"read","content":{"kind":"json","value":"23456"}}},"files":{"plans/a.md":"0123456789"}},
-  "seed":{"plans/a.md":"0123456789"}}
