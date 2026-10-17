@@ -657,6 +657,35 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             journal.inner.replay(write_call, 0, 16, None)?.await?,
             write_records
         );
+        // Without READ, a missing path and an existing one fail identically,
+        // so no caller of the public helper can probe for existence.
+        let unreadable = ToolContext::new(
+            std::sync::Arc::new(
+                writable.scoped(
+                    scope
+                        .grants()
+                        .without(&Capabilities::new([read_grant.clone()])),
+                    scope.limits(),
+                )?,
+            ),
+            call,
+            &call.to_string(),
+            None,
+        )?;
+        let missing = unreadable.current_file("missing.txt", None).await;
+        let present = unreadable.current_file("source.txt", None).await;
+        assert!(
+            matches!(missing, Err(Error::Unauthorized(_))),
+            "{missing:?}"
+        );
+        assert_eq!(format!("{missing:?}"), format!("{present:?}"));
+        // Negative control: with READ the same two probes are distinguishable.
+        let readable = ToolContext::new(writable.clone(), call, &call.to_string(), None)?;
+        assert!(readable.current_file("source.txt", None).await.is_ok());
+        assert!(!matches!(
+            readable.current_file("missing.txt", None).await,
+            Ok(_) | Err(Error::Unauthorized(_))
+        ));
         let restricted = context.scoped(
             scope
                 .grants()

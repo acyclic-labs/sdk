@@ -594,9 +594,11 @@ impl ToolContext {
         )
         .await
     }
-    /// Resolves a workspace-relative path to the authenticated file this task
-    /// currently sees through its content writer's view, then checks READ on
-    /// that exact file under this call's effective scope.
+    /// The single authorization point for path-addressed reads. It checks
+    /// READ on the path before anything is resolved, so a caller without it
+    /// cannot tell a missing file from an unauthorized one. It then resolves
+    /// the file this task currently sees through its content writer's view and
+    /// checks READ on that exact reference before any bytes are returned.
     pub async fn current_file(
         &self,
         path: &str,
@@ -604,6 +606,7 @@ impl ToolContext {
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         let task = self.task();
         let scope = self.effective_scope();
+        task.authorize_path_read(path, scope, io)?;
         let (file, bytes, hold) = self
             .path_writer(io)?
             .current(self.operation_id, path, scope.limits.file_bytes, io)?
@@ -616,6 +619,18 @@ impl ToolContext {
         #[cfg(not(feature = "filesystem"))]
         let _ = hold;
         Ok((file, bytes))
+    }
+
+    /// Records `file` as the version this task's model last saw at its path.
+    pub(crate) fn pin_read(&self, file: &FileRef) {
+        let task = self.task();
+        task.harness.read_pins.record(task.task_id, file);
+    }
+
+    /// The version this task's model last saw at `file`'s path, if pinned.
+    pub(crate) fn read_pin(&self, file: &FileRef) -> Option<FileRef> {
+        let task = self.task();
+        task.harness.read_pins.get(task.task_id, file)
     }
 
     /// Observes this call's original replacement of `path`, so reconciling a

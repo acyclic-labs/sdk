@@ -8,6 +8,17 @@ pub(super) fn owner<T>(
     source: T,
     volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
 ) -> Result<crate::workspace::MountTable<T>> {
+    granted(root, volume, source, volumes, &Action::ALL)
+}
+
+/// Composes the owner's view with exactly `granted` actions on every volume.
+fn granted<T>(
+    root: &Path,
+    volume: &VolumeRef,
+    source: T,
+    volumes: impl IntoIterator<Item = (String, VolumeRef, T)>,
+    granted: &[Action],
+) -> Result<crate::workspace::MountTable<T>> {
     let principal = Principal {
         kind: PrincipalKind::Agent,
         id: "owner".into(),
@@ -45,7 +56,7 @@ pub(super) fn owner<T>(
             std::iter::once(volume)
                 .chain(volumes.iter().map(|(_, volume, _)| volume))
                 .map(|volume| Grant {
-                    actions: Action::ALL.into_iter().collect(),
+                    actions: granted.iter().copied().collect(),
                     resource: ResourcePattern {
                         volume: Some(volume.id().into()),
                         ..resource.clone()
@@ -85,6 +96,44 @@ pub(super) fn owner<T>(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    // Reading routes through READ alone, so a read-only mount stays readable;
+    // publishing still needs WRITE there.
+    #[test]
+    fn read_only_mounts_admit_reads_and_refuse_publication() {
+        let provider = crate::resources::ProviderRef::new(
+            "read-only".into(),
+            "filesystem".into(),
+            "1".into(),
+            &mut None,
+        )
+        .unwrap();
+        let volume = VolumeRef::new(
+            provider,
+            "project".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("owner".into()),
+            &mut None,
+        )
+        .unwrap();
+        let root = std::env::current_dir().unwrap();
+        let read_only = granted(&root, &volume, (), [], &[Action::Read]).unwrap();
+        let (mount, relative) = read_only
+            .admit(None, "notes/a.md", Action::Read, 0)
+            .unwrap();
+        assert_eq!(
+            (&mount.view.volume, relative.as_str()),
+            (&volume, "notes/a.md")
+        );
+        assert!(
+            read_only
+                .admit(None, "notes/a.md", Action::Write, 0)
+                .is_err()
+        );
+        // Negative control: the same route admits publication when WRITE is granted.
+        let writable = owner(&root, &volume, (), []).unwrap();
+        assert!(writable.admit(None, "notes/a.md", Action::Write, 0).is_ok());
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]

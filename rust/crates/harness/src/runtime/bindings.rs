@@ -22,6 +22,8 @@ pub struct AgentHarness {
     pub(super) model: Option<ModelBinding>,
     pub(super) context: ContextPipeline,
     pub(super) fork_preparer: Option<ForkBinding>,
+    /// What each task's model last saw at each path, shared by every clone.
+    pub(super) read_pins: Arc<super::read_pins::ReadPins>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_configuration_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -62,6 +64,7 @@ impl Clone for AgentHarness {
             model: self.model.clone(),
             context: self.context.clone(),
             fork_preparer: self.fork_preparer.clone(),
+            read_pins: Arc::clone(&self.read_pins),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         }
@@ -380,6 +383,7 @@ impl Bindings {
             model: None,
             context: ContextPipeline::default(),
             fork_preparer,
+            read_pins: Arc::default(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_configuration_custody: None,
         };

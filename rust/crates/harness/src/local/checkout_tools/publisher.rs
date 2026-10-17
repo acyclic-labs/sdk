@@ -143,6 +143,21 @@ impl CheckoutPublisher {
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
     }
 
+    fn route<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &str,
+        action: acyclic_fs::access::Action,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (mount, relative) = self.tools.workspace.mounts.admit(
+            volume,
+            path,
+            action,
+            self.tools.clock.now_unix_millis() / 1000,
+        )?;
+        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
+    }
+
     /// Resolves a path in the same view publication writes, after capturing
     /// pending checkout changes so reads observe what the task's shell sees.
     async fn current_file(
@@ -151,10 +166,10 @@ impl CheckoutPublisher {
         path: &str,
         maximum: u64,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        let (mount, relative) = self.tools.workspace.mounts.file(None, path)?;
-        mount.check(
+        let (mount, relative) = self.tools.workspace.mounts.admit(
+            None,
+            path,
             acyclic_fs::access::Action::Read,
-            &relative,
             self.tools.clock.now_unix_millis() / 1000,
         )?;
         serialized(&self.tools.state, async |mut state| {
@@ -265,13 +280,16 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
-            acyclic_fs::access::Action::Write,
-            &relative,
-            self.tools.clock.now_unix_millis() / 1000,
-        )?;
-        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
+        self.route(volume, path, acyclic_fs::access::Action::Write)
+    }
+
+    fn locate<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.route(volume, path, acyclic_fs::access::Action::Read)
     }
 
     fn supports_stage(&self, io: Option<&ContentIo>) -> Result<()> {

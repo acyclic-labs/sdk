@@ -268,3 +268,50 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+fn publication_oracle_folds_history_and_requires_declared_intermediates() {
+    use std::collections::BTreeMap;
+    let files = BTreeMap::from([("plans/a.md".to_owned(), Some("from edit\n".to_owned()))]);
+    let history = BTreeMap::from([(
+        "plans/a.md".to_owned(),
+        vec![b"from bash\n".to_vec(), b"from edit\n".to_vec()],
+    )]);
+    let declared = |contents: &[&str]| {
+        BTreeMap::from([(
+            "plans/a.md".to_owned(),
+            contents.iter().map(|text| (*text).to_owned()).collect(),
+        )])
+    };
+    let check = super::local_execution::check_publications;
+    assert!(check(&files, &declared(&["from bash\n", "from edit\n"]), &history).is_ok());
+    // Negative controls: an undeclared, reordered or missing intermediate, a
+    // wrong final state, and a declaration that never happened are rejected.
+    for wrong in [
+        BTreeMap::new(),
+        declared(&["from edit\n", "from bash\n"]),
+        declared(&["from edit\n"]),
+    ] {
+        assert!(check(&files, &wrong, &history).is_err());
+    }
+    let stale = BTreeMap::from([("plans/a.md".to_owned(), Some("from bash\n".to_owned()))]);
+    assert!(check(&stale, &declared(&["from bash\n", "from edit\n"]), &history).is_err());
+    let mut ghost = declared(&["from bash\n", "from edit\n"]);
+    ghost.insert("plans/b.md".into(), vec!["never\n".into()]);
+    assert!(check(&files, &ghost, &history).is_err());
+    let single = BTreeMap::from([("plans/a.md".to_owned(), vec![b"from edit\n".to_vec()])]);
+    assert!(check(&files, &BTreeMap::new(), &single).is_ok());
+    // Republishing identical bytes is not an intermediate state.
+    let repeated = BTreeMap::from([(
+        "plans/a.md".to_owned(),
+        vec![
+            b"from edit
+"
+            .to_vec(),
+            b"from edit
+"
+            .to_vec(),
+        ],
+    )]);
+    assert!(check(&files, &BTreeMap::new(), &repeated).is_ok());
+}

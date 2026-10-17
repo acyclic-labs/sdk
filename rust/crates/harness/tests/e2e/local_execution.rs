@@ -156,6 +156,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut seen = initial.cursor.position;
     let mut paths = std::collections::BTreeSet::new();
     let mut removed = std::collections::BTreeSet::new();
+    let mut published = std::collections::BTreeMap::<String, Vec<Vec<u8>>>::new();
     while seen != target.cursor.position {
         let change = observation
             .changes
@@ -167,16 +168,10 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         }
         seen = change.cursor.position;
         for file in &change.files {
-            if case
-                .expect
-                .files
-                .get(&file.key.path())
-                .and_then(Option::as_deref)
-                .map(str::as_bytes)
-                != Some(file.bytes.as_ref())
-            {
-                return Err("publication file bytes differ".into());
-            }
+            published
+                .entry(file.key.path())
+                .or_default()
+                .push(file.bytes.as_ref().to_vec());
         }
         for key in &change.removed {
             let path = key.path();
@@ -192,6 +187,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         wire.push(serde_json::to_value(&change)?);
     }
     matchers::ordered(&case.expect.wire, &wire, "file publication wire")?;
+    check_publications(&case.expect.files, &case.expect.published, &published)?;
     for (path, expected) in &case.expect.files {
         if expected.is_none()
             && ((case.seed.contains_key(path) && !removed.contains(path))
@@ -363,6 +359,56 @@ pub(super) fn check_frames(
         _ => return Err("local task wire outcome differs".into()),
     }
     matchers::ordered(expected, frames, "scheduler wire frames")?;
+    Ok(())
+}
+
+/// Folds publications per path: the last one must be the expected final
+/// state, and a path published more than once must declare every content in
+/// order, so intermediate states are asserted rather than ignored.
+pub(super) fn check_publications(
+    files: &std::collections::BTreeMap<String, Option<String>>,
+    declared: &std::collections::BTreeMap<String, Vec<String>>,
+    published: &std::collections::BTreeMap<String, Vec<Vec<u8>>>,
+) -> TestResult {
+    for (path, contents) in published {
+        // Republishing identical bytes is not a new state of the file.
+        let mut contents = contents.clone();
+        contents.dedup();
+        let last = contents.last().ok_or("empty publication history")?;
+        if files
+            .get(path)
+            .and_then(Option::as_deref)
+            .map(str::as_bytes)
+            != Some(last.as_slice())
+        {
+            return Err(format!("final publication bytes differ: {path}").into());
+        }
+        match declared.get(path) {
+            Some(expected) => {
+                if !expected
+                    .iter()
+                    .map(String::as_bytes)
+                    .eq(contents.iter().map(Vec::as_slice))
+                {
+                    return Err(format!("publication history differs: {path}").into());
+                }
+            }
+            None if contents.len() > 1 => {
+                return Err(format!(
+                    "undeclared intermediate publications: {path}: {:?}",
+                    contents
+                        .iter()
+                        .map(|c| String::from_utf8_lossy(c))
+                        .collect::<Vec<_>>()
+                )
+                .into());
+            }
+            None => {}
+        }
+    }
+    if let Some(path) = declared.keys().find(|path| !published.contains_key(*path)) {
+        return Err(format!("declared publications never happened: {path}").into());
+    }
     Ok(())
 }
 

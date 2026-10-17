@@ -87,6 +87,7 @@ mod content_read;
 pub use content_read::*;
 mod content_write;
 mod groups;
+mod read_pins;
 mod interactions;
 mod model_context;
 mod tool_dispatch;

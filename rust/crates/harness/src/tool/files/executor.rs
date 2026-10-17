@@ -15,6 +15,8 @@ pub(crate) enum FileTool {
     },
 }
 
+const STALE_READ: &str = "the file changed since it was last read; read it again before editing";
+
 impl FileTool {
     pub(in crate::tool) fn is_read(&self) -> bool {
         matches!(self, Self::Read | Self::Search { .. })
@@ -86,6 +88,9 @@ impl FileTool {
                 .await?
             }
         };
+        if matches!(self, Self::Write | Self::Edit) {
+            context.pin_read(&file.0);
+        }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
         let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
@@ -188,6 +193,7 @@ impl FileTool {
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         let (file, bytes) = context.current_file(&input.0.path, io).await?;
+        context.pin_read(&file);
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("file read requires UTF-8 content"))?;
         let offset = input.0.offset.unwrap_or(1);
@@ -231,6 +237,21 @@ impl FileTool {
             super::edit::validate_edit_bound(maximum)?;
         }
         let (file, bytes) = context.current_file(&input.0.path, io).await?;
+        // The exact version the model read: a change anywhere in the file
+        // since then is a conflict, not an edit of content it never saw.
+        if context
+            .read_pin(&file)
+            .is_some_and(|read| read.descriptor() != file.descriptor())
+        {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: STALE_READ,
+                });
+            }
+            return Err(Error::Conflict(STALE_READ.into()));
+        }
         let source = std::str::from_utf8(bytes.as_ref())
             .map_err(|_| invalid("exact text edit requires UTF-8 content"))?;
         let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;

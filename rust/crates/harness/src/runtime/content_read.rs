@@ -283,7 +283,7 @@ impl TaskContext {
         io: Option<&ContentIo>,
     ) -> Result<()> {
         let writer = super::content_write::content_writer(self.content_binding(None), io)?;
-        let (volume, relative) = writer.destination(None, path, io)?;
+        let (volume, relative) = writer.locate(None, path, io)?;
         crate::executor::with_history_io(io, |work| {
             if !super::task_context::path_read_granted_with_work(
                 &scope.grants,

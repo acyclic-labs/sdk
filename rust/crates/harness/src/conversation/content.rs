@@ -245,6 +245,17 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
     }
+    /// Routes a path to the volume and relative path a READ addresses. Unlike
+    /// [`Self::destination`], it never requires publication admission, so a
+    /// readable but unwritable location still routes.
+    fn locate<'a>(
+        &'a self,
+        _volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
+    }
     /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
     /// Rejects unavailable bounded publication before external side effects.

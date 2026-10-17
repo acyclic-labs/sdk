@@ -23,6 +23,10 @@ pub(super) struct Expectations {
     pub frames: Vec<Value>,
     pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
+    /// Every published content of a path, in order, for paths published more
+    /// than once; `files` holds only the final state.
+    #[serde(default)]
+    pub published: BTreeMap<String, Vec<String>>,
     pub diffs: Option<BTreeMap<String, Value>>,
     pub results: Option<BTreeMap<String, Value>>,
 }
