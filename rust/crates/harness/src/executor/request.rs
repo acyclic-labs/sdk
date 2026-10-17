@@ -84,23 +84,11 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
-        let mut projection = self.prepare_projection(input, step, prior_messages).await?;
-        crate::model::PreparedModelRequest::prepare(
-            self.request_taking_context(&mut projection)?,
-            self.stock.limits,
-            self.io,
-        )
-    }
-
-    pub(super) async fn prepare_projection(
-        &self,
-        input: &TurnInput,
-        step: u32,
-        prior_messages: &[ModelMessage],
-    ) -> Result<crate::context::Context> {
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
         let base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io)?;
-        self.transform_projection(&context_input, base).await
+        self.prepare_transformed_request(&context_input, base)
+            .await
+            .map(|(_, prepared)| prepared)
     }
 
     pub(super) async fn canonical_base(
@@ -149,6 +137,18 @@ impl StockExecution<'_> {
         input: &ContextInput,
         base: crate::context::Context,
     ) -> Result<crate::context::Context> {
+        let (mut context, prepared) = self.prepare_transformed_request(input, base).await?;
+        if self.io.is_none() {
+            context.messages = prepared.into_messages();
+        }
+        Ok(context)
+    }
+
+    pub(super) async fn prepare_transformed_request(
+        &self,
+        input: &ContextInput,
+        base: crate::context::Context,
+    ) -> Result<(crate::context::Context, crate::model::PreparedModelRequest)> {
         let mut context = self
             .context_pipeline()
             .transform(input, base, self.stock.limits, self.io)
@@ -182,13 +182,22 @@ impl StockExecution<'_> {
                     })?,
             );
         }
-        if self.io.is_none() {
-            context.messages = prepared.into_messages();
-        } else if prefix_count != 0 {
-            context.messages = crate::model::clone_messages(&prepared.request().messages, self.io)?;
+        if prefix_count == 0 {
+            return Ok((context, prepared));
         }
-        crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
-        Ok(context)
+        if self.io.is_none() {
+            let (prepared, context, ()) = prepared.with_context(context, |context| {
+                crate::context::validate_projected_context(context, self.stock.limits, self.io)
+            })?;
+            Ok((context, prepared))
+        } else {
+            if prefix_count != 0 {
+                context.messages =
+                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
+            }
+            crate::context::validate_projected_context(&context, self.stock.limits, self.io)?;
+            Ok((context, prepared))
+        }
     }
 
     pub(super) fn request_from_context(

@@ -23,53 +23,283 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<(), WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let path = self.mutation_path(path, &mut accounting, cancellation)?;
-            let existing = self
-                .checkout
-                .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)
-                .await?
-                .0
-                .record;
-            let mut operations = crate::kernel::Owned::allocate(
-                if existing.is_some() { 2 } else { 1 },
-                &mut accounting,
-            )?;
-            if let Some(record) = existing {
-                if record.kind != FileKind::Regular {
-                    return Err(WorkspaceError::NotRegularFile);
-                }
-                Self::reset_file(
-                    &path.value,
-                    Some(record),
-                    &mut operations,
-                    &mut accounting,
-                    cancellation,
-                )?;
+        let result = self
+            .write_with_accounting(path, bytes, &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn write_with_accounting(
+        &mut self,
+        path: &str,
+        bytes: impl Into<acyclic_stream::OwnedBytes>,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let path = self.mutation_path(path, accounting, cancellation)?;
+        let existing = self
+            .checkout
+            .lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true)
+            .await?
+            .0
+            .record;
+        let mut operations =
+            crate::kernel::Owned::allocate(if existing.is_some() { 2 } else { 1 }, accounting)?;
+        if let Some(record) = existing {
+            if record.kind != FileKind::Regular {
+                return Err(WorkspaceError::NotRegularFile);
             }
-            let operation = if existing.is_some() {
-                AuthoredMutation::Write {
+            Self::reset_file(
+                &path.value,
+                Some(record),
+                &mut operations,
+                accounting,
+                cancellation,
+            )?;
+        }
+        let operation = if existing.is_some() {
+            AuthoredMutation::Write {
+                path: path.value,
+                offset: 0,
+                bytes: bytes.into(),
+            }
+        } else {
+            AuthoredMutation::CreateFile {
+                path: path.value,
+                bytes: bytes.into(),
+                metadata: FileMetadata::default(),
+            }
+        };
+        Self::push_mutation(
+            &mut operations,
+            crate::kernel::Owned::new(operation, path.allocation, path.bytes),
+            accounting,
+        )?;
+        self.apply_authored(operations, accounting, cancellation)
+            .await
+    }
+
+    /// Stages directory prefixes and ordered file replacements as one transaction batch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn write_batch<W: crate::facade::FsWork>(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = self
+            .write_batch_with_accounting::<true>(directories, files, &mut accounting, cancellation)
+            .await;
+        work.finish(result, &accounting)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn write_batch_with_accounting<const RESET: bool>(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        accounting.check()?;
+        if self.checkout.has_pending_mutations()
+            || self.checkout.volume_config().case_sensitivity
+                != crate::model::CaseSensitivity::Sensitive
+        {
+            return self
+                .write_batch_serial(directories, files, accounting, cancellation)
+                .await;
+        }
+        let (paths, directory_count) =
+            self.batch_paths(directories, files, accounting, cancellation)?;
+        let mut kinds = self
+            .batch_kinds(&paths.value, accounting, cancellation)
+            .await?;
+        classify_batch_paths(&paths.value, directory_count, &mut kinds.value, accounting)?;
+        let capacity = directory_count
+            .checked_add(
+                files
+                    .len()
+                    .checked_mul(2)
+                    .ok_or(crate::WorkError::Overflow)?,
+            )
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut operations = crate::kernel::Owned::allocate(capacity, accounting)?;
+        // Transfer the original path ownership after all cross-path decisions.
+        // Only resize plus write needs two independently owned copies.
+        let backing = paths.value.capacity() * std::mem::size_of::<NamespacePath>();
+        let mut path_allocation = paths.allocation;
+        let mut paths = paths.value.into_iter();
+        for (index, path) in paths.by_ref().enumerate() {
+            let bytes = path.retained_bytes();
+            let allocation = crate::kernel::split_allocation(&mut path_allocation, bytes)?;
+            let path = crate::kernel::Owned::new(path, allocation, bytes);
+            let existing = kinds.value.get(index).copied().flatten().is_some();
+            let mutation = if index < directory_count {
+                if existing {
+                    path.retire(accounting)?;
+                    continue;
+                }
+                AuthoredMutation::CreateDirectory {
                     path: path.value,
-                    offset: 0,
-                    bytes: bytes.into(),
+                    metadata: FileMetadata::default(),
                 }
             } else {
-                AuthoredMutation::CreateFile {
-                    path: path.value,
-                    bytes: bytes.into(),
-                    metadata: FileMetadata::default(),
+                let (_, content) = files
+                    .get(index - directory_count)
+                    .ok_or(FsError::InvalidDiff)?;
+                if existing && RESET {
+                    let (copy, allocation) =
+                        path.value.clone_with_accounting(accounting, cancellation)?;
+                    let bytes = copy.retained_bytes();
+                    Self::push_mutation(
+                        &mut operations,
+                        crate::kernel::Owned::new(
+                            AuthoredMutation::Resize {
+                                path: copy,
+                                logical_bytes: 0,
+                            },
+                            allocation,
+                            bytes,
+                        ),
+                        accounting,
+                    )?;
+                }
+                if existing {
+                    AuthoredMutation::Write {
+                        path: path.value,
+                        offset: 0,
+                        bytes: content.clone(),
+                    }
+                } else {
+                    AuthoredMutation::CreateFile {
+                        path: path.value,
+                        bytes: content.clone(),
+                        metadata: FileMetadata::default(),
+                    }
                 }
             };
             Self::push_mutation(
                 &mut operations,
-                crate::kernel::Owned::new(operation, path.allocation, path.bytes),
-                &mut accounting,
+                crate::kernel::Owned::new(mutation, path.allocation, path.bytes),
+                accounting,
             )?;
-            self.apply_authored(operations, &mut accounting, cancellation)
-                .await
         }
-        .await;
-        work.finish(result, &accounting)
+        drop(paths);
+        crate::kernel::retire_allocation(path_allocation, backing as u64, accounting)?;
+        kinds.retire(accounting)?;
+        if operations.value.is_empty() {
+            return operations.retire(accounting).map_err(Into::into);
+        }
+        self.checkout
+            .apply_authored_bulk_transaction_with_accounting(operations, accounting, cancellation)
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn write_batch_serial(
+        &mut self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), WorkspaceError> {
+        let mut candidate = Self {
+            workspace: self.workspace.clone(),
+            checkout: self.checkout.private_candidate(accounting, cancellation)?,
+            idempotency_key: self.idempotency_key,
+            requires_rebase: self.requires_rebase,
+        };
+        for directory in directories {
+            candidate
+                .create_dirs(directory, accounting, cancellation)
+                .await?;
+        }
+        for (path, bytes) in files {
+            candidate
+                .write_with_accounting(path, bytes.clone(), accounting, cancellation)
+                .await?;
+        }
+        self.checkout = candidate.checkout;
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn batch_paths(
+        &self,
+        directories: &[&str],
+        files: &[(&str, acyclic_stream::OwnedBytes)],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(crate::kernel::Owned<Vec<NamespacePath>>, usize), WorkspaceError> {
+        let config = self.checkout.volume_config();
+        let mut paths = crate::kernel::Owned::allocate(0, accounting)?;
+        for directory in directories {
+            let path = self.mutation_path(directory, accounting, cancellation)?;
+            for depth in 1..=path.value.depth() {
+                let (prefix, allocation) = path.value.prefix_with_accounting(
+                    depth,
+                    config.limits,
+                    accounting,
+                    cancellation,
+                )?;
+                let bytes = prefix.retained_bytes();
+                paths.ensure_for_push(usize::MAX, accounting)?;
+                Self::push_mutation(
+                    &mut paths,
+                    crate::kernel::Owned::new(prefix, allocation, bytes),
+                    accounting,
+                )?;
+            }
+            path.retire(accounting)?;
+        }
+        let directory_count = paths.value.len();
+        for (file, _) in files {
+            let path = self.mutation_path(file, accounting, cancellation)?;
+            paths.ensure_for_push(usize::MAX, accounting)?;
+            Self::push_mutation(&mut paths, path, accounting)?;
+        }
+        Ok((paths, directory_count))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn batch_kinds(
+        &mut self,
+        paths: &[NamespacePath],
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::kernel::Owned<Vec<Option<FileKind>>>, WorkspaceError> {
+        let config = self.checkout.volume_config();
+        let mut kinds = crate::kernel::Owned::allocate(paths.len(), accounting)?;
+        let maximum = usize::try_from(config.limits.maximum_paths_per_batch)
+            .unwrap_or(usize::MAX)
+            .max(1);
+        for chunk in paths.chunks(maximum) {
+            let (lookup, allocation) = self
+                .checkout
+                .lookup_batch_no_follow_with_accounting(chunk, false, accounting, cancellation)
+                .await
+                .map_err(|error| match error {
+                    FsError::Path(crate::kernel::PathLookupError::NotDirectory) => {
+                        WorkspaceError::NotDirectory
+                    }
+                    error => error.into(),
+                })?;
+            for entry in &lookup.entries {
+                accounting.charge(crate::WorkCounters {
+                    bytes_copied: std::mem::size_of::<Option<FileKind>>() as u64,
+                    ..Default::default()
+                })?;
+                kinds.value.push(entry.record.map(|record| record.kind));
+            }
+            let bytes = lookup.retained_allocation_bytes;
+            drop(lookup);
+            crate::kernel::retire_allocation(allocation, bytes, accounting)?;
+        }
+        Ok(kinds)
     }
 
     /// Creates missing directory prefixes without replacing existing objects.
@@ -312,3 +542,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+fn classify_batch_paths(
+    paths: &[NamespacePath],
+    directory_count: usize,
+    kinds: &mut [Option<FileKind>],
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), WorkspaceError> {
+    if paths.len() != kinds.len() || directory_count > paths.len() {
+        return Err(FsError::InvalidDiff.into());
+    }
+    // Preserve directory-error precedence before processing file duplicates.
+    for (index, kind) in kinds.iter().enumerate() {
+        accounting.charge(crate::WorkCounters {
+            items_examined: 1,
+            ..Default::default()
+        })?;
+        if kind.is_some_and(|kind| {
+            kind != if index < directory_count {
+                FileKind::Directory
+            } else {
+                FileKind::Regular
+            }
+        }) {
+            return Err(if index < directory_count {
+                WorkspaceError::NotDirectory
+            } else {
+                WorkspaceError::NotRegularFile
+            });
+        }
+    }
+
+    let mut ordered = crate::kernel::Owned::allocate(paths.len(), accounting)?;
+    let classified = (|| -> Result<(), WorkspaceError> {
+        for (ordinal, key) in paths.iter().enumerate() {
+            accounting.charge(crate::WorkCounters {
+                bytes_copied: std::mem::size_of::<crate::kernel::IndexedKey<'_, NamespacePath>>()
+                    as u64,
+                ..Default::default()
+            })?;
+            ordered
+                .value
+                .push(crate::kernel::IndexedKey { ordinal, key });
+        }
+        crate::kernel::sort_indexed(&mut ordered.value, accounting)?;
+        for adjacent in ordered.value.windows(2) {
+            let [previous, current] = adjacent else {
+                return Err(FsError::InvalidDiff.into());
+            };
+            accounting.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+            if previous.key != current.key {
+                continue;
+            }
+            let kind = kinds.get_mut(current.ordinal).ok_or(FsError::InvalidDiff)?;
+            *kind = Some(if current.ordinal < directory_count {
+                FileKind::Directory
+            } else if previous.ordinal < directory_count {
+                return Err(WorkspaceError::NotRegularFile);
+            } else {
+                FileKind::Regular
+            });
+        }
+        Ok(())
+    })();
+    let retired = ordered.retire(accounting);
+    classified?;
+    retired?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_properties.rs"]
+mod batch_properties;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_differential.rs"]
+mod batch_differential;
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_original.rs"]
+mod batch_original;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_index_properties.rs"]
+mod batch_index_properties;

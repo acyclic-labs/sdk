@@ -39,6 +39,11 @@ use uuid::Uuid;
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal<P> = FilesystemExecutionJournal<P, MemoryAuthorityBackend, MemoryObjectBackend>;
 
+#[cfg(test)]
+thread_local! {
+    static MEMORY_VOLUME_KEY: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
 async fn new_memory_content(
     agent: AgentId,
     maximum_file_bytes: u64,
@@ -55,9 +60,12 @@ async fn new_memory_content(
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
+    let key = Uuid::new_v4().to_string();
+    #[cfg(test)]
+    let key = MEMORY_VOLUME_KEY.get().map_or(key, str::to_owned);
     let volume = VolumeRef::new(
         provider,
-        Uuid::new_v4().to_string(),
+        key,
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
         &mut None,
@@ -72,6 +80,12 @@ async fn new_memory_content(
         )?,
     ));
     host.create_volume(&volume).await?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let host = {
+        let reference = super::fork_preparer_io::content_workspace(&host.provider, &volume, None)?;
+        let workspace = host.open(&reference, None).await?;
+        host.for_workspace(&volume, workspace)?
+    };
     Ok((host, volume, memory_store))
 }
 
@@ -571,3 +585,11 @@ mod tests;
 #[cfg(test)]
 #[path = "memory_summary_tests/mod.rs"]
 mod summary_tests;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "memory/workspace_binding_properties.rs"]
+mod workspace_binding_properties;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "memory/binding_differential.rs"]
+mod binding_differential;

@@ -43,7 +43,7 @@ impl CheckoutRoots {
         })
     }
 
-    #[cfg(any(test, feature = "native-watch"))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn replicate(
         &self,
         accounting: &mut KernelAccounting<'_>,

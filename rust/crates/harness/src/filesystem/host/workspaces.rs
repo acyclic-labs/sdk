@@ -214,45 +214,80 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|failure| failure.error)
                 .map_err(map_error)?,
         };
-        for mutation in mutations {
-            match mutation {
-                WorkspaceMutation::CreateDirectory { path } => {
-                    transaction
-                        .create_dir_all(path, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let batched = if !invalidate_metadata
+            && mutations
+                .iter()
+                .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
+        {
+            let directories = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::CreateDirectory { path } => Some(path.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let files = mutations
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    WorkspaceMutation::PutFile { path, bytes } => {
+                        Some((path.as_str(), bytes.clone()))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            transaction
+                .write_batch(&directories, &files, budget, &cancellation)
+                .await
+                .map_err(|failure| map_error(failure.error))?;
+            true
+        } else {
+            false
+        };
+        #[cfg(target_arch = "wasm32")]
+        let batched = false;
+        if !batched {
+            for mutation in mutations {
+                match mutation {
+                    WorkspaceMutation::CreateDirectory { path } => {
+                        transaction
+                            .create_dir_all(path, budget, &cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(map_error)?;
+                    }
+                    WorkspaceMutation::PutFile { path, bytes } => {
+                        transaction
+                            .write(path, bytes.clone(), budget, &cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(map_error)?;
+                    }
+                    WorkspaceMutation::Remove { path } => {
+                        transaction
+                            .remove(path, budget, &cancellation)
+                            .await
+                            .map(|receipt| receipt.value)
+                            .map_err(|failure| failure.error)
+                            .map_err(map_error)?;
+                    }
                 }
-                WorkspaceMutation::PutFile { path, bytes } => {
-                    transaction
-                        .write(path, bytes.clone(), budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
-                }
-                WorkspaceMutation::Remove { path } => {
-                    transaction
-                        .remove(path, budget, &cancellation)
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(map_error)?;
-                }
-            }
-            // Raw mutations do not carry a descriptor or write publication.
-            // Invalidate the old index atomically, including same-byte writes.
-            // The content writer supplies its own metadata in this transaction.
-            if invalidate_metadata
-                && let WorkspaceMutation::PutFile { path, .. } | WorkspaceMutation::Remove { path } =
-                    mutation
-            {
-                let metadata = content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
-                match transaction.remove(&metadata, budget, &cancellation).await {
-                    Ok(_) => {}
-                    Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
-                    Err(failure) => return Err(map_error(failure.error)),
+                // Raw mutations do not carry a descriptor or write publication.
+                // Invalidate the old index atomically, including same-byte writes.
+                // The content writer supplies its own metadata in this transaction.
+                if invalidate_metadata
+                    && let WorkspaceMutation::PutFile { path, .. }
+                    | WorkspaceMutation::Remove { path } = mutation
+                {
+                    let metadata =
+                        content_metadata_path_io(path.trim_start_matches('/'), true, None)?;
+                    match transaction.remove(&metadata, budget, &cancellation).await {
+                        Ok(_) => {}
+                        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => {}
+                        Err(failure) => return Err(map_error(failure.error)),
+                    }
                 }
             }
         }
@@ -355,6 +390,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let name = std::str::from_utf8(reference.as_resource().key())
             .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("open workspace", 1u64));
         io.sdk(
             self.filesystem
                 .open_workspace(name, io, io.cancellation())
