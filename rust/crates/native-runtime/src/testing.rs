@@ -35,6 +35,7 @@ impl Boundary {
 #[derive(Default)]
 struct State {
     active: usize,
+    native_active: usize,
     idle: Option<Waker>,
     cancelled: bool,
     trace: Vec<String>,
@@ -60,7 +61,7 @@ pub(crate) struct Context {
     detail: Arc<Mutex<Arc<str>>>,
 }
 
-pub(crate) struct Active(pub(crate) Context);
+pub(crate) struct Active(pub(crate) Context, bool);
 impl Drop for Active {
     fn drop(&mut self) {
         let idle = {
@@ -69,6 +70,12 @@ impl Drop for Active {
                 .active
                 .checked_sub(1)
                 .expect("unregistered completion");
+            if self.1 {
+                state.native_active = state
+                    .native_active
+                    .checked_sub(1)
+                    .expect("unregistered native completion");
+            }
             (state.active == 0).then(|| state.idle.take()).flatten()
         };
         if let Some(idle) = idle {
@@ -130,6 +137,12 @@ impl Schedule {
         self.0.state.lock().unwrap().ready_reads
     }
 
+    /// Accepted native/blocking owners, including physical work after caller cancellation.
+    /// Task owners waiting on streams are excluded; they cannot hide a missing follow.
+    pub fn pending_native_work(&self) -> usize {
+        self.0.state.lock().unwrap().native_active
+    }
+
     /// Original submissions and their completion trace, including cancellation.
     pub fn trace(&self) -> Vec<String> {
         self.0.state.lock().unwrap().trace.clone()
@@ -142,6 +155,7 @@ impl Context {
     }
 
     pub(crate) fn accept(&self, kind: &'static str) -> Active {
+        let native = matches!(kind, "native" | "blocking");
         {
             let mut state = self.schedule.0.state.lock().unwrap();
             assert!(
@@ -151,16 +165,20 @@ impl Context {
             // Cancellation and registration share the same lock. Once cancel
             // returns, drain cannot miss an already accepted submission.
             state.active += 1;
+            state.native_active += usize::from(native);
             state.trace.push(format!(
                 "{kind}:{}",
                 if self.owned { "completion" } else { "dispatch" }
             ));
         }
-        Active(Self {
-            schedule: self.schedule.clone(),
-            owned: true,
-            detail: Arc::new(Mutex::new(self.detail.lock().unwrap().clone())),
-        })
+        Active(
+            Self {
+                schedule: self.schedule.clone(),
+                owned: true,
+                detail: Arc::new(Mutex::new(self.detail.lock().unwrap().clone())),
+            },
+            native,
+        )
     }
 
     async fn pause(&self, name: &'static str) {
@@ -226,34 +244,27 @@ where
         let active = context.accept("blocking");
         let owned = active.0.clone();
         (
+            None,
             Some(tokio::spawn(CURRENT.scope(
                 Some(owned.clone()),
                 async move {
                     let _active = active;
                     owned.pause("blocking:submitted").await;
-                    let result = CURRENT.sync_scope(None, || {
+                    let result = blocking_on_service(move || {
                         let _inline = crate::InlineBlocking::enter();
                         work()
-                    });
+                    })
+                    .await;
                     owned.pause("blocking:completed").await;
                     result
                 },
             ))),
-            None,
         )
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        (
-            None,
-            Some(tokio::spawn(async move {
-                let mut completion = crate::run_blocking_io(work, None)?;
-                let job = completion.pending.take().expect("prepared host operation");
-                queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
-                completion.await
-            })),
-        )
+        (None, Some(tokio::spawn(blocking_on_service(work))))
     } else {
         (Some(tokio::task::spawn_blocking(work)), None)
     };
@@ -266,6 +277,19 @@ where
                 .map_err(std::io::Error::other),
         }
     }
+}
+
+// Both instrumented and ordinary replay closures use the real native service.
+// Submission/terminal gates never make a blocking closure execute on Tokio.
+async fn blocking_on_service<F, T>(work: F) -> std::io::Result<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let mut completion = crate::run_blocking_io(work, None)?;
+    let job = completion.pending.take().expect("prepared host operation");
+    queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
+    completion.await
 }
 
 pub(crate) fn submit(

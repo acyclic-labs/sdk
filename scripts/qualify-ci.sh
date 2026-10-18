@@ -182,6 +182,8 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
     node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
     node scripts/qualify-mcp-loom.mjs --hook-lifecycle --all-features
+    node scripts/qualify-mcp-loom.mjs --e2e-progress
+    node scripts/qualify-mcp-loom.mjs --native-progress
     node scripts/qualify-mcp-loom.mjs --timer
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features

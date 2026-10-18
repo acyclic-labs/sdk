@@ -45,6 +45,36 @@ export function qualifyGuestLoom(run = spawnSync) {
   return qualifyLoom("acyclic-actors", "guest_loom", [], run);
 }
 
+export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
+  return qualifyLoom("acyclic-harness", "e2e-progress-model", features, run, {
+    targetCfg: ["--", "--cfg", "acyclic_e2e_progress_loom"],
+    filters: ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "forgotten_cleanup_is_detected_on_the_real_registration"],
+    timeout: 9500,
+  });
+}
+
+export function qualifyNativeProgressLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", ["--features", "test-support"], run, {
+    kind: "--lib", targetCfg: [],
+    env: {...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_native_runtime_loom`},
+    filters: [
+      "testing::model::native_progress_reporting_races_physical_completion_and_unwind",
+      "testing::model::missing_native_cleanup_is_detected_on_the_actual_tracker",
+      "testing::model::accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake",
+      "testing::model::missing_registration_is_detected_on_the_real_tracker",
+      "testing::model::missing_terminal_wake_is_detected_on_the_real_tracker",
+      "testing::queue_model::capacity_release_races_registration_on_the_real_queue",
+      "testing::queue_model::physical_completion_races_observer_drop_on_the_real_terminal",
+      "testing::queue_model::broken_capacity_wake_is_detected",
+      "testing::queue_model::broken_capacity_accounting_is_detected",
+      "testing::queue_model::broken_terminal_wake_is_detected",
+      "testing::queue_model::broken_terminal_accounting_is_detected",
+      "testing::queue_model::observer_retires_the_state_charge_before_the_worker_lets_go",
+      "testing::queue_model::a_charge_left_on_the_shared_state_is_detected",
+    ], timeout: 9500,
+  });
+}
+
 export function qualifyFsBindingLoom(features = [], run = spawnSync) {
   return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
     targetCfg: ["--", "--cfg", "acyclic_fs_loom"],
@@ -102,7 +132,9 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const features = process.argv.slice(2);
-  if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
+  if (features.length === 1 && features[0] === "--native-progress") qualifyNativeProgressLoom();
+  else if (features[0] === "--e2e-progress") qualifyE2eProgressLoom(features.length > 1 ? features.slice(1) : undefined);
+  else if (features[0] === "--hook-lifecycle") qualifyHookLifecycleLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--coordinator-origins") qualifyCoordinatorOriginsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features[0] === "--summary-checkpoints") qualifySummaryCheckpointsLoom(features.length > 1 ? features.slice(1) : undefined);
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();

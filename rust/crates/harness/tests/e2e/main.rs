@@ -20,6 +20,12 @@ mod notification_history;
 mod notifications;
 mod plan_query;
 mod plans;
+#[path = "../support/progress_guard.rs"]
+mod progress_guard;
+#[path = "../support/progress_guard_tests.rs"]
+mod progress_guard_tests;
+#[path = "../support/progress_registry.rs"]
+mod progress_registry;
 mod provider_case;
 mod provider_http;
 mod provider_tests;
@@ -276,6 +282,20 @@ fn scenario_capacity() -> TestResult<usize> {
 }
 
 async fn run_scenarios(started: Instant) -> TestResult {
+    let mut guard = progress_guard::Guard::new();
+    let registry = guard.registry.clone();
+    let io = guard.io.clone();
+    guard
+        .run(run_guarded_scenarios(started, registry, io))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+async fn run_guarded_scenarios(
+    started: Instant,
+    registry: std::sync::Arc<progress_registry::Registry>,
+    io: acyclic_native_runtime::testing::Schedule,
+) -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
@@ -288,22 +308,21 @@ async fn run_scenarios(started: Instant) -> TestResult {
     }
     let count = paths.len();
     let capacity = scenario_capacity()?;
-    stall::report_on_termination()?;
+
     let admitted = std::sync::Arc::new((AtomicUsize::new(0), AtomicUsize::new(0)));
     let mut results = stream::iter(paths.into_iter().map(|path| {
         let root = root.clone();
         let admitted = admitted.clone();
+        let registry = registry.clone();
+        let io = io.clone();
         async move {
             let case_path = path.clone();
             let (running, peak) = &*admitted;
             peak.fetch_max(running.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
-            let result: TestResult = tokio::spawn(async move {
-                stall::admitted(&case_path.clone(), async move {
-                    let case = scenario::load_value(&root, &case_path)?;
-                    drivers::run(case).await?;
-                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-                })
-                .await
+            let result: TestResult = stall::run(io, registry, case_path.clone(), async move {
+                let case = scenario::load_value(&root, &case_path)?;
+                drivers::run(case).await?;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             })
             .await
             .unwrap_or_else(|error| Err(Box::new(error)));

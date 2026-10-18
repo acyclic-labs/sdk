@@ -25,6 +25,56 @@ fn context(schedule: &Schedule) -> Context {
 }
 
 #[test]
+fn native_progress_reporting_races_physical_completion_and_unwind() {
+    for panic in [false, true] {
+        loom::model(move || {
+            let (schedule, _) = Schedule::new();
+            let task = context(&schedule).accept("task");
+            assert_eq!(
+                schedule.pending_native_work(),
+                0,
+                "a blocked follow hid idle"
+            );
+            let native = task.0.accept("native");
+            assert_eq!(schedule.pending_native_work(), 1);
+            let blocking = task.0.accept("blocking");
+            assert_eq!(schedule.pending_native_work(), 2);
+            let worker = thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _native = native;
+                    if panic {
+                        panic!("native completion unwind control");
+                    }
+                }));
+                assert_eq!(result.is_err(), panic);
+            });
+            assert!((1..=2).contains(&schedule.pending_native_work()));
+            worker.join().unwrap();
+            assert_eq!(
+                schedule.pending_native_work(),
+                1,
+                "completion lost another owner"
+            );
+            drop(blocking);
+            assert_eq!(schedule.pending_native_work(), 0, "native cleanup hid idle");
+            drop(task);
+        });
+    }
+}
+
+#[test]
+#[should_panic(expected = "native cleanup hid idle")]
+fn missing_native_cleanup_is_detected_on_the_actual_tracker() {
+    loom::model(|| {
+        let (schedule, _) = Schedule::new();
+        let native = context(&schedule).accept("native");
+        // Deliberately omit the real completion guard's Drop path.
+        std::mem::forget(native);
+        assert_eq!(schedule.pending_native_work(), 0, "native cleanup hid idle");
+    });
+}
+
+#[test]
 fn accepted_descendants_cannot_escape_cancel_or_lose_the_terminal_wake() {
     loom::model(|| {
         let (schedule, _) = Schedule::new();

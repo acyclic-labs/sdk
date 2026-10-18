@@ -148,14 +148,23 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         assert!(worker.unwrap().starts_with("acyclic-host-io-"));
         let (schedule, mut events) = Schedule::new();
         let mut controlled = Box::pin(schedule.scope(async {
-            spawn_blocking(|| std::thread::current().id())
-                .await
-                .unwrap()
+            spawn_blocking(|| {
+                (
+                    std::thread::current().id(),
+                    std::thread::current().name().map(String::from),
+                )
+            })
+            .await
+            .unwrap()
         }));
         let mut boundaries = Vec::new();
         loop {
             tokio::select! {
-                actual = &mut controlled => { assert_eq!(actual, driver); break; },
+                actual = &mut controlled => {
+                    assert_ne!(actual.0, driver, "blocking work ran on the runtime driver");
+                    assert!(actual.1.unwrap().starts_with("acyclic-host-io-"));
+                    break;
+                },
                 boundary = events.recv() => {
                     let boundary = boundary.unwrap();
                     boundaries.push(boundary.name);

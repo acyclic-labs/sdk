@@ -1,7 +1,8 @@
 //! Scenario outcomes may depend only on readiness: a scripted model turn (an exhausted script is an error),
 //! a follow up to a cut that is already published (each change must strictly advance toward it), or a journal
 //! replay that ends at an empty page. A wall-clock deadline turns host load into scenario failures, so the
-//! sources compiled into this binary must not contain one.
+//! scenario sources must not contain one. The separate shared progress guard observes native I/O; its idle
+//! budget is infrastructure, never an expected scenario outcome or a per-scenario deadline.
 use std::path::Path;
 
 /// Wall-clock deadlines and sleeps, assembled so this file does not match itself.
@@ -37,7 +38,14 @@ fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
         sources.push(entry?.path());
     }
     // The shared support modules main.rs includes by path.
-    for name in ["quiescent.rs", "scenario_data.rs", "swarm_session.rs"] {
+    // The single infrastructure guard and its virtual-clock controls live in
+    // progress_guard{,_tests}.rs. Scenario semantics still cannot use a clock.
+    for name in [
+        "quiescent.rs",
+        "scenario_data.rs",
+        "swarm_session.rs",
+        "progress_registry.rs",
+    ] {
         sources.push(tests.join("support").join(name));
     }
     let mut found = Vec::new();

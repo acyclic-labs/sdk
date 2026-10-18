@@ -2,10 +2,45 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("progress qualification instruments the shared registry and requires the cleanup negative control", () => {
+  for (const missing of [null, 1, 2]) {
+    let models = 0;
+    const run = (command, args) => {
+      if (command === "cargo") {
+        assert.deepEqual(args.slice(-3), ["--", "--cfg", "acyclic_e2e_progress_loom"]);
+        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "e2e-progress-model"}})};
+      }
+      assert.equal(args[0], models++ === 0
+        ? "registration_reporting_and_cancel_or_panic_cleanup_are_atomic"
+        : "forgotten_cleanup_is_detected_on_the_real_registration");
+      return {status: 0, stdout: summary(models === missing ? 0 : 1, 0, 1)};
+    };
+    if (missing === null) { qualifyE2eProgressLoom(undefined, run); assert.equal(models, 2); }
+    else assert.throws(() => qualifyE2eProgressLoom(undefined, run), /requires a nonzero/);
+  }
+});
+
+test("native progress qualification instruments the real mutex and requires every ownership model", () => {
+  for (const missing of [null, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]) {
+    let models = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_native_runtime_loom/);
+        assert.ok(args.includes("--lib") && args.includes("--no-run"));
+        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "acyclic_native_runtime"}})};
+      }
+      assert.match(args[0], /^testing::(?:queue_)?model::/);
+      return {status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 4)};
+    };
+    if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 13); }
+    else assert.throws(() => qualifyNativeProgressLoom(run), /requires a nonzero/);
+  }
+});
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
   for (const missing of [null, 1, 2]) {
