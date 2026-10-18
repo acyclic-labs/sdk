@@ -3,7 +3,7 @@
 use crate::{
     Error, Result,
     goal::GoalState,
-    task_volume::{Change, Cursor, FileKey, FileValue, Query, SCHEMA, Snapshot},
+    task_volume::{Change, Component, Cursor, FileKey, FileValue, Query, SCHEMA, Snapshot},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -106,12 +106,13 @@ impl FileQueryView {
         {
             return Err(invalid());
         }
-        let mut files = BTreeMap::<FileKey, FileValue>::new();
+        let mut files = Vec::new();
+        let mut seen = BTreeSet::new();
         let mut rejected_models = BTreeSet::new();
         let mut bytes = 0usize;
         for file in snapshot.files {
             if !query.matches(&file.key)
-                || files.contains_key(&file.key)
+                || !seen.insert(file.key.clone())
                 || rejected_models.contains(&file.key)
             {
                 return Err(invalid());
@@ -124,7 +125,7 @@ impl FileQueryView {
                 .checked_add(file.bytes.len())
                 .filter(|size| *size <= maximum_bytes)
                 .ok_or_else(invalid)?;
-            files.insert(file.key.clone(), file);
+            files.push(file);
         }
         let storage = super::FileViews::ordinary(
             crate::task_volume::HeadSnapshot {
@@ -132,7 +133,7 @@ impl FileQueryView {
                 cursor,
                 files: files
                     .into_iter()
-                    .map(|(_, file)| crate::task_volume::HeadFile {
+                    .map(|file| crate::task_volume::HeadFile {
                         key: file.key,
                         publication: file.publication,
                         channel: file.channel,
@@ -259,6 +260,25 @@ impl FileQueryView {
         {
             &self.storage.files
         }
+    }
+
+    pub(super) fn text_files<'a>(
+        &'a self,
+        task: &Component,
+        from: Option<&FileKey>,
+    ) -> impl Iterator<Item = &'a crate::task_volume::HeadFile> + use<'a> {
+        self.storage.text_files(task, from)
+    }
+
+    #[cfg(feature = "tui")]
+    pub(super) fn text_changed_before(
+        &self,
+        task: &Component,
+        from: &FileKey,
+        since: u64,
+        channel: crate::task_volume::Channel,
+    ) -> bool {
+        self.storage.text_changed_before(task, from, since, channel)
     }
 
     /// Borrows model identities; rendering never reparses request bytes.

@@ -1,7 +1,7 @@
 //! Disposable file views at a query cursor. Bytes retain segment ownership.
 
 use crate::task_volume::{
-    Change, Channel, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
+    Change, Channel, Component, Cursor, Error, FileKey, HeadFile, HeadSnapshot, Result, TaskFile,
 };
 use std::collections::btree_map::Entry;
 #[cfg(feature = "test-support")]
@@ -24,14 +24,36 @@ pub struct QueryViewLimits {
 }
 
 /// One query's materialized files; snapshots and deltas never concatenate text.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct FileViews {
     pub(super) cursor: Cursor,
     pub(super) files: Files,
+    stream_order: Vec<FileKey>,
+    stream_positions: std::collections::BTreeMap<FileKey, (u64, usize)>,
+    task_streams: std::collections::BTreeMap<(Component, u64, usize), FileKey>,
+    stream_updates: std::collections::BTreeMap<FileKey, (u64, usize)>,
+    task_updates: std::collections::BTreeMap<(Component, u64, usize), (FileKey, (u64, usize))>,
     limits: QueryViewLimits,
     segments: usize,
     pub(super) bytes: u64,
     pub(super) window: bool,
+}
+
+impl PartialEq for FileViews {
+    fn eq(&self, other: &Self) -> bool {
+        // A snapshot uses (cut, ordinal), while follow uses (publication, 0).
+        // Compare their observable ordering, retaining both index invariants.
+        self.cursor == other.cursor
+            && self.files == other.files
+            && self.stream_order == other.stream_order
+            && self.limits == other.limits
+            && self.segments == other.segments
+            && self.bytes == other.bytes
+            && self.window == other.window
+            && self.task_streams.values().eq(other.task_streams.values())
+            && self.stream_index_consistent()
+            && other.stream_index_consistent()
+    }
 }
 
 fn admit(limits: QueryViewLimits, files: usize, segments: usize, bytes: u64) -> Result<()> {
@@ -47,6 +69,29 @@ fn disposable(key: &FileKey) -> bool {
 }
 
 impl FileViews {
+    fn stream_index_consistent(&self) -> bool {
+        self.stream_positions.len() == self.task_streams.len()
+            && self.stream_positions.len() == self.stream_order.len()
+            && self.stream_updates.len() == self.stream_positions.len()
+            && self.task_updates.len() == self.stream_positions.len()
+            && self
+                .task_updates
+                .iter()
+                .all(|((task, cut, ordinal), (key, position))| {
+                    matches!(key, FileKey::Task { task: owner, .. } if owner == task)
+                        && self.stream_positions.get(key) == Some(position)
+                        && self.stream_updates.get(key) == Some(&(*cut, *ordinal))
+                })
+            && self
+                .task_streams
+                .iter()
+                .all(|((task, position, ordinal), key)| {
+                    matches!(key, FileKey::Task { task: owner, .. } if owner == task)
+                        && stream_key(key)
+                        && self.files.contains_key(key)
+                        && self.stream_positions.get(key) == Some(&(*position, *ordinal))
+                })
+    }
     /// Builds a complete replacement without mutating an existing fold.
     pub fn snapshot(snapshot: HeadSnapshot, limits: QueryViewLimits) -> Result<Self> {
         Self::build(snapshot, limits, true)
@@ -69,12 +114,17 @@ impl FileViews {
         let mut view = Self {
             cursor: snapshot.cursor,
             files: Files::default(),
+            stream_order: Vec::new(),
+            stream_positions: Default::default(),
+            task_streams: Default::default(),
+            stream_updates: Default::default(),
+            task_updates: Default::default(),
             limits,
             segments: 0,
             bytes: 0,
             window: false,
         };
-        for file in snapshot.files {
+        for (ordinal, file) in snapshot.files.into_iter().enumerate() {
             let text = matches!(
                 file.key,
                 FileKey::Task {
@@ -116,6 +166,7 @@ impl FileViews {
                 segments,
                 bytes,
             )?;
+            view.index_stream(&file.key, (view.cursor.position, ordinal));
             if view.files.insert(file.key.clone(), file).is_some() {
                 return Err(Error::InvalidSegment);
             }
@@ -140,9 +191,101 @@ impl FileViews {
     pub fn file(&self, key: &FileKey) -> Option<&HeadFile> {
         self.files.get(key)
     }
-    /// Materialized files in canonical key order.
+    /// Materialized streams preserve authoritative snapshot and follow order.
     pub fn files(&self) -> impl Iterator<Item = &HeadFile> {
-        self.files.values()
+        self.files
+            .values()
+            .filter(|head| !stream_key(&head.key))
+            .chain(
+                self.stream_order
+                    .iter()
+                    .filter_map(|key| self.files.get(key)),
+            )
+    }
+
+    // Cursor cut plus ordinal preserves the authoritative vector order without
+    // inventing a second durable clock. Both indexes are bounded by retained files.
+    fn index_stream(&mut self, key: &FileKey, position: (u64, usize)) {
+        if !stream_key(key) {
+            return;
+        }
+        let FileKey::Task { task, .. } = key else {
+            unreachable!()
+        };
+        let first = if let Some(first) = self.stream_positions.get(key) {
+            *first
+        } else {
+            self.stream_order.push(key.clone());
+            self.stream_positions.insert(key.clone(), position);
+            self.task_streams
+                .insert((task.clone(), position.0, position.1), key.clone());
+            position
+        };
+        if let Some(old) = self.stream_updates.insert(key.clone(), position) {
+            self.task_updates.remove(&(task.clone(), old.0, old.1));
+        }
+        self.task_updates
+            .insert((task.clone(), position.0, position.1), (key.clone(), first));
+    }
+    fn remove_stream(&mut self, key: &FileKey) {
+        if let Some(position) = self.stream_positions.remove(key) {
+            let FileKey::Task { task, .. } = key else {
+                unreachable!()
+            };
+            self.task_streams
+                .remove(&(task.clone(), position.0, position.1));
+            if let Some(old) = self.stream_updates.remove(key) {
+                self.task_updates.remove(&(task.clone(), old.0, old.1));
+            }
+            self.stream_order.retain(|old| old != key);
+        }
+    }
+    // Each retained head has one latest update. The range visits only heads
+    // changed since this reader's cut, even when the reader skips publications.
+    pub(super) fn text_changed_before(
+        &self,
+        task: &Component,
+        from: &FileKey,
+        since: u64,
+        channel: Channel,
+    ) -> bool {
+        #[cfg(feature = "test-support")]
+        crate::test_support::task_volume_item_examined();
+        let Some(from) = self.stream_positions.get(from) else {
+            return true;
+        };
+        use std::ops::Bound::{Excluded, Included};
+        let earliest = self.task_updates.range((
+            Excluded((task.clone(), since, usize::MAX)),
+            Included((task.clone(), u64::MAX, usize::MAX)),
+        )).inspect(|_| {
+            #[cfg(feature = "test-support")]
+            crate::test_support::task_volume_item_examined();
+        }).filter(|(_, (key, _))| !matches!(key,
+            FileKey::Task { file: TaskFile::TextHead { channel: found, .. }, .. } if *found != channel
+        )).map(|(_, (_, position))| position).min();
+        earliest.is_some_and(|position| position < from)
+    }
+    pub(super) fn text_files<'a>(
+        &'a self,
+        task: &Component,
+        from: Option<&FileKey>,
+    ) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
+        #[cfg(feature = "test-support")]
+        if from.is_some() {
+            crate::test_support::task_volume_item_examined();
+        }
+        let position = from
+            .and_then(|key| self.stream_positions.get(key))
+            .copied()
+            .unwrap_or((0, 0));
+        self.task_streams
+            .range((task.clone(), position.0, position.1)..=(task.clone(), u64::MAX, usize::MAX))
+            .inspect(|_| {
+                #[cfg(feature = "test-support")]
+                crate::test_support::task_volume_item_examined();
+            })
+            .filter_map(|(_, key)| self.files.get(key))
     }
 
     pub(super) fn replace(
@@ -156,16 +299,18 @@ impl FileViews {
             .chain(change.file.iter().chain(&change.files).map(|f| &f.key))
         {
             if let Some(old) = self.files.remove(key) {
+                self.remove_stream(key);
                 self.bytes -= old.length;
                 self.segments -= old.segments.len();
             }
         }
-        for file in change.file.iter().chain(&change.files) {
+        for (ordinal, file) in change.file.iter().chain(&change.files).enumerate() {
             if rejected.contains(&file.key) {
                 continue;
             }
             self.bytes += file.bytes.len() as u64;
             self.segments += 1;
+            self.index_stream(&file.key, (change.cursor.position, ordinal));
             self.files.insert(
                 file.key.clone(),
                 HeadFile {
@@ -215,7 +360,12 @@ impl FileViews {
             Some((
                 FileKey::Task {
                     task,
-                    file: TaskFile::TextHead { turn, channel },
+                    file:
+                        TaskFile::TextHead {
+                            turn,
+                            execution,
+                            channel,
+                        },
                 },
                 _,
             )) => {
@@ -227,6 +377,7 @@ impl FileViews {
                     .get(&FileKey::Task {
                         task: task.clone(),
                         file: TaskFile::TextHead {
+                            execution: *execution,
                             turn: *turn,
                             channel,
                         },
@@ -337,6 +488,7 @@ impl FileViews {
             }
             admit(view.limits, next_count, segments, bytes)?;
             if let (Some(file), Some((key, sequence))) = (&change.file, logical) {
+                view.index_stream(&key, (next.position, 0));
                 match view.files.entry(key.clone()) {
                     Entry::Occupied(mut entry) if sequence.is_some() => {
                         let head = entry.get_mut();
@@ -377,7 +529,9 @@ impl FileViews {
                     .sum::<u64>();
                 head.length -= removed;
                 if head.segments.is_empty() {
+                    let key = entry.key().clone();
                     entry.remove();
+                    view.remove_stream(&key);
                 }
             }
             view.bytes = bytes;
@@ -387,3 +541,16 @@ impl FileViews {
         })
     }
 }
+
+fn stream_key(key: &FileKey) -> bool {
+    matches!(
+        key,
+        FileKey::Task {
+            file: TaskFile::Chunk { .. } | TaskFile::TextHead { .. },
+            ..
+        }
+    )
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;

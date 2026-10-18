@@ -5,6 +5,36 @@ pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use tracing::field::Empty;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static BOX_LAYOUTS: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn record_box_layout<F>(_: &F) {
+    BOX_LAYOUTS.with(|layouts| {
+        if let Some((count, bytes)) = layouts.get() {
+            layouts.set(Some((count + 1, bytes + std::mem::size_of::<F>() as u64)));
+        }
+    });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn observe_box_layouts<R>(run: impl FnOnce() -> R) -> (R, (u64, u64)) {
+    BOX_LAYOUTS.with(|layouts| {
+        assert!(layouts.get().is_none(), "nested box layout observation");
+        layouts.set(Some((0, 0)));
+    });
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            BOX_LAYOUTS.set(None);
+        }
+    }
+    let _reset = Reset;
+    (run(), BOX_LAYOUTS.get().unwrap())
+}
+
 /// Records `outcome` and `error.kind` on the current span, then returns `result`.
 pub(crate) fn outcome<T>(result: crate::Result<T>) -> crate::Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -65,14 +95,17 @@ pub(crate) fn traced<'a, T: 'a>(
     #[cfg(not(target_arch = "wasm32"))]
     {
         let context = span.clone();
-        Box::pin(context.scope(async move {
+        let future = context.scope(async move {
             let result = future.await;
             span.record("outcome", if result.is_ok() { "ok" } else { "err" });
             if let Err(error) = &result {
                 span.record("error.kind", error.kind());
             }
             result
-        }))
+        });
+        #[cfg(test)]
+        record_box_layout(&future);
+        Box::pin(future)
     }
     #[cfg(target_arch = "wasm32")]
     {

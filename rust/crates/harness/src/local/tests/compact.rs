@@ -280,6 +280,7 @@ async fn checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tas
         FileKey::Task {
             task: Component::new(target.to_string()).map_err(super::super::storage)?,
             file: TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: 99,
                 sequence: 0,
             },

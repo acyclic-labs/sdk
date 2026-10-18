@@ -2,6 +2,11 @@
 use super::*;
 use std::cell::Cell;
 
+#[cfg(acyclic_loom)]
+mod sequence;
+#[cfg(acyclic_loom)]
+pub use sequence::verify_chunk_sequence_publication;
+
 mod journal;
 pub(crate) use journal::Journal;
 

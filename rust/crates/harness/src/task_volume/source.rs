@@ -114,15 +114,9 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             let index = self.index.lock().await;
             let generation = self.generation(&index);
             if generation.position == cursor.position && generation.commit == cursor.commit {
-                for range in query.ranges() {
-                    for (_, file) in index
-                        .files
-                        .range(range)
-                        .filter(|(_, file)| query.matches_file(&file.file))
-                    {
-                        include(&mut sizes, &mut bytes, &file.file, maximum_files)?;
-                    }
-                }
+                index.visit::<true>(query, |stored| {
+                    include(&mut sizes, &mut bytes, &stored.file, maximum_files)
+                })?;
                 return Ok((sizes, bytes));
             }
         }

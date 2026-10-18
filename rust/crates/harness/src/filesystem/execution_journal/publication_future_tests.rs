@@ -64,6 +64,7 @@ async fn fixture() -> Result<Journal> {
     )
 }
 
+mod invocation;
 mod legacy;
 use serde_json::Value;
 
@@ -335,7 +336,7 @@ async fn turn(
 }
 
 #[test]
-fn journal_unmetered_task_files_match_main() {
+fn journal_wrappers_preserve_atomic_unmetered_task_files() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -361,6 +362,28 @@ fn journal_unmetered_task_files_match_main() {
                 )
                 .await?;
                 let journal = fixture.execution(fixture.running(80).await?, operation)?;
+                // Independent stores need identical initial entropy: the atomic
+                // chunk transaction now authenticates the task-volume header.
+                fixture
+                    .stream
+                    .append(acyclic_stream::AppendRequest {
+                        path: acyclic_stream::StreamPath::new(format!(
+                            "harness/task-volumes/{}",
+                            fixture.storage.storage_name(&mut None)?
+                        ))?,
+                        records: vec![
+                            serde_json::to_vec(&serde_json::json!({
+                                "volume":"06060606-0606-0606-0606-060606060606",
+                                "epoch":"07070707-0707-0707-0707-070707070707",
+                                "schema":crate::task_volume::SCHEMA,
+                            }))
+                            .unwrap()
+                            .into(),
+                        ],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    })
+                    .await?;
                 let files = crate::task_volume::TaskFiles::open(
                     fixture.stream.clone(),
                     &fixture.storage,
@@ -373,49 +396,36 @@ fn journal_unmetered_task_files_match_main() {
             })
             .unwrap()
     };
-    for broken in [false, true] {
-        let [expected, actual] =
-            differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
-                runtime.block_on(async {
-                    let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
-                        .await
-                        .unwrap();
-                    if broken && !old {
-                        // Restore the erroneous unconditional publication on a fresh
-                        // candidate fixture; canonical journal bytes stay unchanged.
-                        let records = journal.records(operation, 0, 64, None).await.unwrap();
-                        let record = records
-                            .iter()
-                            .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
-                            .unwrap();
-                        journal
-                            .publish_chunk("model:0:event:0", &record.event, None)
-                            .await
-                            .unwrap();
-                    }
-                    let snapshot = journal
-                        .task_files
-                        .as_ref()
-                        .unwrap()
-                        .snapshot(&crate::task_volume::Query::Root, 16)
-                        .await
-                        .unwrap();
-                    (artifacts, snapshot.files)
-                })
-            });
-        assert_eq!(expected.0.0, actual.0.0);
-        assert!(expected.0.1.is_empty());
-        if broken {
-            assert_eq!(actual.0.1.len(), 1);
-            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
-            assert_ne!(
-                expected, actual,
-                "unconditional publication was not detected"
-            );
-        } else {
-            assert_eq!(expected, actual);
-        }
-    }
+    let [expected, actual] =
+        differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
+            runtime.block_on(async {
+                let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
+                    .await
+                    .unwrap();
+                let snapshot = journal
+                    .task_files
+                    .as_ref()
+                    .unwrap()
+                    .snapshot(&crate::task_volume::Query::Root, 16)
+                    .await
+                    .unwrap();
+                (artifacts, snapshot.files)
+            })
+        });
+    assert_eq!(
+        expected, actual,
+        "the wrapper changed atomic task-file publication"
+    );
+    assert_eq!(actual.0.1.len(), 1);
+    assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
+    let crate::task_volume::FileKey::Task {
+        file: crate::task_volume::TaskFile::Chunk { execution, .. },
+        ..
+    } = &actual.0.1[0].key
+    else {
+        panic!("chunk missing")
+    };
+    assert_eq!(*execution, operation);
 }
 
 fn journal_wrapper_observations(
@@ -424,6 +434,8 @@ fn journal_wrapper_observations(
         usize,
         acyclic_test_support::AllocationInfo,
         acyclic_test_support::AllocationInfo,
+        (u64, u64),
+        (u64, u64),
     ) -> proptest::test_runner::TestCaseResult,
 ) -> proptest::test_runner::TestCaseResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -460,24 +472,27 @@ fn journal_wrapper_observations(
                 || (),
                 |()| {
                     let mut outcome = None;
+                    let mut layouts = (0, 0);
                     let allocation = acyclic_test_support::measure(|| {
-                        outcome = Some(
-                            runtime
-                                .block_on(
-                                    run(
-                                        &Choice(&journal, old),
-                                        mode,
-                                        0,
-                                        (operation, "key", &event),
-                                        &file,
-                                        &oversized,
+                        (outcome, layouts) = crate::obs::observe_box_layouts(|| {
+                            Some(
+                                runtime
+                                    .block_on(
+                                        run(
+                                            &Choice(&journal, old),
+                                            mode,
+                                            0,
+                                            (operation, "key", &event),
+                                            &file,
+                                            &oversized,
+                                        )
+                                        .unwrap(),
                                     )
-                                    .unwrap(),
-                                )
-                                .map_err(|e| e.to_string()),
-                        );
+                                    .map_err(|e| e.to_string()),
+                            )
+                        });
                     });
-                    (outcome.unwrap(), allocation)
+                    (outcome.unwrap(), allocation, layouts)
                 },
             );
             assert_eq!(
@@ -495,16 +510,17 @@ fn journal_wrapper_observations(
         prop_assert!(after.0.0.is_err());
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(before.1, after.1);
+        let (before_layout, after_layout) = (before.0.2, after.0.2);
         let (before, after) = (before.0.1, after.0.1);
         prop_assert_eq!(after.count_total, before.count_total - 1);
-        observe(mode, before, after)?;
+        observe(mode, before, after, before_layout, after_layout)?;
     }
     Ok(())
 }
 
 #[test]
 fn journal_wrapper_frame_measurements() {
-    journal_wrapper_observations([1; 32], |mode, before, after| {
+    journal_wrapper_observations([1; 32], |mode, before, after, _, _| {
         eprintln!(
             "JOURNAL_FRAME {}",
             serde_json::json!({
@@ -579,13 +595,11 @@ proptest! {
     // wrapper's exact one-box saving from the full operation above.
     #[test]
     fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
-        let expected: Vec<u64> = serde_json::from_str(&std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/filesystem/execution_journal/publication_future_expected.json"),
-        ).unwrap()).unwrap();
-        prop_assert_eq!(expected.len(), 5);
-        journal_wrapper_observations(digest, |mode, before, after| {
-            let saved = expected[mode];
+        journal_wrapper_observations(digest, |mode, before, after, before_layout, after_layout| {
+            prop_assert_eq!(before_layout.0, 2);
+            prop_assert_eq!(after_layout.0, 1);
+            // Exact bytes come from concrete boxed layouts, including both outer frames.
+            let saved = before_layout.1 - after_layout.1;
             eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
             prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
             prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");

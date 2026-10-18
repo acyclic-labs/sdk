@@ -10,6 +10,13 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let encoded = serde_json::to_vec(&case).unwrap();
     let decoded: task_query_case::TaskQueryCase = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(case, decoded);
+    if let Ok(query) = acyclic_harness::task_volume::Query::folder(&case.folder) {
+        let bytes = serde_json::to_vec(&query).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<acyclic_harness::task_volume::Query>(&bytes).unwrap(),
+            query
+        );
+    }
     // Parse every input independently of fixture expectations and prior input failures.
     for input in &case.writes {
         if let Ok(file) = input.write() {

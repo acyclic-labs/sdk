@@ -203,6 +203,7 @@ fuzz_target!(|data: &[u8]| {
                                 task: acyclic_harness::task_volume::Component::new(&owner.id)
                                     .unwrap(),
                                 file: acyclic_harness::task_volume::TaskFile::Chunk {
+                                    execution: acyclic_harness::OperationId::from_bytes([0; 16]),
                                     turn: 0,
                                     sequence: index as u64,
                                 },

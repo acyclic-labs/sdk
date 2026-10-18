@@ -165,6 +165,7 @@ fn files() -> Vec<(FileKey, bool)> {
         (TaskFile::Completion(0), false),
         (
             TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: 0,
                 sequence: 0,
             },
@@ -172,6 +173,7 @@ fn files() -> Vec<(FileKey, bool)> {
         ),
         (
             TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: 0,
                 channel: Channel::Text,
             },
@@ -179,6 +181,7 @@ fn files() -> Vec<(FileKey, bool)> {
         ),
         (
             TaskFile::TextHead {
+                execution: crate::OperationId::from_bytes([0; 16]),
                 turn: 0,
                 channel: Channel::Reasoning,
             },

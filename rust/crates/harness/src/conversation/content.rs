@@ -45,8 +45,11 @@ impl<'a, T> BoundedContentFuture<'a, T> {
                         acyclic_fs::WorkCounters::UNCHARGED,
                     )?
                 };
+                let future = build();
+                #[cfg(test)]
+                crate::obs::record_box_layout(&future);
                 return Ok(Self {
-                    future: Box::pin(build()),
+                    future: Box::pin(future),
                     _hold: None,
                     _native: Some(native),
                 });
@@ -58,8 +61,11 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             }
         }
         let _ = io;
+        let future = build();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        crate::obs::record_box_layout(&future);
         Ok(Self {
-            future: Box::pin(build()),
+            future: Box::pin(future),
             #[cfg(feature = "filesystem")]
             _hold: hold,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

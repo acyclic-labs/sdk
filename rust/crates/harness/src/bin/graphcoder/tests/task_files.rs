@@ -67,6 +67,7 @@ async fn followed_task_files_render_without_a_wire_connection() {
         FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
             file: TaskFile::Chunk {
+                execution: acyclic_harness::OperationId::from_bytes([0; 16]),
                 turn: 0,
                 sequence: 0,
             },

@@ -527,6 +527,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         key: &StreamKey,
         bytes: OwnedBytes,
         event: &crate::executor::ExecutionEvent,
+        chunk: Option<crate::task_volume::JournalFile>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -534,12 +535,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if quota.work().is_some() {
             quota.adopt(path.as_str().len() as u64)?;
         }
-        self.append(
+        self.append_with_file(
             path,
             expected_tail,
             Some(key),
             bytes,
             Self::execution_write(operation, event)?,
+            chunk,
             quota.work(),
         )
         .await
@@ -586,7 +588,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<bool> {
-        use acyclic_stream::{CommitCondition, CommitOutcome, CommittedMutation};
+        self.append_with_file(path, expected_tail, key, bytes, write, None, work)
+            .await
+    }
+
+    async fn append_with_file(
+        &self,
+        path: acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: Option<&StreamKey>,
+        bytes: OwnedBytes,
+        write: crate::distributed::JournalWrite,
+        chunk: Option<crate::task_volume::JournalFile>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<bool> {
+        use acyclic_stream::{CommitCondition, CommitOutcome};
         let owner = self.condition(write, work).await?;
         let target =
             match crate::store::operations::bounds_with_work(&self.host.stream, &path, work).await?
@@ -630,7 +646,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             work,
         )?;
         let (key, held) = crate::distributed::digest_key(&digest, work)?;
-        let request = crate::distributed::journal_request::<true>(
+        let mut request = crate::distributed::journal_request::<true>(
             key,
             held,
             owner,
@@ -639,23 +655,52 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             bytes.clone(),
             work,
         )?;
-        let (outcome, retained) =
-            crate::distributed::commit(request, &self.host.stream, Some(self.operation_id()), None)
-                .await?;
+        if let Some(chunk) = &chunk {
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let measuring = request
+                .1
+                .work()
+                .as_deref()
+                .and_then(|work| work.original_native_work())
+                .map(crate::filesystem::PreparationIo::from_native_work)
+                .transpose()?;
+            let adding = async {
+                crate::distributed::add_condition(&mut request, chunk.condition.clone())?;
+                crate::distributed::add_record(
+                    &mut request,
+                    chunk.path.clone(),
+                    chunk.record.clone(),
+                )
+            };
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            crate::test_support::accounted::observe_chunk(adding, measuring.as_ref()).await?;
+            #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+            adding.await?;
+        }
+        let (outcome, retained) = crate::distributed::commit_journal(
+            request,
+            held,
+            &self.host.stream,
+            self.operation_id(),
+        )
+        .await?;
         let received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {
-                let valid = match envelope.mutations.as_slice() {
-                    [CommittedMutation::Append(append)] => {
-                        append.path == path
-                            && append.start == expected_tail
-                            && expected_tail.checked_add(1) == Some(append.end)
-                            && append.tail == append.end
-                            && matches!(append.records.as_slice(), [record] if record.sequence == expected_tail && record.value == bytes && record.commit_id == envelope.commit_id)
-                    }
-                    _ => false,
-                };
+                let valid = verify_append(envelope, &path, expected_tail, &bytes)
+                    && match &chunk {
+                        None => envelope.mutations.len() == 1,
+                        Some(chunk) => {
+                            let acyclic_stream::CommitCondition::Head { expected, .. } =
+                                &chunk.condition
+                            else {
+                                return Err(Error::Indeterminate(self.operation_id()));
+                            };
+                            envelope.mutations.len() == 2
+                                && verify_append(envelope, &chunk.path, *expected, &chunk.record)
+                        }
+                    };
                 if valid {
                     Ok(true)
                 } else {
@@ -722,4 +767,19 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.tool_output_schema = Some(output_schema);
         Ok(self)
     }
+}
+
+#[cfg(feature = "filesystem")]
+fn verify_append(
+    envelope: &acyclic_stream::CommittedEnvelope,
+    path: &acyclic_stream::StreamPath,
+    expected: u64,
+    bytes: &OwnedBytes,
+) -> bool {
+    envelope.mutations.iter().any(|mutation| {
+        let acyclic_stream::CommittedMutation::Append(append) = mutation else { return false };
+        &append.path == path && append.start == expected
+            && expected.checked_add(1) == Some(append.end) && append.tail == append.end
+            && matches!(append.records.as_slice(), [record] if record.sequence == expected && &record.value == bytes && record.commit_id == envelope.commit_id)
+    })
 }

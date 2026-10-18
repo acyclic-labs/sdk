@@ -35,8 +35,15 @@ alacritty_terminal = "0.26"
 name = "cli"
 path = "tests/cli.rs"
 
+[[test]]
+name = "live-progress"
+path = "tests/live_progress.rs"
+
 [dev-dependencies.axum]
 workspace = true
 
 [dev-dependencies.tempfile]
 version = "3.27.0"
+
+[dev-dependencies.acyclic-native-runtime]
+path = "../../../../native-runtime"

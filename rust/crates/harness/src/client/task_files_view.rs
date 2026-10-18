@@ -16,7 +16,6 @@ pub struct TaskQueryView<'a> {
     pub task: &'a Component,
     #[cfg(feature = "tui")]
     pub(crate) source: &'a Arc<Query>,
-    #[cfg(feature = "tui")]
     selection: &'a FileQueryView,
     files: &'a BTreeMap<FileKey, HeadFile>,
     selected: std::collections::btree_map::Range<'a, FileKey, HeadFile>,
@@ -25,6 +24,8 @@ pub struct TaskQueryView<'a> {
 /// One model stream, including its exact chunk watermark.
 #[derive(Clone, Copy)]
 pub struct TaskTextView<'a> {
+    /// Execution identity; ordinals may restart in another execution.
+    pub execution: crate::OperationId,
     /// Model turn/attempt identity.
     pub turn: u64,
     /// Text or reasoning; never mix their independent UTF-8 boundaries.
@@ -55,7 +56,6 @@ impl FileQueryView {
             task,
             #[cfg(feature = "tui")]
             source: self.source(),
-            #[cfg(feature = "tui")]
             selection: self,
             files: self.files(),
             selected: self.files().range(range),
@@ -74,6 +74,11 @@ impl ClientViews {
 }
 impl<'a> TaskQueryView<'a> {
     #[cfg(feature = "tui")]
+    pub(crate) fn text_changed_before(&self, from: &FileKey, since: u64, channel: Channel) -> bool {
+        self.selection
+            .text_changed_before(self.task, from, since, channel)
+    }
+    #[cfg(feature = "tui")]
     pub(crate) fn selection(&self) -> &'a FileQueryView {
         self.selection
     }
@@ -89,28 +94,30 @@ impl<'a> TaskQueryView<'a> {
         &self,
         from: Option<&FileKey>,
     ) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
-        let (mut lower, upper) = Query::Task(self.task.clone())
-            .ranges()
-            .pop()
-            .expect("task range");
-        if let Some(from) = from {
-            lower = std::ops::Bound::Included(from.clone());
-        }
-        self.files.range((lower, upper)).filter_map(|(_, file)| {
-            let FileKey::Task { file: kind, .. } = &file.key else {
-                return None;
-            };
-            let (turn, channel) = match kind {
-                TaskFile::TextHead { turn, channel } => (*turn, *channel),
-                TaskFile::Chunk { turn, .. } => (*turn, file.channel?),
-                _ => return None,
-            };
-            Some(TaskTextView {
-                turn,
-                channel,
-                file,
+        self.selection
+            .text_files(self.task, from)
+            .filter_map(|file| {
+                let FileKey::Task { file: kind, .. } = &file.key else {
+                    return None;
+                };
+                let (execution, turn, channel) = match kind {
+                    TaskFile::TextHead {
+                        execution,
+                        turn,
+                        channel,
+                    } => (*execution, *turn, *channel),
+                    TaskFile::Chunk {
+                        execution, turn, ..
+                    } => (*execution, *turn, file.channel?),
+                    _ => return None,
+                };
+                Some(TaskTextView {
+                    execution,
+                    turn,
+                    channel,
+                    file,
+                })
             })
-        })
     }
     /// Exact task files in numeric identity order, retaining canonical metadata.
     pub fn files(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
@@ -119,21 +126,30 @@ impl<'a> TaskQueryView<'a> {
     /// Selected text/reasoning heads, or raw chunks from an ordinary query.
     /// A raw chunk's identity remains in `file.key`; heads include through_sequence.
     pub fn text(&self) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
-        self.files().filter_map(|file| {
-            let FileKey::Task { file: kind, .. } = &file.key else {
-                unreachable!()
-            };
-            let (turn, channel) = match kind {
-                TaskFile::TextHead { turn, channel } => (*turn, *channel),
-                TaskFile::Chunk { turn, .. } => (*turn, file.channel?),
-                _ => return None,
-            };
-            Some(TaskTextView {
-                turn,
-                channel,
-                file,
+        self.selection
+            .text_files(self.task, None)
+            .filter_map(|file| {
+                let FileKey::Task { file: kind, .. } = &file.key else {
+                    unreachable!()
+                };
+                let (execution, turn, channel) = match kind {
+                    TaskFile::TextHead {
+                        execution,
+                        turn,
+                        channel,
+                    } => (*execution, *turn, *channel),
+                    TaskFile::Chunk {
+                        execution, turn, ..
+                    } => (*execution, *turn, file.channel?),
+                    _ => return None,
+                };
+                Some(TaskTextView {
+                    execution,
+                    turn,
+                    channel,
+                    file,
+                })
             })
-        })
     }
     /// Unique tool folders, including a retained output tail without its request.
     pub fn tools(&self) -> impl Iterator<Item = ToolQueryView<'a>> + use<'a> {

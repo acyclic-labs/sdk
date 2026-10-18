@@ -16,7 +16,7 @@ pub(super) fn append<'a>(
                 journal
                     .append_validated(operation, None, key, event, Some(&local))
                     .await?;
-                journal.publish_chunk(key, event, Some(&local)).await
+                publish_chunk(journal, key, event, Some(&local)).await
             }
             .await;
             let retained = local.owned_bytes()?;
@@ -29,7 +29,7 @@ pub(super) fn append<'a>(
                 .append_validated(operation, None, key, event, io)
                 .await?;
             if io.is_some() {
-                journal.publish_chunk(key, event, io).await?;
+                publish_chunk(journal, key, event, io).await?;
             }
             Ok(())
         })
@@ -183,4 +183,68 @@ pub(super) fn stage<'a>(
         )
         .await
     })
+}
+
+// Frozen pre-atomic publication used only by the old factory baseline.
+use crate::task_volume::{Channel, Component, FileKey, FileValue, TaskFile};
+pub(super) async fn publish_chunk(
+    journal: &Journal,
+    key: &str,
+    event: &ExecutionEvent,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    let (Some(files), Some((owner, _))) = (&journal.task_files, &journal.owner) else {
+        return Ok(());
+    };
+    let ExecutionEvent::Model {
+        step,
+        purpose: crate::executor::ModelPurpose::Response,
+        ..
+    } = event
+    else {
+        return Ok(());
+    };
+    let Some(model) = journal.verify_event_refs_with_io(event, io).await? else {
+        return Ok(());
+    };
+    let (channel, delta) = match model {
+        ModelEvent::Content { delta } => (Channel::Text, delta),
+        ModelEvent::Reasoning { delta } => (Channel::Reasoning, delta),
+        _ => return Ok(()),
+    };
+    let sequence = key
+        .rsplit(':')
+        .next()
+        .and_then(|part| part.parse().ok())
+        .ok_or_else(|| Error::Invalid("model event has no canonical ordinal".into()))?;
+    let value = FileValue {
+        requester: None,
+        publication: None,
+        key: FileKey::Task {
+            task: Component::new(owner.task_id().to_string())?,
+            file: TaskFile::Chunk {
+                execution: OperationId::from_bytes([0; 16]),
+                turn: u64::from(*step),
+                sequence,
+            },
+        },
+        channel: Some(channel),
+        bytes: delta.into_bytes().into(),
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let work = io.and_then(PreparationIo::original_native_work);
+    #[cfg(target_arch = "wasm32")]
+    let work = None;
+    loop {
+        let head = files.inner.head().await?;
+        match files
+            .inner
+            .append_if(head, &value, Vec::new(), None, work)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(crate::task_volume::Error::Conflict(_)) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
 }

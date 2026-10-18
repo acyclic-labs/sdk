@@ -50,7 +50,7 @@ impl Cursor {
 /// One atomic-cut snapshot; file payloads remain shared segment slices.
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
-    /// Current matching files in typed identity order (chunk sequences are numeric).
+    /// Current matching files; assistant chunks follow durable publication order.
     pub files: Vec<FileValue>,
     /// Exclusive publication cut; subsequent follow begins here.
     pub cursor: Cursor,
@@ -136,6 +136,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
 
     /// Captures a finite snapshot and cursor under one publication cut.
     pub async fn snapshot(&self, query: &Query, maximum_files: usize) -> Result<Snapshot> {
+        self.snapshot_index::<true>(query, maximum_files).await
+    }
+
+    pub(super) async fn snapshot_index<const SCOPED: bool>(
+        &self,
+        query: &Query,
+        maximum_files: usize,
+    ) -> Result<Snapshot> {
         self.refresh().await?;
         let index = self.index.lock().await;
         let files = if matches!(
@@ -146,20 +154,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         } else if let Query::CommandSession { session, recent } = query {
             super::command_query::snapshot(&index, session, *recent, maximum_files)?
         } else {
-            let mut files = Vec::new();
-            for range in query.ranges() {
-                for (_, file) in index
-                    .files
-                    .range(range)
-                    .filter(|(_, file)| query.snapshot_matches_file(&file.file))
-                {
-                    if files.len() == maximum_files {
-                        return Err(Error::LimitExceeded);
-                    }
-                    files.push(file.file.clone());
-                }
-            }
-            files
+            index.select::<SCOPED>(query, maximum_files)?
         };
         let generation = self.generation(&index);
         drop(index);

@@ -27,7 +27,11 @@ pub fn text(views: &mut ClientViews, task: &str, sequence: u64, reasoning: bool,
         views,
         FileKey::Task {
             task: Component::new(task).unwrap(),
-            file: TaskFile::Chunk { turn: 0, sequence },
+            file: TaskFile::Chunk {
+                execution: harness::OperationId::from_bytes([0; 16]),
+                turn: 0,
+                sequence,
+            },
         },
         bytes.to_vec(),
         Some(if reasoning {

@@ -44,6 +44,8 @@ pub use content_publisher::FilesystemContentPublisher;
 
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+#[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+pub use execution_journal::verify_cached_summary_publication;
 mod fork_preparer;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::AllocationClaim;

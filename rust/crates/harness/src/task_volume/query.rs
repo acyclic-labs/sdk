@@ -82,6 +82,15 @@ pub enum Query {
         /// Turn/attempt identity.
         turn: u64,
     },
+    /// One execution's immutable assistant chunks within a model step.
+    ExecutionChunks {
+        /// Task identity.
+        task: Component,
+        /// Model step.
+        turn: u64,
+        /// Unique execution journal identity.
+        execution: crate::OperationId,
+    },
     /// Tool invocations in one turn.
     Tools {
         /// Task identity.
@@ -140,8 +149,13 @@ impl Query {
         let chunks = |task: &Component, turn: u64| {
             range(
                 task,
-                TaskFile::Chunk { turn, sequence: 0 },
                 TaskFile::Chunk {
+                    execution: crate::OperationId::from_bytes([0; 16]),
+                    turn,
+                    sequence: 0,
+                },
+                TaskFile::Chunk {
+                    execution: crate::OperationId::from_bytes([255; 16]),
                     turn,
                     sequence: u64::MAX,
                 },
@@ -268,11 +282,42 @@ impl Query {
                     tools(task, *turn, &minimum, &maximum),
                 ];
             }
-            Self::Chunks { task, turn }
-            | Self::File(FileKey::Task {
+            Self::Chunks { task, turn } => chunks(task, *turn),
+            Self::ExecutionChunks {
                 task,
-                file: TaskFile::TextHead { turn, .. },
-            }) => chunks(task, *turn),
+                turn,
+                execution,
+            } => range(
+                task,
+                TaskFile::Chunk {
+                    turn: *turn,
+                    execution: *execution,
+                    sequence: 0,
+                },
+                TaskFile::Chunk {
+                    turn: *turn,
+                    execution: *execution,
+                    sequence: u64::MAX,
+                },
+            ),
+            Self::File(FileKey::Task {
+                task,
+                file: TaskFile::TextHead {
+                    turn, execution, ..
+                },
+            }) => range(
+                task,
+                TaskFile::Chunk {
+                    turn: *turn,
+                    execution: *execution,
+                    sequence: 0,
+                },
+                TaskFile::Chunk {
+                    turn: *turn,
+                    execution: *execution,
+                    sequence: u64::MAX,
+                },
+            ),
             Self::Tools { task, turn } => tools(task, *turn, &minimum, &maximum),
             Self::Tool { task, turn, call } => tools(task, *turn, call, call),
             Self::Requests(task) => {
@@ -354,6 +399,22 @@ impl Query {
                     ..
                 },
             ) => true,
+            (
+                Self::ExecutionChunks {
+                    task: t,
+                    turn,
+                    execution,
+                },
+                FileKey::Task {
+                    task,
+                    file:
+                        TaskFile::Chunk {
+                            turn: found_turn,
+                            execution: found,
+                            ..
+                        },
+                },
+            ) => t == task && turn == found_turn && execution == found,
             (Self::Root, _)
             | (Self::Plans, FileKey::Plan(_))
             | (Self::Agents, FileKey::Agent(_))
@@ -372,14 +433,22 @@ impl Query {
             (
                 Self::File(FileKey::Task {
                     task: t,
-                    file: TaskFile::TextHead { turn, .. },
+                    file:
+                        TaskFile::TextHead {
+                            turn, execution, ..
+                        },
                 }),
                 FileKey::Task {
                     task,
-                    file: TaskFile::Chunk { turn: n, .. },
+                    file:
+                        TaskFile::Chunk {
+                            turn: n,
+                            execution: found,
+                            ..
+                        },
                 },
-            )
-            | (
+            ) => t == task && turn == n && execution == found,
+            (
                 Self::Chunks { task: t, turn },
                 FileKey::Task {
                     task,
@@ -525,6 +594,13 @@ impl Query {
                 task: component(t)?,
                 turn: number(n)?,
             },
+            [".tasks", t, "turns", n, "chunks" | "executions", execution] => {
+                Self::ExecutionChunks {
+                    task: component(t)?,
+                    turn: number(n)?,
+                    execution: super::execution_id(execution)?,
+                }
+            }
             [".tasks", t, "turns", n, "tools"] => Self::Tools {
                 task: component(t)?,
                 turn: number(n)?,

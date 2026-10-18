@@ -64,6 +64,7 @@ async fn scenario<const BOUND: bool, const BACKGROUND: bool>(query: &str) {
             task: Component::new(task.to_string()).unwrap(),
             file: TaskFile::Chunk {
                 turn: 0,
+                execution: crate::OperationId::from_bytes([0; 16]),
                 sequence: 0,
             },
         },

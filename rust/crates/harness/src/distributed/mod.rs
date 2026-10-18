@@ -31,8 +31,8 @@ mod completion;
 mod coordinator;
 mod journal;
 mod observe;
-mod origins;
 mod origin_locator;
+mod origins;
 mod proof;
 mod results;
 mod scheduling;
@@ -43,11 +43,11 @@ mod tests;
 
 #[cfg(feature = "filesystem")]
 pub(crate) use authority::JournalWrite;
-#[cfg(feature = "filesystem")]
-pub(crate) use commit::journal_request;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use commit::native_call_result;
 pub(crate) use commit::{CommitPhase, add_condition, add_record, append, commit, commit_request};
+#[cfg(feature = "filesystem")]
+pub(crate) use commit::{commit_journal, journal_request};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) use completion::prepare_materialization_commit;
 pub use coordinator::DistributedCoordinator;
@@ -72,3 +72,7 @@ const COORDINATOR_WIRE_VERSION: &str = "3";
 const COORDINATOR_WIRE_DIGEST: &str =
     "667265d00a51e8a59c84844f5e9e9ab38f9fd2118921d50b044b023cc3f7fed6";
 const READ_PAGE_SIZE: u32 = 1_024;
+
+/// Real prepared-transaction race for the dedicated Loom target.
+#[cfg(all(acyclic_harness_loom, acyclic_loom, feature = "filesystem"))]
+pub use commit::verify_prepared_journal_identity;

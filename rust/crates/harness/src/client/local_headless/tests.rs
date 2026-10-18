@@ -115,7 +115,7 @@ proptest! {
             for sequence in 0..count {
                 let file = FileValue { requester: None, publication: None,
                     key: FileKey::Task { task: Component::new(crate::runtime::task_id_for_admission(operation).to_string()).unwrap(),
-                        file: TaskFile::Chunk { turn: if turns { (sequence / 64) as u64 } else { 0 }, sequence: sequence as u64 } },
+                        file: TaskFile::Chunk { execution: crate::OperationId::from_bytes([0; 16]), turn: if turns { (sequence / 64) as u64 } else { 0 }, sequence: sequence as u64 } },
                     channel: Some(crate::task_volume::Channel::Text), bytes: vec![b'x'].into() };
                 generation = volume.append(generation, &file).await.unwrap();
                 query.publish_next(async |change| {

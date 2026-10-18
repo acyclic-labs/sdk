@@ -166,6 +166,17 @@ impl NativeMaterializationWork {
     pub fn shares_allocation_context(&self, other: &Self) -> bool {
         self.shares_ledger(other) && self.shares_resource_allowance(other)
     }
+    /// Whether contexts use the same allocation scope and invocation cancellation.
+    pub fn shares_invocation_context(&self, other: &Self) -> bool {
+        let same_invocation = match (&self.invocation, &other.invocation) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        self.shares_allocation_context(other)
+            && same_invocation
+            && self.cancellation().same_state(other.cancellation())
+    }
     pub(crate) fn allocation_work(&self) -> Self {
         Self {
             recheck_items: false,

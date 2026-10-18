@@ -1,9 +1,38 @@
-use super::{observe, pair, record};
+use super::{observe, pair, record, reserve};
 use proptest::prelude::*;
 use std::{
     cell::Cell,
     panic::{AssertUnwindSafe, catch_unwind},
 };
+
+#[test]
+fn observer_reservation_excludes_trace_allocations_with_negative_control() {
+    assert_eq!(reserve::<u8>(0), None);
+    let capture = |reserved| {
+        observe::<_, _, u8>(
+            || (),
+            |()| {
+                let capacity = reserve::<u8>(if reserved { 2 } else { 0 }).unwrap();
+                let measured = crate::measure(|| {
+                    record(1u8);
+                    record(2u8);
+                });
+                if reserved {
+                    assert_eq!(reserve::<u8>(0), Some(capacity));
+                }
+                measured.count_total
+            },
+        )
+    };
+    let candidate = capture(true);
+    let control = capture(false);
+    assert_eq!(candidate.1, control.1);
+    assert_eq!(candidate.0, 0);
+    assert!(
+        control.0 > 0,
+        "missing reservation must pollute the same measurement"
+    );
+}
 
 proptest! {
     #[test]

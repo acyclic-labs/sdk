@@ -53,7 +53,11 @@ fn writes(rows: &[(u8, u8, u8, u8)]) -> BTreeMap<FileKey, Write> {
                 } else {
                     Channel::Reasoning
                 });
-                TaskFile::Chunk { turn, sequence }
+                TaskFile::Chunk {
+                    execution: acyclic_harness::OperationId::from_bytes([0; 16]),
+                    turn,
+                    sequence,
+                }
             }
             kind => TaskFile::Tool {
                 turn,
@@ -110,13 +114,24 @@ fn check(view: TaskQueryView<'_>, source: &BTreeMap<FileKey, HeadFile>, fault: F
         .collect();
     if actual_text.iter().any(|text| match &text.file.key {
         FileKey::Task {
-            file: TaskFile::Chunk { turn, .. },
+            file: TaskFile::Chunk {
+                execution, turn, ..
+            },
             ..
-        } => text.turn != *turn || Some(text.channel) != text.file.channel,
+        } => {
+            text.execution != *execution
+                || text.turn != *turn
+                || Some(text.channel) != text.file.channel
+        }
         FileKey::Task {
-            file: TaskFile::TextHead { turn, channel },
+            file:
+                TaskFile::TextHead {
+                    execution,
+                    turn,
+                    channel,
+                },
             ..
-        } => text.turn != *turn || text.channel != *channel,
+        } => text.execution != *execution || text.turn != *turn || text.channel != *channel,
         _ => true,
     }) {
         return false;

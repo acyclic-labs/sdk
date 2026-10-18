@@ -37,6 +37,7 @@ async fn scenario<const BOUND: bool>(row: &Value, rename: &str, remap: bool) {
     for (file, channel, text) in [
         (
             TaskFile::Chunk {
+                execution: OperationId::from_bytes([0; 16]),
                 turn: 0,
                 sequence: 0,
             },

@@ -242,7 +242,9 @@ where
             interactions,
             owner: None,
             execution: None,
-            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
+            verified: crate::sync::Mutex::new(VerifiedSummary::default()),
+            #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+            append_probe: cache::AppendProbe::default(),
             conversation_projection: tokio::sync::Mutex::new(None),
             history_read_limits: None,
             task_files: None,

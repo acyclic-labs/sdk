@@ -1,5 +1,20 @@
 use super::*;
 
+// Keep ordinary append allocation shape intact. Only model builds heap-place
+// lazy child futures before polling them on Loom's coroutine stack.
+macro_rules! journal_future {
+    ($make:expr, $ordinary:expr) => {{
+        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+        {
+            super::cache::model_future($make).await
+        }
+        #[cfg(not(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom)))]
+        {
+            $ordinary.await
+        }
+    }};
+}
+
 #[derive(Serialize)]
 struct BorrowedObservation<'a> {
     version: u32,
@@ -33,7 +48,7 @@ where
             .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
         loop {
             let before = io.map(PreparationIo::owned_bytes).transpose()?;
-            let (page_hold, page) = {
+            let (page_hold, page, fence) = {
                 let page = match io {
                     #[cfg(not(target_arch = "wasm32"))]
                     Some(io) if io.original_native_work().is_some() => {
@@ -41,49 +56,107 @@ where
                             io.invalid("execution replay requires original native work")
                         })?;
                         crate::NativeFutureBundle::new(work, || {
-                            self.replay_page(
+                            #[cfg(all(
+                                feature = "model-checking",
+                                acyclic_harness_loom,
+                                acyclic_loom
+                            ))]
+                            {
+                                let (tail, fence) = (summary.tail, summary.fence);
+                                return super::cache::model_future(move || {
+                                    self.replay_page_fenced(
+                                        operation,
+                                        tail,
+                                        EXECUTION_REPLAY_PAGE_RECORDS,
+                                        true,
+                                        fence,
+                                        Some(io),
+                                    )
+                                });
+                            }
+                            #[cfg(not(all(
+                                feature = "model-checking",
+                                acyclic_harness_loom,
+                                acyclic_loom
+                            )))]
+                            self.replay_page_fenced(
                                 operation,
                                 summary.tail,
                                 EXECUTION_REPLAY_PAGE_RECORDS,
                                 true,
+                                summary.fence,
                                 Some(io),
                             )
                         })?
                         .await?
                     }
                     Some(io) => {
-                        Box::pin(self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            Some(io),
-                        ))
-                        .await?
+                        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                        {
+                            let (tail, fence) = (summary.tail, summary.fence);
+                            super::cache::model_future(move || {
+                                self.replay_page_fenced(
+                                    operation,
+                                    tail,
+                                    EXECUTION_REPLAY_PAGE_RECORDS,
+                                    true,
+                                    fence,
+                                    Some(io),
+                                )
+                            })
+                            .await?
+                        }
+                        #[cfg(not(all(
+                            feature = "model-checking",
+                            acyclic_harness_loom,
+                            acyclic_loom
+                        )))]
+                        {
+                            Box::pin(self.replay_page_fenced(
+                                operation,
+                                summary.tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                summary.fence,
+                                Some(io),
+                            ))
+                            .await?
+                        }
                     }
                     None => {
-                        self.replay_page(
-                            operation,
-                            summary.tail,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            true,
-                            None,
-                        )
-                        .await?
+                        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                        let (tail, fence) = (summary.tail, summary.fence);
+                        journal_future!(
+                            move || self.replay_page_fenced(
+                                operation,
+                                tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                fence,
+                                None,
+                            ),
+                            self.replay_page_fenced(
+                                operation,
+                                summary.tail,
+                                EXECUTION_REPLAY_PAGE_RECORDS,
+                                true,
+                                summary.fence,
+                                None,
+                            )
+                        )?
                     }
                 };
+                let (page, fence) = page;
                 let page_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                     _ => None,
                 };
-                (page_hold, page)
+                (page_hold, page, fence)
             };
             if page.is_empty() {
                 return Ok(());
             }
-            for (record, model) in page {
-                summary.accept(&record, model.as_ref(), limits, io)?;
-            }
+            summary.accept_page(page, fence, limits, io)?;
             drop(page_hold);
         }
     }
@@ -110,7 +183,13 @@ where
                 None
             };
             let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            if let Some(shared) = shared.as_deref_mut() {
+                shared.bind(*operation, io)?;
+            }
+            let summary = shared
+                .as_deref_mut()
+                .map(|cache| &mut cache.summary)
+                .unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             self.refresh_summary(*operation, summary, io).await?;
             let summary_hold = io
@@ -189,7 +268,18 @@ where
                 None
             };
             let mut transient = ExecutionSummary::default();
-            let summary = shared.as_deref_mut().unwrap_or(&mut transient);
+            if let Some(shared) = shared.as_deref_mut() {
+                shared.bind(
+                    self.owner
+                        .as_ref()
+                        .map_or(command, |(_, operation)| *operation),
+                    io,
+                )?;
+            }
+            let summary = shared
+                .as_deref_mut()
+                .map(|cache| &mut cache.summary)
+                .unwrap_or(&mut transient);
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let result = async {
                 let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
@@ -252,7 +342,7 @@ where
         self.verify_canonical_publication_with_io(operation_id, event, limits, io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
-        let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
+        let _retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(64)?;
             let copying = acyclic_fs::WorkCounters {
@@ -328,80 +418,159 @@ where
                 work,
             )
         })?;
-        let mut shared = if io.is_none() {
+        #[cfg(not(target_arch = "wasm32"))]
+        let cacheable = io.is_none() || io.and_then(PreparationIo::original_native_work).is_some();
+        #[cfg(target_arch = "wasm32")]
+        let cacheable = io.is_none();
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let cacheable = cacheable && !crate::test_support::accounted::append_scan_enabled();
+        let mut shared = if cacheable {
             Some(self.verified.lock().await)
         } else {
             None
         };
-        let mut transient = ExecutionSummary::default();
-        let summary = shared.as_deref_mut().unwrap_or(&mut transient);
-        loop {
-            self.refresh_summary(operation_id, summary, io).await?;
-            if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .verify_execution(
-                        operation_id,
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await?;
+        #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+        let _append_scope = {
+            // Negative control shortens the actual production guard lifetime.
+            if self.append_probe.release_early {
+                drop(shared.take());
             }
-            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
-                if *previous != event_digest {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if io.is_some() {
-                        return Err(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Conflict,
-                            reason: "execution journal retry identity reused",
-                        });
-                    }
-                    return Err(Error::Conflict(
-                        "execution journal retry identity reused".into(),
-                    ));
+            self.append_probe.enter()
+        };
+        let mut transient = VerifiedSummary::default();
+        let cache = shared.as_deref_mut().unwrap_or(&mut transient);
+        cache.bind(operation_id, io)?;
+        let VerifiedSummary { summary, funding } = cache;
+        let summary_io = funding.as_ref().or(io);
+        let result = async {
+            loop {
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let current = &mut *summary;
+                journal_future!(
+                    move || self.refresh_summary(operation_id, current, summary_io),
+                    self.refresh_summary(operation_id, summary, summary_io)
+                )?;
+                if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let mut history = borrowed
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let work = &mut history;
+                    journal_future!(
+                        move || owner.verify_execution(operation_id, event, work),
+                        owner.verify_execution(
+                            operation_id,
+                            event,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo)
+                        )
+                    )?;
                 }
-                return Ok(expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence)));
-            }
-            if expected_tail.is_some_and(|tail| tail != summary.tail) {
-                return Ok(false);
-            }
-            summary.validate_next(event, model.as_ref(), limits, io)?;
-            let committed = if let Some(owner) = owner {
-                let mut borrowed = io.map(PreparationIo::history_io);
-                owner
-                    .append_execution(
-                        operation_id,
-                        summary.tail,
-                        &key,
-                        bytes.clone(),
-                        event,
-                        &mut borrowed
-                            .as_mut()
-                            .map(|io| io as &mut dyn crate::store::history::HistoryIo),
-                    )
-                    .await?
-            } else {
-                self.append_local_with_io(
-                    &observation,
-                    summary.tail,
-                    key.clone(),
-                    bytes.clone(),
-                    io,
-                )
-                .await?
-            };
-            if committed {
-                drop(key);
-                drop(key_hold);
-                drop(bytes);
-                drop(body_hold);
-                drop(retry_digest);
-                drop(retry_hold);
-                return Ok(true);
+                if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+                    if *previous != event_digest {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if io.is_some() {
+                            return Err(Error::NativeBoundary {
+                                code: crate::wire::ErrorCode::Conflict,
+                                reason: "execution journal retry identity reused",
+                            });
+                        }
+                        return Err(Error::Conflict(
+                            "execution journal retry identity reused".into(),
+                        ));
+                    }
+                    return Ok(
+                        expected_tail.is_none_or(|tail| tail.checked_add(1) == Some(*sequence))
+                    );
+                }
+                if expected_tail.is_some_and(|tail| tail != summary.tail) {
+                    return Ok(false);
+                }
+                summary.validate_next(event, model.as_ref(), limits, io)?;
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let model_ref = model.as_ref();
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let preparing = super::cache::model_future(move || {
+                    self.prepare_chunk(operation_id, event, model_ref, io)
+                });
+                #[cfg(not(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom)))]
+                let preparing = self.prepare_chunk(operation_id, event, model.as_ref(), io);
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let chunk = crate::test_support::accounted::observe_chunk(preparing, io).await;
+                #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+                let chunk = preparing.await;
+                let chunk = match chunk {
+                    Err(Error::TaskFiles(error))
+                        if matches!(*error, crate::task_volume::Error::SequenceConflict(_)) =>
+                    {
+                        continue;
+                    }
+                    result => result?,
+                };
+                let committed = if let Some(owner) = owner {
+                    let mut borrowed = io.map(PreparationIo::history_io);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let mut history = borrowed
+                        .as_mut()
+                        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let work = &mut history;
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let (tail, key_ref, content) = (summary.tail, &key, bytes.clone());
+                    journal_future!(
+                        move || owner.append_execution(
+                            operation_id,
+                            tail,
+                            key_ref,
+                            content,
+                            event,
+                            chunk,
+                            work,
+                        ),
+                        owner.append_execution(
+                            operation_id,
+                            summary.tail,
+                            &key,
+                            bytes.clone(),
+                            event,
+                            chunk,
+                            &mut borrowed
+                                .as_mut()
+                                .map(|io| io as &mut dyn crate::store::history::HistoryIo),
+                        )
+                    )?
+                } else {
+                    #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                    let (view, tail, key, content) =
+                        (&observation, summary.tail, key.clone(), bytes.clone());
+                    journal_future!(
+                        move || self.append_local_with_io(view, tail, key, content, io),
+                        self.append_local_with_io(
+                            &observation,
+                            summary.tail,
+                            key.clone(),
+                            bytes.clone(),
+                            io
+                        )
+                    )?
+                };
+                if committed {
+                    drop(key);
+                    drop(key_hold);
+                    drop(bytes);
+                    drop(body_hold);
+                    return Ok(true);
+                }
             }
         }
+        .await;
+        if result.is_err() {
+            cache.clear();
+        }
+        result
     }
 
     async fn append_local_with_io(
@@ -429,26 +598,47 @@ where
         let appended = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                crate::distributed::append(
-                    (&stream, &self.stream),
-                    [bytes],
-                    0,
-                    Some(tail),
-                    key,
-                    operation_id,
-                    &mut Some(&mut borrowed),
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let stream_ref = &stream;
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let mut history = Some(&mut borrowed as &mut dyn crate::store::history::HistoryIo);
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let work = &mut history;
+                journal_future!(
+                    move || crate::distributed::append(
+                        (stream_ref, &self.stream),
+                        [bytes],
+                        0,
+                        Some(tail),
+                        key,
+                        operation_id,
+                        work,
+                    ),
+                    crate::distributed::append(
+                        (&stream, &self.stream),
+                        [bytes],
+                        0,
+                        Some(tail),
+                        key,
+                        operation_id,
+                        &mut Some(&mut borrowed),
+                    )
                 )
-                .await
             }
-            None => stream
-                .append_batch(vec![bytes], Some(tail), Some(key))
-                .await
+            None => {
+                #[cfg(all(feature = "model-checking", acyclic_harness_loom, acyclic_loom))]
+                let stream_ref = &stream;
+                journal_future!(
+                    move || stream_ref.append_batch(vec![bytes], Some(tail), Some(key)),
+                    stream.append_batch(vec![bytes], Some(tail), Some(key))
+                )
                 .map_err(|error| match error {
                     StreamError::IdempotencyMismatch => {
                         Error::Conflict("execution journal retry identity reused".into())
                     }
                     _ => Error::Indeterminate(operation_id),
-                }),
+                })
+            }
         };
         drop(stream);
         drop(path_hold);
@@ -486,7 +676,10 @@ where
                     }) => error,
                     error => return Err(error),
                 };
-                let records = self.replay_page(operation_id, tail, 1, true, io).await?;
+                let records = journal_future!(
+                    move || self.replay_page(operation_id, tail, 1, true, io),
+                    self.replay_page(operation_id, tail, 1, true, io)
+                )?;
                 if records.iter().any(|(record, _)| {
                     record.idempotency_key == retry_digest && &record.event == event
                 }) {

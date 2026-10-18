@@ -37,6 +37,23 @@ where
         retain_models: bool,
         io: Option<&PreparationIo>,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
+        self.replay_page_fenced(operation_id, after, maximum, retain_models, None, io)
+            .await
+            .map(|(records, _)| records)
+    }
+
+    pub(super) async fn replay_page_fenced(
+        &self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+        retain_models: bool,
+        fence: Option<acyclic_stream::CommitId>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        Vec<(ExecutionRecord, Option<ModelEvent>)>,
+        Option<acyclic_stream::CommitId>,
+    )> {
         #[cfg(not(target_arch = "wasm32"))]
         let recheck = io
             .and_then(PreparationIo::original_native_work)
@@ -96,8 +113,8 @@ where
             let mut entries = match crate::store::operations::read_records(
                 &self.stream,
                 stream.path(),
-                after,
-                page_maximum,
+                after.saturating_sub(u64::from(fence.is_some())),
+                page_maximum + u32::from(fence.is_some()),
                 &mut work,
             )
             .await?
@@ -107,7 +124,14 @@ where
                     if let Some(io) = io {
                         io.check_cancellation()?;
                     }
-                    return Ok(result);
+                    if fence.is_some() {
+                        return Err(canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "execution journal lost its retained cursor",
+                        ));
+                    }
+                    return Ok((result, fence));
                 }
                 Err(error) => {
                     return Err(Self::journal_read_stream_error(
@@ -117,6 +141,24 @@ where
                     ));
                 }
             };
+            if let Some(expected) = fence {
+                let anchor = entries.next(&mut work).await?.ok_or_else(|| {
+                    canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "execution journal lost its retained cursor",
+                    )
+                })?;
+                if !super::cache::matches_anchor(after, expected, anchor.sequence, anchor.commit_id)
+                {
+                    return Err(canonical_boundary(
+                        io,
+                        crate::wire::ErrorCode::Storage,
+                        "execution journal cursor was replaced",
+                    ));
+                }
+            }
+            let mut next_fence = fence;
             if io.is_none() {
                 result
                     .try_reserve_exact(entries.size_hint().1.unwrap_or(capacity).min(capacity))
@@ -226,6 +268,7 @@ where
                         .try_reserve_exact(capacity - result.len())
                         .map_err(Error::Allocation)?;
                 }
+                next_fence = Some(record.commit_id);
                 result.push((
                     ExecutionRecord {
                         operation_id,
@@ -251,7 +294,7 @@ where
                     )
                     .await?;
             }
-            Ok(result)
+            Ok((result, next_fence))
         }
         .await;
         #[cfg(not(target_arch = "wasm32"))]

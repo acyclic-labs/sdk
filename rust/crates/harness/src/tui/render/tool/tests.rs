@@ -183,3 +183,38 @@ fn stream_admission_retires_a_nonstreaming_fallback_before_its_first_byte() {
     render(&mut rows, &views);
     assert_eq!(rows.tools()[1].to_string(), "streamed body");
 }
+
+#[test]
+fn interleaved_tool_channels_keep_independent_utf8_boundaries() {
+    let mut views = crate::test_support::empty_client_views();
+    let task = Component::new("task").unwrap();
+    put(
+        &mut views,
+        ToolFile::Request,
+        br#"{"name":"bash","arguments":{}}"#.to_vec(),
+    );
+    let mut live = TaskRows::default();
+    let mut shared = crate::tui::render::StreamText::default();
+    for (file, bytes) in [
+        (ToolFile::Stdout(0), vec![0xe6]),
+        (ToolFile::Stderr(0), b"error".to_vec()),
+        (ToolFile::Stdout(1), vec![0x97, 0xa5]),
+    ] {
+        shared.push(&bytes);
+        put(&mut views, file, bytes);
+        live.update(
+            Some(views.selections().next().unwrap().1.task(&task)),
+            true,
+            false,
+        );
+    }
+    let mut oracle = expected("日", 20);
+    oracle.extend(expected("error", 19));
+    assert_eq!(&live.tools()[1..], oracle);
+    shared.boundary();
+    assert_ne!(
+        shared.rows(0),
+        oracle,
+        "shared channel decoder negative control escaped"
+    );
+}

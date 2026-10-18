@@ -14,9 +14,9 @@ struct Entry {
     key: FileKey,
     channel: Option<Channel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    requester: Option<crate::TaskId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     publication: Option<crate::OperationId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
 }
 
 /// Exact framed size, for rejecting oversized requests before publication.
@@ -24,8 +24,8 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
     let metadata = serde_json::to_vec(&Entry {
         key: file.key.clone(),
         channel: file.channel,
-        requester: file.requester,
         publication: file.publication,
+        requester: file.requester,
     })
     .map_err(|_| Error::InvalidSegment)?;
     PREFIX
@@ -35,11 +35,62 @@ pub(crate) fn record_bytes(file: &FileValue) -> Result<usize> {
 }
 
 pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, FileValue)> {
-    let entry = Entry {
-        key: write.key.clone(),
-        channel: write.channel,
-        requester: write.requester,
-        publication: write.publication,
+    let ((bytes, offset), entry) = {
+        let encoded = encode_record(write, work)?;
+        (
+            encoded,
+            Entry {
+                key: write.key.clone(),
+                channel: write.channel,
+                publication: write.publication,
+                requester: write.requester,
+            },
+        )
+    };
+    let file = FileValue {
+        key: entry.key,
+        channel: entry.channel,
+        publication: entry.publication,
+        requester: entry.requester,
+        bytes: bytes.slice(offset..),
+    };
+    Ok((bytes, file))
+}
+
+#[derive(Serialize)]
+struct BorrowedEntry<'a> {
+    key: &'a FileKey,
+    channel: Option<Channel>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publication: Option<crate::OperationId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requester: Option<crate::TaskId>,
+}
+
+pub(super) fn encode_record(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes, usize)> {
+    encode_parts(
+        &write.key,
+        write.channel,
+        write.publication,
+        write.requester,
+        &write.bytes,
+        work,
+    )
+}
+
+pub(super) fn encode_parts(
+    key: &FileKey,
+    channel: Option<Channel>,
+    publication: Option<crate::OperationId>,
+    requester: Option<crate::TaskId>,
+    payload: &[u8],
+    work: NativeWork<'_>,
+) -> Result<(OwnedBytes, usize)> {
+    let entry = BorrowedEntry {
+        key,
+        channel,
+        publication,
+        requester,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let io = work
@@ -62,7 +113,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     };
     let total = PREFIX
         .checked_add(metadata.len())
-        .and_then(|n| n.checked_add(write.bytes.len()))
+        .and_then(|n| n.checked_add(payload.len()))
         .ok_or(Error::LimitExceeded)?;
     if total > acyclic_stream::MAX_RECORD_BYTES {
         return Err(Error::LimitExceeded);
@@ -96,7 +147,7 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
             .to_le_bytes(),
     );
     bytes.extend_from_slice(&metadata);
-    bytes.extend_from_slice(&write.bytes);
+    bytes.extend_from_slice(payload);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let bytes = crate::executor::with_history_io(io.as_ref(), |history| {
         crate::store::operations::owned_bytes_from_retained_vec(bytes, history)
@@ -104,19 +155,41 @@ pub(super) fn encode(write: &Write, work: NativeWork<'_>) -> Result<(OwnedBytes,
     })?;
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let bytes: OwnedBytes = bytes.into();
-    // The input was already validated. Reuse its typed metadata rather than
-    // serializing and decoding another owned copy before publication.
-    let file = FileValue {
-        key: entry.key,
-        channel: entry.channel,
-        requester: entry.requester,
-        publication: entry.publication,
-        bytes: bytes.slice(PREFIX + metadata.len()..),
-    };
-    Ok((bytes, file))
+    Ok((bytes, PREFIX + metadata.len()))
 }
 
 pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
+    decode_with(bytes, |metadata| {
+        serde_json::from_slice(metadata).map_err(|_| Error::InvalidSegment)
+    })
+}
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for Entry {}
+
+#[cfg(feature = "filesystem")]
+pub(super) fn decode_journal(
+    bytes: &OwnedBytes,
+    io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<FileValue> {
+    decode_with(bytes, |metadata| match io {
+        None => serde_json::from_slice(metadata).map_err(|_| Error::InvalidSegment),
+        Some(io) => {
+            let (entry, hold) = io.decode(
+                std::marker::PhantomData::<Entry>,
+                metadata,
+                crate::wire::ErrorCode::Storage,
+            )?;
+            hold.into_retained()?;
+            Ok(entry)
+        }
+    })
+}
+
+fn decode_with(
+    bytes: &OwnedBytes,
+    parse: impl FnOnce(&[u8]) -> Result<Entry>,
+) -> Result<FileValue> {
     if bytes.get(..8) != Some(MAGIC.as_slice()) {
         return Err(Error::InvalidSegment);
     }
@@ -127,12 +200,12 @@ pub(super) fn decode(bytes: &OwnedBytes) -> Result<FileValue> {
         .ok_or(Error::InvalidSegment)? as usize;
     let offset = PREFIX.checked_add(length).ok_or(Error::InvalidSegment)?;
     let metadata = bytes.get(PREFIX..offset).ok_or(Error::InvalidSegment)?;
-    let entry: Entry = serde_json::from_slice(metadata).map_err(|_| Error::InvalidSegment)?;
+    let entry = parse(metadata)?;
     let file = FileValue {
         key: entry.key,
         channel: entry.channel,
-        requester: entry.requester,
         publication: entry.publication,
+        requester: entry.requester,
         bytes: bytes.slice(offset..),
     };
     file.validate()?;

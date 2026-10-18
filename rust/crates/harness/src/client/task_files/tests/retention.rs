@@ -46,7 +46,11 @@ fn chunk(task: crate::TaskId, sequence: u64, bytes: &[u8]) -> FileValue {
         publication: None,
         key: FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
-            file: TaskFile::Chunk { turn: 0, sequence },
+            file: TaskFile::Chunk {
+                execution: crate::OperationId::from_bytes([0; 16]),
+                turn: 0,
+                sequence,
+            },
         },
         channel: Some(Channel::Text),
         bytes: bytes.to_vec().into(),

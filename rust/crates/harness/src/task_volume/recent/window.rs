@@ -57,7 +57,6 @@ impl Window {
                 .get(&file.key)
                 .is_some_and(|entry| entry.order == order - 1)
         });
-        files.sort_unstable_by(|left, right| left.key.cmp(&right.key));
         window
     }
 

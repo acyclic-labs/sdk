@@ -189,18 +189,18 @@ where
                 let result = async {
                     self.append_validated(operation, None, key, event, Some(&local))
                         .await?;
-                    self.publish_chunk(key, event, Some(&local)).await
+                    Ok(())
                 }
                 .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
-                return result.map(|_| ());
+                return result;
             }
             let span = obs_span!("acyclic.harness.journal.append");
             traced(span, async move {
                 self.append_validated(operation, None, key, event, io)
-                    .await?;
-                self.publish_chunk(key, event, io).await
+                    .await
+                    .map(|_| ())
             })
             .await
         })
