@@ -203,12 +203,9 @@ async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> 
             assert!(input > 2);
             assert!(output > 0 && input + u64::from(output) <= u64::from(capacity.context_tokens));
         }
-        // The output-first control never settles its admitted turn.
-        if legacy {
-            harness.disconnect_unfinished().await?;
-        } else {
-            harness.close().await?;
-        }
+        // The output-first control settles its admitted turn as failed without
+        // generating, so both presets close a settled HEAD.
+        harness.close().await?;
     }
     Ok(())
 }
