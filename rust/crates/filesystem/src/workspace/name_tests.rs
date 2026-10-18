@@ -375,3 +375,126 @@ fn one_original_leaf_guard_covers_the_entire_planning_pass() {
         }
     }
 }
+
+fn complete_name_observation(
+    text: &str,
+    mode: u8,
+    recheck: bool,
+    baseline: bool,
+    redundant: Option<u8>,
+) -> ((String, crate::WorkCounters, u64, AllocationInfo), usize) {
+    let cancellation = CancellationToken::new();
+    let (root, work) = fixture(mode, WorkBudget::UNBOUNDED, &cancellation);
+    let work = if recheck {
+        work.recheck_admitted()
+    } else {
+        work
+    };
+    let mut accounting = KernelAccounting::native(&work, &cancellation);
+    accounting
+        .record_completed(crate::WorkCounters::UNCHARGED)
+        .unwrap();
+    let mut output = None;
+    let mut locks = 0;
+    let mut injected = false;
+    let heap = measure(|| {
+        let mut probe = |tag, _, _| {
+            if redundant == Some(tag) && !injected {
+                // Encoding and append have released their charge's leaf guard.
+                work.admit(crate::WorkCounters::UNCHARGED).unwrap();
+                injected = true;
+            }
+        };
+        let (result, count) = root.state.count_locks(|| {
+            if baseline {
+                reference::decode(text, &mut accounting, false, &mut probe)
+            } else {
+                WorkspaceName::with_probe(text, &mut accounting, char::is_ascii, &mut probe)
+            }
+        });
+        output = Some(result);
+        locks = count;
+    });
+    assert_eq!(injected, redundant.is_some());
+    let name = output.unwrap().unwrap();
+    let observation = (
+        name.as_str().to_owned(),
+        accounting.spent(),
+        work.live_allocation_bytes(),
+        heap,
+    );
+    drop(name);
+    (observation, locks)
+}
+
+fn check_complete_name_leaf_pin(text: &str, mode: u8, recheck: bool) {
+    let baseline = complete_name_observation(text, mode, recheck, true, None);
+    let candidate = complete_name_observation(text, mode, recheck, false, None);
+    assert_eq!(baseline.0.0, candidate.0.0);
+    assert_eq!(baseline.0.3, candidate.0.3);
+    let normalized = unicode_normalization::UnicodeNormalization::nfc(text).count();
+    let decomposed = unicode_normalization::UnicodeNormalization::nfd(text).count();
+    // Old: twelve fixed boundaries, one per input/decomposition visit, and
+    // five per normalized scalar (check, admission, two record guards, validate).
+    assert_eq!(
+        baseline.1,
+        12 + text.chars().count() + decomposed + 5 * normalized
+    );
+    // New: one planning guard. Unicode retains one charge and one validation
+    // per normalized scalar; ASCII omits normalization and its terminal check.
+    let expected = if text.is_ascii() {
+        11
+    } else {
+        12 + 2 * normalized
+    };
+    let pin = |observed| {
+        if observed == expected {
+            Ok(())
+        } else {
+            Err("complete-name leaf bound")
+        }
+    };
+    assert_eq!(pin(candidate.1), Ok(()));
+    for tag in [2, 4] {
+        if tag == 2 && text.is_ascii() {
+            continue;
+        }
+        let control = complete_name_observation(text, mode, recheck, false, Some(tag));
+        assert_eq!(
+            candidate.0, control.0,
+            "admission changed output, work, storage or heap"
+        );
+        assert_eq!(control.1, expected + 1);
+        assert_eq!(pin(control.1), Err("complete-name leaf bound"));
+    }
+}
+
+#[test]
+fn complete_names_pin_encoding_and_append_and_reject_redundant_admission() {
+    let wide = "a".repeat(255);
+    for mode in 1..5 {
+        for recheck in [false, true] {
+            for text in ["n", "private", "cafe\u{301}", "\u{e9}", "\u{ac01}", &wide] {
+                check_complete_name_leaf_pin(text, mode, recheck);
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    // Every valid generated name has exactly the closed-form boundary count;
+    // an extra admission at either actual copy effect preserves every other
+    // observation while failing that same count.
+    #[test]
+    fn complete_name_boundaries_follow_scalar_counts(
+        scalars in proptest::collection::vec(
+            prop_oneof![Just('a'), Just('\u{e9}'), Just('\u{301}'),
+                        Just('\u{1100}'), Just('\u{1161}'), Just('\u{11a8}')], 1..33),
+        mode in 1u8..5,
+        recheck in any::<bool>(),
+    ) {
+        let text: String = scalars.into_iter().collect();
+        check_complete_name_leaf_pin(&text, mode, recheck);
+    }
+}
