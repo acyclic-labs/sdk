@@ -178,11 +178,16 @@ impl<D: Present> FrameOutput<D> {
         // Empty frames must cross the same boundary as nonempty ones: the
         // signal worker can invalidate a cursor while the caller is rendering.
         let mut frame = std::mem::take(&mut self.frame);
+        // Transfer the effect with its bytes. If the writer unwinds, a later
+        // cursor-only frame must not discharge the guard's pending reset.
+        let effects = self.effects;
+        self.effects.margins = false;
         let presented = self
             .device
-            .present_if_current(&mut frame, self.effects, expected);
-        if !matches!(presented, Ok(None)) {
-            self.effects.margins = false;
+            .present_if_current(&mut frame, effects, expected);
+        if matches!(presented, Ok(None)) {
+            self.effects.margins = effects.margins;
+        } else {
             frame.clear();
         }
         self.frame = frame;
@@ -511,6 +516,9 @@ impl<D: Present> FrameTerminal<D> {
             &mut self.terminal.backend_mut().output.frame,
             std::mem::take(&mut self.cursor),
         );
+        // The local body now owns any reset. A render unwind drops those
+        // bytes, so teardown must not claim their postcondition either.
+        self.terminal.backend_mut().output.effects.margins = false;
         let margins = if retained && self.scroll_regions {
             match scroll {
                 Some(scroll) => scroll.apply(&mut self.shown, &mut bytes)?,
