@@ -210,20 +210,11 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
-        // Stream retains rejected CAS requests too. A new snapshot or publication gate
-        // is a new attempt; successful operation deduplication remains in the authority
-        // record lookup above, including recovery after a lost acknowledgement.
         let idempotency_key = work.key(
-            b"operation-attempt\0",
+            b"operation\0",
             &[
                 &authority_id.into_bytes(),
                 &commit.operation_id.into_bytes(),
-                durable.digest.as_bytes(),
-                &snapshot.epoch_tail.to_le_bytes(),
-                &gate_tail.to_le_bytes(),
-                lease_path
-                    .as_ref()
-                    .map_or(&[], |path| path.as_str().as_bytes()),
             ],
         )?;
         let result = self
