@@ -132,6 +132,7 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
             (provider.model().clone(), provider.clone()),
         )
         .unwrap()
+        .state_directory(directory.path().join("state"))
         .without_default_tools()
         .tool(Tool {
             hook_names: &[],
