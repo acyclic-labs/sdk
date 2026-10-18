@@ -92,6 +92,8 @@ mod interactions;
 mod model_context;
 mod tool_dispatch;
 pub use groups::*;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use tool_dispatch::PolicyVerdict;
 
 #[cfg(test)]
 mod tests;

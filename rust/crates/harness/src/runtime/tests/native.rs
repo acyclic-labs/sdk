@@ -341,3 +341,68 @@ fn opaque_interaction_router_rejects_native_before_ordinary_route_or_box() -> Re
     );
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn native_policy_denial_is_a_verdict_and_evaluation_failures_stay_errors() -> Result<()> {
+    use crate::runtime::PolicyVerdict;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = native_work(&cancellation);
+    let (mut policy, definition, invocation) = native_policy_fixture_inputs();
+    policy.decision = ToolPolicyDecision::Deny {
+        reason: "echo is forbidden".into(),
+    };
+    let context = test_context(Bindings::local().build(None)?)?;
+    let verdict = context
+        .policy_decision(
+            &policy,
+            Some(&policy.identity),
+            &definition,
+            &invocation,
+            Some(&work),
+            context.scope(),
+        )
+        .await?;
+    assert!(matches!(
+        verdict,
+        PolicyVerdict::Deny(Error::NativeDiagnostic {
+            code: crate::wire::ErrorCode::Unauthorized,
+            ref message,
+            ..
+        }) if message == "echo is forbidden"
+    ));
+    drop(verdict);
+    // Tool task commands keep the strict form: the same denial is an error there.
+    assert!(
+        context
+            .policy_approval(
+                &policy,
+                Some(&policy.identity),
+                &definition,
+                &invocation,
+                Some(&work),
+                context.scope(),
+            )
+            .await
+            .is_err()
+    );
+    // Negative control: a changed policy identity is a failure, never a denial verdict.
+    let changed = ComponentIdentity {
+        digest: [10; 32],
+        ..policy.identity.clone()
+    };
+    assert!(
+        context
+            .policy_decision(
+                &policy,
+                Some(&changed),
+                &definition,
+                &invocation,
+                Some(&work),
+                context.scope(),
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
+}

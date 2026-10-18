@@ -248,7 +248,8 @@ export interface WasmModelLimitsInput {
 export type WasmModelToolResultContentInput =
     | Readonly<{ kind: "json"; value: unknown }>
     | (Omit<Extract<ToolResultContent, { kind: "parts" }>, "parts">
-        & Readonly<{ parts: readonly ModelDataPart[] }>);
+        & Readonly<{ parts: readonly ModelDataPart[] }>)
+    | Readonly<Extract<ToolResultContent, { kind: "error" }>>;
 type WasmModelCamelContentPart<Part extends ModelContentPart> =
     Part extends { readonly kind: "tool_call"; readonly call_id: string }
         ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>

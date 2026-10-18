@@ -234,6 +234,27 @@ impl TaskContext {
         work: Option<&NativeWork>,
         scope: &RuntimeScope,
     ) -> Result<Option<((OperationId, Interaction), Option<NativeCustody>)>> {
+        match self
+            .policy_decision(policy, expected, definition, invocation, work, scope)
+            .await?
+        {
+            PolicyVerdict::Allow => Ok(None),
+            PolicyVerdict::Deny(denial) => Err(denial),
+            PolicyVerdict::Approval(request) => Ok(Some(request)),
+        }
+    }
+
+    /// [`Self::policy_approval`] with the policy's denial kept apart from evaluation failures, so
+    /// a caller can return the denial to the model while every failure stays strict.
+    pub(crate) async fn policy_decision(
+        &self,
+        policy: &dyn ToolPolicy,
+        expected: Option<&ComponentIdentity>,
+        definition: &ToolDefinition,
+        invocation: &ToolInvocation,
+        work: Option<&NativeWork>,
+        scope: &RuntimeScope,
+    ) -> Result<PolicyVerdict> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let io = work
             .map(crate::filesystem::PreparationIo::from_native_work)
@@ -290,23 +311,23 @@ impl TaskContext {
         drop(after);
         let (decision, custody) = decision;
         match decision {
-            ToolPolicyDecision::Allow => Ok(None),
+            ToolPolicyDecision::Allow => Ok(PolicyVerdict::Allow),
             ToolPolicyDecision::Deny { reason } => {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(custody) = custody {
-                    return Err(Error::NativeDiagnostic {
+                    return Ok(PolicyVerdict::Deny(Error::NativeDiagnostic {
                         code: crate::wire::ErrorCode::Unauthorized,
                         message: reason,
                         custody,
-                    });
+                    }));
                 }
-                Err(Error::Unauthorized(reason))
+                Ok(PolicyVerdict::Deny(Error::Unauthorized(reason)))
             }
             ToolPolicyDecision::RequireApproval { prompt } => {
                 let task = self
                     .durable_task
                     .unwrap_or_else(|| TaskId::from_bytes(self.task_id.into_bytes()));
-                Ok(Some(tool_approval_request(
+                Ok(PolicyVerdict::Approval(tool_approval_request(
                     task,
                     &identity.0,
                     definition,
@@ -317,4 +338,14 @@ impl TaskContext {
             }
         }
     }
+}
+
+/// A bound policy's evaluated decision for one call.
+pub(crate) enum PolicyVerdict {
+    /// The call may proceed.
+    Allow,
+    /// The policy denied the call; the error carries its reason.
+    Deny(Error),
+    /// The call waits on this approval request.
+    Approval(((OperationId, Interaction), Option<NativeCustody>)),
 }

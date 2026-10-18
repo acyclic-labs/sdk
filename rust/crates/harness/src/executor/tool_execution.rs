@@ -1,5 +1,5 @@
 use super::*;
-use crate::wire::ErrorCode::{Conflict, Invalid, Unauthorized};
+use crate::wire::ErrorCode::{Conflict, Invalid};
 
 /// A model tool call refused before admission. It is the call's model-visible result, never an
 /// error: it reaches no journal, executor or task outcome, and replay recomputes it from the
@@ -14,7 +14,7 @@ enum ToolCallRejection {
 }
 
 /// Why the bound policy stopped a call before dispatch.
-enum PolicyStop {
+pub(in crate::executor) enum PolicyStop {
     /// Approval is pending or was rejected; the turn's progress reports it.
     Progress(ExecutionProgress<()>),
     /// The policy denied the call; the model receives the denial as the call's result.
@@ -259,11 +259,11 @@ impl StockExecution<'_> {
         started: bool,
     ) -> Result<Option<PolicyStop>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(progress) = self
+        if let Some(stop) = self
             .settle_native_tool_policy(journal, operation_id, invocation, &tool.definition, started)
             .await?
         {
-            return Ok(Some(PolicyStop::Progress(progress)));
+            return Ok(Some(stop));
         }
         if !stock_is_native(self.io) {
             let scope = &self.stock.tool_scope;
@@ -475,7 +475,7 @@ impl StockExecution<'_> {
                             .ok_or_else(|| {
                                 stock_boundary(
                                     self.io,
-                                    Unauthorized,
+                                    crate::wire::ErrorCode::Unauthorized,
                                     "native tool acceptance has no issued context",
                                 )
                             })?
@@ -501,22 +501,24 @@ impl StockExecution<'_> {
         result: &ToolResult,
     ) -> Result<ToolSettlement<(Value, crate::model::ToolResultContent)>> {
         let (operation_id, step) = identity;
-        if let Err(error) = with_history_io(self.io, |work| {
-            validate_json_schema_value(
+        // A violation is the tool's mistake and settles the call, including the native cause;
+        // a schema, budget or diagnostic failure still stops the turn.
+        if let Err(violation) = with_history_io(self.io, |work| {
+            check_json_schema_value(
                 &tool.definition.output_schema,
                 &result.value,
                 "tool output",
                 work,
             )
-        }) {
+        })? {
             return self
-                .reject_tool_call(
+                .settle_tool_failure(
                     journal,
                     operation_id,
                     step,
                     &invocation.call_id,
                     ToolFailureKind::InvalidOutput,
-                    error,
+                    violation,
                 )
                 .await
                 .map(Err);

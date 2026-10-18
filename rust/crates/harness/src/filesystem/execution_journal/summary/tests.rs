@@ -44,7 +44,7 @@ proptest! {
         prop_assert!(state.require_next(&stopped, None).is_err());
         prop_assert_eq!(state.quiescent(None).unwrap(), !tool);
         if tool {
-            accept(&mut state, ExecutionEvent::ToolFailed { step, call_id: "tool".into(), reason: ToolFailureKind::ExecutorRejected }).unwrap();
+            accept(&mut state, ExecutionEvent::ToolFailed { step, call_id: "tool".into(), reason: ToolFailureKind::ExecutorRejected, cause: crate::executor::ToolFailureCause { class: crate::executor::ToolErrorClass::Failed, message: "tool failed".into() } }).unwrap();
             prop_assert!(state.quiescent(None).unwrap());
         }
     }

@@ -74,6 +74,21 @@ impl StockExecution<'_> {
         if error.is_native_failure() {
             return Err(error);
         }
+        self.settle_tool_failure(journal, operation_id, step, call_id, reason, error)
+            .await
+    }
+
+    /// Records `error` as the call's failure. Callers pass only a definitive cause the model
+    /// can act on: a schema violation split from schema failures, or a non-native error.
+    pub(super) async fn settle_tool_failure(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+        error: Error,
+    ) -> Result<crate::model::ToolResultContent> {
         tracing::warn!(
             %operation_id,
             call_id,

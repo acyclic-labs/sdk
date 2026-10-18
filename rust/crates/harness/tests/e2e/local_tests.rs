@@ -218,10 +218,7 @@ async fn fs_family_rejects_bypassing_schema_rejection() -> crate::TestResult {
     let error = super::drivers::run(broken)
         .await
         .expect_err("parser dispatch passed unchanged schema-rejection expectations");
-    assert!(
-        error.to_string().contains("model tool result"),
-        "{error}"
-    );
+    assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }
 
