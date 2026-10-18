@@ -286,13 +286,140 @@ fn an_unselected_provider_is_never_observed_and_keeps_its_own_decode_failure() {
 }
 
 #[test]
-fn a_codex_login_supplied_after_observation_replaces_the_generation() {
-    let registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
-    assert!(registry.resolve("openai/gpt-5").is_err());
-    let registry =
-        registry.with_codex_login(crate::CodexLogin::from_path("replacement-auth.json".into()));
-    let resolved = registry.resolve("openai/gpt-5");
-    assert!(resolved.unwrap().codex_login.is_some());
+fn a_codex_login_supplied_after_observation_overrides_the_previous_login() {
+    for previous in [false, true] {
+        let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+        if previous {
+            registry =
+                registry.with_codex_login(crate::CodexLogin::from_path("previous.json".into()));
+        }
+        assert_eq!(registry.resolve("openai/gpt-5").is_ok(), previous);
+        let registry =
+            registry.with_codex_login(crate::CodexLogin::from_path("supplied.json".into()));
+        // Inspect the shared selector before resolve creates its per-model login.
+        let selected = registry
+            .selected_credential("openai", &specification(true))
+            .unwrap();
+        let Credential::Codex(selected) = selected else {
+            panic!("supplied login missing")
+        };
+        assert!(Arc::ptr_eq(
+            &selected,
+            registry.codex_login.as_ref().unwrap()
+        ));
+        assert!(
+            registry
+                .resolve("openai/gpt-5")
+                .unwrap()
+                .codex_login
+                .is_some()
+        );
+    }
+}
+
+fn supplied_login_sequence(
+    broken: bool,
+    initial: Option<Source>,
+    decode_failure: bool,
+    first: u8,
+    counted: bool,
+    operations: &[Option<Source>],
+) {
+    let (mut registry, sources) = fixture();
+    {
+        let mut state = sources.lock().unwrap();
+        state.key = initial;
+        state.decode_error = decode_failure.then_some("openai");
+    }
+    match first {
+        0 => {
+            let _ = load(&mut registry, counted);
+        }
+        1 => {
+            registry
+                .register("openai".into(), specification(counted))
+                .unwrap();
+        }
+        _ => {}
+    }
+    let before = registry.resolve("openai/gpt-5");
+    // With no declared default, register may accept an uncounted API-key
+    // endpoint. Login replacement must preserve its resolution error too.
+    assert_eq!(
+        before.is_ok(),
+        !decode_failure && !(first == 1 && !counted && initial.is_some())
+    );
+    let observed = reads(&sources);
+    for &key in operations {
+        {
+            let mut state = sources.lock().unwrap();
+            state.key = key;
+            state.decode_error = None;
+        }
+        registry =
+            registry.with_codex_login(crate::CodexLogin::from_path("replacement.json".into()));
+        if broken {
+            // Restore the removed production reset: the same oracle must fail.
+            registry.selection = snapshot::Snapshot::default();
+        }
+        let resolved = registry.resolve("openai/gpt-5");
+        assert_eq!(
+            reads(&sources),
+            observed,
+            "supplying a login must preserve key observations"
+        );
+        if let Err(error) = &before {
+            assert_eq!(resolved.err().unwrap().to_string(), error.to_string());
+        } else {
+            let resolved = resolved.unwrap();
+            assert_eq!(resolved.key.as_deref(), initial.map(|_| "snapshot-key"));
+            assert_eq!(resolved.codex_login.is_some(), initial.is_none());
+        }
+    }
+}
+
+#[test]
+fn supplied_logins_preserve_keys_errors_and_default_counting_at_every_entry_point() {
+    let sources = [
+        None,
+        Some(Source::Keychain),
+        Some(Source::Environment),
+        Some(Source::Configuration),
+    ];
+    for initial in sources {
+        for decode_failure in [false, true] {
+            for first in 0..3 {
+                for counted in [false, true] {
+                    supplied_login_sequence(
+                        false,
+                        initial,
+                        decode_failure,
+                        first,
+                        counted,
+                        &sources,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "supplying a login must preserve key observations")]
+fn negative_control_detects_supplied_login_resetting_the_admitted_generation() {
+    supplied_login_sequence(true, None, false, 0, false, &[Some(Source::Keychain)]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn supplied_login_sequences_preserve_credential_observations(
+        initial in proptest::option::of(prop_oneof![Just(Source::Keychain), Just(Source::Environment), Just(Source::Configuration)]),
+        decode_failure in any::<bool>(), first in 0u8..3, counted in any::<bool>(),
+        operations in proptest::collection::vec(proptest::option::of(prop_oneof![Just(Source::Keychain), Just(Source::Environment), Just(Source::Configuration)]), 0..12),
+    ) {
+        supplied_login_sequence(false, initial, decode_failure, first, counted, &operations);
+    }
 }
 
 #[test]

@@ -68,16 +68,21 @@ impl Registry {
             Ok(None) => {}
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(login) = observations.login.get_or_insert_with(|| {
-            self.codex_login.clone().or_else(|| {
-                self.credentials
-                    .allows_native_sources()
-                    .then(crate::CodexLogin::discover)
-                    .flatten()
-                    .map(Arc::new)
-            })
+        // An explicitly supplied login overrides discovery without invalidating
+        // the key observations used to admit the current catalog.
+        if let Some(login) = self.codex_login.clone().or_else(|| {
+            observations
+                .login
+                .get_or_insert_with(|| {
+                    self.credentials
+                        .allows_native_sources()
+                        .then(crate::CodexLogin::discover)
+                        .flatten()
+                        .map(Arc::new)
+                })
+                .clone()
         }) {
-            return Ok(Credential::Codex(login.clone()));
+            return Ok(Credential::Codex(login));
         }
         Ok(Credential::Missing)
     }

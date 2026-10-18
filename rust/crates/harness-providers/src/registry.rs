@@ -61,7 +61,6 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
         self.codex_login = Some(Arc::new(login));
-        self.selection = snapshot::Snapshot::default();
         self
     }
 
