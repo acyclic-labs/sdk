@@ -149,20 +149,28 @@ fn cursor(sub: &Subscription, next: u64, anchor: CommitId) -> wire::SessionCurso
     }
 }
 
-fn resume(omit_wake: bool) {
+// Compose the two atomic observation boundaries: registration versus append,
+// then the returned source's read/register/park versus append. Each model has
+// one reader operation and one writer operation, and exhausts every schedule.
+fn resume(registration: bool, omit_wake: bool) {
     let fixture = input(&["next"]);
-    let iterations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count = iterations.clone();
     verification::check(move || {
-        let iteration = count.fetch_add(1, Ordering::Relaxed);
-        if iteration % 1000 == 0 {
-            eprintln!("resume omit_wake={omit_wake}: schedule {iteration}");
-        }
         let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
         let anchor = append(&stream, &sub, &records[..2], 0);
         let keeper = ManuallyDrop::new(stream.clone());
-        let writer = loom::thread::spawn({
+        let mut opening = Some(
+            Provider::new(stream.clone(), |_: &Subscription| Ok(()))
+                .subscribe(sub.encode().unwrap(), cursor(&sub, 2, anchor))
+                .unwrap()
+                .open,
+        );
+        let opened = if registration {
+            None
+        } else {
+            Some(run(opening.take().unwrap()).unwrap())
+        };
+        let mut writer = Some(loom::thread::spawn({
             let stream = stream.clone();
             let sub = sub.clone();
             move || {
@@ -171,36 +179,35 @@ fn resume(omit_wake: bool) {
                 }
                 append(&stream, &sub, &records[2..], 2);
             }
-        });
-        run(async {
-            let mut source = Provider::new(stream.clone(), |_: &Subscription| Ok(()))
-                .subscribe(sub.encode().unwrap(), cursor(&sub, 2, anchor))
-                .unwrap()
-                .open
-                .await
-                .unwrap();
-            let data = source.next().await.unwrap().unwrap();
-            assert_eq!(data.after.as_ref().unwrap().next, 3);
-            let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
-                panic!("missing publication")
-            };
-            assert_eq!(Publication::decode(&bytes).unwrap().sequence.get(), 2);
+        }));
+        let mut source = opened.unwrap_or_else(|| run(opening.take().unwrap()).unwrap());
+        if registration {
+            writer.take().unwrap().join().unwrap();
+        }
+        let data = run(source.next()).unwrap().unwrap();
+        assert_eq!(data.after.as_ref().unwrap().next, 3);
+        let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
+            panic!("missing publication")
+        };
+        assert_eq!(Publication::decode(&bytes).unwrap().sequence.get(), 2);
+        if let Some(writer) = writer {
             writer.join().unwrap();
-            assert!(
-                source.next().now_or_never().is_none(),
-                "duplicate publication"
-            );
-        });
+        }
+        assert!(
+            source.next().now_or_never().is_none(),
+            "duplicate publication"
+        );
+        drop(source);
         drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 #[test]
 fn checked_resume_exhausts_append_registration_and_wakeup() {
-    resume(false);
-    control(|| resume(true), "deadlock");
+    resume(true, false);
+    resume(false, false);
+    control(|| resume(false, true), "deadlock");
 }
-
 fn replacement(unchecked: bool) {
     let fixture = input(&["original"]);
     let other_fixture = input(&["replacement", "later"]);
