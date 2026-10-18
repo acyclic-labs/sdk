@@ -115,10 +115,25 @@ fn wake(broken: bool) {
     let snapshot = observation.snapshot.take().unwrap();
     assert!(snapshot.files.is_empty());
     let expected = request();
+    // Preparation cannot publish. Model its completed prefix separately from
+    // the real commit/follow race, as the competing-writer models do below.
+    let (request, write, cut) = loom::future::block_on(Box::pin(
+        files
+            .inner
+            .prepare_append(snapshot.generation, &expected, Vec::new(), false, None),
+    ))
+    .unwrap()
+    .unwrap();
     let writer = files.clone();
-    let write = expected.clone();
     let producer = loom::thread::spawn(move || {
-        loom::future::block_on(Box::pin(writer.write(snapshot.generation, &write))).unwrap()
+        loom::future::block_on(Box::pin(writer.inner.commit_append(
+            snapshot.generation,
+            request,
+            write,
+            cut,
+            None,
+        )))
+        .unwrap()
     });
     // A contended snapshot can hand off to an independent worker. Writer
     // completion does not join that worker; await delivery with the real
