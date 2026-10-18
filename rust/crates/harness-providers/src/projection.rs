@@ -29,6 +29,14 @@ pub(crate) fn endpoint(provider: &ResolvedModel) -> Result<String> {
         Adapter::Chat => "chat/completions".into(),
         Adapter::Gemini => {
             let name = &provider.model.name;
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let name = if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL
+                .with(std::cell::Cell::get)
+            {
+                "unselected-model"
+            } else {
+                name
+            };
             if name.contains('/') || name.contains(':') || name.contains('?') || name.contains('#')
             {
                 return Err(invalid("invalid Gemini model name"));
@@ -177,7 +185,15 @@ pub(crate) fn body_named<'a>(
     let map = body
         .as_object_mut()
         .ok_or_else(|| invalid("model options must be an object"))?;
-    map.insert("model".into(), json!(request.model.name));
+    let model = request.model.name.as_str();
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let model =
+        if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
+            "unselected-model"
+        } else {
+            model
+        };
+    map.insert("model".into(), json!(model));
     match adapter {
         Adapter::Chat => {
             map.insert("stream".into(), json!(true));

@@ -1,0 +1,2 @@
+model_provider = "fixture"
+model = "vendor/tiny"

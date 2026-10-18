@@ -82,6 +82,13 @@ pub(crate) fn body<'a, 'b>(
     model: &'a str,
     adapter: Adapter,
 ) -> CountBody<'a, 'b> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let model =
+        if crate::tests::catalog_identity_tests::SUBSTITUTE_WIRE_MODEL.with(std::cell::Cell::get) {
+            "unselected-model"
+        } else {
+            model
+        };
     let input = CountInput {
         generation,
         model,

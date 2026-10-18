@@ -33,6 +33,12 @@ impl ThresholdCompaction {
     #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "filesystem-local")))]
     pub(crate) fn for_capacity(capacity: ModelContextCapacity, fixed_tokens: u32) -> Result<Self> {
         capacity.validate()?;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if capacity.output_tokens.is_none()
+            && unknown_output_tests::REQUIRE_OUTPUT_BOUND.with(std::cell::Cell::get)
+        {
+            return Err(Error::Invalid("output capacity is unknown".into()));
+        }
         let available = capacity
             .context_tokens
             .checked_sub(fixed_tokens)
@@ -90,6 +96,12 @@ impl ThresholdCompaction {
         input_tokens: u64,
     ) -> Result<bool> {
         self.validate(capacity, None)?;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if capacity.output_tokens.is_none()
+            && unknown_output_tests::IGNORE_CONTEXT_PRESSURE.with(std::cell::Cell::get)
+        {
+            return Ok(false);
+        }
         Ok(input_tokens > u64::from(capacity.context_tokens - self.response_reserve_tokens))
     }
 }
@@ -146,5 +158,5 @@ mod defaults_tests;
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod unknown_output_tests;

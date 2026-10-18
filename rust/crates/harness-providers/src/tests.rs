@@ -27,6 +27,9 @@ mod argument_projection_tests;
 #[path = "call_id_tests.rs"]
 mod call_id_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "catalog_identity_tests.rs"]
+pub(crate) mod catalog_identity_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "catalog_tests.rs"]
 mod catalog_tests;
 #[cfg(not(target_arch = "wasm32"))]

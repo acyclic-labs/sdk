@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod catalog_compaction;
 mod goal_review;
 mod instruction_review;
 use acyclic_harness::{
@@ -22,6 +23,7 @@ enum Mode {
     Instructions,
     FsRefusals,
     ConfiguredModel,
+    ConfiguredOpaqueModel,
     UnknownOutput,
     CatalogDefault,
     EnvironmentModel,
@@ -85,7 +87,7 @@ async fn execute_with(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if !matches!(mode, Mode::ConfiguredModel) {
+    if !matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
         command.arg("--settings-root").arg(settings);
     }
     if matches!(mode, Mode::ExplicitModel) {
@@ -93,7 +95,10 @@ async fn execute_with(
     }
     if matches!(mode, Mode::EnvironmentModel) {
         command.env("GRAPHCODER_MODEL", "graphcoder-qual/tiny");
-    } else if !matches!(mode, Mode::ConfiguredModel | Mode::CatalogDefault) {
+    } else if !matches!(
+        mode,
+        Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel | Mode::CatalogDefault
+    ) {
         command.args(["--model", "graphcoder-qual/tiny"]);
     }
     if matches!(mode, Mode::Dumb) {
@@ -132,6 +137,11 @@ async fn execute_with(
 async fn scenario(mode: Mode) {
     let instructions = matches!(mode, Mode::Instructions);
     let fs_refusals = matches!(mode, Mode::FsRefusals);
+    let model = if matches!(mode, Mode::ConfiguredOpaqueModel) {
+        "vendor/tiny"
+    } else {
+        "tiny"
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -139,9 +149,10 @@ async fn scenario(mode: Mode) {
     let app = Router::new()
         .route(
             "/count",
-            post(move || {
+            post(move |Json(body): Json<Value>| {
                 let requests = counter.clone();
                 async move {
+                    assert_eq!(body["model"], model, "count uses the selected opaque model");
                     requests.send("count").unwrap();
                     Json(json!({"input_tokens":64}))
                 }
@@ -152,6 +163,7 @@ async fn scenario(mode: Mode) {
             post(move |Json(body): Json<Value>| {
                 let requests = requests.clone();
                 async move {
+                    assert_eq!(body["model"], model, "generation uses the selected opaque model");
                     assert!(body.to_string().contains("hello"));
                     if instructions {
                         // A one-shot prompt without GOAL.md carries no goal guidance.
@@ -201,11 +213,14 @@ async fn scenario(mode: Mode) {
     let configured = match mode {
         Mode::CatalogDefault => "",
         Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
+        Mode::ConfiguredOpaqueModel => {
+            "model = \"vendor/tiny\"\nmodel_provider = \"graphcoder-qual\"\n"
+        }
         _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
     };
     std::fs::write(settings.join(".codex/config.toml"), configured).unwrap();
     std::fs::create_dir(settings.join("codex-home")).unwrap();
-    if matches!(mode, Mode::ConfiguredModel) {
+    if matches!(mode, Mode::ConfiguredModel | Mode::ConfiguredOpaqueModel) {
         std::fs::write(settings.join("codex-home/config.toml"), configured).unwrap();
         std::fs::write(
             settings.join(".codex/config.toml"),
@@ -216,7 +231,7 @@ async fn scenario(mode: Mode) {
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "models":{model:{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
     if matches!(
@@ -379,9 +394,45 @@ fn catalog_parse_error_reports_field_and_line_through_binary() {
     assert!(error.contains("line 3"), "{error}");
 }
 
+#[test]
+fn catalog_missing_file_and_unknown_model_fail_through_binary() {
+    let fixture = tempfile::tempdir().unwrap();
+    let catalog = fixture.path().join("catalog.json");
+    for (document, expected) in [
+        (None, "cannot read provider catalog"),
+        (Some("{}"), "unknown model provider"),
+    ] {
+        if let Some(document) = document {
+            std::fs::write(&catalog, document).unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_graphcoder"))
+            .env("CODEX_HOME", fixture.path())
+            .env("XDG_DATA_HOME", fixture.path())
+            .env_remove("GRAPHCODER_MODEL")
+            .args([
+                "--catalog",
+                catalog.to_str().unwrap(),
+                "--model",
+                "missing/model",
+                "-p",
+                "hello",
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains(expected), "{error}");
+    }
+}
+
 #[tokio::test]
 async fn catalog_configured_model_reaches_http() {
     scenario(Mode::ConfiguredModel).await;
+}
+
+#[tokio::test]
+async fn catalog_configured_provider_preserves_slashes_through_count_and_generation() {
+    scenario(Mode::ConfiguredOpaqueModel).await;
 }
 
 #[tokio::test]
