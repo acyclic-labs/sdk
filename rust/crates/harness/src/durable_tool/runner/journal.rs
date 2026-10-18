@@ -157,7 +157,7 @@ impl DurableToolRunner<'_> {
         );
         let key = tool_text(format_args!("tool:failed:{}", OperationId::new()), io)?;
         let call = tool_text(format_args!("{}", invocation.call_id), io)?;
-        let message = tool_text(format_args!("{}", crate::executor::Sanitized(error)), io)?;
+        let message = tool_text(format_args!("{}", crate::executor::CauseText(error)), io)?;
         let cause = crate::executor::ToolFailureCause {
             class: crate::executor::ToolErrorClass::of(error),
             message: message.0,

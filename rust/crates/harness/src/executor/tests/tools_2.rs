@@ -135,3 +135,112 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
     }
     Ok(())
 }
+
+// Review P1: an interruption after the next step's `ContextPrepared` left a projection whose
+// refusal lost its in-memory provenance on reload, so resume rejected its own history. The
+// refusal is now a recorded settlement and its result is admitted by shape on every load.
+#[tokio::test]
+async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepared() -> Result<()> {
+    let refusing = || {
+        ScriptedModelProvider::new([
+            tool_turn([
+                ModelEvent::ToolCall(crate::model::ToolCall::new(
+                    "ghost-call".into(),
+                    "example.ghost".into(),
+                    json!({}),
+                )),
+                echo_call("bad-call", json!(7)),
+            ]),
+            done_turn(),
+        ])
+        .with_token_counter(fixture_token_count)
+    };
+    let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+    let executor = |model: Arc<ScriptedModelProvider>| -> Result<StockExecutor> {
+        uncompacted_executor(
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            model,
+            ContextPipeline::default(),
+            echo_tools(
+                tool_executor.clone(),
+                json!({"type":"object"}),
+                json!({"type":"object"}),
+                crate::tool::json_projection_schema(json!({"type":"object"})),
+            )?,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )
+    };
+    let input = TurnInput {
+        operation_id: OperationId::from_bytes([83; 16]),
+        input: ModelContent::Text("hello".into()),
+        selected_context: None,
+        max_steps: 4,
+    };
+    let journal = Journal::default();
+    let first = Arc::new(refusing());
+    let output = executor(first.clone())?
+        .execute(input.clone(), &journal)
+        .await?;
+    assert_eq!(output.text, "done");
+    // Interrupt after step 1's context commit, before its model dispatch.
+    {
+        let mut records = journal.0.lock().unwrap();
+        let prepared = records
+            .iter()
+            .position(|record| {
+                matches!(
+                    record.event,
+                    ExecutionEvent::ContextPrepared { step: 1, .. }
+                )
+            })
+            .expect("step 1 context");
+        records.truncate(prepared + 1);
+    }
+    let resumed =
+        Arc::new(ScriptedModelProvider::new([done_turn()]).with_token_counter(fixture_token_count));
+    let recovered = executor(resumed.clone())?.execute(input, &journal).await?;
+    assert_eq!(recovered.text, "done");
+    let requests = resumed.requests();
+    assert_eq!(requests.len(), 1);
+    // The resumed request carries both refusals exactly as the first run delivered them.
+    for call in ["ghost-call", "bad-call"] {
+        assert_eq!(
+            super::tools_1::tool_error_text(&requests[0].messages, call),
+            super::tools_1::tool_error_text(&first.requests()[1].messages, call),
+            "{call}"
+        );
+        assert!(
+            super::tools_1::tool_error_text(&requests[0].messages, call).is_some(),
+            "{call}"
+        );
+    }
+    // Both refusals are settlements recorded without a start, and nothing dispatched.
+    let refusals = journal
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+        .count();
+    assert_eq!(refusals, 2);
+    assert!(
+        !journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+    );
+    assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+    // Negative control: the first run sent step 1 once, and the resumed run never replayed
+    // step 0.
+    assert_eq!(first.requests().len(), 2);
+    assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+    Ok(())
+}

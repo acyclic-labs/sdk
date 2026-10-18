@@ -1,4 +1,3 @@
-use super::tool_execution::tool_failure_content;
 use super::*;
 
 impl StockExecution<'_> {
@@ -96,6 +95,21 @@ impl StockExecution<'_> {
             cause = ?error,
             "tool call failed; returning the failure to the model"
         );
+        let cause = with_history_io(self.io, |work| ToolFailureCause::of(&error, work))?;
+        self.settle_tool_cause(journal, operation_id, step, call_id, reason, cause)
+            .await
+    }
+
+    /// Appends the call's failure with its bounded cause, unless the call is already settled.
+    pub(super) async fn settle_tool_cause(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+        reason: ToolFailureKind,
+        cause: ToolFailureCause,
+    ) -> Result<crate::model::ToolResultContent> {
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -113,7 +127,6 @@ impl StockExecution<'_> {
                 work,
             )
         })?;
-        let cause = with_history_io(self.io, |work| ToolFailureCause::of(&error, work))?;
         let content = tool_failure_content(reason, &cause, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,

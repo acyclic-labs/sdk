@@ -162,7 +162,7 @@ impl PreparedModelRequest {
             )
             .await?;
             let _bytes_hold = hold;
-            let mut segment: ModelPrefix = match io {
+            let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => crate::filesystem::retain_decoded(io.decode(
                     std::marker::PhantomData::<ModelPrefix>,
@@ -209,11 +209,6 @@ impl PreparedModelRequest {
                 return Err(Error::Invalid(
                     "inherited model context exceeds message limit".into(),
                 ));
-            }
-            // A parent-owned private segment is the harness's own retained request; anything
-            // else is supplied history whose error results stay unrecorded.
-            if reference.volume().class() == crate::conversation::VolumeClass::AgentPrivate {
-                super::request::mark_recorded_failures(&mut segment.messages);
             }
             // Nonempty segments strictly decrease this bounded count, rejecting cycles.
             expected_count = Some(remaining);

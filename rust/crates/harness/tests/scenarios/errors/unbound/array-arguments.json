@@ -2,5 +2,6 @@
   "turns":[[{"type":"event","kind":"tool_call","call_id":"missing","name":"set_name","arguments":[1,{"path":"unbound-output.txt"}]},
     {"type":"event","kind":"completed","metadata":null}],"done"],
   "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"set_name",
-    "arguments":[1,{"path":"unbound-output.txt"}]}},{"kind":"model","event":{"kind":"completed"}}]}
+    "arguments":[1,{"path":"unbound-output.txt"}]}},{"kind":"model","event":{"kind":"completed"}},
+    {"kind":"tool_failed","call_id":"missing","reason":"unavailable"}]}
 }

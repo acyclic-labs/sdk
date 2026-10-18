@@ -3,5 +3,6 @@
     "text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}},{"type":"event","kind":"completed","metadata":null}],"done"],
   "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"write",
     "arguments":{"path":"route-sentinel.txt","text":"overwritten","media_type":"text/plain","display_name":"route-sentinel.txt"}}},
-    {"kind":"model","event":{"kind":"completed"}}]}
+    {"kind":"model","event":{"kind":"completed"}},
+    {"kind":"tool_failed","call_id":"missing","reason":"unavailable"}]}
 }

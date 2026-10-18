@@ -32,8 +32,7 @@ mod tool_call;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use crate::executor::json::json_value_logical_owned_bytes;
 pub use content::{
-    FailureProvenance, ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole,
-    ToolResultContent,
+    ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRole, ToolResultContent,
 };
 pub use media::{
     FileProjectionPolicy, ImageDetail, NativeConfigurationBinding, NativeMediaIntent,

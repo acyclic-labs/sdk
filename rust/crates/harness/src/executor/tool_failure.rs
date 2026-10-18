@@ -75,15 +75,40 @@ impl ToolFailureCause {
     ) -> Result<Self> {
         Ok(Self {
             class: ToolErrorClass::of(error),
-            message: preparation_format(format_args!("{}", Sanitized(error)), work)?,
+            message: preparation_format(format_args!("{}", CauseText(error)), work)?,
         })
     }
 
-    /// Whether a recorded cause has the bounded, sanitized shape this module writes.
+    /// The cause of a call refused before dispatch: its complete model-visible text, sanitized
+    /// and bounded like every cause, classed by the refusing error.
+    pub(crate) fn refusal(
+        name: &str,
+        reason: ToolFailureKind,
+        error: &Error,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        let class = ToolErrorClass::of(error);
+        let message = preparation_format(
+            format_args!(
+                "{}",
+                Sanitized(&RefusalText {
+                    name,
+                    reason,
+                    class,
+                    error,
+                })
+            ),
+            work,
+        )?;
+        Ok(Self { class, message })
+    }
+
+    /// Whether a recorded cause has the bounded, sanitized, nonblank shape this module writes.
     #[must_use]
     pub fn is_canonical(&self) -> bool {
         self.message.len() <= TOOL_FAILURE_MESSAGE_BYTES
             && !self.message.chars().any(char::is_control)
+            && !self.message.trim().is_empty()
     }
 }
 
@@ -93,6 +118,10 @@ pub(crate) struct ToolFailureText<'a>(pub ToolFailureKind, pub &'a ToolFailureCa
 impl fmt::Display for ToolFailureText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(reason, cause) = self;
+        // A refusal's cause is already its complete text.
+        if reason.precedes_dispatch() {
+            return formatter.write_str(&cause.message);
+        }
         write!(
             formatter,
             "{} ({}): {}",
@@ -103,22 +132,73 @@ impl fmt::Display for ToolFailureText<'_> {
     }
 }
 
-/// A refusal's text: its class and sanitized, bounded cause.
-pub(crate) struct RefusalText<'a>(pub &'a Error);
+/// The complete text of a call refused before dispatch.
+struct RefusalText<'a> {
+    name: &'a str,
+    reason: ToolFailureKind,
+    class: ToolErrorClass,
+    error: &'a Error,
+}
 
 impl fmt::Display for RefusalText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "({}): {}",
-            ToolErrorClass::of(self.0).label(),
-            Sanitized(self.0)
-        )
+        let Self {
+            name,
+            reason,
+            class,
+            error,
+        } = self;
+        match reason {
+            ToolFailureKind::Unavailable => write!(
+                formatter,
+                "tool `{name}` is not available; call one of the declared tools"
+            ),
+            ToolFailureKind::InvalidInput => write!(
+                formatter,
+                "tool `{name}` rejected its arguments: {}",
+                CauseText(*error)
+            ),
+            _ => write!(
+                formatter,
+                "tool `{name}` refused the call ({}): {}",
+                class.label(),
+                CauseText(*error)
+            ),
+        }
     }
 }
 
-/// Displays an error with control characters replaced and its UTF-8 bounded on a character.
-pub(crate) struct Sanitized<'a>(pub &'a Error);
+/// The sanitized, bounded text of the error behind a failure, never blank: an error whose text
+/// is blank is described by its stable class, so no cause is erased.
+pub(crate) struct CauseText<'a>(pub &'a Error);
+
+impl fmt::Display for CauseText<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut probe = Visible(false);
+        // The probe stops at the first visible character, so the error renders twice at most.
+        let _ = write!(probe, "{}", self.0);
+        if probe.0 {
+            write!(formatter, "{}", Sanitized(self.0))
+        } else {
+            write!(formatter, "{} error", ToolErrorClass::of(self.0).label())
+        }
+    }
+}
+
+/// Finds a visible character, failing the write once it has one.
+struct Visible(bool);
+
+impl fmt::Write for Visible {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        self.0 = text
+            .chars()
+            .any(|character| !character.is_control() && !character.is_whitespace());
+        if self.0 { Err(fmt::Error) } else { Ok(()) }
+    }
+}
+
+/// Displays text with control characters replaced and its UTF-8 bounded on a character.
+pub(crate) struct Sanitized<'a>(pub &'a dyn fmt::Display);
 
 impl fmt::Display for Sanitized<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -157,6 +237,101 @@ impl fmt::Write for Bounded<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    /// Every failure kind; `entry` fails to compile when a kind is added without coverage.
+    const KINDS: [ToolFailureKind; 7] = [
+        ToolFailureKind::ExecutorRejected,
+        ToolFailureKind::InvalidOutput,
+        ToolFailureKind::ProjectionRejected,
+        ToolFailureKind::PublicationRejected,
+        ToolFailureKind::Unavailable,
+        ToolFailureKind::InvalidInput,
+        ToolFailureKind::Refused,
+    ];
+
+    /// The production constructor each entry point uses for its kind.
+    fn entry(kind: ToolFailureKind, name: &str, error: &Error) -> Result<ToolFailureCause> {
+        match kind {
+            // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
+            ToolFailureKind::Unavailable
+            | ToolFailureKind::InvalidInput
+            | ToolFailureKind::Refused => ToolFailureCause::refusal(name, kind, error, &mut None),
+            // Executor error, output contract, projection and publication after a start.
+            ToolFailureKind::ExecutorRejected
+            | ToolFailureKind::InvalidOutput
+            | ToolFailureKind::ProjectionRejected
+            | ToolFailureKind::PublicationRejected => ToolFailureCause::of(error, &mut None),
+        }
+    }
+
+    /// Errors over every class, including ones whose own text is blank.
+    fn error(variant: u8, text: String) -> Error {
+        match variant % 8 {
+            0 => Error::Invalid(text),
+            1 => Error::NotFound(text),
+            2 => Error::Conflict(text),
+            3 => Error::Unauthorized(text),
+            4 => Error::Storage(text),
+            5 => Error::InteractionRejected(crate::InteractionRejection::Denied),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            6 => Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: ["", " ", "\n\t", "\u{1b}"][text.len() % 4],
+            },
+            _ => Error::Unsupported(text),
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        // Class G: no settled tool failure reaches the model or the journal without its cause.
+        #[test]
+        fn every_tool_failure_entry_point_carries_a_nonblank_bounded_cause(
+            kind in 0..KINDS.len(),
+            variant in any::<u8>(),
+            text in r"(\PC|[\n\t\x1b ]){0,400}",
+            name in "[a-z_.@0-9]{1,300}",
+        ) {
+            let kind = KINDS[kind];
+            let cause = entry(kind, &name, &error(variant, text)).unwrap();
+            prop_assert!(cause.is_canonical(), "{cause:?}");
+            let rendered = ToolFailureText(kind, &cause).to_string();
+            prop_assert!(!rendered.trim().is_empty());
+            prop_assert!(!rendered.chars().any(char::is_control));
+            // The rendered text is exactly what the result admission contract accepts.
+            let result = crate::model::ToolResultContent::Error { message: rendered };
+            prop_assert!(result.validate_limits(crate::conversation::Limits::default(), &mut None).is_ok());
+        }
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[test]
+    fn a_blank_error_is_described_by_its_class() -> Result<()> {
+        let blank = Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict,
+            reason: " \n",
+        };
+        let cause = ToolFailureCause::of(&blank, &mut None)?;
+        assert_eq!(cause.message, "conflict error");
+        assert!(cause.is_canonical());
+        // Negative control: the sanitized text alone erases the cause, and admission refuses it.
+        let erased = ToolFailureCause {
+            class: ToolErrorClass::Conflict,
+            message: Sanitized(&blank).to_string(),
+        };
+        assert!(!erased.is_canonical());
+        // An empty error result is refused too.
+        let empty = crate::model::ToolResultContent::Error {
+            message: String::new(),
+        };
+        assert!(
+            empty
+                .validate_limits(crate::conversation::Limits::default(), &mut None)
+                .is_err()
+        );
+        Ok(())
+    }
 
     #[test]
     fn causes_are_bounded_on_characters_and_free_of_controls() -> Result<()> {

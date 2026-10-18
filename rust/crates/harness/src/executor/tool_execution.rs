@@ -1,9 +1,9 @@
 use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid};
 
-/// A model tool call refused before admission. It is the call's model-visible result, never an
-/// error: it reaches no journal, executor or task outcome, and replay recomputes it from the
-/// bound composition.
+/// A model tool call refused before dispatch. It is the call's model-visible result, never an
+/// error: it is recorded as the call's settlement, without a start, and reaches no executor or
+/// task outcome.
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
     Unavailable,
@@ -67,7 +67,9 @@ impl StockExecution<'_> {
         let (tool, mut context, _capability) = match admitted {
             Ok(admitted) => admitted,
             Err(rejection) => {
-                let content = self.rejected_tool_content(&invocation, &rejection)?;
+                let content = self
+                    .settle_tool_refusal(journal, operation_id, step, &invocation, rejection)
+                    .await?;
                 return self.push_tool_result(&invocation, content, prior_messages);
             }
         };
@@ -137,7 +139,14 @@ impl StockExecution<'_> {
                 Some(PolicyStop::Progress(progress)) => return Ok(progress),
                 Some(PolicyStop::Refused(denial)) => {
                     let content = self
-                        .rejected_tool_content(&invocation, &ToolCallRejection::Refused(denial))?;
+                        .settle_tool_refusal(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation,
+                            ToolCallRejection::Refused(denial),
+                        )
+                        .await?;
                     return self.push_tool_result(&invocation, content, prior_messages);
                 }
                 None => {}
@@ -182,33 +191,61 @@ impl StockExecution<'_> {
         stock_vec_push(prior_messages, message, self.io)?;
         Ok(ExecutionProgress::Ready(()))
     }
-    fn rejected_tool_content(
+    /// Records a refusal as the call's settlement, or replays the one recorded; the model
+    /// receives the same text either way, and canonical publication reads it from the record.
+    async fn settle_tool_refusal(
         &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
         invocation: &ToolInvocation,
-        rejection: &ToolCallRejection,
+        rejection: ToolCallRejection,
     ) -> Result<crate::model::ToolResultContent> {
-        let name = &invocation.name;
-        let text = with_history_io(self.io, |work| match rejection {
-            ToolCallRejection::Unavailable => preparation_format(
-                format_args!("tool `{name}` is not available; call one of the declared tools"),
-                work,
+        let (reason, error) = match rejection {
+            ToolCallRejection::Unavailable => (
+                ToolFailureKind::Unavailable,
+                Error::NotFound("tool is not available".into()),
             ),
-            ToolCallRejection::InvalidInput(violation) => preparation_format(
-                format_args!(
-                    "tool `{name}` rejected its arguments: {}",
-                    Sanitized(violation)
-                ),
-                work,
-            ),
-            ToolCallRejection::Refused(refusal) => preparation_format(
-                format_args!("tool `{name}` refused the call {}", RefusalText(refusal)),
-                work,
-            ),
+            ToolCallRejection::InvalidInput(violation) => {
+                (ToolFailureKind::InvalidInput, violation)
+            }
+            ToolCallRejection::Refused(denial) => (ToolFailureKind::Refused, denial),
+        };
+        let (_, records) = self
+            .tool_records(journal, operation_id, step, &invocation.call_id)
+            .await?;
+        for record in &records {
+            if let ExecutionEvent::ToolFailed {
+                reason: recorded,
+                cause,
+                ..
+            } = &record.event
+            {
+                if *recorded != reason {
+                    return Err(stock_boundary(
+                        self.io,
+                        Conflict,
+                        "tool refusal changed on replay",
+                    ));
+                }
+                return tool_failure_content(reason, cause, self.io);
+            }
+        }
+        if self.stock.reconciliation_only {
+            return Err(Error::Indeterminate(operation_id));
+        }
+        let cause = with_history_io(self.io, |work| {
+            ToolFailureCause::refusal(&invocation.name, reason, &error, work)
         })?;
-        Ok(crate::model::ToolResultContent::Error {
-            message: text,
-            provenance: crate::model::FailureProvenance::RECORDED,
-        })
+        self.settle_tool_cause(
+            journal,
+            operation_id,
+            step,
+            &invocation.call_id,
+            reason,
+            cause,
+        )
+        .await
     }
 
     fn authorize_tool_invocation(
@@ -632,7 +669,7 @@ impl StockExecution<'_> {
 }
 
 /// The model-visible result of a recorded tool failure; replay derives the same content.
-pub(super) fn tool_failure_content(
+pub(crate) fn tool_failure_content(
     reason: ToolFailureKind,
     cause: &ToolFailureCause,
     io: Option<&PreparationIo>,
@@ -641,7 +678,6 @@ pub(super) fn tool_failure_content(
         message: with_history_io(io, |work| {
             preparation_format(format_args!("{}", ToolFailureText(reason, cause)), work)
         })?,
-        provenance: crate::model::FailureProvenance::RECORDED,
     })
 }
 

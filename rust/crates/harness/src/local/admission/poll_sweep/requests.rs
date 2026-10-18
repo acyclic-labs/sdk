@@ -46,7 +46,7 @@ pub(super) async fn check(harness: &Harness, fixture: &Fixture) -> Result<()> {
         );
         let request = journal.staged_ref_with_io(operation, &key, None).await?;
         let bytes = journal.load(&request, None)?.await?;
-        let prepared = PreparedModelRequest::decode_retained(&bytes, harness.limits, None)?;
+        let prepared = PreparedModelRequest::decode(&bytes, harness.limits, None)?;
         if matches!(fixture.scenario, Scenario::Compaction) {
             use crate::conversation::ContentResidencyVerifier;
             let prompt = prepared

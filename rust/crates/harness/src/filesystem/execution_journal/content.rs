@@ -248,8 +248,7 @@ where
                         .map_or_else(Limits::default, |(owner, _)| owner.input_limits());
                     let before = io.map(PreparationIo::owned_bytes).transpose()?;
                     let _prepared_hold;
-                    let prepared =
-                        crate::model::PreparedModelRequest::decode_retained(bytes, limits, io)?;
+                    let prepared = crate::model::PreparedModelRequest::decode(bytes, limits, io)?;
                     _prepared_hold = match (io, before) {
                         (Some(io), Some(before)) => Some(io.guard_owned(io.owned_since(before)?)?),
                         _ => None,

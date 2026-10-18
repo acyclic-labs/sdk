@@ -4,5 +4,6 @@
     "metadata":null}],"done"],
   "expect":{"events":[{"kind":"model","event":{"kind":"tool_call","call_id":"missing","name":"set_name","arguments":{"name":"No route"}}},
     {"kind":"model","event":{"kind":"tool_call","call_id":"missing-second","name":"set_name","arguments":{"name":"No route"}}},
-    {"kind":"model","event":{"kind":"completed"}}]}
+    {"kind":"model","event":{"kind":"completed"}},
+    {"kind":"tool_failed","call_id":"missing","reason":"unavailable"},{"kind":"tool_failed","call_id":"missing-second","reason":"unavailable"}]}
 }

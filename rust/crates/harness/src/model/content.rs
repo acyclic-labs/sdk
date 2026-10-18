@@ -123,40 +123,13 @@ pub enum ToolResultContent {
         /// Text and file parts.
         parts: Vec<ModelDataPart>,
     },
-    /// Harness-authored refusal or failure of the paired call, outside the tool's projection
-    /// contract: the model reads why its call produced no result and may correct the next one.
+    /// The paired call produced no result: the model reads why and may correct its next call.
+    /// Like any supplied result it is history, not evidence that a tool ran; its contract is
+    /// its shape, a nonempty control-free message within the render limit.
     Error {
         /// Bounded model-visible cause.
         message: String,
-        /// Whether the harness recorded this failure; supplied input never is.
-        #[serde(skip)]
-        provenance: FailureProvenance,
     },
-}
-
-/// Provenance of a harness failure result. It is never serialized, so decoded input is always
-/// unrecorded: only the executor that recorded the failure, or a loader of the harness's own
-/// retained bytes, marks a result recorded. Only a recorded failure is exempt from the
-/// paired tool's result contract.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct FailureProvenance {
-    recorded: bool,
-}
-
-impl FailureProvenance {
-    /// A failure the harness recorded for its paired call.
-    pub(crate) const RECORDED: Self = Self { recorded: true };
-
-    pub(crate) const fn is_recorded(self) -> bool {
-        self.recorded
-    }
-}
-
-/// Provenance never distinguishes otherwise identical results: it is not part of the value.
-impl PartialEq for FailureProvenance {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
 }
 
 impl ModelContent {
@@ -351,10 +324,17 @@ impl ToolResultContent {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
             }
         }
-        if let Self::Error { message, .. } = self
-            && message.len() as u64 > limits.render_bytes
-        {
-            return Err(invalid(work, "tool error exceeds render limit"));
+        // `result_bound` charges the message scan.
+        if let Self::Error { message } = self {
+            if message.len() as u64 > limits.render_bytes {
+                return Err(invalid(work, "tool error exceeds render limit"));
+            }
+            if message.is_empty() || message.chars().any(char::is_control) {
+                return Err(invalid(
+                    work,
+                    "tool error must be nonempty control-free text",
+                ));
+            }
         }
         preparation::result_bound(self, limits.render_bytes, work)
     }

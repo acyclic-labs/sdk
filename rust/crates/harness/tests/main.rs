@@ -19,6 +19,7 @@ mod portable_text_tools;
 mod portable_text_variants;
 mod project_workspaces;
 mod recursive_fork;
+mod refused_tool_conversation;
 mod retained_content;
 mod saved_tool_metadata;
 mod scheduler_results;

@@ -88,12 +88,16 @@ impl ExecutionSummary {
             ExecutionEvent::ToolFailed {
                 step,
                 call_id,
+                reason,
                 cause,
-                ..
             } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
-                cause.is_canonical() && self.tools.get(&(*step, key)) == Some(&false)
+                // A refusal settles a call with no start; any other failure follows one.
+                let recorded = self.tools.get(&(*step, key));
+                cause.is_canonical()
+                    && (recorded == Some(&false)
+                        || (reason.precedes_dispatch() && recorded.is_none()))
             }
         };
         if let Some(io) = io {
@@ -335,6 +339,9 @@ impl PreparationRecord for Observation {
                 "invalid_output",
                 "projection_rejected",
                 "publication_rejected",
+                "unavailable",
+                "invalid_input",
+                "refused",
             ];
             let mut bytes = 0;
             let mut remaining = labels.as_slice();
