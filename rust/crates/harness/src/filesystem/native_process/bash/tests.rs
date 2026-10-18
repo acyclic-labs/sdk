@@ -150,6 +150,12 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             .map_err(|error| Error::Storage(error.to_string()))?;
         // Isolate host settings in a child test process; never mutate this
         // process's environment while other tests or native workers run.
+        // libtest names omit the crate; derive the path so a module move
+        // cannot leave a stale literal behind.
+        let test_name = format!(
+            "{}::host_home_and_path_survive_mount_environment_overrides",
+            module_path!().split_once("::").map_or(module_path!(), |(_, path)| path)
+        );
         let executable =
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
         // Property: every non-NUL native value survives launch byte-for-byte,
@@ -159,7 +165,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             |value| {
         let result = std::process::Command::new(&executable)
         .args([
-            "filesystem::native_process::bash::tests::host_home_and_path_survive_mount_environment_overrides",
+            test_name.as_str(),
             "--exact",
             "--nocapture",
         ])
@@ -178,6 +184,13 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             "{}\n{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
+        );
+        // A drifted test name selects nothing and exits successfully; the
+        // child must actually have run exactly this test.
+        prop_assert!(
+            String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "child selected no test: {}",
+            String::from_utf8_lossy(&result.stdout)
         );
         Ok(())
         }).map_err(|error| Error::Invalid(error.to_string()))?;
