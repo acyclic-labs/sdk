@@ -85,7 +85,7 @@ pub(crate) fn generate_encoded<'a>(
             }
             if let Some(wait) = redelivery.next(&error, retry_after, output) {
                 drop(error);
-                provider.transport.delay(wait).await;
+                crate::deadline::timer(provider.transport.as_ref(), wait, None)?.await?;
                 continue;
             }
             Err(error)?;

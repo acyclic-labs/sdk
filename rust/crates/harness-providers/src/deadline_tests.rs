@@ -119,10 +119,14 @@ fn bounded(history: History, idle_ms: u32, total_ms: u32) -> Arc<dyn HttpTranspo
 
 const IDLE: u32 = 100;
 
-/// A gap the idle deadline always tolerates, or always reports. Silence is measured on the
-/// clock, so the bound is exact; a gap of exactly one deadline is a tie and is not generated.
+/// A gap the idle deadline tolerates, up to and including exactly one deadline, or one it
+/// reports. Silence is measured on the clock, so the bound is exact, ties included.
 fn gap() -> impl Strategy<Value = Millis> {
-    prop_oneof![1..u64::from(IDLE), u64::from(IDLE) + 1..u64::from(5 * IDLE)]
+    prop_oneof![
+        Just(u64::from(IDLE)),
+        1..=u64::from(IDLE),
+        u64::from(IDLE) + 1..u64::from(5 * IDLE)
+    ]
 }
 
 proptest! {
@@ -332,7 +336,10 @@ proptest! {
                     assert!(guarded.next().await.unwrap().unwrap().is_empty());
                 }
             }
-            tokio::time::advance(Duration::from_millis(100 + late)).await;
+            // After empty chunks, end within one idle window of the last of them (75 ms in) but
+            // past one from the last bytes: only bytes are progress.
+            let tail = if empty && !eof { 26 + late % 74 } else { 100 + late };
+            tokio::time::advance(Duration::from_millis(tail)).await;
             // Negative control: polling the producer first, as the old guard did, reports
             // ready data/EOF and skips the clock check entirely.
             assert!(guarded.body.next().now_or_never().is_some());
@@ -393,6 +400,113 @@ proptest! {
         });
         prop_assert_eq!(observed.as_deref(), Some(expected));
         prop_assert!(!timer_only);
+    }
+}
+
+// A deadline is the longest tolerated wait: a read exactly at it proceeds, and a read once the
+// clock has passed it by a nanosecond fails, for either deadline, with the producer ready.
+#[test]
+fn deadlines_expire_once_the_clock_passes_them() {
+    for idle in [false, true] {
+        for past in [Duration::ZERO, Duration::from_nanos(1)] {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("test runtime");
+            runtime.block_on(async {
+                let transport: Arc<dyn HttpTransport> = Arc::new(Starved(History {
+                    head: 0,
+                    gaps: vec![],
+                    silent: true,
+                }));
+                let (timeouts, expected) = if idle {
+                    let timeouts = TimeoutSpec {
+                        idle_ms: 100,
+                        total_ms: u32::MAX,
+                    };
+                    (timeouts, "no response bytes for 100 ms")
+                } else {
+                    let timeouts = TimeoutSpec {
+                        idle_ms: u32::MAX,
+                        total_ms: 100,
+                    };
+                    (timeouts, "exchange exceeded 100 ms")
+                };
+                let deadlines = Deadlines::start(transport, timeouts, false);
+                let ready: BoxProviderStream<'static, Result<Bytes>> =
+                    Box::pin(futures::stream::repeat_with(|| {
+                        Ok(Bytes::from_static(b"x"))
+                    }));
+                let mut guarded = Guarded::new(ready, deadlines);
+                tokio::time::advance(Duration::from_millis(100) + past).await;
+                let item = guarded.next().now_or_never().flatten().expect("ready item");
+                if past.is_zero() {
+                    assert!(item.is_ok(), "a read at the deadline itself proceeds");
+                } else {
+                    assert_eq!(cause(&item.expect_err("past the deadline")), expected);
+                }
+            });
+        }
+    }
+}
+
+/// A platform whose clock counts whole milliseconds and whose timer elapses the whole
+/// milliseconds of its wait at once, dropping any fraction.
+struct Coarse(Arc<std::sync::atomic::AtomicU64>);
+
+impl HttpTransport for Coarse {
+    fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+        unreachable!("the guard is driven directly")
+    }
+    fn delay(&self, wait: Duration) -> BoxProviderFuture<'static, ()> {
+        let clock = self.0.clone();
+        Box::pin(async move {
+            let millis = u64::try_from(wait.as_millis()).expect("bounded wait");
+            clock.fetch_add(millis, std::sync::atomic::Ordering::SeqCst);
+        })
+    }
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+// The wake-up lands past the deadline even on a millisecond platform that drops fractions, so
+// a silent body times out on its first poll. Negative control: a wake-up armed less than a
+// millisecond past the deadline leaves this clock exactly at it, unexpired, and the guard
+// re-arms and yields forever; the bounded poll loop then fails.
+#[test]
+fn a_millisecond_platform_reaches_every_deadline() {
+    let mut context = std::task::Context::from_waker(futures::task::noop_waker_ref());
+    for idle in [false, true] {
+        let transport: Arc<dyn HttpTransport> = Arc::new(Coarse(Arc::default()));
+        let timeouts = if idle {
+            TimeoutSpec {
+                idle_ms: 100,
+                total_ms: u32::MAX,
+            }
+        } else {
+            TimeoutSpec {
+                idle_ms: u32::MAX,
+                total_ms: 100,
+            }
+        };
+        let deadlines = Deadlines::start(transport, timeouts, false);
+        let mut guarded = Guarded::new(Box::pin(futures::stream::pending()), deadlines);
+        let ended = (0..8).find_map(|_| match guarded.poll_next_unpin(&mut context) {
+            Poll::Ready(item) => Some(item),
+            Poll::Pending => None,
+        });
+        let error = ended
+            .flatten()
+            .expect("deadline reached")
+            .expect_err("timeout");
+        let expected = if idle {
+            "no response bytes for 100 ms"
+        } else {
+            "exchange exceeded 100 ms"
+        };
+        assert_eq!(cause(&error), expected);
     }
 }
 

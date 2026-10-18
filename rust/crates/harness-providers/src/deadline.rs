@@ -10,8 +10,11 @@
 //! as a typed [`ModelTransportFailure::Timeout`], which redelivery treats like any retryable
 //! failure: redelivered only while no output has escaped.
 //!
-//! On the native ledger the wake-up timer is admitted before it exists, at the one place this
-//! module creates one ([`Deadlines::arm`]).
+//! A deadline is the longest tolerated wait: it expires once the clock passes it.
+//!
+//! [`timer`] is the one place this crate creates a platform timer, deadline wake-ups and retry
+//! backoffs alike; on the native ledger it admits the timer before it exists.
+//! `scripts/qualify-provider-stream.sh` rejects any other timer construction in the crate.
 use crate::{HttpRequest, HttpResponse, HttpTransport, TimeoutSpec};
 use acyclic_harness::{Error, ModelTransportFailure, Result};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -150,21 +153,40 @@ fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
     }
 }
 
-/// A wake-up timer: portable, or admitted on the native ledger.
-enum Wake {
+/// A platform timer: portable, or admitted on the native ledger.
+pub(crate) enum Wake {
     Portable(BoxProviderFuture<'static, ()>),
     #[cfg(not(target_arch = "wasm32"))]
     Native(acyclic_harness::NativeFutureBundle<'static, ()>),
 }
 
-impl Wake {
-    fn poll(&mut self, context: &mut Context<'_>) -> Poll<Result<()>> {
-        match self {
+impl Future for Wake {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
+        match self.get_mut() {
             Self::Portable(timer) => timer.poll_unpin(context).map(Ok),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(timer) => timer.poll_unpin(context),
         }
     }
+}
+
+/// Creates the platform timer for `wait`, the crate's only one: admitted on `work`'s ledger
+/// before it exists when there is one, else portable.
+pub(crate) fn timer(
+    transport: &dyn HttpTransport,
+    wait: Duration,
+    work: Option<&Work>,
+) -> Result<Wake> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = work {
+        return transport
+            .delay_with_native_work(wait, work)
+            .map(Wake::Native);
+    }
+    let _ = work;
+    Ok(Wake::Portable(transport.delay(wait)))
 }
 
 /// One exchange's deadlines on the transport's clock.
@@ -197,12 +219,12 @@ impl Deadlines {
             .saturating_add(Duration::from_millis(self.timeouts.idle_ms.into()))
     }
 
-    /// The deadline the clock has reached, if any; `idle` only once the body is being read.
+    /// The deadline the clock has passed, if any; `idle` only once the body is being read.
     fn expired(&self, idle: bool) -> Option<Expired> {
         let now = self.transport.now();
-        if now >= self.total {
+        if now > self.total {
             Some(Expired::Total)
-        } else if idle && now >= self.idle_at() {
+        } else if idle && now > self.idle_at() {
             Some(Expired::Idle)
         } else {
             None
@@ -211,20 +233,6 @@ impl Deadlines {
 
     fn timeout(&self, expired: Expired) -> Error {
         timeout(self.native, expired, self.timeouts)
-    }
-
-    /// Creates the wake-up timer for `wait`: the one place a deadline timer is allocated, and
-    /// on the native ledger it is admitted first.
-    fn arm(&self, wait: Duration, work: Option<&Work>) -> Result<Wake> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = work {
-            return self
-                .transport
-                .delay_with_native_work(wait, work)
-                .map(Wake::Native);
-        }
-        let _ = work;
-        Ok(Wake::Portable(self.transport.delay(wait)))
     }
 
     /// Waits for a deadline: wakes on the timer, then measures on the clock. A timer that fires
@@ -247,10 +255,13 @@ impl Deadlines {
                 } else {
                     self.total
                 };
-                let wait = due.saturating_sub(self.transport.now());
-                self.wake = Some(self.arm(wait, work)?);
+                // Wake past the deadline, since at the deadline itself it has not expired: a
+                // whole millisecond past, so a timer or clock of millisecond granularity, which
+                // may drop the fraction, still passes it rather than re-arming forever.
+                let wait = due.saturating_sub(self.transport.now()) + Duration::from_millis(1);
+                self.wake = Some(timer(self.transport.as_ref(), wait, work)?);
             }
-            match self.wake.as_mut().map(|wake| wake.poll(context)) {
+            match self.wake.as_mut().map(|wake| wake.poll_unpin(context)) {
                 Some(Poll::Pending) | None => return Poll::Pending,
                 Some(Poll::Ready(result)) => {
                     self.wake = None;

@@ -339,11 +339,11 @@ async fn exchange_count(
             return Err(failure);
         };
         drop(failure);
+        let delay = crate::deadline::timer(provider.transport.as_ref(), wait, work)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
-            let delay = provider.transport.delay_with_native_work(wait, work)?;
             let cancelled = work.cancellation_wait()?;
-            futures::pin_mut!(cancelled, delay);
+            futures::pin_mut!(cancelled);
             match futures::future::select(cancelled, delay).await {
                 futures::future::Either::Left(_) => {
                     return Err(Error::from(
@@ -354,6 +354,6 @@ async fn exchange_count(
             }
             continue;
         }
-        provider.transport.delay(wait).await;
+        delay.await?;
     }
 }
