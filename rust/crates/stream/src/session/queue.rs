@@ -63,6 +63,26 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 (cursor(next), item, key)
             }
             Err(error) => {
+                if channel.publication.is_some()
+                    && matches!(
+                        error,
+                        StreamError::AccessDenied
+                            | StreamError::NotFound
+                            | StreamError::PrefixNotRetained
+                    )
+                {
+                    let generation = channel.generation;
+                    self.remove(identity.channel_id)?;
+                    self.controls.push_back(frame(
+                        identity.channel_id,
+                        generation,
+                        Body::Closed(wire::SessionClosed {
+                            code: error.code().into(),
+                            message: String::new(),
+                        }),
+                    ));
+                    return Ok(());
+                }
                 let channel = self
                     .channels
                     .get_mut(&identity.channel_id)
@@ -164,6 +184,33 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let Some((_, id)) = selected else {
             return Ok(None);
         };
+        if let Some(encoded) = self
+            .channels
+            .get(&id)
+            .and_then(|channel| channel.publication.as_ref())
+        {
+            let validation = self
+                .publications
+                .as_ref()
+                .ok_or(StreamError::Unsupported)?
+                .revalidate(encoded);
+            if let Err(error) = validation {
+                let generation = self
+                    .channels
+                    .get(&id)
+                    .ok_or(StreamError::Unavailable)?
+                    .generation;
+                self.remove(id)?;
+                return Ok(Some(frame(
+                    id,
+                    generation,
+                    Body::Closed(wire::SessionClosed {
+                        code: error.code().into(),
+                        message: String::new(),
+                    }),
+                )));
+            }
+        }
         self.ready_after = selected;
         #[cfg(test)]
         {

@@ -98,7 +98,7 @@ impl StreamError {
     #[must_use]
     pub fn from_session_close(code: &str) -> Self {
         Self::from_code(code).unwrap_or(match code {
-            "permission_denied" | "unauthenticated" => Self::AccessDenied,
+            "permission_denied" | "unauthenticated" | "revoked" => Self::AccessDenied,
             "resource_exhausted" => Self::Capacity,
             "unimplemented" => Self::Unsupported,
             _ => Self::Unavailable,

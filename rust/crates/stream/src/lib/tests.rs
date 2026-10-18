@@ -38,6 +38,7 @@ mod error_code_tests {
         for (code, error) in [
             ("unimplemented", StreamError::Unsupported),
             ("permission_denied", StreamError::AccessDenied),
+            ("revoked", StreamError::AccessDenied),
             ("unauthenticated", StreamError::AccessDenied),
             ("resource_exhausted", StreamError::Capacity),
             ("invalid_argument", StreamError::InvalidArgument),

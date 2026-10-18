@@ -1,3 +1,4 @@
+//! Session filesystem conformance.
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
 use acyclic_fs::wire::filesystem::v2 as wire;
@@ -16,6 +17,13 @@ type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn subscription(volume_id: acyclic_fs::VolumeId, latest: bool) -> Subscription {
     Subscription {
         volume_id,
+        workspace_name: acyclic_fs::WorkspaceName::new(
+            "session-fs",
+            &WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .value,
         path_prefix: PortablePath::parse("/", acyclic_fs::VolumeLimits::default()).unwrap(),
         delivery: if latest {
             wire::SessionFsDelivery::Latest
@@ -34,8 +42,10 @@ proptest! {
         sequence in 1u64..u64::MAX, latest in any::<bool>(), parts in prop::collection::vec("[a-z]{1,12}",0..5)) {
         let mut sub = subscription(acyclic_fs::VolumeId::from_bytes(volume), latest);
         sub.path_prefix = PortablePath::parse(&format!("/{}", parts.join("/")), acyclic_fs::VolumeLimits::default()).unwrap();
+        sub.workspace_name = acyclic_fs::WorkspaceName::new(format!("ws-{}", parts.join("-")), &WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap().value;
         prop_assert_eq!(Subscription::decode(&sub.encode().unwrap()).unwrap(), sub.clone());
         let publication = Publication {
+            workspace_name: sub.workspace_name.clone(),
             generation: acyclic_fs::kernel::PublishedGeneration {
                 volume_id: sub.volume_id,
                 generation_root: acyclic_fs::ObjectId {
@@ -132,10 +142,24 @@ impl Connection {
         sub: &Subscription,
         resume: session::SessionCursor,
     ) -> Result<Self> {
+        let provider = Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(())));
+        let mut connection = Self::start(stream, provider, sub, resume).await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
+        Ok(connection)
+    }
+    async fn start<P: acyclic_stream::StreamProvider>(
+        stream: Arc<P>,
+        provider: Arc<dyn PublicationProvider>,
+        sub: &Subscription,
+        resume: session::SessionCursor,
+    ) -> Result<Self> {
         let (sender, receiver) = mpsc::unbounded();
         let output = engine::serve_with_publications(
-            stream.clone(),
-            Some(Arc::new(Provider(stream))),
+            stream,
+            Some(provider),
             "local".into(),
             engine::Limits::default(),
             Box::pin(receiver),
@@ -175,10 +199,6 @@ impl Connection {
         assert!(matches!(
             connection.next().await?.body,
             Some(Body::InterestApplied(_))
-        ));
-        assert!(matches!(
-            connection.next().await?.body,
-            Some(Body::Opened(_))
         ));
         Ok(connection)
     }
@@ -291,7 +311,7 @@ use futures::FutureExt;
 async fn cursors_reject_scope_offset_and_anchor_changes() -> Result {
     let (_fs, workspace, stream) = fixture().await?;
     let sub = subscription(workspace.id().volume_id(), false);
-    let provider = Provider(stream);
+    let provider = Provider::new(stream, |_: &Subscription| Ok(()));
     let source = provider.subscribe(sub.encode()?, session::SessionCursor::default())?;
     let mut records = source.open.await?;
     let data = records.next().await.ok_or("missing publication")??;
@@ -314,13 +334,11 @@ async fn cursors_reject_scope_offset_and_anchor_changes() -> Result {
         next: cursor.next,
         opaque: decoded.encode()?,
     };
-    assert!(
-        provider
-            .subscribe(sub.encode()?, wrong)?
-            .open
-            .await
-            .is_err()
-    );
+    assert!(matches!(
+        provider.subscribe(sub.encode()?, wrong)?.open.await,
+        Err(StreamError::PrefixNotRetained)
+    ));
+
     Ok(())
 }
 
@@ -339,5 +357,305 @@ fn seed_corpus_round_trips() -> Result {
         Subscription::decode(include_bytes!("../fuzz/corpus/session_fs/unknown-version")),
         Err(StreamError::Unsupported)
     ));
+    Ok(())
+}
+
+#[path = "support/session_fs.rs"]
+mod support;
+
+fn closed(frame: &session::SessionFrame, error: StreamError) -> bool {
+    matches!(&frame.body, Some(Body::Closed(close)) if close.code == error.code()
+        && StreamError::from_session_close(&close.code) == error)
+}
+
+#[tokio::test]
+async fn published_reference_works_in_the_filesystem_server() -> Result {
+    use wire::filesystem_service_server::FilesystemService;
+    let (fs, workspace, stream) = fixture().await?;
+    workspace.write_text("/entry", "published").await?;
+    let sub = subscription(workspace.id().volume_id(), false);
+    let mut connection = Connection::open(stream, &sub, session::SessionCursor::default()).await?;
+    connection.grant()?;
+    connection.data().await?;
+    let (publication, _) = connection.data().await?;
+    let service = acyclic_fs::FilesystemWireService::new(fs, Default::default())?;
+    let reference = publication.generation_ref();
+    let read = service
+        .read(tonic::Request::new(wire::ReadRequest {
+            generation: Some(reference.clone()),
+            path: "/entry".into(),
+            maximum_bytes: 64,
+            range: None,
+        }))
+        .await?
+        .into_inner();
+    assert_eq!(read.contents.as_slice(), b"published");
+    service
+        .list_directory(tonic::Request::new(wire::ListDirectoryRequest {
+            generation: Some(reference.clone()),
+            path: "/".into(),
+            page: Some(wire::PageOptions {
+                maximum_items: 10,
+                after: None,
+            }),
+        }))
+        .await?;
+    let mut broken = reference;
+    broken.workspace = None;
+    let error = service
+        .read(tonic::Request::new(wire::ReadRequest {
+            generation: Some(broken),
+            path: "/entry".into(),
+            maximum_bytes: 64,
+            range: None,
+        }))
+        .await
+        .err()
+        .ok_or("missing workspace unexpectedly accepted")?;
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_during_checked_resume_has_no_gap_or_duplicate() -> Result {
+    for after_registration in [false, true] {
+        for skip in [0, 1] {
+            let (_fs, workspace, stream) = fixture().await?;
+            let sub = subscription(workspace.id().volume_id(), false);
+            let mut first =
+                Connection::open(stream.clone(), &sub, session::SessionCursor::default()).await?;
+            first.grant()?;
+            let (_, cursor) = first.data().await?;
+            drop(first);
+            let entered = Arc::new(tokio::sync::Barrier::new(2));
+            let release = Arc::new(tokio::sync::Barrier::new(2));
+            let mut history = support::History::new(stream);
+            history.gate = Some((entered.clone(), release.clone(), after_registration));
+            history.skip = skip;
+            let history = Arc::new(history);
+            let provider = Arc::new(Provider::new(history.clone(), |_: &Subscription| Ok(())));
+            let mut connection = Connection::start(history, provider, &sub, cursor).await?;
+            let open = connection.next();
+            let publish = async {
+                entered.wait().await;
+                workspace.write_text("/entry", "one").await?;
+                workspace.write_text("/entry", "two").await?;
+                release.wait().await;
+                Result::Ok(())
+            };
+            let (opened, published) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                    futures::join!(open, publish)
+                })
+                .await?;
+            published?;
+            assert!(matches!(opened?.body, Some(Body::Opened(_))));
+            connection.grant()?;
+            let (one, _) = connection.data().await?;
+            if skip == 0 {
+                assert_eq!(one.sequence.get(), 2);
+                assert_eq!(connection.data().await?.0.sequence.get(), 3);
+            } else {
+                // Negative control: skipping one real record fails the exact oracle.
+                assert_ne!(one.sequence.get(), 2);
+            }
+            assert!(connection.output.next().now_or_never().is_none());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn replaced_or_lost_history_is_terminal_for_all_and_latest() -> Result {
+    for latest in [false, true] {
+        let (_fs, workspace, stream) = fixture().await?;
+        workspace.write_text("/entry", "original").await?;
+        let sub = subscription(workspace.id().volume_id(), latest);
+        let provider = Provider::new(stream.clone(), |_: &Subscription| Ok(()));
+        let mut records = provider
+            .subscribe(sub.encode()?, session::SessionCursor::default())?
+            .open
+            .await?;
+        records.next().await.ok_or("missing creation")??;
+        let cursor = records
+            .next()
+            .await
+            .ok_or("missing publication")??
+            .after
+            .ok_or("missing cursor")?;
+        for loss in 0..3 {
+            for unchecked in [false, true] {
+                let (_replacement_fs, replacement, replacement_stream) = fixture().await?;
+                // Same volume, independently initialized authority. Loss 0: short
+                // replacement; loss 1: different anchor; loss 2: retained floor.
+                if loss != 0 {
+                    replacement.write_text("/entry", "replacement").await?;
+                }
+                if loss == 1 {
+                    replacement.write_text("/later", "next").await?;
+                }
+                let mut history = support::History::new(if loss == 2 {
+                    stream.clone()
+                } else {
+                    replacement_stream
+                });
+                history.unchecked = unchecked;
+                if loss == 2 {
+                    history.floor = cursor.next;
+                }
+                let history = Arc::new(history);
+                let provider = Arc::new(Provider::new(history.clone(), |_: &Subscription| Ok(())));
+                let mut resumed =
+                    Connection::start(history, provider, &sub, cursor.clone()).await?;
+                let outcome = resumed.next().await?;
+                if unchecked {
+                    assert!(
+                        !closed(&outcome, StreamError::PrefixNotRetained),
+                        "negative control accepted by oracle"
+                    );
+                } else {
+                    assert!(closed(&outcome, StreamError::PrefixNotRetained));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn workspace_deletion_closes_instead_of_becoming_idle() -> Result {
+    for skip_deletion in [false, true] {
+        let (_fs, workspace, stream) = fixture().await?;
+        let sub = subscription(workspace.id().volume_id(), false);
+        let provider = Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(())));
+        let provider = Arc::new(support::Broken {
+            inner: provider,
+            skip_deletion,
+            skip_authorization: false,
+        });
+        let mut connection = Connection::start(
+            stream.clone(),
+            provider.clone(),
+            &sub,
+            session::SessionCursor::default(),
+        )
+        .await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
+        connection.grant()?;
+        let (_, cursor) = connection.data().await?;
+        drop(connection);
+        let mut connection = Connection::start(stream.clone(), provider, &sub, cursor).await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
+        connection.grant()?;
+        workspace.delete(acyclic_fs::IdempotencyKey::new()).await?;
+        if !skip_deletion {
+            let mut tail_sub = sub.clone();
+            tail_sub.start_next = acyclic_stream::StreamProvider::tail(
+                &*stream,
+                acyclic_stream::StreamPath::new(format!(
+                    "fs/authorities/{}/records",
+                    hex::encode(sub.volume_id.into_bytes())
+                ))?,
+            )
+            .await?;
+            let provider = Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(())));
+            let mut from_tail = Connection::start(
+                stream.clone(),
+                provider,
+                &tail_sub,
+                session::SessionCursor::default(),
+            )
+            .await?;
+            assert!(closed(&from_tail.next().await?, StreamError::NotFound));
+        }
+        if skip_deletion {
+            assert!(connection.output.next().now_or_never().is_none());
+        } else {
+            assert!(closed(&connection.next().await?, StreamError::NotFound));
+            assert!(connection.output.next().now_or_never().is_none());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn revocation_discards_buffered_frames_at_delivery() -> Result {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for skip_authorization in [false, true] {
+        let (_fs, workspace, stream) = fixture().await?;
+        let sub = subscription(workspace.id().volume_id(), true);
+        let allowed = Arc::new(AtomicBool::new(true));
+        let policy = allowed.clone();
+        let provider = Arc::new(Provider::new(stream.clone(), move |_: &Subscription| {
+            if policy.load(Ordering::Acquire) {
+                Ok(())
+            } else {
+                Err(StreamError::AccessDenied)
+            }
+        }));
+        let provider = Arc::new(support::Broken {
+            inner: provider,
+            skip_deletion: false,
+            skip_authorization,
+        });
+        let mut connection =
+            Connection::start(stream, provider, &sub, session::SessionCursor::default()).await?;
+        assert!(matches!(
+            connection.next().await?.body,
+            Some(Body::Opened(_))
+        ));
+        assert!(connection.output.next().now_or_never().is_none()); // queues creation
+        allowed.store(false, Ordering::Release);
+        connection.grant()?;
+        let outcome = connection.next().await?;
+        assert_eq!(
+            closed(&outcome, StreamError::AccessDenied),
+            !skip_authorization
+        );
+        if skip_authorization {
+            assert!(matches!(outcome.body, Some(Body::Data(_))));
+        } else {
+            assert!(connection.output.next().now_or_never().is_none());
+        }
+    }
+    assert_eq!(
+        StreamError::from_session_close("revoked"),
+        StreamError::AccessDenied
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn latest_resumes_after_a_conflated_cursor() -> Result {
+    let (_fs, workspace, stream) = fixture().await?;
+    let sub = subscription(workspace.id().volume_id(), true);
+    let mut first =
+        Connection::open(stream.clone(), &sub, session::SessionCursor::default()).await?;
+    assert!(first.output.next().now_or_never().is_none());
+    for text in ["one", "two"] {
+        workspace.write_text("/entry", text).await?;
+        assert!(first.output.next().now_or_never().is_none());
+    }
+    first.grant()?;
+    let (last, cursor) = first.data().await?;
+    assert_eq!(last.sequence.get(), 3);
+    drop(first);
+    // Negative control: discarding the conflated cursor replays an applied root.
+    let mut reset =
+        Connection::open(stream.clone(), &sub, session::SessionCursor::default()).await?;
+    reset.grant()?;
+    assert!(reset.data().await?.0.sequence.get() <= 3);
+    drop(reset);
+    workspace.write_text("/entry", "three").await?;
+    let mut resumed = Connection::open(stream.clone(), &sub, cursor).await?;
+    resumed.grant()?;
+    assert_eq!(resumed.data().await?.0.sequence.get(), 4);
+    assert!(resumed.output.next().now_or_never().is_none());
     Ok(())
 }

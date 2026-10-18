@@ -84,6 +84,7 @@ struct Channel {
     generation: u64,
     latest: bool,
     opaque_cursor: bool,
+    publication: Option<Bytes>,
     pending: VecDeque<Pending>,
     indexed: Option<usize>,
     credit: wire::SessionWindow,

@@ -14,6 +14,8 @@ pub struct PublicationSubscription {
 
 /// Filesystem-owned adapter for the opaque Session payload.
 pub trait PublicationProvider: crate::ProviderPlatform + 'static {
+    /// Revalidates current authority immediately before delivery.
+    fn revalidate(&self, encoded: &Bytes) -> Result<(), StreamError>;
     /// Prepares a subscription and continuation.
     fn subscribe(
         &self,

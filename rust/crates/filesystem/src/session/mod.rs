@@ -1,7 +1,7 @@
 use crate::kernel::PublishedGeneration;
 use crate::path::PortablePath;
 use crate::wire::filesystem::v2 as wire;
-use crate::{Sequence, VolumeId};
+use crate::{Sequence, VolumeId, WorkspaceName};
 use acyclic_stream::{CommitId, StreamError};
 use bytes::Bytes;
 use prost::Message;
@@ -16,6 +16,8 @@ pub use provider::Provider;
 pub struct Subscription {
     /// Volume identity.
     pub volume_id: VolumeId,
+    /// Canonical workspace name.
+    pub workspace_name: WorkspaceName,
     /// Selected path prefix.
     pub path_prefix: PortablePath,
     /// Delivery mode.
@@ -29,6 +31,8 @@ pub struct Subscription {
 pub struct Publication {
     /// Published generation.
     pub generation: PublishedGeneration,
+    /// Owning workspace name.
+    pub workspace_name: WorkspaceName,
     /// Authority sequence.
     pub sequence: Sequence,
     /// Stream commit identity.
@@ -81,6 +85,7 @@ impl Subscription {
             path_prefix: self.path_prefix.as_str().into(),
             delivery: self.delivery as i32,
             start_next: self.start_next,
+            workspace: Some(workspace_ref(self.volume_id, &self.workspace_name)),
         }
     }
     fn from_wire(value: wire::SessionFsSubscription) -> Result<Self, StreamError> {
@@ -90,8 +95,10 @@ impl Subscription {
         if delivery == wire::SessionFsDelivery::Unspecified {
             return Err(StreamError::InvalidArgument);
         }
+        let volume_id = VolumeId::from_bytes(fixed(&value.volume_id)?);
         Ok(Self {
-            volume_id: VolumeId::from_bytes(fixed(&value.volume_id)?),
+            workspace_name: workspace_name(volume_id, value.workspace)?,
+            volume_id,
             path_prefix: PortablePath::parse(&value.path_prefix, crate::VolumeLimits::default())
                 .map_err(|_| StreamError::InvalidArgument)?,
             delivery,
@@ -101,6 +108,17 @@ impl Subscription {
 }
 
 impl Publication {
+    /// Returns the public filesystem generation reference.
+    pub fn generation_ref(&self) -> wire::GenerationRef {
+        wire::GenerationRef {
+            workspace: Some(workspace_ref(
+                self.generation.volume_id,
+                &self.workspace_name,
+            )),
+            generation_id: self.generation.generation_root.digest.as_bytes().to_vec(),
+        }
+    }
+
     /// Encodes the typed payload.
     pub fn encode(&self) -> Result<Bytes, StreamError> {
         if self.generation.generation_root.kind != crate::ObjectKind::GenerationRoot {
@@ -109,10 +127,7 @@ impl Publication {
         let wire = wire::SessionFsPublication {
             version: 1,
             volume_id: self.generation.volume_id.into_bytes().to_vec(),
-            generation: Some(wire::GenerationRef {
-                workspace: None,
-                generation_id: self.generation.generation_root.digest.as_bytes().to_vec(),
-            }),
+            generation: Some(self.generation_ref()),
             sequence: self.sequence.get(),
             commit_id: self.commit_id.as_bytes().to_vec(),
         };
@@ -126,12 +141,14 @@ impl Publication {
     fn from_wire(value: wire::SessionFsPublication) -> Result<Self, StreamError> {
         version(value.version)?;
         let generation = value.generation.ok_or(StreamError::InvalidArgument)?;
-        if generation.workspace.is_some() || value.sequence == 0 || value.sequence == u64::MAX {
+        if value.sequence == 0 || value.sequence == u64::MAX {
             return Err(StreamError::InvalidArgument);
         }
+        let volume_id = VolumeId::from_bytes(fixed(&value.volume_id)?);
         Ok(Self {
+            workspace_name: workspace_name(volume_id, generation.workspace)?,
             generation: PublishedGeneration {
-                volume_id: VolumeId::from_bytes(fixed(&value.volume_id)?),
+                volume_id,
                 generation_root: crate::ObjectId {
                     kind: crate::ObjectKind::GenerationRoot,
                     digest: crate::Digest::from_bytes(fixed(&generation.generation_id)?),
@@ -172,4 +189,31 @@ impl Cursor {
             preceding_commit_id: CommitId::from_bytes(fixed(&value.preceding_commit_id)?),
         })
     }
+}
+
+fn workspace_ref(volume: VolumeId, name: &WorkspaceName) -> wire::WorkspaceRef {
+    wire::WorkspaceRef {
+        workspace_id: volume.into_bytes().to_vec(),
+        name: name.as_str().into(),
+    }
+}
+fn workspace_name(
+    volume: VolumeId,
+    value: Option<wire::WorkspaceRef>,
+) -> Result<WorkspaceName, StreamError> {
+    let value = value.ok_or(StreamError::InvalidArgument)?;
+    if value.workspace_id != volume.into_bytes() {
+        return Err(StreamError::InvalidArgument);
+    }
+    let name = WorkspaceName::new(
+        &value.name,
+        &crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|_| StreamError::InvalidArgument)?
+    .value;
+    if name.as_str() != value.name {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(name)
 }

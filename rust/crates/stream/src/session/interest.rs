@@ -69,6 +69,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             subscription.kind,
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
+        let publication = match &subscription.kind {
+            Some(Kind::FsPublications(encoded)) => Some(encoded.clone()),
+            _ => None,
+        };
         let (latest, source) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
@@ -128,6 +132,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 generation: identity.generation,
                 latest,
                 opaque_cursor,
+                publication,
                 pending: VecDeque::new(),
                 indexed: None,
                 credit: wire::SessionWindow::default(),
