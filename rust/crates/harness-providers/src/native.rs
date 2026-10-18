@@ -103,7 +103,7 @@ pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation
             Error::Invalid(message) => (ErrorCode::Invalid, message),
             Error::Unauthorized(message) => (ErrorCode::Unauthorized, message),
             Error::Storage(message) => (ErrorCode::Storage, message),
-            error @ Error::ModelUnavailable { .. } => (ErrorCode::Unavailable, error.to_string()),
+            error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string()),
             error => return error,
         };
         match allocation.split_off(message.capacity() as u64) {

@@ -2,19 +2,37 @@ use crate::RetrySpec;
 use acyclic_harness::{Error, model::ModelDispatch, wire::ErrorCode};
 use std::time::Duration;
 
-/// One dispatch's redelivery budget. Only a request the endpoint refused before any output is
+/// One exchange's redelivery budget. Only a request the endpoint refused before any output is
 /// redelivered, so no caller-visible event can repeat.
 pub(crate) struct Redelivery {
     spec: RetrySpec,
-    dispatch: ModelDispatch,
+    /// Jitter seed: concurrent exchanges spread out while one exchange's schedule replays.
+    seed: [u8; 32],
     attempt: u8,
 }
 
 impl Redelivery {
-    pub(crate) const fn new(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
+    /// The budget of one model dispatch.
+    pub(crate) fn new(spec: RetrySpec, dispatch: ModelDispatch) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"harness-providers:redelivery:dispatch:v1");
+        hasher.update(&dispatch.operation_id.into_bytes());
+        hasher.update(&dispatch.step.to_le_bytes());
+        Self::seeded(spec, *hasher.finalize().as_bytes())
+    }
+
+    /// The budget of one exchange without a dispatch, such as a token count, keyed by its body.
+    pub(crate) fn for_request(spec: RetrySpec, body: &[u8]) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"harness-providers:redelivery:request:v1");
+        hasher.update(body);
+        Self::seeded(spec, *hasher.finalize().as_bytes())
+    }
+
+    const fn seeded(spec: RetrySpec, seed: [u8; 32]) -> Self {
         Self {
             spec,
-            dispatch,
+            seed,
             attempt: 0,
         }
     }
@@ -37,12 +55,8 @@ impl Redelivery {
                 let ceiling = u64::from(self.spec.base_delay_ms)
                     .saturating_mul(1 << self.attempt.min(16))
                     .min(u64::from(self.spec.max_delay_ms));
-                // Equal jitter, derived from the dispatch so concurrent tasks spread out while
-                // one dispatch's schedule replays exactly.
-                let mut hasher = blake3::Hasher::new();
-                hasher.update(b"harness-providers:redelivery:v1");
-                hasher.update(&self.dispatch.operation_id.into_bytes());
-                hasher.update(&self.dispatch.step.to_le_bytes());
+                // Equal jitter from the exchange's seed.
+                let mut hasher = blake3::Hasher::new_keyed(&self.seed);
                 hasher.update(&[self.attempt]);
                 let sample = hasher
                     .finalize()
@@ -77,7 +91,7 @@ mod tests {
     }
     fn unavailable() -> Error {
         Error::ModelUnavailable {
-            status: Some(503),
+            failure: acyclic_harness::ModelTransportFailure::Status(503),
             excerpt: String::new(),
         }
     }
@@ -95,7 +109,10 @@ mod tests {
         }
         // The schedule replays exactly for the same dispatch.
         let mut again = Redelivery::new(RetrySpec::DEFAULT, dispatch());
-        assert_eq!(again.next(&unavailable(), None, false), waits.first().copied().flatten());
+        assert_eq!(
+            again.next(&unavailable(), None, false),
+            waits.first().copied().flatten()
+        );
         let mut hinted = Redelivery::new(RetrySpec::DEFAULT, dispatch());
         assert_eq!(
             hinted.next(&unavailable(), Some(Duration::from_secs(2)), false),
@@ -109,6 +126,28 @@ mod tests {
             None
         );
         assert_eq!(fresh.next(&Error::Invalid("bad".into()), None, false), None);
+        let transport = |failure| Error::ModelUnavailable {
+            failure,
+            excerpt: String::new(),
+        };
+        // TLS failures meet the same peer again; every other transport class is redelivered.
+        assert_eq!(
+            fresh.next(
+                &transport(acyclic_harness::ModelTransportFailure::Tls),
+                None,
+                false
+            ),
+            None
+        );
+        for failure in [
+            acyclic_harness::ModelTransportFailure::Connect,
+            acyclic_harness::ModelTransportFailure::Timeout,
+            acyclic_harness::ModelTransportFailure::Interrupted,
+        ] {
+            let mut each = Redelivery::new(RetrySpec::DEFAULT, dispatch());
+            assert!(each.next(&transport(failure), None, false).is_some());
+            assert_eq!(each.next(&transport(failure), None, true), None);
+        }
         assert_eq!(
             fresh.next(&unavailable(), Some(Duration::from_secs(9)), false),
             None

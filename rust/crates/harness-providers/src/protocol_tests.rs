@@ -136,7 +136,7 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                     // Redelivered within the default budget, then a typed refusal.
                     assert_eq!(sent, 1 + usize::from(crate::RetrySpec::DEFAULT.attempts));
                     let Error::ModelUnavailable {
-                        status: Some(found),
+                        failure: acyclic_harness::ModelTransportFailure::Status(found),
                         excerpt,
                     } = &error
                     else {
@@ -176,7 +176,16 @@ async fn interrupted_bodies_are_transient_and_protocol_violations_are_invalid() 
                 .try_collect::<Vec<_>>()
                 .await
                 .expect_err("unfinished body");
-            assert!(matches!(error, Error::Storage(_)), "{adapter:?}: {error}");
+            assert!(
+                matches!(
+                    error,
+                    Error::ModelUnavailable {
+                        failure: acyclic_harness::ModelTransportFailure::Interrupted,
+                        ..
+                    }
+                ),
+                "{adapter:?}: {error}"
+            );
         }
         let error = stream::events(
             adapter,

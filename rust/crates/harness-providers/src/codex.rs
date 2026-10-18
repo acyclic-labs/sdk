@@ -31,15 +31,15 @@ pub struct CodexLogin {
 #[derive(Clone, Copy)]
 struct RefreshFailure {
     code: acyclic_harness::wire::ErrorCode,
-    status: Option<u16>,
+    failure: Option<acyclic_harness::ModelTransportFailure>,
     message: [u8; 256],
     length: usize,
 }
 impl RefreshFailure {
     fn from_error(error: &acyclic_harness::Error) -> Option<Self> {
         use acyclic_harness::Error;
-        let (message, status) = match error {
-            Error::ModelUnavailable { status, excerpt } => (excerpt.as_str(), *status),
+        let (message, failure) = match error {
+            Error::ModelUnavailable { failure, excerpt } => (excerpt.as_str(), Some(*failure)),
             error => (
                 match error {
                     Error::Unauthorized(message)
@@ -64,7 +64,7 @@ impl RefreshFailure {
         }
         let mut failure = Self {
             code: error.code(),
-            status,
+            failure,
             message: [0; 256],
             length: message.len(),
         };
@@ -83,13 +83,13 @@ impl RefreshFailure {
         let text = std::str::from_utf8(&self.message[..self.length])
             .map_err(|_| invalid("invalid shared refresh diagnostic"))?;
         let message = io.string(text)?;
-        Ok(match self.code {
-            ErrorCode::Unauthorized => Error::Unauthorized(message),
-            ErrorCode::Storage => Error::Storage(message),
-            ErrorCode::Unavailable => Error::ModelUnavailable {
-                status: self.status,
+        Ok(match (self.code, self.failure) {
+            (_, Some(failure)) => Error::ModelUnavailable {
+                failure,
                 excerpt: message,
             },
+            (ErrorCode::Unauthorized, None) => Error::Unauthorized(message),
+            (ErrorCode::Storage, None) => Error::Storage(message),
             _ => Error::Invalid(message),
         })
     }

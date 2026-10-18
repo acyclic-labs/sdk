@@ -98,9 +98,40 @@ const EXCERPT_BYTES: usize = 256;
 
 fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
     matches!(status, 408 | 429 | 500..=599).then(|| Error::ModelUnavailable {
-        status: Some(status),
+        failure: acyclic_harness::ModelTransportFailure::Status(status),
         excerpt: excerpt(body),
     })
+}
+
+/// The one transport failure for the portable and native paths. A native failure carries only
+/// its class, as its diagnostic must be funded; the portable one keeps the bounded root cause.
+fn transport_failure(
+    native: bool,
+    failure: acyclic_harness::ModelTransportFailure,
+    cause: &str,
+) -> Error {
+    #[cfg(not(target_arch = "wasm32"))]
+    if native {
+        use acyclic_harness::ModelTransportFailure::{Connect, Interrupted, Status, Timeout, Tls};
+        return Error::NativeBoundary {
+            code: if failure.retryable() {
+                acyclic_harness::wire::ErrorCode::Unavailable
+            } else {
+                acyclic_harness::wire::ErrorCode::Invalid
+            },
+            reason: match failure {
+                Connect => "model provider connection failed",
+                Timeout => "model provider exchange timed out",
+                Tls => "model provider TLS failed",
+                Interrupted | Status(_) => "model provider connection interrupted",
+            },
+        };
+    }
+    let _ = native;
+    Error::ModelUnavailable {
+        failure,
+        excerpt: excerpt(cause.as_bytes()),
+    }
 }
 
 /// Classifies a non-success response, reading at most [`EXCERPT_BYTES`] of a refusal's body.

@@ -74,12 +74,20 @@ impl HttpTransport for BrowserTransport {
                     init.as_ref(),
                 )
                 .map_err(|_| {
-                    acyclic_harness::Error::Storage("browser model dispatch failed".into())
+                    crate::transport_failure(
+                        false,
+                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        "browser model dispatch failed",
+                    )
                 })?;
             let response = JsFuture::from(Promise::resolve(&response))
                 .await
                 .map_err(|_| {
-                    acyclic_harness::Error::Storage("browser model exchange failed".into())
+                    crate::transport_failure(
+                        false,
+                        acyclic_harness::ModelTransportFailure::Interrupted,
+                        "browser model exchange failed",
+                    )
                 })?
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
@@ -108,7 +116,11 @@ impl HttpTransport for BrowserTransport {
                 },
                 |body| async move {
                     let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
-                        acyclic_harness::Error::Storage("browser model body interrupted".into())
+                        crate::transport_failure(
+                            false,
+                            acyclic_harness::ModelTransportFailure::Interrupted,
+                            "browser model body interrupted",
+                        )
                     })?;
                     let done = Reflect::get(&chunk, &JsValue::from_str("done"))
                         .map_err(|_| invalid("invalid browser stream result"))?;

@@ -19,6 +19,42 @@ pub enum InteractionRejection {
     Denied,
 }
 
+/// How a model provider exchange failed, with its retryability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelTransportFailure {
+    /// The provider answered with this refusal status: 408, 429 or 5xx.
+    Status(u16),
+    /// No connection was established, so the request never left this host.
+    Connect,
+    /// The exchange timed out.
+    Timeout,
+    /// TLS negotiation with the provider failed.
+    Tls,
+    /// The connection failed after the request was sent, or the response body was cut off.
+    Interrupted,
+}
+
+impl ModelTransportFailure {
+    /// Whether redelivery may clear the failure. TLS failures are not retryable: a retry meets
+    /// the same peer and configuration.
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        !matches!(self, Self::Tls)
+    }
+}
+
+impl std::fmt::Display for ModelTransportFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Status(status) => write!(formatter, "HTTP {status}"),
+            Self::Connect => formatter.write_str("connection failed"),
+            Self::Timeout => formatter.write_str("timed out"),
+            Self::Tls => formatter.write_str("TLS failed"),
+            Self::Interrupted => formatter.write_str("connection interrupted"),
+        }
+    }
+}
+
 /// Errors shared by harness surfaces.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -42,14 +78,14 @@ pub enum Error {
     /// Automatic admission stopped with a file-driven blocked goal.
     #[error("goal blocked: {0}")]
     GoalBlocked(crate::goal::GoalBlockedReason),
-    /// The model provider definitively refused or could not take the request (HTTP 408, 429 or
-    /// 5xx, or no connection), after bounded redelivery or once output had begun. A definitive
-    /// failure: the provider performed no effect for the harness to reconcile.
-    #[error("model provider unavailable{}: {excerpt}", status.map_or_else(|| " (no connection)".to_owned(), |status| format!(" (HTTP {status})")))]
+    /// The model provider refused or could not take the request, after bounded redelivery of a
+    /// retryable failure or once output had begun. A definitive failure: the provider performed
+    /// no effect for the harness to reconcile.
+    #[error("model provider unavailable ({failure}){}", if excerpt.is_empty() { String::new() } else { format!(": {excerpt}") })]
     ModelUnavailable {
-        /// The final HTTP status; `None` when no connection was established.
-        status: Option<u16>,
-        /// Bounded, control-free excerpt of the provider's response body.
+        /// How the exchange failed.
+        failure: ModelTransportFailure,
+        /// Bounded, control-free excerpt of the response body or the transport's root cause.
         excerpt: String,
     },
     /// A required capability is unavailable.
@@ -424,7 +460,8 @@ impl Error {
             }
             Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
-            Self::ModelUnavailable { .. } => ErrorCode::Unavailable,
+            Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
+            Self::ModelUnavailable { .. } => ErrorCode::Invalid,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::InteractionRejected(InteractionRejection::Declined) => {
                 ErrorCode::InteractionDeclined

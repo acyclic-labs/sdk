@@ -114,7 +114,11 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         let error = provider.count_tokens(&request).await.unwrap_err();
         assert_eq!(error.code(), code);
         assert!(error.to_string().contains(&status.to_string()));
-        assert!(!error.to_string().contains("fixture-secret"));
+        // Only a refusal carries its bounded body excerpt, as on dispatch.
+        assert_eq!(
+            error.to_string().contains("fixture-secret"),
+            code == acyclic_harness::wire::ErrorCode::Unavailable
+        );
     }
     for body in [
         b"{\"input_tokens\":-1}".as_slice(),

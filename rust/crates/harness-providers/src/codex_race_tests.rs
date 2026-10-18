@@ -250,7 +250,7 @@ async fn oauth_transient_statuses_keep_the_retryable_classification() -> Result<
         assert!(error.to_string().contains(&status.to_string()));
         assert!(matches!(
             error,
-            acyclic_harness::Error::ModelUnavailable { status: Some(found), .. } if found == status
+            acyclic_harness::Error::ModelUnavailable { failure: acyclic_harness::ModelTransportFailure::Status(found), .. } if found == status
         ));
     }
     Ok(())

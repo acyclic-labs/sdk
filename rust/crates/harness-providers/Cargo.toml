@@ -32,6 +32,7 @@ acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = fa
 blake3.workspace = true
 base64 = "=0.22.1"
 reqwest.workspace = true
+rustls.workspace = true
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 tempfile = "3.27.0"
 time = { workspace = true, features = ["formatting", "parsing"] }

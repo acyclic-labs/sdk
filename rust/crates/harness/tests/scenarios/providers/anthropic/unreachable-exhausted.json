@@ -1,0 +1,43 @@
+{
+ "unreachable": 4,
+ "responses": [],
+ "expect": {
+  "outcome": "failed",
+  "text": "",
+  "events": [],
+  "requests": [],
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Failed": {
+      "message": {
+       "$contains": "model provider unavailable (connection failed)"
+      }
+     }
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "failed",
+    "attention": true,
+    "parent": null,
+    "error": {
+     "$contains": "connection failed"
+    }
+   }
+  ]
+ }
+}

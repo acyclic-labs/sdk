@@ -474,7 +474,7 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
 #[path = "contract_errors.rs"]
 mod errors;
 pub(crate) use errors::indeterminate_display;
-pub use errors::{Error, InteractionRejection, Result};
+pub use errors::{Error, InteractionRejection, ModelTransportFailure, Result};
 
 #[cfg(test)]
 mod tests {

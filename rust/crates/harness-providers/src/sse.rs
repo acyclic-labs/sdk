@@ -21,23 +21,27 @@ pub(crate) struct Decoder {
 }
 
 impl Decoder {
-    fn failure(&self, storage: bool, reason: &'static str) -> acyclic_harness::Error {
+    fn failure(&self, reason: &'static str) -> acyclic_harness::Error {
         #[cfg(not(target_arch = "wasm32"))]
         if self.custody.is_some() {
             return acyclic_harness::Error::NativeBoundary {
-                code: if storage {
-                    acyclic_harness::wire::ErrorCode::Storage
-                } else {
-                    acyclic_harness::wire::ErrorCode::Invalid
-                },
+                code: acyclic_harness::wire::ErrorCode::Invalid,
                 reason,
             };
         }
-        if storage {
-            acyclic_harness::Error::Storage(reason.into())
-        } else {
-            invalid(reason)
-        }
+        invalid(reason)
+    }
+    /// The body ended inside an event: the connection was cut off, not the stream malformed.
+    fn truncated(&self) -> acyclic_harness::Error {
+        #[cfg(not(target_arch = "wasm32"))]
+        let native = self.custody.is_some();
+        #[cfg(target_arch = "wasm32")]
+        let native = false;
+        crate::transport_failure(
+            native,
+            acyclic_harness::ModelTransportFailure::Interrupted,
+            "truncated SSE event",
+        )
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
@@ -69,7 +73,7 @@ impl Decoder {
                 .transpose()?;
             self.line
                 .try_reserve_exact(capacity - self.line.len())
-                .map_err(|_| self.failure(false, "SSE buffer allocation failed"))?;
+                .map_err(|_| self.failure("SSE buffer allocation failed"))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(owner), Some(allocation)) = (&mut self.custody, &mut allocation) {
                 allocation.reconcile_capacity(self.line.capacity() as u64)?;
@@ -82,8 +86,7 @@ impl Decoder {
     }
 
     fn finish_line(&mut self) -> Result<()> {
-        let text =
-            std::str::from_utf8(&self.line).map_err(|_| self.failure(false, "SSE is not UTF-8"))?;
+        let text = std::str::from_utf8(&self.line).map_err(|_| self.failure("SSE is not UTF-8"))?;
         if let Some(value) = text.strip_prefix("data:") {
             let value = value.strip_prefix(' ').unwrap_or(value);
             let target = self
@@ -91,7 +94,7 @@ impl Decoder {
                 .len()
                 .checked_add(value.len())
                 .and_then(|n| n.checked_add(1))
-                .ok_or_else(|| self.failure(false, "SSE size overflow"))?;
+                .ok_or_else(|| self.failure("SSE size overflow"))?;
             let old = self.data.capacity();
             if target > old {
                 let capacity = target.max(old.saturating_mul(2)).max(8);
@@ -112,7 +115,7 @@ impl Decoder {
                     .transpose()?;
                 self.data
                     .try_reserve_exact(capacity - self.data.len())
-                    .map_err(|_| self.failure(false, "SSE buffer allocation failed"))?;
+                    .map_err(|_| self.failure("SSE buffer allocation failed"))?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let (Some(owner), Some(allocation)) = (&mut self.custody, &mut allocation) {
                     allocation.reconcile_capacity(self.data.capacity() as u64)?;
@@ -148,8 +151,8 @@ pub(crate) fn frames<'a>(
                 if byte == b'\n' && decoder.cr { decoder.cr = false; continue; }
                 decoder.cr = byte == b'\r';
                 if byte != b'\n' && byte != b'\r' {
-                    decoder.bytes = decoder.bytes.checked_add(1).ok_or_else(|| decoder.failure(false, "SSE size overflow"))?;
-                    if decoder.bytes > maximum { Err(decoder.failure(false, "SSE event exceeds configured byte limit"))?; }
+                    decoder.bytes = decoder.bytes.checked_add(1).ok_or_else(|| decoder.failure("SSE size overflow"))?;
+                    if decoder.bytes > maximum { Err(decoder.failure("SSE event exceeds configured byte limit"))?; }
                     decoder.line_byte(byte)?;
                 } else if decoder.line.is_empty() {
                     decoder.bytes = 0;
@@ -165,7 +168,7 @@ pub(crate) fn frames<'a>(
             }
         }
         if !decoder.line.is_empty() || !decoder.data.is_empty() {
-            Err(decoder.failure(true, "truncated SSE event"))?;
+            Err(decoder.truncated())?;
         }
     }
 }

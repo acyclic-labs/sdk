@@ -21,6 +21,9 @@ pub struct ProviderCase {
     /// HTTP status of each response; omitted statuses are 200.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub statuses: Vec<u16>,
+    /// Leading exchanges, counts included, refused for want of a connection.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unreachable: u8,
     pub chunk_bytes: NonZeroUsize,
     /// Registered tools beyond the defaults, named like installed MCP tools.
     #[serde(default)]
@@ -42,6 +45,10 @@ pub struct Expectations {
     pub outcome: super::local_case::ExpectedOutcome,
 }
 
+fn is_zero(count: &u8) -> bool {
+    *count == 0
+}
+
 fn is_succeeded(outcome: &super::local_case::ExpectedOutcome) -> bool {
     *outcome == super::local_case::ExpectedOutcome::Succeeded
 }
@@ -61,8 +68,24 @@ impl ProviderCase {
 
 impl ProviderCase {
     pub fn validate(&self) -> Result<(), &'static str> {
+        let succeeded = self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded;
+        // No response is consumed only when every attempt was refused.
+        if self.responses.is_empty() {
+            return if self.prompt.is_empty()
+                || succeeded
+                || self.unreachable == 0
+                || !self.statuses.is_empty()
+                || !self.expect.events.is_empty()
+                || !self.expect.requests.is_empty()
+                || self.expect.frames.is_empty()
+                || self.expect.statuses.len() < 2
+            {
+                Err("invalid bounded provider scenario")
+            } else {
+                Ok(())
+            };
+        }
         if self.prompt.is_empty()
-            || self.responses.is_empty()
             || self.responses.len() > 8
             || self.responses.len() != self.expect.events.len()
             || self.responses.len() != self.expect.requests.len()
@@ -71,8 +94,7 @@ impl ProviderCase {
                 .statuses
                 .iter()
                 .any(|status| !(200..600).contains(status))
-            || (self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded)
-                != (self.status(self.responses.len() - 1) == 200)
+            || succeeded != (self.status(self.responses.len() - 1) == 200)
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
             })

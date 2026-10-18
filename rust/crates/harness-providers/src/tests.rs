@@ -46,6 +46,8 @@ pub(crate) mod native_tests;
 mod portable_projection_tests;
 #[path = "tool_name_tests.rs"]
 pub(crate) mod tool_name_tests;
+#[path = "transport_tests.rs"]
+mod transport_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;
@@ -273,7 +275,16 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         status,
         sent: Mutex::new(Vec::new()),
     });
-    let provider = ResolvedModel {
+    let provider = provider_with(adapter, "http://127.0.0.1:1234/v1", script.clone());
+    (provider, script)
+}
+
+pub(super) fn provider_with(
+    adapter: Adapter,
+    base_url: &str,
+    transport: Arc<dyn HttpTransport>,
+) -> ResolvedModel {
+    ResolvedModel {
         files: crate::files::Files::default(),
         estimator: crate::accounting::TokenEstimator::new(adapter),
         model: Model {
@@ -285,7 +296,7 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
         config: Arc::new(ProviderSpec {
             adapter,
             authentication: Authentication::ApiKey,
-            base_url: "http://127.0.0.1:1234/v1".into(),
+            base_url: base_url.into(),
             headers: BTreeMap::new(),
             models: BTreeMap::new(),
             token_counter: Some(crate::TokenCounterSpec {
@@ -302,13 +313,12 @@ fn provider(adapter: Adapter, status: u16) -> (ResolvedModel, Arc<Script>) {
             output_tokens: 1024,
         },
         key: Some("scripted-key".into()),
-        transport: script.clone(),
+        transport,
         #[cfg(not(target_arch = "wasm32"))]
         codex_count: crate::codex_count::Counter::default(),
         #[cfg(not(target_arch = "wasm32"))]
         codex_login: None,
-    };
-    (provider, script)
+    }
 }
 
 pub(super) fn request(provider: &ResolvedModel) -> Result<(PreparedModelRequest, ModelDispatch)> {

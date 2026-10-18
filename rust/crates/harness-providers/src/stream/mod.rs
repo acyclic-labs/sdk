@@ -103,8 +103,11 @@ pub(crate) fn finish(
     dispatch: ModelDispatch,
 ) -> Result<Vec<ModelEvent>> {
     if !state.terminal {
-        return Err(acyclic_harness::Error::Storage(
-            "model stream ended without a terminal marker".into(),
+        // The body ended early: the connection was cut off, not the protocol violated.
+        return Err(crate::transport_failure(
+            false,
+            acyclic_harness::ModelTransportFailure::Interrupted,
+            "model stream ended without a terminal marker",
         ));
     }
     let mut calls = Vec::with_capacity(state.calls.len() + state.thinking.len() + 1);

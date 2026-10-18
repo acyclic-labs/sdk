@@ -120,23 +120,20 @@ impl ReqwestTransport {
         for (name, value) in request.headers {
             builder = builder.header(name, value);
         }
-        let response = builder.body(request.body).send().await.map_err(|error| {
-            if error.is_connect() {
-                // The request never left this host: a definitive, redeliverable refusal.
-                connect_error(native)
-            } else {
-                transport_error(native, "model HTTP exchange failed")
-            }
-        })?;
+        let response = builder
+            .body(request.body)
+            .send()
+            .await
+            .map_err(|error| reqwest_failure(native, &error))?;
         let status = response.status().as_u16();
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok())
             .and_then(crate::retry::retry_after);
-        let body = response.bytes_stream().map(move |chunk| {
-            chunk.map_err(|_| transport_error(native, "model HTTP body interrupted"))
-        });
+        let body = response
+            .bytes_stream()
+            .map(move |chunk| chunk.map_err(|error| reqwest_failure(native, &error)));
         #[cfg(not(target_arch = "wasm32"))]
         let body = native::body(body, work)?;
         #[cfg(target_arch = "wasm32")]
@@ -160,31 +157,39 @@ impl ReqwestTransport {
     }
 }
 
+/// Classifies a send or body error by its source chain, keeping only the root cause's text: the
+/// outer layers name the URL, which can carry credentials.
 #[cfg(not(target_arch = "wasm32"))]
-fn transport_error(native: bool, reason: &'static str) -> acyclic_harness::Error {
-    #[cfg(not(target_arch = "wasm32"))]
-    if native {
-        return acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Storage,
-            reason,
+fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness::Error {
+    use acyclic_harness::ModelTransportFailure;
+    let mut root: &(dyn std::error::Error + 'static) = error;
+    let mut tls = false;
+    loop {
+        tls |= root.is::<rustls::Error>();
+        // An `io::Error`'s `source` skips the error it wraps, and rustls reports through nested
+        // ones, so descend into the wrapped error first.
+        let next = match root
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+        {
+            Some(wrapped) => Some(wrapped as &(dyn std::error::Error + 'static)),
+            None => root.source(),
         };
+        match next {
+            Some(next) => root = next,
+            None => break,
+        }
     }
-    let _ = native;
-    acyclic_harness::Error::Storage(reason.into())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn connect_error(native: bool) -> acyclic_harness::Error {
-    if native {
-        return acyclic_harness::Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Unavailable,
-            reason: "model provider connection failed",
-        };
-    }
-    acyclic_harness::Error::ModelUnavailable {
-        status: None,
-        excerpt: "connection failed".into(),
-    }
+    let failure = if tls {
+        ModelTransportFailure::Tls
+    } else if error.is_timeout() {
+        ModelTransportFailure::Timeout
+    } else if error.is_connect() {
+        ModelTransportFailure::Connect
+    } else {
+        ModelTransportFailure::Interrupted
+    };
+    crate::transport_failure(native, failure, &root.to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
