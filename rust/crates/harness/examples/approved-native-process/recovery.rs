@@ -14,7 +14,11 @@ pub(super) struct Restart {
     pub(super) destination: VolumeRef,
     pub(super) request: NativeProcessRequest,
     pub(super) first: Option<EffectStatus>,
+    /// The MCP call ran in the child.
     pub(super) applied: bool,
+    /// The capture settled and preparation verified its publication. A host
+    /// that dies after the call but before settlement leaves this false.
+    pub(super) published: bool,
 }
 
 pub(super) async fn run<P, A, O>(
@@ -82,7 +86,9 @@ where
                 .await?,
             journal,
             true,
-            matches!(recovered_status, EffectStatus::Succeeded { .. }),
+            // A lost MCP response stays indeterminate even though the
+            // process effect itself completed.
+            matches!(recovered_status, EffectStatus::Succeeded { .. }) && !lost_response,
         )
         .await?;
     }
@@ -107,7 +113,7 @@ where
     if mcp {
         verify_mcp_calls(&seed.request, seed.applied)?;
     }
-    verify_publication(&files, &seed.destination, seed.applied).await?;
+    verify_publication(&files, &seed.destination, seed.published).await?;
     if receipt_fault.is_none() && !lost_response {
         println!(
             "approved {} execution, SDK publication and receipt-only recovery passed",

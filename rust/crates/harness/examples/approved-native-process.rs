@@ -458,6 +458,7 @@ where
         request: request.clone(),
         first: None,
         applied: false,
+        published: false,
     };
     if let Some(path) = restart_path {
         use std::io::Write as _;
@@ -513,6 +514,7 @@ where
     remove_physical_output(directory.path(), applied)?;
     restart.first = status;
     restart.applied = applied;
+    restart.published = applied;
     Ok(Evidence {
         restart,
         directory,
