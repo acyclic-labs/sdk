@@ -10,6 +10,12 @@ fn specification(mask: u8) -> ProviderSpec {
     let model = base.models.values().next().unwrap().clone();
     ProviderSpec {
         authentication: Authentication::Optional,
+        token_counter: Some(crate::TokenCounterSpec {
+            path: "count".into(),
+            adapter: base.adapter,
+            response_field: crate::TokenCountField::InputTokens,
+            framing_tokens: 0,
+        }),
         models: (0..3)
             .filter(|index| mask & (1 << index) != 0)
             .map(|index| (format!("model{index}"), model.clone()))
@@ -29,8 +35,7 @@ fn load(registry: &mut Registry, mask: u8, default: Option<u8>) -> Result<()> {
 }
 
 fn sequence(operations: &[(bool, u8, Option<u8>)]) {
-    let (_, transport) = crate::tests::provider(crate::Adapter::Responses, 200);
-    let mut registry = Registry::with_transport(Credentials::explicit(BTreeMap::new()), transport);
+    let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
     load(&mut registry, 7, Some(0)).unwrap();
     let (mut retained_mask, mut retained_default) = (7u8, 0u8);
     for &(reload, mask, proposed) in operations {
