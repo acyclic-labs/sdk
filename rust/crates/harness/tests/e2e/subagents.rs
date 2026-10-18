@@ -15,11 +15,7 @@ use acyclic_stream::{
 use futures::{Stream, StreamExt as _};
 use prost::Message as _;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
-
-/// How long one live delivery may take before the scenario names it as
-/// missing. This bounds a hang. It is not a latency assertion.
-const DELIVERY: Duration = Duration::from_secs(30);
+use std::sync::Arc;
 
 /// Each subagent's task: its streamed reply and its final status file.
 const CHUNKS: &str = ".tasks/t/turns/1/chunks";
@@ -63,10 +59,12 @@ fn at<E: std::fmt::Display>(step: impl std::fmt::Display) -> impl FnOnce(E) -> S
 
 /// Next live item of `stream`, or an error naming `what` never arrived.
 async fn next<T>(stream: &mut (impl Stream<Item = T> + Unpin), what: &str) -> TestResult<T> {
-    tokio::time::timeout(DELIVERY, stream.next())
-        .await
-        .map_err(|_| format!("{what}: nothing delivered within {DELIVERY:?}"))?
-        .ok_or_else(|| format!("{what}: the live stream ended").into())
+    super::stall::guarded(
+        std::path::Path::new(what),
+        super::stall::waiting("subagent delivery", stream.next()),
+    )
+    .await?
+    .ok_or_else(|| format!("{what}: the live stream ended").into())
 }
 
 /// `count` changes of one follow.

@@ -25,19 +25,14 @@ use acyclic_harness::{
 use acyclic_stream::{StreamProvider, grpc::Client};
 use serde_json::{Value, json};
 use std::{
-    io::BufRead as _,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 
 /// The child's configuration, passed in its environment.
 const CHILD: &str = "ACYCLIC_RESUME_CHILD";
 /// The line the child prints once its journal holds the streamed prefix.
 const JOURNALED: &str = "acyclic-resume: journaled";
-/// How long the child may take to journal its prefix. This bounds a hang. It
-/// is not a latency assertion.
-const HANG: Duration = Duration::from_secs(30);
 const INSTRUCTION: &str = "Resume after a kill.";
 const PREFIX: &str = "partial-";
 const REST: &str = "restored";
@@ -352,24 +347,26 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         files: files.path().to_owned(),
         seed,
     })?;
-    let mut child = std::process::Command::new(std::env::current_exe()?)
+    let mut child = tokio::process::Command::new(std::env::current_exe()?)
         .args(["--exact", "resume::child", "--ignored", "--nocapture"])
         .env(CHILD, config)
         .env("RUST_TEST_THREADS", "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true)
         .spawn()?;
     let stdout = child.stdout.take().ok_or("child has no stdout")?;
-    let journaled = tokio::task::spawn_blocking(move || {
-        std::io::BufReader::new(stdout)
-            .lines()
-            .any(|line| line.is_ok_and(|line| line == JOURNALED))
-    });
-    let journaled = tokio::time::timeout(HANG, journaled).await;
-    // Killed, not asked: nothing in the child runs after this point.
-    child.kill()?;
-    let status = child.wait()?;
-    if !matches!(journaled, Ok(Ok(true))) {
+    let journaled = journaled(stdout);
+    let journaled = super::stall::guarded(
+        Path::new("resume child"),
+        super::stall::waiting("journaled prefix", journaled),
+    )
+    .await;
+    // Killed, not asked: nothing in the child runs after this point. Async
+    // pipe reads cancel on drop; no detached blocking reader survives a stall.
+    child.kill().await?;
+    let status = child.wait().await?;
+    if !journaled?? {
         return Err(format!("the child exited ({status}) without journaling its prefix").into());
     }
     let identity = Identity::new(seed);
@@ -455,5 +452,35 @@ pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<
         )
         .into());
     }
+    Ok(())
+}
+
+async fn journaled(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<bool> {
+    use tokio::io::AsyncBufReadExt as _;
+    let mut lines = tokio::io::BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line == JOURNALED {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+#[tokio::test(start_paused = true)]
+async fn journaled_pipe_distinguishes_readiness_from_permanent_silence() -> TestResult {
+    use tokio::io::AsyncWriteExt as _;
+    let (mut writer, reader) = tokio::io::duplex(128);
+    writer
+        .write_all(format!("noise\n{JOURNALED}\n").as_bytes())
+        .await?;
+    assert!(super::stall::guarded(Path::new("ready child"), journaled(reader)).await??);
+    let (_writer, reader) = tokio::io::duplex(128);
+    let error = super::stall::guarded(
+        Path::new("silent child"),
+        super::stall::waiting("journaled prefix", journaled(reader)),
+    )
+    .await
+    .expect_err("accepted an open pipe that never delivers a prefix");
+    assert_eq!(error, "stalled: silent child at journaled prefix");
     Ok(())
 }

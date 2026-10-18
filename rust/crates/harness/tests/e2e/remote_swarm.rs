@@ -14,11 +14,8 @@ use acyclic_stream::{AppendRequest, StreamPath, StreamProvider, session, wire};
 use futures::{FutureExt as _, channel::oneshot};
 use prost::Message as _;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
-/// How long the client may take to reach the expected views, or to be
-/// refused. This bounds a hang. It is not a latency assertion.
-const HANG: Duration = Duration::from_secs(30);
 const AGENTS: usize = 2;
 
 fn path(name: &str) -> TestResult<StreamPath> {
@@ -285,18 +282,17 @@ pub(super) async fn follow_publishing<P: StreamProvider + 'static>(
         .fuse();
     let completed = completed.fuse();
     futures::pin_mut!(followed, completed);
-    let outcome = tokio::time::timeout(HANG, async {
-        futures::select! {
-            result = followed => Err(format!("the swarm follow ended: {result:?}")),
-            _ = completed => Ok(()),
-        }
-    })
+    let outcome = super::stall::guarded(
+        std::path::Path::new("remote swarm"),
+        super::stall::waiting("swarm views", async {
+            futures::select! {
+                result = followed => Err(format!("the swarm follow ended: {result:?}")),
+                _ = completed => Ok(()),
+            }
+        }),
+    )
     .await;
-    match outcome {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_) => return Err(format!("the swarm views were not ready within {HANG:?}").into()),
-    }
+    outcome??;
     let strip = |agent: &StreamPath| agent.as_str().trim_start_matches(root).to_owned();
     let observed = views.read(|views| {
         json!({
@@ -341,9 +337,13 @@ pub(super) async fn refused<P: StreamProvider + 'static>(
             ))
         },
     );
-    match tokio::time::timeout(HANG, followed).await {
-        Ok(Err(error)) => Ok(error),
-        Ok(Ok(())) => Err("a refused swarm follow ended cleanly".into()),
-        Err(_) => Err(format!("the swarm follow was not refused within {HANG:?}").into()),
+    match super::stall::guarded(
+        std::path::Path::new("remote swarm refusal"),
+        super::stall::waiting("swarm refusal", followed),
+    )
+    .await?
+    {
+        Err(error) => Ok(error),
+        Ok(()) => Err("a refused swarm follow ended cleanly".into()),
     }
 }
