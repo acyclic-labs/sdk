@@ -27,10 +27,11 @@ struct Output<W: Write> {
     state: Arc<Mutex<State<W>>>,
     broken: bool,
     strip_attribute_reset: bool,
+    strip_cell_repaint: bool,
 }
 impl<W: Write> Present for Output<W> {
-    fn present(&mut self, frame: &mut Vec<u8>, hidden: bool) -> io::Result<()> {
-        lifecycle::active(&self.state, |guard| guard.present(frame, hidden))
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.present(frame, effects))
     }
     fn outside_writes(&mut self) -> Option<u64> {
         lifecycle::active(&self.state, |guard| Ok(guard.outside_writes()))
@@ -40,7 +41,7 @@ impl<W: Write> Present for Output<W> {
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if self.broken && frame.is_empty() {
@@ -51,7 +52,10 @@ impl<W: Write> Present for Output<W> {
             // Keep the real checked lifecycle path and omit only its repair.
             frame.drain(..4);
         }
-        lifecycle::present_if_current(&self.state, frame, hidden, expected)
+        if self.strip_cell_repaint && expected.is_none() {
+            frame.retain(|&byte| byte != b'Z');
+        }
+        lifecycle::present_if_current(&self.state, frame, effects, expected)
     }
 }
 
@@ -72,6 +76,7 @@ fn model(broken: bool, during_render: bool) {
                 state: Arc::clone(&state),
                 broken,
                 strip_attribute_reset: false,
+                strip_cell_repaint: false,
             },
             Size::new(2, 2),
         )
@@ -108,7 +113,14 @@ fn model(broken: bool, during_render: bool) {
         assert_eq!(
             guard
                 .guard
-                .present_if_current(&mut Vec::new(), true, count)
+                .present_if_current(
+                    &mut Vec::new(),
+                    FrameEffects {
+                        cursor_hidden: true,
+                        margins: false
+                    },
+                    count
+                )
                 .unwrap(),
             count
         );
@@ -175,6 +187,7 @@ fn attributes_model(broken: bool) {
                 state: Arc::clone(&state),
                 broken: false,
                 strip_attribute_reset: broken,
+                strip_cell_repaint: false,
             },
             size,
         )
@@ -210,4 +223,95 @@ fn checked_presentation_recovers_attributes_under_the_real_lock() {
 #[test]
 fn negative_control_checked_recovery_cannot_omit_attributes() {
     assert!(std::panic::catch_unwind(|| attributes_model(true)).is_err());
+}
+
+struct Contents(Arc<loom::sync::atomic::AtomicUsize>);
+impl Write for Contents {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        for at in 0..bytes.len() {
+            if bytes[at..].starts_with(b"\x1b[2J") {
+                self.0.store(0, Ordering::SeqCst);
+            } else if bytes[at] == b'Z' {
+                self.0.store(1, Ordering::SeqCst);
+            } else if bytes[at] == b'X' {
+                self.0.store(2, Ordering::SeqCst);
+            }
+        }
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn contents_model(broken: bool, during_render: bool) {
+    // State is the real lifecycle mutex. Both writers use that same lock;
+    // the cell observer is atomic and worker joins occur outside the lock.
+    loom::model(move || {
+        let cell = Arc::new(loom::sync::atomic::AtomicUsize::new(0));
+        let state = Arc::new(Mutex::new(State::new(Contents(Arc::clone(&cell)))));
+        let size = Size::new(2, 1);
+        let mut terminal = FrameTerminal::new(
+            Output {
+                state: Arc::clone(&state),
+                broken: false,
+                strip_attribute_reset: false,
+                strip_cell_repaint: broken,
+            },
+            size,
+        )
+        .unwrap();
+        let paint = |frame: &mut Frame<'_>| {
+            frame.render_widget(ratatui::widgets::Paragraph::new("Z"), frame.area());
+        };
+        terminal.draw(size, paint).unwrap();
+        let write_outside = |outside: Arc<Mutex<State<Contents>>>| {
+            lifecycle::active(&outside, |guard| guard.writer().write_all(b"\x1b[HX")).unwrap();
+        };
+        if during_render {
+            terminal
+                .draw(size, |frame| {
+                    paint(frame);
+                    let outside = Arc::clone(&state);
+                    thread::spawn(move || write_outside(outside))
+                        .join()
+                        .unwrap();
+                })
+                .unwrap();
+        } else {
+            let outside = Arc::clone(&state);
+            let worker = thread::spawn(move || write_outside(outside));
+            terminal.draw(size, paint).unwrap();
+            worker.join().unwrap();
+        }
+        // An outside write after presentation legitimately changes the cell.
+        // Once that writer is joined, the next frame must restore its target.
+        terminal.draw(size, paint).unwrap();
+        assert_eq!(
+            cell.load(Ordering::SeqCst),
+            1,
+            "retained contents must follow lifecycle invalidation"
+        );
+    });
+}
+
+#[test]
+fn retained_cells_recover_under_the_real_lifecycle_lock() {
+    for during_render in [false, true] {
+        contents_model(false, during_render);
+    }
+}
+#[test]
+fn negative_control_checked_recovery_cannot_omit_retained_cells() {
+    let failure = std::panic::catch_unwind(|| contents_model(true, false))
+        .expect_err("omitted cell recovery must fail");
+    let text = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        text.contains("retained contents must follow lifecycle invalidation"),
+        "{text}"
+    );
 }

@@ -1,6 +1,10 @@
 use super::*;
 use std::collections::VecDeque;
+use std::os::unix::fs::MetadataExt;
 use std::time::Duration;
+
+#[path = "../../tests/support/status_flags.rs"]
+mod status_flags;
 
 #[test]
 fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<()> {
@@ -161,6 +165,7 @@ const FRAME: usize = 256 * 1024;
 /// `select` forces Darwin's /dev/tty-alias wait (unlimited select) on any
 /// terminal; elsewhere every terminal has the one poll(2) wait.
 fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Result<Vec<Op>> {
+    let controller_device = controller.metadata()?.rdev();
     let drain = std::thread::spawn(move || {
         let mut controller = controller;
         std::thread::sleep(Duration::from_millis(20));
@@ -172,10 +177,10 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
                 Ok(count) => total += count,
             }
         }
-        // Handed back open: closing the master hangs up the slave, so
-        // restoring it afterwards would fail with EIO on Linux.
-        (total, controller)
+        // Keep the controller in the join result until restoration is acknowledged.
+        (controller, total)
     });
+    let original_flags = status_flags::settable_status_flags(&user)?;
     let mut tty = RawTty::from_file(user)?;
     #[cfg(target_vendor = "apple")]
     if select {
@@ -190,12 +195,42 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
     };
     let written = write_all(&mut traced, &vec![b'x'; FRAME], write_until);
     let trace = traced.trace;
-    let restored = tty.restore();
-    written?;
-    restored?;
-    let (drained, controller) = drain
+    if let Err(error) = written {
+        tty.restore()?;
+        return Err(error);
+    }
+    // Joining transfers controller custody; worker completion cannot hang up
+    // the slave while its owner restores termios and descriptor flags.
+    let (controller, drained) = drain
         .join()
         .map_err(|_| io::Error::other("drain panicked"))?;
+    assert_eq!(
+        controller.metadata()?.rdev(),
+        controller_device,
+        "controller custody must survive until restoration acknowledgement"
+    );
+    let restored = tty.restore();
+    restored.expect("restoration acknowledged while controller is retained");
+    let restored = tcgetattr(&tty.file)?;
+    assert_eq!(restored.input_modes, tty.original.input_modes);
+    assert_eq!(restored.output_modes, tty.original.output_modes);
+    assert_eq!(restored.control_modes, tty.original.control_modes);
+    assert_eq!(restored.local_modes, tty.original.local_modes);
+    assert_eq!(restored.input_speed(), tty.original.input_speed());
+    assert_eq!(restored.output_speed(), tty.original.output_speed());
+    for index in [
+        rustix::termios::SpecialCodeIndex::VMIN,
+        rustix::termios::SpecialCodeIndex::VTIME,
+    ] {
+        assert_eq!(
+            restored.special_codes[index],
+            tty.original.special_codes[index]
+        );
+    }
+    assert_eq!(
+        status_flags::settable_status_flags(&tty.file)?,
+        original_flags
+    );
     assert_eq!(drained, FRAME);
     drop(controller);
     Ok(trace)

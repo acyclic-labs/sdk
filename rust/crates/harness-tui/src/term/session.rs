@@ -34,16 +34,19 @@ impl Write for Output {
     }
 }
 impl super::Present for Output {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
-        lifecycle::active(&self.state, |guard| guard.present(frame, cursor_hidden))
+    fn supports_scroll_regions(&self) -> bool {
+        lifecycle::active(&self.state, |guard| Ok(guard.supports_scroll_regions())).unwrap_or(false)
+    }
+    fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.present(frame, effects))
     }
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: super::FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
-        lifecycle::present_if_current(&self.state, frame, cursor_hidden, expected)
+        lifecycle::present_if_current(&self.state, frame, effects, expected)
     }
     fn outside_writes(&mut self) -> Option<u64> {
         lifecycle::active(&self.state, |guard| Ok(guard.outside_writes()))

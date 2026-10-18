@@ -3,17 +3,25 @@ use std::io::{self, Write};
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, ClearType, CrosstermBackend, WindowSize},
-    buffer::Cell,
+    buffer::{Buffer, Cell, CellDiffOption, CellWidth},
     layout::{Position, Size},
+    style::{Color, Modifier},
 };
+
+use super::RegionScroll;
 
 /// A terminal device that presents whole frames under its restoration
 /// journal (see `RestoreGuard`): the session's `Output`, or a guard itself.
 pub trait Present {
-    /// Present one frame. `cursor_hidden` is the cursor's visibility after it.
+    /// The negotiated profile supports bounded margins and row scrolling.
+    fn supports_scroll_regions(&self) -> bool {
+        false
+    }
+
+    /// Present one frame with its restoration effects.
     /// The buffer's contents are consumed. On error, a begun synchronized
     /// update has been closed or remains journaled for restoration.
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()>;
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()>;
 
     /// How many times the device was reached other than by a presented frame
     /// (setup, restore, suspend and resume, direct writes), or `None` when
@@ -28,14 +36,28 @@ pub trait Present {
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>>;
 }
 
+/// What a frame leaves on the device that restoration must undo if the
+/// frame is cut short at any byte.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameEffects {
+    /// The cursor is hidden after the frame.
+    pub cursor_hidden: bool,
+    /// The frame sets scrolling margins (DECSTBM), resetting them itself.
+    pub margins: bool,
+}
+
 impl<P: Present + ?Sized> Present for &mut P {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
-        (**self).present(frame, cursor_hidden)
+    fn supports_scroll_regions(&self) -> bool {
+        (**self).supports_scroll_regions()
+    }
+
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
+        (**self).present(frame, effects)
     }
     fn outside_writes(&mut self) -> Option<u64> {
         (**self).outside_writes()
@@ -43,10 +65,10 @@ impl<P: Present + ?Sized> Present for &mut P {
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
-        (**self).present_if_current(frame, cursor_hidden, expected)
+        (**self).present_if_current(frame, effects, expected)
     }
 }
 
@@ -107,10 +129,10 @@ impl Part {
     pub(crate) fn apply<W: Write>(
         mut self,
         guard: &mut super::RestoreGuard<W>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
     ) -> io::Result<()> {
         let synchronized = if self.first {
-            guard.begin_frame(cursor_hidden)
+            guard.begin_frame(effects)
         } else {
             guard.frame_open()
         };
@@ -120,7 +142,7 @@ impl Part {
             self.last && synchronized,
         )?;
         if self.last {
-            guard.end_frame(cursor_hidden);
+            guard.end_frame(effects);
         }
         Ok(())
     }
@@ -132,7 +154,7 @@ impl Part {
 struct FrameOutput<D: Present> {
     device: D,
     frame: Vec<u8>,
-    cursor_hidden: bool,
+    effects: FrameEffects,
 }
 
 impl<D: Present> Write for FrameOutput<D> {
@@ -153,8 +175,9 @@ impl<D: Present> FrameOutput<D> {
         let mut frame = std::mem::take(&mut self.frame);
         let presented = self
             .device
-            .present_if_current(&mut frame, self.cursor_hidden, expected);
+            .present_if_current(&mut frame, self.effects, expected);
         if !matches!(presented, Ok(None)) {
+            self.effects.margins = false;
             frame.clear();
         }
         self.frame = frame;
@@ -170,6 +193,7 @@ struct FrameBackend<D: Present> {
     shown: Shown,
     /// The device's outside-write count when `shown` was last ours.
     ours: Option<u64>,
+    position_written: bool,
 }
 
 /// Cursor and default attribute state after the last presented frame. A command that
@@ -218,14 +242,14 @@ impl<D: Present> Backend for FrameBackend<D> {
         self.crossterm().append_lines(lines)
     }
     fn hide_cursor(&mut self) -> io::Result<()> {
-        self.output.cursor_hidden = true;
+        self.output.effects.cursor_hidden = true;
         if self.shown.visible.replace(false) == Some(false) {
             return Ok(());
         }
         self.crossterm().hide_cursor()
     }
     fn show_cursor(&mut self) -> io::Result<()> {
-        self.output.cursor_hidden = false;
+        self.output.effects.cursor_hidden = false;
         if self.shown.visible.replace(true) == Some(true) {
             return Ok(());
         }
@@ -239,6 +263,7 @@ impl<D: Present> Backend for FrameBackend<D> {
         if self.shown.position.replace(position) == Some(position) {
             return Ok(());
         }
+        self.position_written = true;
         self.crossterm().set_cursor_position(position)
     }
     fn clear(&mut self) -> io::Result<()> {
@@ -277,55 +302,103 @@ impl<D: Present> Drop for FrameBackend<D> {
 /// The only full-screen presentation path: each draw reaches the device as
 /// one presented frame, wrapped in synchronized output (DECSET 2026) by the
 /// device when the probed terminal supports it. A draw identical to the screen
-/// (unchanged buffer and cursor) reaches no device at all.
+/// (unchanged buffer and cursor) reaches no device at all. Scroll hints
+/// shift only a supported device and the retained baseline together.
 pub struct FrameTerminal<D: Present> {
     terminal: Terminal<FrameBackend<D>>,
+    /// One retained screen baseline, exchanged with the render buffer.
+    shown: Buffer,
+    staging: Buffer,
+    scroll_regions: bool,
+    invalid: bool,
+    repaired: Vec<usize>,
+    cursor: Vec<u8>,
+    #[cfg(test)]
+    work: FrameWork,
+}
+
+#[cfg(test)]
+#[derive(Default, Debug, PartialEq, Eq)]
+struct FrameWork {
+    diff: usize,
+    reset: usize,
+    terminal_diff: usize,
+    terminal_reset: usize,
+}
+
+// Restore buffer custody even when the caller's render closure unwinds.
+struct RenderBuffer<'a, 'b> {
+    frame: &'a mut Frame<'b>,
+    staging: &'a mut Buffer,
+}
+
+impl Drop for RenderBuffer<'_, '_> {
+    fn drop(&mut self) {
+        self.frame.buffer_mut().reset();
+        std::mem::swap(self.frame.buffer_mut(), self.staging);
+    }
 }
 
 impl<D: Present> FrameTerminal<D> {
     /// Present frames of `size` to `device`.
     pub fn new(device: D, size: Size) -> io::Result<Self> {
+        let scroll_regions = device.supports_scroll_regions();
         Ok(Self {
             terminal: Terminal::new(FrameBackend {
                 output: FrameOutput {
                     device,
                     frame: Vec::new(),
-                    cursor_hidden: false,
+                    effects: FrameEffects::default(),
                 },
                 size,
                 shown: Shown::default(),
                 ours: None,
+                position_written: false,
             })?,
+            shown: Buffer::empty(ratatui::layout::Rect::default()),
+            staging: Buffer::default(),
+            scroll_regions,
+            invalid: false,
+            repaired: Vec::new(),
+            cursor: Vec::new(),
+            #[cfg(test)]
+            work: FrameWork::default(),
         })
     }
 
     /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
+        self.draw_scrolled(size, None, render)
+    }
+
+    /// Draw a frame, using a supported row-scroll hint before its diff.
+    pub fn draw_scrolled(
+        &mut self,
+        size: Size,
+        scroll: Option<RegionScroll>,
+        render: impl FnOnce(&mut Frame<'_>),
+    ) -> io::Result<()> {
         let backend = self.terminal.backend_mut();
         let outside = backend.output.device.outside_writes();
-        if outside.is_none() || outside != backend.ours || backend.size != size {
-            backend.shown = Shown::default();
-        }
+        let invalidated = outside.is_none() || outside != backend.ours || backend.size != size;
         backend.ours = outside;
         backend.size = size;
-        let drawn = self.terminal.draw(render).map(drop);
-        let backend = self.terminal.backend_mut();
-        let committed = match backend.output.commit(backend.ours) {
+        if invalidated {
+            self.invalidate();
+        }
+        let drawn = self.scroll_and_draw(scroll, render);
+        let expected = self.terminal.backend_mut().ours;
+        let presented = self.terminal.backend_mut().output.commit(expected);
+        let committed = match presented {
             Ok(None) => {
-                // Nothing reached the device. Keep the diff bytes and encode
-                // the cursor without cached assumptions; any further outside
-                // change before presentation is then harmless.
-                let desired = backend.shown;
-                backend.shown = Shown::default();
-                // The retained diff was encoded before the outside access.
-                // Repair attributes BEFORE its cells, not just the cursor after.
-                backend
-                    .output
-                    .frame
-                    .splice(0..0, b"\x1b[0m".iter().copied());
-                backend.shown.attributes = true;
-                let repair = match desired.visible {
+                // Outside output can change cells as well as attributes/cursor.
+                // Re-encode the retained target against the empty staging buffer;
+                // no second render, screen clone, or assumed device baseline.
+                let desired = self.terminal.backend_mut().shown;
+                let restored = self.recover_contents();
+                let backend = self.terminal.backend_mut();
+                let repair = restored.and_then(|()| match desired.visible {
                     Some(true) => backend.show_cursor().and_then(|()| {
                         desired
                             .position
@@ -333,20 +406,217 @@ impl<D: Present> FrameTerminal<D> {
                     }),
                     Some(false) => backend.hide_cursor(),
                     None => Ok(()),
-                };
+                });
                 repair.and_then(|()| backend.output.commit(None))
             }
             result => result,
         }
         .and_then(|count| count.ok_or_else(|| io::ErrorKind::Interrupted.into()));
+        let backend = self.terminal.backend_mut();
         if let Ok(count) = committed.as_ref() {
             backend.ours = Some(*count);
         }
         if drawn.is_err() || committed.is_err() {
             // The device may hold any part of the frame.
-            backend.shown = Shown::default();
+            self.invalidate();
         }
         drawn.and(committed.map(|_| ()))
+    }
+
+    // Cell, cursor and attribute assumptions share one invalidation path.
+    fn invalidate(&mut self) {
+        self.invalid = true;
+        self.terminal.backend_mut().shown = Shown::default();
+    }
+
+    fn recover_contents(&mut self) -> io::Result<()> {
+        let mut bytes = std::mem::take(&mut self.terminal.backend_mut().output.frame);
+        bytes.clear();
+        // Restate every device assumption before repainting: attributes,
+        // margins, cells, then the requested cursor at the checked boundary.
+        bytes.extend_from_slice(b"\x1b[0m");
+        if self.scroll_regions {
+            bytes.extend_from_slice(b"\x1b[r");
+        }
+        bytes.extend_from_slice(b"\x1b[2J");
+        let encoded = encode_diff(&self.staging, &self.shown, &mut bytes);
+        let backend = self.terminal.backend_mut();
+        backend.output.frame = bytes;
+        backend.output.effects.margins = self.scroll_regions;
+        backend.shown = Shown {
+            attributes: true,
+            ..Shown::default()
+        };
+        encoded
+    }
+
+    fn scroll_and_draw(
+        &mut self,
+        scroll: Option<RegionScroll>,
+        render: impl FnOnce(&mut Frame<'_>),
+    ) -> io::Result<()> {
+        let previous_area = self.terminal.get_frame().area();
+        self.terminal.autoresize()?;
+        let area = self.terminal.get_frame().area();
+        if self.invalid && area == previous_area {
+            // We own the retained baseline. Clear through the backend without
+            // Terminal::clear's synchronous cursor query on the output path.
+            self.terminal.backend_mut().clear()?;
+        }
+        if self.terminal.current_buffer_mut().area != ratatui::layout::Rect::default() {
+            // Terminal creates two viewport buffers at construction/resize. Take
+            // one for rendering and retire the other. Its ordinary draw lifecycle
+            // thereafter sees two genuinely empty buffers, so it visits no cells.
+            self.staging = std::mem::take(self.terminal.current_buffer_mut());
+            self.terminal.swap_buffers();
+            *self.terminal.current_buffer_mut() = Buffer::default();
+        }
+        if self.staging.area != area {
+            self.staging.resize(area);
+        }
+        let retained = !self.invalid && self.shown.area == area;
+        if !retained {
+            self.shown.resize(area);
+            self.shown.reset();
+        }
+        self.invalid = false;
+        self.terminal.backend_mut().reset_attributes()?;
+        let mut bytes = std::mem::replace(
+            &mut self.terminal.backend_mut().output.frame,
+            std::mem::take(&mut self.cursor),
+        );
+        let margins = if retained && self.scroll_regions {
+            match scroll {
+                Some(scroll) => scroll.apply(&mut self.shown, &mut bytes)?,
+                None => false,
+            }
+        } else {
+            false
+        };
+        let Self {
+            terminal,
+            shown,
+            staging,
+            repaired,
+            cursor,
+            ..
+        } = self;
+        #[cfg(test)]
+        let mut work = FrameWork::default();
+        #[cfg(test)]
+        let mut returned_cells = 0;
+        let mut encoded = Ok(());
+        terminal.backend_mut().position_written = false;
+        let drawn = terminal
+            .draw(|frame| {
+                std::mem::swap(frame.buffer_mut(), staging);
+                let render_buffer = RenderBuffer { frame, staging };
+                render(render_buffer.frame);
+                let next = render_buffer.frame.buffer_mut();
+                repair_wide_trails(shown, next, repaired);
+                // Ratatui's Buffer::diff_iter remains the encoder input. Owning its
+                // baseline lets scrolling rotate cells and retain heap symbols.
+                encoded = encode_diff(shown, next, &mut bytes);
+                #[cfg(test)]
+                {
+                    work.diff = shown.content.len().min(next.content.len());
+                }
+                for &index in repaired.iter() {
+                    next.content[index].diff_option = CellDiffOption::None;
+                }
+                std::mem::swap(shown, next);
+                #[cfg(test)]
+                {
+                    work.reset = next.content.len();
+                }
+                drop(render_buffer);
+                #[cfg(test)]
+                {
+                    returned_cells = frame.buffer_mut().content.len();
+                }
+            })
+            .map(drop);
+        #[cfg(test)]
+        {
+            if drawn.is_ok() {
+                // After ratatui's swap, current is the buffer it just reset.
+                // These are the actual operands of its diff and reset passes.
+                work.terminal_reset = terminal.current_buffer_mut().content.len();
+                work.terminal_diff = work.terminal_reset.min(returned_cells);
+            }
+            self.work = work;
+        }
+        let backend = terminal.backend_mut();
+        if !bytes.is_empty() && !backend.position_written {
+            let position = backend.shown.position.take();
+            if backend.shown.visible == Some(true)
+                && let Some(position) = position
+            {
+                backend.set_cursor_position(position)?;
+            }
+        }
+        let output = &mut backend.output;
+        bytes.append(&mut output.frame);
+        *cursor = std::mem::replace(&mut output.frame, bytes);
+        // Pair the effect with its encoded reset only after the body is back.
+        // A render panic must not let cursor teardown retire older margins.
+        output.effects.margins = margins;
+        drawn.and(encoded)
+    }
+}
+
+// Empty diffs must not invoke crossterm's formatting/reset path. Both ordinary
+// rendering and checked full-screen recovery use this encoder choke point.
+fn encode_diff(previous: &Buffer, next: &Buffer, bytes: &mut Vec<u8>) -> io::Result<()> {
+    let mut content = previous.diff_iter(next).peekable();
+    if content.peek().is_none() {
+        return Ok(());
+    }
+    CrosstermBackend::new(bytes).draw(content)
+}
+
+/// A wide glyph paints its style over trailing cells even though the logical
+/// buffer stores reset cells there. If a new wide glyph covers the old lead,
+/// ratatui skips that lead and can miss its newly uncovered trailing style.
+/// Force those uncovered cells through the diff before cursor placement.
+fn repair_wide_trails(previous: &Buffer, next: &mut Buffer, repaired: &mut Vec<usize>) {
+    repaired.clear();
+    if previous.area != next.area || next.area.width == 0 {
+        return;
+    }
+    let width = usize::from(next.area.width);
+    let visible = Modifier::REVERSED
+        | Modifier::UNDERLINED
+        | Modifier::SLOW_BLINK
+        | Modifier::RAPID_BLINK
+        | Modifier::CROSSED_OUT;
+    for (row, (old, new)) in previous
+        .content
+        .chunks(width)
+        .zip(next.content.chunks_mut(width))
+        .enumerate()
+    {
+        // Ordinary one-cell rows need no width/style walk or scratch storage.
+        if old.iter().all(|cell| {
+            cell.symbol().len() == 1 && !matches!(cell.diff_option, CellDiffOption::ForcedWidth(_))
+        }) {
+            continue;
+        }
+        let (mut covered_until, mut styled_until) = (0, 0);
+        for (column, (old, new)) in old.iter().zip(new.iter_mut()).enumerate() {
+            let covered = column < covered_until;
+            if !covered {
+                covered_until = column + usize::from(new.cell_width().max(1));
+                if column < styled_until && new.diff_option == CellDiffOption::None {
+                    new.diff_option = CellDiffOption::AlwaysUpdate;
+                    repaired.push(row * width + column);
+                }
+            }
+            if old.fg != Color::Reset || old.bg != Color::Reset || old.modifier.intersects(visible)
+            {
+                styled_until = styled_until.max(column + usize::from(old.cell_width()));
+            }
+        }
     }
 }
 

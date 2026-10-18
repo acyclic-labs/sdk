@@ -3,8 +3,8 @@ use acyclic_harness::{
     local::LocalHarness,
     tui::{
         self, PromptBox, PromptInput, Viewport, crossterm,
-        ratatui::layout::Size,
-        term::{Environment, FrameTerminal, ScreenMode, Tty},
+        ratatui::layout::{Position, Rect, Size},
+        term::{Environment, FrameTerminal, RegionScroll, ScreenMode, Tty},
     },
 };
 use std::{sync::Arc, time::Instant};
@@ -47,6 +47,8 @@ pub async fn run(
     let mut completions = client::local_completions(&local, &mut input).await?;
     let mut viewport = Viewport::default();
     let mut renderer = tui::ClientRenderer::default();
+    // The transcript band and its top line in the frame on the device.
+    let mut shown = None;
     let start = Instant::now();
     client.follow_commands(&commands).await?;
     let mut documents = client::local_documents(&local, client.views_mut()).await?;
@@ -68,23 +70,24 @@ pub async fn run(
         let mut areas = tui::ScreenAreas::default();
         let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let back = client::tui_scroll(&commands)?;
-        let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
         input.busy = renderer.is_busy();
         let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;
+        let area = Rect::from((Position::ORIGIN, size));
+        let maximum_scroll = screen.tail_scroll(area, &input);
         if client::frame_due(&batch) {
-            terminal.draw(size, |frame| {
-                maximum_scroll = screen.tail_scroll(frame.area(), &input);
-                let scroll = maximum_scroll.saturating_sub(back);
+            let scroll = maximum_scroll.saturating_sub(back);
+            let transcript = screen.areas(area, &input).transcript;
+            let moved = RegionScroll::between(shown.filter(|_| !inline), transcript, scroll);
+            terminal.draw_scrolled(size, moved, |frame| {
                 areas = screen.render(frame, &input, &mut viewport, scroll, now);
             })?;
+            shown = Some((transcript, scroll));
         } else {
             // More of this read is queued: route it against the same layout
             // and present once, after the read.
-            let area = tui::ratatui::layout::Rect::new(0, 0, size.width, size.height);
-            maximum_scroll = screen.tail_scroll(area, &input);
             areas = screen.areas(area, &input);
         }
         if batch.is_empty() {

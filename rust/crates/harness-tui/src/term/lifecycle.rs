@@ -102,11 +102,11 @@ pub(crate) fn active<W: Write, T>(
 pub(crate) fn present_if_current<W: Write>(
     state: &Mutex<State<W>>,
     frame: &mut Vec<u8>,
-    cursor_hidden: bool,
+    effects: super::FrameEffects,
     expected: Option<u64>,
 ) -> io::Result<Option<u64>> {
     active(state, |guard| {
-        super::Present::present_if_current(guard, frame, cursor_hidden, expected)
+        super::Present::present_if_current(guard, frame, effects, expected)
     })
 }
 
@@ -157,7 +157,10 @@ mod poison_tests {
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             active(&state, |guard| -> io::Result<()> {
                 // Journaled before the first byte, as every frame is.
-                guard.begin_frame(true);
+                guard.begin_frame(crate::term::FrameEffects {
+                    cursor_hidden: true,
+                    margins: false,
+                });
                 panic!("injected writer panic");
             })
         }));

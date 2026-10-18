@@ -16,10 +16,10 @@ RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-
 python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests:: client::commands::session::init_models::
 
 cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests:: completion::
+python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests:: term::region::tests:: term::frame:: completion::
 
-cargo test --locked -p acyclic-harness-tui --features tui --test completion
+cargo test --locked -p acyclic-harness-tui --features tui --test completion --test terminal --test terminal_regions --test terminal_frames --test terminal_frame_faults
 cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-tui/fuzz completion_events --target x86_64-unknown-linux-gnu --dev -- -runs=128 -max_len=128 -timeout=5 -max_total_time=5
 
 RUSTFLAGS="--cfg acyclic_harness_tui_loom" cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close term::console_owner::tests::negative_control_detects_input_without_close
+python3 scripts/qualify-graphcoder-artifact.py term::frame::frame_model:: term::lifecycle::terminal_lifecycle_model:: term::console_owner::tests::input_observes_output_close term::console_owner::tests::negative_control_detects_input_without_close

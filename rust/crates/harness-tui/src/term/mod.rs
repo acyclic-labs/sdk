@@ -7,6 +7,7 @@ mod console_owner;
 mod counters;
 mod decoder;
 mod frame;
+mod region;
 #[cfg(any(unix, acyclic_harness_tui_loom))]
 mod lifecycle;
 mod probe;
@@ -22,7 +23,8 @@ pub use capabilities::*;
 #[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
 pub use counters::{DeviceIo, device_io};
 pub use decoder::{Decoder, encode_key};
-pub use frame::{FrameTerminal, Present};
+pub use frame::{FrameEffects, FrameTerminal, Present};
+pub use region::RegionScroll;
 pub use probe::{PROBE_LIMIT, PROBE_TIMEOUT, Probe, ProbeIo, ProbeReplies, detect};
 pub use restore::{RestoreGuard, ScreenMode};
 #[cfg(all(unix, not(acyclic_harness_tui_loom)))]

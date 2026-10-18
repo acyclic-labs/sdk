@@ -15,7 +15,7 @@ use acyclic_harness_tui::ratatui::{
     widgets::Paragraph,
 };
 use acyclic_harness_tui::term::{
-    Capabilities, FrameTerminal, ModeState, Present, RestoreGuard, device_io,
+    Capabilities, FrameEffects, FrameTerminal, ModeState, Present, RestoreGuard, device_io,
 };
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
@@ -23,6 +23,12 @@ use alacritty_terminal::index::{Column, Line as Row, Point};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
+
+#[path = "terminal_frames/contents.rs"]
+mod contents;
+
+#[path = "terminal_frames/regions.rs"]
+mod regions;
 
 const WIDTH: u16 = 24;
 const HEIGHT: u16 = 6;
@@ -354,19 +360,22 @@ impl<W: Write> Write for Calls<W> {
     }
 }
 impl<W: Present> Present for Calls<W> {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+    fn supports_scroll_regions(&self) -> bool {
+        self.0.supports_scroll_regions()
+    }
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
         self.1.set(self.1.get() + 1);
         self.2.set(self.2.get() + frame.len() as u64);
-        self.0.present(frame, cursor_hidden)
+        self.0.present(frame, effects)
     }
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         let bytes = frame.len() as u64;
-        let accepted = self.0.present_if_current(frame, cursor_hidden, expected)?;
+        let accepted = self.0.present_if_current(frame, effects, expected)?;
         if accepted.is_some() && bytes != 0 {
             self.1.set(self.1.get() + 1);
             self.2.set(self.2.get() + bytes);
@@ -387,16 +396,24 @@ fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std
     let drain = std::thread::spawn(move || {
         let mut bytes = [0; 65536];
         while matches!(controller.read(&mut bytes), Ok(count) if count > 0) {}
+        // A completed drainer retains the master in its JoinHandle result.
+        // The guard tuple drops/restores Tty before releasing that result.
+        controller
     });
-    let (tty, output) =
-        acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?.split();
+    let mut tty = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
+    tty.negotiate(&acyclic_harness_tui::term::Environment(
+        [("TERM".into(), "xterm-256color".into())].into(),
+    ))?;
+    let (tty, output) = tty.split();
     Ok((output, Box::new((tty, drain))))
 }
 
 #[cfg(windows)]
 fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std::any::Any>)> {
     // The attached console (conhost or ConPTY) with VT processing enabled.
-    let (tty, output) = acyclic_harness_tui::term::Tty::open()?.split();
+    let mut tty = acyclic_harness_tui::term::Tty::open()?;
+    tty.negotiate(&acyclic_harness_tui::term::Environment::default())?;
+    let (tty, output) = tty.split();
     Ok((output, Box::new(tty)))
 }
 
@@ -510,7 +527,7 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
         }
         let before = device_io();
         let start = std::time::Instant::now();
-        output.present(&mut frame, false)?;
+        output.present(&mut frame, FrameEffects::default())?;
         let elapsed = start.elapsed();
         eprintln!(
             "windows {mib} MiB frame: {:.1} ms, {} console writes",
@@ -526,23 +543,26 @@ fn very_large_frames_reach_the_real_console() -> io::Result<()> {
 #[derive(Clone)]
 struct Shared(Rc<RefCell<RestoreGuard<Device>>>, bool);
 impl Present for Shared {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
-        self.0.borrow_mut().present(frame, cursor_hidden)
+    fn supports_scroll_regions(&self) -> bool {
+        self.0.borrow().supports_scroll_regions()
+    }
+    fn present(&mut self, frame: &mut Vec<u8>, effects: FrameEffects) -> io::Result<()> {
+        self.0.borrow_mut().present(frame, effects)
     }
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if self.1 {
             self.0
                 .borrow_mut()
-                .present_if_current(frame, cursor_hidden, expected)
+                .present_if_current(frame, effects, expected)
         } else {
             // Negative control: no validation at the lifecycle boundary.
             if !frame.is_empty() {
-                self.0.borrow_mut().present(frame, cursor_hidden)?;
+                self.0.borrow_mut().present(frame, effects)?;
             }
             Ok(Some(0))
         }
@@ -620,7 +640,7 @@ struct RetryDevice {
     fail: Rc<std::cell::Cell<bool>>,
 }
 impl Present for RetryDevice {
-    fn present(&mut self, frame: &mut Vec<u8>, _: bool) -> io::Result<()> {
+    fn present(&mut self, frame: &mut Vec<u8>, _: FrameEffects) -> io::Result<()> {
         if self.fail.replace(false) {
             return Err(io::ErrorKind::TimedOut.into());
         }
@@ -629,14 +649,14 @@ impl Present for RetryDevice {
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if expected.is_some_and(|count| count != 0) {
             return Ok(None);
         }
         if !frame.is_empty() {
-            self.present(frame, cursor_hidden)?;
+            self.present(frame, effects)?;
         }
         Ok(Some(0))
     }

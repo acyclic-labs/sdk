@@ -19,6 +19,7 @@ pub struct RestoreGuard<W: Write> {
     undo: Vec<(u16, Cow<'static, [u8]>, Option<u16>)>,
     modes: std::collections::BTreeMap<u16, ModeState>,
     desired: Vec<u16>,
+    scroll_regions: bool,
     /// Device accesses other than presented frames (see `Present`).
     outside: u64,
 }
@@ -37,6 +38,7 @@ impl<W: Write> RestoreGuard<W> {
             undo: Vec::new(),
             modes: caps.modes.clone(),
             desired: Vec::new(),
+            scroll_regions: caps.scroll_regions,
             outside: 0,
         }
     }
@@ -207,6 +209,7 @@ impl<W: Write> RestoreGuard<W> {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
         self.modes.clone_from(&caps.modes);
+        self.scroll_regions = caps.scroll_regions;
         Ok(())
     }
 
@@ -252,10 +255,16 @@ impl<W: Write> RestoreGuard<W> {
 const SHOW_CURSOR: (u16, &[u8]) = (25, b"[?25h");
 const END_SYNCHRONIZED: (u16, &[u8]) = (2026, b"[?2026l");
 const BEGIN_SYNCHRONIZED: &[u8] = b"[?2026h";
+/// Full-screen margins (DECSTBM without parameters). Margins are not a DEC
+/// mode; 0 is no mode number, so the key cannot collide with one.
+const RESET_MARGINS: (u16, &'static [u8]) = (0, b"\x1b[r");
+/// Undo records scoped to one frame: undone when the frame is cut short.
+const FRAME_SCOPED: [u16; 2] = [END_SYNCHRONIZED.0, RESET_MARGINS.0];
 
 /// Frame presentation under the restoration journal: a synchronized update's
-/// close and a hidden cursor's show are journaled before the first byte, so
-/// an error, timeout or unwind at any byte is undone by restoration.
+/// close, a hidden cursor's show and set margins' reset are journaled before
+/// the first byte, so an error, timeout or unwind at any byte is undone by
+/// restoration.
 impl<W: Write> RestoreGuard<W> {
     fn journal(&mut self, (mode, undo): (u16, &'static [u8])) {
         if !self.undo.iter().any(|(journaled, _, _)| *journaled == mode) {
@@ -265,9 +274,12 @@ impl<W: Write> RestoreGuard<W> {
 
     /// Journal a frame before writing it; returns whether to bracket it as a
     /// synchronized update (DECSET 2026, when the probe found the mode).
-    pub(crate) fn begin_frame(&mut self, cursor_hidden: bool) -> bool {
-        if cursor_hidden {
+    pub(crate) fn begin_frame(&mut self, effects: super::FrameEffects) -> bool {
+        if effects.cursor_hidden {
             self.journal(SHOW_CURSOR);
+        }
+        if effects.margins {
+            self.journal(RESET_MARGINS);
         }
         let synchronized = self
             .modes
@@ -305,39 +317,48 @@ impl<W: Write> RestoreGuard<W> {
             .any(|(mode, _, _)| *mode == END_SYNCHRONIZED.0)
     }
 
-    /// The whole frame reached the device: its update is closed, and a shown
-    /// cursor needs no restoration.
-    pub(crate) fn end_frame(&mut self, cursor_hidden: bool) {
+    /// Retire only postconditions this completed frame established. A frame
+    /// without a region scroll cannot discharge an older pending margin reset.
+    pub(crate) fn end_frame(&mut self, effects: super::FrameEffects) {
         self.undo.retain(|(mode, _, _)| {
-            *mode != END_SYNCHRONIZED.0 && (cursor_hidden || *mode != SHOW_CURSOR.0)
+            if *mode == END_SYNCHRONIZED.0 {
+                false
+            } else if *mode == RESET_MARGINS.0 {
+                !effects.margins
+            } else {
+                effects.cursor_hidden || *mode != SHOW_CURSOR.0
+            }
         });
     }
 
-    /// A frame failed partway: close its update now, bounded by the writer's
-    /// own deadline. If that fails too, the journal still holds the close.
+    /// A frame failed partway: close its update and reset its margins now,
+    /// bounded by the writer's own deadline. What fails stays journaled.
     pub(crate) fn abort_frame(&mut self) -> io::Result<()> {
-        let Some(index) = self
+        // Reverse journal order, as restoration would undo them.
+        while let Some(index) = self
             .undo
             .iter()
-            .position(|(mode, _, _)| *mode == END_SYNCHRONIZED.0)
-        else {
-            return Ok(());
-        };
-        // CAN cancels any partial escape sequence the failed write left open.
-        self.writer.write_all(b"")?;
-        self.writer.write_all(END_SYNCHRONIZED.1)?;
-        self.writer.flush()?;
-        self.undo.remove(index);
+            .rposition(|(mode, _, _)| FRAME_SCOPED.contains(mode))
+        {
+            // CAN cancels any partial escape sequence the failed write left open.
+            self.writer.write_all(b"\x18")?;
+            self.writer.write_all(&self.undo[index].1)?;
+            self.writer.flush()?;
+            self.undo.remove(index);
+        }
         Ok(())
     }
 }
 
 impl<W: Write> super::Present for RestoreGuard<W> {
-    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
-        let synchronized = self.begin_frame(cursor_hidden);
+    fn supports_scroll_regions(&self) -> bool {
+        self.scroll_regions
+    }
+    fn present(&mut self, frame: &mut Vec<u8>, effects: super::FrameEffects) -> io::Result<()> {
+        let synchronized = self.begin_frame(effects);
         match self.write_frame(frame, synchronized, synchronized) {
             Ok(()) => {
-                self.end_frame(cursor_hidden);
+                self.end_frame(effects);
                 Ok(())
             }
             Err(error) => {
@@ -349,14 +370,14 @@ impl<W: Write> super::Present for RestoreGuard<W> {
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: super::FrameEffects,
         expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if expected.is_some_and(|expected| expected != self.outside) {
             return Ok(None);
         }
         if !frame.is_empty() {
-            self.present(frame, cursor_hidden)?;
+            self.present(frame, effects)?;
         }
         Ok(Some(self.outside))
     }

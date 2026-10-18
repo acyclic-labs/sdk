@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$Binary)
+param([Parameter(Mandatory=$true)][string]$Binary, [switch]$FrameRegions)
 $ErrorActionPreference = 'Stop'
 $Binary = (Resolve-Path -LiteralPath $Binary).ProviderPath
 $artifactRoot = Join-Path (Split-Path -Parent $PSScriptRoot) ('target/terminal-signals-' + [Guid]::NewGuid().ToString('N'))
@@ -30,6 +30,7 @@ public static class TerminalSignalConPty {
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool CreateProcessW(string binary,StringBuilder command,IntPtr pa,IntPtr ta,bool inherit,uint flags,IntPtr environment,string directory,ref StartupEx startup,out ProcessInfo process);
     [DllImport("kernel32.dll")] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
+    [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr handle,out uint exit);
     [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr handle,byte[] bytes,uint size,out uint read,IntPtr overlapped);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteFile(IntPtr handle,byte[] bytes,uint size,out uint written,IntPtr overlapped);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
@@ -45,7 +46,7 @@ public static class TerminalSignalConPty {
         try {
             Require(CreatePipe(out ir,out iw,IntPtr.Zero,0),"input pipe");
             Require(CreatePipe(out orr,out ow,IntPtr.Zero,0),"output pipe");
-            Require(CreatePseudoConsole(new Coord{x=80,y=24},ir,ow,0,out console)==0,"CreatePseudoConsole");
+            Require(CreatePseudoConsole(new Coord{x=(short)(scenario=="regions"?100:80),y=(short)(scenario=="regions"?40:24)},ir,ow,0,out console)==0,"CreatePseudoConsole");
             IntPtr size=IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero,1,0,ref size);
             attributes=Marshal.AllocHGlobal(size);
@@ -55,7 +56,8 @@ public static class TerminalSignalConPty {
             IntPtr parentInput=GetStdHandle(-10),parentOutput=GetStdHandle(-11),parentError=GetStdHandle(-12);
             try {
                 Require(SetStdHandle(-10,IntPtr.Zero)&&SetStdHandle(-11,IntPtr.Zero)&&SetStdHandle(-12,IntPtr.Zero),"clear inherited handles");
-                Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact term::windows::tests::windows_lifecycle_child --nocapture"),
+                string test=scenario=="regions"?"regions::real_terminal_region_cost --ignored":"term::windows::tests::windows_lifecycle_child";
+                Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact "+test+" --nocapture"),
                     IntPtr.Zero,IntPtr.Zero,false,0x80000|4,IntPtr.Zero,Path.GetDirectoryName(binary),ref startup,out process),"ConPTY child");
             } finally {
                 Require(SetStdHandle(-10,parentInput)&&SetStdHandle(-11,parentOutput)&&SetStdHandle(-12,parentError),"restore host handles");
@@ -65,6 +67,13 @@ public static class TerminalSignalConPty {
             drain=new Thread(()=>{ draining.WaitOne();using(var log=new FileStream(Path.ChangeExtension(report,"output"),FileMode.Create,FileAccess.Write,FileShare.ReadWrite)) { byte[] bytes=new byte[4096];uint count;while(ReadFile(outputHandle,bytes,(uint)bytes.Length,out count,IntPtr.Zero)&&count>0) { log.Write(bytes,0,(int)count);log.Flush(); } } });
             drain.IsBackground=true;drain.Start();
             Require(ResumeThread(process.thread)!=UInt32.MaxValue,"resume child");
+            if(scenario=="regions") {
+                Require(WaitForSingleObject(process.process,10000)==0,"region measurement child deadline");
+                uint exit;Require(GetExitCodeProcess(process.process,out exit)&&exit==0,"region measurement child exit");
+                Require(File.Exists(report),"physical region report");
+                Console.Write(File.ReadAllText(report));
+                return;
+            }
             var timer=Stopwatch.StartNew();
             string inputReady=Path.ChangeExtension(report,"input-ready");
             while(!File.Exists(inputReady)&&timer.ElapsedMilliseconds<1500) {
@@ -157,14 +166,18 @@ public static class TerminalSignalConPty {
 '@
 $previousReport = $env:ACYCLIC_TERMINAL_WINDOWS_REPORT
 $previousEvent = $env:ACYCLIC_TERMINAL_WINDOWS_EVENT
+$previousRegionReport = $env:ACYCLIC_TERMINAL_REGION_REPORT
 try {
-    foreach ($scenario in @('break','close','blocked')) {
+    $scenarios = if ($FrameRegions) { @('regions') } else { @('break','close','blocked') }
+    foreach ($scenario in $scenarios) {
         $report = Join-Path $artifactRoot ($scenario + '.txt')
         $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $report
         $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $scenario
+        $env:ACYCLIC_TERMINAL_REGION_REPORT = $report
         [TerminalSignalConPty]::Run($Binary,$scenario,$report)
     }
 } finally {
     $env:ACYCLIC_TERMINAL_WINDOWS_REPORT = $previousReport
     $env:ACYCLIC_TERMINAL_WINDOWS_EVENT = $previousEvent
+    $env:ACYCLIC_TERMINAL_REGION_REPORT = $previousRegionReport
 }

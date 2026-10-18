@@ -9,7 +9,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use acyclic_harness_tui::ratatui::{Frame, layout::Size, text::Line, widgets::Paragraph};
-use acyclic_harness_tui::term::{Capabilities, FrameTerminal, ModeState, Present, RestoreGuard};
+use acyclic_harness_tui::term::{
+    Capabilities, FrameEffects, FrameTerminal, ModeState, Present, RestoreGuard,
+};
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::term::{Config, Term, TermMode};
@@ -69,18 +71,18 @@ impl Write for Faulty {
 /// The removed device path: bracket and write, with nothing journaled.
 struct Unjournaled(Faulty);
 impl Present for Unjournaled {
-    fn present(&mut self, frame: &mut Vec<u8>, _cursor_hidden: bool) -> io::Result<()> {
+    fn present(&mut self, frame: &mut Vec<u8>, _effects: FrameEffects) -> io::Result<()> {
         let bracketed = [b"\x1b[?2026h".as_slice(), frame, b"\x1b[?2026l"].concat();
         self.0.write_all(&bracketed)
     }
     fn present_if_current(
         &mut self,
         frame: &mut Vec<u8>,
-        cursor_hidden: bool,
+        effects: FrameEffects,
         _expected: Option<u64>,
     ) -> io::Result<Option<u64>> {
         if !frame.is_empty() {
-            self.present(frame, cursor_hidden)?;
+            self.present(frame, effects)?;
         }
         Ok(Some(0))
     }
