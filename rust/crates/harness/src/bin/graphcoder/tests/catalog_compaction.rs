@@ -87,7 +87,7 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
                 } else {
                     assert!(calls < 2, "pressure must compact before the third ordinary generation");
                     format!("data: {}\n\ndata: {}\n\n",
-                        json!({"type":"response.output_item.done","item":{"type":"function_call",
+                        json!({"type":"response.output_item.done","output_index":0,"item":{"type":"function_call",
                             "id":format!("item-{calls}"),"call_id":format!("call-{calls}"),
                             "name":body["tools"].as_array().unwrap().iter().find(|tool| tool["type"] == "function").expect("declared tool")["name"],"arguments":"{}"}}),
                         json!({"type":"response.completed","response":{"status":"completed",
@@ -107,6 +107,7 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
             .unwrap();
     });
     let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("project")).unwrap();
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({
         "default_model":format!("fixture/{MODEL}"),"fixture":{
