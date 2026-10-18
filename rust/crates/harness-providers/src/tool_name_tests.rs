@@ -5,7 +5,10 @@ use acyclic_harness::{
     tool::ToolDefinition,
 };
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 fn definition(name: String) -> ToolDefinition {
     ToolDefinition {
@@ -445,4 +448,115 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     let error = native.next().await.unwrap().unwrap_err();
     assert!(error.to_string().contains("aggregate"));
     Ok(())
+}
+
+fn request_with(tools: &[&str]) -> ModelRequest {
+    let (provider, _) = provider(Adapter::Responses, 200);
+    let (prepared, _) = request(&provider).unwrap();
+    let mut request = prepared.request().clone();
+    request.tools = tools
+        .iter()
+        .map(|name| definition((*name).into()))
+        .collect();
+    request
+}
+
+#[test]
+fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
+    let long = format!("mcp.server.{}", "t".repeat(80));
+    let request = request_with(&[&long]);
+    let (names, built) = Names::built(&request);
+    let aliases: Vec<_> = names.aliases().collect();
+    assert_eq!(aliases, [(64, 64)], "digest alias capacity is exact");
+    // One 40-byte binding, the 64-byte digest buffer, the 64-byte alias,
+    // and one wire index entry: no growth and no uncounted temporary.
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(
+        built,
+        crate::tool_names::Built {
+            allocations: 4,
+            bytes: 40 + 64 + 64 + 8,
+            probes: 0,
+        }
+    );
+    assert!(built.within(&Names::claim(1).unwrap()));
+    // A readable alias needs neither the digest buffer nor any slack.
+    let request = request_with(&["mcp.docs.search", "read"]);
+    let (names, built) = Names::built(&request);
+    assert_eq!(names.aliases().collect::<Vec<_>>(), [(17, 17)]);
+    assert_eq!(built.allocations, 3);
+    assert!(built.within(&Names::claim(2).unwrap()));
+    for size in 0..64 {
+        let names: Vec<String> = (0..size)
+            .map(|index| format!("mcp.s{index}.{}", "x".repeat(index * 3)))
+            .collect();
+        let request = request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let (table, built) = Names::built(&request);
+        assert!(table.aliases().all(|(length, capacity)| length == capacity));
+        assert!(built.within(&Names::claim(size as u64).unwrap()));
+    }
+}
+
+#[test]
+fn negative_control_a_grown_alias_retains_slack_beyond_its_claim() {
+    // The former builder reserved the readable prefix, then appended the digest.
+    let mut grown = String::with_capacity(47);
+    grown.push_str(&"t".repeat(47));
+    grown.push_str(&"0".repeat(17));
+    assert!(grown.capacity() > grown.len(), "growth left no slack");
+    assert!(
+        grown.capacity() > 64,
+        "the per-alias claim would hold slack"
+    );
+}
+
+/// The reviewer's input: an alias, its declared readable name, and the
+/// alias's first `taken` salted digests, all declared as canonical names.
+fn adversarial(taken: u32) -> Vec<String> {
+    let mut tools = vec!["mcp.a.b".to_owned(), "mcp__a__b".to_owned()];
+    tools.extend((1..=taken).map(|salt| Names::candidate("mcp.a.b", salt)));
+    tools
+}
+
+#[test]
+fn occupied_candidates_cost_one_probe_each() {
+    let tools = adversarial(1024);
+    let request = request_with(&tools.iter().map(String::as_str).collect::<Vec<_>>());
+    let (names, built) = Names::built(&request);
+    assert_eq!(
+        built.probes, 1025,
+        "one probe per occupied candidate plus the free one"
+    );
+    assert!(built.within(&Names::claim(tools.len() as u64).unwrap()));
+    assert_eq!(
+        names.wire("mcp.a.b").unwrap(),
+        Names::candidate("mcp.a.b", 1025)
+    );
+    Names::assert_round_trip(&request);
+}
+
+#[test]
+#[should_panic(expected = "quadratic resolution exceeds the claim")]
+fn negative_control_resorting_every_round_exceeds_the_probe_claim() {
+    // The former loop re-sorted and pair-checked the whole table each round.
+    let names = adversarial(1024).len() as u64;
+    let rounds = 1025;
+    let pair_checks = rounds * (names - 1);
+    assert!(
+        pair_checks <= Names::claim(names).unwrap().probes,
+        "quadratic resolution exceeds the claim"
+    );
+}
+
+#[test]
+fn lookups_borrow_the_cached_alias() {
+    let request = request_with(&["mcp.docs.search"]);
+    let names = Names::new(&request);
+    let first = names.wire("mcp.docs.search").unwrap();
+    let second = names.wire("mcp.docs.search").unwrap();
+    assert!(matches!(first, Cow::Borrowed(_)) && matches!(second, Cow::Borrowed(_)));
+    assert_eq!(first.as_ptr(), second.as_ptr(), "lookups share one alias");
+    // Negative control: an owned copy has its own storage.
+    let copied = first.clone().into_owned();
+    assert_ne!(copied.as_ptr(), second.as_ptr());
 }
