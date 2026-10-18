@@ -421,6 +421,7 @@ fn journal_unmetered_task_files_match_main() {
 fn journal_wrapper_observations(
     mut digest: [u8; 32],
     restore_box: bool,
+    pad_frame: bool,
     mut observe: impl FnMut(
         usize,
         acyclic_test_support::AllocationInfo,
@@ -462,20 +463,25 @@ fn journal_wrapper_observations(
                 |()| {
                     let mut outcome = None;
                     let allocation = acyclic_test_support::measure(|| {
-                        outcome = Some(
-                            runtime
-                                .block_on(
-                                    run(
-                                        &Choice(&journal, old),
-                                        mode,
-                                        0,
-                                        (operation, "key", &event),
-                                        &file,
-                                        &oversized,
-                                    )
-                                    .unwrap(),
-                                )
-                                .map_err(|e| e.to_string()),
+                        crate::conversation::BoundedContentFuture::<()>::with_padded_frame(
+                            pad_frame && !old,
+                            || {
+                                outcome = Some(
+                                    runtime
+                                        .block_on(
+                                            run(
+                                                &Choice(&journal, old),
+                                                mode,
+                                                0,
+                                                (operation, "key", &event),
+                                                &file,
+                                                &oversized,
+                                            )
+                                            .unwrap(),
+                                        )
+                                        .map_err(|e| e.to_string()),
+                                );
+                            },
                         );
                     });
                     (outcome.unwrap(), allocation)
@@ -509,7 +515,7 @@ fn journal_wrapper_observations(
 
 #[test]
 fn journal_wrapper_frame_measurements() {
-    journal_wrapper_observations([1; 32], false, |mode, before, after| {
+    journal_wrapper_observations([1; 32], false, false, |mode, before, after| {
         eprintln!(
             "JOURNAL_FRAME {}",
             serde_json::json!({
@@ -584,7 +590,7 @@ proptest! {
     // wrapper's exact one-box saving from the full operation above.
     #[test]
     fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
-        exact_wrapper_layout(digest, false)?;
+        exact_wrapper_layout(digest, false, false)?;
     }
 
     // Every old/new factory is compared at its exact admission boundary, after
@@ -595,24 +601,40 @@ proptest! {
 fn exact_wrapper_layout(
     digest: [u8; 32],
     restore_box: bool,
+    pad_frame: bool,
 ) -> proptest::test_runner::TestCaseResult {
     // Old outer box + old nested trace box - independent unmetered frame.
     // Each term comes from a concrete reference type in this feature closure.
-    journal_wrapper_observations(digest, restore_box, |mode, before, after| {
+    journal_wrapper_observations(digest, restore_box, pad_frame, |mode, before, after| {
         let saved = legacy::expected_saved_bytes(mode) as u64;
         prop_assert!(saved > 0, "original factory layout was not captured");
-        prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
+        prop_assert_eq!(
+            before.bytes_total,
+            after.bytes_total + saved,
+            "journal wrapper allocated bytes"
+        );
         Ok(())
     })
 }
 
 #[test]
 fn restoring_the_nested_factory_box_fails_the_exact_guard() {
-    let error = exact_wrapper_layout([1; 32], true).unwrap_err();
+    let error = exact_wrapper_layout([1; 32], true, false).unwrap_err();
     assert!(
         error
             .to_string()
             .contains("journal wrapper allocation count")
+    );
+}
+
+#[test]
+fn enlarging_the_inline_factory_frame_fails_the_same_byte_guard() {
+    let error = exact_wrapper_layout([1; 32], false, true).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("journal wrapper allocated bytes"),
+        "size control did not reach the byte guard: {error}"
     );
 }
 

@@ -22,7 +22,24 @@ pub struct BoundedContentFuture<'a, T> {
     pub(super) _native: Option<acyclic_fs::NativeAllocation>,
 }
 
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+thread_local! {
+    static PAD_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl<'a, T> BoundedContentFuture<'a, T> {
+    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(crate) fn with_padded_frame<R>(enabled: bool, operation: impl FnOnce() -> R) -> R {
+        struct Reset(bool);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                PAD_FRAME.set(self.0);
+            }
+        }
+        let _reset = Reset(PAD_FRAME.replace(enabled));
+        operation()
+    }
+
     /// Admits the concrete future before invoking its builder.
     pub fn new<F>(io: Option<&'a ContentIo>, build: impl FnOnce() -> F) -> Result<Self>
     where
@@ -58,6 +75,22 @@ impl<'a, T> BoundedContentFuture<'a, T> {
             }
         }
         let _ = io;
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        if PAD_FRAME.get() {
+            // Size-only mutation: keep the shipping future inline in its one
+            // allocation, with extra retained state across the real await.
+            let future = build();
+            let padding = std::hint::black_box([0u64; 1]);
+            return Ok(Self {
+                future: Box::pin(async move {
+                    let result = future.await;
+                    std::hint::black_box(padding);
+                    result
+                }),
+                _hold: hold,
+                _native: None,
+            });
+        }
         Ok(Self {
             future: Box::pin(build()),
             #[cfg(feature = "filesystem")]
