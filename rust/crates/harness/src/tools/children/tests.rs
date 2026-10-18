@@ -568,6 +568,6 @@ proptest! {
     }
 }
 
-mod review;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod crash_cuts;
+mod review;

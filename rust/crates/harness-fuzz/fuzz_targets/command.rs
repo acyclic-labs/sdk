@@ -3,12 +3,12 @@
 use acyclic_harness::{Error, Result};
 use libfuzzer_sys::fuzz_target;
 
+#[path = "../../harness/src/tools/agent_selection.rs"]
+mod agent_selection;
 #[path = "../../harness/src/tools/command.rs"]
 mod command;
 #[path = "../../harness/src/tools/fs_command.rs"]
 mod fs_command;
-#[path = "../../harness/src/tools/agent_selection.rs"]
-mod agent_selection;
 use agent_selection::{AgentTarget, selection};
 use command::parse_command;
 use fs_command::parse_fs_command;
@@ -32,9 +32,15 @@ fn agent_reference(input: &str) -> Option<AgentTarget> {
 fuzz_target!(|input: &str| {
     // Selection is total, matches the reference and owns exactly the operand.
     let selected = selection(input);
-    assert_eq!(selected.as_ref().map(|inspection| inspection.target), agent_reference(input));
+    assert_eq!(
+        selected.as_ref().map(|inspection| inspection.target),
+        agent_reference(input)
+    );
     if let Some(inspection) = &selected {
-        assert_eq!(parse_fs_command(input).unwrap().arguments[1], inspection.path);
+        assert_eq!(
+            parse_fs_command(input).unwrap().arguments[1],
+            inspection.path
+        );
         assert!(inspection.path.ends_with(inspection.operand()));
     }
     if let Ok(arguments) = parse_command(input) {

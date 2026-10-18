@@ -18,7 +18,10 @@ const D: u64 = sdk_json_diagnostic_bytes();
 const CODEC: [[([u64; 9], [i128; 6]); 2]; 3] = [
     [
         ([4, 1, 4, 0, 0, 1, 64, 0, 4], [2, 2, 2, 160, 160, 160]),
-        ([8, 1, 8, 0, 0, 1, 472 + D, 408 + D, 4], [2, 2, 2, 160, 160, 160]),
+        (
+            [8, 1, 8, 0, 0, 1, 472 + D, 408 + D, 4],
+            [2, 2, 2, 160, 160, 160],
+        ),
     ],
     [
         ([21, 7, 21, 0, 0, 1, 64, 0, 1], [2, 2, 2, 160, 160, 160]),
@@ -154,7 +157,8 @@ fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> Te
     // output. Both sizes are layout- and feature-dependent, so they come from
     // the real types rather than one build's constants.
     let ledger_bytes = if native { original_ledger_bytes() } else { 0 };
-    let header = acyclic_stream::OwnedBytes::vec_guard_header_bytes::<acyclic_fs::NativeAllocation>();
+    let header =
+        acyclic_stream::OwnedBytes::vec_guard_header_bytes::<acyclic_fs::NativeAllocation>();
     let expected = WorkCounters {
         bytes_copied: copied,
         bytes_encoded: encoded,

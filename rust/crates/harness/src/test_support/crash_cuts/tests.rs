@@ -102,7 +102,11 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
 
 /// Independent oracle: the reopened journal holds exactly the named prefix.
 fn prefix(frames: usize) -> Frames {
-    (frames >= 1, frames >= 2, 1 + u64::from(frames >= 2) + u64::from(frames >= 3))
+    (
+        frames >= 1,
+        frames >= 2,
+        1 + u64::from(frames >= 2) + u64::from(frames >= 3),
+    )
 }
 
 fn mismatches(found: &CrashCuts<Frames>) -> Vec<(Cut, Frames)> {

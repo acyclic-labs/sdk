@@ -227,7 +227,10 @@ async fn every_durable_cut_recovers_the_retained_receipt_exactly_once() {
         (true, true, false),
         (true, true, true),
     ] {
-        assert!(states.contains(&state), "no cut reached {state:?}: {states:?}");
+        assert!(
+            states.contains(&state),
+            "no cut reached {state:?}: {states:?}"
+        );
     }
 }
 

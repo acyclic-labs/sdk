@@ -16,8 +16,5 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         scanner.push(part);
     }
     assert_eq!(scanner.finish(), contains(&text));
-    assert_eq!(
-        contains(&text),
-        contains(&text.replace("\r\n", "\n"))
-    );
+    assert_eq!(contains(&text), contains(&text.replace("\r\n", "\n")));
 });

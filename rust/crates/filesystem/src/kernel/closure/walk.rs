@@ -88,13 +88,16 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             ),
             None => None,
         };
-        let previous = slot.as_ref().and_then(|slot| slot.current(epochs)).filter(|cached| {
-            cached.limits == self.limits
-                && root.0.volume_id == cached.root.volume_id
-                && root.0.root_file_id == cached.root.root_file_id
-                && root.0.required_features == cached.root.required_features
-                && root.0.parents.as_slice() == [cached.generation_id]
-        });
+        let previous = slot
+            .as_ref()
+            .and_then(|slot| slot.current(epochs))
+            .filter(|cached| {
+                cached.limits == self.limits
+                    && root.0.volume_id == cached.root.volume_id
+                    && root.0.root_file_id == cached.root.root_file_id
+                    && root.0.required_features == cached.root.required_features
+                    && root.0.parents.as_slice() == [cached.generation_id]
+            });
         if let Some(previous) = previous {
             let increment = match self.prove_increment(&root.0, &previous).await {
                 Err(crate::FsError::Closure(

@@ -13,7 +13,10 @@ thread_local! {
 pub fn record<T: 'static>(event: T) {
     let mut pending = Some(event);
     TRACE.with_borrow_mut(|trace| {
-        if let Some(trace) = trace.as_mut().and_then(|trace| trace.downcast_mut::<Vec<T>>()) {
+        if let Some(trace) = trace
+            .as_mut()
+            .and_then(|trace| trace.downcast_mut::<Vec<T>>())
+        {
             trace.push(pending.take().unwrap());
         }
     });

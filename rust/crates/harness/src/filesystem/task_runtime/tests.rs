@@ -22,8 +22,8 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
-mod headless;
 mod canonical_compaction;
+mod headless;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_mail;
 

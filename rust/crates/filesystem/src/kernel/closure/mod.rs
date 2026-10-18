@@ -177,9 +177,9 @@ pub(crate) fn closure_error(error: crate::FsError) -> ClosureError {
 mod memory;
 pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
 mod published;
+use memory::{ProofVec, map_get, map_insert, set_insert};
 use published::ProofSlot;
 pub(crate) use published::Unpublished;
-use memory::{ProofVec, map_get, map_insert, set_insert};
 mod walk;
 pub(crate) use walk::ProofContext;
 

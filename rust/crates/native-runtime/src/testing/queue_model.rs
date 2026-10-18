@@ -343,7 +343,11 @@ fn waiter_charge(cancel: bool, broken: bool) {
                 .is_pending()
         );
         assert!(waiter.is_some());
-        assert_ne!(meter.memory.load(Ordering::SeqCst), before, "waiter uncharged");
+        assert_ne!(
+            meter.memory.load(Ordering::SeqCst),
+            before,
+            "waiter uncharged"
+        );
 
         let released = workers.admission.clone();
         let receiving = receiver.clone();

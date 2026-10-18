@@ -194,12 +194,16 @@ fn history_encoding_owns_exactly_its_capacity(value: &str) -> bool {
             .unwrap();
     let mut observer = &io;
     let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-    let bytes = crate::store::history::canonical_bytes_with_work(value, 1 << 20, &mut work).unwrap();
+    let bytes =
+        crate::store::history::canonical_bytes_with_work(value, 1 << 20, &mut work).unwrap();
     let capacity = bytes.capacity() as u64;
     assert_eq!(io.owned_bytes().unwrap(), capacity, "value={value:?}");
     let slack = bytes.capacity() > bytes.len();
     drop(bytes);
-    work.as_deref_mut().unwrap().release_owned(capacity).unwrap();
+    work.as_deref_mut()
+        .unwrap()
+        .release_owned(capacity)
+        .unwrap();
     assert_eq!(io.owned_bytes().unwrap(), 0, "value={value:?}");
     slack
 }

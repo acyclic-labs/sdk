@@ -920,7 +920,10 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
     assert_eq!(failure.error.kind(), std::io::ErrorKind::TimedOut);
     assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
     drop(clock);
-    assert_eq!(checks, 2, "the deadline expired only once the clock reached it");
+    assert_eq!(
+        checks, 2,
+        "the deadline expired only once the clock reached it"
+    );
     assert!(failure.cleanup_completed);
     assert!(tree.is_reaped());
 }

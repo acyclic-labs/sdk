@@ -55,7 +55,10 @@ fn files_snapshot_follow_and_resume() -> Result {
             });
             for spelling in reserved {
                 let spelling = spelling.as_str().ok_or("catalog spelling must be text")?;
-                assert!(!spelling.starts_with("thes"), "builtin {spelling} completes /thes");
+                assert!(
+                    !spelling.starts_with("thes"),
+                    "builtin {spelling} completes /thes"
+                );
             }
             put(&volume, "commands/thesis.md", b"Draft a thesis").await?;
             put(&volume, "workspace/Straße.rs", b"source").await?;

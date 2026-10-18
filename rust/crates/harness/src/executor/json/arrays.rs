@@ -125,7 +125,10 @@ pub(super) fn build(
             remaining -= items;
             Ok(())
         }
-        _ => Err(boundary("JSON array index scan exceeds its admission", code)),
+        _ => Err(boundary(
+            "JSON array index scan exceeds its admission",
+            code,
+        )),
     };
     let prepaid =
         std::cell::RefCell::new(&mut prepaid as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
@@ -138,7 +141,10 @@ pub(super) fn build(
         index.byte(&mut table, *byte, depth, string, item)?;
     }
     if lexical.items != items {
-        return Err(boundary("JSON array index scan differs from its admission", code));
+        return Err(boundary(
+            "JSON array index scan differs from its admission",
+            code,
+        ));
     }
     index.finish(&table)?;
     Ok(table)

@@ -259,14 +259,14 @@ fn frames_reject_segments_and_malformed_digests() {
 fn checked_in_wire_corpus() {
     macro_rules! seed {
         ($name:literal) => {
-            std::str::from_utf8(include_bytes!(concat!(
-                "fixtures/wire-corpus/",
-                $name
-            )))
-            .unwrap()
+            std::str::from_utf8(include_bytes!(concat!("fixtures/wire-corpus/", $name))).unwrap()
         };
     }
-    for line in [seed!("request-text"), seed!("request-base64"), seed!("request-requester")] {
+    for line in [
+        seed!("request-text"),
+        seed!("request-base64"),
+        seed!("request-requester"),
+    ] {
         assert_eq!(
             jsonl::request(&jsonl::parse_request(line).unwrap()).unwrap(),
             line

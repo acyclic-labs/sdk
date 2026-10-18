@@ -24,7 +24,9 @@ thread_local! {
 
 #[cfg(test)]
 fn capture_now() -> Instant {
-    CAPTURE_CLOCK.with(std::cell::Cell::get).unwrap_or_else(Instant::now)
+    CAPTURE_CLOCK
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(Instant::now)
 }
 
 /// Freezes this thread's capture clock at `now`, or restores wall time.

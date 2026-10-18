@@ -37,9 +37,9 @@ mod config;
 mod context;
 mod files;
 mod inheritance;
-mod routing;
 mod owner;
 mod owner_record;
+mod routing;
 mod runtime;
 #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;

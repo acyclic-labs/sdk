@@ -12,10 +12,10 @@ pub mod client;
 /// Rust-owned Actors contract declarations and schema renderer.
 pub mod contract;
 
-/// Shared durable timer records, derived from the harness timer stream format.
-pub mod timers;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
+/// Shared durable timer records, derived from the harness timer stream format.
+pub mod timers;
 
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]

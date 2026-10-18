@@ -40,8 +40,8 @@ mod generation;
 mod handle;
 mod identity;
 mod join;
-mod join_git;
 mod join_apply;
+mod join_git;
 mod join_helpers;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_native;

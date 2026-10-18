@@ -388,7 +388,10 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .source
         .clone()
         .ok_or_else(|| Error::NotFound("scratch source".into()))?;
-    assert!(!scratch.destination.exists(), "publication projected scratch");
+    assert!(
+        !scratch.destination.exists(),
+        "publication projected scratch"
+    );
     assert!(!directory.path().join(".volumes/scratch/note").exists());
     assert_eq!(
         scratch
