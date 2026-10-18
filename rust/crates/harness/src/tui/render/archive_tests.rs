@@ -4,10 +4,11 @@ use crate::{
     task_volume::{Component, FileValue, TaskFile, TaskVolume},
 };
 use acyclic_stream::{MemoryStream, StreamPath};
+use proptest::prelude::*;
 
-#[test]
-fn idle_pending_prompt_projection_allocates_nothing() {
-    let (files, owner, prompt) = futures::executor::block_on(async {
+/// A command-session view holding one pending prompt request.
+fn pending(prompt: &str) -> (FileQueryView, OutputOwner) {
+    futures::executor::block_on(async {
         let volume = TaskVolume::open(
             Arc::new(MemoryStream::default()),
             StreamPath::new("prompt-idle").unwrap(),
@@ -21,11 +22,10 @@ fn idle_pending_prompt_projection_allocates_nothing() {
                 Component::new(crate::OperationId::from_bytes([1; 16]).to_string()).unwrap(),
             ),
         };
-        let prompt = format!("same{}", "\u{301}".repeat(40));
         let file = FileValue::new(
             key,
             serde_json::to_vec(&CommandResolution::Prompt {
-                text: prompt.clone(),
+                text: prompt.to_owned(),
                 source: None,
                 mentions: Vec::new(),
             })
@@ -43,19 +43,21 @@ fn idle_pending_prompt_projection_allocates_nothing() {
         (
             FileQueryView::from_snapshot(query, snapshot, 16, 8192).unwrap(),
             OutputOwner::Session(session),
-            prompt,
         )
-    });
+    })
+}
+
+fn painted(archive: &Archive) -> Vec<String> {
+    archive.rows().iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn idle_pending_prompt_projection_allocates_nothing() {
+    let prompt = format!("same{}", "\u{301}".repeat(40));
+    let (files, owner) = pending(&prompt);
     let mut archive = Archive::default();
     archive.update(Some((&files, owner.clone())));
-    assert_eq!(
-        archive
-            .rows()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        [format!("You: {prompt}")]
-    );
+    assert_eq!(painted(&archive), [format!("You: {prompt}")]);
     for count in [32, 64] {
         let mut changed = usize::MAX;
         let allocation = acyclic_test_support::measure(|| {
@@ -70,12 +72,32 @@ fn idle_pending_prompt_projection_allocates_nothing() {
         );
         assert_eq!(changed, archive.rows().len());
     }
-    assert_eq!(
-        archive
-            .rows()
+    assert_eq!(painted(&archive), [format!("You: {prompt}")]);
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    /// Every line of a multi-line prompt is its own sanitized row, whatever the
+    /// line ending; controls inside a line stay visible escapes.
+    #[test]
+    fn multiline_prompts_paint_one_sanitized_row_per_line(
+        lines in prop::collection::vec("[a-z日\u{301}\t\u{1b}\u{202e} ]{0,6}", 1..5),
+        crlf in any::<bool>(),
+    ) {
+        let (files, owner) = pending(&lines.join(if crlf { "\r\n" } else { "\n" }));
+        let mut archive = Archive::default();
+        archive.update(Some((&files, owner)));
+        let expected: Vec<String> = lines
             .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
-        [format!("You: {prompt}")]
-    );
+            .enumerate()
+            .map(|(index, line)| {
+                format!(
+                    "{}{}",
+                    if index == 0 { "You: " } else { "     " },
+                    line.replace('\u{1b}', "\\u{1b}").replace('\u{202e}', "\\u{202e}")
+                )
+            })
+            .collect();
+        prop_assert_eq!(painted(&archive), expected);
+    }
 }

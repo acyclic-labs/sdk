@@ -20,14 +20,17 @@ pub(super) struct Archive {
 #[cfg(test)]
 #[path = "archive_tests.rs"]
 mod tests;
+/// One row per prompt line. Lines are split before sanitizing: the sanitizer
+/// escapes `\n` itself, so splitting its output would never break a line.
 fn prompt_rows(text: &str) -> Vec<Line<'static>> {
-    super::super::display_text(text)
-        .split('\n')
+    text.split('\n')
         .enumerate()
         .map(|(index, row)| {
+            let row = row.strip_suffix('\r').unwrap_or(row);
             Line::raw(format!(
-                "{}{row}",
-                if index == 0 { "You: " } else { "     " }
+                "{}{}",
+                if index == 0 { "You: " } else { "     " },
+                super::super::display_text(row)
             ))
         })
         .collect()
