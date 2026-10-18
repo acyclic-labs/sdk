@@ -1,5 +1,6 @@
 use super::*;
 use crate::task_volume::{Change, Component, FileKey, FileValue, TaskFile};
+use crate::{task_volume::Channel, tui::render::task_text::TaskText};
 use proptest::prelude::*;
 
 fn replaced_head(bodies: &[String], forget_prefix: bool) {
@@ -13,7 +14,7 @@ fn replaced_head(bodies: &[String], forget_prefix: bool) {
             channel: Channel::Text,
         },
     };
-    let mut decoder = StreamText::default();
+    let mut decoder = TaskText::default();
     let mut rows = Vec::new();
     for body in bodies {
         let mut cursor = views.selections().next().unwrap().1.cursor().clone();
@@ -34,13 +35,12 @@ fn replaced_head(bodies: &[String], forget_prefix: bool) {
                 removed: Vec::new(),
             })
             .unwrap();
-        if forget_prefix {
-            decoder.prefix = None;
-        }
         let task = views.selections().next().unwrap().1.task(&task);
-        let changed = decoder.update(&task, Channel::Text);
-        rows.truncate(changed);
-        rows.extend(decoder.rows(changed));
+        if forget_prefix {
+            decoder.forget_head_identity(task.cursor.position);
+        }
+        let _changed = decoder.update(&task, Channel::Text);
+        decoder.apply(&mut rows, 0);
         let actual: String = rows
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -64,6 +64,29 @@ fn lost_prefix_identity_negative_control() {
     let bodies = vec!["old".into(), "new".into()];
     replaced_head(&bodies, false);
     assert!(std::panic::catch_unwind(|| replaced_head(&bodies, true)).is_err());
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    #[test]
+    fn replacing_a_head_preserves_the_current_publication_order(bodies in prop::collection::vec("[a-z日€🙂]{1,8}",2..6)) {
+        let mut views=crate::test_support::empty_client_views();
+        let task=Component::new("task").unwrap();
+        let mut live=TaskText::default();
+        for (index, body) in bodies.iter().enumerate() {
+            for execution in if index==0 {vec![255,1]} else {vec![255]} {
+                let mut file=FileValue::new(FileKey::Task { task:task.clone(),file:TaskFile::TextHead {
+                    execution:crate::OperationId::from_bytes([execution;16]),turn:0,channel:Channel::Text,
+                }},body.as_bytes().to_vec());
+                file.channel=Some(Channel::Text);
+                publish(&mut views,file);
+            }
+            let selection=views.selections().next().unwrap().1;
+            let query=selection.task(&task);
+            live.update(&query,Channel::Text);
+            assert_eq!(live.rows(),replay_task(&query,Channel::Text));
+        }
+    }
 }
 
 fn bounded_tool(lines: usize, chunk: usize, broken: bool) {
@@ -163,12 +186,38 @@ fn publish(views: &mut crate::client::ClientViews, file: FileValue) {
         .unwrap();
 }
 fn decode_task(
-    decoder: &mut StreamText,
+    decoder: &mut TaskText,
     views: &crate::client::ClientViews,
     task: &Component,
     channel: Channel,
 ) {
     decoder.update(&views.selections().next().unwrap().1.task(task), channel);
+}
+
+// Independent former replay: one decoder, a boundary between heads, no task
+// cache, changed-head query, row patches or cached render state.
+fn replay_task(task: &crate::client::TaskQueryView<'_>, channel: Channel) -> Vec<Line<'static>> {
+    let mut decoder = StreamText::default();
+    let mut turn = None;
+    for text in task.text().filter(|text| text.channel == channel) {
+        if turn.is_some() && turn != Some((text.execution, text.turn)) {
+            decoder.boundary();
+        }
+        turn = Some((text.execution, text.turn));
+        for bytes in &text.file.segments {
+            decoder.push(bytes);
+        }
+    }
+    if turn.is_some_and(|(_, turn)| {
+        task.file(&FileKey::Task {
+            task: task.task.clone(),
+            file: TaskFile::Completion(turn),
+        })
+        .is_some()
+    }) {
+        decoder.boundary();
+    }
+    decoder.rows(0)
 }
 
 async fn journal_chunk(
@@ -283,8 +332,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
     #[test]
     fn interleaved_heads_render_identically_live_and_reopened(
-        text in "[a-z日€🙂]{1,8}", reasoning in any::<bool>(),
-        rest in prop::collection::vec(any::<bool>(), 0..12), batch in 1usize..5,
+        text in prop_oneof!["[a-z日€🙂]{1,8}", Just("```rust\nlet n = 1;\n".to_owned()), Just("[ref]: /a\n\n[ref]\n\n".to_owned())], reasoning in any::<bool>(),
+        rest in prop::collection::vec(any::<bool>(), 0..12), batch in 1usize..5, invisible_first in any::<bool>(),
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             use crate::task_volume::TaskVolume;
@@ -296,28 +345,29 @@ proptest! {
             let mut views=head_views(volume.heads(&Query::Root,None,512).await.unwrap());
             let channel=if reasoning {Channel::Reasoning} else {Channel::Text};
             let schedule:Vec<_>=[false,true,false,false,true].into_iter().chain(rest).collect();
-            let mut live=StreamText::default();
-            let mut broken=StreamText::default();
+            let mut live=TaskText::default();
+            let mut broken=TaskText::default();
             let mut rows=Vec::new();
             for (index, execution) in schedule.iter().enumerate() {
-                let data=journal_chunk(&volume,&provider,task.clone(),(if *execution {1}else{255},0,channel),text.as_bytes(),&index.to_string()).await;
+                let bytes = if index==0 && invisible_first {b"[ref]: /a\n\n".as_slice()} else {text.as_bytes()};
+                let data=journal_chunk(&volume,&provider,task.clone(),(if *execution {1}else{255},0,channel),bytes,&index.to_string()).await;
                 follow_head(&mut views,data);
                 if index==3 || (index>4 && index%batch!=0 && index+1<schedule.len()) {continue;}
                 let selection=views.selections().next().unwrap().1;
                 let query=selection.task(&task);
                 assert!(query.text().all(|text| matches!(text.file.key,FileKey::Task {file:TaskFile::TextHead {..},..})), "fixture must exercise materialized heads");
-                let changed=live.update(&query,channel);
-                rows.truncate(changed);
-                rows.extend(live.rows(changed));
+                let _changed=live.update(&query,channel);
+                live.apply(&mut rows,0);
                 // Restore the former last-head-only resume: pretend every
                 // earlier-head update is already consumed by this reader.
-                broken.cut=query.cursor.position;
+                if index>=2 {broken.cut=query.cursor.position;}
                 broken.update(&query,channel);
                 let reopened=head_views(volume.reopen().await.unwrap().heads(&Query::Root,None,512).await.unwrap());
-                let mut replay=StreamText::default();
+                let mut replay=TaskText::default();
                 decode_task(&mut replay,&reopened,&task,channel);
-                assert_eq!(rows,replay.rows(0),"interleaved prefix {index}");
-                if index==2 {assert_ne!(broken.rows(0),rows,"last-head-only negative control escaped");}
+                assert_eq!(rows,replay.rows(),"interleaved prefix {index}");
+                assert_eq!(rows,replay_task(&query,channel),"independent former replay {index}");
+                if index==2 {assert_ne!(broken.rows(),rows,"last-head-only negative control escaped");}
             }
         });
     }
@@ -327,7 +377,7 @@ fn restarted_execution_and_old_completion_preserve_stream_boundaries() {
     for channel in [Channel::Text, Channel::Reasoning] {
         let task = Component::new("task").unwrap();
         let mut views = crate::test_support::empty_client_views();
-        let mut decoder = StreamText::default();
+        let mut decoder = TaskText::default();
         for (execution, turn, bytes) in [(255, 0, b"old".as_slice()), (1, 1, &[0xe6])] {
             let mut file = FileValue::new(
                 FileKey::Task {
@@ -356,7 +406,8 @@ fn restarted_execution_and_old_completion_preserve_stream_boundaries() {
         );
         decode_task(&mut decoder, &views, &task, channel);
         assert_eq!(
-            decoder.pending_len, 1,
+            decoder.pending_len(),
+            1,
             "older completion froze the current turn"
         );
         assert!(
@@ -385,22 +436,22 @@ proptest! {
             file.channel=Some(channel);
             let cut=volume.append(volume.head().await.unwrap(),&file).await.unwrap();
             client.next_change().await.unwrap();
-            let mut live=StreamText::default();
+            let mut live=TaskText::default();
             decode_task(&mut live,client.views(),&task,channel);
-            assert!(live.pending_len>0);
+            assert!(live.pending_len()>0);
             let complete=FileValue::new(FileKey::Task {task:task.clone(),file:TaskFile::Completion(0)},b"{}".to_vec());
             volume.append(cut,&complete).await.unwrap();
             client.next_change().await.unwrap();
             decode_task(&mut live,client.views(),&task,channel);
             let reopened=TaskFileClient::observe_task(&volume.reopen().await.unwrap(),&owner,task_id,32,4096).await.unwrap();
-            let mut replay=StreamText::default();
+            let mut replay=TaskText::default();
             decode_task(&mut replay,reopened.views(),&task,channel);
-            assert_eq!(live.rows(0),replay.rows(0));
-            assert_eq!(replay.pending_len,0);
+            assert_eq!(live.rows(),replay.rows());
+            assert_eq!(replay.pending_len(),0);
             let mut broken=StreamText::default();
             for segment in &reopened.views().selections().next().unwrap().1.task(&task).text().next().unwrap().file.segments {broken.push(segment);}
             assert!(broken.pending_len>0,"omitted completion negative control escaped");
-            assert_ne!(broken.pending_len,replay.pending_len);
+            assert_ne!(broken.pending_len,replay.pending_len());
         });
     }
 }
@@ -500,7 +551,9 @@ fn changed_head_lookup_has_exact_work_independent_of_unrelated_history() {
                                 crate::test_support::task_volume_item_examined();
                             }
                         }
-                        rewind = query.text_changed_before(&last, since, Channel::Text);
+                        rewind = query.text_updates(since).any(|(_, text)| {
+                            text.channel == Channel::Text && text.file.key != last
+                        });
                     })
                 });
                 differential::record(rewind);
@@ -622,7 +675,7 @@ fn scoped_stream_resume_has_exact_work_and_allocations_with_scan_negative() {
 fn descending_executions_in_one_turn_keep_their_text_boundary() {
     let task = Component::new("task").unwrap();
     let mut views = crate::test_support::empty_client_views();
-    let mut live = StreamText::default();
+    let mut live = TaskText::default();
     let mut combined = StreamText::default();
     for (execution, bytes) in [(255, b"first".as_slice()), (1, b"second".as_slice())] {
         let mut file = FileValue::new(
@@ -641,11 +694,159 @@ fn descending_executions_in_one_turn_keep_their_text_boundary() {
         decode_task(&mut live, &views, &task, Channel::Text);
         combined.push(bytes);
     }
-    let rows: Vec<_> = live.rows(0).iter().map(ToString::to_string).collect();
+    let rows: Vec<_> = live.rows().iter().map(ToString::to_string).collect();
     assert_eq!(rows, ["first", "", "second"]);
     assert_ne!(
         combined.rows(0),
-        live.rows(0),
+        live.rows(),
         "execution-blind decoder escaped"
     );
+}
+
+#[test]
+fn interleaved_whole_renderer_has_exact_work_and_allocations_with_replay_negative() {
+    use crate::tui::render::ClientRenderer;
+    use acyclic_test_support::{differential, measure};
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    for n in [64, 128] {
+        // Both branches create their own provider, journal, query and renderer.
+        let [baseline, candidate] = differential::pair::<_, _, Vec<String>>(
+            || {
+                runtime.block_on(async {
+                    use crate::task_volume::TaskVolume;
+                    use acyclic_stream::{MemoryStream, StreamPath};
+                    let id = crate::TaskId::from_bytes([7; 16]);
+                    let task = Component::new(id.to_string()).unwrap();
+                    let authority = crate::wire::Authority {
+                        kind: crate::wire::AggregateKind::Task as i32,
+                        id: id.to_string(),
+                    };
+                    let provider = Arc::new(MemoryStream::default());
+                    let volume = TaskVolume::open(
+                        provider.clone(),
+                        StreamPath::new("swarm/a/files").unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                    let views = head_views(volume.heads(&Query::Root, None, 512).await.unwrap());
+                    let mut changes = Vec::new();
+                    for index in 0..n {
+                        changes.push(
+                            journal_chunk(
+                                &volume,
+                                &provider,
+                                task.clone(),
+                                (if index % 2 == 0 { 255 } else { 1 }, 0, Channel::Text),
+                                b"words\n\n",
+                                &index.to_string(),
+                            )
+                            .await,
+                        );
+                    }
+                    (views, changes, authority)
+                })
+            },
+            |(mut views, changes, authority), replay| {
+                let mut renderer = ClientRenderer::default();
+                let mut parsed = 0;
+                let mut rendered_rows = 0;
+                let mut items = 0;
+                let mut allocations = 0;
+                let mut bytes = 0;
+                for (index, change) in changes.into_iter().enumerate() {
+                    follow_head(&mut views, change);
+                    let unchanged_tail = (!replay && index >= 2 && index % 2 == 0).then(|| {
+                        renderer.transcript.last().unwrap().spans[0]
+                            .content
+                            .as_ptr()
+                    });
+                    let before = if replay { 0 } else { renderer.text_work() };
+                    let row_before = if replay { 0 } else { renderer.rendered_rows() };
+                    let (allocated, work) = crate::test_support::measure_task_volume_work(|| {
+                        measure(|| {
+                            if replay {
+                                renderer = ClientRenderer::default();
+                            }
+                            renderer.update(&views, &authority);
+                        })
+                    });
+                    parsed += renderer.text_work() - before;
+                    rendered_rows += renderer.rendered_rows() - row_before;
+                    items += work;
+                    allocations += allocated.count_total;
+                    bytes += allocated.bytes_total;
+                    if let Some(pointer) = unchanged_tail {
+                        assert_eq!(
+                            renderer.transcript.last().unwrap().spans[0]
+                                .content
+                                .as_ptr(),
+                            pointer,
+                            "an A update copied B's unchanged row through the renderer"
+                        );
+                    }
+                    if replay {
+                        let selection = views.selections().next().unwrap().1;
+                        let task = Component::new(authority.id.clone()).unwrap();
+                        assert_eq!(
+                            renderer.transcript,
+                            replay_task(&selection.task(&task), Channel::Text)
+                        );
+                    }
+                    differential::record(
+                        renderer
+                            .transcript
+                            .iter()
+                            .map(|line| format!("{line:?}"))
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                (parsed, rendered_rows, items, allocations, bytes)
+            },
+        );
+        assert_eq!(
+            baseline.1, candidate.1,
+            "full styled output and per-publication observer trace"
+        );
+        eprintln!(
+            "whole-render n={n}: candidate={:?}, replay={:?}",
+            candidate.0, baseline.0
+        );
+        let expected = match n {
+            64 => (448, 127, 1808, 1970, 2_295_056),
+            128 => (896, 255, 3632, 3901, 4_569_440),
+            _ => unreachable!("paired fixture sizes"),
+        };
+        assert_eq!(
+            candidate.0, expected,
+            "whole-render work and physical allocations"
+        );
+        // The identical exact oracle must reject replay for examined work,
+        // allocation count AND allocated bytes, independently of parser counts.
+        for (actual, expected) in [
+            (baseline.0.2, expected.2),
+            (baseline.0.3, expected.3),
+            (baseline.0.4, expected.4),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_eq!(actual, expected)).is_err(),
+                "full-replay work/allocation negative control escaped"
+            );
+        }
+        assert_eq!(
+            candidate.0.0,
+            7 * n,
+            "each authenticated byte reaches its decoder once"
+        );
+        assert_eq!(
+            baseline.0.0,
+            7 * n * (n + 1) / 2,
+            "full-replay negative control"
+        );
+        assert_eq!(candidate.0.1, 2 * n - 1, "only changed rows are projected");
+        assert_eq!(baseline.0.1, n * n, "full replay projects unchanged rows");
+        assert_ne!(baseline.0, candidate.0, "full-replay negative escaped");
+    }
 }

@@ -12,6 +12,7 @@ mod archive;
 mod selection;
 mod stream_text;
 mod task;
+mod task_text;
 mod tool;
 use stream_text::StreamText;
 
@@ -65,6 +66,11 @@ impl ClientRenderer {
     pub(crate) fn text_work(&self) -> usize {
         self.task.work() + self.archive.work()
     }
+    #[cfg(test)]
+    fn rendered_rows(&self) -> usize {
+        self.task.rendered_rows()
+    }
+
     /// Reuse the accepted file projection across input, scroll and timer frames.
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub fn update_files(
@@ -144,15 +150,12 @@ impl ClientRenderer {
             archive_changed
         } else {
             let changed = prefix + task_changed;
-            self.transcript.truncate(changed);
-            self.transcript
-                .extend_from_slice(&self.task.rows()[task_changed..]);
+            self.task.apply(&mut self.transcript, prefix, task_changed);
             changed
         };
         self.transcript_changed = self.transcript_changed.min(changed);
-        let (changed, rows) = self.task.reasoning();
-        self.reasoning_rows.truncate(changed);
-        self.reasoning_rows.extend_from_slice(&rows[changed..]);
+        let (changed, _) = self.task.reasoning();
+        self.task.apply_reasoning(&mut self.reasoning_rows);
         self.reasoning_changed = self.reasoning_changed.min(changed);
         self.documents(views);
         self.busy = self.task.busy();
@@ -483,10 +486,14 @@ impl ClientRenderer {
 }
 
 fn line(line: &acyclic_markdown::Line) -> Line<'static> {
+    #[cfg(feature = "test-support")]
+    crate::test_support::task_volume_item_examined();
     Line::from(
         line.spans
             .iter()
             .map(|span| {
+                #[cfg(feature = "test-support")]
+                crate::test_support::task_volume_item_examined();
                 let mut style = Style::default();
                 if let Some(acyclic_markdown::Color(r, g, b)) = span.style.foreground {
                     style = style.fg(Color::Rgb(r, g, b));

@@ -1,4 +1,4 @@
-use super::{Line, StreamText, archive::Archive, tool};
+use super::{Line, StreamText, archive::Archive, task_text::TaskText, tool};
 use crate::{
     client::TaskQueryView,
     task_volume::{Channel, Component, FileKey, HeadFile, Query, TaskFile},
@@ -19,10 +19,10 @@ struct ToolRows {
 #[derive(Default)]
 pub(super) struct TaskRows {
     identity: Option<(Arc<Query>, Component)>,
-    stream: StreamText,
-    reasoning: StreamText,
-    text: Vec<Line<'static>>,
-    reasoning_rows: Vec<Line<'static>>,
+    stream: TaskText,
+    reasoning: TaskText,
+    patched: bool,
+    reasoning_reset: bool,
     reasoning_changed: usize,
     tools: BTreeMap<(u64, Component), ToolRows>,
     fallback: Archive,
@@ -48,6 +48,22 @@ impl TaskRows {
     pub(super) fn rows(&self) -> &[Line<'static>] {
         &self.rows
     }
+    pub(super) fn apply(&self, rows: &mut Vec<Line<'static>>, offset: usize, changed: usize) {
+        if self.patched {
+            self.stream.apply(rows, offset);
+        } else {
+            rows.truncate(offset + changed);
+            rows.extend_from_slice(&self.rows[changed..]);
+        }
+    }
+    pub(super) fn apply_reasoning(&self, rows: &mut Vec<Line<'static>>) {
+        if self.reasoning_reset || self.reasoning.rows().is_empty() {
+            rows.clear();
+            rows.extend_from_slice(self.reasoning.rows());
+        } else {
+            self.reasoning.apply(rows, 0);
+        }
+    }
     pub(super) fn tools(&self) -> &[Line<'static>] {
         &self.tool_rows
     }
@@ -58,8 +74,8 @@ impl TaskRows {
     pub(super) fn tool_copies(&self) -> usize {
         self.tool_copies
     }
-    pub(super) fn reasoning(&self) -> (usize, &Vec<Line<'static>>) {
-        (self.reasoning_changed, &self.reasoning_rows)
+    pub(super) fn reasoning(&self) -> (usize, &[Line<'static>]) {
+        (self.reasoning_changed, self.reasoning.rows())
     }
     pub(super) fn busy(&self) -> bool {
         self.state["state"] == "active" || self.state["state"] == "running"
@@ -84,6 +100,10 @@ impl TaskRows {
     pub(super) fn work(&self) -> usize {
         self.stream.work + self.reasoning.work + self.fallback.work()
     }
+    #[cfg(test)]
+    pub(super) fn rendered_rows(&self) -> usize {
+        self.stream.row_work + self.reasoning.row_work
+    }
     pub(super) fn update(
         &mut self,
         task: Option<TaskQueryView<'_>>,
@@ -100,32 +120,29 @@ impl TaskRows {
             return changed;
         };
         let mut changed = self.rows.len();
-        if !self
+        let identity_changed = !self
             .identity
             .as_ref()
-            .is_some_and(|(source, owner)| Arc::ptr_eq(source, task.source) && owner == task.task)
-        {
+            .is_some_and(|(source, owner)| Arc::ptr_eq(source, task.source) && owner == task.task);
+        if identity_changed {
             *self = Self {
                 identity: Some((task.source.clone(), task.task.clone())),
                 ..Self::default()
             };
             changed = 0;
         }
-        if self.hidden != hidden {
+        self.reasoning_reset = identity_changed;
+        let visibility_changed = self.hidden != hidden;
+        if visibility_changed {
             self.hidden = hidden;
             changed = 0;
         }
         let details_changed = self.details != details;
         self.details = details;
+        let previously_streamed = !self.stream.rows().is_empty();
         let text_changed = self.stream.update(&task, Channel::Text);
-        self.text.truncate(text_changed);
-        self.text.extend(self.stream.rows(text_changed));
         changed = changed.min(text_changed);
-        let reasoning_changed = self.reasoning.update(&task, Channel::Reasoning);
-        self.reasoning_changed = reasoning_changed;
-        self.reasoning_rows.truncate(reasoning_changed);
-        self.reasoning_rows
-            .extend(self.reasoning.rows(reasoning_changed));
+        self.reasoning_changed = self.reasoning.update(&task, Channel::Reasoning);
         let status = task.files().find(|file| {
             matches!(
                 file.key,
@@ -217,7 +234,7 @@ impl TaskRows {
             changed = changed.min(fallback);
         }
         let text = if streamed {
-            &self.text
+            self.stream.rows()
         } else {
             self.fallback.rows()
         };
@@ -232,14 +249,24 @@ impl TaskRows {
                 self.tool_rows.extend_from_slice(&tool.rows);
             }
         }
+        self.patched = !identity_changed
+            && !hidden
+            && !visibility_changed
+            && previously_streamed
+            && streamed
+            && changed == text_changed;
         if hidden {
             self.rows.clear();
             return 0;
         }
         // Answer changes never touch the independently cached tool tail.
         changed = changed.min(text.len());
-        self.rows.truncate(changed);
-        self.rows.extend_from_slice(&text[changed..]);
+        if self.patched {
+            self.stream.apply(&mut self.rows, 0);
+        } else {
+            self.rows.truncate(changed);
+            self.rows.extend_from_slice(&text[changed..]);
+        }
         changed
     }
 }

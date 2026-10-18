@@ -74,9 +74,13 @@ impl ClientViews {
 }
 impl<'a> TaskQueryView<'a> {
     #[cfg(feature = "tui")]
-    pub(crate) fn text_changed_before(&self, from: &FileKey, since: u64, channel: Channel) -> bool {
+    pub(crate) fn text_updates(
+        &self,
+        since: u64,
+    ) -> impl Iterator<Item = ((u64, usize), TaskTextView<'a>)> + use<'a> {
         self.selection
-            .text_changed_before(self.task, from, since, channel)
+            .text_updates(self.task, since)
+            .filter_map(|(position, file)| Some((position, TaskTextView::from_file(file)?)))
     }
     #[cfg(feature = "tui")]
     pub(crate) fn selection(&self) -> &'a FileQueryView {
@@ -84,73 +88,41 @@ impl<'a> TaskQueryView<'a> {
     }
     #[cfg(feature = "tui")]
     pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
+        #[cfg(feature = "test-support")]
+        crate::test_support::task_volume_item_examined();
         match key {
             FileKey::Task { task, .. } if task == self.task => self.files.get(key),
             _ => None,
         }
     }
-    #[cfg(feature = "tui")]
+    #[cfg(all(test, feature = "tui"))]
     pub(crate) fn text_from(
         &self,
         from: Option<&FileKey>,
     ) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
         self.selection
             .text_files(self.task, from)
-            .filter_map(|file| {
-                let FileKey::Task { file: kind, .. } = &file.key else {
-                    return None;
-                };
-                let (execution, turn, channel) = match kind {
-                    TaskFile::TextHead {
-                        execution,
-                        turn,
-                        channel,
-                    } => (*execution, *turn, *channel),
-                    TaskFile::Chunk {
-                        execution, turn, ..
-                    } => (*execution, *turn, file.channel?),
-                    _ => return None,
-                };
-                Some(TaskTextView {
-                    execution,
-                    turn,
-                    channel,
-                    file,
-                })
-            })
+            .filter_map(TaskTextView::from_file)
     }
+
     /// Exact task files in numeric identity order, retaining canonical metadata.
     pub fn files(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
-        self.selected.clone().map(|(_, file)| file)
+        self.selected
+            .clone()
+            .inspect(|_| {
+                #[cfg(feature = "test-support")]
+                crate::test_support::task_volume_item_examined();
+            })
+            .map(|(_, file)| file)
     }
     /// Selected text/reasoning heads, or raw chunks from an ordinary query.
     /// A raw chunk's identity remains in `file.key`; heads include through_sequence.
     pub fn text(&self) -> impl Iterator<Item = TaskTextView<'a>> + use<'a> {
         self.selection
             .text_files(self.task, None)
-            .filter_map(|file| {
-                let FileKey::Task { file: kind, .. } = &file.key else {
-                    unreachable!()
-                };
-                let (execution, turn, channel) = match kind {
-                    TaskFile::TextHead {
-                        execution,
-                        turn,
-                        channel,
-                    } => (*execution, *turn, *channel),
-                    TaskFile::Chunk {
-                        execution, turn, ..
-                    } => (*execution, *turn, file.channel?),
-                    _ => return None,
-                };
-                Some(TaskTextView {
-                    execution,
-                    turn,
-                    channel,
-                    file,
-                })
-            })
+            .filter_map(TaskTextView::from_file)
     }
+
     /// Unique tool folders, including a retained output tail without its request.
     pub fn tools(&self) -> impl Iterator<Item = ToolQueryView<'a>> + use<'a> {
         let task = self.clone();
@@ -194,6 +166,8 @@ impl<'a> ToolQueryView<'a> {
     }
     #[cfg(feature = "tui")]
     pub(crate) fn file(&self, key: &FileKey) -> Option<&'a HeadFile> {
+        #[cfg(feature = "test-support")]
+        crate::test_support::task_volume_item_examined();
         self.task.file(key).filter(|file| matches!(&file.key,
             FileKey::Task { file: TaskFile::Tool { turn, call, .. }, .. } if *turn == self.turn && call == self.call))
     }
@@ -254,5 +228,30 @@ impl<'a> ToolQueryView<'a> {
     /// Standard error deltas, with an independent numeric sequence.
     pub fn stderr(&self) -> impl Iterator<Item = &'a HeadFile> + use<'a> {
         self.range(ToolFile::Stderr(0), ToolFile::Stderr(u64::MAX))
+    }
+}
+
+impl<'a> TaskTextView<'a> {
+    fn from_file(file: &'a HeadFile) -> Option<Self> {
+        let FileKey::Task { file: kind, .. } = &file.key else {
+            return None;
+        };
+        let (execution, turn, channel) = match kind {
+            TaskFile::TextHead {
+                execution,
+                turn,
+                channel,
+            } => (*execution, *turn, *channel),
+            TaskFile::Chunk {
+                execution, turn, ..
+            } => (*execution, *turn, file.channel?),
+            _ => return None,
+        };
+        Some(Self {
+            execution,
+            turn,
+            channel,
+            file,
+        })
     }
 }

@@ -271,14 +271,12 @@ impl FileQueryView {
     }
 
     #[cfg(feature = "tui")]
-    pub(super) fn text_changed_before(
-        &self,
+    pub(super) fn text_updates<'a>(
+        &'a self,
         task: &Component,
-        from: &FileKey,
         since: u64,
-        channel: crate::task_volume::Channel,
-    ) -> bool {
-        self.storage.text_changed_before(task, from, since, channel)
+    ) -> impl Iterator<Item = ((u64, usize), &'a crate::task_volume::HeadFile)> + use<'a> {
+        self.storage.text_updates(task, since)
     }
 
     /// Borrows model identities; rendering never reparses request bytes.

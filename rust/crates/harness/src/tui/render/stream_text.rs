@@ -1,7 +1,7 @@
 use super::{Line, line};
 use crate::{
-    client::{TaskQueryView, ToolQueryView},
-    task_volume::{Channel, FileKey, Query},
+    client::ToolQueryView,
+    task_volume::{FileKey, Query},
 };
 use acyclic_markdown::Markdown;
 use std::sync::Arc;
@@ -12,16 +12,14 @@ pub(super) struct StreamText {
     markdown: Markdown,
     stable: Vec<Line<'static>>,
     pending: [u8; 4],
-    pending_len: usize,
-    provisional_row: Option<usize>,
+    pub(super) pending_len: usize,
+    pub(super) provisional_row: Option<usize>,
     newline: bool,
     source: Option<Arc<Query>>,
     first: Option<FileKey>,
-    prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
-    last: Option<FileKey>,
-    segments: usize,
-    cut: u64,
-    turn: Option<(crate::OperationId, u64)>,
+    pub(super) prefix: Option<(FileKey, usize, acyclic_stream::OwnedBytes)>,
+    pub(super) last: Option<FileKey>,
+    pub(super) segments: usize,
     tool_limit: usize,
     tool_lines: usize,
     tool_partial: bool,
@@ -94,73 +92,6 @@ impl StreamText {
         if self.pending_len != 0 && !self.newline {
             changed = changed.min(self.len().saturating_sub(1));
         }
-        changed
-    }
-    pub(super) fn update(&mut self, task: &TaskQueryView<'_>, channel: Channel) -> usize {
-        if !self
-            .source
-            .as_ref()
-            .is_some_and(|source| Arc::ptr_eq(source, task.source))
-            || self
-                .last
-                .as_ref()
-                .is_some_and(|last| task.text_changed_before(last, self.cut, channel))
-            || self
-                .first
-                .as_ref()
-                .is_some_and(|key| task.file(key).is_none())
-            || self.prefix.as_ref().is_some_and(|(key, index, bytes)| {
-                task.file(key)
-                    .and_then(|file| file.segments.get(*index))
-                    .is_none_or(|current| {
-                        current.as_ptr() != bytes.as_ptr() || current.len() != bytes.len()
-                    })
-            })
-        {
-            *self = Self {
-                source: Some(task.source.clone()),
-                ..Self::default()
-            };
-        }
-        let mut changed = self.provisional_row.take().unwrap_or_else(|| self.len());
-        let from = self.last.clone();
-        for text in task
-            .text_from(from.as_ref())
-            .filter(|text| text.channel == channel)
-        {
-            let start = if self.last.as_ref() == Some(&text.file.key) {
-                self.segments
-            } else {
-                0
-            };
-            if start > text.file.segments.len() {
-                *self = Self::default();
-                return self.update(task, channel);
-            }
-            if self.turn != Some((text.execution, text.turn)) && self.first.is_some() {
-                changed = changed.min(self.boundary());
-            }
-            self.turn = Some((text.execution, text.turn));
-            for (index, segment) in text.file.segments.iter().enumerate().skip(start) {
-                if self.prefix.is_none() && !segment.is_empty() {
-                    self.prefix = Some((text.file.key.clone(), index, segment.clone()));
-                }
-                changed = changed.min(self.push(segment));
-            }
-            self.first.get_or_insert_with(|| text.file.key.clone());
-            self.last = Some(text.file.key.clone());
-            self.segments = text.file.segments.len();
-        }
-        if self.turn.is_some_and(|(_, turn)| {
-            task.file(&FileKey::Task {
-                task: task.task.clone(),
-                file: crate::task_volume::TaskFile::Completion(turn),
-            })
-            .is_some()
-        }) {
-            changed = changed.min(self.boundary());
-        }
-        self.cut = task.cursor.position;
         changed
     }
     pub(super) fn tool_lines(&self) -> usize {

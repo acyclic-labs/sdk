@@ -242,29 +242,23 @@ impl FileViews {
     }
     // Each retained head has one latest update. The range visits only heads
     // changed since this reader's cut, even when the reader skips publications.
-    pub(super) fn text_changed_before(
-        &self,
+    #[cfg(feature = "tui")]
+    pub(super) fn text_updates<'a>(
+        &'a self,
         task: &Component,
-        from: &FileKey,
         since: u64,
-        channel: Channel,
-    ) -> bool {
-        #[cfg(feature = "test-support")]
-        crate::test_support::task_volume_item_examined();
-        let Some(from) = self.stream_positions.get(from) else {
-            return true;
-        };
+    ) -> impl Iterator<Item = ((u64, usize), &'a HeadFile)> + use<'a> {
         use std::ops::Bound::{Excluded, Included};
-        let earliest = self.task_updates.range((
-            Excluded((task.clone(), since, usize::MAX)),
-            Included((task.clone(), u64::MAX, usize::MAX)),
-        )).inspect(|_| {
-            #[cfg(feature = "test-support")]
-            crate::test_support::task_volume_item_examined();
-        }).filter(|(_, (key, _))| !matches!(key,
-            FileKey::Task { file: TaskFile::TextHead { channel: found, .. }, .. } if *found != channel
-        )).map(|(_, (_, position))| position).min();
-        earliest.is_some_and(|position| position < from)
+        self.task_updates
+            .range((
+                Excluded((task.clone(), since, usize::MAX)),
+                Included((task.clone(), u64::MAX, usize::MAX)),
+            ))
+            .filter_map(|(_, (key, position))| {
+                #[cfg(feature = "test-support")]
+                crate::test_support::task_volume_item_examined();
+                Some((*position, self.files.get(key)?))
+            })
     }
     pub(super) fn text_files<'a>(
         &'a self,
