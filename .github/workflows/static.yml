@@ -11,8 +11,8 @@ concurrency:
   group: static-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  static:
-    name: SDK Static
+  static-checks:
+    name: SDK Static checks
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     env:
@@ -36,6 +36,37 @@ jobs:
         run: node --test scripts/local-cloud.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
+  static:
+    name: SDK Static
+    if: always()
+    needs: [static-checks, json-accounting]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require static checks and JSON accounting
+        env:
+          STATIC_RESULT: ${{ needs.static-checks.result }}
+          JSON_RESULT: ${{ needs.json-accounting.result }}
+        run: |
+          test "$STATIC_RESULT" = success
+          test "$JSON_RESULT" = success
+  json-accounting:
+    # Run on every PR: callers outside the codec also rely on these exact
+    # charges to fit their original native work budgets.
+    name: Harness JSON accounting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust-toolchain
+      - name: Verify exact charges, mutation controls and original-budget regressions
+        run: >-
+          cargo test --locked -p acyclic-harness -p acyclic-harness-providers
+          --features acyclic-harness/filesystem --lib --
+          executor::json task_runtime::tests runtime::tests::native
+          codex_dispatch_tests::stock
   aarch64:
     # Integer widths in libc differ by architecture (for example nlink_t is u32 on
     # aarch64 Linux and u64 on x86_64). Type-check the native host crates on an arm

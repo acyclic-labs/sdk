@@ -6,6 +6,22 @@ mod digest_properties {
     use super::*;
     use proptest::prelude::*;
 
+    // Count from the value tree, independently of the byte lexer: containers,
+    // object keys and scalar values each contribute exactly one item.
+    fn items(value: &Value) -> (u64, bool) {
+        match value {
+            Value::Array(values) => values.iter().fold((1, true), |(count, arrays), value| {
+                let (child, nested) = items(value);
+                (count + child, arrays || nested)
+            }),
+            Value::Object(fields) => fields.values().fold((1, false), |(count, arrays), value| {
+                let (child, nested) = items(value);
+                (count + 1 + child, arrays || nested)
+            }),
+            _ => (1, false),
+        }
+    }
+
     fn values() -> impl Strategy<Value = Value> {
         prop_oneof![
             Just(Value::Null),
@@ -125,6 +141,8 @@ mod digest_properties {
             });
             prop_assert_eq!(digest.unwrap(), *blake3::hash(&expected).as_bytes());
             prop_assert_eq!(work.receipt().bytes_hashed, expected.len() as u64);
+            let (items, arrays) = items(&value);
+            prop_assert_eq!(work.receipt().items_examined, items * if arrays { 2 } else { 1 });
             prop_assert_eq!(measured.bytes_current, 0);
             prop_assert!(measured.bytes_max as u64 <= work.receipt().peak_allocation_bytes);
             prop_assert_eq!(native.live_allocation_bytes(), baseline);

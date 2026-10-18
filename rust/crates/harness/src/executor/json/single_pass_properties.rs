@@ -23,6 +23,7 @@ enum Fault {
     Corrupt,
     OmitCharge,
     OmitScanCharge,
+    ByteScanCharge,
 }
 fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     let calls = Cell::new(0);
@@ -43,7 +44,14 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
                 encoded += bytes
             }
             JsonCodecCharge::Inspect { items } if !matches!(fault, Fault::OmitScanCharge) => {
-                inspected += items
+                // At this boundary only the original serialization has run,
+                // so `encoded` is its document byte length. Restore the old
+                // byte-based funding at the real scan charge boundary.
+                inspected += if matches!(fault, Fault::ByteScanCharge) {
+                    encoded
+                } else {
+                    items
+                }
             }
             _ => {}
         }
@@ -151,6 +159,7 @@ fn single_pass_negative_controls() {
         let mut faults = vec![Fault::Repeat, Fault::Corrupt, Fault::OmitCharge];
         if canonical {
             faults.push(Fault::OmitScanCharge);
+            faults.push(Fault::ByteScanCharge);
         }
         for fault in faults {
             let error = check(&value, canonical, fault).unwrap_err();
