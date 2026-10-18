@@ -172,9 +172,18 @@ pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
             cause,
         }) => (
             wire::CompletionState::Indeterminate,
-            Some(crate::wire_codec::encode_error(
-                &cause.clone().into_error(*operation_id),
-            )),
+            Some(wire::Error {
+                code: wire::ErrorCode::Indeterminate as i32,
+                message: crate::contract::indeterminate_display(
+                    *operation_id,
+                    match cause {
+                        crate::IndeterminateCause::Unobserved => None,
+                        crate::IndeterminateCause::Command(cause) => Some(cause),
+                    },
+                )
+                .to_string(),
+                operation_id: operation_id.to_string(),
+            }),
         ),
         None if state.phase == OperationPhase::Terminal => (
             wire::CompletionState::Indeterminate,

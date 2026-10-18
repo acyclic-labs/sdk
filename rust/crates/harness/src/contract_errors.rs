@@ -76,10 +76,10 @@ pub enum Error {
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
     /// Durable admission may have committed and must be reconciled.
-    #[error("operation outcome is indeterminate: {0}")]
+    #[error("{}", indeterminate_display(*.0, None))]
     Indeterminate(OperationId),
     /// A task command left its task's completion uncertain, keeping its cause.
-    #[error("operation outcome is indeterminate: {operation_id}: {cause}")]
+    #[error("{}", indeterminate_display(*operation_id, Some(cause)))]
     CommandIndeterminate {
         /// Operation whose completion must be reconciled.
         operation_id: OperationId,
@@ -506,6 +506,24 @@ impl Error {
                 | Self::GoalBlocked(_)
         )
     }
+}
+
+// Share formatting with wire status without cloning the retained diagnostic.
+pub(crate) fn indeterminate_display(
+    operation: OperationId,
+    cause: Option<&crate::CommandIndeterminacy>,
+) -> impl std::fmt::Display + '_ {
+    struct Diagnostic<'a>(OperationId, Option<&'a crate::CommandIndeterminacy>);
+    impl std::fmt::Display for Diagnostic<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "operation outcome is indeterminate: {}", self.0)?;
+            if let Some(cause) = self.1 {
+                write!(f, ": {cause}")?;
+            }
+            Ok(())
+        }
+    }
+    Diagnostic(operation, cause)
 }
 
 /// The only conversion of a fired cancellation token into a harness error.

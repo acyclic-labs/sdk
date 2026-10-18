@@ -1,5 +1,11 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    // One-shot production mutation, confined to the current-thread test runtime.
+    pub(super) static ERASE_CAUSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
     P: StreamProvider + 'static,
@@ -211,6 +217,15 @@ fn command_indeterminate(
             crate::executor::preparation_format(format_args!("{}", command.kind), work)
         })?,
         reason,
+    };
+    #[cfg(test)]
+    let cause = if ERASE_CAUSE.with(|erase| erase.replace(false)) {
+        crate::CommandIndeterminacy {
+            command: String::new(),
+            reason: crate::CommandIndeterminacyReason::Unsettled,
+        }
+    } else {
+        cause
     };
     tracing::warn!(
         %task,

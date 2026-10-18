@@ -1,5 +1,43 @@
 use super::*;
 
+#[tokio::test]
+async fn indeterminate_live_join_keeps_command_causes() -> Result<()> {
+    for reason in [
+        crate::CommandIndeterminacyReason::Failed {
+            code: "ERROR_CODE_INVALID".into(),
+            error: "invalid model result".into(),
+        },
+        crate::CommandIndeterminacyReason::Unsettled,
+        crate::CommandIndeterminacyReason::InputLimit,
+    ] {
+        let cause = crate::IndeterminateCause::Command(crate::CommandIndeterminacy {
+            command: "acyclic.model.v1".into(),
+            reason,
+        });
+        let expected = cause.clone();
+        let definition = TaskDefinition::live("test.uncertain", "1", move |context, (): ()| {
+            let cause = cause.clone();
+            async move { Err::<(), _>(cause.into_error(context.task_id)) }
+        })?;
+        let mut bindings = Bindings::local();
+        bindings.tasks.register(definition)?;
+        let runtime = bindings.build(None)?;
+        let definition = runtime.task::<(), ()>("test.uncertain@1")?;
+        let operation_id = OperationId::new();
+        let task = runtime
+            .spawn_local_with_operation(operation_id, &definition, ())
+            .await?;
+        assert_eq!(
+            task.result().await?,
+            Outcome::Indeterminate {
+                operation_id,
+                cause: expected
+            }
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn task_requirements_reject_missing_versions_and_cycles() -> Result<()> {
     assert!(

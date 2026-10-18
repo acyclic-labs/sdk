@@ -1,13 +1,25 @@
 use super::*;
 
 // A failing command's kind and source error reach the task's outcome, the
-// caller's error and the logs. Negative control: a command that reports
-// indeterminate progress itself records no failure, so the cause names it
-// without any source error text.
+// caller's error and the logs, including after reopening the durable host.
 #[tokio::test]
 async fn indeterminate_command_keeps_its_cause() -> Result<()> {
+    command_cause_path().await
+}
+
+#[tokio::test]
+async fn indeterminate_command_negative_control_detects_erased_production_cause() {
+    super::super::dispatch::ERASE_CAUSE.with(|erase| erase.set(true));
+    let result = command_cause_path().await;
+    super::super::dispatch::ERASE_CAUSE.with(|erase| assert!(!erase.replace(false)));
+    assert!(
+        matches!(result, Err(Error::Conflict(message)) if message == "indeterminate command cause was erased")
+    );
+}
+
+async fn command_cause_path() -> Result<()> {
     struct UncertainCommand {
-        fail: bool,
+        mode: u8,
         kind: std::sync::Mutex<Option<String>>,
     }
     impl TaskCommandHost for UncertainCommand {
@@ -20,33 +32,41 @@ async fn indeterminate_command_keeps_its_cause() -> Result<()> {
         ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
             *self.kind.lock().unwrap() = Some(command.kind);
             Box::pin(async move {
-                if self.fail {
-                    Err(Error::Unsupported("original command cause".into()))
-                } else {
-                    Ok(TaskCommandProgress::Indeterminate)
+                match self.mode {
+                    0 => Err(Error::Unsupported("original command cause".into())),
+                    1 => Ok(TaskCommandProgress::Indeterminate),
+                    _ => Ok(TaskCommandProgress::Ready(Value::String("x".repeat(8192)))),
                 }
             })
         }
     }
-    for fail in [true, false] {
+    for mode in 0..3 {
+        let fail = mode == 0;
         let (seen, _capture) = crate::obs::capture::install();
-        let fixture = Fixture::new().await?;
+        let mut fixture = Fixture::new().await?;
+        fixture.scope = RuntimeScope::new(
+            fixture.scope.grants().clone(),
+            Limits {
+                file_bytes: 8192,
+                ..Limits::default()
+            },
+        )?;
         let runtime = fixture.runtime(None).await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
         let command = UncertainCommand {
-            fail,
+            mode,
             kind: std::sync::Mutex::new(None),
         };
         runtime.run_task(lease, &command, 2).await?;
         let kind = command.kind.lock().unwrap().clone().expect("command ran");
-        let reason = if fail {
-            crate::CommandIndeterminacyReason::Failed {
+        let reason = match mode {
+            0 => crate::CommandIndeterminacyReason::Failed {
                 code: "ERROR_CODE_UNSUPPORTED".into(),
                 error: "unsupported capability: original command cause".into(),
-            }
-        } else {
-            crate::CommandIndeterminacyReason::Unsettled
+            },
+            1 => crate::CommandIndeterminacyReason::Unsettled,
+            _ => crate::CommandIndeterminacyReason::InputLimit,
         };
         let expected = crate::CommandIndeterminacy {
             command: kind,
@@ -59,7 +79,39 @@ async fn indeterminate_command_keeps_its_cause() -> Result<()> {
         else {
             panic!("command left no indeterminate outcome");
         };
-        assert_eq!(cause, crate::IndeterminateCause::Command(expected.clone()));
+        if cause != crate::IndeterminateCause::Command(expected.clone()) {
+            return Err(Error::Conflict(
+                "indeterminate command cause was erased".into(),
+            ));
+        }
+        let reopened = fixture.runtime(None).await?;
+        let durable = crate::runtime::RuntimeTask::<Value>::Durable {
+            task_id: task,
+            host: reopened.task_host().clone(),
+            output_schema: Value::Bool(true),
+            extensions: None,
+        };
+        assert_eq!(
+            durable.result().await?,
+            Outcome::Indeterminate {
+                operation_id,
+                cause: cause.clone()
+            },
+        );
+        assert_eq!(
+            reopened.task_host().terminal_status(task).await?,
+            Some(Outcome::Indeterminate {
+                operation_id,
+                cause: cause.clone()
+            }),
+        );
+        let state = fixture.scheduler_state(task).await?;
+        assert_eq!(
+            crate::wire_api::operation_status(&state).error,
+            Some(crate::wire_codec::encode_error(
+                &cause.clone().into_error(operation_id)
+            )),
+        );
         let error = cause.into_error(operation_id);
         assert_eq!(error.code(), crate::wire::ErrorCode::Indeterminate);
         assert!(error.to_string().contains(&expected.to_string()));

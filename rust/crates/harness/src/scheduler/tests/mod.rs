@@ -5,6 +5,8 @@ use crate::{
     resources::ProviderRef,
 };
 #[cfg(not(target_arch = "wasm32"))]
+mod indeterminate;
+#[cfg(not(target_arch = "wasm32"))]
 mod lease_history;
 mod lifecycle;
 mod model_ordering;

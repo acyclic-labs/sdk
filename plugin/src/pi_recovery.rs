@@ -385,9 +385,13 @@ where
                             }
                             Outcome::Failed { message } => Outcome::Failed { message },
                             Outcome::Cancelled => Outcome::Cancelled,
-                            Outcome::Indeterminate { operation_id } => {
-                                Outcome::Indeterminate { operation_id }
-                            }
+                            Outcome::Indeterminate {
+                                operation_id,
+                                cause,
+                            } => Outcome::Indeterminate {
+                                operation_id,
+                                cause,
+                            },
                         },
                     },
                     None => PiTaskObservation::Pending { task_id },
