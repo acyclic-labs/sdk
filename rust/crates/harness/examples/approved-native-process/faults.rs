@@ -173,48 +173,44 @@ impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
     }
 }
 
-pub(super) async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for (kind, lost_reply) in [
+type Scenario =
+    futures::future::LocalBoxFuture<'static, std::result::Result<(), Box<dyn std::error::Error>>>;
+
+/// Fault scenarios own their streams, filesystems and directories, so the
+/// caller may drive them concurrently.
+pub(super) fn scenarios() -> impl Iterator<Item = Scenario> {
+    use futures::FutureExt as _;
+    let receipts = [
         ("launch", false),
         ("launch", true),
         ("observed", false),
         ("observed", true),
-    ] {
-        let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
-        *stream.fault.lock().await = Some((kind, lost_reply));
+    ]
+    .map(|(kind, lost_reply)| receipt_fault(kind, lost_reply).boxed_local());
+    let lost_response = async {
         super::run_on(
             Some("tools/call"),
-            stream.clone(),
-            Some((kind, lost_reply)),
-            false,
+            Arc::new(MemoryStream::default()),
+            None,
+            true,
         )
         .await?;
-        if stream.fault.lock().await.is_some() {
-            return Err("native receipt fault was not exercised".into());
-        }
-        println!("MCP {kind} receipt fault (lost acknowledgement: {lost_reply}) passed");
+        println!(
+            "MCP applied call with lost response, bounded cleanup and receipt-only recovery passed"
+        );
+        Ok::<_, Box<dyn std::error::Error>>(())
     }
-    super::run_on(
-        Some("tools/call"),
-        Arc::new(MemoryStream::default()),
-        None,
-        true,
-    )
-    .await?;
-    println!(
-        "MCP applied call with lost response, bounded cleanup and receipt-only recovery passed"
-    );
-    #[cfg(feature = "filesystem-local")]
-    {
-        disk_restart().await?;
-        host_death().await?;
-    }
-    Ok(())
+    .boxed_local();
+    receipts
+        .into_iter()
+        .chain([lost_response])
+        .chain(restarts())
 }
 
 #[cfg(feature = "filesystem-local")]
-async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    for (method, receipt_fault, lost_response) in [
+fn restarts() -> impl Iterator<Item = Scenario> {
+    use futures::FutureExt as _;
+    [
         ("tools/call", None, false),
         ("tools/call", Some(("launch", false)), false),
         ("tools/call", Some(("launch", true)), false),
@@ -223,62 +219,94 @@ async fn disk_restart() -> std::result::Result<(), Box<dyn std::error::Error>> {
         ("tools/call", None, true),
         ("tools/list", None, false),
         ("tools/list", None, true),
-    ] {
-        let storage = tempfile::tempdir()?;
-        let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
-            storage.path().join("filesystem"),
-        ))
-        .await?;
-        let local = acyclic_stream::LocalStream::open(
-            storage.path().join("coordinator"),
-            Default::default(),
-        )
-        .await?;
-        let stream = Arc::new(ReceiptFaultStream {
-            inner: local,
-            fault: Mutex::new(receipt_fault),
-            hide_next_inspection: Default::default(),
-        });
-        let weak_stream = Arc::downgrade(&stream);
-        let evidence = super::prepare_on(
-            Some(method),
-            stream.clone(),
-            filesystem,
-            receipt_fault,
-            lost_response,
-            None,
-        )
-        .await?;
-        if stream.fault.lock().await.is_some() {
-            return Err("disk-backed native receipt fault was not exercised".into());
-        }
-        drop(stream);
-        if weak_stream.upgrade().is_some() || evidence.files.upgrade().is_some() {
-            return Err("old runtime or storage handles survived disk restart".into());
-        }
-        let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
-            storage.path().join("filesystem"),
-        ))
-        .await?;
-        let stream = Arc::new(
-            acyclic_stream::LocalStream::open(
-                storage.path().join("coordinator"),
-                Default::default(),
-            )
-            .await?,
-        );
-        super::recovery::run(
-            stream,
-            filesystem,
-            &evidence.restart,
-            receipt_fault,
-            lost_response,
-        )
-        .await?;
-        println!(
-            "MCP {method:?} disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
-        );
+    ]
+    .map(|(method, receipt_fault, lost_response)| {
+        disk_restart(method, receipt_fault, lost_response).boxed_local()
+    })
+    .into_iter()
+    .chain([host_death().boxed_local()])
+}
+
+#[cfg(not(feature = "filesystem-local"))]
+fn restarts() -> impl Iterator<Item = Scenario> {
+    std::iter::empty()
+}
+
+async fn receipt_fault(
+    kind: &'static str,
+    lost_reply: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let stream = Arc::new(ReceiptFaultStream::<MemoryStream>::default());
+    *stream.fault.lock().await = Some((kind, lost_reply));
+    super::run_on(
+        Some("tools/call"),
+        stream.clone(),
+        Some((kind, lost_reply)),
+        false,
+    )
+    .await?;
+    if stream.fault.lock().await.is_some() {
+        return Err("native receipt fault was not exercised".into());
     }
+    println!("MCP {kind} receipt fault (lost acknowledgement: {lost_reply}) passed");
+    Ok(())
+}
+
+#[cfg(feature = "filesystem-local")]
+async fn disk_restart(
+    method: &'static str,
+    receipt_fault: Option<(&'static str, bool)>,
+    lost_response: bool,
+) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let storage = tempfile::tempdir()?;
+    let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
+        storage.path().join("filesystem"),
+    ))
+    .await?;
+    let local =
+        acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
+            .await?;
+    let stream = Arc::new(ReceiptFaultStream {
+        inner: local,
+        fault: Mutex::new(receipt_fault),
+        hide_next_inspection: Default::default(),
+    });
+    let weak_stream = Arc::downgrade(&stream);
+    let evidence = super::prepare_on(
+        Some(method),
+        stream.clone(),
+        filesystem,
+        receipt_fault,
+        lost_response,
+        None,
+    )
+    .await?;
+    if stream.fault.lock().await.is_some() {
+        return Err("disk-backed native receipt fault was not exercised".into());
+    }
+    drop(stream);
+    if weak_stream.upgrade().is_some() || evidence.files.upgrade().is_some() {
+        return Err("old runtime or storage handles survived disk restart".into());
+    }
+    let filesystem = Fs::local(acyclic_fs::LocalOptions::new(
+        storage.path().join("filesystem"),
+    ))
+    .await?;
+    let stream = Arc::new(
+        acyclic_stream::LocalStream::open(storage.path().join("coordinator"), Default::default())
+            .await?,
+    );
+    super::recovery::run(
+        stream,
+        filesystem,
+        &evidence.restart,
+        receipt_fault,
+        lost_response,
+    )
+    .await?;
+    println!(
+        "MCP {method:?} disk restart (receipt fault: {receipt_fault:?}, lost response: {lost_response}) passed"
+    );
     Ok(())
 }
 

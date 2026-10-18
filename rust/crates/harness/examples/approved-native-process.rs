@@ -763,21 +763,33 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     if cfg!(test) {
         #[cfg(test)]
         task::properties::verify_native_callbacks()?;
-        run(None).await?;
-        run(Some("tools/call")).await?;
-        run(Some("tools/list")).await?;
-        for method in [
-            "resources/list",
-            "resources/templates/list",
-            "resources/read",
-            "prompts/list",
-            "prompts/get",
-        ] {
-            run(Some(method)).await?;
-        }
+        use futures::FutureExt as _;
+        // Every scenario owns its stream, filesystem and native directories,
+        // so the suite overlaps them instead of summing their process waits.
+        let scenarios = [
+            None,
+            Some("tools/call"),
+            Some("tools/list"),
+            Some("resources/list"),
+            Some("resources/templates/list"),
+            Some("resources/read"),
+            Some("prompts/list"),
+            Some("prompts/get"),
+        ]
+        .map(|method| run(method).boxed_local())
+        .into_iter();
         #[cfg(test)]
-        faults::run().await?;
-        Ok(())
+        let scenarios = scenarios.chain(faults::scenarios());
+        // Every scenario runs to its end, so each failing control reports.
+        let failures = futures::future::join_all(scenarios)
+            .await
+            .into_iter()
+            .filter_map(std::result::Result::err)
+            .collect::<Vec<_>>();
+        for failure in &failures {
+            eprintln!("scenario failed: {failure}");
+        }
+        failures.into_iter().next().map_or(Ok(()), Err)
     } else {
         let method = if std::env::args().any(|arg| arg == "--mcp-discovery") {
             Some("tools/list")
