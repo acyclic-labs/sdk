@@ -15,12 +15,16 @@ using System.Runtime.InteropServices;
 public static class RegionScreenOracle {
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short x,y; }
     [StructLayout(LayoutKind.Sequential)] struct Rect { public short left,top,right,bottom; }
-    [StructLayout(LayoutKind.Explicit)] struct Cell {
+    [StructLayout(LayoutKind.Sequential)] struct Info {
+        public Coord size,cursor; public ushort attributes; public Rect window; public Coord maximum;
+    }
+    [StructLayout(LayoutKind.Explicit,CharSet=CharSet.Unicode)] struct Cell {
         [FieldOffset(0)] public char character;
         [FieldOffset(2)] public ushort attributes;
     }
     [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateConsoleScreenBuffer(uint access,uint sharing,IntPtr security,uint flags,IntPtr data);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetConsoleMode(IntPtr output,uint mode);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetConsoleScreenBufferInfo(IntPtr output,out Info info);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetConsoleScreenBufferSize(IntPtr output,Coord size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool WriteFile(IntPtr output,byte[] bytes,uint size,out uint written,IntPtr overlapped);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool ReadConsoleOutputW(IntPtr output,[Out] Cell[] cells,Coord size,Coord origin,ref Rect region);
@@ -32,7 +36,11 @@ public static class RegionScreenOracle {
         IntPtr handle=CreateConsoleScreenBuffer(0xC0000000,3,IntPtr.Zero,1,IntPtr.Zero);
         Require(handle!=new IntPtr(-1),"CreateConsoleScreenBuffer");
         try {
-            Require(SetConsoleScreenBufferSize(handle,new Coord{x=80,y=25}),"buffer size");
+            Info info;
+            Require(GetConsoleScreenBufferInfo(handle,out info),"original buffer size");
+            // A new buffer inherits the host viewport. Never shrink beneath
+            // it: conhost and ConPTY may have arbitrary window dimensions.
+            Require(SetConsoleScreenBufferSize(handle,new Coord{x=(short)Math.Max(24,(int)info.size.x),y=(short)Math.Max(8,(int)info.size.y)}),"buffer size");
             Require(SetConsoleMode(handle,7),"enable VT processing");
             uint written;
             Require(WriteFile(handle,bytes,(uint)bytes.Length,out written,IntPtr.Zero)&&written==bytes.Length,"production frame write");
