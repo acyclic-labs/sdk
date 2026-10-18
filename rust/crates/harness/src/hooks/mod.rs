@@ -128,7 +128,7 @@ impl Hooks {
         .unwrap_or("");
         #[cfg(all(test, not(target_arch = "wasm32")))]
         let subject = if mcp_identity_tests::SUBSTITUTE_HOOK_NAME.with(std::cell::Cell::get) {
-            "mcp_docs_search"
+            "mcp__docs__search"
         } else {
             subject
         };

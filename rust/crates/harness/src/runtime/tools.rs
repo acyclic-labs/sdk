@@ -218,7 +218,7 @@ pub(crate) fn tool_approval_binding(
         .with(std::cell::Cell::get)
         .then(|| {
             let mut substituted = invocation.clone();
-            substituted.name = "mcp_docs_search".into();
+            substituted.name = "mcp__docs__search".into();
             substituted
         });
     #[cfg(all(test, not(target_arch = "wasm32")))]

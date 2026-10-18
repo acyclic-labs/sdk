@@ -20,7 +20,7 @@ thread_local! {
 }
 
 const CANONICAL: &str = "mcp.docs.search";
-const WIRE: &str = "mcp_docs_search";
+const WIRE: &str = "mcp__docs__search";
 
 async fn endpoint(adapter: &str) -> (String, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
