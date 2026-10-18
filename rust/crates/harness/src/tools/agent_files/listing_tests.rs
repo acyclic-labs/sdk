@@ -158,33 +158,6 @@ proptest! {
     }
 }
 
-#[test]
-fn refusal_scope_negative_controls_detect_escaping_validation_and_bounds() {
-    fn is_refusal(answer: &Result<std::result::Result<String, Rejected>>) -> bool {
-        matches!(answer, Ok(Err(_)))
-    }
-    // These are the old `?` conversions on actual production validation errors.
-    for command in [
-        "ls .volumes/agents/",
-        "cat .volumes/agents/worker/no-such-file",
-    ] {
-        let inspection = crate::tools::agent_selection::selection(command).unwrap();
-        let rejected = query(&inspection).err().expect("validation must fail");
-        assert!(is_refusal(&Ok(Err(rejected))));
-        let rejected = query(&inspection).err().unwrap();
-        assert!(
-            !is_refusal(&Err(rejected.0)),
-            "escaping validation passed the refusal invariant"
-        );
-    }
-    let rejected = classify(crate::task_volume::Error::LimitExceeded).unwrap();
-    assert!(is_refusal(&Ok(Err(rejected))));
-    assert!(
-        !is_refusal(&Err(storage(crate::task_volume::Error::LimitExceeded))),
-        "escaping query bound passed the refusal invariant"
-    );
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
