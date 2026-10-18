@@ -5,15 +5,20 @@ use crate::conversation::{
 };
 
 type Publisher = FilesystemContentPublisher<LocalAuthorityBackend, LocalObjectBackend>;
+mod pin;
 
-fn publication_operation(operation: OperationId, path: &str) -> acyclic_fs::OperationId {
-    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-publication/v2");
+fn path_operation(domain: &str, operation: OperationId, path: &str) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new_derive_key(domain);
     hash.update(&operation.into_bytes());
     hash.update(path.as_bytes());
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     acyclic_fs::OperationId::from_bytes(identity)
 }
+
+/// Capture identity for path resolution; phases 0 and 1 belong to shell
+/// commands and publications under the same tool operation.
+const READ_CAPTURE_PHASE: u8 = 2;
 
 pub(in crate::local) struct CheckoutPublisher {
     tools: Arc<CheckoutTools>,
@@ -108,7 +113,9 @@ impl CheckoutPublisher {
             let original = match &publication {
                 Publication::Once { .. } => writer.observe_staged_once(operation, self.maximum, None)?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum).await?,
-                Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum).await?,
+                Publication::Replace(source) => {
+                    writer.observe_replacement(operation, source.path(), self.maximum, None)?.await?.0
+                }
             };
             if original.is_none() {
                 if let Some(native) = native {
@@ -135,6 +142,86 @@ impl CheckoutPublisher {
         })
         .await
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
+    }
+
+    fn route<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &str,
+        action: acyclic_fs::access::Action,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        let (mount, relative) = self.tools.workspace.mounts.admit(
+            volume,
+            path,
+            action,
+            self.tools.clock.now_unix_millis() / 1000,
+        )?;
+        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
+    }
+
+    /// Resolves a path in the same view publication writes, after capturing
+    /// pending checkout changes so reads observe what the task's shell sees.
+    async fn current_file(
+        &self,
+        operation: OperationId,
+        path: &str,
+        maximum: u64,
+        window: Option<crate::conversation::LineWindow>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let (mount, relative) = self.tools.workspace.mounts.admit(
+            None,
+            path,
+            acyclic_fs::access::Action::Read,
+            self.tools.clock.now_unix_millis() / 1000,
+        )?;
+        serialized(&self.tools.state, async |mut state| {
+            let view = state
+                .active
+                .as_ref()
+                .unwrap_or_else(|| self.tools.workspace.view());
+            if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
+                state.watcher = None;
+            }
+            let State {
+                active, watcher, ..
+            } = &mut *state;
+            let view = active
+                .as_ref()
+                .unwrap_or_else(|| self.tools.workspace.view());
+            match &mount.view.source {
+                Some(source) => {
+                    if let Some(native) = source.native().await.as_ref() {
+                        native.sync().await?;
+                    }
+                }
+                None => {
+                    self.tools
+                        .capture(
+                            (&self.tools.workspace, view),
+                            watcher,
+                            operation,
+                            READ_CAPTURE_PHASE,
+                            PublicationPermit::Unrestricted,
+                            None,
+                        )
+                        .await?;
+                }
+            }
+            let workspace = mount
+                .view
+                .source
+                .as_ref()
+                .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+            if mount.view.source.is_none() {
+                pin::path(view, operation, &relative, maximum).await?;
+            }
+            let (file, bytes, _) = self
+                .writer_for(&mount.view.volume, workspace)?
+                .current(operation, &relative, maximum, window, None)?
+                .await?;
+            Ok((file, bytes))
+        })
+        .await
     }
 
     async fn materialize(
@@ -177,7 +264,11 @@ impl CheckoutPublisher {
             &self.tools.workspace.path,
             self.tools.workspace.identity,
             &self.tools.workspace.store,
-            publication_operation(operation, file.path()),
+            path_operation(
+                "acyclic.local.checkout-publication/v2",
+                operation,
+                file.path(),
+            ),
             from,
             to,
             &|| std::future::ready(Ok(())),
@@ -198,13 +289,16 @@ impl ContentPublisher for CheckoutPublisher {
         io: Option<&ContentIo>,
     ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
         self.supports_stage(io)?;
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
-            acyclic_fs::access::Action::Write,
-            &relative,
-            self.tools.clock.now_unix_millis() / 1000,
-        )?;
-        Ok((&mount.view.volume, std::borrow::Cow::Owned(relative)))
+        self.route(volume, path, acyclic_fs::access::Action::Write)
+    }
+
+    fn locate<'a>(
+        &'a self,
+        volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        self.route(volume, path, acyclic_fs::access::Action::Read)
     }
 
     fn supports_stage(&self, io: Option<&ContentIo>) -> Result<()> {
@@ -284,6 +378,63 @@ impl ContentPublisher for CheckoutPublisher {
             ))
         })
     }
+    fn current<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        maximum: u64,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&'a ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            let (file, bytes) = self.current_file(operation, path, maximum, window).await?;
+            Ok((file, bytes, None))
+        })
+    }
+
+    fn observe_replacement<'a>(
+        &'a self,
+        operation: OperationId,
+        path: &'a str,
+        maximum: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        self.supports_stage(io)?;
+        BoundedContentFuture::new(None, || async move {
+            let (mount, relative) = self.tools.workspace.mounts.file(None, path)?;
+            serialized(&self.tools.state, async |state| {
+                let view = state
+                    .active
+                    .as_ref()
+                    .unwrap_or_else(|| self.tools.workspace.view());
+                let workspace = mount
+                    .view
+                    .source
+                    .as_ref()
+                    .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
+                let file = self
+                    .writer_for(&mount.view.volume, workspace)?
+                    .observe_replacement(operation, &relative, maximum, None)?
+                    .await?
+                    .0;
+                if let Some(file) = &file {
+                    if let Some(source) = &mount.view.source {
+                        if let Some(native) = source.native().await.as_ref() {
+                            native.advance_to_head().await?;
+                        }
+                    } else {
+                        self.materialize(view, operation, file).await?;
+                    }
+                }
+                Ok((file, None))
+            })
+            .await
+        })
+    }
+
     fn observe_staged_once<'a>(
         &'a self,
         operation: OperationId,

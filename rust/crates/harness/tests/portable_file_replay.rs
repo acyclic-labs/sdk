@@ -276,7 +276,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         ),
         (
             files::edit()?,
-            json!({"file":source,"old_text":"original","new_text":"changed"}),
+            json!({"path":"source.txt","old_string":"original","new_string":"changed"}),
         ),
         (
             files::patch_file(4096, 16)?,
@@ -296,10 +296,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         tools.register((tool, None), &mut None, None)?;
     }
     let mut bounded_text = [
-        (
-            bounded_read,
-            json!({"file":source,"range":{"start":0,"end":8}}),
-        ),
+        (bounded_read, json!({"path":"source.txt","limit":1})),
         (
             text_files::search_file(
                 SearchOptions {
@@ -357,7 +354,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     let admission = OperationId::from_bytes([84; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
     let call = OperationId::from_bytes([85; 16]);
-    let arguments = json!({"file":source});
+    let arguments = json!({"path":"source.txt"});
 
     for reopened in [false, true] {
         let runtime = FilesystemTaskRuntime::open(
@@ -437,25 +434,32 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             writes: AtomicUsize::new(0),
         });
         let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
-        assert_eq!(
-            runner
-                .run(
-                    task,
-                    &definition,
-                    &acyclic_harness::tool::ToolInvocation {
-                        operation_id: call,
-                        call_id: call.to_string(),
-                        name: definition.name.clone(),
-                        arguments: arguments.clone(),
-                    },
-                    &ToolContext::new(context.clone(), call, &(call.to_string()), None)?,
-                    None,
-                    false,
-                )?
-                .await?
-                .0,
-            Outcome::Succeeded(json!(text))
-        );
+        let Outcome::Succeeded(read) = runner
+            .run(
+                task,
+                &definition,
+                &acyclic_harness::tool::ToolInvocation {
+                    operation_id: call,
+                    call_id: call.to_string(),
+                    name: definition.name.clone(),
+                    arguments: arguments.clone(),
+                },
+                // Path reads resolve through the task's owner-bound view.
+                &ToolContext::new(writable.clone(), call, &(call.to_string()), None)?,
+                None,
+                false,
+            )?
+            .await?
+            .0
+        else {
+            panic!("admitted path read must complete")
+        };
+        // A path read names the generation it resolved; the bytes and their
+        // descriptor are the original source's.
+        assert_eq!(read["text"], json!(text));
+        assert_eq!(read["offset"], json!(1));
+        assert_eq!(read["file"]["path"], json!("source.txt"));
+        assert_eq!(read["file"]["descriptor"], json!(source.descriptor()));
         assert_eq!(
             executor.executions.load(Ordering::SeqCst),
             if reopened { 2 } else { 1 }
@@ -475,8 +479,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 name: tool.definition.name.clone(),
                 arguments: arguments.clone(),
             };
-            let original =
-                ToolContext::new(context.clone(), operation, &operation.to_string(), None)?;
+            let base = if index == 0 { &writable } else { &context };
+            let original = ToolContext::new(base.clone(), operation, &operation.to_string(), None)?;
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
             assert!(matches!(
@@ -488,12 +492,12 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 .authorize(None, Some(&original), &invocation, None)?;
             for wrong in [
                 ToolContext::new(
-                    context.clone(),
+                    base.clone(),
                     OperationId::new(),
                     &operation.to_string(),
                     None,
                 )?,
-                ToolContext::new(context.clone(), operation, "different-call", None)?,
+                ToolContext::new(base.clone(), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
                     tool.executor
@@ -516,7 +520,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             );
             assert_eq!(bounded_executor.reconciliations.load(Ordering::SeqCst), 0);
             if index == 0 {
-                assert_eq!(value, json!("original"));
+                assert_eq!(value["text"], json!("original\r\n"));
+                assert_eq!(value["file"]["descriptor"], json!(source.descriptor()));
             } else {
                 assert_eq!(value.get("file"), Some(&json!(source)));
                 assert_eq!(
@@ -653,6 +658,35 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             journal.inner.replay(write_call, 0, 16, None)?.await?,
             write_records
         );
+        // Without READ, a missing path and an existing one fail identically,
+        // so no caller of the public helper can probe for existence.
+        let unreadable = ToolContext::new(
+            std::sync::Arc::new(
+                writable.scoped(
+                    scope
+                        .grants()
+                        .without(&Capabilities::new([read_grant.clone()])),
+                    scope.limits(),
+                )?,
+            ),
+            call,
+            &call.to_string(),
+            None,
+        )?;
+        let missing = unreadable.current_file("missing.txt", None).await;
+        let present = unreadable.current_file("source.txt", None).await;
+        assert!(
+            matches!(missing, Err(Error::Unauthorized(_))),
+            "{missing:?}"
+        );
+        assert_eq!(format!("{missing:?}"), format!("{present:?}"));
+        // Negative control: with READ the same two probes are distinguishable.
+        let readable = ToolContext::new(writable.clone(), call, &call.to_string(), None)?;
+        assert!(readable.current_file("source.txt", None).await.is_ok());
+        assert!(!matches!(
+            readable.current_file("missing.txt", None).await,
+            Ok(_) | Err(Error::Unauthorized(_))
+        ));
         let restricted = context.scoped(
             scope
                 .grants()

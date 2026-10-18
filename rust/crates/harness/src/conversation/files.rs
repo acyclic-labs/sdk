@@ -100,6 +100,44 @@ impl FileDescriptor {
         Ok(false)
     }
 
+    /// Whether `lines`, joined by `\n` with or without one final terminator,
+    /// are exactly these bytes. Hashes the borrowed lines in place.
+    pub(crate) fn matches_lines<'a>(
+        &self,
+        lines: impl Iterator<Item = &'a str> + Clone,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<bool> {
+        let joined = lines
+            .clone()
+            .map(|line| line.len() as u64 + 1)
+            .sum::<u64>()
+            .saturating_sub(1);
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("verify", joined));
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        let terminated = match self.byte_length.checked_sub(joined) {
+            Some(0) => false,
+            Some(1) => true,
+            _ => return Ok(false),
+        };
+        if let Some(io) = work.as_deref_mut() {
+            io.hashed_bytes(self.byte_length)?;
+        }
+        let mut hasher = Sha256::new();
+        for (index, line) in lines.enumerate() {
+            if index != 0 {
+                hasher.update(b"\n");
+            }
+            hasher.update(line.as_bytes());
+        }
+        if terminated {
+            hasher.update(b"\n");
+        }
+        Ok(hasher.finalize().as_slice() == self.sha256)
+    }
+
     /// Validates metadata under the caller's optional work observer.
     pub fn validate(
         &self,

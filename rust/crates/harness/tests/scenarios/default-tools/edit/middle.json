@@ -1,6 +1,1 @@
-{"seed":{"plans/a.md":"abc def ghi"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit",
-  "arguments":{"file":"plans/a.md","old_text":"def","new_text":"DEF"}},{"type":"event","kind":"completed",
-  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":"abc DEF ghi"},"results":{"call":{"name":"edit",
-  "content":{"kind":"json","value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":11,"sha256":[19,
-  94,122,159,118,40,164,211,231,210,162,219,143,98,236,156,43,85,229,107,250,73,176,215,139,80,146,65,13,
-  236,208,115],"media_type":"text/plain"},"display_name":"a.md"}}}}}}}
+{"seed":{"plans/a.md":"abc def ghi"},"turns":[[{"type":"event","kind":"tool_call","call_id":"call","name":"edit","arguments":{"path":"plans/a.md","old_string":"def","new_string":"DEF"}},{"type":"event","kind":"completed","metadata":null}],"done"],"expect":{"files":{"plans/a.md":"abc DEF ghi"},"results":{"call":{"name":"edit","content":{"kind":"parts","parts":[{"kind":"text","text":"Updated plans/a.md (11 bytes)."}]}}}}}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::observed::ObservedFold;
 
 #[tokio::test]
 async fn original_context_survives_tool_response_loss_and_rejects_retargeted_replay() -> Result<()>
@@ -533,6 +534,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
                 changed_call,
                 0,
                 &mut replay_context,
+                &mut ObservedFold::default(),
             )
             .await,
         Err(Error::Conflict(_))

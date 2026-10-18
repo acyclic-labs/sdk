@@ -43,6 +43,31 @@ impl ContentPublisher for MemoryContentPublisher {
             .observe_staged_once(operation_id, maximum_bytes, io)
     }
 
+    fn observe_replacement<'a>(
+        &'a self,
+        operation_id: OperationId,
+        path: &'a str,
+        maximum_bytes: u64,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        self.files
+            .observe_replacement(operation_id, path, maximum_bytes, io)
+    }
+
+    fn current<'a>(
+        &'a self,
+        operation_id: OperationId,
+        path: &'a str,
+        maximum_bytes: u64,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&'a crate::filesystem::PreparationIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        self.files
+            .current(operation_id, path, maximum_bytes, window, io)
+    }
+
     fn stage_at<'a>(
         &'a self,
         operation_id: OperationId,

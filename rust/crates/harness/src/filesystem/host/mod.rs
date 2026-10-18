@@ -98,6 +98,7 @@ mod content;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;
+mod metadata;
 mod ranges;
 mod reads;
 mod volumes;

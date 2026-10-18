@@ -50,7 +50,6 @@ pub fn conversion_tool() -> Result<Tool> {
         .ok_or_else(|| Error::Invalid("conversion schema is not an object".into()))?
         .insert("x-fixture-maximum-bytes".into(), json!(MAXIMUM_BYTES));
     let adapter = Arc::new(ImageConversion {
-        read: files::read()?.executor,
         write: files::write()?.executor,
     });
     Ok(Tool {
@@ -70,7 +69,6 @@ pub fn conversion_tool() -> Result<Tool> {
 }
 
 struct ImageConversion {
-    read: Arc<dyn ToolExecutor>,
     write: Arc<dyn ToolExecutor>,
 }
 
@@ -146,15 +144,11 @@ impl ToolExecutor for ImageConversion {
                         "conversion requires bounded fixture bytes".into(),
                     ));
                 }
-                let read = ToolInvocation {
-                    arguments: json!({"file":input.source}),
-                    ..invocation.clone()
-                };
                 let write = ToolInvocation {
                     arguments: json!({"path":input.destination,"text":"","media_type":MIME,"display_name":"converted.img1"}),
                     ..invocation.clone()
                 };
-                self.read.authorize(None, Some(context), &read, None)?;
+                context.authorize_file_read(&input.source)?;
                 self.write.authorize(None, Some(context), &write, None)
             };
         }

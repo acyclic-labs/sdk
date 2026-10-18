@@ -5,7 +5,7 @@ use schema::ProjectionMode;
 /// Replaceable model projection for the canonical file result shapes.
 #[derive(Clone, Copy)]
 pub enum FileProjection {
-    /// Exact UTF-8 read result.
+    /// Line-numbered text of a read selection.
     Read(ProjectionMode),
     /// Published immutable reference.
     Publication(ProjectionMode),
@@ -29,66 +29,67 @@ impl ToolProjection for FileProjection {
     ) -> Result<(Value, crate::NativeCustody)> {
         match *self {
             Self::Read(mode) => {
-                let text = decode::<String>(&result.value, work)?;
-                if mode == schema::ProjectionMode::Full {
-                    return schema::project_json(&text.0, work);
+                let value = decode::<ReadFileResult>(&result.value, work)?;
+                let read = &value.0;
+                // Executors and projections are replaceable independently, so
+                // the projection checks the result answers this exact request:
+                // its window starts at the requested line and holds no more
+                // than the requested lines. A request for the whole file must
+                // return the file, verified against its descriptor on the
+                // caller's work ledger whatever length was returned.
+                let request = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                let whole = request.0.offset.unwrap_or(1) == 1 && request.0.limit.is_none();
+                if read.text.len() as u64 > read.file.descriptor().byte_length()
+                    || read.offset != request.0.offset.unwrap_or(1)
+                    || request
+                        .0
+                        .limit
+                        .is_some_and(|limit| read.text.split_inclusive('\n').count() as u64 > limit)
+                    || (whole && !matches_file(&read.file, &read.text, work)?)
+                {
+                    let allocation = edit::allocation(work, 0)?;
+                    return Err(edit::invalid(
+                        &allocation,
+                        "read result does not fit its source file",
+                    ));
                 }
-                let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let owned_io = work
-                    .map(crate::executor::PreparationIo::from_native_work)
-                    .transpose()?;
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                let io = owned_io.as_ref();
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let io: Option<&crate::executor::PreparationIo> = None;
-                if let Some(range) = input.0.range {
-                    if range.end.checked_sub(range.start) != Some(text.0.len() as u64)
-                        || range.end > input.0.file.descriptor().byte_length()
-                    {
-                        return Err(crate::executor::with_history_io(io, |history| {
-                            crate::store::guarded_boundary(
-                                history,
-                                crate::wire::ErrorCode::Invalid,
-                                "read result does not match its requested interval",
-                            )
-                        }));
-                    }
-                } else {
-                    crate::executor::with_history_io(io, |history| {
-                        input.0.file.descriptor().verify(text.0.as_bytes(), history)
-                    })?;
+                if mode == ProjectionMode::Full {
+                    let mut allocation = edit::allocation(work, std::mem::size_of::<String>())?;
+                    let text = super::lines::numbered(&read.text, read.offset, &mut allocation)?;
+                    return schema::project_text(&text, work);
                 }
-                if let Some(range) = input.0.range {
-                    return schema::summary_reference(
-                        &input.0.file,
-                        400,
-                        format_args!(
-                            "Read bytes {}..{}; {} source bytes omitted before and {} after. Selected text is retained in the canonical tool result and omitted from this model projection.",
-                            range.start,
-                            range.end,
-                            range.start,
-                            input.0.file.descriptor().byte_length() - range.end,
-                        ),
-                        work,
-                    );
-                }
+                let lines = read.text.lines().count() as u64;
                 schema::summary_reference(
-                    &input.0.file,
-                    160,
+                    &read.file,
+                    read.file.path().len() + 240,
                     format_args!(
-                        "Read {} UTF-8 bytes. The exact text is retained in the canonical tool result and omitted from this model projection.",
-                        text.0.len()
+                        "Read {} lines from line {} of {} ({} UTF-8 bytes). The text is retained in the canonical tool result and omitted from this model projection.",
+                        lines,
+                        read.offset,
+                        read.file.path(),
+                        read.text.len(),
                     ),
                     work,
                 )
             }
             Self::Publication(mode) => {
                 let value = decode::<FileResult>(&result.value, work)?;
+                let file = &value.0.file;
                 match mode {
-                    schema::ProjectionMode::Full => schema::project_json(&value.0, work),
+                    schema::ProjectionMode::Full => {
+                        let (text, _allocation) = schema::bounded_format(
+                            file.path().len() + 64,
+                            format_args!(
+                                "Updated {} ({} bytes).",
+                                file.path(),
+                                file.descriptor().byte_length()
+                            ),
+                            work,
+                        )?;
+                        schema::project_text(&text, work)
+                    }
                     schema::ProjectionMode::Reference => schema::project_reference(
-                        &value.0.file,
+                        file,
                         "File publication completed. The original output reference, workspace and content identity remain in the canonical tool result. Body bytes are omitted from this model projection.",
                         work,
                     ),
@@ -114,4 +115,19 @@ impl ToolProjection for FileProjection {
             }
         }
     }
+}
+
+/// Whether `text` is exactly `file`'s content, hashing on the caller's ledger.
+fn matches_file(file: &FileRef, text: &str, work: crate::NativeWork<'_>) -> Result<bool> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        return file
+            .descriptor()
+            .matches_bytes(text.as_bytes(), &mut Some(&mut io));
+    }
+    let _ = work;
+    file.descriptor().matches_bytes(text.as_bytes(), &mut None)
 }

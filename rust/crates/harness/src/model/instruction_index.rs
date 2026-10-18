@@ -148,12 +148,10 @@ fn direction(key: &[u8; 32], bit: u16) -> usize {
     usize::from((key[usize::from(bit / 8)] >> (7 - bit % 8)) & 1)
 }
 
-pub(super) fn source_key(
-    volume: &crate::conversation::VolumeRef,
-    path: &str,
-    io: Option<&PreparationIo>,
-) -> Result<[u8; 32]> {
-    with_history_io(io, |work| source_key_history(volume, path, work))
+/// Reads name a file by its workspace path alone, so instructions and reads
+/// meet on the path; the body comparison then proves the content is the same.
+pub(super) fn path_key(path: &str, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    with_history_io(io, |work| digest_key(&path, work))
 }
 
 pub(super) fn source_key_history(
@@ -161,9 +159,16 @@ pub(super) fn source_key_history(
     path: &str,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<[u8; 32]> {
+    digest_key(&(volume, path), work)
+}
+
+fn digest_key<T: serde::Serialize>(
+    value: &T,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<[u8; 32]> {
     // Keys are request-local; the unobserved path hashes the borrowed wire.
     if work.is_none() {
-        return crate::executor::json::serialized_json_digest(&(volume, path));
+        return crate::executor::json::serialized_json_digest(value);
     }
     #[cfg(feature = "filesystem")]
     let maximum = work
@@ -173,7 +178,7 @@ pub(super) fn source_key_history(
         .unwrap_or(u64::MAX);
     #[cfg(not(feature = "filesystem"))]
     let maximum = u64::MAX;
-    crate::executor::json::canonical_json_digest(&(volume, path), maximum, work)
+    crate::executor::json::canonical_json_digest(value, maximum, work)
 }
 
 pub(super) fn history_step_traced(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {

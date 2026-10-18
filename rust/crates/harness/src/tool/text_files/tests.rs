@@ -42,24 +42,40 @@ fn assert_reference(projection: &Value, expected: &FileRef) -> Result<()> {
 fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> Result<()> {
     let mut work = super::super::edit::allocation(None, 0)?;
     let file = crate::tool::tests::file(b"ababa")?;
-    let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
+    let input = invocation(json!({"path":file.path(),"offset":2}));
     let result = ToolResult {
-        value: json!("bab"),
+        value: json!({"file":file,"offset":2,"text":"bab"}),
     };
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = FileProjection::Read(mode);
         let projected = projector.project(&input, &result, None)?.0;
         crate::executor::validate_json_schema_value(
-            &mode.schema::<String>()?,
+            &mode.text_schema()?,
             &projected,
             "read projection",
             &mut None,
         )?;
         if mode == ProjectionMode::Full {
-            assert_eq!(projected, json!({"kind":"json","value":result.value}));
+            assert_eq!(
+                projected,
+                json!({"kind":"parts","parts":[{"kind":"text","text":"     2\tbab"}]})
+            );
         } else {
             assert_reference(&projected, &file)?;
         }
+    }
+    // Negative controls: a result that cannot come from its source file, and
+    // a zero line number, never reach the model.
+    for value in [
+        json!({"file":file,"offset":1,"text":"ababab"}),
+        json!({"file":file,"offset":0,"text":"bab"}),
+    ] {
+        let projector = FileProjection::Read(ProjectionMode::Full);
+        assert!(
+            projector
+                .project(&input, &ToolResult { value }, None)
+                .is_err()
+        );
     }
     let search = SearchResult {
         file: file.clone(),
@@ -143,38 +159,24 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
 fn original_scope_preflight_rejects_missing_grants_and_oversize_inputs() -> Result<()> {
     let file = crate::tool::tests::file(b"ababa")?;
     let adapter = FileTool::Read;
-    let input = invocation(json!({"file":file,"range":{"start":1,"end":4}}));
-    let empty = RuntimeScope::new(Capabilities::default(), Limits::default())?;
+    let input = invocation(json!({"path":file.path(),"offset":2,"limit":1}));
     assert!(adapter.authorize(None, None, &input, None).is_err());
-    assert!(adapter.authorize(Some(&empty), None, &input, None).is_err());
     let grants = Capabilities::new([file.read_capability(&mut None)?]);
     let scope = RuntimeScope::new(grants, Limits::default())?;
-    assert_eq!(
-        adapter
-            .preflight(&scope, &input, None)?
-            .0
-            .expect("read source"),
-        file
-    );
-    for range in [json!({"start":4,"end":1}), json!({"start":0,"end":6})] {
+    // A path read resolves its file later, through the task view.
+    assert!(adapter.preflight(&scope, &input, None)?.0.is_none());
+    for arguments in [
+        json!({"path":file.path(),"offset":0}),
+        json!({"path":file.path(),"limit":0}),
+        json!({"path":"../escape.txt"}),
+        json!({"file":file,"range":{"start":1,"end":4}}),
+    ] {
         assert!(
             adapter
-                .preflight(
-                    &scope,
-                    &invocation(json!({"file":file,"range":range})),
-                    None
-                )
+                .preflight(&scope, &invocation(arguments), None)
                 .is_err()
         );
     }
-    let bounded = RuntimeScope::new(
-        scope.grants().clone(),
-        Limits {
-            render_bytes: 2,
-            ..Limits::default()
-        },
-    )?;
-    assert!(adapter.preflight(&bounded, &input, None).is_err());
     let bounded = FileTool::Search {
         options: SEARCH,
         maximum_result_bytes: 1,

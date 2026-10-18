@@ -29,7 +29,9 @@ mod authorization;
 mod capture;
 mod created_access;
 mod journal;
-pub(in crate::filesystem) use journal::journal_absent;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(in crate::filesystem) use journal::LEGACY_ABSENCE_ONLY;
+pub(in crate::filesystem) use journal::path_absent;
 mod preparation;
 mod references;
 pub(crate) use allocations::AllocationClaim;

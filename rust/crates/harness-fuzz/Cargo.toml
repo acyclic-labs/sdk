@@ -52,6 +52,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "line_window"
+path = "fuzz_targets/line_window.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "search_request"
 path = "fuzz_targets/search_request.rs"
 required-features = ["runtime"]

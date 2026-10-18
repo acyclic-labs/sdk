@@ -41,7 +41,7 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                         content: ModelContent::Part(ModelContentPart::ToolCall(ToolCall::new(
                             "call".into(),
                             "read".into(),
-                            serde_json::json!({"file":file}),
+                            serde_json::json!({"path":file.path()}),
                         ))),
                     },
                     ModelMessage {
@@ -49,8 +49,10 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                         content: ModelContent::Part(ModelContentPart::ToolResult {
                             call_id: "call".into(),
                             name: "read".into(),
-                            content: ToolResultContent::Json {
-                                value: serde_json::json!(body),
+                            content: ToolResultContent::Parts {
+                                parts: vec![ModelDataPart::Text {
+                                    text: format!("     1\t{body}"),
+                                }],
                             },
                         }),
                     },
@@ -61,10 +63,13 @@ fn read_deduplication_uses_original_ledger_and_preserves_the_exchange() {
                 let ModelContent::Part(ModelContentPart::ToolResult {
                     call_id,
                     name,
-                    content: ToolResultContent::Json { value },
+                    content: ToolResultContent::Parts { parts },
                 }) = &messages[2].content
                 else {
                     panic!("exchange lost")
+                };
+                let [ModelDataPart::Text { text: value }] = parts.as_slice() else {
+                    panic!("result text lost")
                 };
                 assert_eq!((call_id.as_str(), name.as_str()), ("call", "read"));
                 assert_eq!(
@@ -121,18 +126,18 @@ proptest! {
         prop_assert_eq!(decoded, message);
         prop_assert!(sources.reservation(expected.len() as u64, None).is_err());
         let alternate = self::file(&path, &body, "arbitrary");
-        prop_assert!(source.same_content(&alternate));
+        prop_assert!(source.same_source(InstructionSource::new(&alternate), &mut None).unwrap());
         let different = self::file(&format!("other/{path}"), &body, &label);
-        prop_assert!(!source.same_content(&different));
+        prop_assert!(!source.same_source(InstructionSource::new(&different), &mut None).unwrap());
         let legacy: ProjectInstruction = serde_json::from_slice(&serde_json::to_vec(&file).unwrap()).unwrap();
-        prop_assert!(legacy.source().same_content(&file));
+        prop_assert!(legacy.source().same_source(InstructionSource::new(&file), &mut None).unwrap());
         let captured = ProjectInstruction::Captured {
             file: self::file("archive/opaque", &body, "rules"),
             source: InstructionIdentity::new(file.volume().clone(), path).unwrap(),
         };
         prop_assert_eq!(captured.source().render(body.as_bytes(), None).unwrap(), expected);
-        prop_assert!(captured.source().same_content(&file));
-        prop_assert!(!InstructionSource::new(&captured).same_content(&file), "archive-location negative control must lose identity");
+        prop_assert!(captured.source().same_source(InstructionSource::new(&file), &mut None).unwrap());
+        prop_assert!(!InstructionSource::new(&captured).same_source(InstructionSource::new(&file), &mut None).unwrap(), "archive-location negative control must lose identity");
         let decoded: ProjectInstruction = serde_json::from_slice(&serde_json::to_vec(&captured).unwrap()).unwrap();
         prop_assert_eq!(decoded, captured);
     }

@@ -1,8 +1,0 @@
-{"turns":[[{"type":"event","kind":"tool_call","call_id":"edit","name":"edit","arguments":{"file":"plans/a.md",
-  "old_text":"before","new_text":"after"}},{"type":"event","kind":"completed","metadata":null}],[{"type":"event",
-  "kind":"tool_call","call_id":"read","name":"read","arguments":{"file":"plans/a.md"}},{"type":"event","kind":"completed",
-  "metadata":null}],"done"],"expect":{"files":{"plans/a.md":"after\n"},"results":{"edit":{"name":"edit",
-  "content":{"kind":"json","value":{"file":{"path":"plans/a.md","descriptor":{"byte_length":6,"sha256":[123,
-  154,114,70,109,57,96,235,42,172,204,252,132,137,57,69,52,144,219,6,120,189,71,37,222,243,247,137,184,145,
-  201,25],"media_type":"text/plain"},"display_name":"a.md"}}}},"read":{"name":"read","content":{"kind":"json",
-  "value":"before\n"}}}}}

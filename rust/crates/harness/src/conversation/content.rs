@@ -233,11 +233,32 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     }
 }
 
+/// Lines a path-addressed read keeps: resolution streams the whole file to
+/// identify it, but retains only lines `offset..offset + limit` (one-based).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LineWindow {
+    /// One-based first line.
+    pub offset: u64,
+    /// Maximum number of lines; `None` keeps every line from `offset`.
+    pub limit: Option<u64>,
+}
+
 /// Owner-bound, bounded publication on the caller's existing ledger.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Resolves the exact destination before the caller checks write authority.
     /// Paths remain relative to the selected volume in returned file references.
     fn destination<'a>(
+        &'a self,
+        _volume: Option<&VolumeRef>,
+        path: &'a str,
+        _io: Option<&ContentIo>,
+    ) -> Result<(&'a VolumeRef, std::borrow::Cow<'a, str>)> {
+        Ok((self.volume(), std::borrow::Cow::Borrowed(path)))
+    }
+    /// Routes a path to the volume and relative path a READ addresses. Unlike
+    /// [`Self::destination`], it never requires publication admission, so a
+    /// readable but unwritable location still routes.
+    fn locate<'a>(
         &'a self,
         _volume: Option<&VolumeRef>,
         path: &'a str,
@@ -301,6 +322,41 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
             io,
             crate::wire::ErrorCode::Unsupported,
             "publication observation is unavailable",
+        ))
+    }
+    /// Resolves the file currently at a destination path through this writer's
+    /// task view, so path-addressed tools read and replace what the task sees.
+    /// With a `window`, the returned bytes are exactly those lines of the
+    /// UTF-8 file and nothing else of it is retained.
+    fn current<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        _window: Option<LineWindow>,
+        io: Option<&'a ContentIo>,
+    ) -> Result<
+        BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)>,
+    > {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "path resolution is unavailable",
+        ))
+    }
+    /// Observes the replacement of `path` staged under `operation_id`, if any,
+    /// so a reconciled path-addressed edit never applies twice.
+    fn observe_replacement<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _path: &'a str,
+        _maximum_bytes: u64,
+        io: Option<&'a ContentIo>,
+    ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        Err(content_error(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "replacement observation is unavailable",
         ))
     }
     /// Replaces bytes only at the immutable source generation.

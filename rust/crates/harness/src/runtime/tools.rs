@@ -237,6 +237,9 @@ pub struct ToolContext {
     pub(super) operation_id: OperationId,
     pub(super) call_id: String,
     pub(crate) model_step: u32,
+    /// Latest version per path the model observed in this turn's durable
+    /// tool results; `None` outside model-driven execution.
+    pub(super) observed_files: Option<Arc<[FileRef]>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_interactions: Option<Arc<dyn InteractionRouter>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -252,6 +255,7 @@ impl Clone for ToolContext {
             operation_id: self.operation_id,
             call_id: self.call_id.clone(),
             model_step: self.model_step,
+            observed_files: self.observed_files.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: self.native_interactions.clone(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -329,6 +333,7 @@ impl ToolContext {
             operation_id,
             call_id,
             model_step: 0,
+            observed_files: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_interactions: None,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -412,6 +417,19 @@ impl ToolContext {
     ) -> Result<()> {
         self.task().authorize_file_read(
             file,
+            self.effective_scope(),
+            Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
+        )
+    }
+
+    /// Checks effective READ over a workspace path before it is resolved.
+    pub fn authorize_path_read_with_native_work(
+        &self,
+        path: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.task().authorize_path_read(
+            path,
             self.effective_scope(),
             Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
         )
@@ -560,6 +578,12 @@ impl ToolContext {
         .await
     }
 
+    /// Checks READ on an exact file under this call's effective scope.
+    pub fn authorize_file_read(&self, file: &FileRef) -> Result<()> {
+        self.task()
+            .authorize_file_read(file, self.effective_scope(), None)
+    }
+
     /// Reads immutable content under the effective tool scope and caller IO limits.
     pub async fn read_file(
         &self,
@@ -575,15 +599,100 @@ impl ToolContext {
         )
         .await
     }
-    /// Reads one authenticated interval under this tool call's effective scope.
-    pub async fn read_file_range(
+    /// The single authorization point for path-addressed reads. It checks
+    /// READ on the path before anything is resolved, so a caller without it
+    /// cannot tell a missing file from an unauthorized one. It then resolves
+    /// the file this task currently sees through its content writer's view and
+    /// checks READ on that exact reference before any bytes are returned.
+    pub async fn current_file(
         &self,
-        file: &FileRef,
-        range: acyclic_fs::ByteRange,
+        path: &str,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        self.current_lines(path, None, io).await
+    }
+
+    /// [`Self::current_file`], retaining only `window`'s lines of the file.
+    pub async fn current_lines(
+        &self,
+        path: &str,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let task = self.task();
+        let scope = self.effective_scope();
+        task.authorize_path_read(path, scope, io)?;
+        let (file, bytes, hold) = self
+            .path_writer(io)?
+            .current(self.operation_id, path, scope.limits.file_bytes, window, io)?
+            .await?;
+        task.authorize_file_read(&file, scope, io)?;
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let _ = hold;
+        Ok((file, bytes))
+    }
+
+    /// The version the model last observed at `file`'s path through a
+    /// durable successful tool result, or `None` when this call has no model
+    /// history or none of its results named that path.
+    pub(crate) fn observed_version(&self, file: &FileRef) -> Option<&FileRef> {
+        self.observed_files
+            .as_deref()?
+            .iter()
+            .find(|observed| observed.volume() == file.volume() && observed.path() == file.path())
+    }
+
+    /// Binds the versions this call's model observed, derived from the
+    /// canonical journal of its turn rather than from in-memory state.
+    pub(crate) fn with_observed_files(mut self, observed: Vec<FileRef>) -> Self {
+        self.observed_files = Some(Arc::from(observed));
+        self
+    }
+
+    /// Observes this call's original replacement of `path`, so reconciling a
+    /// path-addressed edit returns its first publication instead of reapplying.
+    pub async fn observe_replacement(
+        &self,
+        path: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        let (file, hold) = self
+            .path_writer(io)?
+            .observe_replacement(
+                self.operation_id,
+                path,
+                self.effective_scope().limits.file_bytes,
+                io,
+            )?
+            .await?;
+        #[cfg(feature = "filesystem")]
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        #[cfg(feature = "filesystem")]
+        if let Some(hold) = hold {
+            hold.into_retained()?;
+        }
+        #[cfg(not(feature = "filesystem"))]
+        let (retained, _) = (0, hold);
+        Ok((file, retained))
+    }
+
+    fn path_writer(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<&Arc<dyn crate::conversation::ContentPublisher>> {
         self.task()
-            .read_bound_range(file, range, self.effective_scope(), io)
-            .await
+            .content_binding(None)
+            .and_then(|binding| binding.writer.as_ref())
+            .ok_or_else(|| {
+                crate::conversation::content_error(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "path-addressed file tools require a bound task content volume",
+                )
+            })
     }
 }

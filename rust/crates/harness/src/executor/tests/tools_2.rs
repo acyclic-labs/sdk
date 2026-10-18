@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::observed::ObservedFold;
 
 #[tokio::test]
 async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
@@ -46,7 +47,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
                 0,
                 invocation,
                 0,
-                &mut messages
+                &mut messages,
+                &mut ObservedFold::default(),
             )
             .await,
         Err(Error::Invalid(_))

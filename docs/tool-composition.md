@@ -26,18 +26,33 @@ alias or old-data migration is installed.
 
 ## Portable file operations
 
-`tool::files::{read_file,write_file,edit_file}` individually assemble owner-bound
-adapters at revision `portable-5`. They require the original `ToolContext`, exact
-call/operation identity, effective task bounds, public paths, and appropriate
-read/publication authority before effects or replay. Plain context-free execution
-returns an explicit unsupported outcome. Capability strings and copied references
-cannot manufacture the original publisher's authority.
+`tool::files::{read,write,edit}` individually assemble owner-bound adapters
+(`read` at revision `portable-7`, `write` and `edit` at `portable-6`). They require
+the original `ToolContext`, exact call/operation identity, effective task bounds,
+public paths, and appropriate read/publication authority before effects or replay.
+Plain context-free execution returns an explicit unsupported outcome. Capability
+strings and copied references cannot manufacture the original publisher's authority.
 
-The reader returns exact bounded UTF-8. The writer uses `TaskContext::stage_file_once`.
-Exact editing reads an immutable source, calls `tool::edit::exact_replace`, and
-publishes through `TaskContext::stage_file_at`. The matcher rejects empty, missing,
-and ambiguous needles, including overlapping occurrences, and checks input/output
-bounds before output allocation. Unchanged UTF-8 and line endings remain exact.
+The model addresses files by workspace-relative `path`, as in other coding agents.
+`ContentPublisher::current` resolves the path through the task's bound view to the
+authenticated current `FileRef` (a checkout first captures pending disk changes, so
+reads see what `bash` wrote). Path reads need volume or directory READ over the
+location before resolution and READ on the resolved file before any bytes return;
+exact-file grants still cover pinned-reference tools such as search and patch.
+
+`read` takes an optional one-based line `offset` and `limit`, and its model
+projection is `cat -n` text (a six-column right-aligned line number, a tab, the
+line). The render bound applies to that numbered text. The canonical result keeps
+the resolved `FileRef`, the first line number and the exact selected text.
+
+`edit` takes `old_string`, `new_string` and `replace_all`. It resolves the current
+file, calls `tool::edit::exact_replace` (or `replace_all`), and publishes through
+`TaskContext::stage_file_at`, which pins the generation it resolved: a concurrent
+change between resolution and publication conflicts instead of merging. The matcher
+rejects empty, missing, and ambiguous needles, including overlapping occurrences,
+and checks input/output bounds before output allocation. Unchanged UTF-8 and line
+endings remain exact. Reconciling an edit observes the publication its operation
+already made, keyed by operation and path, and never applies the edit twice.
 
 `FilesystemHost::edit_text` reuses that matcher and `FilesystemHost::put_content_at`.
 The existing atomic publication receipt pins the expected generation and complete
@@ -46,7 +61,7 @@ user edit. Changed retry bytes/preconditions and stale fresh operations conflict
 Unsupported generation-aware publishers reject before ordinary staging. There is
 no separate receipt ledger or merge engine.
 
-`tool::files::patch_file(work,hunks)` selects optional revision `portable-patch-4`.
+`tool::files::patch_file(work,hunks)` selects optional revision `portable-patch-5`, whose projection is text like `write` and `edit`.
 Its pure `tool::patch::apply_update` accepts bounded V4A update-file fragments:
 ordered `@@` hunks, exact context/add/delete lines, optional exact anchors and EOF.
 It rejects missing/ambiguous context, unknown syntax and out-of-order changes.

@@ -5,8 +5,8 @@ use acyclic_harness::{
         BoundedContentFuture, ContentIo, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
     },
     model::{
-        ModelContent, ModelContentPart, ModelDispatch, ModelMessage, ModelProvider, ModelRequest,
-        ModelRole, PreparedModelRequest, ToolCall, ToolResultContent,
+        ModelContent, ModelContentPart, ModelDataPart, ModelDispatch, ModelMessage, ModelProvider,
+        ModelRequest, ModelRole, PreparedModelRequest, ToolCall, ToolResultContent,
     },
 };
 use acyclic_harness_providers::{Credentials, Registry};
@@ -112,21 +112,24 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
         let claude = source("CLAUDE.md", BODY.as_bytes());
         let context = discovered(vec![agents.clone(), agents.clone(), claude.clone()]).await;
         assert_eq!(context.messages.len(), 2, "same source must be projected once");
-        for (read_file, returned, range, repeated) in [
-            (agents.clone(), BODY, None, true),
-            (agents.clone(), BODY, Some(json!({"start":0,"end":BODY.len()})), true),
-            (agents.clone(), "Project", Some(json!({"start":0,"end":7})), false),
-            (source("elsewhere/AGENTS.md", BODY.as_bytes()), BODY, None, false),
-            (agents.clone(), "changed after capture", None, false),
-            (source("nested/AGENTS.md", b"changed after capture"), "changed after capture", None, false),
+        // Reads name a path; the projection shows `cat -n` lines.
+        let shown = "     1\tProject marker: λ\n     2\tverbatim <literal>";
+        let changed = "     1\tchanged after capture";
+        for (arguments, returned, marker, repeated) in [
+            (json!({"path":"nested/AGENTS.md"}), shown, "Project marker", true),
+            (json!({"path":"nested/AGENTS.md","offset":1}), shown, "Project marker", true),
+            (json!({"path":"nested/AGENTS.md","limit":2}), shown, "Project marker", false),
+            (json!({"path":"elsewhere/AGENTS.md"}), shown, "Project marker", false),
+            (json!({"path":"nested/AGENTS.md"}), changed, "changed after capture", false),
+            (json!({"path":"nested/AGENTS.md","offset":2}), "     2\tverbatim <literal>", "verbatim", false),
         ] {
             let mut messages = Vec::new();
             messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Part(
-                ModelContentPart::ToolCall(ToolCall::new("call".into(), "read".into(), json!({"file":read_file,"range":range})))
+                ModelContentPart::ToolCall(ToolCall::new("call".into(), "read".into(), arguments))
             ) });
             messages.push(ModelMessage { role: ModelRole::Tool, content: ModelContent::Part(
                 ModelContentPart::ToolResult { call_id: "call".into(), name: "read".into(),
-                    content: ToolResultContent::Json { value: json!(returned) } }
+                    content: ToolResultContent::Parts { parts: vec![ModelDataPart::Text { text: returned.into() }] } }
             ) });
             let captured = acyclic_harness::model::ProjectInstruction::Captured {
                 file: source("inputs/context/private-copy", BODY.as_bytes()),
@@ -148,8 +151,8 @@ async fn instruction_review_loopback_scope_budget_and_read_deduplication() {
             assert_eq!(body["input"][2]["type"], "function_call");
             assert_eq!(body["input"][3]["type"], "function_call_output");
             assert_eq!(body["input"][2]["call_id"], body["input"][3]["call_id"]);
-            let output: String = serde_json::from_str(body["input"][3]["output"].as_str().unwrap()).unwrap();
-            assert_eq!(output.contains(returned), !repeated);
+            let output = body["input"][3]["output"].to_string();
+            assert_eq!(output.contains(marker), !repeated, "{output}");
             assert_eq!(output.contains("instructions already included"), repeated);
         }
         // Individually valid bodies exceed the combined bound. No reader or HTTP

@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
-/// Reads exact UTF-8 from a pinned ref using the task's authenticated reader.
+/// Reads a workspace-relative UTF-8 file, optionally by one-based line range,
+/// resolved through the task view and returned as `cat -n` numbered text.
 pub fn read() -> Result<Tool> {
     FileTool::Read.assemble(super::schema::ProjectionMode::Full)
 }
@@ -23,7 +24,8 @@ pub fn write() -> Result<Tool> {
     FileTool::Write.assemble(super::schema::ProjectionMode::Full)
 }
 
-/// Replaces one exact, unambiguous match at the source's pinned generation.
+/// Replaces one exact, unambiguous match (or every match with `replace_all`) in
+/// a workspace-relative file, published only at the generation it resolved.
 pub fn edit() -> Result<Tool> {
     FileTool::Edit.assemble(super::schema::ProjectionMode::Full)
 }
@@ -44,9 +46,13 @@ pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
 }
 
 mod inputs;
-pub use inputs::{EditFileInput, FileResult, PatchFileInput, ReadFileInput, WriteFileInput};
+pub use inputs::{
+    EditFileInput, FileResult, PatchFileInput, ReadFileInput, ReadFileResult, WriteFileInput,
+};
 mod executor;
+mod lines;
 pub(crate) use executor::FileTool;
+pub(crate) use lines::unnumbered;
 mod assembly;
 mod authorization;
 mod projection;

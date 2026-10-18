@@ -1,5 +1,6 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
 mod instruction_review;
+mod path_tools;
 use acyclic_harness::{
     OperationId,
     client::{jsonl, prepare_local_prompt},
@@ -22,6 +23,7 @@ enum Mode {
     Jsonl,
     OpenJsonl,
     Dumb,
+    FileTools,
 }
 
 async fn execute(
@@ -105,6 +107,7 @@ async fn execute(
 
 async fn scenario(mode: Mode) {
     let instructions = matches!(mode, Mode::Instructions);
+    let file_tools = matches!(mode, Mode::FileTools);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
@@ -140,7 +143,12 @@ async fn scenario(mode: Mode) {
                         assert!(body.get("instructions").is_none());
                     }
                     requests.send("model").unwrap();
-                    ([("content-type", "text/event-stream")], ANSWER)
+                    let answer = if file_tools {
+                        path_tools::response(&body)
+                    } else {
+                        ANSWER.to_owned()
+                    };
+                    ([("content-type", "text/event-stream")], answer)
                 }
             }),
         );
@@ -158,6 +166,9 @@ async fn scenario(mode: Mode) {
     let settings = directory.path().join("settings");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&settings).unwrap();
+    if file_tools {
+        std::fs::write(workspace.join("example.txt"), "before λ\nsecond line\n").unwrap();
+    }
     if instructions {
         std::fs::write(
             workspace.join("AGENTS.md"),
@@ -211,8 +222,14 @@ async fn scenario(mode: Mode) {
             _ => unreachable!(),
         }
     }
-    assert_eq!(generated, 1);
+    assert_eq!(generated, if file_tools { 4 } else { 1 });
     assert!(counted > 0);
+    if file_tools {
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("example.txt")).unwrap(),
+            "after λ\nsecond line\n"
+        );
+    }
     stop.send(()).unwrap();
     server.await.unwrap();
 }

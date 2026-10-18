@@ -17,6 +17,7 @@ impl StockExecution<'_> {
         }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
+        let mut observed = super::observed::ObservedFold::default();
         let mut text = String::new();
         for step in 0..input.max_steps {
             let model_events = self
@@ -52,6 +53,7 @@ impl StockExecution<'_> {
                         invocation,
                         invocation_index,
                         &mut prior_messages,
+                        &mut observed,
                     )
                     .await?
                 {

@@ -53,6 +53,26 @@ impl FileTool {
         Ok((Some(file), custody))
     }
 
+    /// Validates a model-supplied workspace path before any resolution.
+    fn workspace_path(
+        &self,
+        path: &str,
+        scope: &RuntimeScope,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        self.public_path(path, io)?;
+        if path.len() > scope.limits().path_bytes {
+            return Err(crate::executor::with_history_io(io, |history| {
+                crate::store::guarded_boundary(
+                    history,
+                    crate::wire::ErrorCode::Invalid,
+                    "file path exceeds original task bound",
+                )
+            }));
+        }
+        Ok(())
+    }
+
     fn public_path(&self, path: &str, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(path, history)?;
@@ -82,32 +102,32 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
+                self.workspace_path(&input.0.path, scope, io)?;
                 let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
-                let length = match input.0.range {
-                    Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
-                        range.end.checked_sub(range.start)
-                    }
-                    Some(_) => None,
-                    None => Some(input.0.file.descriptor().byte_length()),
-                };
-                if maximum == 0
+                if input.0.offset == Some(0)
+                    || input.0.limit == Some(0)
+                    || maximum == 0
                     || maximum == u64::MAX
-                    || length.is_none_or(|length| length > maximum)
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
-                        "file selection exceeds text rendering bound",
+                        "read offset and limit are one-based and need a finite rendering bound",
                     ));
                 }
-                (input.0.file, input.1)
+                return Ok((None, input.1));
             }
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
-                self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                self.workspace_path(&input.0.path, scope, io)?;
+                return Ok((None, input.1));
+            }
+            Self::Edit => {
+                let input = decode::<EditFileInput>(&invocation.arguments, work)?;
+                self.workspace_path(&input.0.path, scope, io)?;
+                if input.0.old_string.is_empty() {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
-                        "file path exceeds original task bound",
+                        "edit old_string must be nonempty",
                     ));
                 }
                 return Ok((None, input.1));

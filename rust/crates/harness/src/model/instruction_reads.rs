@@ -5,7 +5,7 @@ impl crate::filesystem::PreparationRecord for crate::tool::files::ReadFileInput 
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         Ok(Some(
             (std::mem::size_of::<Self>() as u64)
-                .checked_add(self.file.logical_owned_bytes()?)
+                .checked_add(self.path.capacity() as u64)
                 .ok_or_else(super::inventory::overflow)?,
         ))
     }
@@ -83,11 +83,7 @@ pub(crate) fn deduplicate_reads(
                         policy: FileProjectionPolicy::ProjectInstructions(source),
                         ..
                     } => {
-                        let key = super::instruction_index::source_key(
-                            source.volume(),
-                            source.path(),
-                            io,
-                        )?;
+                        let key = super::instruction_index::path_key(source.path(), io)?;
                         index_map.set(0, key, Some((index, part_index)), io)?;
                     }
                     ModelContentPart::ToolCall(call) => {
@@ -124,10 +120,10 @@ pub(crate) fn deduplicate_reads(
                 if &call.call_id != call_id || &call.name != name {
                     continue;
                 }
-                let ToolResultContent::Json {
-                    value: Value::String(body),
-                } = content
-                else {
+                let ToolResultContent::Parts { parts } = content else {
+                    continue;
+                };
+                let [ModelDataPart::Text { text: body }] = parts.as_mut_slice() else {
                     continue;
                 };
                 let Some(arguments) = call.arguments.as_object() else {
@@ -135,17 +131,7 @@ pub(crate) fn deduplicate_reads(
                 };
                 if arguments
                     .keys()
-                    .any(|key| !matches!(key.as_str(), "file" | "range"))
-                {
-                    continue;
-                }
-                let Some(file) = arguments.get("file").and_then(Value::as_object) else {
-                    continue;
-                };
-                if file.len() != 5
-                    || ["volume", "path", "version", "descriptor", "display_name"]
-                        .iter()
-                        .any(|key| !file.contains_key(*key))
+                    .any(|key| !matches!(key.as_str(), "path" | "offset" | "limit"))
                 {
                     continue;
                 }
@@ -179,16 +165,11 @@ pub(crate) fn deduplicate_reads(
                     }) if source.is_data() => continue,
                     Err(error) => return Err(error),
                 };
-                if input.0.range.is_some_and(|range| {
-                    range.start != 0 || range.end != input.0.file.descriptor().byte_length()
-                }) {
+                // Only a read of the whole file can repeat the instructions.
+                if input.0.offset.unwrap_or(1) != 1 || input.0.limit.is_some() {
                     continue;
                 }
-                let key = super::instruction_index::source_key(
-                    input.0.file.volume(),
-                    input.0.file.path(),
-                    io,
-                )?;
+                let key = super::instruction_index::path_key(&input.0.path, io)?;
                 let Some((source_message, source_part)) = index_map.get(0, &key, io)? else {
                     continue;
                 };
@@ -202,16 +183,12 @@ pub(crate) fn deduplicate_reads(
                     continue;
                 };
                 let source = InstructionSource::with_identity(file, identity);
-                if !source.same_content(&input.0.file) {
+                // The read names the instruction path; its body must show
+                // exactly the instruction file's bytes.
+                let Some(lines) = crate::tool::files::unnumbered(body) else {
                     continue;
-                }
-                if !with_history_io(io, |work| {
-                    input
-                        .0
-                        .file
-                        .descriptor()
-                        .matches_bytes(body.as_bytes(), work)
-                })? {
+                };
+                if !with_history_io(io, |work| file.descriptor().matches_lines(lines, work))? {
                     continue;
                 }
                 *body = with_history_io(io, |work| {
@@ -236,7 +213,7 @@ pub(crate) fn deduplicate_reads(
 #[test]
 fn owned_read_identity_reserves_before_decoding_with_unfunded_negative_control() {
     let file = super::instruction_tests::file("AGENTS.md", "rules", "rules");
-    let arguments = serde_json::json!({"file":file});
+    let arguments = serde_json::json!({"path":file.path()});
     let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
     budget.bytes_encoded = 0;
     let cancellation = acyclic_fs::CancellationToken::new();

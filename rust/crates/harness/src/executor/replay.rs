@@ -110,6 +110,23 @@ pub(crate) async fn replay_execution<'a>(
     Vec<ExecutionRecord>,
     Option<crate::conversation::ContentHold<'a>>,
 )> {
+    replay_execution_after(journal, operation_id, 0, maximum_selected, select, io).await
+}
+
+/// Validates the whole journal but selects only records after sequence
+/// `after`, so a caller folding the journal copies each record once.
+pub(crate) async fn replay_execution_after<'a>(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    after: u64,
+    maximum_selected: usize,
+    select: impl Fn(&ExecutionEvent) -> bool,
+    io: Option<&'a PreparationIo>,
+) -> Result<(
+    u64,
+    Vec<ExecutionRecord>,
+    Option<crate::conversation::ContentHold<'a>>,
+)> {
     validate_journal(journal, io)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let output_before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -136,7 +153,7 @@ pub(crate) async fn replay_execution<'a>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let page_bytes = page.capacity() as u64 * std::mem::size_of::<ExecutionRecord>() as u64;
         for record in page {
-            if select(&record.event) {
+            if record.sequence > after && select(&record.event) {
                 if selected.len() >= maximum_selected {
                     return Err(Error::Invalid(
                         "selected execution records exceed bound".into(),

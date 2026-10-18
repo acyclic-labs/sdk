@@ -60,6 +60,40 @@ impl ProjectionMode {
             Self::Reference => output::<ReferenceProjection<'_>>(),
         }
     }
+
+    /// Generates the model envelope of a result rendered as plain text.
+    pub fn text_schema(self) -> Result<Value> {
+        match self {
+            Self::Full => output::<TextProjection<'_>>(),
+            Self::Reference => output::<ReferenceProjection<'_>>(),
+        }
+    }
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TextPart<'a> {
+    Text { text: &'a str },
+}
+
+/// Text the model reads verbatim; providers never JSON-quote a parts result.
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TextProjection<'a> {
+    Parts { parts: [TextPart<'a>; 1] },
+}
+
+pub(crate) fn project_text(
+    text: &str,
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    super::value(
+        &TextProjection::Parts {
+            parts: [TextPart::Text { text }],
+        },
+        u64::MAX,
+        work,
+    )
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -109,6 +143,17 @@ pub(crate) fn summary_reference(
     arguments: std::fmt::Arguments<'_>,
     work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
+    let (text, _allocation) = bounded_format(maximum, arguments, work)?;
+    project_reference(file, &text, work)
+}
+
+/// Formats a short model-facing summary into a preclaimed, charged buffer,
+/// returned with the custody that accounts for it.
+pub(crate) fn bounded_format(
+    maximum: usize,
+    arguments: std::fmt::Arguments<'_>,
+    work: crate::NativeWork<'_>,
+) -> Result<(String, crate::NativeCustody)> {
     use std::fmt::Write as _;
     let mut allocation = super::edit::allocation(work, std::mem::size_of::<String>())?;
     let mut text = String::new();
@@ -147,7 +192,7 @@ pub(crate) fn summary_reference(
             .unwrap_or_else(|| invalid(&allocation, "file summary formatting failed")));
     }
     drop(writer);
-    project_reference(file, &text, work)
+    Ok((text, allocation))
 }
 
 #[cfg(test)]
@@ -156,52 +201,63 @@ mod tests {
     use crate::executor::compile_json_schema;
     use crate::tool::{
         ToolInvocation, ToolProjection, ToolResult,
-        files::{self, FileProjection, FileResult, ReadFileInput},
+        files::{self, FileProjection, FileResult, ReadFileInput, ReadFileResult},
     };
     use serde_json::json;
 
     #[test]
-    fn existing_file_results_support_reference_projection_without_changing_canonical_values()
-    -> Result<()> {
+    fn file_results_project_as_text_or_reference_without_changing_canonical_values() -> Result<()> {
         use crate::model::{FileProjectionPolicy, ModelDataPart, ToolResultContent};
         let file = crate::tool::tests::file(b"exact")?;
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "file-projection".into(),
             name: "read".into(),
-            arguments: json!({"file":file}),
+            arguments: json!({"path":file.path()}),
         };
         let published = ToolResult {
             value: json!(FileResult { file: file.clone() }),
         };
         let read = ToolResult {
-            value: json!("exact"),
+            value: json!(ReadFileResult {
+                file: file.clone(),
+                offset: 1,
+                text: "exact".into(),
+            }),
         };
+        let expected_full = [
+            format!("Updated {} (5 bytes).", file.path()),
+            "     1\texact".to_owned(),
+        ];
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
-            for (projector, result, schema) in [
+            for ((projector, result), full) in [
                 (
                     &FileProjection::Publication(mode) as &dyn ToolProjection,
                     &published,
-                    mode.schema::<FileResult>()?,
                 ),
-                (
-                    &FileProjection::Read(mode) as &dyn ToolProjection,
-                    &read,
-                    mode.schema::<String>()?,
-                ),
-            ] {
+                (&FileProjection::Read(mode) as &dyn ToolProjection, &read),
+            ]
+            .into_iter()
+            .zip(&expected_full)
+            {
                 let projection = projector.project(&invocation, result, None)?.0;
-                let validator = compile_json_schema(&schema, "file projection", &mut None)?;
+                let validator =
+                    compile_json_schema(&mode.text_schema()?, "file projection", &mut None)?;
                 assert!(validator.is_valid(&projection));
-                if mode == ProjectionMode::Full {
-                    assert_eq!(projection, json!({"kind":"json","value":result.value}));
-                    continue;
-                }
                 let wire: ToolResultContent = serde_json::from_value(projection.clone())
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let ToolResultContent::Parts { parts } = wire else {
-                    panic!("reference parts")
+                    panic!("file projections are parts")
                 };
+                if mode == ProjectionMode::Full {
+                    // Text parts reach the model verbatim: no JSON quoting,
+                    // no byte arrays, no file reference.
+                    assert_eq!(parts, vec![ModelDataPart::Text { text: full.clone() }]);
+                    let mut changed = projection;
+                    changed["parts"][0]["kind"] = json!("file");
+                    assert!(!validator.is_valid(&changed));
+                    continue;
+                }
                 assert!(
                     matches!(parts.get(1), Some(ModelDataPart::File { file:actual, policy:FileProjectionPolicy::Reference }) if actual==&file)
                 );
@@ -213,17 +269,23 @@ mod tests {
                 assert!(!validator.is_valid(&changed));
             }
         }
-        assert!(
-            FileProjection::Read(ProjectionMode::Reference)
-                .project(
-                    &invocation,
-                    &ToolResult {
-                        value: json!("changed")
-                    },
-                    None
-                )
-                .is_err()
-        );
+        for (offset, text) in [(1, "longer than the file"), (0, "exact")] {
+            assert!(
+                FileProjection::Read(ProjectionMode::Full)
+                    .project(
+                        &invocation,
+                        &ToolResult {
+                            value: json!(ReadFileResult {
+                                file: file.clone(),
+                                offset,
+                                text: text.into(),
+                            })
+                        },
+                        None
+                    )
+                    .is_err()
+            );
+        }
         Ok(())
     }
 
@@ -239,7 +301,15 @@ mod tests {
             "projection",
             &mut None,
         )?;
-        assert!(input.is_valid(&json!({"file":file})));
+        assert!(input.is_valid(&json!({"path":"src/lib.rs","offset":2,"limit":3})));
+        for invalid in [
+            json!({"file":file}),
+            json!({"path":""}),
+            json!({"path":"a","offset":0}),
+            json!({"path":"a","limit":0}),
+        ] {
+            assert!(!input.is_valid(&invalid));
+        }
         assert!(output.is_valid(&canonical));
         let envelope = project_json(&result, None)?.0;
         assert!(projection.is_valid(&envelope));
@@ -279,10 +349,18 @@ mod tests {
         let file = crate::tool::tests::file(b"exact")?;
         let edit = files::edit()?;
         let patch = files::patch_file(8192, 8)?;
+        let edit_schema = compile_json_schema(&edit.definition.input_schema, "edit", &mut None)?;
+        assert!(edit_schema.is_valid(
+            &json!({"path":"a.txt","old_string":"x","new_string":"","replace_all":true})
+        ));
         for (schema, value) in [
             (
                 &edit.definition.input_schema,
-                json!({"file":file,"old_text":"","new_text":"x"}),
+                json!({"path":"a.txt","old_string":"","new_string":"x"}),
+            ),
+            (
+                &edit.definition.input_schema,
+                json!({"file":file,"old_text":"exact","new_text":"x"}),
             ),
             (
                 &patch.definition.input_schema,
@@ -291,9 +369,7 @@ mod tests {
         ] {
             assert!(!compile_json_schema(schema, "edit", &mut None)?.is_valid(&value));
         }
-        let mut invalid = json!({"file":file});
-        invalid["file"]["path"] = json!("../escape");
-        assert!(serde_json::from_value::<ReadFileInput>(invalid).is_err());
+        assert!(serde_json::from_value::<ReadFileInput>(json!({"file":file})).is_err());
         Ok(())
     }
 }

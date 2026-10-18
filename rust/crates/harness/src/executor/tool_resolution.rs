@@ -70,6 +70,8 @@ impl StockExecution<'_> {
         if error.is_native_failure() {
             return Err(error);
         }
+        #[cfg(test)]
+        tracing::error!(%operation_id, call_id, ?reason, ?error, "admitted tool rejected");
         let (tail, current) = self
             .tool_records(journal, operation_id, step, call_id)
             .await?;
@@ -144,6 +146,7 @@ impl StockExecution<'_> {
         invocation: ToolInvocation,
         invocation_index: usize,
         prior_messages: &mut Vec<ModelMessage>,
+        observed: &mut super::observed::ObservedFold,
     ) -> Result<ExecutionProgress<()>> {
         let span = obs_span!("acyclic.harness.executor.tool_call", step = step);
         let call = self.settle_tool_call(
@@ -153,6 +156,7 @@ impl StockExecution<'_> {
             invocation,
             invocation_index,
             prior_messages,
+            observed,
         );
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some() {

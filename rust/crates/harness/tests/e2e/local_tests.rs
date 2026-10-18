@@ -30,25 +30,6 @@ proptest::proptest! {
 
 proptest::proptest! {
     #[test]
-    fn seeded_reference_binding_preserves_other_arguments_and_text(
-        text in ".{0,48}", pinned in proptest::bool::ANY,
-    ) {
-        use acyclic_harness::{model::{ModelEvent, ToolCall}, test_support::{ScriptedEvent, ScriptedTurn}};
-        use serde_json::json;
-        let name = if pinned { "read@portable-6" } else { "read" };
-        let script = vec![ScriptedTurn::Events(vec![ScriptedEvent::Event(ModelEvent::ToolCall(
-            ToolCall::new("call".into(), name.into(), json!({"file":"seed","range":{"start":2,"end":4},"text":text})),
-        ))]), ScriptedTurn::Text(text.clone())];
-        let reference = json!({"immutable":"generation", "path":"seed", "text":text});
-        let references = std::collections::BTreeMap::from([("seed".into(), reference.clone())]);
-        let bound = super::local_case::bind_seed_files(script.clone(), &references).unwrap();
-        let mut expected = serde_json::to_value(&script)?;
-        expected[0][0]["arguments"]["file"] = reference;
-        proptest::prop_assert_eq!(serde_json::to_value(bound)?, expected);
-        proptest::prop_assert!(super::local_case::bind_seed_files(script, &Default::default()).is_err());
-    }
-
-    #[test]
     fn model_result_oracle_rejects_loss_duplicates_identity_and_content(text in ".{0,48}") {
         use serde_json::json;
         let result = json!({"name":"read", "content":{"kind":"json","value":text}});
@@ -119,20 +100,20 @@ fn local_schema_requires_outcome_frames_files_and_known_fields() -> crate::TestR
 async fn read_family_rejects_a_valid_but_wrong_selected_range() -> crate::TestResult {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline =
-        super::scenario::load_value(&root, &root.join("default-tools/read/middle.json"))?;
+        super::scenario::load_value(&root, &root.join("default-tools/read/second-line.json"))?;
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
         super::drivers::run(baseline.clone()),
     )
     .await??;
     let mut broken = baseline;
-    broken["turns"][0][0]["arguments"]["range"]["start"] = 2.into();
+    broken["turns"][0][0]["arguments"]["offset"] = 1.into();
     let error = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         super::drivers::run(broken),
     )
     .await?
-    .expect_err("accepted the wrong selected bytes");
+    .expect_err("accepted the wrong selected lines");
     assert!(error.to_string().contains("model tool result"), "{error}");
     Ok(())
 }
@@ -286,4 +267,51 @@ proptest::proptest! {
             proptest::prop_assert!(error.to_string().contains("sequence has a gap"));
         }
     }
+}
+
+#[test]
+fn publication_oracle_folds_history_and_requires_declared_intermediates() {
+    use std::collections::BTreeMap;
+    let files = BTreeMap::from([("plans/a.md".to_owned(), Some("from edit\n".to_owned()))]);
+    let history = BTreeMap::from([(
+        "plans/a.md".to_owned(),
+        vec![b"from bash\n".to_vec(), b"from edit\n".to_vec()],
+    )]);
+    let declared = |contents: &[&str]| {
+        BTreeMap::from([(
+            "plans/a.md".to_owned(),
+            contents.iter().map(|text| (*text).to_owned()).collect(),
+        )])
+    };
+    let check = super::local_execution::check_publications;
+    assert!(check(&files, &declared(&["from bash\n", "from edit\n"]), &history).is_ok());
+    // Negative controls: an undeclared, reordered or missing intermediate, a
+    // wrong final state, and a declaration that never happened are rejected.
+    for wrong in [
+        BTreeMap::new(),
+        declared(&["from edit\n", "from bash\n"]),
+        declared(&["from edit\n"]),
+    ] {
+        assert!(check(&files, &wrong, &history).is_err());
+    }
+    let stale = BTreeMap::from([("plans/a.md".to_owned(), Some("from bash\n".to_owned()))]);
+    assert!(check(&stale, &declared(&["from bash\n", "from edit\n"]), &history).is_err());
+    let mut ghost = declared(&["from bash\n", "from edit\n"]);
+    ghost.insert("plans/b.md".into(), vec!["never\n".into()]);
+    assert!(check(&files, &ghost, &history).is_err());
+    let single = BTreeMap::from([("plans/a.md".to_owned(), vec![b"from edit\n".to_vec()])]);
+    assert!(check(&files, &BTreeMap::new(), &single).is_ok());
+    // Republishing identical bytes is not an intermediate state.
+    let repeated = BTreeMap::from([(
+        "plans/a.md".to_owned(),
+        vec![
+            b"from edit
+"
+            .to_vec(),
+            b"from edit
+"
+            .to_vec(),
+        ],
+    )]);
+    assert!(check(&files, &BTreeMap::new(), &repeated).is_ok());
 }

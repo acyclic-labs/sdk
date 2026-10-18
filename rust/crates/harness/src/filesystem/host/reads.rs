@@ -1,5 +1,6 @@
 use super::*;
 mod media_type;
+mod window;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -251,6 +252,66 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Option<crate::OperationId>,
     )> {
         self.require_private_directory(volume, grant, path, io)?;
+        self.resolve_path(
+            volume,
+            PathGrant::Read(grant),
+            path,
+            expected_generation,
+            maximum_bytes,
+            None,
+            io,
+        )
+        .await
+    }
+
+    /// Resolves the file at a path on the writer's current head. Write
+    /// authority over the volume admits observing the destination it replaces.
+    pub(crate) async fn current_path(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        maximum_bytes: u64,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        crate::executor::with_history_io(io, |work| volume.validate(work))?;
+        grant.require(volume, crate::conversation::VolumeOperation::Write, io)?;
+        if volume.provider() != &self.provider || crate::conversation::is_internal_path(path) {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unauthorized,
+                "path belongs to another provider or internal storage",
+            ));
+        }
+        let (file, bytes, _) = self
+            .resolve_path(
+                volume,
+                PathGrant::Write,
+                path,
+                None,
+                maximum_bytes,
+                window,
+                io,
+            )
+            .await?;
+        Ok((file, bytes))
+    }
+
+    async fn resolve_path(
+        &self,
+        volume: &VolumeRef,
+        grant: PathGrant<'_>,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        window: Option<crate::conversation::LineWindow>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
@@ -281,36 +342,54 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             crate::executor::preparation_format(format_args!("/{path}"), work)
         })?;
         let _requested_hold = io.guard_owned(requested.capacity() as u64)?;
-        let bytes = read_generation(&generation, &requested, maximum_bytes, Some(io)).await?;
-        let metadata_path = content_metadata_path_io(path, true, Some(io))?;
-        let _metadata_path_hold = io.guard_owned(metadata_path.capacity() as u64)?;
-        let metadata = read_generation(
-            &generation,
-            &metadata_path,
-            io.remaining()?.source_bytes_read,
-            Some(io),
-        )
-        .await;
-        let staged: Option<FileRef> = match metadata {
-            Ok(metadata) => Some(io.decode_json(&metadata)?),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
+        // A line window streams the file: the whole body is hashed and
+        // classified to identify the version, but only its lines are kept.
+        let (bytes, scanned) = match window {
+            None => (
+                read_generation(&generation, &requested, maximum_bytes, Some(io)).await?,
+                None,
+            ),
+            Some(window) => {
+                let (lines, scanned) =
+                    window::scan(&generation, &requested, maximum_bytes, window, io).await?;
+                (lines, Some(scanned))
+            }
         };
+        let staged = self
+            .publication_range(
+                &workspace,
+                &generation,
+                volume,
+                path,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                io,
+            )
+            .await?
+            .map(|(file, _)| file);
         let _staged_hold = staged
             .as_ref()
             .map(|file| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
         let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Storage,
-                    "private file metadata does not match the file",
-                ));
+            match &scanned {
+                Some(scanned)
+                    if scanned.length != staged.descriptor().byte_length()
+                        || &scanned.sha256 != staged.descriptor().sha256() =>
+                {
+                    return Err(stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Invalid,
+                        "file content does not match its descriptor",
+                    ));
+                }
+                Some(_) => {}
+                None => crate::executor::with_history_io(Some(io), |work| {
+                    staged.descriptor().verify(&bytes, work)
+                })?,
             }
-            crate::executor::with_history_io(Some(io), |work| {
-                staged.descriptor().verify(&bytes, work)
-            })?;
             (
                 FileDescriptor::new(
                     *staged.descriptor().sha256(),
@@ -320,12 +399,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 stock_string_copy(staged.display_name(), Some(io))?,
             )
         } else {
-            (
-                crate::executor::with_history_io(Some(io), |work| {
+            let descriptor = match &scanned {
+                Some(scanned) => FileDescriptor::new(
+                    scanned.sha256,
+                    scanned.length,
+                    stock_string_copy(scanned.media_type, Some(io))?,
+                )?,
+                None => crate::executor::with_history_io(Some(io), |work| {
                     FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
                 })?,
-                stock_string_copy(name, Some(io))?,
-            )
+            };
+            (descriptor, stock_string_copy(name, Some(io))?)
         };
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
@@ -338,19 +422,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        grant.require_file_read(&reference, Some(io))?;
-        if staged.is_some() {
-            // Upload metadata carries the publication operation, not a sentinel.
-            // Reuse range authentication to bind it to the original atomic write.
-            self.read_pinned_range(
-                &reference,
-                acyclic_fs::ByteRange {
-                    offset: 0,
-                    length: 0,
-                },
-                Some(io),
-            )
-            .await?;
+        if let PathGrant::Read(grant) = grant {
+            grant.require_file_read(&reference, Some(io))?;
         }
         let publication = staged
             .as_ref()
@@ -420,7 +493,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(reference_hold);
         Ok(chunk.bytes)
     }
+}
 
+/// Authority under which a path is resolved to its current file.
+#[derive(Clone, Copy)]
+enum PathGrant<'a> {
+    /// A verified directory or volume read grant, checked against the result.
+    Read(&'a ContentGrant),
+    /// The caller verified whole-volume write authority.
+    Write,
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(in crate::filesystem) fn require_private_directory(
         &self,
         volume: &VolumeRef,

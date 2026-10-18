@@ -274,12 +274,21 @@ pub(super) async fn read_record_decoded_bounded<A: AsyncAuthorityStore, O: Async
             drop(raw);
             value.map(Some)
         }
-        Err(error) if journal_absent(&error) => Ok(None),
+        Err(error) if path_absent(&error) => Ok(None),
         Err(error) => Err(error),
     }
 }
 
-pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    pub(in crate::filesystem) static LEGACY_ABSENCE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub(in crate::filesystem) fn path_absent(error: &Error) -> bool {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if LEGACY_ABSENCE_ONLY.with(std::cell::Cell::get) {
+        return matches!(error, Error::NotFound(_));
+    }
     match error {
         Error::NotFound(_) => true,
         #[cfg(not(target_arch = "wasm32"))]

@@ -17,6 +17,7 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     owner: Arc<TaskJournalOwner<P>>,
     handle: ProjectSourceReadHandle,
     generation: Generation<A, O>,
+    workspace: acyclic_fs::Workspace<A, O>,
     limits: Limits,
     pub(super) io: PreparationIo,
     pub(super) serial: tokio::sync::Mutex<()>,
@@ -60,6 +61,7 @@ where
             owner,
             handle,
             generation,
+            workspace,
             limits,
             io,
             serial: tokio::sync::Mutex::new(()),
@@ -318,27 +320,24 @@ where
         let bytes = bytes?;
         self.io
             .retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        let metadata_path =
-            crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
-        let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         Self::verify_owner(&self.owner, &self.io).await?;
-        let metadata = self
-            .generation
-            .read(
-                &metadata_path,
-                self.io.remaining()?.source_bytes_read,
-                self.io.remaining()?,
-                self.io.cancellation(),
+        let staged = self
+            .host
+            .publication_range(
+                &self.workspace,
+                &self.generation,
+                volume,
+                path,
+                acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: 0,
+                },
+                &self.io,
             )
             .await;
-        let metadata = self.io.receive(metadata);
         Self::verify_owner(&self.owner, &self.io).await?;
+        let staged = staged?.map(|(file, _)| file);
         let display_name = path.rsplit('/').next().unwrap_or(path);
-        let staged = match metadata {
-            Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
         self.io.charge(WorkCounters {
             bytes_hashed: bytes.len() as u64,
             ..WorkCounters::default()
@@ -346,11 +345,6 @@ where
         let raw_descriptor;
         let _descriptor_hold;
         let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path {
-                return Err(Error::Storage(
-                    "selected file metadata does not match immutable data".into(),
-                ));
-            }
             staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())

@@ -307,7 +307,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let journal = preparation_journal(&host.provider, request.operation_id, self.io)?;
         match (host).resolve(&journal, self.io).await {
             Ok(_) => {}
-            Err(error) if journal_absent(&error) => return Ok(None),
+            Err(error) if path_absent(&error) => return Ok(None),
             Err(error) => return Err(error),
         }
         if !read_claim(

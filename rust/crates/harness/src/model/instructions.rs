@@ -94,12 +94,6 @@ impl<'a> InstructionSource<'a> {
         })
     }
 
-    pub(crate) fn same_content(self, other: &FileRef) -> bool {
-        self.same_identity(other)
-            && self.file.descriptor().sha256() == other.descriptor().sha256()
-            && self.file.descriptor().byte_length() == other.descriptor().byte_length()
-    }
-
     pub(crate) fn same_source(
         self,
         other: Self,
@@ -115,10 +109,6 @@ impl<'a> InstructionSource<'a> {
 
     pub(super) fn index_key(self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
         super::instruction_index::source_key_history(self.volume, self.path, work)
-    }
-
-    pub(crate) fn same_identity(self, other: &FileRef) -> bool {
-        self.volume == other.volume() && self.path == other.path()
     }
 }
 

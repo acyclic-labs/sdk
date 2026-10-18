@@ -2,10 +2,11 @@ use super::instruction_tests::file;
 use super::*;
 use proptest::prelude::*;
 
-fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
-    let mut arguments = serde_json::json!({"file": file});
-    if let Some((start, end)) = range {
-        arguments["range"] = serde_json::json!({"start":start,"end":end});
+/// A read of `file` and its `cat -n` projection; `limit` makes it partial.
+fn exchange(file: &FileRef, limit: Option<u64>) -> [ModelMessage; 2] {
+    let mut arguments = serde_json::json!({"path": file.path()});
+    if let Some(limit) = limit {
+        arguments["limit"] = serde_json::json!(limit);
     }
     [
         ModelMessage {
@@ -21,13 +22,14 @@ fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
             content: ModelContent::Part(ModelContentPart::ToolResult {
                 call_id: "reused".into(),
                 name: "read".into(),
-                content: ToolResultContent::Json {
-                    value: Value::String("rules".into()),
+                content: ToolResultContent::Parts {
+                    parts: vec![ModelDataPart::Text { text: SHOWN.into() }],
                 },
             }),
         },
     ]
 }
+const SHOWN: &str = "     1\trules";
 fn fixture(reads: usize) -> Vec<ModelMessage> {
     let source = file("AGENTS.md", "rules", "rules");
     let mut messages = vec![project_instruction(&source.clone().into(), None).unwrap()];
@@ -38,15 +40,16 @@ fn fixture(reads: usize) -> Vec<ModelMessage> {
 }
 fn result_body(message: &ModelMessage) -> &str {
     let ModelContent::Part(ModelContentPart::ToolResult {
-        content: ToolResultContent::Json {
-            value: Value::String(body),
-        },
+        content: ToolResultContent::Parts { parts },
         ..
     }) = &message.content
     else {
         panic!("result exchange lost")
     };
-    body
+    let [ModelDataPart::Text { text }] = parts.as_slice() else {
+        panic!("result text lost")
+    };
+    text
 }
 #[test]
 fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
@@ -58,7 +61,7 @@ fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
             } else {
                 file("other.md", "rules", "rules")
             };
-            let unrelated = exchange(&other, partial.then_some((0, 2)));
+            let unrelated = exchange(&other, partial.then_some(1));
             let repeated = exchange(&source, None);
             let mut messages = vec![project_instruction(&source.clone().into(), None).unwrap()];
             let (first, second) = if unrelated_first {
@@ -72,7 +75,7 @@ fn reused_ids_consume_pending_calls_in_both_orders_and_partial_reads() {
             deduplicate_reads(&mut messages, None).unwrap();
             assert_eq!([messages[1].clone(), messages[3].clone()], calls);
             let (kept, deduped) = if unrelated_first { (2, 4) } else { (4, 2) };
-            assert_eq!(result_body(&messages[kept]), "rules");
+            assert_eq!(result_body(&messages[kept]), SHOWN);
             assert!(result_body(&messages[deduped]).starts_with("Read completed;"));
         }
     }
@@ -106,11 +109,13 @@ proptest! {
                     use sha2::Digest;
                     for exchange in messages[1..].chunks_exact_mut(2) {
                         let ModelContent::Part(ModelContentPart::ToolCall(call))=&exchange[0].content else { unreachable!() };
-                        let input:crate::tool::files::ReadFileInput=serde_json::from_value(call.arguments.clone()).unwrap();
-                        let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Json{value:Value::String(body)},.. })=&mut exchange[1].content else { unreachable!() };
-                        let hash:[u8;32]=sha2::Sha256::digest(body.as_bytes()).into();
-                        assert_eq!(hash,*input.file.descriptor().sha256());
-                        acyclic_test_support::differential::record(("verify",body.len() as u64));
+                        assert_eq!(call.arguments,serde_json::json!({"path":"AGENTS.md"}));
+                        let ModelContent::Part(ModelContentPart::ToolResult { content:ToolResultContent::Parts{parts},.. })=&mut exchange[1].content else { unreachable!() };
+                        let [ModelDataPart::Text{text:body}]=parts.as_mut_slice() else { unreachable!() };
+                        let shown=body.strip_prefix("     1\t").unwrap();
+                        let hash:[u8;32]=sha2::Sha256::digest(shown.as_bytes()).into();
+                        assert_eq!(hash,*file("AGENTS.md", "rules", "rules").descriptor().sha256());
+                        acyclic_test_support::differential::record(("verify",shown.len() as u64));
                         *body="Read completed; instructions already included from AGENTS.md for ..".into();
                     }
                     messages

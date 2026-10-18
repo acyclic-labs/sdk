@@ -1,4 +1,5 @@
 use super::*;
+use crate::executor::observed::ObservedFold;
 
 #[tokio::test]
 async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<()> {
@@ -422,14 +423,30 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     let before = messages.clone();
     assert!(matches!(
         StockExecution::ordinary(&base)
-            .settle_tool_call(&journal, operation, 0, invocation.clone(), 0, &mut messages)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut messages,
+                &mut ObservedFold::default(),
+            )
             .await,
         Err(Error::Unauthorized(_))
     ));
     let contextual = base.with_task_context(&context, operation)?;
     assert!(matches!(
         StockExecution::ordinary(&contextual)
-            .settle_tool_call(&journal, operation, 0, invocation, 0, &mut messages)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                invocation,
+                0,
+                &mut messages,
+                &mut ObservedFold::default(),
+            )
             .await,
         Err(Error::Unsupported(_))
     ));
