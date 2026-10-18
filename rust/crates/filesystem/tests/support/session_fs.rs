@@ -9,6 +9,7 @@ pub struct History {
     pub floor: u64,
     pub unchecked: bool,
     pub skip: u64,
+    pub stale_head: bool,
     pub gate: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>, bool)>,
 }
 impl History {
@@ -18,6 +19,7 @@ impl History {
             floor: 0,
             unchecked: false,
             skip: 0,
+            stale_head: false,
             gate: None,
         }
     }
@@ -42,7 +44,11 @@ impl StreamProvider for History {
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.inner.fork(request).await
     }
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
+        // Negative control: serve an old live head after the terminal fact.
+        if self.stale_head {
+            request.from = 1;
+        }
         self.inner.read(request).await
     }
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {

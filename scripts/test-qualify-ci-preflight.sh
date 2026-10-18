@@ -194,7 +194,7 @@ cat >"$gate/bin/mcp_loom" <<'EOF'
 case "${1:-}" in
   distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
+  hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
 esac
 EOF

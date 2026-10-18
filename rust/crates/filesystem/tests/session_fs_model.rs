@@ -63,6 +63,17 @@ fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
     .unwrap();
     let mut payloads = vec![Bytes::new(), Bytes::from(created)];
     for text in texts {
+        if *text == "deleted" {
+            payloads.push(Bytes::from(
+                acyclic_fs::kernel::encode_workspace_deleted::<acyclic_fs::FsError>(
+                    sub.volume_id,
+                    |_| Ok(()),
+                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed.into(),
+                )
+                .unwrap(),
+            ));
+            continue;
+        }
         let publication = PublishedGeneration {
             volume_id: sub.volume_id,
             generation_root: root(text.as_bytes()),
@@ -372,4 +383,74 @@ fn revocation(skip_authorization: bool) {
 fn resumed_buffered_delivery_exhausts_revocation() {
     revocation(false);
     control(|| revocation(true), "delivery skipped authorization");
+}
+
+// Empty opaque cursors select the separate follow/tail/read branch. No barrier
+// orders those awaits against append/recovery: the real shim explores each gap.
+fn fresh_open(replace: bool, start_next: u64, stale_head: bool) {
+    let fixture = input(if replace {
+        &["original", "original-tail"]
+    } else {
+        &["original"]
+    });
+    let deleted = input(&[if replace { "replacement" } else { "original" }, "deleted"]);
+    verification::check(move || {
+        let (mut sub, records) = fixture.clone();
+        sub.start_next = start_next;
+        let stream = Arc::new(MemoryStream::default());
+        append(&stream, &sub, &records, 0);
+        let keeper = ManuallyDrop::new(stream.clone());
+        let replacement = MemoryStream::default();
+        append(&replacement, &sub, &deleted.1, 0);
+        let writer = loom::thread::spawn({
+            let stream = stream.clone();
+            let sub = sub.clone();
+            let terminal = deleted.1[3].clone();
+            move || {
+                if replace {
+                    run(verification::recover(&stream, &replacement)).unwrap();
+                } else {
+                    append(&stream, &sub, &[terminal], 3);
+                }
+            }
+        });
+        let mut history = support::History::new(stream);
+        history.stale_head = stale_head;
+        let provider = Provider::new(Arc::new(history), |_: &Subscription| Ok(()));
+        let error = run(async {
+            match provider
+                .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
+                .unwrap()
+                .open
+                .await
+            {
+                Err(error) => error,
+                Ok(mut source) => source
+                    .next()
+                    .await
+                    .expect("fresh follow ended")
+                    .unwrap_err(),
+            }
+        });
+        // A future start can be rejected before the append linearizes. Replacing
+        // a live unchecked follow closes its old watch with Unavailable. Neither
+        // permits advancing a cursor or remaining idle after the terminal fact.
+        match error {
+            StreamError::NotFound => {}
+            StreamError::OutOfRange if !replace && start_next == 4 => {}
+            StreamError::Unavailable if replace => {}
+            other => panic!("unexpected fresh-open error: {other:?}"),
+        }
+        writer.join().unwrap();
+        drop(ManuallyDrop::into_inner(keeper));
+        Ok(())
+    });
+}
+#[test]
+fn fresh_open_exhausts_deletion_and_history_replacement() {
+    fresh_open(false, 3, false);
+    fresh_open(false, 4, false);
+    fresh_open(true, 4, false);
+    control(|| fresh_open(false, 4, true), "deadlock");
+    control(|| fresh_open(true, 4, true), "deadlock");
 }
