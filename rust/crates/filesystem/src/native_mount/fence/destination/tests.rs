@@ -10,7 +10,7 @@ enum Control {
 
 // The independent expectation describes the four physical mutations: remove
 // the exact empty directory, lock the registry, unlink the fence, unlock.
-fn expected(before: crate::WorkCounters, live: u64, leaf: &str) -> crate::WorkCounters {
+pub(super) fn expected(before: crate::WorkCounters, live: u64, leaf: &str) -> crate::WorkCounters {
     let mut expected = before;
     expected.items_examined += leaf.len() as u64;
     expected.bytes_copied += leaf.len() as u64;

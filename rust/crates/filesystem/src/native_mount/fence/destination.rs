@@ -1,7 +1,20 @@
 use super::*;
 
 #[cfg(all(test, target_os = "linux", not(acyclic_fs_native_loom)))]
+mod retry_tests;
+#[cfg(all(test, target_os = "linux", not(acyclic_fs_native_loom)))]
 mod tests;
+
+fn cleanup_work(_name: &[crate::native_host::NativeUnit]) -> crate::WorkCounters {
+    crate::WorkCounters {
+        backend_write_operations: 1,
+        #[cfg(windows)]
+        backend_read_operations: 1,
+        #[cfg(windows)]
+        items_examined: _name.len() as u64,
+        ..crate::WorkCounters::UNCHARGED
+    }
+}
 
 impl MountDestinationGuard {
     pub(in crate::native_mount) fn prepare_destination_cleanup(
@@ -19,24 +32,13 @@ impl MountDestinationGuard {
             .file_name()
             .ok_or(NativeMountError::InvalidDestination)?;
         let prepared = crate::native_host::prepare_leaf(Path::new(leaf), &mut &*native)?;
-        let mut credit = native.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1,
-            #[cfg(windows)]
-            backend_read_operations: 1,
-            #[cfg(windows)]
-            items_examined: prepared.0.len() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        self.birth_cleanup
-            .as_mut()
-            .ok_or(NativeMountError::ControlPending)?
-            .absorb(&mut credit)?;
-        self.destination_cleanup = Some(prepared);
+        let credit = native.reserve_work(cleanup_work(&prepared.0))?;
+        self.destination_cleanup = Some((prepared.0, prepared.1, credit));
         Ok(())
     }
 
     pub(in crate::native_mount) fn remove_destination(&mut self) -> Result<(), NativeMountError> {
-        let Some((name, _)) = self.destination_cleanup.as_ref() else {
+        let Some((name, _, credit)) = self.destination_cleanup.as_mut() else {
             return Ok(());
         };
         // Physical namespace producers have stopped, but this destination's
@@ -48,10 +50,7 @@ impl MountDestinationGuard {
             .parent_directory
             .as_ref()
             .ok_or(NativeMountError::ControlPending)?;
-        let credit = self
-            .birth_cleanup
-            .as_ref()
-            .ok_or(NativeMountError::ControlPending)?;
+        credit.refill_cleanup(cleanup_work(name))?;
         let mut work = NativeFenceReleaseWork {
             credit,
             wait: None,

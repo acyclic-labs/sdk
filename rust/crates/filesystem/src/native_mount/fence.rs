@@ -19,10 +19,14 @@ pub(super) struct MountDestinationGuard {
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
     // Allocated and funded before shutdown; retained on a failed exact cleanup.
-    destination_cleanup: Option<(Vec<crate::native_host::NativeUnit>, crate::NativeAllocation)>,
+    destination_cleanup: Option<(
+        Vec<crate::native_host::NativeUnit>,
+        crate::NativeAllocation,
+        crate::NativeWorkReservation,
+    )>,
 }
 
-/// The accepted fence path has no allocator or new cleanup-reservation ingress.
+/// The accepted fence path can spend only its supplied, original-ledger credit.
 pub(super) struct NativeFenceReleaseWork<'a> {
     pub(super) credit: &'a crate::NativeWorkReservation,
     pub(super) wait: Option<&'a crate::CancellationToken>,
@@ -349,7 +353,12 @@ impl MountDestinationGuard {
             crate::materializer::NativeResourceCredit::Copy.delta(NATIVE_FENCE_NAME_BYTES as u64),
         )?;
         let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
-        let credit = native.reserve_work(crate::WorkCounters {
+        let credit = native.reserve_work(Self::cleanup_work())?;
+        Ok((Some(prepared), Some(credit)))
+    }
+
+    fn cleanup_work() -> crate::WorkCounters {
+        crate::WorkCounters {
             // Registry lock, exact fence unlink, and registry unlock. The
             // accepted unlock remains funded even if caller waiting stops.
             backend_write_operations: 3,
@@ -358,8 +367,7 @@ impl MountDestinationGuard {
             #[cfg(windows)]
             items_examined: NATIVE_FENCE_NAME_BYTES as u64,
             ..crate::WorkCounters::UNCHARGED
-        })?;
-        Ok((Some(prepared), Some(credit)))
+        }
     }
 
     fn acquire_files(
@@ -522,6 +530,13 @@ impl MountDestinationGuard {
         let registry = self.registry_file.as_ref().ok_or_else(invalid)?;
         let name = self.cleanup_name.as_ref().ok_or_else(invalid)?;
         let credit = self.birth_cleanup.as_mut().ok_or_else(invalid)?;
+        // Fund the whole transaction before acquiring the global registry.
+        // The unlock has exclusive credit that unlink cannot consume.
+        credit.refill_cleanup(Self::cleanup_work())?;
+        let unlock = credit.partition_work(
+            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            wait,
+        )?;
         let mut work = NativeFenceReleaseWork {
             credit,
             wait,
@@ -539,7 +554,11 @@ impl MountDestinationGuard {
         // cancellation can stop new work, but cannot revoke this accepted
         // physical release and strand all future starters behind the lock.
         let unlocked = crate::native_host::NativeHostWork::attempt_io(
-            &mut work,
+            &mut NativeFenceReleaseWork {
+                credit: &unlock,
+                wait: None,
+                pending: None,
+            },
             crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
             || fence_io::unlock(registry),
         );

@@ -212,6 +212,33 @@ impl NativeWorkReservation {
         *incoming = WorkCounters::UNCHARGED;
         Ok(())
     }
+    /// Funds another attempt at this accepted cleanup from its original finite
+    /// ledger. Cancellation cannot revoke cleanup, and no new ledger is made.
+    #[cfg(any(test, feature = "native-watch"))]
+    pub(crate) fn refill_cleanup(
+        &mut self,
+        maximum: WorkCounters,
+    ) -> Result<(), NativeTreeMaterializationError> {
+        if maximum.allocation_operations != 0 || maximum.peak_allocation_bytes != 0 {
+            return Err(NativeTreeMaterializationError::InvalidLayout);
+        }
+        let available = self
+            .state
+            .get_mut()
+            .available()
+            .map_err(native_materialization_work_error)?;
+        let missing = maximum.intersect_budget(available).remaining(maximum)?;
+        if missing == WorkCounters::UNCHARGED {
+            return Ok(());
+        }
+        // Exclusive reservation custody precedes the original ledger's lock,
+        // as in absorb/partition_work; no new caller permission is admitted.
+        self.meter
+            .state(|state| state.reserve_reconciled(missing))
+            .map_err(native_materialization_work_error)?;
+        let mut retry = Self::new(self.meter.clone(), missing);
+        self.absorb(&mut retry)
+    }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn check_wait(
         &self,

@@ -18,16 +18,24 @@ fn cleanup_after_contended_registry(
     if broken {
         kernel.disable_registry_wait();
     }
-    let work = NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .map_err(|(error, _)| error)
-    .unwrap();
+    let cancellation = crate::CancellationToken::new();
+    let work = NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)
+        .unwrap();
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(destination, false, &work, &mut guard, false).unwrap();
     let mut guard = guard.unwrap();
     let (fence, registry) = MountDestinationGuard::paths_for_canonical(destination).unwrap();
+    // A real failed unlink consumes the original transaction. Retry after
+    // caller cancellation must replenish that same ledger before contending
+    // with the starter; every following lock schedule remains exhaustive.
+    let saved = fence.with_file_name("retained-fence");
+    std::fs::rename(&fence, &saved).unwrap();
+    std::fs::create_dir(&fence).unwrap();
+    cancellation.cancel();
+    assert!(guard.release_cleanup(None).is_err());
+    std::fs::remove_dir(&fence).unwrap();
+    std::fs::rename(saved, &fence).unwrap();
     let registry: MountLockFile = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
