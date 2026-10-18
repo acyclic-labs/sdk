@@ -13,20 +13,31 @@ use rmcp::transport::auth::{AuthorizationCallback, AuthorizationManager, Authori
 use std::sync::Arc;
 
 /// An authorized MCP OAuth session. Only [`authorize`] and [`recover`] create
-/// one, over an explicit [`OAuthHttpClient`]; rmcp's provider-unaware
-/// `AuthorizationManager::new` is not reachable through this crate.
+/// one, over an explicit [`OAuthHttpClient`]. The rmcp manager stays private
+/// and only its token operation is exposed, so rmcp's provider-unaware
+/// `AuthorizationManager::new` is not reachable through this type:
+///
+/// ```
+/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// async fn token(session: &McpAuthorization) -> Option<String> {
+///     session.get_access_token().await.ok()
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use acyclic_harness::mcp::oauth::McpAuthorization;
+/// type Manager = <McpAuthorization as std::ops::Deref>::Target;
+/// async fn bypass() {
+///     drop(Manager::new("http://127.0.0.1:9/").await);
+/// }
+/// ```
 pub struct McpAuthorization(AuthorizationManager);
 
-impl std::ops::Deref for McpAuthorization {
-    type Target = AuthorizationManager;
-    fn deref(&self) -> &AuthorizationManager {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for McpAuthorization {
-    fn deref_mut(&mut self) -> &mut AuthorizationManager {
-        &mut self.0
+impl McpAuthorization {
+    /// Returns the current access token, refreshing it through the session's
+    /// own OAuth HTTP client when it has expired.
+    pub async fn get_access_token(&self) -> std::result::Result<String, AuthError> {
+        self.0.get_access_token().await
     }
 }
 
