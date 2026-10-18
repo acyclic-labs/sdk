@@ -37,6 +37,7 @@ mod config;
 mod context;
 mod files;
 mod inheritance;
+mod routing;
 mod owner;
 mod owner_record;
 mod runtime;

@@ -80,134 +80,127 @@ impl LocalHarness {
             ));
         }
         let task = crate::runtime::task_id_for_admission(operation);
-        let continuation = self.continuation_selection(task).await?;
-        let selected = compact::checkpoints::capture_selection(
-            &self.task_files.inner,
-            parent,
-            self.limits.file_bytes,
-        )
-        .await?
-        .1
-        .is_some();
-        // A completed conversation is continued, never parented: without a
-        // compaction its whole history becomes the selected checkpoint, which
-        // is captured under the admission gate below.
-        let history = continuation.is_none()
-            && !selected
-            && matches!(
-                self.runtime.task_host().outcome(parent).await?,
-                Some(
-                    crate::Outcome::Succeeded(_)
-                        | crate::Outcome::Failed { .. }
-                        | crate::Outcome::Cancelled
-                )
-            )
-            && match self.runtime.task_host().observe_admission(task).await {
-                Err(Error::NotFound(_)) => true,
-                Ok(_) => false,
-                Err(error) => return Err(error),
-            };
-        // Ordinary active children need no terminal-parent probe. Their existing
-        // admission/parent check is already performed by prepare_inheritance.
-        if continuation.is_some() || selected || history {
-            let existing = match self.runtime.task_host().observe_admission(task).await {
-                Ok(record) => Some(record.parent),
-                Err(Error::NotFound(_)) => None,
-                Err(error) => return Err(error),
-            };
-            if continuation.is_none() && existing.is_some_and(|retained| retained != Some(parent)) {
-                return Err(Error::Conflict(
-                    "task admission belongs to another conversation".into(),
-                ));
-            }
-            // Completed executions retain their lifetime boundary. A conversation
-            // continuation is a new root bound to the selected immutable checkpoint.
-            if continuation.is_some()
-                || existing.is_none()
-                    && matches!(
-                        self.runtime.task_host().outcome(parent).await?,
-                        Some(
-                            crate::Outcome::Succeeded(_)
-                                | crate::Outcome::Failed { .. }
-                                | crate::Outcome::Cancelled
-                        )
-                    )
-            {
-                return super::admission::serialized(&self.admission, async || {
-                    let (selected, through) = match self.continuation_selection(task).await? {
-                        Some(selected) => {
-                            let through = selected
-                                .continuation
-                                .as_ref()
-                                .ok_or_else(|| {
-                                    Error::Invalid("continuation lost parent history".into())
-                                })?
-                                .through
-                                .clone();
-                            (selected, through)
-                        }
-                        None => {
-                            let capture = async || {
-                                compact::checkpoints::capture_selection(
-                                    &self.task_files.inner,
-                                    parent,
-                                    self.limits.file_bytes,
-                                )
-                                .await
-                            };
-                            let (mut cut, mut selected, _) = capture().await?;
-                            // Captured under the gate, so a concurrent retry of
-                            // this operation finds the checkpoint instead of
-                            // capturing another history position.
-                            if selected.is_none() && history {
-                                self.checkpoint_history(operation, parent).await?;
-                                (cut, selected, _) = capture().await?;
-                            }
-                            let selected = selected.ok_or_else(|| {
-                                Error::Conflict("continuation lost its checkpoint".into())
-                            })?;
-                            let through = selected.through.clone().unwrap_or(cut.cursor);
-                            (selected, through)
-                        }
-                    };
-                    let (retained, checkpoint) = self
-                        .retain_continuation(task, parent, selected, through, prompt)
-                        .await?;
-                    let prompt = &retained
-                        .continuation
-                        .as_ref()
-                        .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
-                        .prompt;
-                    self.prepare_inheritance(task, None).await?;
-                    let (receive, model) = match self.recover_turn_inputs(operation).await? {
-                        Some(inputs) => inputs,
-                        None => {
-                            let prompt = self.prompt_context(Some(task), prompt).await?;
-                            self.stage_bound_turn(
-                                operation,
-                                &prompt,
-                                checkpoint.boundary.manifest,
-                                self.input_publisher()?.as_ref(),
-                            )
-                            .await?
-                        }
-                    };
-                    self.admit_turn(operation, None, receive, model).await
-                })
-                .await;
-            }
-        }
-        inheritance::admit_prepared(
+        // Routing, history capture, retention and admission share one hold of
+        // the admission gate, so a concurrent retry of this operation observes
+        // a finished admission instead of racing it.
+        super::routing::routed(
             &self.admission,
-            Box::pin(self.prepare_inheritance(task, Some(parent))),
-            Box::pin(async {
-                let prompt = self.prompt_context(Some(task), prompt).await?;
-                let (receive, model) = self.stage_turn(operation, &prompt).await?;
-                self.admit_turn(operation, Some(parent), receive, model)
-                    .await
-            }),
+            async || {
+                if self.continuation_selection(task).await?.is_some() {
+                    return super::routing::route(parent, true, false, false, None);
+                }
+                let selected = compact::checkpoints::capture_selection(
+                    &self.task_files.inner,
+                    parent,
+                    self.limits.file_bytes,
+                )
+                .await?
+                .1
+                .is_some();
+                let settled = matches!(
+                    self.runtime.task_host().outcome(parent).await?,
+                    Some(
+                        crate::Outcome::Succeeded(_)
+                            | crate::Outcome::Failed { .. }
+                            | crate::Outcome::Cancelled
+                    )
+                );
+                // An ordinary child of a live, unselected parent routes without
+                // its own admission: inheritance preparation checks that, and
+                // reading it here would add a read to every parented turn.
+                if !selected && !settled {
+                    return Ok(super::routing::Route::Child);
+                }
+                let existing = match self.runtime.task_host().observe_admission(task).await {
+                    Ok(record) => Some(record.parent),
+                    Err(Error::NotFound(_)) => None,
+                    Err(error) => return Err(error),
+                };
+                super::routing::route(parent, false, selected, settled, existing)
+            },
+            async |route| match route {
+                super::routing::Route::Continue { history } => {
+                    self.continue_conversation(operation, task, parent, history, prompt)
+                        .await
+                }
+                super::routing::Route::Child => {
+                    self.prepare_inheritance(task, Some(parent)).await?;
+                    let prompt = self.prompt_context(Some(task), prompt).await?;
+                    let (receive, model) = self.stage_turn(operation, &prompt).await?;
+                    self.admit_turn(operation, Some(parent), receive, model)
+                        .await
+                }
+            },
         )
         .await
+    }
+    /// Admits a new root bound to the parent's selected checkpoint, capturing
+    /// the parent's whole history first when `history` asks for it. The caller
+    /// holds the admission gate.
+    async fn continue_conversation(
+        &self,
+        operation: OperationId,
+        task: TaskId,
+        parent: TaskId,
+        history: bool,
+        prompt: &str,
+    ) -> Result<Admission<RuntimeTask<TurnOutput>>> {
+        let (selected, through) = match self.continuation_selection(task).await? {
+            Some(selected) => {
+                let through = selected
+                    .continuation
+                    .as_ref()
+                    .ok_or_else(|| Error::Invalid("continuation lost parent history".into()))?
+                    .through
+                    .clone();
+                (selected, through)
+            }
+            None => {
+                let capture = async || {
+                    compact::checkpoints::capture_selection(
+                        &self.task_files.inner,
+                        parent,
+                        self.limits.file_bytes,
+                    )
+                    .await
+                };
+                let (mut cut, mut selected, _) = capture().await?;
+                // Captured under the gate, so a concurrent retry of
+                // this operation finds the checkpoint instead of
+                // capturing another history position.
+                if selected.is_none() && history {
+                    self.checkpoint_history(operation, parent).await?;
+                    (cut, selected, _) = capture().await?;
+                }
+                let selected = selected
+                    .ok_or_else(|| Error::Conflict("continuation lost its checkpoint".into()))?;
+                let through = selected.through.clone().unwrap_or(cut.cursor);
+                (selected, through)
+            }
+        };
+        let (retained, checkpoint) = self
+            .retain_continuation(task, parent, selected, through, prompt)
+            .await?;
+        let prompt = &retained
+            .continuation
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("continuation lost its prompt".into()))?
+            .prompt;
+        self.prepare_inheritance(task, None).await?;
+        let (receive, model) = match self.recover_turn_inputs(operation).await? {
+            Some(inputs) => inputs,
+            None => {
+                let prompt = self.prompt_context(Some(task), prompt).await?;
+                self.stage_bound_turn(
+                    operation,
+                    &prompt,
+                    checkpoint.boundary.manifest,
+                    self.input_publisher()?.as_ref(),
+                )
+                .await?
+            }
+        };
+        self.admit_turn(operation, None, receive, model).await
     }
     // The caller holds the existing admission gate and prepares inheritance.
     pub(super) async fn admit_turn(
