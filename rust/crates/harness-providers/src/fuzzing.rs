@@ -68,7 +68,12 @@ pub fn assert_stream_invariants(input: &[u8]) {
     if kind == b'H' {
         if let Ok(header) = std::str::from_utf8(input) {
             let clock = || std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
-            if let Some(wait) = crate::retry::retry_after_at(header, clock) {
+            let wait = crate::retry::retry_after_at(header, clock);
+            let digits = header.trim();
+            if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                assert!(wait.is_some());
+            }
+            if let Some(wait) = wait {
                 // Normalize either accepted form to delta-seconds without losing its delay.
                 assert_eq!(
                     crate::retry::retry_after_at(&wait.as_secs().to_string(), clock),
@@ -389,6 +394,7 @@ mod properties {
         for seed in [
             include_bytes!("../fuzz/corpus/provider_stream/retry-after-date").as_slice(),
             include_bytes!("../fuzz/corpus/provider_stream/retry-after-delta").as_slice(),
+            include_bytes!("../fuzz/corpus/provider_stream/retry-after-overflow").as_slice(),
         ] {
             assert_stream_invariants(seed);
         }

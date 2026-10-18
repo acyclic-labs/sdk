@@ -89,7 +89,9 @@ pub(crate) fn retry_after_at(
 ) -> Option<Duration> {
     let value = value.trim();
     if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return value.parse::<u64>().ok().map(Duration::from_secs);
+        // Overflow is still a delay hint, always beyond our u32-millisecond retry budget.
+        // Treating it as absent would retry before the endpoint's requested time.
+        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
     }
     let date = httpdate::parse_http_date(value).ok()?;
     Some(date.duration_since(now()).unwrap_or(Duration::ZERO))
@@ -188,6 +190,7 @@ mod tests {
         fn retry_after_forms_round_trip_and_obey_the_same_budget(
             at in 0..4_000_000_000u64, now in 0..4_000_000_000u64,
             delta in proptest::prelude::any::<u64>(),
+            overflow_digits in "[0-9]{20,80}",
         ) {
             let clock = std::time::UNIX_EPOCH + Duration::from_secs(now);
             let date = httpdate::fmt_http_date(std::time::UNIX_EPOCH + Duration::from_secs(at));
@@ -199,6 +202,14 @@ mod tests {
                 (wait <= Duration::from_millis(RetrySpec::DEFAULT.max_delay_ms.into())).then_some(wait));
             // Negative control: the former delta-only parser ignores every date hint.
             proptest::prop_assert_ne!(date.parse::<u64>().ok().map(Duration::from_secs), Some(wait));
+            let overflow = format!("1{overflow_digits}");
+            let wait = retry_after_at(&overflow, || clock);
+            proptest::prop_assert_eq!(wait, Some(Duration::from_secs(u64::MAX)));
+            let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
+            proptest::prop_assert_eq!(retry.next(&unavailable(), wait, false), None);
+            // Negative control: discarding numeric overflow would permit an early retry.
+            let mut former = Redelivery::new(RetrySpec::DEFAULT, dispatch());
+            proptest::prop_assert!(former.next(&unavailable(), overflow.parse::<u64>().ok().map(Duration::from_secs), false).is_some());
         }
     }
 }
