@@ -149,7 +149,10 @@ fn minimal_rescan(heap: AllocationInfo, trace: &[&str], fallback: bool) -> bool 
             .into_iter()
             .flatten()
     });
-    heap.count_total == if cfg!(windows) { 324 } else { 331 } && trace.iter().copied().eq(expected)
+    // Preserve the pre-index rescan pin; one nonempty body produces one batch.
+    let (index_allocations, _) = super::batch_cost_tests::one_chunk_index(&[0x5a; 96]);
+    heap.count_total == (if cfg!(windows) { 324 } else { 331 }) + index_allocations
+        && trace.iter().copied().eq(expected)
 }
 
 fn run(
@@ -304,7 +307,8 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
                 assert!(before.health_items > 0 && after.health_items > 0);
                 assert_eq!(
                     after.work["itemsExamined"],
-                    if cfg!(windows) { 436 } else { 331 }
+                    (if cfg!(windows) { 436 } else { 331 })
+                        + super::batch_cost_tests::one_chunk_index(&[0x5a; 96]).1
                 );
             }
             assert_eq!(before.result, after.result);

@@ -55,11 +55,13 @@ impl Drop for OldOwner {
     }
 }
 
-// Warm one-byte staging with live shared health: these counts exclude fixture setup.
+// Warm one-byte staging before the duplicate index was introduced. Preserve
+// that independent pin and add the allocation required by this operation's batch.
 const OWNER_FREE_ALLOCATIONS: u64 = if cfg!(windows) { 43 } else { 46 };
 
 fn no_owner_allocation(measured: AllocationInfo) -> Result<(), String> {
-    let ceiling = OWNER_FREE_ALLOCATIONS;
+    let (index_allocations, _) = super::batch_cost_tests::one_chunk_index(&[0x5a]);
+    let ceiling = OWNER_FREE_ALLOCATIONS + index_allocations;
     if measured.count_total != ceiling {
         return Err(format!(
             "capture allocations: expected {ceiling}, got {measured:?}"

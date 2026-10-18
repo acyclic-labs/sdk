@@ -42,22 +42,29 @@ fn exact_batch_work(cost: WorkCounters, count: u64, probes: u64) -> bool {
 
 // Separate occupancy-only oracle, without the production index or its values.
 fn expected_probes(writes: &[ObjectWrite]) -> u64 {
+    expected_batch_probes(
+        &writes
+            .iter()
+            .map(|write| write.object_id)
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub(crate) fn expected_batch_probes(ids: &[ObjectId]) -> u64 {
     use std::hash::BuildHasher;
     let hashes = super::index::hash_state();
     let capacity = (2usize..)
-        .find(|size| {
-            size.is_power_of_two() && writes.len() < *size && writes.len() <= size - size / 8
-        })
+        .find(|size| size.is_power_of_two() && ids.len() < *size && ids.len() <= size - size / 8)
         .unwrap();
-    let mut occupied = vec![false; capacity];
+    let mut occupied = vec![None; capacity];
     let mut probes = 0;
-    for write in writes {
-        let start = hashes.hash_one(write.object_id) as usize;
+    for id in ids {
+        let start = hashes.hash_one(id) as usize;
         for offset in 0..capacity {
             probes += 1;
             let position = (start.wrapping_add(offset)) % capacity;
-            if !occupied[position] {
-                occupied[position] = true;
+            if occupied[position].is_none() || occupied[position] == Some(*id) {
+                occupied[position] = Some(*id);
                 break;
             }
         }
