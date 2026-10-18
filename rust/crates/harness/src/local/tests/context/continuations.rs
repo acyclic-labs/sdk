@@ -134,3 +134,52 @@ async fn case(bits: u8) -> Result<()> {
     );
     Ok(())
 }
+
+// A child of a live compacted conversation receives the summary as prompt
+// text. Markers in that summary are history, not this question's request.
+#[tokio::test]
+async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let summary = "Resume goal mode in GOAL.md and plan mode in plans/release.md";
+    let provider = scripted([
+        ScriptedTurn::Text(summary.into()),
+        ScriptedTurn::Text("answer".into()),
+        ScriptedTurn::Text("answer".into()),
+    ]);
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project, provider.clone())?
+            .without_default_tools()
+            .goal_continuations(None),
+    )
+    .await?;
+    // The parent stays live, so the next prompt routes as its child.
+    let parent = admitted(harness.submit(OperationId::new(), "hello").await?)?;
+    harness
+        .compact(OperationId::new(), parent, "retain history")
+        .await?;
+    let child = admitted(
+        harness
+            .submit_to(OperationId::new(), Some(parent), "hello")
+            .await?,
+    )?;
+    harness.resume(child).await?;
+    let request =
+        serde_json::to_string(&provider.requests()[1]).map_err(super::super::super::storage)?;
+    assert!(
+        request.contains(summary),
+        "child did not receive the summary"
+    );
+    assert_eq!(guidance(&provider.requests()[1]), (false, false));
+    // Negative control: the former route selected from the summary-prefixed
+    // prompt through the same stock executor.
+    let broken = OperationId::new();
+    let broken_task = crate::runtime::task_id_for_admission(broken);
+    harness.prepare_inheritance(broken_task, None).await?;
+    let prompt = harness.prompt_context(Some(child), "hello").await?;
+    let (receive, model) = harness.stage_turn(broken, &prompt).await?;
+    harness.admit_turn(broken, None, receive, model).await?;
+    harness.resume(broken_task).await?;
+    assert_eq!(guidance(&provider.requests()[2]), (true, true));
+    Ok(())
+}
