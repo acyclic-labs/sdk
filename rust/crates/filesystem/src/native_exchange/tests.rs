@@ -520,3 +520,32 @@ fn witness_bounds_trailing_data_and_raw_names_are_preserved() -> TestResult {
     assert_eq!(fs::read(&f.prepared)?, b"before");
     Ok(())
 }
+
+/// The exchange syscalls receive raw names. A normalized directory alias is
+/// refused by the shared raw-leaf guard before either entry is touched.
+#[test]
+fn exchange_refuses_normalized_directory_aliases() -> TestResult {
+    let f = Fixture::new(true)?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&f.live, f.temporary.path().join("alias"))?;
+    for leaf in ["alias/", "alias/.", "alias//"] {
+        assert!(
+            matches!(
+                entry::validate_leaf(Path::new(leaf)),
+                Err(NativeExchangeError::InvalidLayout)
+            ),
+            "accepted {leaf:?}"
+        );
+        let refused = f.entries(
+            finite_budget(),
+            &CancellationToken::new(),
+            |left, _, right, right_name, work| {
+                exchange_native_entries(left, Path::new(leaf), right, right_name, work)
+            },
+        );
+        assert!(refused.is_err(), "exchanged through {leaf:?}");
+        assert_eq!(fs::read(f.live.join("old"))?, b"old");
+        assert_eq!(fs::read(f.prepared.join("new"))?, b"new");
+    }
+    Ok(())
+}

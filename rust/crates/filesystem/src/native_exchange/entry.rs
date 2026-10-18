@@ -35,13 +35,10 @@ pub(crate) fn exchange_native_entries<W: SourceDemandReadWork>(
     }
 }
 
+/// The exchange syscalls take these raw names, so they share the one raw-leaf
+/// guard: a normalized `alias/` or `alias/.` would follow a directory link.
 pub(super) fn validate_leaf(name: &Path) -> Result<(), NativeExchangeError> {
-    let mut parts = name.components();
-    if matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() {
-        Ok(())
-    } else {
-        Err(NativeExchangeError::InvalidLayout)
-    }
+    host::require_leaf(name).map_err(|_| NativeExchangeError::InvalidLayout)
 }
 
 #[cfg(unix)]

@@ -13,7 +13,16 @@ timed() {
 }
 case "${1:-all}" in
 all)
-    for phase in native model windows fuzz; do bash "$0" "$phase"; done
+    for phase in static native model windows fuzz; do bash "$0" "$phase"; done
+    ;;
+static)
+    # Durable flushes go through std or acyclic-native-runtime, which use each
+    # platform's native full sync (F_FULLFSYNC on Apple). A bare fsync is not.
+    if grep -rnE '(libc|rustix::fs)::f(data)?sync\b' rust/crates --include='*.rs' |
+        grep -v '^rust/crates/native-runtime/'; then
+        echo "raw fsync bypasses the native durability mechanism" >&2
+        exit 1
+    fi
     ;;
 native)
     artifacts=$(mktemp)
@@ -31,6 +40,7 @@ for line in open(sys.argv[1]):
     harness=$(binary acyclic_harness)
     (cd rust/crates/filesystem; timed filesystem "$filesystem" \
         native_capture::held_root_tests native_host::held_files::record native_host::leaf \
+        native_exchange::tests::exchange_refuses_normalized_directory_aliases \
         demand::tests::a_held_root \
         demand::tests::negative_control_binding)
     (cd rust/crates/harness; timed incarnation "$harness" \
@@ -73,5 +83,5 @@ windows-fuzz)
 fuzz)
     timed fuzz cargo +nightly-2026-07-01 check --locked -p acyclic-harness-fuzz --bin records
     ;;
-*) echo "usage: $0 [all|native|model|windows|windows-base|windows-cli|windows-fuzz|fuzz]" >&2; exit 2 ;;
+*) echo "usage: $0 [all|static|native|model|windows|windows-base|windows-cli|windows-fuzz|fuzz]" >&2; exit 2 ;;
 esac

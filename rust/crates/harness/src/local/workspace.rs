@@ -433,8 +433,8 @@ mod setup_probe {
     }
 
     /// Runs `hook` with the checkout's path after its root is held and
-    /// before setup.
-    #[cfg(test)]
+    /// before setup. Unix only: Windows refuses to rename a held directory.
+    #[cfg(all(test, unix))]
     pub(in crate::local) fn replace_before_setup(hook: impl FnOnce(&Path) + 'static) {
         BEFORE_SETUP.set(Some(Box::new(hook)));
     }
@@ -461,7 +461,9 @@ mod setup_probe {
     }
 }
 #[cfg(test)]
-pub(super) use setup_probe::{follow_path, replace_before_setup};
+pub(super) use setup_probe::follow_path;
+#[cfg(all(test, unix))]
+pub(super) use setup_probe::replace_before_setup;
 
 // A configured SDK volume gets one persistent private native view. Bootstrap
 // into a sibling and rename only the complete generation, before binding its

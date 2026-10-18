@@ -87,12 +87,12 @@ pub(super) fn rename_unix_names_once(
 
 #[cfg(unix)]
 pub(super) fn sync_held_descriptor_once(file: &impl std::os::fd::AsRawFd) -> io::Result<()> {
-    // SAFETY: the borrowed descriptor remains owned by the live caller.
-    if unsafe { libc::fsync(file.as_raw_fd()) } < 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    use std::os::fd::FromRawFd as _;
+    // std's full sync is each Unix's native durability mechanism: fsync on
+    // Linux, F_FULLFSYNC on Apple, where a bare fsync stops at the drive cache.
+    // SAFETY: the borrowed descriptor stays owned by the live caller; the
+    // ManuallyDrop view never closes it.
+    std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(file.as_raw_fd()) }).sync_all()
 }
 
 #[cfg(windows)]
