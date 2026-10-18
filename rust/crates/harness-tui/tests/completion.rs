@@ -11,6 +11,8 @@ use acyclic_harness_tui::{
 };
 use proptest::prelude::*;
 
+#[path = "support/completion_deltas.rs"]
+mod deltas;
 #[path = "support/completion_sequences.rs"]
 mod sequences;
 
@@ -49,8 +51,10 @@ fn completion_regression_corpus() {
         include_bytes!("../fuzz/corpus/completion_events/catalog-alias").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/themes").as_slice(),
         include_bytes!("../fuzz/corpus/completion_events/greek-theme").as_slice(),
+        include_bytes!("../fuzz/corpus/completion_events/quoted-delta").as_slice(),
     ] {
         assert!(sequences::exercise(seed).is_ok());
+        deltas::exercise(seed);
     }
 }
 
@@ -535,6 +539,7 @@ proptest! {
     #[test]
     fn arbitrary_completion_sequences_preserve_graphemes_and_atomic_undo(data in prop::collection::vec(any::<u8>(), 0..128)) {
         sequences::exercise(&data)?;
+        deltas::exercise(&data);
     }
 }
 

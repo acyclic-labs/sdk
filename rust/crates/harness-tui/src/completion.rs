@@ -217,6 +217,8 @@ pub struct CompletionMenu {
     theme_commands: BTreeMap<String, usize>,
     next_file: u64,
     version: Option<(Rc<()>, usize, usize)>,
+    // Bytes before the first possible trigger, verified at `version`.
+    scan_start: usize,
     /// Cumulative bytes examined while locating tokens and candidates scored.
     pub work: CompletionWork,
     /// Selected row, wrapping during navigation.
@@ -276,47 +278,32 @@ impl CompletionMenu {
         {
             return;
         }
-        // Appending plain text cannot create a completion trigger. Inspect the
-        // inserted delta rather than rescanning an arbitrarily long plain draft.
-        if self.request.is_none()
-            && self.dismissed.is_none()
-            && let Some((base, range, inserted)) = editor.completion_change()
-            && let Some(old) = &self.version
-            && Rc::ptr_eq(base, &old.0)
-            && range.is_empty()
-            && range.start.checked_add(*inserted) == Some(editor.text().len())
-            && old.1 == range.start
-            && old.1 == old.2
-            && editor.cursor() == editor.text().len()
-            && editor.selection().is_empty()
-        {
-            let text = slice(editor.text(), range.start..);
-            self.work.prompt_bytes += text.len();
-            if !text.contains('@') && !(range.start == 0 && text.starts_with('/')) {
-                self.version = Some(version);
-                return;
-            }
-        }
+        // A missing request is not a lexical checkpoint: later edits can expose
+        // a mention inside an earlier quoted token. Only a trigger-free prefix
+        // is independent of the suffix. Carry that prefix across one known edit
+        // (or cursor-only changes), and let the shared parser handle the rest.
         let from = self
-            .request
+            .version
             .as_ref()
-            .and_then(|request| {
+            .and_then(|old| {
+                if Rc::ptr_eq(&old.0, &version.0) {
+                    return Some(self.scan_start);
+                }
                 let (base, range, _) = editor.completion_change()?;
-                let old = self.version.as_ref()?;
-                (Rc::ptr_eq(base, &old.0)
-                    && editor.cursor() >= request.range.start
-                    && range.start >= request.range.start
-                    && range.end <= request.range.end)
-                    .then_some(if request.kind == CompletionKind::Theme {
-                        0
-                    } else {
-                        request.range.start
-                    })
+                Rc::ptr_eq(base, &old.0).then_some(self.scan_start.min(range.start))
             })
             .unwrap_or(0);
+        self.scan_start = if editor.text().starts_with('/') {
+            0
+        } else {
+            let tail = slice(editor.text(), from..);
+            let plain = tail.find('@').unwrap_or(tail.len());
+            self.work.prompt_bytes += plain + usize::from(plain < tail.len());
+            from + plain
+        };
         let request = request_from(
             editor,
-            from,
+            self.scan_start,
             &mut self.work.prompt_bytes,
             Some(&self.theme_commands),
         );
@@ -430,6 +417,7 @@ impl CompletionMenu {
     pub fn dismiss(&mut self, editor: &Editor) {
         self.dismissed = request_from(editor, 0, &mut 0, Some(&self.theme_commands));
         self.version = Some(editor.completion_version());
+        self.scan_start = 0;
         self.request = None;
         self.items.clear();
         self.selected = 0;

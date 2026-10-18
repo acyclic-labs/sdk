@@ -121,6 +121,42 @@ proptest! {
 }
 
 #[test]
+fn short_quoted_prefixes_agree_after_every_append() {
+    let mut prefixes = vec![String::new()];
+    for _ in 0..7 {
+        let mut next = Vec::new();
+        for prefix in &prefixes {
+            for suffix in ["a", " ", "@", "\""] {
+                let mut editor = Editor::new(prefix);
+                let mut menu = CompletionMenu::default();
+                menu.refresh(&editor);
+                editor.insert(suffix, 0);
+                menu.refresh(&editor);
+                assert_eq!(
+                    menu.request,
+                    completion_request(&editor),
+                    "{prefix:?} + {suffix:?}"
+                );
+                next.push(format!("{prefix}{suffix}"));
+            }
+        }
+        prefixes = next;
+    }
+}
+
+#[test]
+fn dismissal_without_refresh_invalidates_the_prefix_checkpoint() {
+    let mut editor = Editor::new("long plain prefix");
+    let mut menu = CompletionMenu::default();
+    menu.refresh(&editor);
+    editor.set_text("@a", 0);
+    menu.dismiss(&editor);
+    editor.set_text("@b", 1);
+    menu.refresh(&editor);
+    assert_eq!(menu.request, completion_request(&editor));
+}
+
+#[test]
 #[should_panic(expected = "unchanged refresh must do zero work")]
 fn negative_control_detects_repeated_scanning() {
     unchanged_work(1000, 2, true);
