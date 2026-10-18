@@ -83,8 +83,8 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
 /// in the same read behind it. A wheel flick or held `PageUp` arrives as one
 /// input batch; its motions publish as one layout change and draw one frame.
 /// Draining stops after the first event that is not purely a motion; that
-/// event is routed here, in order, against the same layout, which a motion
-/// never changes. Later events of the batch stay queued, and the next read is
+/// event is routed here, unless it needs a presented viewport: pointer events
+/// stay queued at the frame boundary. Later events stay queued, and the next read is
 /// never touched, so read boundaries stay frame boundaries.
 pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
     batch: &mut std::collections::VecDeque<crate::tui::key_event::InputEvent>,
@@ -100,7 +100,7 @@ pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
             && effects[first..]
                 .iter()
                 .all(|effect| transcript_motion(effect, page_rows).is_some());
-        if !motion {
+        if !motion || frame_due(batch) {
             break;
         }
     }

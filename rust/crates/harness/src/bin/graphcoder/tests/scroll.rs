@@ -6,7 +6,7 @@ use acyclic_harness::{
     },
     task_volume::{Query, TaskVolume},
     tui::{
-        Action, Editor, InputEffect, PromptInput, Screen, Viewport, WHEEL_ROWS,
+        Action, Editor, InputEffect, PromptBox, PromptInput, Screen, Viewport, WHEEL_ROWS,
         key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
         ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line},
     },
@@ -194,6 +194,125 @@ fn a_key_repeat_or_unbracketed_paste_read_presents_one_frame() {
         let mut input = PromptInput::new(Editor::new("draft"));
         assert_eq!(drive_with(vec![read], Mode::Loop, &mut input).await.0, 2);
     });
+}
+
+/// Render and route exactly as the shipping loop does. The independent oracle
+/// renders per event; the mutant restores consumption of a pointer behind a
+/// motion, using the viewport from before the preceding key burst.
+fn pointer_after_motions<const ABSORB_POINTER: bool>(
+    count: usize,
+    width: u16,
+    wrap: bool,
+    motion: InputEvent,
+    per_event: bool,
+) -> (String, usize, std::ops::Range<usize>, usize) {
+    let screen = Screen::default();
+    let area = Rect::new(0, 0, width, 10);
+    let mut input = PromptInput::default();
+    let mut settings = *input.editor.settings();
+    settings.wrap = wrap;
+    input.set_settings(settings);
+    // Locate the visible click independently of either driven viewport.
+    let mut probe = input.clone();
+    probe.editor.set_text(&"x".repeat(count), 0);
+    let click_area = PromptBox::input_area(screen.areas(area, &probe).prompt);
+    let click = InputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(acyclic_harness::tui::key_event::MouseButton::Left),
+        column: click_area.x,
+        row: click_area.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    let mut batch: InputBatch = (0..count)
+        .map(|_| key(KeyCode::Char('x')))
+        .chain([motion, click])
+        .collect();
+    let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
+    let mut viewport = Viewport::default();
+    let mut effects = Vec::new();
+    let mut frames = 0;
+    let mut present = true;
+    while !batch.is_empty() {
+        let mut areas = screen.areas(area, &input);
+        if present {
+            terminal
+                .draw(|frame| {
+                    areas = screen.render(frame, &input, &mut viewport, 0, 0);
+                })
+                .unwrap();
+            frames += 1;
+        }
+        let page = usize::from(areas.transcript.height);
+        let mut route =
+            |event| input.event(event, PromptBox::input_area(areas.prompt), &mut viewport, 0);
+        if per_event {
+            effects.clear();
+            effects.extend(route(batch.pop_front().unwrap()));
+        } else {
+            input_burst(&mut batch, page, &mut effects, &mut route);
+            if ABSORB_POINTER
+                && !effects.is_empty()
+                && effects
+                    .iter()
+                    .all(|effect| transcript_motion(effect, page).is_some())
+                && !batch.is_empty()
+                && frame_due(&batch)
+            {
+                effects.extend(route(batch.pop_front().unwrap()));
+            }
+        }
+        present = per_event || frame_due(&batch);
+    }
+    terminal
+        .draw(|frame| {
+            screen.render(frame, &input, &mut viewport, 0, 0);
+        })
+        .unwrap();
+    (
+        input.editor.text().to_owned(),
+        input.editor.cursor(),
+        input.editor.selection(),
+        frames + 1,
+    )
+}
+
+fn assert_pointer_after_motions<const ABSORB_POINTER: bool>(count: usize, width: u16, wrap: bool) {
+    for motion in [
+        notch(true),
+        notch(false),
+        key(KeyCode::PageUp),
+        key(KeyCode::PageDown),
+    ] {
+        let expected = pointer_after_motions::<false>(count, width, wrap, motion.clone(), true);
+        let actual = pointer_after_motions::<ABSORB_POINTER>(count, width, wrap, motion, false);
+        assert_eq!(
+            (&actual.0, actual.1, &actual.2),
+            (&expected.0, expected.1, &expected.2),
+            "pointer routing must match per-event rendering"
+        );
+        assert_eq!(
+            actual.3, 3,
+            "one initial frame, one before the click, one after the read"
+        );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Property: layout-only key routing followed by any scroll motion and a
+    // pointer must preserve the editor text, cursor and selection of painting
+    // every event, with exactly one presentation boundary before the pointer.
+    #[test]
+    fn pointers_behind_motions_use_the_current_prompt_viewport(
+        count in 32usize..96, width in 8u16..24, wrap in proptest::bool::ANY,
+    ) {
+        assert_pointer_after_motions::<false>(count, width, wrap);
+    }
+}
+
+#[test]
+#[should_panic(expected = "pointer routing must match per-event rendering")]
+fn negative_control_absorbing_a_pointer_uses_the_stale_prompt_viewport() {
+    assert_pointer_after_motions::<true>(64, 12, true);
 }
 
 /// Final offset and positions appended for `motions` from offset `start`,
