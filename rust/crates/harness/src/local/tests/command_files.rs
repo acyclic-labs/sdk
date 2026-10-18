@@ -194,27 +194,21 @@ async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> R
     };
     let harness = LocalHarness::open(make()?).await?;
     let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
-    crate::local::workspace::volumes::project(&retained).await?;
+    crate::local::workspace::volumes::project_unscoped(&retained).await?;
     drop(harness);
     let reopened = LocalHarness::open(make()?).await?;
-    let failure =
-        crate::local::workspace::volumes::project(&reopened.workspace.as_ref().unwrap().mounts)
-            .await
-            .expect_err("negative control lost its retained native owner");
+    let failure = crate::local::workspace::volumes::project_unscoped(
+        &reopened.workspace.as_ref().unwrap().mounts,
+    )
+    .await
+    .expect_err("negative control lost its retained native owner");
     assert!(
         failure
             .to_string()
             .contains("mount destination is already owned"),
         "{failure:?}"
     );
-    for (_, mount) in retained.mounts() {
-        if let Some(source) = &mount.view.source {
-            let native = source.native().await;
-            if let Some(native) = native.as_ref() {
-                native.unmount().await?;
-            }
-        }
-    }
+    crate::local::workspace::volumes::retire(&retained).await?;
     reopened.close().await?;
     Ok(())
 }

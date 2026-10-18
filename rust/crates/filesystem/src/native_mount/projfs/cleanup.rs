@@ -1,5 +1,15 @@
 use super::*;
 
+// Actual held entries, authenticated root handle, backing capacity and birth
+// credit. These resources move into the existing physical retirement worker.
+pub(super) type ProjectionCleanup = (
+    Vec<std::fs::File>,
+    std::fs::File,
+    crate::NativeAllocation,
+    crate::NativeWorkReservation,
+);
+
+#[cfg(test)]
 pub(in crate::native_mount) fn detach_projection(
     destination: &std::path::Path,
     expected: crate::NativeRootIdentity,
@@ -7,6 +17,17 @@ pub(in crate::native_mount) fn detach_projection(
     work: &crate::NativeMaterializationWork,
     stop: impl FnOnce() -> Result<(), NativeMountError>,
 ) -> Result<(), NativeMountError> {
+    let mut cleanup = prepare_projection_cleanup(destination, expected, source, work)?;
+    stop()?;
+    finish_projection_cleanup(&mut cleanup)
+}
+
+pub(super) fn prepare_projection_cleanup(
+    destination: &std::path::Path,
+    expected: crate::NativeRootIdentity,
+    source: &dyn MountFilesystem,
+    work: &crate::NativeMaterializationWork,
+) -> Result<ProjectionCleanup, NativeMountError> {
     use windows::Wdk::Storage::FileSystem::{FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT};
     use windows::Win32::Storage::FileSystem::{
         FILE_GENERIC_WRITE, FILE_READ_ATTRIBUTES, SYNCHRONIZE,
@@ -36,47 +57,58 @@ pub(in crate::native_mount) fn detach_projection(
         &mut files,
         &mut allocation,
     )?;
-    stop()?;
+    let credit = work.reserve_work(crate::WorkCounters {
+        // delete_through first tries POSIX disposition, then the legacy
+        // disposition on filesystems which reject that operation.
+        backend_write_operations: (files.len() as u64)
+            .checked_mul(2)
+            .ok_or(crate::WorkError::Overflow)?
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)?,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    Ok((files, root_handle, allocation, credit))
+}
+
+pub(super) fn finish_projection_cleanup(
+    (files, root_handle, _, credit): &mut ProjectionCleanup,
+) -> Result<(), NativeMountError> {
     // Held no-follow handles name only source-backed entries sampled before detach.
-    for file in files.into_iter().rev() {
-        match delete_through(&file, || (&mut &*work).started_io(WriteOperations.delta(1))) {
+    while let Some(file) = files.last() {
+        match delete_through(file, || credit.started_io(WriteOperations.delta(1), None)) {
             // Unknown children keep their directory; cleanup never traverses them.
             Err(crate::NativeTreeMaterializationError::Io(error))
                 if error
                     .raw_os_error()
                     .is_some_and(|code| code == 145 || code == HR_DIRECTORY_NOT_EMPTY.0) => {}
-            result => result.map_err(|error| {
-                NativeMountError::Driver(format!("removing a held projected entry: {error}"))
-            })?,
+            result => result.map_err(NativeMountError::from)?,
         }
+        drop(files.pop());
     }
     let tag = windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS.to_le_bytes();
     let mut packet = [0_u8; 8];
     packet[..4].copy_from_slice(&tag);
     let mut returned = 0;
-    (&mut &*work)
-        .attempt_io(WriteOperations.delta(1), || {
-            use std::os::windows::io::AsRawHandle;
-            // SAFETY: the authenticated root handle and fixed reparse header remain live.
-            unsafe {
-                windows::Win32::System::IO::DeviceIoControl(
-                    windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
-                    windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
-                    Some(packet.as_ptr().cast()),
-                    u32::try_from(packet.len())
-                        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
-                    None,
-                    0,
-                    Some(&raw mut returned),
-                    None,
-                )
-            }
-            .map_err(std::io::Error::from)
-        })
-        .map_err(|error| {
-            NativeMountError::Driver(format!("clearing the detached ProjFS root tag: {error}"))
-        })?;
-    drop(allocation);
+    credit.started_io(WriteOperations.delta(1), None)?;
+    (|| {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: the authenticated root handle and fixed reparse header remain live.
+        unsafe {
+            windows::Win32::System::IO::DeviceIoControl(
+                windows::Win32::Foundation::HANDLE(root_handle.as_raw_handle()),
+                windows::Win32::System::Ioctl::FSCTL_DELETE_REPARSE_POINT,
+                Some(packet.as_ptr().cast()),
+                u32::try_from(packet.len())
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+                None,
+                0,
+                Some(&raw mut returned),
+                None,
+            )
+        }
+        .map_err(std::io::Error::from)
+    })()
+    .map_err(NativeMountError::from)?;
     Ok(())
 }
 

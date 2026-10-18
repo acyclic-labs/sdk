@@ -145,6 +145,7 @@ impl NativeMountRetirement {
     ) -> Result<bool, NativeMountError> {
         let mut changed = self.retire_source_and_watch_with_cleanup(wait)?;
         if let Some(guard) = self.destination_guard.as_mut() {
+            guard.remove_destination()?;
             guard.release_cleanup(wait)?;
             drop(self.destination_guard.take());
             changed = true;

@@ -239,6 +239,22 @@ impl FuseSession {
         result
     }
 
+    pub(in crate::native_mount) fn prepare_destination_cleanup(
+        &mut self,
+        destination: &std::path::Path,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        // Lock order: customer session -> driver state -> original work ledger.
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retirement
+            .as_mut()
+            .and_then(|packet| packet.destination_guard.as_mut())
+            .ok_or(NativeMountError::ControlPending)?
+            .prepare_destination_cleanup(destination, work)
+    }
+
     pub(in crate::native_mount) fn begin_original_work(
         &self,
         work: &NativeMaterializationWork,

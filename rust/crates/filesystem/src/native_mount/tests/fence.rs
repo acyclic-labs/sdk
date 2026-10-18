@@ -13,16 +13,17 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&reported[0], &actual.0);
         proptest::prop_assert_eq!(&reported[1], &actual.1);
         proptest::prop_assert_ne!(&reported[0], &reported[1]);
-        for path in reported {
-            proptest::prop_assert_eq!(path.parent(), Some(parent.as_path()));
-            proptest::prop_assert_ne!(path, destination.clone());
-        }
+        proptest::prop_assert_eq!(reported[0].parent(), Some(parent.as_path()));
+        proptest::prop_assert_eq!(&reported[1], &super::super::registry::path().unwrap());
+        proptest::prop_assert_ne!(reported[0].clone(), destination.clone());
+        proptest::prop_assert_ne!(reported[1].clone(), destination);
     }
 }
 
 #[cfg(windows)]
 #[test]
 fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let root = tempfile::tempdir()?;
     std::fs::write(root.path().join("existing.txt"), b"real")?;
     let request = NativeMountRequest {
@@ -53,6 +54,7 @@ fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error
 #[test]
 fn administrative_last_drop_closes_real_fence_without_touching_residue()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let parent = tempfile::tempdir()?;
     let destination = parent.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -108,6 +110,7 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
 #[test]
 fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let parent = tempfile::tempdir()?;
     let destination = parent.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -119,7 +122,11 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let writes = baseline.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
     let mut budget = WorkBudget::UNBOUNDED;
-    budget.backend_write_operations = writes + 2 + u64::from(cfg!(windows));
+    // Successful acquisition spends its final write unlocking the registry.
+    // Keep that one write unavailable while funding the accepted fence
+    // retirement (lock, unlink, unlock) and the administrative final close.
+    let retirement_writes = 3 + 1 + u64::from(cfg!(windows));
+    budget.backend_write_operations = writes - 1 + retirement_writes;
     let denied = crate::NativeMaterializationWork::new(budget, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
     let error = NativeMountRecoveryOwner::acquire_with_original(&destination, &denied)
@@ -150,6 +157,7 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
 #[test]
 fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let parent = tempfile::tempdir()?;
     let destination = parent.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -175,8 +183,8 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
 }
 
 #[test]
-fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
--> Result<(), Box<dyn std::error::Error>> {
+fn exact_reclamation_preserves_live_owners() -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let live_destination = temporary.path().join("live");
     let stale_destination = temporary.path().join("stale");
@@ -197,34 +205,49 @@ fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
     stale.file.take();
     drop(stale);
 
-    assert_eq!(
-        reclaim_stale_native_mount_destination_fences(temporary.path())?,
-        1
-    );
+    assert!(matches!(
+        reclaim_native_mount_destination_fence(&live_destination),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    reclaim_native_mount_destination_fence(&stale_destination)?;
     assert!(live_path.is_file());
     assert!(!stale_path.exists());
     drop(live);
-    assert_eq!(
-        reclaim_stale_native_mount_destination_fences(temporary.path())?,
-        0
-    );
+    assert!(!live_path.exists());
     Ok(())
 }
 
 #[test]
-fn parent_sweep_rejects_malformed_reserved_fence_names() -> Result<(), Box<dyn std::error::Error>> {
+fn exact_reclamation_preserves_every_authored_sibling() -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
-    std::fs::write(temporary.path().join(".acyclic-fs-mount-invalid.lock"), b"")?;
-    assert!(matches!(
-        reclaim_stale_native_mount_destination_fences(temporary.path()),
-        Err(NativeMountError::InvalidDestination)
-    ));
+    let destination = temporary.path().join("mount");
+    std::fs::create_dir(&destination)?;
+    let mut stale = MountDestinationGuard::acquire_canonical(&destination)?;
+    stale.file.take();
+    drop(stale);
+    let authored = temporary.path().join(".acyclic-fs-mount-invalid.lock");
+    std::fs::write(&authored, b"authored")?;
+    // Beyond the former 4096-entry cap: reclamation must touch only the
+    // explicitly tracked destination, independent of sibling population.
+    for index in 0..4097 {
+        std::fs::write(temporary.path().join(format!("user-{index}")), b"retain")?;
+    }
+    reclaim_native_mount_destination_fence(&destination)?;
+    assert_eq!(std::fs::read(authored)?, b"authored");
+    for index in 0..4097 {
+        assert_eq!(
+            std::fs::read(temporary.path().join(format!("user-{index}")))?,
+            b"retain"
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     let release = temporary.path().join("release");
@@ -285,6 +308,7 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
 #[test]
 fn shared_destination_fence_retains_original_owner_after_denial()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -345,6 +369,7 @@ fn shared_destination_fence_retains_original_owner_after_denial()
 #[test]
 fn accepted_destination_fence_cleanup_survives_original_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -400,6 +425,7 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
 #[test]
 fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -426,6 +452,7 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
 #[test]
 fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dyn std::error::Error>>
 {
+    crate::native_mount::registry::initialize().unwrap();
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -454,6 +481,7 @@ fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dy
 #[test]
 fn recovery_reclaims_a_dead_owner_lock_but_rejects_a_held_lock()
 -> Result<(), Box<dyn std::error::Error>> {
+    crate::native_mount::registry::initialize().unwrap();
     let root = tempfile::tempdir()?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;

@@ -296,8 +296,8 @@ impl NativeMountRecoveryOwner {
     #[cfg(target_os = "linux")]
     pub(super) fn detach_pinned(
         &mut self,
-        file: File,
-        parent: File,
+        file: std::fs::File,
+        parent: std::fs::File,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         {

@@ -93,6 +93,7 @@ impl ProjFsSession {
                 qualification: self.qualification,
                 capture_failure: self.capture_failure.take(),
                 capture_attempted: self.capture_attempted,
+                projection_cleanup: self.projection_cleanup.take(),
             };
             self.original_stop_work = self.original_stop_work.allocation_work();
             let mut lifecycle = lock_recover(&projector.lifecycle);

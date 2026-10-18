@@ -5,6 +5,19 @@ pub(crate) fn unix_name<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&std::ffi::CStr, &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
+    let (owned, allocation) = prepare_unix_name(name, work)?;
+    let result = std::ffi::CStr::from_bytes_with_nul(&owned)
+        .map_err(|_| W::invalid_request())
+        .and_then(|name| operation(name, work));
+    drop(owned);
+    work.release(allocation)?;
+    result
+}
+
+pub(crate) fn prepare_unix_name<W: NativeHostWork>(
+    name: &OsStr,
+    work: &mut W,
+) -> Result<(Vec<u8>, W::Allocation), W::Error> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = name.as_bytes();
     for byte in bytes {
@@ -20,18 +33,14 @@ pub(crate) fn unix_name<W: NativeHostWork, T>(
             .ok_or(crate::WorkError::Overflow)?,
         work,
     )?;
-    let result = (|| {
-        work.started_io(copy_work(bytes.len() as u64))?;
-        owned.extend_from_slice(bytes);
-        owned.push(0);
-        operation(
-            std::ffi::CStr::from_bytes_with_nul(&owned).map_err(|_| W::invalid_request())?,
-            work,
-        )
-    })();
-    drop(owned);
-    work.release(allocation)?;
-    result
+    if let Err(error) = work.started_io(copy_work(bytes.len() as u64)) {
+        drop(owned);
+        work.release(allocation)?;
+        return Err(error);
+    }
+    owned.extend_from_slice(bytes);
+    owned.push(0);
+    Ok((owned, allocation))
 }
 
 pub(super) fn create_unix_directory_leaf<W: NativeHostWork>(

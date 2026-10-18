@@ -34,6 +34,17 @@ pub(crate) fn with_wide_units<W: NativeHostWork, T>(
     work: &mut W,
     operation: impl FnOnce(&[u16], &mut W) -> Result<T, W::Error>,
 ) -> Result<T, W::Error> {
+    let (name, allocation) = prepare_wide_units(units, work)?;
+    let result = operation(&name, work);
+    drop(name);
+    work.release(allocation)?;
+    result
+}
+
+pub(crate) fn prepare_wide_units<W: NativeHostWork>(
+    units: impl Iterator<Item = u16> + Clone,
+    work: &mut W,
+) -> Result<(Vec<u16>, W::Allocation), W::Error> {
     let mut length = 0usize;
     for _ in units.clone() {
         work.started_io(ITEM)?;
@@ -46,10 +57,12 @@ pub(crate) fn with_wide_units<W: NativeHostWork, T>(
     work.admit(encoded)?;
     let (mut name, allocation) = buffer(length, work)?;
     name.extend(units.map(|u| if u == 47 { 92 } else { u }));
-    let result = work.record(encoded).and_then(|()| operation(&name, work));
-    drop(name);
-    work.release(allocation)?;
-    result
+    if let Err(error) = work.record(encoded) {
+        drop(name);
+        work.release(allocation)?;
+        return Err(error);
+    }
+    Ok((name, allocation))
 }
 
 pub(super) fn windows_leaf_name<W: NativeHostWork>(

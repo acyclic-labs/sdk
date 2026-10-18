@@ -7,7 +7,6 @@ use crate::kernel::FileMetadata;
 use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
 use bytes::Bytes;
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -270,6 +269,7 @@ mod error;
 pub use error::*;
 mod fence_io;
 mod recovery;
+mod registry;
 pub use recovery::*;
 mod startup;
 pub use startup::*;

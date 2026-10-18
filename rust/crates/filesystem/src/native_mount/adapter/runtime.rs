@@ -73,6 +73,7 @@ impl Drop for RuntimeAllocation<'_> {
 
 /// Initializes callback services outside a bounded invocation.
 pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
+    crate::native_mount::registry::initialize()?;
     CallbackRuntime::create().map(|_| ())
 }
 

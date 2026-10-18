@@ -159,6 +159,21 @@ impl DarwinMountSession {
         self.unmount.state().control.detached
     }
 
+    pub(in crate::native_mount) fn prepare_destination_cleanup(
+        &mut self,
+        destination: &Path,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        // Lock order: customer session -> driver state -> original work ledger.
+        self.unmount
+            .state()
+            .retirement
+            .as_mut()
+            .and_then(|packet| packet.destination_guard.as_mut())
+            .ok_or(NativeMountError::ControlPending)?
+            .prepare_destination_cleanup(destination, work)
+    }
+
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
         self.unmount
             .state()

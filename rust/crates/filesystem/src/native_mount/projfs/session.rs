@@ -26,6 +26,7 @@ pub(in crate::native_mount) struct ProjFsSession {
     pub(in crate::native_mount) qualification: Option<ProjFsNamespaceQualification>,
     pub(in crate::native_mount) capture_failure: Option<NativeMountError>,
     pub(in crate::native_mount) capture_attempted: bool,
+    pub(super) projection_cleanup: Option<super::cleanup::ProjectionCleanup>,
 }
 
 // SAFETY: ProjFS contexts are opaque handles. The provider synchronizes callback
@@ -144,6 +145,7 @@ impl ProjFsSession {
             qualification: None,
             capture_failure: None,
             capture_attempted: false,
+            projection_cleanup: None,
         });
         runtime.projector.attach(Arc::clone(&runtime))?;
         session.controller = Some(Arc::clone(&runtime.projector));
@@ -246,13 +248,20 @@ impl ProjFsSession {
 
     pub(in crate::native_mount) fn stop_physical(&mut self) -> Result<(), NativeMountError> {
         let Some(runtime) = self.runtime.as_ref().cloned() else {
+            if let Some(cleanup) = self.projection_cleanup.as_mut() {
+                super::cleanup::finish_projection_cleanup(cleanup)?;
+                drop(self.projection_cleanup.take());
+            }
             if let Some(retirement) = self.retirement.as_mut() {
                 retirement.retire(None)?;
-                if !retirement.is_retired() {
-                    return Err(NativeMountError::ControlPending);
-                }
             }
-            self.retirement = None;
+            if self
+                .retirement
+                .as_ref()
+                .is_some_and(super::super::NativeMountRetirement::is_retired)
+            {
+                self.retirement = None;
+            }
             return Ok(());
         };
         runtime.callbacks.drain();
@@ -312,13 +321,27 @@ impl ProjFsSession {
         });
         self.runtime = None;
         drop(runtime);
+        if let Some(cleanup) = self.projection_cleanup.as_mut() {
+            if self.namespace_outcome.as_ref().is_some_and(|outcome| {
+                outcome.capture_failure.is_some() || outcome.cleanup_failure.is_some()
+            }) {
+                // Never delete data whose publication/capture failed. Remove
+                // only the detached root tag; the outcome retains the cause.
+                cleanup.0.clear();
+            }
+            super::cleanup::finish_projection_cleanup(cleanup)?;
+            drop(self.projection_cleanup.take());
+        }
         if let Some(retirement) = self.retirement.as_mut() {
             retirement.retire(None)?;
-            if !retirement.is_retired() {
-                return Err(NativeMountError::ControlPending);
-            }
         }
-        self.retirement = None;
+        if self
+            .retirement
+            .as_ref()
+            .is_some_and(super::super::NativeMountRetirement::is_retired)
+        {
+            self.retirement = None;
+        }
         Ok(())
     }
 
@@ -336,6 +359,49 @@ impl ProjFsSession {
     ) -> Result<NativeMountWorkScope, NativeMountError> {
         let (runtime, _) = self.live()?;
         NativeMountWorkScope::enter(Arc::clone(runtime), work)
+    }
+
+    pub(in crate::native_mount) fn prepare_destination_cleanup(
+        &mut self,
+        destination: &std::path::Path,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        self.retirement
+            .as_mut()
+            .and_then(|packet| packet.destination_guard.as_mut())
+            .ok_or(NativeMountError::ControlPending)?
+            .prepare_destination_cleanup(destination, work)
+    }
+
+    // Prepare while source lookup and original invocation admission are live;
+    // request_retirement transfers every handle and credit into the worker.
+    pub(in crate::native_mount) fn prepare_projection_cleanup(
+        &mut self,
+    ) -> Result<(), NativeMountError> {
+        if self.projection_cleanup.is_some() {
+            return Ok(());
+        }
+        let Some(runtime) = self.runtime.as_ref() else {
+            // A previous stop already moved every resource into the physical
+            // worker. Retrying waits on that same owner, without source lookup.
+            return if self.controller.is_some() {
+                Ok(())
+            } else {
+                Err(NativeMountError::ControlPending)
+            };
+        };
+        let work = runtime
+            .source
+            .native_original_work()?
+            .ok_or(NativeMountError::ControlPending)?;
+        self.flush_callbacks(&work)?;
+        self.projection_cleanup = Some(super::cleanup::prepare_projection_cleanup(
+            &runtime.root,
+            runtime.metadata_root.identity(),
+            runtime.source.as_ref(),
+            &work,
+        )?);
+        Ok(())
     }
 
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {

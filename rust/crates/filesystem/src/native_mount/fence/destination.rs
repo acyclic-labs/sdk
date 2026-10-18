@@ -1,0 +1,72 @@
+use super::*;
+
+#[cfg(all(test, target_os = "linux", not(acyclic_fs_native_loom)))]
+mod tests;
+
+impl MountDestinationGuard {
+    pub(in crate::native_mount) fn prepare_destination_cleanup(
+        &mut self,
+        destination: &Path,
+        native: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        if self.destination_cleanup.is_some() {
+            return Ok(());
+        }
+        if self.file.is_none() || self.parent_directory.is_none() {
+            return Err(NativeMountError::ControlPending);
+        }
+        let leaf = destination
+            .file_name()
+            .ok_or(NativeMountError::InvalidDestination)?;
+        let prepared = crate::native_host::prepare_leaf(Path::new(leaf), &mut &*native)?;
+        let mut credit = native.reserve_work(crate::WorkCounters {
+            backend_write_operations: 1,
+            #[cfg(windows)]
+            backend_read_operations: 1,
+            #[cfg(windows)]
+            items_examined: prepared.0.len() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        })?;
+        self.birth_cleanup
+            .as_mut()
+            .ok_or(NativeMountError::ControlPending)?
+            .absorb(&mut credit)?;
+        self.destination_cleanup = Some(prepared);
+        Ok(())
+    }
+
+    pub(in crate::native_mount) fn remove_destination(&mut self) -> Result<(), NativeMountError> {
+        let Some((name, _)) = self.destination_cleanup.as_ref() else {
+            return Ok(());
+        };
+        // Physical namespace producers have stopped, but this destination's
+        // fence is still held. A new starter cannot acquire this destination.
+        if self.file.is_none() {
+            return Err(NativeMountError::ControlPending);
+        }
+        let parent = self
+            .parent_directory
+            .as_ref()
+            .ok_or(NativeMountError::ControlPending)?;
+        let credit = self
+            .birth_cleanup
+            .as_ref()
+            .ok_or(NativeMountError::ControlPending)?;
+        let mut work = NativeFenceReleaseWork {
+            credit,
+            wait: None,
+            pending: None,
+        };
+        match crate::native_host::remove_prepared_leaf(parent, name, true, &mut work) {
+            Ok(()) => {}
+            Err(crate::NativeTreeMaterializationError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+        drop(self.destination_cleanup.take());
+        Ok(())
+    }
+}

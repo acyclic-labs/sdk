@@ -3,6 +3,9 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
+mod exclude;
+#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+mod publication_tests;
 #[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
 mod recovery_tests;
 
@@ -42,6 +45,7 @@ pub(in crate::local) fn excluded(
     let destination = root.join(relative);
     std::iter::once(destination.clone())
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
+        .filter(|path| path.starts_with(root))
         .map(|path| {
             let relative = path
                 .strip_prefix(root)
@@ -94,6 +98,7 @@ pub(super) async fn attach(
             workspace: crate::tools::git::OwnedView::Volume(source),
             destination,
             native: StateArc::new(AsyncMutex::new(None)),
+            users: StateArc::new(crate::sync::SyncMutex::new(0)),
         }));
     }
     Ok(())
@@ -112,15 +117,75 @@ pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     Ok(())
 }
 
-pub(in crate::local) async fn project(mounts: &Mounts) -> Result<()> {
+/// The single native execution scope shared by bash and hooks. Entry projects
+/// every bound volume, so a command sees persisted volume data. A successful
+/// exit publishes and detaches each projection and removes its SDK-owned
+/// residue, so the checkout holds no mount between executions. The body owns
+/// every check that must precede publication.
+pub(in crate::local) struct Claims(Vec<(Arc<MountedVolume>, projection::Entered)>);
+
+pub(in crate::local) async fn native_scope<T>(
+    mounts: &Mounts,
+    body: impl AsyncFnOnce(Claims) -> Result<(T, Claims)>,
+) -> Result<T> {
+    let mut entered = Vec::new();
+    let mut projected = Ok(());
     for (relative, mount) in mounts.mounts() {
         if let Some(source) = &mount.view.source {
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
+            let entry = match projection_root(&source.destination, relative) {
+                Ok(root) => Box::pin(source.enter(root, relative, mount.mode.read_only())).await,
+                Err(error) => Err(error),
+            };
+            match entry {
+                Ok(entry) => entered.push((Arc::clone(source), entry)),
+                Err(error) => {
+                    projected = Err(error);
+                    break;
+                }
+            }
+        }
+    }
+    let result = match projected {
+        // Boxed, as are projection entry and exit: these deep futures stay
+        // out of every caller's layout.
+        Ok(()) => Box::pin(body(Claims(entered))).await,
+        Err(error) => Err(error),
+    };
+    // The body returns claims only after physical cleanup and verification.
+    // Cancellation leaves them in the worker, rather than this caller future.
+    let (value, Claims(entered)) = result?;
+    let mut retired = Ok(());
+    for (source, entry) in entered.into_iter().rev() {
+        if let Err(error) = Box::pin(source.leave(entry)).await
+            && retired.is_ok()
+        {
+            retired = Err(error);
+        }
+    }
+    retired?;
+    Ok(value)
+}
+
+/// Negative controls only: projects outside any execution scope, so nothing
+/// retires the projection until `retire`.
+#[cfg(test)]
+pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
+    for (relative, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
             let root = projection_root(&source.destination, relative)?;
-            source
-                .project(root, relative, mount.mode.read_only())
-                .await?;
+            drop(source.enter(root, relative, mount.mode.read_only()).await?);
+        }
+    }
+    Ok(())
+}
+
+/// Retires every projection when the host disconnects; no scope is live.
+pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
+    for (_, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
+            Box::pin(source.retire()).await?;
         }
     }
     Ok(())
@@ -215,11 +280,20 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
 // the exclusive destination fence before probing or detaching the driver, so
 // a live owner is rejected and authored host residue is retained.
 pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()> {
+    let destination = root.join(relative);
+    let controls = acyclic_fs::native_mount_control_paths(&destination)?;
+    let mut excluded = vec![destination.clone()];
+    excluded.extend(
+        controls
+            .iter()
+            .filter(|path| path.starts_with(root))
+            .cloned(),
+    );
+    exclude::exclude_mount_paths(root, &excluded).map_err(mount_io)?;
     if let Some(parent) = relative.parent() {
         create_mount_directory(root, parent)?;
     }
-    let destination = root.join(relative);
-    let [fence, _] = acyclic_fs::native_mount_control_paths(&destination)?;
+    let [fence, _] = controls;
     match std::fs::symlink_metadata(fence) {
         Ok(_) => acyclic_fs::detach_native_mount_destination_after_crash(&destination)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

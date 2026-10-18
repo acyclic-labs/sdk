@@ -89,6 +89,7 @@ fn remount_first(
 
 #[test]
 fn real_recovery_owner_keeps_fence_through_helper_exit_with_negative_control() {
+    crate::native_mount::registry::initialize().unwrap();
     // These ordinary filesystem objects provide descriptor identities only;
     // connectivity, flock, process execution and mount syscalls are modeled.
     let root = tempfile::tempdir().unwrap();

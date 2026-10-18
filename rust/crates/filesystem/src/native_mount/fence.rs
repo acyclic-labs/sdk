@@ -1,5 +1,6 @@
 use super::fence_io::MountLockFile;
 use super::*;
+mod destination;
 
 pub(super) const NATIVE_FENCE_PREFIX: &str = ".acyclic-fs-mount-";
 pub(super) const NATIVE_FENCE_SUFFIX: &str = ".lock";
@@ -17,6 +18,8 @@ pub(super) struct MountDestinationGuard {
     pub(super) registry_file: Option<MountLockFile>,
     pub(super) cleanup_name: Option<[crate::native_host::NativeUnit; NATIVE_FENCE_NAME_BYTES + 1]>,
     pub(super) birth_cleanup: Option<crate::NativeWorkReservation>,
+    // Allocated and funded before shutdown; retained on a failed exact cleanup.
+    destination_cleanup: Option<(Vec<crate::native_host::NativeUnit>, crate::NativeAllocation)>,
 }
 
 /// The accepted fence path has no allocator or new cleanup-reservation ingress.
@@ -347,7 +350,9 @@ impl MountDestinationGuard {
         )?;
         let prepared = crate::native_host::prepare_ascii_leaf(terminated, native)?;
         let credit = native.reserve_work(crate::WorkCounters {
-            backend_write_operations: 2,
+            // Registry lock, exact fence unlink, and registry unlock. The
+            // accepted unlock remains funded even if caller waiting stops.
+            backend_write_operations: 3,
             #[cfg(windows)]
             backend_read_operations: 1,
             #[cfg(windows)]
@@ -368,13 +373,7 @@ impl MountDestinationGuard {
     ) -> Result<(), NativeMountError> {
         use crate::native_host::NativeHostWork as _;
         let work = &mut &*native;
-        let registry: MountLockFile = crate::native_host::open_leaf(
-            &parent_directory,
-            Path::new(NATIVE_REGISTRY_NAME),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-            work,
-        )?
-        .into();
+        let registry = registry::open(work)?;
         lock_mount_file_with_work(&registry, true, work)?;
         let file = crate::native_host::open_leaf(
             &parent_directory,
@@ -392,6 +391,7 @@ impl MountDestinationGuard {
             registry_file: Some(registry.into()),
             cleanup_name,
             birth_cleanup,
+            destination_cleanup: None,
         };
         if recovery {
             // Even a post-open lock failure belongs to the preborn admin
@@ -454,6 +454,7 @@ impl MountDestinationGuard {
             registry_file: None,
             cleanup_name: None,
             birth_cleanup: None,
+            destination_cleanup: None,
         })
     }
 
@@ -470,7 +471,7 @@ impl MountDestinationGuard {
             ".acyclic-fs-mount-{}.lock",
             identity.finalize().to_hex()
         ));
-        let registry_path = parent.join(".acyclic-fs-mount-registry.lock");
+        let registry_path = registry::path()?;
         Ok((lock_path, registry_path))
     }
 
@@ -526,15 +527,29 @@ impl MountDestinationGuard {
             wait,
             pending: None,
         };
-        // A contended registry is a real pending control. Do not spend an
-        // unbounded sequence of new lock attempts after cancellation.
-        lock_mount_file_with_work(registry, false, &mut work)?;
-        match crate::native_host::remove_ascii_leaf(directory, name, &mut work) {
+        // Retirement owns its original cleanup credit while the OS waits.
+        // Contention is one blocking syscall, not repeated charged attempts
+        // which could exhaust birth credit before the fence is removed.
+        lock_mount_file_with_work(registry, true, &mut work)?;
+        // Completing the accepted retirement owns its birth credit even if
+        // the caller stops waiting after registry acquisition.
+        work.wait = None;
+        let removed = crate::native_host::remove_ascii_leaf(directory, name, &mut work);
+        // The held lock must be released on every unlink outcome. Caller
+        // cancellation can stop new work, but cannot revoke this accepted
+        // physical release and strand all future starters behind the lock.
+        let unlocked = crate::native_host::NativeHostWork::attempt_io(
+            &mut work,
+            crate::materializer::NativeResourceCredit::WriteOperations.delta(1),
+            || fence_io::unlock(registry),
+        );
+        match removed {
             Ok(()) => {}
             Err(crate::NativeTreeMaterializationError::Io(error))
                 if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        unlocked?;
         self.file.take();
         Ok(())
     }
@@ -571,13 +586,7 @@ impl MountDestinationGuard {
                     .ok_or(NativeMountError::InvalidDestination)?,
             ),
         };
-        let registry: MountLockFile = crate::native_host::open_leaf(
-            directory,
-            Path::new(NATIVE_REGISTRY_NAME),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
-            work,
-        )?
-        .into();
+        let registry = registry::open(work)?;
         lock_mount_file_with_work(&registry, true, work)?;
         match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
@@ -598,22 +607,21 @@ pub(super) fn lock_mount_file_with_work<W: crate::native_host::NativeHostWork>(
 where
     NativeMountError: From<W::Error>,
 {
-    loop {
-        let delta = crate::materializer::NativeResourceCredit::WriteOperations.delta(1);
-        let result = work.attempt_io(delta, || match fence_io::try_lock(file) {
-            Ok(()) => Ok(true),
-            Err(error) if lock_is_contended(&error) => Ok(false),
-            Err(error) => Err(error),
-        });
+    let delta = crate::materializer::NativeResourceCredit::WriteOperations.delta(1);
+    work.attempt_io(delta, || {
+        let result = if blocking {
+            fence_io::lock(file)
+        } else {
+            fence_io::try_lock(file)
+        };
         match result {
-            Ok(true) => return Ok(()),
-            Ok(false) if blocking => {
-                fence_io::wait(file);
-            }
-            Ok(false) => return Err(NativeMountError::DestinationBusy),
-            Err(error) => return Err(error.into()),
+            Err(error) if lock_is_contended(&error) => Ok(false),
+            result => result.map(|()| true),
         }
-    }
+    })
+    .map_err(NativeMountError::from)?
+    .then_some(())
+    .ok_or(NativeMountError::DestinationBusy)
 }
 
 impl Drop for MountDestinationGuard {
@@ -629,54 +637,43 @@ impl Drop for MountDestinationGuard {
     }
 }
 
-pub(super) fn acquire_mount_lock(path: &Path, blocking: bool) -> Result<File, NativeMountError> {
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    let lock_metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    if lock_metadata.file_type().is_symlink() || !file.metadata().is_ok_and(|value| value.is_file())
-    {
-        return Err(NativeMountError::InvalidDestination);
-    }
-    if blocking {
-        fs2::FileExt::lock_exclusive(&file)
-            .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    } else {
-        fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
-            if lock_is_contended(&error) {
-                NativeMountError::DestinationBusy
-            } else {
-                NativeMountError::Driver(error.to_string())
-            }
-        })?;
-    }
-    Ok(file)
+pub(super) fn acquire_mount_lock(
+    path: &Path,
+    blocking: bool,
+) -> Result<MountLockFile, NativeMountError> {
+    open_mount_lock(
+        path,
+        &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+        blocking,
+    )
 }
 
-pub(super) fn acquire_existing_mount_lock(path: &Path) -> Result<File, NativeMountError> {
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    let lock_metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| NativeMountError::Driver(error.to_string()))?;
-    if lock_metadata.file_type().is_symlink() || !file.metadata().is_ok_and(|value| value.is_file())
-    {
-        return Err(NativeMountError::InvalidDestination);
-    }
-    fs2::FileExt::try_lock_exclusive(&file).map_err(|error| {
-        if lock_is_contended(&error) {
-            NativeMountError::DestinationBusy
-        } else {
-            NativeMountError::Driver(error.to_string())
-        }
-    })?;
+pub(super) fn acquire_existing_mount_lock(path: &Path) -> Result<MountLockFile, NativeMountError> {
+    open_mount_lock(
+        path,
+        &crate::native_host::NativeOpenOptions::ReadWrite,
+        false,
+    )
+}
+
+fn open_mount_lock(
+    path: &Path,
+    options: &crate::native_host::NativeOpenOptions,
+    blocking: bool,
+) -> Result<MountLockFile, NativeMountError> {
+    let cancellation = crate::CancellationToken::new();
+    let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+    let parent = path.parent().ok_or(NativeMountError::InvalidDestination)?;
+    let leaf = path
+        .file_name()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let (parent, _) = crate::native_host::open_root_directory(parent, &mut work)?;
+    // Every entry point uses held-parent, no-follow opening and the same lock
+    // syscall shim. A lexical metadata check after opening could follow a
+    // replaced symlink and cannot establish the lock's identity.
+    let file = crate::native_host::open_leaf(&parent, Path::new(leaf), options, &mut work)?;
+    let file = file.into();
+    lock_mount_file_with_work(&file, blocking, &mut work)?;
     Ok(file)
 }
 
@@ -713,3 +710,6 @@ pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
 pub(super) fn update_path_identity(hasher: &mut blake3::Hasher, path: &Path) {
     hasher.update(path.to_string_lossy().as_bytes());
 }
+
+#[cfg(all(test, acyclic_fs_native_loom, target_os = "linux"))]
+mod models;

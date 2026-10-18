@@ -9,7 +9,7 @@ mod bootstrap;
 mod performance_tests;
 
 mod mounts;
-mod projection;
+pub(super) mod projection;
 pub(super) mod volumes;
 #[cfg(all(test, feature = "native-execution", unix))]
 pub(super) use crate::sync::owned::lock_owned;
@@ -19,6 +19,8 @@ pub(super) struct MountedVolume {
     pub(super) workspace: crate::tools::git::OwnedView,
     pub(super) destination: PathBuf,
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
+    /// Native execution scopes currently using `native`.
+    pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 

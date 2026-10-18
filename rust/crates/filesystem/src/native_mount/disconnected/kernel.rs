@@ -20,6 +20,8 @@ loom::lazy_static! {
 pub(in crate::native_mount) struct Kernel {
     fixture: std::sync::OnceLock<Fixture>,
     pinned: std::sync::OnceLock<(RawFd, u64)>,
+    missing_registry_wait: std::sync::OnceLock<()>,
+    registry_directory: std::sync::OnceLock<std::path::PathBuf>,
     recovery_fence: std::sync::OnceLock<(u64, u64, RawFd)>,
     state: Mutex<State>,
     // Registry and destination flock state/wakeups are independent OS resources.
@@ -52,6 +54,8 @@ impl Kernel {
         Self {
             fixture: std::sync::OnceLock::new(),
             pinned: std::sync::OnceLock::new(),
+            missing_registry_wait: std::sync::OnceLock::new(),
+            registry_directory: std::sync::OnceLock::new(),
             recovery_fence: std::sync::OnceLock::new(),
             state: Mutex::new(State {
                 mount: Some(0),
@@ -68,7 +72,7 @@ impl Kernel {
         }
     }
 
-    pub(super) fn install(
+    pub(in crate::native_mount) fn install(
         base: Statx,
         helper_stat: rustix::fs::Stat,
         early_release: bool,
@@ -87,6 +91,26 @@ impl Kernel {
                 .is_ok()
         );
         kernel
+    }
+
+    // An immutable physical syscall fixture, outside the modeled checkout.
+    pub(in crate::native_mount) fn set_registry_directory(&self, path: std::path::PathBuf) {
+        self.registry_directory.set(path).unwrap();
+    }
+
+    pub(in crate::native_mount) fn registry_directory(&self) -> Option<&std::path::Path> {
+        self.registry_directory
+            .get()
+            .map(std::path::PathBuf::as_path)
+    }
+
+    // Immutable fault configuration, set before any modeled actor starts.
+    pub(in crate::native_mount) fn disable_registry_wait(&self) {
+        self.missing_registry_wait.set(()).unwrap();
+    }
+
+    pub(in crate::native_mount) fn registry_wait_disabled(&self) -> bool {
+        self.missing_registry_wait.get().is_some()
     }
 
     pub(in crate::native_mount) fn early_release(&self) -> bool {

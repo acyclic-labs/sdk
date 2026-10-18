@@ -537,14 +537,7 @@ impl LocalHarness {
     pub async fn disconnect(self) -> Result<()> {
         #[cfg(feature = "native-execution")]
         if let Some(workspace) = &self.workspace {
-            for (_, mount) in workspace.mounts.mounts() {
-                if let Some(source) = &mount.view.source {
-                    let native = source.native().await;
-                    if let Some(native) = native.as_ref() {
-                        native.unmount().await?;
-                    }
-                }
-            }
+            crate::local::workspace::volumes::retire(&workspace.mounts).await?;
         }
         Ok(())
     }

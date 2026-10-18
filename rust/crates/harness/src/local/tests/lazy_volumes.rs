@@ -87,7 +87,11 @@ async fn logical_volume_writes_precede_one_native_projection_and_survive_reopen(
         b"staged"
     );
     assert_eq!(harness.run("use the native volume").await?.text, "mounted");
-    assert!(scratch.native().await.is_some());
+    assert!(
+        scratch.native().await.is_none(),
+        "bash retained its projection past its execution scope"
+    );
+    assert!(!scratch.destination.exists());
     let requests = provider.requests();
     for (call_id, expected) in [("checkout-2", "staged"), ("checkout-4", "replaced")] {
         let result = requests

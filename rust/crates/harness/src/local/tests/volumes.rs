@@ -84,17 +84,27 @@ async fn fs_volume_qualifier_selects_only_a_granted_mount() -> Result<()> {
         std::fs::read(directory.path().join("root-file")).map_err(super::super::storage)?,
         b"root"
     );
+    // The scope retired the projection after publishing the native write.
+    assert!(scratch.native().await.is_none());
+    let cancellation = acyclic_fs::CancellationToken::new();
     assert_eq!(
-        std::fs::read(
-            scratch
-                .native()
-                .await
-                .as_ref()
-                .unwrap()
-                .path()
-                .join("data-file")
-        )
-        .map_err(super::super::storage)?,
+        scratch
+            .workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .read(
+                "/data-file",
+                32,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value
+            .as_ref(),
         b"data"
     );
     Ok(())
@@ -228,19 +238,13 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         std::fs::read(directory.path().join("copied")).map_err(super::super::storage)?,
         b"from tool"
     );
+    // Bash's scope retired its projection and fences, retaining user files.
     let entries: Vec<_> = std::fs::read_dir(directory.path().join(".volumes"))
         .map_err(super::super::storage)?
-        .filter_map(|entry| match entry {
-            Ok(entry) => match entry.file_type() {
-                Ok(kind) if kind.is_dir() => Some(Ok(entry.file_name())),
-                Ok(_) => None,
-                Err(error) => Some(Err(error)),
-            },
-            Err(error) => Some(Err(error)),
-        })
+        .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<_>>()
         .map_err(super::super::storage)?;
-    assert_eq!(entries, [std::ffi::OsString::from("scratch")]);
+    assert_eq!(entries, [std::ffi::OsString::from("user-owned")]);
     let workspace = harness.workspace().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -260,10 +264,20 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
             .as_ref(),
         b"retain"
     );
-    for path in acyclic_fs::native_mount_control_paths(&directory.path().join(".volumes/scratch"))
-        .map_err(Error::from)?
+    let [fence, registry] =
+        acyclic_fs::native_mount_control_paths(&directory.path().join(".volumes/scratch"))
+            .map_err(Error::from)?;
+    assert!(
+        !registry.starts_with(directory.path()),
+        "registry entered the checkout"
+    );
+    assert!(
+        std::fs::symlink_metadata(&registry)
+            .map_err(super::super::storage)?
+            .is_file()
+    );
     {
-        let relative = path
+        let relative = fence
             .strip_prefix(directory.path())
             .map_err(super::super::storage)?;
         let relative = format!("/{}", relative.to_str().unwrap().replace('\\', "/"));

@@ -145,6 +145,87 @@ fn cancelled_waiter_keeps_a_submitted_jobs_guard_until_cleanup() {
     checked_model(offloaded_cleanup, "cleanup escaped checkout ownership");
 }
 
+fn offloaded_projection_cleanup(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(crate::sync::SyncMutex::new(0));
+    let claim = complete(crate::local::workspace::projection::enter(
+        &slot,
+        &users,
+        async || Ok(7),
+    ))
+    .unwrap();
+    let observed = users.clone();
+    let worker_slot = slot.clone();
+    let mut caller_claim = None;
+    let worker = if broken {
+        caller_claim = Some(claim);
+        thread::spawn(move || {
+            thread::yield_now();
+            assert!(
+                *observed.lock().unwrap() > 0,
+                "bash worker lost its projection before physical cleanup"
+            );
+            assert_eq!(
+                *complete(crate::sync::owned::lock_owned(worker_slot)),
+                Some(7),
+                "bash worker lost its projection before physical cleanup"
+            );
+        })
+    } else {
+        thread::spawn(move || {
+            let ((), claim) =
+                crate::filesystem::native_process::capture::with_custody(claim, |_| {
+                    thread::yield_now();
+                    assert!(
+                        *observed.lock().unwrap() > 0,
+                        "bash worker lost its projection before physical cleanup"
+                    );
+                    assert_eq!(
+                        *complete(crate::sync::owned::lock_owned(worker_slot)),
+                        Some(7),
+                        "bash worker lost its projection before physical cleanup"
+                    );
+                });
+            // The dropped waiter cannot receive the completed custody. It is
+            // released here, after the same physical cleanup boundary as Bash.
+            drop(claim);
+        })
+    };
+    drop(caller_claim);
+    // A second command can enter and complete while the first command's
+    // caller is gone. Its last-user check must still see physical custody.
+    let next = complete(crate::local::workspace::projection::enter(
+        &slot,
+        &users,
+        async || Ok(8),
+    ))
+    .unwrap();
+    complete(crate::local::workspace::projection::leave(
+        &slot,
+        &users,
+        next,
+        async |slot, retire| {
+            if retire {
+                *slot = None;
+            }
+            Ok(())
+        },
+    ))
+    .unwrap();
+    worker
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert_eq!(*users.lock().unwrap(), 0);
+}
+
+#[test]
+fn cancelled_bash_retains_projection_until_physical_cleanup() {
+    checked_model(
+        offloaded_projection_cleanup,
+        "bash worker lost its projection before physical cleanup",
+    );
+}
+
 #[path = "tests/fencing.rs"]
 mod fencing;
 

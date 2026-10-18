@@ -42,16 +42,13 @@ impl NativeMountSession {
                 .as_ref()
         });
         if let Some(guard) = guard {
-            for (name, file) in [
-                (
-                    guard
-                        .fence_name
-                        .as_ref()
-                        .and_then(|name| std::str::from_utf8(name).ok()),
-                    guard.file.as_ref(),
-                ),
-                (Some(NATIVE_REGISTRY_NAME), guard.registry_file.as_ref()),
-            ] {
+            for (name, file) in [(
+                guard
+                    .fence_name
+                    .as_ref()
+                    .and_then(|name| std::str::from_utf8(name).ok()),
+                guard.file.as_ref(),
+            )] {
                 if let (Some(name), Some(file)) = (name, file) {
                     work.charge(
                         crate::materializer::NativeResourceCredit::Items.delta(name.len() as u64),
@@ -331,6 +328,20 @@ impl NativeMountSession {
         work: &NativeSessionStopWork<'_>,
     ) -> Result<bool, NativeMountError> {
         let result = (|| {
+            let changed = self.stop_namespace_with_context(work)?;
+            Ok(self.release_destination_with_context(work)? || changed)
+        })();
+        self.measured_cleanup_failed = result.is_err();
+        result
+    }
+
+    // The destination fence remains owned after physical namespace retirement.
+    // Customer mounts finish their held-entry cleanup before releasing it.
+    pub(super) fn stop_namespace_with_context(
+        &mut self,
+        work: &NativeSessionStopWork<'_>,
+    ) -> Result<bool, NativeMountError> {
+        let result = (|| {
             let mut changed = false;
             if let Some(driver) = self.driver.as_mut() {
                 with_driver!(
@@ -402,20 +413,60 @@ impl NativeMountSession {
                 }
                 stopped?;
             }
-            if let Some(guard) = self.destination_guard.as_mut() {
-                match work {
-                    NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter)?,
-                    NativeSessionStopWork::AcceptedWait(wait) => {
-                        guard.release_cleanup(Some(wait))?;
-                    }
-                }
-                drop(self.destination_guard.take());
-                changed = true;
-            }
             Ok(changed)
         })();
         self.measured_cleanup_failed = result.is_err();
         result
+    }
+    pub(super) fn prepare_destination_cleanup(
+        &mut self,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        if let Some(guard) = self.destination_guard.as_mut() {
+            return guard.prepare_destination_cleanup(&self.request.destination, work);
+        }
+        let driver = self
+            .driver
+            .as_mut()
+            .ok_or(NativeMountError::ControlPending)?;
+        with_driver!(
+            driver,
+            session,
+            session.prepare_destination_cleanup(&self.request.destination, work),
+            Err(NativeMountError::UnsupportedTarget),
+        )
+    }
+
+    #[cfg(windows)]
+    pub(super) fn prepare_projection_cleanup(&mut self) -> Result<(), NativeMountError> {
+        self.driver
+            .as_mut()
+            .map_or(Ok(()), |driver| driver.prepare_projection_cleanup())
+    }
+
+    pub(super) fn release_destination_with_context(
+        &mut self,
+        work: &NativeSessionStopWork<'_>,
+    ) -> Result<bool, NativeMountError> {
+        let Some(guard) = self.destination_guard.as_mut() else {
+            return Ok(false);
+        };
+        let result = guard.remove_destination().and_then(|()| {
+            if guard.birth_cleanup.is_some() {
+                // Namespace producers have retired. Complete the accepted fence
+                // release on its original credit, even after caller cancellation.
+                guard.release_cleanup(None)
+            } else {
+                match work {
+                    NativeSessionStopWork::Meter(meter) => guard.release(&mut &**meter),
+                    NativeSessionStopWork::AcceptedWait(wait) => guard.release_cleanup(Some(wait)),
+                }
+            }
+        });
+        self.measured_cleanup_failed = result.is_err();
+        result?;
+        drop(self.destination_guard.take());
+        Ok(true)
     }
 }
 

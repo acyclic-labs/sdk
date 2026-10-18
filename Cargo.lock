@@ -181,6 +181,7 @@ dependencies = [
  "cc",
  "crc-fast",
  "diffy",
+ "dirs",
  "divan",
  "fs2",
  "fuser",

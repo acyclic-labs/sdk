@@ -17,7 +17,11 @@ fn joined<T>(worker: thread::JoinHandle<T>) -> T {
 
 fn checked(scenario: fn(bool), diagnostic: &str) {
     loom::model(move || scenario(false));
-    let failure = std::panic::catch_unwind(|| loom::model(move || scenario(true)))
+    controlled(|| loom::model(move || scenario(true)), diagnostic);
+}
+
+fn controlled(control: impl FnOnce() + std::panic::UnwindSafe, diagnostic: &str) {
+    let failure = std::panic::catch_unwind(control)
         .expect_err("projection negative control escaped the model");
     let message = failure
         .downcast_ref::<String>()
@@ -257,4 +261,144 @@ fn checkout_then_projection_order_cannot_deadlock() {
     assert!(!output.status.success(), "inverted lock order passed");
     let diagnostic = String::from_utf8_lossy(&output.stderr);
     assert!(diagnostic.contains("deadlock; threads ="), "{diagnostic}");
+}
+
+fn scope(
+    slot: &StateArc<AsyncMutex<Option<u8>>>,
+    users: &StateArc<SyncMutex<usize>>,
+    broken: bool,
+) {
+    let entered = complete(enter(slot, users, async || Ok(7))).unwrap();
+    assert!(
+        complete(lock_owned(slot.clone())).is_some(),
+        "projection retired under a running command"
+    );
+    if broken {
+        // The faulty exit retires without consulting other scopes.
+        drop(entered);
+        *complete(lock_owned(slot.clone())) = None;
+    } else {
+        complete(leave(slot, users, entered, async |slot, retire| {
+            if retire {
+                *slot = None;
+            }
+            Ok(())
+        }))
+        .unwrap();
+    }
+}
+
+// Initial admission has its own exhaustive model above. Start with one live
+// scope so this model explores only competing admission versus retirement.
+fn scoped_retirement(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(SyncMutex::new(0));
+    let entered = complete(enter(&slot, &users, async || Ok(7))).unwrap();
+    let worker = {
+        let (slot, users) = (slot.clone(), users.clone());
+        thread::spawn(move || scope(&slot, &users, broken))
+    };
+    complete(leave(&slot, &users, entered, async |slot, retire| {
+        assert!(slot.is_some(), "projection retired under a running command");
+        if retire {
+            *slot = None;
+        }
+        Ok(())
+    }))
+    .unwrap();
+    joined(worker);
+    assert!(
+        complete(lock_owned(slot)).is_none(),
+        "projection outlived its last scope"
+    );
+}
+
+#[test]
+fn the_last_execution_scope_alone_retires_the_projection() {
+    checked(
+        scoped_retirement,
+        "projection retired under a running command",
+    );
+}
+
+fn publication(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(SyncMutex::new(0));
+    let a = complete(enter(&slot, &users, async || Ok(0))).unwrap();
+    let b = complete(enter(&slot, &users, async || Ok(0))).unwrap();
+    let mut published = 0;
+    // B already holds its claim when A completes. A must publish even though
+    // B keeps the native namespace attached.
+    complete(leave(&slot, &users, a, async |slot, retire| {
+        if !broken || retire {
+            published += 1;
+        }
+        if retire {
+            *slot = None;
+        }
+        Ok(())
+    }))
+    .unwrap();
+    assert_eq!(published, 1, "successful command skipped publication");
+    assert!(complete(lock_owned(slot.clone())).is_some());
+    complete(leave(&slot, &users, b, async |slot, retire| {
+        published += 1;
+        assert!(retire);
+        *slot = None;
+        Ok(())
+    }))
+    .unwrap();
+    assert_eq!(published, 2);
+}
+
+#[test]
+fn every_completed_command_publishes_before_its_acknowledgement() {
+    checked(publication, "successful command skipped publication");
+}
+
+fn competing_completions(broken: bool) {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(SyncMutex::new(0));
+    let a = complete(enter(&slot, &users, async || Ok(7))).unwrap();
+    let b = complete(enter(&slot, &users, async || Ok(7))).unwrap();
+    let published = StateArc::new(Mutex::new(0));
+    let completion = move |slot: StateArc<AsyncMutex<Option<u8>>>,
+                           users: StateArc<SyncMutex<usize>>,
+                           entered: Entered,
+                           published: StateArc<Mutex<usize>>| {
+        let publish = async |slot: &mut Option<u8>, retire| {
+            assert!(slot.is_some(), "completion lost its unpublished projection");
+            *published.lock().unwrap() += 1;
+            if retire {
+                *slot = None;
+            }
+            Ok(())
+        };
+        if broken {
+            // Restore caller-side release before publication owns the slot.
+            drop(entered);
+            thread::yield_now();
+            let mut slot = complete(lock_owned(slot));
+            let retire = *users.lock().unwrap() == 0;
+            complete(publish(&mut slot, retire)).unwrap();
+        } else {
+            complete(leave(&slot, &users, entered, publish)).unwrap();
+        }
+    };
+    let worker = {
+        let (slot, users, published) = (slot.clone(), users.clone(), published.clone());
+        thread::spawn(move || completion(slot, users, b, published))
+    };
+    completion(slot.clone(), users, a, published.clone());
+    joined(worker);
+    assert_eq!(*published.lock().unwrap(), 2);
+    assert!(complete(lock_owned(slot)).is_none());
+}
+
+#[test]
+fn every_completing_worker_retains_its_projection_until_publication() {
+    checked(
+        competing_completions,
+        "completion lost its unpublished projection",
+    );
 }

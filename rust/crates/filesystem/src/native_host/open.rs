@@ -231,6 +231,39 @@ pub(crate) fn remove_leaf<W: NativeHostWork>(
     })
 }
 
+#[cfg(feature = "native-mount")]
+pub(crate) fn prepare_leaf<W: NativeHostWork>(
+    name: &Path,
+    work: &mut W,
+) -> Result<(Vec<NativeUnit>, W::Allocation), W::Error> {
+    require_leaf(name)?;
+    #[cfg(unix)]
+    return prepare_unix_name(name.as_os_str(), work);
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        prepare_wide_units(name.as_os_str().encode_wide(), work)
+    }
+}
+
+#[cfg(feature = "native-mount")]
+pub(crate) fn remove_prepared_leaf<W: NativeHostWork>(
+    parent: &Dir,
+    name: &[NativeUnit],
+    directory: bool,
+    work: &mut W,
+) -> Result<(), W::Error> {
+    #[cfg(unix)]
+    return remove_unix_named_leaf(
+        parent,
+        std::ffi::CStr::from_bytes_with_nul(name).map_err(|_| W::invalid_request())?,
+        directory,
+        work,
+    );
+    #[cfg(windows)]
+    remove_windows_leaf(parent, name, directory, None, work)
+}
+
 pub(super) fn retry_io<W: NativeHostWork, T>(
     work: &mut W,
     delta: WorkCounters,

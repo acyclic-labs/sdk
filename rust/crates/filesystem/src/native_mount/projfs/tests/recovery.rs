@@ -10,7 +10,8 @@ async fn detach_removes_projection_and_preserves_non_provider_content()
     let seed = folder.child(windows_name("seed.txt"));
     source.create_file(&seed, FileMetadata::default(), None, &work)?;
     source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
-    let (_root, destination, mut session) = mount_source(&source)?;
+    let (_root, destination, mut session) =
+        mount_source(&source).map_err(|error| format!("mounting recovery fixture: {error}"))?;
     let projected = destination.join("nested/seed.txt");
     let mut permissions = std::fs::metadata(&projected)?.permissions();
     permissions.set_readonly(true);
@@ -25,13 +26,16 @@ async fn detach_removes_projection_and_preserves_non_provider_content()
         source.as_ref(),
         &work,
         || {
-            session.stop()?;
+            // Add unplanned entries after cleanup samples its held names,
+            // while the provider still serves paths. Windows rejects new
+            // path access after SDK stop until the root tag is removed.
             std::fs::write(destination.join("keep.txt"), b"unrelated")?;
             std::fs::write(destination.join("nested/keep.txt"), b"nested unrelated")?;
             std::os::windows::fs::symlink_dir(checkout.path(), destination.join("checkout"))?;
-            Ok(())
+            session.stop().map(|_| ())
         },
-    )?;
+    )
+    .map_err(|error| format!("detaching recovery fixture: {error}"))?;
     assert!(!projected.exists());
     assert_eq!(std::fs::read(destination.join("keep.txt"))?, b"unrelated");
     assert_eq!(

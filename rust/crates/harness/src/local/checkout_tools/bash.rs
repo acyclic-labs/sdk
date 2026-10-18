@@ -9,8 +9,13 @@ impl CheckoutTools {
         maximum_output: usize,
         state: OwnedMutexGuard<State>,
         files: output::Output,
-    ) -> Result<(Result<ToolResult>, OwnedMutexGuard<State>, output::Output)> {
-        workspace::volumes::project(&state.mounts).await?;
+        claims: workspace::volumes::Claims,
+    ) -> Result<(
+        Result<ToolResult>,
+        OwnedMutexGuard<State>,
+        output::Output,
+        workspace::volumes::Claims,
+    )> {
         let workspace = state
             .workspace
             .as_ref()
@@ -37,9 +42,14 @@ impl CheckoutTools {
         )?;
         let check_owner = Arc::clone(&files.owner);
         let runtime = tokio::runtime::Handle::current();
-        let (output, (state, files)) = native_process::capture::capture_with_custody(
+        let (output, (state, files, claims)) = native_process::capture::capture_with_custody(
             invocation,
-            |(_, files): &mut (OwnedMutexGuard<State>, output::Output), chunk| files.observe(chunk),
+            |(_, files, _): &mut (
+                OwnedMutexGuard<State>,
+                output::Output,
+                workspace::volumes::Claims,
+            ),
+             chunk| files.observe(chunk),
             move || {
                 if acyclic_fs::capture_root_identity(&workspace.path)
                     .map_err(std::io::Error::other)?
@@ -60,7 +70,7 @@ impl CheckoutTools {
                     .map_err(native_process::capture::control_error)
                 })
             },
-            (state, files),
+            (state, files, claims),
         )
         .await?;
         let result = output
@@ -73,6 +83,6 @@ impl CheckoutTools {
                     "stop": output.stop,
                 }),
             });
-        Ok((result, state, files))
+        Ok((result, state, files, claims))
     }
 }

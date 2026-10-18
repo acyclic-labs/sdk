@@ -445,3 +445,173 @@ async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolve
     assert!(provider.requests().is_empty());
     Ok(())
 }
+
+/// Names below the checkout's `.volumes/`; an absent or empty directory is not
+/// visible to `git status`, while a mount registry or projection is.
+fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
+    match std::fs::read_dir(workspace.join(".volumes")) {
+        Ok(entries) => entries
+            .map(|entry| {
+                Ok(entry
+                    .map_err(super::super::storage)?
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned())
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(super::super::storage(error)),
+    }
+}
+
+async fn open_checkout(
+    root: &Path,
+    name: &str,
+    home: &Path,
+    provider: &Arc<ScriptedModelProvider>,
+) -> Result<LocalHarness> {
+    LocalHarness::open(
+        checkout_config(&root.join(name), (model()?, provider.clone()))?
+            .state_directory(root.join(format!("state-{name}")))
+            .settings(SettingsConfig::new(root.join(name), home).codex_home(home.join(".codex"))),
+    )
+    .await
+}
+
+// Hooks and bash share one native execution scope that projects bound volumes
+// on entry and retires them on exit. Both real turns leave a clean checkout,
+// before and after the host disconnects.
+#[tokio::test]
+async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let script = root.path().join("hook.sh");
+    std::fs::write(&script, "cat >/dev/null\nprintf '%s' \"$1\"\n")
+        .map_err(super::super::storage)?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        settings(&script, "hook-ran").to_string(),
+    )
+    .map_err(super::super::storage)?;
+    for (name, bash) in [("hooked", false), ("bash", true)] {
+        let workspace = root.path().join(name);
+        std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+        // A Git checkout sees no untracked mount point while one is live.
+        let status = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&workspace)
+            .status()
+            .map_err(super::super::storage)?;
+        assert!(status.success());
+        let turns = bash
+            .then(|| {
+                super::checked_commands::call(
+                    0,
+                    "bash",
+                    "test -d .volumes/scratch && printf 'MOUNTED STATUS[%s]'                      \"$(git status --porcelain --untracked-files=all)\"",
+                )
+            })
+            .into_iter()
+            .chain([ScriptedTurn::Text("done".into())]);
+        let provider = scripted(turns);
+        let harness = open_checkout(root.path(), name, &home, &provider).await?;
+        harness.run("go").await?;
+        assert!(request_has(&provider, 0, "hook-ran")?);
+        if bash {
+            assert!(request_has(&provider, 1, "MOUNTED STATUS[]")?);
+        }
+        let exclude = std::fs::read_to_string(workspace.join(".git/info/exclude"))
+            .map_err(super::super::storage)?;
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| *line == "/.volumes/scratch")
+                .count(),
+            1,
+            "{name}: {exclude}"
+        );
+        assert!(
+            !exclude
+                .lines()
+                .any(|line| matches!(line, "/.volumes" | "/.volumes/"))
+        );
+        let authored = workspace.join(".volumes/user-owned");
+        std::fs::write(&authored, "keep").map_err(super::super::storage)?;
+        let ignored = std::process::Command::new("git")
+            .args(["check-ignore", "--no-index", "-q", "--"])
+            .arg(&authored)
+            .current_dir(&workspace)
+            .status()
+            .map_err(super::super::storage)?;
+        assert_eq!(ignored.code(), Some(1), "{name}: authored sibling hidden");
+        std::fs::remove_file(&authored).map_err(super::super::storage)?;
+        assert!(!workspace.join(".gitignore").exists());
+        assert_eq!(volume_residue(&workspace)?, Vec::<String>::new(), "{name}");
+        harness.disconnect().await?;
+        assert_eq!(volume_residue(&workspace)?, Vec::<String>::new(), "{name}");
+    }
+    Ok(())
+}
+
+// Negative control: a projection that escapes the execution scope is exactly
+// the residue the clean-checkout detector above must see.
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn a_projection_outside_the_execution_scope_is_visible_residue() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let home = root.path().join("home");
+    std::fs::create_dir_all(root.path().join("leaky")).map_err(super::super::storage)?;
+    let harness = open_checkout(root.path(), "leaky", &home, &scripted([])).await?;
+    let mounts = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
+    crate::local::workspace::volumes::project_unscoped(&mounts).await?;
+    assert!(
+        !volume_residue(&root.path().join("leaky"))?.is_empty(),
+        "negative control left no visible projection"
+    );
+    crate::local::workspace::volumes::retire(&mounts).await?;
+    assert_eq!(
+        volume_residue(&root.path().join("leaky"))?,
+        Vec::<String>::new()
+    );
+    harness.disconnect().await?;
+    Ok(())
+}
+
+// A reopened checkout's hooks see volume data persisted by an earlier bash
+// turn: the shared scope projects it for the hook, then retires it.
+#[tokio::test]
+async fn reopened_start_hooks_read_persisted_scratch_data() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let home = root.path().join("home");
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let workspace = root.path().join("reopen");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    let first = scripted([
+        super::checked_commands::call(
+            0,
+            "bash",
+            "printf SCRATCH-NOTE-WREN > .volumes/scratch/note",
+        ),
+        ScriptedTurn::Text("written".into()),
+    ]);
+    let harness = open_checkout(root.path(), "reopen", &home, &first).await?;
+    assert_eq!(harness.run("write the note").await?.text, "written");
+    harness.disconnect().await?;
+    assert_eq!(volume_residue(&workspace)?, Vec::<String>::new());
+    let script = root.path().join("read-note.sh");
+    std::fs::write(&script, "cat >/dev/null\ncat .volumes/scratch/note\n")
+        .map_err(super::super::storage)?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        settings(&script, "unused").to_string(),
+    )
+    .map_err(super::super::storage)?;
+    let second = scripted([ScriptedTurn::Text("read".into())]);
+    let harness = open_checkout(root.path(), "reopen", &home, &second).await?;
+    assert_eq!(harness.run("read the note").await?.text, "read");
+    assert!(request_has(&second, 0, "SCRATCH-NOTE-WREN")?);
+    assert_eq!(volume_residue(&workspace)?, Vec::<String>::new());
+    harness.disconnect().await?;
+    Ok(())
+}

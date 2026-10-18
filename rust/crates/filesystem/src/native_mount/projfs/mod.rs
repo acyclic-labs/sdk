@@ -115,6 +115,7 @@ mod lifecycle;
 mod recovery;
 pub(super) use recovery::*;
 mod cleanup;
+#[cfg(test)]
 pub(super) use cleanup::detach_projection;
 mod recovery_control;
 pub(super) use recovery_control::*;

@@ -62,3 +62,84 @@ fn cancellation_keeps_hook_workers_inside_the_selected_workspace() {
         "{text}"
     );
 }
+
+fn projection_cancellation<const RETAIN: bool>() {
+    let slot = StateArc::new(AsyncMutex::new(None));
+    let users = StateArc::new(crate::sync::SyncMutex::new(0));
+    let claim = complete(crate::local::workspace::projection::enter(
+        &slot,
+        &users,
+        async || Ok(7),
+    ))
+    .unwrap();
+    let mut worker = None;
+    let observed = users.clone();
+    let worker_slot = slot.clone();
+    let mut command = Box::pin(with_workers::<_, _, _, _, RETAIN>(
+        claim,
+        || Ok(()),
+        |check| {
+            worker = Some(thread::spawn(move || {
+                thread::yield_now();
+                check().unwrap();
+                assert!(
+                    *observed.lock().unwrap() > 0,
+                    "physical worker lost its projection claim"
+                );
+                assert_eq!(
+                    *complete(crate::sync::owned::lock_owned(worker_slot)),
+                    Some(7),
+                    "physical worker lost its projection claim"
+                );
+                drop(check);
+            }));
+            std::future::pending::<()>()
+        },
+    ));
+    assert!(
+        command
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(command);
+    let next = complete(crate::local::workspace::projection::enter(
+        &slot,
+        &users,
+        async || Ok(8),
+    ))
+    .unwrap();
+    complete(crate::local::workspace::projection::leave(
+        &slot,
+        &users,
+        next,
+        async |slot, retire| {
+            if retire {
+                *slot = None;
+            }
+            Ok(())
+        },
+    ))
+    .unwrap();
+    worker
+        .unwrap()
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    assert_eq!(*users.lock().unwrap(), 0);
+}
+
+#[test]
+fn cancelled_hook_retains_projection_claim_until_physical_cleanup() {
+    loom::model(projection_cancellation::<true>);
+    let failure = std::panic::catch_unwind(|| loom::model(projection_cancellation::<false>))
+        .expect_err("lost worker claim was accepted");
+    let text = failure
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| failure.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(
+        text.contains("physical worker lost its projection claim"),
+        "{text}"
+    );
+}
