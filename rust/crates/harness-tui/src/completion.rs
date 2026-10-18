@@ -59,7 +59,60 @@ pub struct Completion {
 
 /// Identify the token under the cursor without triggering on emails or \@.
 pub fn completion_request(editor: &Editor) -> Option<CompletionRequest> {
-    request_from(editor, 0, &mut 0, None)
+    request_from(editor, 0, &mut 0, None, None)
+}
+
+/// Parser facts about the text verified at `CompletionMenu::version`. Each
+/// span runs from a trigger (or a leading slash) to just past the last byte its
+/// parse examined, `usize::MAX` while that depends on text after the end; spans
+/// are sorted and merged. A position below `scanned` and inside no span is a
+/// checkpoint: no earlier token depends on bytes at or after it, so a parse
+/// resumed there equals the full parse for every cursor at or after it.
+#[derive(Clone, Debug, Default)]
+struct Checkpoints {
+    spans: Vec<Range<usize>>,
+    scanned: usize,
+}
+
+impl Checkpoints {
+    /// Keep only facts that no byte at or after `at` contributed to.
+    fn edited(&mut self, at: usize) {
+        let keep = self.spans.partition_point(|span| span.end <= at);
+        let first = self.spans.get(keep).map_or(at, |span| span.start);
+        self.scanned = self.scanned.min(first).min(at);
+        self.spans.truncate(keep);
+    }
+
+    /// The latest checkpoint at or before `at <= scanned`.
+    fn before(&self, at: usize) -> usize {
+        match self.spans[..self.spans.partition_point(|span| span.start < at)].last() {
+            Some(span) if span.end > at => span.start,
+            _ => at,
+        }
+    }
+
+    /// Forget facts from `from` onwards before a parse records them again.
+    fn resume(&mut self, from: usize) -> &mut Self {
+        self.spans
+            .truncate(self.spans.partition_point(|span| span.start < from));
+        self.scanned = from;
+        self
+    }
+
+    fn record(&mut self, start: usize, end: usize) {
+        match self.spans.last_mut() {
+            Some(last) if start < last.end => last.end = last.end.max(end),
+            _ => self.spans.push(start..end),
+        }
+    }
+}
+
+/// Just past the character at `at`, or `usize::MAX` when none is written yet.
+fn past(text: &str, at: usize) -> usize {
+    slice(text, at..)
+        .chars()
+        .next()
+        .map_or(usize::MAX, |c| at + c.len_utf8())
 }
 
 /// A command name, or a theme argument, at the start of a `/` prompt.
@@ -68,9 +121,11 @@ fn command_request(
     cursor: usize,
     work: &mut usize,
     themes: Option<&BTreeMap<String, usize>>,
+    frontier: &mut usize,
 ) -> Option<CompletionRequest> {
     let end = scan_until(text, char::is_whitespace, work).unwrap_or(text.len());
     if cursor <= end {
+        *frontier = usize::MAX;
         return Some(CompletionRequest {
             kind: CompletionKind::Command,
             range: 0..end,
@@ -83,6 +138,7 @@ fn command_request(
         || name.eq_ignore_ascii_case("theme"),
         |names| names.contains_key(&name.to_ascii_lowercase()),
     );
+    *frontier = past(text, end);
     if !theme {
         return None;
     }
@@ -90,6 +146,7 @@ fn command_request(
     let start = end + rest.len() - rest.trim_start_matches([' ', '\t']).len();
     let line_end =
         end + scan_until(rest, |c| matches!(c, '\n' | '\r'), work).unwrap_or(text.len() - end);
+    *frontier = past(text, line_end);
     (cursor >= start && cursor <= line_end).then(|| CompletionRequest {
         kind: CompletionKind::Theme,
         range: start..line_end,
@@ -103,6 +160,7 @@ fn request_from(
     from: usize,
     work: &mut usize,
     themes: Option<&BTreeMap<String, usize>>,
+    mut marks: Option<&mut Checkpoints>,
 ) -> Option<CompletionRequest> {
     if !editor.selection().is_empty() {
         return None;
@@ -116,8 +174,16 @@ fn request_from(
     {
         return None;
     }
+    if let Some(marks) = marks.as_deref_mut() {
+        marks.scanned = cursor;
+    }
     let mut found = if from == 0 && text.starts_with('/') && cursor >= 1 {
-        command_request(text, cursor, work, themes)
+        let mut frontier = usize::MAX;
+        let found = command_request(text, cursor, work, themes, &mut frontier);
+        if let Some(marks) = marks.as_deref_mut() {
+            marks.record(0, frontier);
+        }
+        found
     } else {
         None
     };
@@ -155,10 +221,16 @@ fn request_from(
                 let token_end = end
                     + scan_until(slice(text, end..), char::is_whitespace, work)
                         .unwrap_or(text.len() - end);
+                if let Some(marks) = marks.as_deref_mut() {
+                    marks.record(start, past(text, token_end));
+                }
                 if start <= cursor && cursor <= token_end {
                     return None;
                 }
                 continue;
+            }
+            if let Some(marks) = marks.as_deref_mut() {
+                marks.record(start, past(text, end));
             }
             if cursor >= query_start && cursor <= end {
                 found = Some(CompletionRequest {
@@ -217,8 +289,7 @@ pub struct CompletionMenu {
     theme_commands: BTreeMap<String, usize>,
     next_file: u64,
     version: Option<(Rc<()>, usize, usize)>,
-    // Bytes before the first possible trigger, verified at `version`.
-    scan_start: usize,
+    marks: Checkpoints,
     /// Cumulative bytes examined while locating tokens and candidates scored.
     pub work: CompletionWork,
     /// Selected row, wrapping during navigation.
@@ -278,34 +349,27 @@ impl CompletionMenu {
         {
             return;
         }
-        // A missing request is not a lexical checkpoint: later edits can expose
-        // a mention inside an earlier quoted token. Only a trigger-free prefix
-        // is independent of the suffix. Carry that prefix across one known edit
-        // (or cursor-only changes), and let the shared parser handle the rest.
-        let from = self
-            .version
-            .as_ref()
-            .and_then(|old| {
-                if Rc::ptr_eq(&old.0, &version.0) {
-                    return Some(self.scan_start);
-                }
-                let (base, range, _) = editor.completion_change()?;
-                Rc::ptr_eq(base, &old.0).then_some(self.scan_start.min(range.start))
-            })
-            .unwrap_or(0);
-        self.scan_start = if editor.text().starts_with('/') {
-            0
-        } else {
-            let tail = slice(editor.text(), from..);
-            let plain = tail.find('@').unwrap_or(tail.len());
-            self.work.prompt_bytes += plain + usize::from(plain < tail.len());
-            from + plain
-        };
+        // Resume at the latest parser checkpoint before both the cursor and
+        // the earliest byte changed since `version`. An unknown edit history
+        // (or dismissal, catalog theme change) has no facts to reuse.
+        let edit = self.version.as_ref().and_then(|old| {
+            if Rc::ptr_eq(&old.0, &version.0) {
+                return Some(usize::MAX);
+            }
+            let (base, range, _) = editor.completion_change()?;
+            Rc::ptr_eq(base, &old.0).then_some(range.start)
+        });
+        self.marks.edited(edit.unwrap_or(0));
+        let cursor = editor.cursor();
+        let from = self.marks.before(cursor.min(self.marks.scanned));
+        // Behind the verified region, query without discarding later facts.
+        let marks = (cursor >= self.marks.scanned).then(|| self.marks.resume(from));
         let request = request_from(
             editor,
-            self.scan_start,
+            from,
             &mut self.work.prompt_bytes,
             Some(&self.theme_commands),
+            marks,
         );
         self.version = Some(version);
         if request != self.dismissed {
@@ -415,9 +479,9 @@ impl CompletionMenu {
 
     /// Close the popup until the current token changes.
     pub fn dismiss(&mut self, editor: &Editor) {
-        self.dismissed = request_from(editor, 0, &mut 0, Some(&self.theme_commands));
+        self.dismissed = request_from(editor, 0, &mut 0, Some(&self.theme_commands), None);
         self.version = Some(editor.completion_version());
-        self.scan_start = 0;
+        self.marks.edited(0);
         self.request = None;
         self.items.clear();
         self.selected = 0;

@@ -169,10 +169,159 @@ fn full_scan_oracle_detects_a_cursor_before_the_cached_token() {
     let start = completion_request(&editor).unwrap().range.start;
     editor.insert("/", 0);
     editor.set_cursor(4, false);
-    let broken = request_from(&editor, start, &mut 0, None);
+    let broken = request_from(&editor, start, &mut 0, None, None);
     assert_eq!(
         broken,
         completion_request(&editor),
         "incremental requests must match the full scan"
+    );
+}
+
+/// One keystroke: type a character, Backspace, Delete, Left or Right.
+fn press(editor: &mut Editor, key: usize, typed: &[&str]) {
+    let cursor = editor.cursor();
+    let text = editor.text();
+    let left = text[..cursor]
+        .char_indices()
+        .next_back()
+        .map_or(0, |(at, _)| at);
+    let right = text[cursor..]
+        .chars()
+        .next()
+        .map_or(cursor, |c| cursor + c.len_utf8());
+    match key.checked_sub(typed.len()) {
+        None => editor.insert(typed[key], 0),
+        Some(0) => editor.delete(true, 0),
+        Some(1) => editor.delete(false, 0),
+        Some(2) => editor.set_cursor(left, false),
+        _ => editor.set_cursor(right, false),
+    }
+}
+
+/// Every prompt over a trigger-heavy alphabet up to four characters, every
+/// cursor, then every pair of keystrokes. `forget` drops the recorded token
+/// extents, which is the old cache's error: resuming inside an open token.
+fn short_prompts_agree_after_two_keystrokes(forget: bool) {
+    const TYPED: [&str; 5] = ["a", " ", "@", "\"", "/"];
+    let mut texts = vec![String::new()];
+    let mut level = texts.clone();
+    for _ in 0..4 {
+        level = level
+            .iter()
+            .flat_map(|text| TYPED.iter().map(move |typed| format!("{text}{typed}")))
+            .collect();
+        texts.extend(level.iter().cloned());
+    }
+    for text in &texts {
+        for cursor in 0..=text.len() {
+            for keys in 0..(TYPED.len() + 4).pow(2) {
+                let mut editor = Editor::new(text);
+                editor.set_cursor(cursor, false);
+                let mut menu = CompletionMenu::default();
+                menu.refresh(&editor);
+                for key in [keys % (TYPED.len() + 4), keys / (TYPED.len() + 4)] {
+                    if forget {
+                        menu.marks.spans.clear();
+                    }
+                    press(&mut editor, key, &TYPED);
+                    menu.refresh(&editor);
+                    assert_eq!(
+                        menu.request,
+                        completion_request(&editor),
+                        "incremental requests must match the full scan: {text:?} at {cursor}, keys {keys}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn every_two_keystrokes_on_short_prompts_agree_with_full_parsing() {
+    short_prompts_agree_after_two_keystrokes(false);
+}
+
+#[test]
+#[should_panic(expected = "incremental requests must match the full scan")]
+fn negative_control_resuming_inside_an_open_token_fails_the_property() {
+    short_prompts_agree_after_two_keystrokes(true);
+}
+
+/// Prompt bytes examined by each keystroke near the end of `lines` closed
+/// mention and word lines followed by `local` words. `forget` reparses the
+/// whole prompt on every keystroke, as an O(prompt) completion would.
+fn keystroke_work(
+    lines: usize,
+    local: &[usize],
+    at: usize,
+    keys: &[usize],
+    forget: bool,
+) -> Vec<usize> {
+    const WORDS: [&str; 6] = ["plain", "@a.rs", "@\"a b.rs\"", "界界", "a@b", "@\"x\" "];
+    const TYPED: [&str; 4] = ["a", " ", "@", "界"];
+    let mut text: Vec<_> = (0..lines)
+        .rev()
+        .map(|line| WORDS[line % WORDS.len()])
+        .collect();
+    let offset = text.iter().map(|line| line.len() + 1).sum::<usize>();
+    text.extend(local.iter().map(|word| WORDS[*word]));
+    let text = text.join("\n");
+    let mut editor = Editor::new(&text);
+    let mut menu = CompletionMenu::default();
+    menu.set_file("workspace/a.rs", Some(b"")).unwrap();
+    menu.refresh(&editor);
+    let starts: Vec<_> = text
+        .char_indices()
+        .map(|(at, _)| at)
+        .filter(|at| *at >= offset)
+        .collect();
+    editor.set_cursor(
+        starts
+            .get(at % (starts.len() + 1))
+            .copied()
+            .unwrap_or(text.len()),
+        false,
+    );
+    let mut work = vec![];
+    for &key in keys {
+        if forget {
+            menu.version = None;
+        }
+        let before = menu.work.prompt_bytes;
+        menu.refresh(&editor);
+        work.push(menu.work.prompt_bytes - before);
+        assert_eq!(menu.request, completion_request(&editor));
+        press(&mut editor, key % (TYPED.len() + 4), &TYPED);
+    }
+    work
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 32, ..ProptestConfig::default() })]
+    /// Each keystroke moves the cursor at most one character, so 24 keystrokes
+    /// never leave the last 24 prefix lines. Identical counted work for any
+    /// number of earlier lines means per-keystroke cost is independent of the
+    /// prompt and depends only on the edit and the tokens around the cursor.
+    #[test]
+    fn keystroke_work_is_independent_of_prompt_length(
+        local in prop::collection::vec(0usize..6, 0..40),
+        extra in 1usize..1000,
+        at in any::<usize>(),
+        keys in prop::collection::vec(any::<usize>(), 1..24),
+    ) {
+        prop_assert_eq!(
+            keystroke_work(24, &local, at, &keys, false),
+            keystroke_work(24 + extra, &local, at, &keys, false)
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "keystroke work grew with the prompt")]
+fn negative_control_full_reparse_grows_with_the_prompt() {
+    assert_eq!(
+        keystroke_work(24, &[1], 0, &[0, 6], true),
+        keystroke_work(48, &[1], 0, &[0, 6], true),
+        "keystroke work grew with the prompt"
     );
 }
