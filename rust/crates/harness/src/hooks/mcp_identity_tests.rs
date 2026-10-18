@@ -89,7 +89,8 @@ async fn canonical_consumers(adapter: &str) {
     let mut registry = Registry::new(Credentials::explicit(Default::default())).unwrap();
     registry.register("fixture".into(), serde_json::from_value(json!({
         "adapter":adapter,"authentication":"optional","base_url":url,
-        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096
+        "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
+        "token_counter":{"path":"count","adapter":adapter,"response_field":"input_tokens","framing_tokens":0}
     })).unwrap()).unwrap();
     let provider = registry.resolve("fixture/tiny").unwrap();
     let definition = ToolDefinition {
