@@ -23,6 +23,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "file_guidance"
+path = "fuzz_targets/file_guidance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "summary_authorization"
 path = "fuzz_targets/summary_authorization.rs"
 test = false

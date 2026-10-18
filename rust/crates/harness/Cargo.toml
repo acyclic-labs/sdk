@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"

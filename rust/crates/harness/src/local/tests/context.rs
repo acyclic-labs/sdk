@@ -7,6 +7,53 @@ use crate::{
 pub(super) mod crash_cuts;
 mod generation;
 
+#[tokio::test]
+async fn goal_presence_never_reads_the_body_and_disabled_loops_ignore_unreadable_goals()
+-> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Text("first".into()),
+        ScriptedTurn::Text("second".into()),
+    ]);
+    let config = || {
+        Ok::<_, Error>(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .without_default_tools()
+                .goal_continuations(None),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    super::goals::write_goal(&harness, &"x".repeat(65537)).await?;
+    drop(harness);
+    let harness = LocalHarness::open(config()?.limits(crate::conversation::Limits {
+        file_bytes: 65536,
+        ..Default::default()
+    }))
+    .await?;
+    // Negative control: the previous presence probe fails on the exact file
+    // which the shipping staging/run route must accept without reading.
+    assert!(
+        harness
+            .files
+            .read_private_path_indexed(
+                harness.scratch(),
+                &harness.read_grant(harness.scratch())?,
+                "GOAL.md",
+                None,
+                harness.limits.file_bytes,
+                None
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(harness.run("hello").await?.text, "first");
+    super::goals::write_goal(&harness, "---\nstatus: invalid\n---\nShip").await?;
+    assert_eq!(harness.run("hello").await?.text, "second");
+    assert_eq!(provider.requests().len(), 2);
+    Ok(())
+}
+
 async fn instruction(harness: &LocalHarness, name: &str, text: &str) -> Result<()> {
     FilesystemContentPublisher::new(
         harness.files.clone(),

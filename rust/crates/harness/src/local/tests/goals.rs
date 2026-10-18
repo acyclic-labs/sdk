@@ -177,12 +177,7 @@ async fn run(case: Case) -> Result<()> {
     // published ordinary continuation or change the result of its replay.
     let reopen_config = config()?.goal_continuations(None);
     let reopened = LocalHarness::open(reopen_config).await?;
-    assert_eq!(
-        reopened.resume(task_id).await?.text,
-        format!("settle-{}", case.writes.len() - 1),
-        "{}",
-        case.name
-    );
+    check_output(&case, reopened.resume(task_id).await)?;
     assert_eq!(provider.requests().len(), case.calls, "{}", case.name);
     assert_eq!(admitted.len(), case.tasks);
     Ok(())
@@ -212,7 +207,6 @@ fn goal_config(
 /// Whether the loop settles on a blocked GOAL.md that the agent or the cap wrote.
 fn declared_blocked(case: &Case) -> bool {
     !case.unreachable
-        && case.enabled != Some(false)
         && case.final_goal.as_deref().is_some_and(|goal| {
             goal.starts_with(
                 "---

@@ -1,4 +1,5 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod goal_review;
 mod instruction_review;
 use acyclic_harness::{
     OperationId,
@@ -32,13 +33,25 @@ async fn execute(
     operation: OperationId,
     mode: Mode,
 ) -> Vec<u8> {
+    execute_with(workspace, catalog, settings, operation, mode, ("hello", 0)).await
+}
+
+async fn execute_with(
+    workspace: &Path,
+    catalog: &Path,
+    settings: &Path,
+    operation: OperationId,
+    mode: Mode,
+    expected: (&str, i32),
+) -> Vec<u8> {
+    let (prompt, exit) = expected;
     let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions | Mode::FsRefusals);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
         format!(
             "{}\n",
-            jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+            jsonl::request(&prepare_local_prompt(operation, prompt).unwrap()).unwrap()
         )
         .into_bytes()
     } else {
@@ -76,7 +89,7 @@ async fn execute(
     } else if jsonl {
         command.args(["--input-format", "jsonl"]);
     } else {
-        command.args(["-p", "hello"]);
+        command.args(["-p", prompt]);
     }
     // Readiness is the process's own exit, never a wall-clock budget: every
     // mode exits once its turn settles (open JSONL with stdin still held), and
@@ -95,7 +108,7 @@ async fn execute(
     .await
     .unwrap();
     assert!(
-        output.status.success(),
+        output.status.code() == Some(exit),
         "exit {:?}\n{}\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),

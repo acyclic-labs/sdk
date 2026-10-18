@@ -1,5 +1,16 @@
 [
   {
+    "name": "disabled-continuations-preserve-blocked-result",
+    "initial_goal": "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective",
+    "enabled": false,
+    "writes": [null],
+    "tasks": 1,
+    "calls": 1,
+    "final_goal": "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective",
+    "panel": ["Status: blocked | Continuations: 0", "Reason: waiting", "Finish the objective"],
+    "path": "GOAL.md"
+  },
+  {
     "name": "unmounted-stock-writer-disabled-admission-negative-control",
     "initial_goal": "Finish the objective",
     "enabled": false,

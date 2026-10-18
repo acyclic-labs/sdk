@@ -8,6 +8,7 @@ use crate::{
 pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
+mod guidance;
 
 fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -23,12 +24,6 @@ fn manifest_operation(operation: OperationId) -> OperationId {
         b"acyclic.local.context-manifest/v1\0",
         &operation.into_bytes(),
     )
-}
-
-/// A prompt asks for goal mode when it names GOAL.md or goal mode itself.
-fn requests_goal_mode(prompt: &str) -> bool {
-    let prompt = prompt.to_lowercase();
-    prompt.contains("goal.md") || prompt.contains("goal mode")
 }
 
 fn manifest_path(operation: OperationId) -> String {
@@ -86,28 +81,7 @@ impl LocalHarness {
             .await
     }
 
-    /// Whether the agent's private volume holds a GOAL.md.
-    async fn goal_exists(&self) -> Result<bool> {
-        match self
-            .files
-            .read_private_path_indexed(
-                &self.scratch,
-                &self.read_grant(&self.scratch)?,
-                "GOAL.md",
-                None,
-                self.limits.file_bytes,
-                None,
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(Error::NotFound(_)) => Ok(false),
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Stages the turn's manifest once. GOAL.md guidance is included only when a
-    /// GOAL.md exists or `prompt` asks for goal mode, so one-shot prompts carry none.
+    /// Pins the live file conventions once per admission, alongside instructions.
     pub(super) async fn stage_context_manifest_with(
         &self,
         operation: OperationId,
@@ -138,12 +112,9 @@ impl LocalHarness {
         let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
-        let manifest = if prompt.is_some_and(requests_goal_mode) || self.goal_exists().await? {
-            manifest
-        } else {
-            manifest.without_goal_guidance()
-        };
+        let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
+        let manifest =
+            ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
         let mut manifest = manifest;
         #[cfg(feature = "native-execution")]
@@ -232,19 +203,6 @@ impl LocalHarness {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_prompts_naming_goal_mode_or_goal_md_request_it() {
-        for prompt in [
-            "Work in GOAL MODE on this",
-            "update goal.md",
-            "Use Goal.md please",
-        ] {
-            assert!(requests_goal_mode(prompt), "{prompt}");
-        }
-        for prompt in ["Reply with exactly PONG.", "my goal is speed", "goals.md"] {
-            assert!(!requests_goal_mode(prompt), "{prompt}");
-        }
-    }
     use proptest::prelude::*;
 
     proptest! {
