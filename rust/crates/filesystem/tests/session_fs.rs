@@ -659,3 +659,26 @@ async fn latest_resumes_after_a_conflated_cursor() -> Result {
     assert!(resumed.output.next().now_or_never().is_none());
     Ok(())
 }
+
+#[tokio::test]
+async fn authorization_is_current_when_the_provider_open_is_polled() -> Result {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (_fs, workspace, stream) = fixture().await?;
+    let sub = subscription(workspace.id().volume_id(), false);
+    let allowed = Arc::new(AtomicBool::new(true));
+    let policy = allowed.clone();
+    let provider = Provider::new(stream, move |_: &Subscription| {
+        if policy.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(StreamError::AccessDenied)
+        }
+    });
+    let prepared = provider.subscribe(sub.encode()?, session::SessionCursor::default())?;
+    allowed.store(false, Ordering::Release);
+    assert!(matches!(
+        prepared.open.await,
+        Err(StreamError::AccessDenied)
+    ));
+    Ok(())
+}

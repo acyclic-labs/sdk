@@ -7,12 +7,15 @@ use std::sync::Arc;
 /// Session publication adapter for a filesystem authority provider.
 pub struct Provider<P, A> {
     stream: Arc<P>,
-    authorize: A,
+    authorize: Arc<A>,
 }
 impl<P, A> Provider<P, A> {
     /// Binds a provider and the host's current authorization query.
     pub fn new(stream: Arc<P>, authorize: A) -> Self {
-        Self { stream, authorize }
+        Self {
+            stream,
+            authorize: Arc::new(authorize),
+        }
     }
 }
 
@@ -29,7 +32,7 @@ where
         resume: session::SessionCursor,
     ) -> Result<PublicationSubscription, StreamError> {
         let subscription = Subscription::decode(&encoded)?;
-        let authorized = (self.authorize)(&subscription);
+        let authorize = self.authorize.clone();
         let anchor = if resume.opaque.is_empty() {
             if resume.next != 0 {
                 return Err(StreamError::InvalidArgument);
@@ -51,7 +54,7 @@ where
         Ok(PublicationSubscription {
             delivery,
             open: Box::pin(async move {
-                authorized?;
+                authorize(&subscription)?;
                 let path = crate::distributed::authority_records_path(subscription.volume_id)
                     .map_err(|_| StreamError::InvalidArgument)?;
                 let checked = anchor.is_some();
