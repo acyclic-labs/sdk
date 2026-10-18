@@ -101,8 +101,13 @@ pub enum Error {
     #[error("invalid request: {0}")]
     Invalid(String),
     /// A definitive tool rejection; safe to journal without allocating a diagnostic.
-    #[error("tool rejected: {0}")]
-    ToolRejected(&'static str),
+    #[error("tool rejected: {reason}")]
+    ToolRejected {
+        /// The ordinary tool failure classification.
+        code: crate::wire::ErrorCode,
+        /// Fixed cause; no diagnostic allocation is needed.
+        reason: &'static str,
+    },
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
@@ -458,7 +463,8 @@ impl Error {
             Self::Unsupported(_) | Self::GoalBlocked(_) | Self::MountUnavailable { .. } => {
                 ErrorCode::Unsupported
             }
-            Self::Invalid(_) | Self::ToolRejected(_) => ErrorCode::Invalid,
+            Self::Invalid(_) => ErrorCode::Invalid,
+            Self::ToolRejected { code, .. } => *code,
             Self::Unauthorized(_) => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
@@ -554,6 +560,14 @@ impl Error {
                 ))
     }
 
+    /// A definitive malformed tool request, distinct from native accounting failures.
+    pub(crate) fn tool_rejected(reason: &'static str) -> Self {
+        Self::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        }
+    }
+
     /// Native failures must propagate before additional provider or deadline work.
     pub(crate) fn is_native_failure(&self) -> bool {
         #[cfg(feature = "machines")]
@@ -567,7 +581,7 @@ impl Error {
                 | Self::Conflict(_)
                 | Self::Unsupported(_)
                 | Self::Invalid(_)
-                | Self::ToolRejected(_)
+                | Self::ToolRejected { .. }
                 | Self::Unauthorized(_)
                 | Self::ModelUnavailable { .. }
                 | Self::Cancelled

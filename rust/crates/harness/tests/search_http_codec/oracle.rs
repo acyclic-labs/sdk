@@ -107,7 +107,7 @@ pub fn agrees(
 ) -> bool {
     match (expected, actual) {
         (Some(expected), Ok(actual)) => expected == actual,
-        (None, Err(Error::ToolRejected(_))) => native,
+        (None, Err(Error::ToolRejected { .. })) => native,
         (None, Err(Error::Invalid(_))) => !native,
         _ => false,
     }
@@ -138,7 +138,10 @@ fn oracle_detects_broken_decoding_and_bounds() {
         // An always-rejecting decoder must fail on an accepted document.
         assert!(!agrees(
             &wanted,
-            Err(&Error::ToolRejected("broken decoder")),
+            Err(&Error::ToolRejected {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "broken decoder"
+            }),
             true,
         ));
         assert!(!agrees(

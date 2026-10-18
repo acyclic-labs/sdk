@@ -57,3 +57,6 @@ use super::value;
 use super::{edit, patch, schema, text};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) mod native;
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod rejection_tests;

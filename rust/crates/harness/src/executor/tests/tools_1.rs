@@ -1116,5 +1116,23 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
     let rejected = rejected?;
     assert_eq!(rejected, replay?);
     assert_eq!((calls, reconciles), (1, 0));
+    let (rejected, replay, calls, reconciles) = outcome(|| Error::ToolRejected {
+        code: crate::wire::ErrorCode::Conflict,
+        reason: "exact edit text is ambiguous",
+    })
+    .await?;
+    assert_eq!(rejected?, replay?);
+    assert_eq!((calls, reconciles), (1, 0));
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        // Negative control: the former native classification stops the same stock path.
+        let (broken, _, calls, _) = outcome(|| Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Conflict,
+            reason: "exact edit text is ambiguous",
+        })
+        .await?;
+        assert!(matches!(broken, Err(Error::NativeBoundary { .. })));
+        assert_eq!(calls, 1);
+    }
     Ok(())
 }

@@ -244,3 +244,97 @@ async fn refused_calls_survive_an_interruption_after_the_next_context_is_prepare
     assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_stays_strict()
+-> Result<()> {
+    struct Rejected(bool);
+    impl ToolExecutor for Rejected {
+        fn authorize(
+            &self,
+            _: Option<&RuntimeScope>,
+            _: Option<&crate::runtime::ToolContext>,
+            _: &ToolInvocation,
+            _: crate::NativeWork<'_>,
+        ) -> Result<()> {
+            Err(if self.0 {
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "invalid selection",
+                }
+            } else {
+                Error::tool_rejected("invalid selection")
+            })
+        }
+        fn execute<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            panic!("a rejected call must never dispatch")
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ToolInvocation,
+            _: Option<crate::runtime::ToolContext>,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            panic!("a rejected call must never reconcile")
+        }
+    }
+    for broken in [false, true] {
+        let tools = echo_tools(
+            Arc::new(Rejected(broken)),
+            json!({"type":"object"}),
+            json!({}),
+            crate::tool::json_projection_schema(json!({})),
+        )?;
+        let executor = uncompacted_executor(
+            Model::new("fixture".into(), "exact".into(), "1".into(), Value::Null)?,
+            Arc::new(scripted_model()),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "selection".into(),
+            name: "example.echo".into(),
+            arguments: json!({}),
+        };
+        let operation = OperationId::new();
+        let journal = Journal::default();
+        let mut messages = vec![call_message(&invocation)];
+        let result = StockExecution::ordinary(&executor)
+            .settle_tool_call(&journal, operation, 0, invocation.clone(), 0, &mut messages)
+            .await;
+        if broken {
+            // Negative control: the former boundary classification aborts before a record.
+            assert!(matches!(result, Err(Error::NativeBoundary { .. })));
+            assert!(journal.0.lock().unwrap().is_empty());
+        } else {
+            assert!(matches!(result?, ExecutionProgress::Ready(())));
+            let mut replayed = vec![call_message(&invocation)];
+            StockExecution::ordinary(&executor)
+                .settle_tool_call(&journal, operation, 0, invocation, 0, &mut replayed)
+                .await?;
+            assert_eq!(messages, replayed);
+            let records = journal.0.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert!(matches!(
+                records[0].event,
+                ExecutionEvent::ToolFailed {
+                    reason: ToolFailureKind::InvalidInput,
+                    ..
+                }
+            ));
+        }
+    }
+    Ok(())
+}

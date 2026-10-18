@@ -175,8 +175,9 @@ pub(crate) struct CauseText<'a>(pub &'a Error);
 impl fmt::Display for CauseText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut probe = Visible(false);
-        // The probe stops at the first visible character, so the error renders twice at most.
-        let _ = write!(probe, "{}", self.0);
+        // Probe the exact bounded text we will emit. A visible character beyond the bound
+        // cannot keep an all-whitespace prefix from erasing the recorded cause.
+        let _ = write!(probe, "{}", Sanitized(self.0));
         if probe.0 {
             write!(formatter, "{}", Sanitized(self.0))
         } else {
@@ -331,6 +332,46 @@ mod tests {
                 .is_err()
         );
         Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn bounded_native_causes_remain_visible_after_any_whitespace_prefix(
+            prefix in prop::collection::vec(prop::sample::select(vec![' ', '\t', '\n', '\u{2003}']), 0..400),
+            tail in "[a-zé]{1,400}",
+        ) {
+            let prefix: String = prefix.into_iter().collect();
+            let message = format!("{prefix}{tail}");
+            let work = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+                &acyclic_fs::CancellationToken::new(),
+            ).map_err(|(cause, _)| TestCaseError::fail(format!("{cause:?}")))?;
+            let custody = work.claim(message.capacity() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED).unwrap();
+            let error = Error::NativeDiagnostic {
+                code: crate::wire::ErrorCode::Conflict,
+                message,
+                custody,
+            };
+            for kind in KINDS {
+                let cause = entry(kind, "example.tool", &error).unwrap();
+                prop_assert!(cause.is_canonical(), "{kind:?}: {cause:?}");
+            }
+            // Negative control: the old unbounded probe always sees the tail, then emits
+            // a prefix the journal rejects if whitespace consumes the entire byte bound.
+            if prefix.len() >= TOOL_FAILURE_MESSAGE_BYTES {
+                let mut old_probe = Visible(false);
+                let _ = write!(old_probe, "{error}");
+                prop_assert!(old_probe.0);
+                let erased = ToolFailureCause {
+                    class: ToolErrorClass::of(&error),
+                    message: Sanitized(&error).to_string(),
+                };
+                prop_assert!(!erased.is_canonical());
+                prop_assert_eq!(entry(ToolFailureKind::ExecutorRejected, "example.tool", &error).unwrap().message, "conflict error");
+            }
+        }
     }
 
     #[test]

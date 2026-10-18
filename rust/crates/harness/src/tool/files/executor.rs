@@ -100,13 +100,7 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
         let (options, maximum_result_bytes) = bounds;
-        let invalid = |reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return native::invalid(reason);
-            }
-            Error::Invalid(reason.into())
-        };
+        let invalid = |reason| rejection(work, reason);
 
         let input = decode::<super::super::text_files::SearchInput>(&invocation.arguments, work)?;
         let bytes = context.read_file(&input.0.file, io).await?;
@@ -135,13 +129,7 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
         let (maximum_work, maximum_hunks) = bounds;
-        let invalid = |reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return native::invalid(reason);
-            }
-            Error::Invalid(reason.into())
-        };
+        let invalid = |reason| rejection(work, reason);
 
         let input = decode::<PatchFileInput>(&invocation.arguments, work)?;
         let limits = super::patch::PatchLimits {
@@ -178,13 +166,7 @@ impl FileTool {
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
-        let invalid = |reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return native::invalid(reason);
-            }
-            Error::Invalid(reason.into())
-        };
+        let invalid = |reason| rejection(work, reason);
 
         let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
         let length = input.0.file.descriptor().byte_length();
@@ -215,15 +197,7 @@ impl FileTool {
         } else {
             context.read_file(&input.0.file, io).await?
         };
-        let source = if empty {
-            if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
-                return Err(invalid("read range splits UTF-8"));
-            }
-            ""
-        } else {
-            std::str::from_utf8(bytes.as_ref())
-                .map_err(|_| invalid("file read requires UTF-8 content"))?
-        };
+        let source = read_text(bytes.as_ref(), empty, work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let (text, mut custody) = work.display(source)?;
@@ -251,13 +225,7 @@ impl FileTool {
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        let invalid = |reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return native::invalid(reason);
-            }
-            Error::Invalid(reason.into())
-        };
+        let invalid = |reason| rejection(work, reason);
 
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
         let maximum = context.effective_scope().limits().file_bytes;
@@ -456,5 +424,29 @@ impl ToolExecutor for FileTool {
                 .await
                 .map(|result| Some(result.0))
         })
+    }
+}
+
+/// Only content/selection rejections use this path. Accounting and provider errors propagate.
+fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+    if work.is_some() {
+        Error::tool_rejected(reason)
+    } else {
+        Error::Invalid(reason.into())
+    }
+}
+
+pub(super) fn read_text<'a>(
+    bytes: &'a [u8],
+    empty: bool,
+    work: crate::NativeWork<'_>,
+) -> Result<&'a str> {
+    if empty {
+        if bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+            return Err(rejection(work, "read range splits UTF-8"));
+        }
+        Ok("")
+    } else {
+        std::str::from_utf8(bytes).map_err(|_| rejection(work, "file read requires UTF-8 content"))
     }
 }

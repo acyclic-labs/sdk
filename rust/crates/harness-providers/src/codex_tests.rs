@@ -160,6 +160,8 @@ async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
     Ok(())
 }
 
+#[path = "codex_failure_tests.rs"]
+mod failures;
 #[path = "codex_race_tests.rs"]
 mod races;
 

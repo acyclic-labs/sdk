@@ -75,6 +75,10 @@ impl FileTool {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         let error = |code, reason| {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Error::ToolRejected { code, reason };
+            }
             crate::executor::with_history_io(io, |history| {
                 crate::store::guarded_boundary(history, code, reason)
             })

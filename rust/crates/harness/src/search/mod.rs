@@ -135,7 +135,10 @@ pub(crate) fn error(work: crate::NativeWork<'_>, reason: &'static str) -> Error 
 pub(crate) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::ToolRejected(reason);
+        return Error::ToolRejected {
+            code: crate::wire::ErrorCode::Invalid,
+            reason,
+        };
     }
     error(work, reason)
 }

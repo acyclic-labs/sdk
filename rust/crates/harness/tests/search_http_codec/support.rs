@@ -66,7 +66,7 @@ impl SearchProvider for Response {
                     Ok(ordinary)
                 }
                 Err(error) => {
-                    assert!(matches!(error, Error::ToolRejected(_)), "{error:?}");
+                    assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}");
                     assert_eq!(work.live_allocation_bytes(), baseline);
                     Err(error)
                 }

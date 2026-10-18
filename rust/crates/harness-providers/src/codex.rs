@@ -29,47 +29,86 @@ pub struct CodexLogin {
 }
 
 #[derive(Clone, Copy)]
-struct RefreshFailure {
-    code: acyclic_harness::wire::ErrorCode,
-    failure: Option<acyclic_harness::ModelTransportFailure>,
+enum RefreshFailure {
+    /// Preserve static native causes as the same error, without rendering or allocating them.
+    Boundary {
+        code: acyclic_harness::wire::ErrorCode,
+        reason: &'static str,
+    },
+    Diagnostic(RefreshDiagnostic),
+}
+
+#[derive(Clone, Copy)]
+struct RefreshDiagnostic {
+    kind: RefreshDiagnosticKind,
     message: [u8; 256],
     length: usize,
 }
+
+#[derive(Clone, Copy)]
+enum RefreshDiagnosticKind {
+    Invalid,
+    Unauthorized,
+    Storage,
+    Transport(acyclic_harness::ModelTransportFailure),
+}
+
 impl RefreshFailure {
     fn from_error(error: &acyclic_harness::Error) -> Option<Self> {
         use acyclic_harness::Error;
-        let (message, failure) = match error {
-            Error::ModelUnavailable { failure, excerpt } => (excerpt.as_str(), Some(*failure)),
-            error => (
-                match error {
-                    Error::Unauthorized(message)
-                    | Error::Storage(message)
-                    | Error::Invalid(message)
-                    | Error::NativeDiagnostic { message, .. } => message.as_str(),
-                    Error::NativeBoundary { reason, .. } => reason,
-                    _ => return None,
-                },
-                None,
-            ),
-        };
         if !matches!(
             error.code(),
             acyclic_harness::wire::ErrorCode::Unauthorized
                 | acyclic_harness::wire::ErrorCode::Storage
                 | acyclic_harness::wire::ErrorCode::Unavailable
                 | acyclic_harness::wire::ErrorCode::Invalid
-        ) || message.len() > 256
-        {
+        ) {
             return None;
         }
-        let mut failure = Self {
-            code: error.code(),
-            failure,
+        if let Error::NativeBoundary { code, reason } = error {
+            return Some(Self::Boundary {
+                code: *code,
+                reason,
+            });
+        }
+        use RefreshDiagnosticKind as Kind;
+        use acyclic_harness::wire::ErrorCode as Code;
+        let (message, kind) = match error {
+            Error::ModelUnavailable { failure, excerpt } => {
+                (excerpt.as_str(), Kind::Transport(*failure))
+            }
+            Error::Invalid(message)
+            | Error::NativeDiagnostic {
+                code: Code::Invalid,
+                message,
+                ..
+            } => (message.as_str(), Kind::Invalid),
+            Error::Unauthorized(message)
+            | Error::NativeDiagnostic {
+                code: Code::Unauthorized,
+                message,
+                ..
+            } => (message.as_str(), Kind::Unauthorized),
+            Error::Storage(message)
+            | Error::NativeDiagnostic {
+                code: Code::Storage,
+                message,
+                ..
+            } => (message.as_str(), Kind::Storage),
+            // An invocation-owned diagnostic with no reconstructible transport class stays
+            // local, like an oversized diagnostic; never cache it as another failure class.
+            _ => return None,
+        };
+        if message.len() > 256 {
+            return None;
+        }
+        let mut failure = RefreshDiagnostic {
+            kind,
             message: [0; 256],
             length: message.len(),
         };
         failure.message[..message.len()].copy_from_slice(message.as_bytes());
-        Some(failure)
+        Some(Self::Diagnostic(failure))
     }
     // Only call for token-endpoint failures, never per-model credential checks.
     fn share<T>(result: Result<T>, failure: &mut Option<Self>) -> Result<T> {
@@ -79,18 +118,22 @@ impl RefreshFailure {
         result
     }
     fn error(self, io: &mut CredentialIo<'_>) -> Result<acyclic_harness::Error> {
-        use acyclic_harness::{Error, wire::ErrorCode};
-        let text = std::str::from_utf8(&self.message[..self.length])
+        use acyclic_harness::Error;
+        let diagnostic = match self {
+            Self::Boundary { code, reason } => return Ok(Error::NativeBoundary { code, reason }),
+            Self::Diagnostic(diagnostic) => diagnostic,
+        };
+        let text = std::str::from_utf8(&diagnostic.message[..diagnostic.length])
             .map_err(|_| invalid("invalid shared refresh diagnostic"))?;
         let message = io.string(text)?;
-        Ok(match (self.code, self.failure) {
-            (_, Some(failure)) => Error::ModelUnavailable {
+        Ok(match diagnostic.kind {
+            RefreshDiagnosticKind::Transport(failure) => Error::ModelUnavailable {
                 failure,
                 excerpt: message,
             },
-            (ErrorCode::Unauthorized, None) => Error::Unauthorized(message),
-            (ErrorCode::Storage, None) => Error::Storage(message),
-            _ => Error::Invalid(message),
+            RefreshDiagnosticKind::Unauthorized => Error::Unauthorized(message),
+            RefreshDiagnosticKind::Storage => Error::Storage(message),
+            RefreshDiagnosticKind::Invalid => Error::Invalid(message),
         })
     }
 }

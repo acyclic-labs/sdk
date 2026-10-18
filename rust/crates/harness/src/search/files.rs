@@ -415,12 +415,12 @@ where
             Ok(encoded) => match retain_response(&completion, ready(task, id), encoded, work).await
             {
                 Ok(encoded) => return finish(volume, result, encoded, authorize, work).await,
-                Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+                Err(Error::ToolRejected { .. } | Error::Invalid(_)) => {
                     break (SearchOutcome::Rejected, true);
                 }
                 Err(error) => return Err(error),
             },
-            Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+            Err(Error::ToolRejected { .. } | Error::Invalid(_)) => {
                 break (SearchOutcome::Rejected, true);
             }
             Err(
@@ -502,7 +502,7 @@ where
     Fut: std::future::Future<Output = Result<Vec<CommitCondition>>>,
 {
     match publish(volume, key.clone(), bytes, authorize, work).await {
-        Err(Error::ToolRejected(_) | Error::Invalid(_)) => {
+        Err(Error::ToolRejected { .. } | Error::Invalid(_)) => {
             publish(
                 volume,
                 key,

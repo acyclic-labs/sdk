@@ -268,14 +268,19 @@ impl StockExecution<'_> {
             return Ok(Err(ToolCallRejection::InvalidInput(violation)));
         }
         let context = self.invocation_context(invocation)?;
-        stock_authorize_tool(
+        match stock_authorize_tool(
             tool,
             context.as_ref(),
             &self.stock.tool_scope,
             invocation,
             self.io,
-        )?;
-        Ok(Ok((context, capability)))
+        ) {
+            Ok(()) => Ok(Ok((context, capability))),
+            Err(violation @ Error::ToolRejected { .. }) => {
+                Ok(Err(ToolCallRejection::InvalidInput(violation)))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn require_tool_policy(

@@ -19,7 +19,7 @@ pub(crate) fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<Na
 pub(super) fn invalid(work: &NativeCustody, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeBoundary {
+        return Error::ToolRejected {
             code: Invalid,
             reason,
         };
@@ -30,13 +30,24 @@ pub(super) fn invalid(work: &NativeCustody, reason: &'static str) -> Error {
 pub(super) fn conflict(work: &NativeCustody, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeBoundary {
+        return Error::ToolRejected {
             code: Conflict,
             reason,
         };
     }
     let _ = work;
     Error::Conflict(reason.into())
+}
+
+fn capacity_overflow(work: &NativeCustody) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work.is_some() {
+        return Error::NativeBoundary {
+            code: Invalid,
+            reason: "tool vector capacity overflow",
+        };
+    }
+    invalid(work, "tool vector capacity overflow")
 }
 
 pub(super) fn retain(work: &mut NativeCustody, bytes: usize) -> Result<()> {
@@ -107,11 +118,11 @@ pub(crate) fn reserve_vec<T>(
     let slots = std::mem::size_of::<T>();
     let requested = length
         .checked_mul(slots)
-        .ok_or_else(|| invalid(work, "tool vector capacity overflow"))?;
+        .ok_or_else(|| capacity_overflow(work))?;
     let old = value
         .capacity()
         .checked_mul(slots)
-        .ok_or_else(|| invalid(work, "tool vector capacity overflow"))?;
+        .ok_or_else(|| capacity_overflow(work))?;
     admit(work, requested)?;
     value
         .try_reserve_exact(length - value.len())

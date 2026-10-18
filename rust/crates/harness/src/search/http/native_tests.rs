@@ -93,7 +93,7 @@ async fn search_native_http_rejections_are_not_uncertain_transport_failures() ->
                 .await
                 .unwrap_err();
             assert_eq!(error.code(), crate::wire::ErrorCode::Invalid, "{error:?}");
-            assert!(matches!(error, Error::ToolRejected(_)), "{error:?}");
+            assert!(matches!(error, Error::ToolRejected { .. }), "{error:?}");
             assert!(!error.is_native_failure());
             assert!(!error.to_string().contains("test-only-placeholder"));
             drop(error);

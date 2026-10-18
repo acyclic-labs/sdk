@@ -73,7 +73,7 @@ pub async fn check(bytes: &[u8]) {
             (Err(error), None) => assert!(
                 matches!(
                     (&error, native),
-                    (Error::ToolRejected(_), true) | (Error::Invalid(_), false)
+                    (Error::ToolRejected { .. }, true) | (Error::Invalid(_), false)
                 ),
                 "nonterminal admission failure: {error:?}"
             ),
