@@ -1,0 +1,58 @@
+{
+ "stalls": [
+  0
+ ],
+ "responses": [
+  [
+   "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial start\"}}\n\n"
+  ]
+ ],
+ "expect": {
+  "outcome": "failed",
+  "text": "",
+  "events": [
+   [
+    {
+     "kind": "content",
+     "delta": "partial start"
+    }
+   ]
+  ],
+  "requests": [
+   {}
+  ],
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Failed": {
+      "message": {
+       "$contains": "model provider unavailable (timed out): no response bytes for 300000 ms"
+      }
+     }
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "failed",
+    "attention": true,
+    "parent": null,
+    "error": {
+     "$contains": "no response bytes for 300000 ms"
+    }
+   }
+  ]
+ }
+}

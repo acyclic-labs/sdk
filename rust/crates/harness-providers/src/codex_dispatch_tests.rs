@@ -244,6 +244,7 @@ fn cli_credentials_cannot_be_forwarded_to_custom_endpoints() -> acyclic_harness:
             )]),
             max_event_bytes: 4096,
             retry: crate::RetrySpec::DEFAULT,
+            timeouts: crate::TimeoutSpec::DEFAULT,
             token_counter: default_catalog()["openai"].token_counter.clone(),
         },
     )?;

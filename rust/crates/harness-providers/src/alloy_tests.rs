@@ -58,6 +58,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
                     headers: BTreeMap::new(),
                     max_event_bytes: 65536,
                     retry: crate::RetrySpec::DEFAULT,
+                    timeouts: crate::TimeoutSpec::DEFAULT,
                     token_counter: Some(TokenCounterSpec {
                         path: "count".into(),
                         adapter: *adapter,

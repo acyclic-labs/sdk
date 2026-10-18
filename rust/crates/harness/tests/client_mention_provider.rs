@@ -132,6 +132,7 @@ async fn scenario(
             }),
             max_event_bytes: 4096,
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
+            timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
         },
     )?;
     let provider = registry.resolve("scripted/model")?;

@@ -18,6 +18,7 @@ mod portable_file_replay;
 mod portable_text_tools;
 mod portable_text_variants;
 mod project_workspaces;
+mod provider_failure_exit;
 mod recursive_fork;
 mod refused_tool_conversation;
 mod retained_content;

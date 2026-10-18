@@ -186,15 +186,20 @@ fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
-    // The parse oracle replays successful exchanges one per step; refusals are task-level.
-    let parse = case.unreachable == 0 && case.statuses.iter().all(|status| *status == 200);
+    // The parse oracle replays completed exchanges one per step; refusals and stalls are
+    // task-level.
+    let parse =
+        case.unreachable == 0 && (0..case.responses.len()).all(|index| case.completes(index));
     if parse {
         parsed(&case, transport.clone()).await?;
     }
     // A case with registered tools runs again with a default tool added ahead
     // of them: every request expectation, including wire tool names, holds.
     let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for (run, added) in added[..if case.tools.is_empty() { 1 } else { 2 }].iter().enumerate() {
+    for (run, added) in added[..if case.tools.is_empty() { 1 } else { 2 }]
+        .iter()
+        .enumerate()
+    {
         if parse || run > 0 {
             transport.restart()?;
         }
@@ -252,12 +257,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    super::drivers::check_frames(
-        &case.expect.frames,
-        &wire,
-        operation,
-        case.expect.outcome,
-    )?;
+    super::drivers::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
     let terminal = wire
@@ -265,13 +265,8 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire.remove(terminal);
-    if super::drivers::check_frames(
-        &case.expect.frames,
-        &wire,
-        operation,
-        case.expect.outcome,
-    )
-    .is_ok()
+    if super::drivers::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)
+        .is_ok()
     {
         return Err("wire oracle accepted a dropped root completion".into());
     }
@@ -281,7 +276,11 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     }
     // Each refused connection was redelivered under the bounded policy until the script ran out.
     if transport.refused() != usize::from(case.unreachable) {
-        return Err(format!("provider task made {} refused attempts", transport.refused()).into());
+        return Err(format!(
+            "provider task made {} refused attempts",
+            transport.refused()
+        )
+        .into());
     }
     for (request, expected) in requests.iter().zip(&case.expect.requests) {
         let body: Value = serde_json::from_slice(&request.body)?;

@@ -50,6 +50,49 @@ pub struct ProviderSpec {
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub retry: RetrySpec,
+    /// Deadlines bounding every exchange with the endpoint.
+    #[serde(default, skip_serializing_if = "TimeoutSpec::is_default")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub timeouts: TimeoutSpec,
+}
+
+/// Deadlines of one exchange with an endpoint, the model request, its token count and a
+/// credential refresh alike. An expired deadline is a typed timeout, redelivered under `retry`
+/// only while no output has escaped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
+pub struct TimeoutSpec {
+    /// Longest silence of a response body; a body silent for two such windows always fails,
+    /// one silent for less than one never does.
+    pub idle_ms: u32,
+    /// Longest exchange, from the send to the end of the body.
+    pub total_ms: u32,
+}
+
+impl TimeoutSpec {
+    /// Five minutes of silence, as long as a reasoning model may think without a byte, and one
+    /// hour per exchange.
+    pub const DEFAULT: Self = Self {
+        idle_ms: 300_000,
+        total_ms: 3_600_000,
+    };
+    fn is_default(&self) -> bool {
+        *self == Self::DEFAULT
+    }
+    /// Rejects a zero deadline, which would fail every pending exchange.
+    pub(crate) fn validate(self) -> acyclic_harness::Result<()> {
+        if self.idle_ms == 0 || self.total_ms == 0 {
+            return Err(crate::invalid("provider timeouts must be positive"));
+        }
+        Ok(())
+    }
+}
+
+impl Default for TimeoutSpec {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
 }
 
 /// Redelivery of a model request refused with HTTP 408, 429 or 5xx, or never connected, before

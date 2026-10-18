@@ -94,6 +94,20 @@ fn provider_case_rejects_ignored_fields_zero_chunks_and_unused_response_shapes()
                 .is_err()
         );
     }
+    // A stalled last response cannot complete; stalls must name distinct, ascending responses.
+    for stalls in [
+        serde_json::json!([0]),
+        serde_json::json!([1]),
+        serde_json::json!([0, 0]),
+    ] {
+        let mut broken = value.clone();
+        broken["stalls"] = stalls;
+        assert!(
+            serde_json::from_value::<ProviderCase>(broken)?
+                .validate()
+                .is_err()
+        );
+    }
     for statuses in [
         serde_json::json!([]),
         serde_json::json!([{}, {}]),

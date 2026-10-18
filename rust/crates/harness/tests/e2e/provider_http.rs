@@ -6,7 +6,7 @@ use acyclic_harness_providers::{
 };
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
-use futures::stream;
+use futures::{StreamExt as _, stream};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -26,7 +26,7 @@ pub(super) struct Recorded {
     // Test recording only: one lock, never nested or held across a poll/await.
     state: Mutex<State>,
     width: usize,
-    replies: Vec<(u16, Bytes)>,
+    replies: Vec<(u16, Bytes, bool)>,
     unreachable: usize,
 }
 impl Recorded {
@@ -43,7 +43,13 @@ impl Recorded {
                 .responses
                 .iter()
                 .enumerate()
-                .map(|(index, parts)| (case.status(index), Bytes::from(parts.concat())))
+                .map(|(index, parts)| {
+                    (
+                        case.status(index),
+                        Bytes::from(parts.concat()),
+                        case.stalls.contains(&index),
+                    )
+                })
                 .collect(),
         })
     }
@@ -66,7 +72,7 @@ impl Recorded {
         state.next = 0;
         Ok(())
     }
-    fn reply(&self, request: HttpRequest, native: bool) -> Result<(u16, Bytes)> {
+    fn reply(&self, request: HttpRequest, native: bool) -> Result<(u16, Bytes, bool)> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.refused < self.unreachable {
             state.refused += 1;
@@ -84,7 +90,7 @@ impl Recorded {
             });
         }
         if request.url.ends_with("/count") {
-            return Ok((200, Bytes::from_static(br#"{"input_tokens":32}"#)));
+            return Ok((200, Bytes::from_static(br#"{"input_tokens":32}"#), false));
         }
         let bytes = self
             .replies
@@ -98,30 +104,45 @@ impl Recorded {
         });
         Ok(bytes)
     }
+    /// The reply in `width`-byte chunks; a stalled reply then stays silent forever.
     fn chunks(
         &self,
         bytes: Bytes,
+        stall: bool,
     ) -> impl futures::Stream<Item = Result<Bytes>> + Send + Unpin + 'static + use<> {
         let width = self.width;
         let length = bytes.len();
+        let silence = if stall {
+            stream::pending().left_stream()
+        } else {
+            stream::empty().right_stream()
+        };
         stream::iter(
             (0..length)
                 .step_by(width)
                 .map(move |start| Ok(bytes.slice(start..(start + width).min(length)))),
         )
+        .chain(silence)
     }
 }
 impl HttpTransport for Recorded {
-    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+    // Backoffs and idle windows expire when first polled, so redelivery runs without a clock
+    // and a silent body stalls after two idle windows; the exchange's total deadline never does.
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
+        if wait >= std::time::Duration::from_millis(total.into()) {
+            Box::pin(futures::future::pending())
+        } else {
+            Box::pin(async {})
+        }
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let (status, bytes) = self.reply(request, false)?;
+            let (status, bytes, stall) = self.reply(request, false)?;
             Ok(HttpResponse {
                 retry_after: None,
                 status,
-                body: Box::pin(self.chunks(bytes)),
+                body: Box::pin(self.chunks(bytes, stall)),
             })
         })
     }
@@ -135,8 +156,8 @@ impl HttpTransport for Recorded {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
-            let (status, bytes) = self.reply(request, true)?;
-            HttpResponse::with_native_body(status, self.chunks(bytes), work)
+            let (status, bytes, stall) = self.reply(request, true)?;
+            HttpResponse::with_native_body(status, self.chunks(bytes, stall), work)
         })
     }
 }
@@ -176,6 +197,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
             }),
             max_event_bytes: 4096,
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
+            timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
         },
     )?;
     registry.resolve("recorded/model")

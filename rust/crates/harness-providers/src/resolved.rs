@@ -16,7 +16,8 @@ pub struct ResolvedModel {
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<String>,
-    pub(crate) transport: Arc<dyn HttpTransport>,
+    /// The platform transport under the endpoint's deadlines: the only way to the network.
+    pub(crate) transport: Arc<crate::deadline::Bounded>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) codex_count: crate::codex_count::Counter,
     #[cfg(not(target_arch = "wasm32"))]

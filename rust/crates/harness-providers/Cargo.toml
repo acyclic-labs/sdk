@@ -49,7 +49,8 @@ web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Hea
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
-tokio.workspace = true
+# The paused clock drives the exchange deadline properties without wall time.
+tokio = { workspace = true, features = ["test-util"] }
 tempfile = "3.27.0"
 loom = "0.7.2"
 proptest.workspace = true

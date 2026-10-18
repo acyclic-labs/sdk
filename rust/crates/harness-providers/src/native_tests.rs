@@ -28,8 +28,9 @@ impl Fixture {
 }
 
 impl HttpTransport for Fixture {
+    // No deadline ever expires: these fixtures exercise cancellation, never a timeout.
     fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+        Box::pin(std::future::pending())
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("native execution must use its funded HTTP callback")
@@ -97,7 +98,8 @@ async fn native_callbacks_stream_tools_usage_and_release_original_custody() -> R
     for (adapter, response) in fixtures() {
         let (mut provider, _) = provider(adapter, 200);
         let fixture = Arc::new(Fixture::new(response));
-        provider.transport = fixture.clone();
+        provider.transport =
+            crate::deadline::Bounded::new(fixture.clone(), crate::TimeoutSpec::DEFAULT);
         let (request, dispatch) = request(&provider)?;
         let work = work(&CancellationToken::new())?;
         let before = work.live_allocation_bytes();
@@ -165,12 +167,15 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
     ] {
         let (mut provider, _) = provider(Adapter::Chat, 200);
         let cancel = CancellationToken::new();
-        provider.transport = Arc::new(Fixture {
-            cancel: Some(cancel.clone()),
-            pending_body,
-            prefix,
-            ..Fixture::new(CHAT)
-        });
+        provider.transport = crate::deadline::Bounded::new(
+            Arc::new(Fixture {
+                cancel: Some(cancel.clone()),
+                pending_body,
+                prefix,
+                ..Fixture::new(CHAT)
+            }),
+            crate::TimeoutSpec::DEFAULT,
+        );
         let (request, dispatch) = request(&provider)?;
         let work = work(&cancel)?;
         let baseline = work.live_allocation_bytes();
@@ -201,7 +206,10 @@ async fn native_cancellation_wakes_pending_headers_and_pending_body() -> Result<
 async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_when_unfunded()
 -> Result<()> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    provider.transport = Arc::new(Fixture::new("data: invalid-json\n\n"));
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(Fixture::new("data: invalid-json\n\n")),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let (request, dispatch) = request(&provider)?;
     let work = work(&CancellationToken::new())?;
     let baseline = work.live_allocation_bytes();
@@ -222,7 +230,8 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
     }
     assert_eq!(work.live_allocation_bytes(), baseline);
     let transport = Arc::new(Fixture::new(CHAT));
-    provider.transport = transport.clone();
+    provider.transport =
+        crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
     let exhausted = NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(65_536, baseline),
         &CancellationToken::new(),
@@ -255,13 +264,16 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
         .as_mut()
         .unwrap()
         .path = "cancel_count".into();
-    provider.transport = Arc::new(Fixture {
-        response: Bytes::new(),
-        sent: AtomicUsize::new(0),
-        cancel: Some(cancel),
-        pending_body: true,
-        prefix: None,
-    });
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(Fixture {
+            response: Bytes::new(),
+            sent: AtomicUsize::new(0),
+            cancel: Some(cancel),
+            pending_body: true,
+            prefix: None,
+        }),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let (request, _) = request(&provider)?;
     let baseline = work.live_allocation_bytes();
     let result = provider
@@ -300,7 +312,7 @@ mod source_accounting {
             response.push_str("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
             let expected = response.len() as u64;
             let (mut provider, _) = provider(Adapter::Chat, 200);
-            provider.transport = Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) });
+            provider.transport = crate::deadline::Bounded::new(Arc::new(Fixture { response: Bytes::from(response), ..Fixture::new(CHAT) }), crate::TimeoutSpec::DEFAULT);
             let (request, dispatch) = request(&provider).unwrap();
             let work = work(&CancellationToken::new()).unwrap();
             let baseline = work.live_allocation_bytes();

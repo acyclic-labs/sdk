@@ -24,6 +24,9 @@ pub struct ProviderCase {
     /// Leading exchanges, counts included, refused for want of a connection.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub unreachable: u8,
+    /// Ascending indices of responses whose body falls silent after its bytes, never ending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stalls: Vec<usize>,
     pub chunk_bytes: NonZeroUsize,
     /// Registered tools beyond the defaults, named like installed MCP tools.
     #[serde(default)]
@@ -58,10 +61,14 @@ impl ProviderCase {
     pub fn status(&self, index: usize) -> u16 {
         self.statuses.get(index).copied().unwrap_or(200)
     }
-    /// Responses that complete a model step; refused ones are redelivered within it.
+    /// Whether response `index` ends: it is accepted and its body does not stall.
+    pub fn completes(&self, index: usize) -> bool {
+        self.status(index) == 200 && !self.stalls.contains(&index)
+    }
+    /// Responses that complete a model step; refused or stalled ones fail or are redelivered.
     pub fn completed_steps(&self) -> usize {
         (0..self.responses.len())
-            .filter(|&index| self.status(index) == 200)
+            .filter(|&index| self.completes(index))
             .count()
     }
 }
@@ -94,7 +101,13 @@ impl ProviderCase {
                 .statuses
                 .iter()
                 .any(|status| !(200..600).contains(status))
-            || succeeded != (self.status(self.responses.len() - 1) == 200)
+            || !self.stalls.is_sorted_by(|before, after| before < after)
+            || self
+                .stalls
+                .last()
+                .is_some_and(|last| *last >= self.responses.len())
+            || (self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded)
+                != self.completes(self.responses.len() - 1)
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576
             })

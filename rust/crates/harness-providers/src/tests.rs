@@ -307,13 +307,14 @@ pub(super) fn provider_with(
             }),
             max_event_bytes: 4096,
             retry: crate::RetrySpec::DEFAULT,
+            timeouts: crate::TimeoutSpec::DEFAULT,
         }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
             output_tokens: 1024,
         },
         key: Some("scripted-key".into()),
-        transport,
+        transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
         #[cfg(not(target_arch = "wasm32"))]
         codex_count: crate::codex_count::Counter::default(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -496,6 +497,7 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         }),
         max_event_bytes: 4096,
         retry: crate::RetrySpec::DEFAULT,
+        timeouts: crate::TimeoutSpec::DEFAULT,
     };
     for base in [
         "http://example.test",

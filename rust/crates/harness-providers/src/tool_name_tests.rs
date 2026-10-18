@@ -313,7 +313,10 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
         ),
     ] {
         let (mut provider, _) = provider(adapter, 200);
-        provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(fixture)));
+        provider.transport = crate::deadline::Bounded::new(
+            Arc::new(AliasFixture(native_tests::Fixture::new(fixture))),
+            crate::TimeoutSpec::DEFAULT,
+        );
         let (prepared, _) = request(&provider)?;
         let mut request = prepared.request().clone();
         request.tools.push(definition("acyclic.read_file".into()));
@@ -390,7 +393,10 @@ fn checked_in_tool_name_seed_exercises_the_fuzzer_oracle() {
 async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Result<()> {
     const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"acyclic__read_file\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"bad.name\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(BODY)));
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(AliasFixture(native_tests::Fixture::new(BODY))),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let (prepared, _) = request(&provider)?;
     let mut request = prepared.request().clone();
     request.tools.push(definition("acyclic.read_file".into()));
@@ -436,7 +442,10 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     drop(names);
     // The fixture serves a static body for the test's lifetime.
     let body: &'static str = Box::leak(body.into_boxed_str());
-    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(body)));
+    provider.transport = crate::deadline::Bounded::new(
+        Arc::new(AliasFixture(native_tests::Fixture::new(body))),
+        crate::TimeoutSpec::DEFAULT,
+    );
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let dispatch = ModelDispatch {
         request_digest: prepared.request_digest(),

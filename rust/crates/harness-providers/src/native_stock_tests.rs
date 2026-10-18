@@ -169,7 +169,8 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
             selected
         } else {
             let (mut provider, _) = provider(adapter, 200);
-            provider.transport = transport.clone();
+            provider.transport =
+                crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
             provider
         };
         run_stock_turn(

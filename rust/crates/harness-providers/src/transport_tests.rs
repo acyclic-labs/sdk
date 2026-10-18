@@ -27,8 +27,13 @@ impl HttpTransport for Counted {
         self.sent.fetch_add(1, Ordering::SeqCst);
         self.inner.send(request)
     }
-    fn delay(&self, _: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+    // Backoff waits elapse at once; the exchange deadlines, minutes long, never expire here.
+    fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
+        if wait >= std::time::Duration::from_secs(60) {
+            Box::pin(futures::future::pending())
+        } else {
+            Box::pin(async {})
+        }
     }
 }
 

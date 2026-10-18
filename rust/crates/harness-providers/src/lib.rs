@@ -25,6 +25,7 @@ mod cancellation;
 mod codex_dispatch_tests;
 mod counting;
 mod credentials;
+mod deadline;
 mod dispatch;
 mod files;
 #[cfg(test)]
@@ -68,7 +69,7 @@ pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, ProviderSpec, RetrySpec};
+pub use spec::{Authentication, ProviderSpec, RetrySpec, TimeoutSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;

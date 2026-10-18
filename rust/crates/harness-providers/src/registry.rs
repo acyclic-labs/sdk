@@ -159,6 +159,7 @@ impl Registry {
         if !authenticated && config.authentication != Authentication::Optional {
             return Err(invalid("model provider API key is unavailable"));
         }
+        let transport = crate::deadline::Bounded::new(self.transport.clone(), config.timeouts);
         Ok(ResolvedModel {
             files: self.files.clone(),
             estimator: crate::accounting::TokenEstimator::new(config.adapter),
@@ -166,7 +167,7 @@ impl Registry {
             config,
             capacity,
             key,
-            transport: self.transport.clone(),
+            transport,
             #[cfg(not(target_arch = "wasm32"))]
             codex_count: crate::codex_count::Counter::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -197,6 +198,7 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    config.timeouts.validate()?;
     for (name, value) in &config.headers {
         if name.is_empty()
             || !name
