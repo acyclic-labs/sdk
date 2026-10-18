@@ -7,7 +7,9 @@ use acyclic_harness::{
     task_volume::{Query, TaskVolume},
     tui::{
         Action, Editor, InputEffect, PromptBox, PromptInput, Screen, Viewport, WHEEL_ROWS,
-        key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind},
+        key_event::{
+            InputEvent, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        },
         ratatui::{Terminal, backend::TestBackend, layout::Rect, text::Line},
     },
 };
@@ -81,9 +83,20 @@ async fn drive_with(
     mode: Mode,
     input: &mut PromptInput,
 ) -> (usize, u64, usize) {
+    drive_from(reads, mode, input, 0).await
+}
+
+async fn drive_from(
+    reads: Vec<Vec<InputEvent>>,
+    mode: Mode,
+    input: &mut PromptInput,
+    start: isize,
+) -> (usize, u64, usize) {
     let (volume, mut files) = session("burst").await;
+    scroll_tui(&mut files, [start], 10_000).await.unwrap();
     let before = position(&volume).await;
     let mut frames = 0;
+    let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     let mut effects = Vec::new();
     for read in reads {
         let mut batch: InputBatch = read.into();
@@ -103,7 +116,7 @@ async fn drive_with(
                 .unwrap();
             // The loop's next iteration presents only when `frame_due`.
             if mode != Mode::Loop || frame_due(&batch) {
-                frames += 1;
+                terminal.draw(|_| frames += 1).unwrap();
             }
         }
     }
@@ -204,6 +217,7 @@ fn pointer_after_motions<const ABSORB_POINTER: bool>(
     width: u16,
     wrap: bool,
     motion: InputEvent,
+    kind: MouseEventKind,
     per_event: bool,
 ) -> (String, usize, std::ops::Range<usize>, usize) {
     let screen = Screen::default();
@@ -217,14 +231,28 @@ fn pointer_after_motions<const ABSORB_POINTER: bool>(
     probe.editor.set_text(&"x".repeat(count), 0);
     let click_area = PromptBox::input_area(screen.areas(area, &probe).prompt);
     let click = InputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(acyclic_harness::tui::key_event::MouseButton::Left),
+        kind,
         column: click_area.x,
         row: click_area.y,
         modifiers: KeyModifiers::NONE,
     });
-    let mut batch: InputBatch = (0..count)
-        .map(|_| key(KeyCode::Char('x')))
-        .chain([motion, click])
+    // A left drag must exercise an active selection, not just its no-op path.
+    let initial_area = PromptBox::input_area(screen.areas(area, &input).prompt);
+    let start_drag = (kind == MouseEventKind::Drag(MouseButton::Left)).then(|| {
+        InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: initial_area.x,
+            row: initial_area.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    });
+    let mut batch: InputBatch = start_drag
+        .into_iter()
+        .chain(
+            (0..count)
+                .map(|_| key(KeyCode::Char('x')))
+                .chain([motion, click]),
+        )
         .collect();
     let mut terminal = Terminal::new(TestBackend::new(width, 10)).unwrap();
     let mut viewport = Viewport::default();
@@ -276,36 +304,135 @@ fn pointer_after_motions<const ABSORB_POINTER: bool>(
 }
 
 fn assert_pointer_after_motions<const ABSORB_POINTER: bool>(count: usize, width: u16, wrap: bool) {
-    for motion in [
-        notch(true),
-        notch(false),
-        key(KeyCode::PageUp),
-        key(KeyCode::PageDown),
-    ] {
-        let expected = pointer_after_motions::<false>(count, width, wrap, motion.clone(), true);
-        let actual = pointer_after_motions::<ABSORB_POINTER>(count, width, wrap, motion, false);
-        assert_eq!(
-            (&actual.0, actual.1, &actual.2),
-            (&expected.0, expected.1, &expected.2),
-            "pointer routing must match per-event rendering"
-        );
-        assert_eq!(
-            actual.3, 3,
-            "one initial frame, one before the click, one after the read"
-        );
+    for kind in pointer_kinds() {
+        for motion in [
+            notch(true),
+            notch(false),
+            key(KeyCode::PageUp),
+            key(KeyCode::PageDown),
+        ] {
+            let expected =
+                pointer_after_motions::<false>(count, width, wrap, motion.clone(), kind, true);
+            let actual =
+                pointer_after_motions::<ABSORB_POINTER>(count, width, wrap, motion, kind, false);
+            assert_eq!(
+                (&actual.0, actual.1, &actual.2),
+                (&expected.0, expected.1, &expected.2),
+                "pointer routing must match per-event rendering"
+            );
+            assert_eq!(
+                actual.3,
+                2 + usize::from(matches!(
+                    kind,
+                    MouseEventKind::Down(MouseButton::Left)
+                        | MouseEventKind::Drag(MouseButton::Left)
+                )),
+                "only left down/drag needs an intermediate presentation"
+            );
+        }
     }
+}
+
+fn pointer_kinds() -> Vec<MouseEventKind> {
+    let mut kinds = vec![
+        MouseEventKind::Moved,
+        MouseEventKind::ScrollUp,
+        MouseEventKind::ScrollDown,
+        MouseEventKind::ScrollLeft,
+        MouseEventKind::ScrollRight,
+    ];
+    for button in [MouseButton::Left, MouseButton::Right, MouseButton::Middle] {
+        kinds.extend([
+            MouseEventKind::Down(button),
+            MouseEventKind::Up(button),
+            MouseEventKind::Drag(button),
+        ]);
+    }
+    kinds
+}
+
+async fn assert_pointer_publications() {
+    let per_write = drive(vec![vec![notch(true)]], true).await.1;
+    for kind in pointer_kinds() {
+        let pointer = InputEvent::Mouse(MouseEvent {
+            kind,
+            column: 3,
+            row: 9,
+            modifiers: KeyModifiers::NONE,
+        });
+        let read = vec![notch(true), pointer, notch(true)];
+        let actual = drive_from(
+            vec![read.clone()],
+            Mode::Loop,
+            &mut PromptInput::default(),
+            1000,
+        )
+        .await;
+        let expected = drive_from(
+            vec![read],
+            Mode::PerEvent,
+            &mut PromptInput::default(),
+            1000,
+        )
+        .await;
+        let boundary = usize::from(matches!(
+            kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        ));
+        assert_eq!(actual.0, 1 + boundary, "presentation count for {kind:?}");
+        assert_eq!(
+            actual.1,
+            per_write * (1 + boundary as u64),
+            "layout writes for {kind:?}"
+        );
+        assert_eq!(actual.2, expected.2, "ordered scrolling for {kind:?}");
+    }
+}
+
+#[test]
+fn diagonal_wheel_reads_publish_once() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let baseline = drive(vec![vec![notch(true)]], true).await.1;
+        for count in [1, 32, 64] {
+            let horizontal = InputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollRight,
+                column: 3,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            });
+            let read = std::iter::once(notch(false))
+                .chain((0..count).flat_map(|_| [horizontal.clone(), notch(false)]))
+                .collect();
+            let actual =
+                drive_from(vec![read], Mode::Loop, &mut PromptInput::default(), 1000).await;
+            assert_eq!(
+                actual.0, 1,
+                "ignored pointers must not split a read's frame"
+            );
+            assert_eq!(
+                actual.1, baseline,
+                "ignored pointers must not split a layout publish"
+            );
+        }
+    });
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
     // Property: layout-only key routing followed by any scroll motion and a
-    // pointer must preserve the editor text, cursor and selection of painting
-    // every event, with exactly one presentation boundary before the pointer.
+    // pointer kind/button must preserve the editor text, cursor and selection
+    // of painting every event. Only left down/drag adds a presentation boundary.
     #[test]
     fn pointers_behind_motions_use_the_current_prompt_viewport(
         count in 32usize..96, width in 8u16..24, wrap in proptest::bool::ANY,
     ) {
         assert_pointer_after_motions::<false>(count, width, wrap);
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+            .block_on(assert_pointer_publications());
     }
 }
 

@@ -657,6 +657,14 @@ impl PromptInput {
         }
     }
 
+    /// Pointer kinds whose hit testing can read the presented prompt viewport.
+    pub fn reads_presented_viewport(event: &MouseEvent) -> bool {
+        matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Left)
+        )
+    }
+
     /// Mouse selection uses the same grapheme layout as movement and rendering.
     pub fn mouse(
         &mut self,
@@ -669,7 +677,7 @@ impl PromptInput {
             self.dragging = false;
             return vec![];
         }
-        if area.width == 0 || area.height == 0 {
+        if !Self::reads_presented_viewport(&event) || area.width == 0 || area.height == 0 {
             return vec![];
         }
         let inside = area.contains((event.column, event.row).into());

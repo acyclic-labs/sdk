@@ -82,9 +82,9 @@ pub async fn scroll_tui<P: StreamProvider + ?Sized>(
 /// Effects for the next decoded input event plus the view motions decoded
 /// in the same read behind it. A wheel flick or held `PageUp` arrives as one
 /// input batch; its motions publish as one layout change and draw one frame.
-/// Draining stops after the first event that is not purely a motion; that
-/// event is routed here, unless it needs a presented viewport: pointer events
-/// stay queued at the frame boundary. Later events stay queued, and the next read is
+/// Draining stops after the first event that is neither a motion nor an ignored
+/// pointer. Events reading a presented viewport stay queued at the frame boundary.
+/// Later events stay queued, and the next read is
 /// never touched, so read boundaries stay frame boundaries.
 pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
     batch: &mut std::collections::VecDeque<crate::tui::key_event::InputEvent>,
@@ -94,31 +94,32 @@ pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
 ) {
     effects.clear();
     while let Some(event) = batch.pop_front() {
+        let ignored_pointer = matches!(
+            &event,
+            crate::tui::key_event::InputEvent::Mouse(mouse)
+                if !crate::tui::PromptInput::reads_presented_viewport(mouse)
+        );
         let first = effects.len();
         effects.extend(route(event));
-        let motion = effects.len() > first
+        let foldable = (effects.len() > first || ignored_pointer)
             && effects[first..]
                 .iter()
                 .all(|effect| transcript_motion(effect, page_rows).is_some());
-        if !motion || frame_due(batch) {
+        if !foldable || frame_due(batch) {
             break;
         }
     }
 }
 
 /// Whether the frame must reach the terminal before the batch's next event is
-/// routed. Only a pointer event other than the wheel reads presented state
-/// (the prompt viewport); every other event routes against layout recomputed
-/// without presenting. So one read presents one frame, however many keys,
-/// pasted characters or bursts it decoded.
+/// routed. Only left-button down/drag can hit-test the presented prompt viewport;
+/// all other events route against recomputed layout without presenting. A read
+/// presents once at its end, plus a boundary before each queued left down/drag.
 pub fn frame_due(batch: &std::collections::VecDeque<crate::tui::key_event::InputEvent>) -> bool {
-    use crate::tui::key_event::{InputEvent, MouseEventKind};
+    use crate::tui::{PromptInput, key_event::InputEvent};
     match batch.front() {
         None => true,
-        Some(InputEvent::Mouse(mouse)) => !matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ),
+        Some(InputEvent::Mouse(mouse)) => PromptInput::reads_presented_viewport(mouse),
         Some(_) => false,
     }
 }
