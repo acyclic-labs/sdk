@@ -18,7 +18,7 @@ fn case(agents: usize, attention_every: usize) -> TestResult<SwarmCase> {
 
 fn measured(case: SwarmCase, fault: Fault) -> TestResult<Work> {
     let agents = case.agents as u64;
-    let report = futures::executor::block_on(swarm::run_with_fault(case, fault, true))?;
+    let report = swarm::runtime()?.block_on(swarm::run_with_fault(case, fault, true))?;
     let mut work = Work::new();
     work.insert("agents", agents);
     for key in [

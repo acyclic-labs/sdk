@@ -4,7 +4,7 @@ use serde_json::Value;
 
 trait Driver {
     type Case;
-    fn execute(case: Self::Case) -> impl Future<Output = TestResult> + Send;
+    fn execute(case: Self::Case) -> impl Future<Output = TestResult>;
 }
 
 struct JournalDriver;
@@ -64,13 +64,17 @@ impl Driver for super::local_case::LocalCase {
 impl Driver for super::swarm_case::SwarmCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        // Each renderer cache belongs to one event loop. Keep scenarios parallel
-        // without requiring a UI's Rc handle to cross executor threads.
-        acyclic_native_runtime::testing::spawn_blocking(move || {
-            futures::executor::block_on(super::swarm::run(case))
-        })
-        .await?
+        execute_swarm(case, super::swarm_wire::Fault::None).await
     }
+}
+
+async fn execute_swarm(
+    case: super::swarm_case::SwarmCase,
+    fault: super::swarm_wire::Fault,
+) -> TestResult {
+    super::swarm::run_with_fault(case, fault, false)
+        .await
+        .map(drop)
 }
 
 impl Driver for super::subagents::SubagentCase {
@@ -87,11 +91,42 @@ impl Driver for super::provider_case::ProviderCase {
     }
 }
 
-pub(super) async fn run_execution(case: scenario::Scenario) -> TestResult {
+async fn run_execution(case: scenario::Scenario) -> TestResult {
     TaskDriver::execute(case).await
 }
 
-pub(super) async fn run(mut value: Value) -> TestResult {
+pub(super) enum Case {
+    Recipe(Value),
+    Execution(Box<scenario::Scenario>),
+    SwarmFault(Box<super::swarm_case::SwarmCase>, super::swarm_wire::Fault),
+}
+impl From<Value> for Case {
+    fn from(value: Value) -> Self {
+        Self::Recipe(value)
+    }
+}
+impl From<scenario::Scenario> for Case {
+    fn from(value: scenario::Scenario) -> Self {
+        Self::Execution(Box::new(value))
+    }
+}
+
+pub(super) async fn run(case: impl Into<Case>) -> TestResult {
+    // The shared corpus already owns a guard; direct tests enter the same path.
+    super::stall::guarded(std::path::Path::new("driver"), dispatch(case.into()))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+async fn dispatch(case: Case) -> TestResult {
+    match case {
+        Case::Execution(case) => Box::pin(run_execution(*case)).await,
+        Case::Recipe(value) => dispatch_recipe(value).await,
+        Case::SwarmFault(case, fault) => Box::pin(execute_swarm(*case, fault)).await,
+    }
+}
+
+async fn dispatch_recipe(mut value: Value) -> TestResult {
     let driver = value
         .as_object_mut()
         .ok_or("scenario must be an object")?

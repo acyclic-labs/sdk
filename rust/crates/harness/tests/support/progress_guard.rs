@@ -23,6 +23,9 @@ impl Guard {
     pub async fn run<F: Future>(&mut self, future: F) -> Result<F::Output, String> {
         let mut future = Box::pin(future);
         let result = self.drive(future.as_mut()).await;
+        if result.is_err() {
+            self.io.cancel();
+        }
         // Cancel the caller before draining its accepted owners. The runner's
         // abort guards also cancel each actual, tracked scenario task.
         drop(future);

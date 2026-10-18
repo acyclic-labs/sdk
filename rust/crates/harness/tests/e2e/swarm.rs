@@ -14,6 +14,12 @@ use acyclic_stream::MemoryStream;
 use futures::{FutureExt as _, StreamExt as _, channel::mpsc};
 use std::{future::Future as _, sync::Arc, task::Poll};
 
+pub(super) fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 pub(super) async fn run(case: SwarmCase) -> TestResult {
     run_with_fault(case, Fault::None, false).await.map(|_| ())
 }
@@ -23,6 +29,12 @@ pub(super) async fn run_with_fault(
     fault: Fault,
     paced: bool,
 ) -> TestResult<serde_json::Value> {
+    super::stall::guarded(std::path::Path::new("swarm"), run_raw(case, fault, paced))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde_json::Value> {
     let started = std::time::Instant::now();
     case.validate()?;
     let provider = Arc::new(MemoryStream::default());

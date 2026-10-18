@@ -57,7 +57,7 @@ proptest! {
         let decoded: SwarmCase = serde_json::from_slice(&encoded)?;
         prop_assert_eq!(&case, &decoded);
         prop_assert!(case.validate().is_ok());
-        futures::executor::block_on(swarm::run(decoded)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        swarm::runtime().map_err(|e| TestCaseError::fail(e.to_string()))?.block_on(swarm::run(decoded)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     }
 }
 
@@ -77,7 +77,7 @@ proptest! {
             Layout { visible: [shift, width + shift], prefetch: [width + shift, 2 * width + shift] },
         ];
         case.expect.wire = serde_json::json!({});
-        futures::executor::block_on(swarm::run(case)).map_err(|e| TestCaseError::fail(e.to_string()))?;
+        swarm::runtime().map_err(|e| TestCaseError::fail(e.to_string()))?.block_on(swarm::run(case)).map_err(|e| TestCaseError::fail(e.to_string()))?;
     }
 }
 

@@ -3,6 +3,24 @@ use crate::TestResult;
 use serde_json::json;
 use std::path::Path;
 
+#[tokio::test(start_paused = true)]
+async fn direct_swarm_dispatch_rejects_a_permanently_pending_response() -> TestResult {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let mut value =
+        crate::scenario::load_value(&root, &root.join("swarm/prefetch-promotion.json"))?;
+    run(value.clone()).await?;
+    value.as_object_mut().ok_or("scenario")?.remove("driver");
+    let case = serde_json::from_value(value)?;
+    let error = run(super::Case::SwarmFault(
+        Box::new(case),
+        crate::swarm_wire::Fault::PermanentPending,
+    ))
+    .await
+    .expect_err("an async driver owner hid a permanent response stall");
+    assert!(error.to_string().contains("stalled: driver"), "{error}");
+    Ok(())
+}
+
 #[tokio::test]
 async fn plan_query_oracles_check_every_file_and_rendered_revision() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");

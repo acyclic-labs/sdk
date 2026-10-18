@@ -40,28 +40,27 @@ pub(super) async fn run<F>(
     registry: Arc<Registry>,
     path: PathBuf,
     scenario: F,
-) -> Result<F::Output, tokio::task::JoinError>
+) -> F::Output
 where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: Future,
 {
-    let task = io
-        .scope(async move {
-            acyclic_native_runtime::testing::spawn(async move {
-                admitted(registry, &path, scenario).await
-            })
-        })
-        .await;
-    // A raw JoinHandle detaches on drop. The runner must abort the actual
-    // tracked task when its shared guard drops this waiting caller.
-    struct Abort(tokio::task::AbortHandle);
-    impl Drop for Abort {
-        fn drop(&mut self) {
-            self.0.abort();
-        }
+    // Poll async drivers directly. Their Rc state stays on this event loop;
+    // only physical native operations acquire native completion owners.
+    io.scope(admitted(registry, &path, scenario)).await
+}
+
+pub(super) async fn guarded<F: Future>(path: &Path, future: F) -> Result<F::Output, String> {
+    if CURRENT.try_with(|_| ()).is_ok() {
+        return Ok(future.await);
     }
-    let _abort = Abort(task.abort_handle());
-    task.await
+    let mut guard = super::progress_guard::Guard::new();
+    let work = run(
+        guard.io.clone(),
+        guard.registry.clone(),
+        path.into(),
+        future,
+    );
+    guard.run(work).await
 }
 
 #[tokio::test(start_paused = true)]

@@ -56,7 +56,7 @@ mod task_queries;
 mod task_query_case;
 mod task_query_tests;
 use acyclic_harness::context::CompactionPolicy;
-use drivers::run_execution as run;
+use drivers::run;
 use futures::{StreamExt as _, stream};
 use scenario::Scenario;
 use std::{
@@ -372,8 +372,7 @@ async fn run_guarded_scenarios(
                     drivers::run(case).await?;
                     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                 })
-                .await
-                .unwrap_or_else(|error| Err(Box::new(error)));
+                .await;
                 running.fetch_sub(1, Ordering::SeqCst);
                 (path, result)
             }

@@ -34,7 +34,7 @@ fn accepted_native_io_may_outlive_the_shared_idle_budget() -> crate::TestResult 
                 })
                 .await
             });
-            assert_eq!(guard.run(work).await.unwrap().unwrap(), 42);
+            assert_eq!(guard.run(work).await.unwrap(), 42);
             assert!(started.elapsed() >= std::time::Duration::from_secs(20));
             assert!(registry.snapshot().1.is_empty());
         });
