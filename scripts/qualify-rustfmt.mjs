@@ -5,31 +5,23 @@
 import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TOML } from "bun";
 
 const VENDORED = ":(exclude)rust/vendor/**";
 
 // Returns {workspace, edition} for one manifest: `workspace` is the
-// [workspace.package] edition (or null when the manifest is no workspace root),
+// [workspace.package] edition (false when absent, null for no workspace root),
 // `edition` the package edition, "inherit", or null for a virtual manifest.
 export function parseManifest(text) {
-  let section = "", hasPackage = false, edition, workspace = null, isWorkspace = false;
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/#.*/, "").trim();
-    const header = line.match(/^\[([^\]]+)\]$/);
-    if (header) {
-      section = header[1].trim();
-      hasPackage ||= section === "package";
-      isWorkspace ||= section === "workspace" || section.startsWith("workspace.");
-      continue;
-    }
-    const value = line.match(/^edition\s*=\s*"(\d{4})"$/)?.[1];
-    const inherits = /^edition\s*(?:\.\s*workspace\s*=\s*true|=\s*\{\s*workspace\s*=\s*true\s*\})$/.test(line);
-    if (section === "package" && (value || inherits)) edition = value ?? "inherit";
-    if (section === "workspace.package" && value) workspace = value;
-  }
-  return { workspace: isWorkspace ? workspace ?? "2015" : null, edition: hasPackage ? edition ?? "2015" : null };
+  const manifest = TOML.parse(text);
+  const edition = manifest.package?.edition;
+  return {
+    workspace: manifest.workspace ? manifest.workspace.package?.edition ?? false : null,
+    edition: manifest.package ? edition?.workspace === true ? "inherit" : edition ?? "2015" : null,
+    ...(manifest.package?.workspace === undefined ? {} : { workspacePath: manifest.package.workspace }),
+  };
 }
 
 const nearest = (path, table) => {
@@ -46,9 +38,19 @@ export function filesByEdition(root) {
   const manifests = new Map(list("*Cargo.toml").filter((path) => /(^|\/)Cargo\.toml$/.test(path))
     .map((path) => [dirname(path), parseManifest(readFileSync(resolve(root, path), "utf8"))]));
   const workspaceEdition = (dir) => {
+    const explicit = manifests.get(dir).workspacePath;
+    if (explicit !== undefined) {
+      const owner = relative(root, resolve(root, dir, explicit)).split(sep).join("/") || ".";
+      const manifest = manifests.get(owner);
+      if (!manifest?.workspace) throw new Error(`${dir}/Cargo.toml has no workspace edition at ${explicit}`);
+      return manifest.workspace;
+    }
     for (let at = dir; at !== null; at = at === "." ? null : nearest(at, manifests)) {
       const { workspace } = manifests.get(at);
-      if (workspace) return workspace;
+      if (workspace !== null) {
+        if (!workspace) throw new Error(`${at}/Cargo.toml has no workspace.package.edition to inherit`);
+        return workspace;
+      }
     }
     throw new Error(`${dir}/Cargo.toml inherits an edition but has no enclosing workspace`);
   };
@@ -57,8 +59,9 @@ export function filesByEdition(root) {
     const dir = nearest(file, manifests);
     if (dir === null) throw new Error(`${file} has no enclosing Cargo.toml`);
     const { edition, workspace } = manifests.get(dir);
-    const resolved = edition === "inherit" ? workspaceEdition(dir) : edition ?? workspace ?? "2015";
-    groups.set(resolved, [...(groups.get(resolved) ?? []), file]);
+    const resolved = edition === "inherit" ? workspaceEdition(dir) : (edition ?? workspace) || "2015";
+    if (!groups.has(resolved)) groups.set(resolved, []);
+    groups.get(resolved).push(file);
   }
   return groups;
 }

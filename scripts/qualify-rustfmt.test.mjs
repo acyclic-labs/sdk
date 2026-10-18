@@ -45,8 +45,71 @@ test("manifests resolve explicit, inherited, default and virtual editions", () =
   assert.deepEqual(parseManifest(tree["Cargo.toml"]), { workspace: "2024", edition: null });
   assert.deepEqual(parseManifest(tree["member/Cargo.toml"]), { workspace: null, edition: "inherit" });
   assert.deepEqual(parseManifest("[package]\nedition = { workspace = true }\n"), { workspace: null, edition: "inherit" });
-  assert.deepEqual(parseManifest(tree["member/fuzz/Cargo.toml"]), { workspace: "2015", edition: "2021" });
+  assert.deepEqual(parseManifest(tree["member/fuzz/Cargo.toml"]), { workspace: false, edition: "2021" });
   assert.deepEqual(parseManifest("[package]\nname = \"x\"\n[dependencies]\nedition = \"2018\"\n"), { workspace: null, edition: "2015" });
+});
+
+test("TOML edition spellings have the same meaning and malformed manifests fail closed", () => {
+  for (const edition of ["2015", "2018", "2021", "2024"]) {
+    for (const value of [`'${edition}'`, `"${edition}"`, `'''${edition}'''`, `"""${edition}"""`]) {
+      for (const header of ["[package]", "[ 'package' ]", '[ "package" ]']) {
+        assert.deepEqual(parseManifest(`${header}\n'edition' = ${value} # comment\n`), { workspace: null, edition });
+      }
+    }
+  }
+  assert.deepEqual(parseManifest('package.edition.workspace = true\nworkspace.package.edition = "2021"\n'), { workspace: "2021", edition: "inherit" });
+  assert.throws(() => parseManifest('[package]\nedition = "2021"\nedition = "2024"\n'));
+});
+
+test("an explicit package workspace owns the inherited edition", () => {
+  const root = fixture({
+    "member/Cargo.toml": '[package]\nname = "member"\nedition.workspace = true\nworkspace = "../owner"\n',
+    "owner/Cargo.toml": '[workspace]\nmembers = ["../member"]\n[workspace.package]\nedition = "2021"\n',
+  });
+  try { assert.equal(filesByEdition(root).has("2024"), false); }
+  finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("workspace inheritance fails closed at a workspace without an edition", () => {
+  const root = fixture({ "Cargo.toml": '[workspace]\nmembers = ["member"]\n' });
+  try { assert.throws(() => filesByEdition(root), /no workspace.package.edition/); }
+  finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("grouping visits each file once without copying prior groups", () => {
+  const root = fixture();
+  const iterate = Array.prototype[Symbol.iterator];
+  let visits = 0;
+  try {
+    Array.prototype[Symbol.iterator] = function () {
+      const iterator = iterate.call(this);
+      return {
+        next() {
+          const item = iterator.next();
+          if (item.value === "member/src/hidden.rs") visits++;
+          return item;
+        },
+        [Symbol.iterator]() { return this; },
+      };
+    };
+    filesByEdition(root);
+  } finally {
+    Array.prototype[Symbol.iterator] = iterate;
+    rmSync(root, { recursive: true, force: true });
+  }
+  assert.equal(visits, 1);
+});
+
+test("legal TOML strings cannot hide or spoof the package edition", () => {
+  for (const manifest of [
+    "[package]\nname = 'member-fuzz'\nedition = '2021'\n[workspace]\n",
+    '[package]\nname = "member-fuzz"\nedition = "2021"\ndescription = """\n[package]\nedition = "2024"\n"""\n[workspace]\n',
+  ]) {
+    const root = fixture({ "member/fuzz/Cargo.toml": manifest });
+    try {
+      assert.deepEqual(filesByEdition(root).get("2021"), ["member/fuzz/fuzz_targets/target.rs"]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
 });
 
 test("every tracked non-vendored Rust file is checked under its crate's edition", () => {

@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec node "$(dirname "${BASH_SOURCE[0]}")/qualify-rustfmt.mjs"
+exec bun "$(dirname "${BASH_SOURCE[0]}")/qualify-rustfmt.mjs"
