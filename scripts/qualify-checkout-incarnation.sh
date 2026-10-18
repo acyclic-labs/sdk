@@ -16,8 +16,9 @@ all)
     for phase in static native model windows fuzz; do bash "$0" "$phase"; done
     ;;
 static)
-    # Durable flushes go through std or acyclic-native-runtime, which use each
-    # platform's native full sync (F_FULLFSYNC on Apple). A bare fsync is not.
+    # Durable flushes go through acyclic-native-runtime, which issues each
+    # platform's native full sync (F_FULLFSYNC on Apple) once per metered
+    # attempt. A bare fsync elsewhere is not.
     if grep -rnE '(libc|rustix::fs)::f(data)?sync\b' rust/crates --include='*.rs' |
         grep -v '^rust/crates/native-runtime/'; then
         echo "raw fsync bypasses the native durability mechanism" >&2
@@ -40,6 +41,7 @@ for line in open(sys.argv[1]):
     harness=$(binary acyclic_harness)
     (cd rust/crates/filesystem; timed filesystem "$filesystem" \
         native_capture::held_root_tests native_host::held_files::record native_host::leaf \
+        native_host::interrupted_sync_tests \
         native_exchange::tests::exchange_refuses_normalized_directory_aliases \
         demand::tests::a_held_root \
         demand::tests::negative_control_binding)
