@@ -1,0 +1,12 @@
+{"driver":"goal-local","prompt":"Start the objective","turns":[[{"type":"event","kind":"tool_call","call_id":"goal-0",
+    "name":"write","arguments":{"path":".volumes/scratch/GOAL.md","text":"Finish the objective","media_type":
+    "text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"settle-0"
+    ,"settle-1","settle-2"],"policy":{"max_continuations":2},"expect":{"text":"settle-2","request_prompt":
+    "Start the objective","result":{"tasks":3,"continuations":2,"requests":4},"frames":[{"canonical_event_json":{"kind":
+    "declared"}},{"canonical_event_json":{"kind":"completed","outcome":{"Succeeded":{}}}}],"statuses":[{"state":
+    "pending","attention":false,"parent":null},{"state":"completed","attention":true,"parent":null}],"view":{"status":
+    "blocked","markdown":"Finish the objective","reason":"Maximum goal continuations reached (limit 2)."},"files":{
+    "GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nFinish the objective"},
+    "runtime_error":null,"view_error":null,"project_files":{"GOAL.md":"---\nstatus: done\n---\nProject sentinel"}},
+    "project_seed":{"GOAL.md":"---\nstatus: done\n---\nProject sentinel"},"max_steps":2}

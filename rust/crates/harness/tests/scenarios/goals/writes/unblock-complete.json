@@ -1,0 +1,8 @@
+{"prompt":"The service is available; finish the goal","turns":[[{"type":"event","kind":"tool_call","call_id":"write-0","name":
+    "write","arguments":{"path":".volumes/scratch/GOAL.md","text":"---\nstatus: active\n---\nVerify service\n","media_type":"text/markdown",
+    "display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],[{"type":"event","kind":"tool_call","call_id":
+    "write-1","name":"write","arguments":{"path":".volumes/scratch/GOAL.md","text":"---\nstatus: done\n---\nService verified\n","media_type":
+    "text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"expect":{
+    "request_prompt":"The service is available; finish the goal","result":{"requests":3},"view":{"status":"done","markdown":
+    "Service verified\n"},"files":{"GOAL.md":"---\nstatus: done\n---\nService verified\n"}},"seed":{"GOAL.md":
+    "---\nstatus: blocked\n---\nWaiting for service\n"},"max_steps":3}

@@ -1,0 +1,8 @@
+{"turns":[[{"type":"event","kind":"tool_call","call_id":"goal-0","name":"write","arguments":{"path":
+    ".volumes/scratch/GOAL.md","text":"Finish the objective","media_type":"text/markdown","display_name":"GOAL.md"}},{
+    "type":"event","kind":"completed","metadata":null}],"settle-0","settle-1","settle-2",[{"type":"event","kind":
+    "tool_call","call_id":"goal-3","name":"write","arguments":{"path":".volumes/scratch/GOAL.md","text":
+    "---\nstatus: done\n---\nFinish the objective","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":
+    "event","kind":"completed","metadata":null}],"settle-3"],"expect":{"text":"settle-3","result":{"tasks":4,
+    "continuations":3,"requests":6},"files":{"GOAL.md":"---\nstatus: done\n---\nFinish the objective"},"view":{"status":
+    "done"}}}

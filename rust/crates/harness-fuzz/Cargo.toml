@@ -303,6 +303,15 @@ doc = false
 bench = false
 
 [[bin]]
+name = "goal_scenario"
+path = "fuzz_targets/goal_scenario.rs"
+required-features = ["runtime"]
+
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "ui_prompt"
 path = "fuzz_targets/ui_prompt.rs"
 required-features = ["runtime"]

@@ -1,0 +1,2 @@
+{"expect":{"view":{"status":"done","markdown":"Shipped\n"},"files":{"GOAL.md":"---\nstatus: done\n---\nShipped\n"}},"seed":{
+    "GOAL.md":"---\nstatus: done\n---\nShipped\n"},"policy":{"max_continuations":0}}

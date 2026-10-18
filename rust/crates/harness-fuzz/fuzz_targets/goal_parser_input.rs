@@ -11,7 +11,7 @@ use acyclic_harness::{
 
 const LIMIT: u64 = 8192;
 
-fn file(bytes: &[u8]) -> Result<FileRef> {
+pub fn file(bytes: &[u8]) -> Result<FileRef> {
     FileRef::new(
         VolumeRef::new(
             ProviderRef::new("fuzz".into(), "filesystem".into(), "1".into(), &mut None)?,

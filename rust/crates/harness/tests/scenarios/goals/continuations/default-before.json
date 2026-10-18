@@ -1,0 +1,7 @@
+{"turns":["settled-0","settled-1","settled-2","settled-3","settled-4","settled-5","settled-6","settled-7","settled-8","settled-9",
+    "settled-10","settled-11","settled-12","settled-13","settled-14","settled-15","settled-16","settled-17","settled-18",
+    "settled-19","settled-20","settled-21","settled-22","settled-23","settled-24","settled-25","settled-26","settled-27",
+    "settled-28","settled-29","settled-30",[{"type":"event","kind":"tool_call","call_id":"finish-before-cap","name":"write",
+    "arguments":{"path":".volumes/scratch/GOAL.md","text":"---\nstatus: done\n---\nShip the change\n","media_type":"text/markdown","display_name":
+    "GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"expect":{"result":{"tasks":32,"continuations":31,
+    "requests":33},"view":{"status":"done"},"files":{"GOAL.md":"---\nstatus: done\n---\nShip the change\n"}},"max_steps":2}

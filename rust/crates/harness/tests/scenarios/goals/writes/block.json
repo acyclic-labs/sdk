@@ -1,0 +1,6 @@
+{"prompt":"Block the goal until the service is available","turns":[[{"type":"event","kind":"tool_call","call_id":"write-0","name":
+    "write","arguments":{"path":".volumes/scratch/GOAL.md","text":"---\nstatus: blocked\n---\nWaiting for service\n","media_type":"text/markdown",
+    "display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"Settled"],"expect":{"request_prompt":
+    "Block the goal until the service is available","result":{"requests":2},"view":{"status":"blocked","markdown":
+    "Waiting for service\n"},"files":{"GOAL.md":"---\nstatus: blocked\n---\nWaiting for service\n"}},"seed":{"GOAL.md":
+    "Ship the change\n"},"max_steps":2}

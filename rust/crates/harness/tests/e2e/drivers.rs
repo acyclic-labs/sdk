@@ -38,6 +38,19 @@ impl Driver for super::composer_entry::ComposerEntry {
     }
 }
 
+impl Driver for super::goals::GoalCase {
+    type Case = Self;
+    async fn execute(case: Self) -> TestResult {
+        // Preserve the goal family's reviewed five-second total-work guard
+        // even when the common runner uses progress-based stall detection.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            super::goal_workers::scheduled(super::goal_execution::run(case)),
+        )
+        .await??
+    }
+}
+
 impl Driver for Notifications {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
@@ -149,6 +162,12 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
     // Keep each selected driver frame out of the shared dispatch frame. Otherwise
     // every cheap case retains the largest native driver state across each await.
     match driver.as_ref().and_then(Value::as_str) {
+        Some("goal-local") => {
+            Box::pin(super::goals::GoalCase::execute(
+                super::goals::GoalCase::parse(value)?,
+            ))
+            .await
+        }
         #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
         Some("agents") => Box::pin(super::agents::run(value)).await,
         None if driver.is_none() => {

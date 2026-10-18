@@ -1,0 +1,5 @@
+{"prompt":"Complete the goal","turns":[[{"type":"event","kind":"tool_call","call_id":"write-0","name":"write","arguments":{"path":
+    ".volumes/scratch/GOAL.md","text":"---\nstatus: done\n---\nShipped the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":
+    "event","kind":"completed","metadata":null}],"Settled"],"expect":{"request_prompt":"Complete the goal","result":{"requests":2},
+    "view":{"status":"done","markdown":"Shipped the change\n"},"files":{"GOAL.md":"---\nstatus: done\n---\nShipped the change\n"}},
+    "seed":{"GOAL.md":"Ship the change\n"},"max_steps":2}

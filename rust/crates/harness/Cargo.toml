@@ -142,6 +142,7 @@ diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio-util = { workspace = true, features = ["rt"] }
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }

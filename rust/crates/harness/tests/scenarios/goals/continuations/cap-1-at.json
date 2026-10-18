@@ -1,0 +1,4 @@
+{"turns":["settled-0","Settled"],"expect":{"result":{"tasks":2,"continuations":1,"requests":2},"view":{"status":"blocked","reason":
+    "Maximum goal continuations reached (limit 1)."},"files":{"GOAL.md":
+    "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 1).\"\n---\nShip the change\n"}},"policy":{
+    "max_continuations":1}}

@@ -1,0 +1,3 @@
+{"prompt":"Start the objective","project_seed":{"GOAL.md":"---\nstatus: done\n---\nProject sentinel"},"max_steps":2,
+    "expect":{"request_prompt":"Start the objective","project_files":{"GOAL.md":
+    "---\nstatus: done\n---\nProject sentinel"},"view":{"markdown":"Finish the objective"}}}

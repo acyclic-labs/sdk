@@ -1,0 +1,4 @@
+{"prompt":"Create a goal to ship the change","turns":[[{"type":"event","kind":"tool_call","call_id":"write-0","name":"write",
+    "arguments":{"path":".volumes/scratch/GOAL.md","text":"Ship the change\n","media_type":"text/markdown","display_name":"GOAL.md"}},{"type":
+    "event","kind":"completed","metadata":null}],"Settled"],"expect":{"request_prompt":"Create a goal to ship the change","result":{
+    "requests":2}},"max_steps":2,"policy":null}
