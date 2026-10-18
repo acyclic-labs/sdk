@@ -6,6 +6,7 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) fn with_task_files(
         mut self,
         files: Arc<crate::task_volume::TaskFiles<dyn StreamProvider>>,

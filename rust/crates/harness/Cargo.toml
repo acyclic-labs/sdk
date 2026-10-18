@@ -286,6 +286,7 @@ which = { version = "8.0.6", optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["signal", "io-std", "io-util"] }
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
@@ -297,7 +298,6 @@ acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" 
 rcgen = "0.14.10"
 tonic.workspace = true
 serde-saphyr = { version = "=1.3.0", default-features = false, features = ["serialize"] }
-acyclic-test-support = { path = "../test-support" }
 shuttle = "=0.8.1"
 tracing-subscriber.workspace = true
 loom = "0.7.2"

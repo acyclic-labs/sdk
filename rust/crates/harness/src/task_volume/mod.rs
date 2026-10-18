@@ -287,6 +287,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 
     /// The stream of `key`'s file volume, which may not exist yet.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn file_volume_path(&self, key: &FileKey) -> Result<StreamPath> {
         // A separate file stream cannot contend with unrelated parent-volume writes.
         // Release the parent index before opening/locking the child volume.

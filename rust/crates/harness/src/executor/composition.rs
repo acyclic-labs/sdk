@@ -209,6 +209,7 @@ impl StockExecutor {
         Ok(self)
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn with_shared_task_context(
         mut self,
         context: Arc<crate::runtime::TaskContext>,

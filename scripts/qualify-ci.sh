@@ -180,7 +180,7 @@ pinned_pi() {
 # compiles warning-free on wasm32; test-only code is not exempt.
 web_warning_closures() {
   local features
-  for features in browser wasm browser,test-support; do
+  for features in browser wasm browser,test-support wasm,test-support; do
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
@@ -415,6 +415,13 @@ case "$lane" in
       echo "Cargo.lock contains aws-lc-rs/aws-lc-sys; build rustls with the ring provider only" >&2
       exit 1
     fi
+    ;;
+  wasm-tests)
+    # Compile target-specific test code without a browser or native dev-deps.
+    for features in browser,test-support wasm,test-support; do
+      cargo check --locked -p acyclic-harness --no-default-features \
+        --features "$features" --target wasm32-unknown-unknown --lib --tests
+    done
     ;;
   web-warnings)
     # The web lane's compile-only closures, runnable without browsers.

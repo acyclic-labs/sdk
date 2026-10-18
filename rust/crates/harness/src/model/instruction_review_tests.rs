@@ -28,6 +28,11 @@ fn exchange(file: &FileRef, range: Option<(u64, u64)>) -> [ModelMessage; 2] {
         },
     ]
 }
+#[cfg(all(
+    feature = "filesystem",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
 fn fixture(reads: usize) -> Vec<ModelMessage> {
     let source = file("AGENTS.md", "rules", "rules");
     let mut messages = vec![project_instruction(&source.clone().into(), None).unwrap()];

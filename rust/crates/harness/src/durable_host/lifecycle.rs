@@ -431,7 +431,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             invocation_cancellation: None,
             root_binding: std::sync::OnceLock::new(),
             root_choice: std::sync::OnceLock::new(),
-            root_gate: Mutex::new(()),
+            root_gate: tokio::sync::Mutex::new(()),
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: custody,
         };

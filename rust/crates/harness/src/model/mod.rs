@@ -19,7 +19,9 @@ mod preparation;
 mod provider;
 mod reasoning;
 mod request;
+#[cfg(any(feature = "filesystem", feature = "tui"))]
 mod usage;
+#[cfg(any(feature = "filesystem", feature = "tui"))]
 pub(crate) use usage::accumulate_usage;
 #[cfg(test)]
 mod instruction_review_tests;

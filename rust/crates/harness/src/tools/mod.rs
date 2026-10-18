@@ -18,8 +18,7 @@ pub use command::parse_command;
     feature = "native-execution",
     not(target_arch = "wasm32")
 ))]
-pub(crate) use fs_command::FsCommand;
-pub(crate) use fs_command::parse_fs_command;
+pub(crate) use fs_command::{FsCommand, parse_fs_command};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "native-execution",

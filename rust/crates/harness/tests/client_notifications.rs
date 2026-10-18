@@ -1,7 +1,9 @@
 //! Terminal delivery borrows the same file projection as every renderer.
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_harness::client::terminal_notification;
 use acyclic_harness::client::{
     AttentionEvent, AttentionNotification, NotificationMode, TerminalNotificationProtocol,
-    terminal_notification, write_terminal_notifications,
+    write_terminal_notifications,
 };
 #[path = "e2e/notification_history.rs"]
 mod notification_history;

@@ -168,7 +168,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     /// Reads a retained receive cut after cancellation released execution ownership.
-    #[cfg(feature = "filesystem")]
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn cancelled_workflow_suspension(
         &self,
         task: TaskId,

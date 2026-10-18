@@ -30,7 +30,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -208,7 +207,7 @@ pub struct TaskJournalOwner<P> {
         )>,
     >,
     root_choice: std::sync::OnceLock<(OperationId, [u8; 32], [u8; 32])>,
-    root_gate: Mutex<()>,
+    root_gate: tokio::sync::Mutex<()>,
     #[cfg(not(target_arch = "wasm32"))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }

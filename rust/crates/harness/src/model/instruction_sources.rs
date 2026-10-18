@@ -26,7 +26,12 @@ impl<'a> InstructionSources<'a> {
             history_step_traced(lookup_quota.work(), 1)?;
             trace_operation("instruction-source-visit", 1);
             file.validate_source(lookup_quota.work())?;
-            #[cfg(all(test, feature = "test-support"))]
+            #[cfg(all(
+                test,
+                feature = "test-support",
+                feature = "filesystem",
+                not(target_arch = "wasm32")
+            ))]
             if PREFIX_SCAN.with(std::cell::Cell::get) {
                 for prior in &files[..position] {
                     std::hint::black_box(
@@ -68,10 +73,20 @@ impl<'a> InstructionSources<'a> {
     }
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 thread_local! { static PREFIX_SCAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 fn with_prefix_scan<T>(enabled: bool, run: impl FnOnce() -> T) -> T {
     PREFIX_SCAN.with(|state| assert!(!state.replace(enabled)));
     struct Reset;

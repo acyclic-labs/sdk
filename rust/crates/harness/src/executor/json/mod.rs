@@ -6,6 +6,8 @@ use serde_json::Value;
 mod admission;
 mod arrays;
 mod identity;
+#[cfg(test)]
+mod item_budget_tests;
 mod records;
 pub(crate) use identity::{
     canonical_json_digest, json_byte_length, json_byte_length_at_depth, serialized_json_digest,

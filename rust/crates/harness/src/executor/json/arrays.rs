@@ -118,7 +118,17 @@ pub(super) fn build(
     table.resize(length, 0);
     // The scan re-examines exactly the serializer's lexical items. Fund them
     // before entering it; the scan may not examine one item more or fewer.
-    charge(JsonCodecCharge::Inspect { items })?;
+    #[cfg(test)]
+    let charged_items = if super::item_budget_tests::RESTORE_BYTE_CHARGE.get() {
+        document.len() as u64
+    } else {
+        items
+    };
+    #[cfg(not(test))]
+    let charged_items = items;
+    charge(JsonCodecCharge::Inspect {
+        items: charged_items,
+    })?;
     let mut remaining = items;
     let mut prepaid = |event| match event {
         JsonCodecCharge::Work { items, .. } if items <= remaining => {

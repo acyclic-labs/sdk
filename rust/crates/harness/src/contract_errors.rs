@@ -565,6 +565,7 @@ impl Error {
     /// indeterminate or cancelled. Reading the class, not the variant, keeps the failures that
     /// carry it only as a code (native ledgers, task-volume storage, deferred search
     /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn leaves_outcome_uncertain(&self) -> bool {
         use crate::wire::ErrorCode;
         let cause = self.cause();
@@ -645,9 +646,17 @@ impl Error {
             Self::NativeView { .. } => true,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativePublication { .. } => true,
-            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::NativeWorkspacePublication { .. } => true,
-            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             Self::NativeGit { .. } => true,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeTimeout { .. } => true,

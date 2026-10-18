@@ -60,6 +60,79 @@ async fn codex_stock_execution_counts_locally_without_a_backend_count_route() ->
 async fn negative_control_inherited_public_counter_rejects_the_same_stock_task() -> Result<()> {
     stock(true).await
 }
+
+#[tokio::test]
+async fn local_count_reservation_boundary_65536_and_65537_keeps_the_original_ledger() -> Result<()>
+{
+    use acyclic_fs::{CancellationToken, WorkCounters, WorkError};
+    let (_root, login, _, _) = fixture(Vec::new())?;
+    let backend = Arc::new(Backend {
+        counts: AtomicUsize::new(0),
+        generations: AtomicUsize::new(0),
+    });
+    let provider =
+        Registry::with_transport(Credentials::explicit(BTreeMap::new()), backend.clone())
+            .with_codex_login(login)
+            .resolve("openai/gpt-5")?;
+    let (request, _) = crate::tests::request(&provider)?;
+    let items = request.request().messages.len() as u64;
+    assert_eq!(items, 2);
+    // The public wrapper registers one waiter and withholds three items for
+    // cancellation delivery/retirement. Ordinary completion uses one of those
+    // three cleanup items and refunds the other two; these are distinct costs.
+    const REGISTER: u64 = 1;
+    const CLEANUP_RESERVED: u64 = 3;
+    const RETIRE: u64 = 1;
+    let admitted_items = items + REGISTER + CLEANUP_RESERVED;
+    let completed_items = items + REGISTER + RETIRE;
+    for total in [65_536, 65_537] {
+        let work = NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 4 * 1024 * 1024),
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let prior = total - admitted_items;
+        work.charge(WorkCounters {
+            items_examined: prior,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let baseline = work.live_allocation_bytes();
+        let result = provider
+            .count_tokens_with_native_work(&request, &work)?
+            .await;
+        if total == 65_536 {
+            let (count, custody) = result?;
+            assert!(custody.work().shares_allocation_context(&work));
+            assert!(custody.work().shares_ledger(&work));
+            assert_eq!(count.request_digest, request.request_digest());
+            assert_eq!(count.input_tokens, provider.codex_count.count(&request)?);
+            assert_eq!(work.receipt().items_examined, prior + completed_items);
+            drop((count, custody));
+        } else {
+            let Err(Error::NativeWork {
+                cause:
+                    acyclic_fs::NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                        counter: "items_examined",
+                        observed,
+                        maximum,
+                    }),
+                ..
+            }) = result
+            else {
+                panic!("count did not preserve its native refusal: {result:?}");
+            };
+            // Work errors carry the effective ceiling while cleanup is held.
+            assert_eq!(observed + CLEANUP_RESERVED, total);
+            assert_eq!(maximum + CLEANUP_RESERVED, 65_536);
+            assert_eq!(work.receipt().items_examined, prior + REGISTER + RETIRE);
+        }
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
+    assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
 async fn stock(broken: bool) -> Result<()> {
     let (_root, login, _, _) = fixture(Vec::new())?;
     let backend = Arc::new(Backend {

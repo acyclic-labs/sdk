@@ -18,6 +18,7 @@ impl CreationFixture {
         self.create_child_fork(additional, false)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn create_task_filesystem_child(
         &self,
     ) -> impl std::future::Future<Output = Result<PreparedFilesystemChild>> + '_ {

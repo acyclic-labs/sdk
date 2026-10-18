@@ -192,7 +192,12 @@ fn trace_step(items: u64) {
 }
 pub(super) fn trace_operation(name: &'static str, items: u64) {
     let _ = (name, items);
-    #[cfg(all(test, feature = "test-support"))]
+    #[cfg(all(
+        test,
+        feature = "test-support",
+        feature = "filesystem",
+        not(target_arch = "wasm32")
+    ))]
     TRACE_STEPS.with(|active| {
         if active.get() {
             acyclic_test_support::differential::record((name, items));
@@ -200,9 +205,19 @@ pub(super) fn trace_operation(name: &'static str, items: u64) {
     });
 }
 
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 thread_local! { static TRACE_STEPS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(all(
+    test,
+    feature = "test-support",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
 pub(super) fn traced<T>(run: impl FnOnce() -> T) -> T {
     TRACE_STEPS.with(|active| assert!(!active.replace(true)));
     struct Reset;

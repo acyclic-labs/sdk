@@ -83,6 +83,7 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
     pub(crate) async fn write_if(
         &self,
         expected: Generation,

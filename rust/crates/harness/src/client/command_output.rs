@@ -404,6 +404,7 @@ impl super::FileQueryView {
         };
         command_prompt(&request, bytes)
     }
+    #[cfg(feature = "tui")]
     pub(crate) fn pending_prompts<'a>(
         &'a self,
         owner: &OutputOwner,

@@ -98,7 +98,7 @@ impl Views {
         }
         self.order.insert((task, kind, position), key);
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support", not(target_arch = "wasm32")))]
     pub(super) fn parts(
         &self,
     ) -> (

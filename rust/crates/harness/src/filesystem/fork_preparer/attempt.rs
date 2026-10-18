@@ -67,6 +67,7 @@ impl acyclic_fs::AuthorityGuard for &TaskResourcePreparation {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn project_creation_operation(
         &self,
         request: &ForkRequest,

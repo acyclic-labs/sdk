@@ -118,7 +118,7 @@ fn project_source<'a>(
 
 /// Bytes of the one allocation [`SourceStage`] boxes per projection; the
 /// future holds cfg-gated filesystem state, so its size varies by feature.
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn source_projection_future_bytes() -> u64 {
     fn output<F, R>(_: F) -> u64
     where

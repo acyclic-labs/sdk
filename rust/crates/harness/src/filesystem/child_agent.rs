@@ -41,6 +41,7 @@ pub(crate) fn mail_cursor(
 }
 
 /// Projects the exact committed model outcome without losing it at receive.
+#[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
 pub(crate) fn completed_turn(
     child: crate::TaskId,
     record: &crate::workflow::WorkflowRecord,

@@ -2,6 +2,7 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn child_references(&self) -> Result<Vec<Component>> {
         self.refresh().await?;
         let index = self.index.lock().await;
@@ -18,6 +19,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
             .collect())
     }
 
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn child_request(&self, reference: &Component) -> Result<FileValue> {
         let key = FileKey::Child {
             reference: reference.clone(),
@@ -43,6 +45,7 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 
     // The derived index preserves accepted order, independently of inbox names.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub(crate) async fn child_input(
         &self,
         reference: &Component,

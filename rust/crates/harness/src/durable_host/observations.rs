@@ -4,6 +4,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     // Lifecycle/control decisions need the authenticated outcome variant, not
     // the immutable result body. Keep this separate from the payload API so a
     // status read cannot trigger result IO, decoding or canonical re-encoding.
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        any(feature = "filesystem-local", all(test, feature = "filesystem"))
+    ))]
     pub(crate) async fn terminal_status(&self, task: TaskId) -> Result<Option<Outcome<()>>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
@@ -78,6 +82,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 }
 
+#[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
 fn project_terminal<T>(outcome: &Outcome<T>) -> Outcome<()> {
     match outcome {
         Outcome::Succeeded(_) => Outcome::Succeeded(()),
@@ -98,7 +103,12 @@ fn project_terminal<T>(outcome: &Outcome<T>) -> Outcome<()> {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests;
 
-#[cfg(all(test, not(acyclic_loom)))]
+#[cfg(all(
+    test,
+    not(acyclic_loom),
+    feature = "filesystem-local",
+    not(target_arch = "wasm32")
+))]
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(crate) async fn test_coordinator_barrier(
         &self,

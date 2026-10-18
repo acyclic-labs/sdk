@@ -210,32 +210,33 @@ chmod +x "$gate/bin/mcp_loom"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 18 ]]
+[[ "${#cargo_calls[@]}" -eq 19 ]]
 [[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness-fuzz --bins' ]]
 [[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --features model-checking --lib' ]]
 [[ "${cargo_calls[2]}" == 'check --locked -p acyclic-harness --features filesystem-local,model-checking --lib' ]]
-[[ "${cargo_calls[3]}" == 'test -p acyclic-harness --locked --features model-checking --test client-mailbox-model --test client_journal_model --test mcp-loom' ]]
-[[ "${cargo_calls[4]}" == 'test -p acyclic-harness --locked --features model-checking --lib workflow::model_checking::tests::' ]]
-[[ "${cargo_calls[5]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features --features model-checking' ]]
-for index in 6 7 8; do
+[[ "${cargo_calls[3]}" == 'check --locked -p acyclic-harness --features filesystem --lib --tests' ]]
+[[ "${cargo_calls[4]}" == 'test -p acyclic-harness --locked --features model-checking --test client-mailbox-model --test client_journal_model --test mcp-loom' ]]
+[[ "${cargo_calls[5]}" == 'test -p acyclic-harness --locked --features model-checking --lib workflow::model_checking::tests::' ]]
+[[ "${cargo_calls[6]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features --features model-checking' ]]
+for index in 7 8 9; do
   [[ "${cargo_calls[index]}" == 'test --locked --message-format=json -p acyclic-harness --lib --no-run --all-features --features model-checking' ]]
 done
-[[ "${cargo_calls[9]}" == 'rustc --locked --message-format=json -p acyclic-harness --test e2e-progress-model --features filesystem-local,native-execution,test-support,grpc -- --cfg acyclic_e2e_progress_loom' ]]
-[[ "${cargo_calls[10]}" == 'test --locked --message-format=json -p acyclic-native-runtime --lib --no-run --features test-support' ]]
+[[ "${cargo_calls[10]}" == 'rustc --locked --message-format=json -p acyclic-harness --test e2e-progress-model --features filesystem-local,native-execution,test-support,grpc -- --cfg acyclic_e2e_progress_loom' ]]
+[[ "${cargo_calls[11]}" == 'test --locked --message-format=json -p acyclic-native-runtime --lib --no-run --features test-support' ]]
 timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
-[[ "${cargo_calls[11]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
-[[ "${cargo_calls[12]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
-[[ "${cargo_calls[13]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
+[[ "${cargo_calls[12]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
+[[ "${cargo_calls[13]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[14]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
 memory_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"))')"
-[[ "${cargo_calls[14]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
-[[ "${cargo_calls[15]}" == 'rustc --locked --message-format=json -p acyclic-fs --test session_fs_model --no-default-features --features memory,session,acyclic-stream/local' ]]
-[[ "${cargo_calls[16]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
-[[ "${cargo_calls[17]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
+[[ "${cargo_calls[15]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
+[[ "${cargo_calls[16]}" == 'rustc --locked --message-format=json -p acyclic-fs --test session_fs_model --no-default-features --features memory,session,acyclic-stream/local' ]]
+[[ "${cargo_calls[17]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[18]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
 mapfile -t flags <"$gate/flags.log"
-[[ "${flags[10]}" == *'--cfg acyclic_native_runtime_loom'* ]]
-for index in 0 1 2 3 4 14; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
-[[ "${flags[15]}" == *'--cfg acyclic_loom'* && "${flags[15]}" == *'--cfg acyclic_stream_loom'* ]]
-for index in 1 2 3 4; do
+[[ "${flags[11]}" == *'--cfg acyclic_native_runtime_loom'* ]]
+for index in 0 1 2 4 5 15; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
+[[ "${flags[16]}" == *'--cfg acyclic_loom'* && "${flags[16]}" == *'--cfg acyclic_stream_loom'* ]]
+for index in 1 2 4 5; do
   [[ "${flags[index]}" == *'--cfg acyclic_harness_loom'* ]]
   [[ "${flags[index]}" == *'--cfg acyclic_loom'* ]]
 done
@@ -265,17 +266,17 @@ web_warning_calls() {
   )
   mapfile -t cargo_calls <"$gate/cargo.log"
   mapfile -t flags <"$gate/flags.log"
-  [[ "${#cargo_calls[@]}" -eq 4 ]] || return 1
-  local index features=(browser wasm browser,test-support)
-  for index in 0 1 2; do
+  [[ "${#cargo_calls[@]}" -eq 5 ]] || return 1
+  local index features=(browser wasm browser,test-support wasm,test-support)
+  for index in 0 1 2 3; do
     [[ "${cargo_calls[index]}" == "check --locked -p acyclic-harness --no-default-features --features ${features[index]} --target wasm32-unknown-unknown --lib --tests" ]] || return 1
   done
-  [[ "${cargo_calls[3]}" == 'check --locked -p acyclic-harness --no-default-features --target wasm32-unknown-unknown --lib' ]] || return 1
-  for index in 0 1 2 3; do [[ "${flags[index]}" == *-Dwarnings* ]] || return 1; done
+  [[ "${cargo_calls[4]}" == 'check --locked -p acyclic-harness --no-default-features --target wasm32-unknown-unknown --lib' ]] || return 1
+  for index in 0 1 2 3 4; do [[ "${flags[index]}" == *-Dwarnings* ]] || return 1; done
 }
 web_warning_calls scripts/qualify-ci.sh
 # Controls: the pin rejects a lane without test closures or warning denial.
-for mutation in 's/ --lib --tests$/ --lib/' 's/^    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" /    RUSTFLAGS="${RUSTFLAGS:-}" /'; do
+for mutation in 's/ --lib --tests$/ --lib/' 's/^    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" /    RUSTFLAGS="${RUSTFLAGS:-}" /' 's/ browser,test-support wasm,test-support/ browser,test-support/'; do
   sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
   if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
     echo "web warning control did not apply: $mutation" >&2
@@ -286,6 +287,18 @@ for mutation in 's/ --lib --tests$/ --lib/' 's/^    RUSTFLAGS="${RUSTFLAGS:+$RUS
     exit 1
   fi
 done
+
+: >"$gate/cargo.log"
+(
+  cd "$root"
+  SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+    FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
+    bash scripts/qualify-ci.sh wasm-tests
+)
+mapfile -t cargo_calls <"$gate/cargo.log"
+[[ "${#cargo_calls[@]}" -eq 2 ]]
+[[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness --no-default-features --features browser,test-support --target wasm32-unknown-unknown --lib --tests' ]]
+[[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --no-default-features --features wasm,test-support --target wasm32-unknown-unknown --lib --tests' ]]
 
 for lane in docs generation; do
   : >"$gate/cargo.log"

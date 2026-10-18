@@ -84,6 +84,11 @@ pub struct ScriptedReconciliation {
     pub continuation: Option<Vec<ModelEvent>>,
 }
 
+/// Observes each dispatch; thread-safe wherever providers must be.
+trait DispatchObserver: Fn(ModelDispatch) + acyclic_stream::ProviderPlatform {}
+
+impl<T: Fn(ModelDispatch) + acyclic_stream::ProviderPlatform> DispatchObserver for T {}
+
 #[derive(Default)]
 struct State {
     turns: VecDeque<ScriptedTurn>,
@@ -102,7 +107,7 @@ pub struct ScriptedModelProvider {
     state: Arc<Mutex<State>>,
     capacity: Option<ModelContextCapacity>,
     token_counter: Option<Arc<TokenCounter>>,
-    dispatch_observer: Option<Arc<dyn Fn(ModelDispatch) + Send + Sync>>,
+    dispatch_observer: Option<Arc<dyn DispatchObserver>>,
     reads_content: bool,
     content: Option<ContentReader>,
 }
@@ -167,7 +172,7 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn with_dispatch_observer(
         mut self,
-        observer: impl Fn(ModelDispatch) + Send + Sync + 'static,
+        observer: impl Fn(ModelDispatch) + acyclic_stream::ProviderPlatform + 'static,
     ) -> Self {
         self.dispatch_observer = Some(Arc::new(observer));
         self
