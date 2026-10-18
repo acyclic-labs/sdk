@@ -229,7 +229,15 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         }
         crate::counting::wire::endpoint(&config.base_url, "model", counter)?;
     }
-    for model in config.models.values() {
+    for (name, model) in &config.models {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let validate_identity =
+            !catalog_update::tests::SKIP_MODEL_IDENTITY.with(std::cell::Cell::get);
+        #[cfg(not(all(test, not(target_arch = "wasm32"))))]
+        let validate_identity = true;
+        if validate_identity {
+            Model::validate_identity(provider, name, "provider-v1")?;
+        }
         model.capacity.validate()?;
         if model
             .max_context_tokens

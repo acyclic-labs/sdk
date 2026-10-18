@@ -101,10 +101,11 @@ impl Model {
     }
     /// Validates constructed or deserialized selections.
     pub fn validate(&self) -> Result<()> {
-        if self.provider.trim().is_empty()
-            || self.name.trim().is_empty()
-            || self.revision.trim().is_empty()
-        {
+        Self::validate_identity(&self.provider, &self.name, &self.revision)
+    }
+    /// Validates identity fields without allocating a model selection.
+    pub fn validate_identity(provider: &str, name: &str, revision: &str) -> Result<()> {
+        if provider.trim().is_empty() || name.trim().is_empty() || revision.trim().is_empty() {
             return Err(Error::Invalid(
                 "model provider, name, and revision must be non-empty".into(),
             ));

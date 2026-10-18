@@ -3,13 +3,15 @@ use super::*;
 
 pub(super) enum Changes {
     One(String, ProviderSpec),
+    #[cfg(not(target_arch = "wasm32"))]
     Many(BTreeMap<String, ProviderSpec>),
 }
 
 impl Changes {
     fn entries(&self) -> impl Iterator<Item = (&String, &ProviderSpec)> {
-        let (one, many) = match self {
+        let (one, many): (_, Option<&BTreeMap<String, ProviderSpec>>) = match self {
             Self::One(id, spec) => (Some((id, spec)), None),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Many(providers) => (None, Some(providers)),
         };
         one.into_iter()
@@ -19,13 +21,15 @@ impl Changes {
     fn get(&self, id: &str) -> Option<&ProviderSpec> {
         match self {
             Self::One(provider, spec) => (provider == id).then_some(spec),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Many(providers) => providers.get(id),
         }
     }
 
     fn into_entries(self) -> impl Iterator<Item = (String, ProviderSpec)> {
-        let (one, many) = match self {
+        let (one, many): (_, Option<BTreeMap<String, ProviderSpec>>) = match self {
             Self::One(id, spec) => (Some((id, spec)), None),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Many(providers) => (None, Some(providers)),
         };
         one.into_iter()
@@ -73,4 +77,4 @@ impl Registry {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-mod tests;
+pub(super) mod tests;

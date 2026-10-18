@@ -3,6 +3,7 @@ use proptest::prelude::*;
 
 thread_local! {
     pub(super) static SKIP_RETAINED_DEFAULT: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
+    pub(in crate::registry) static SKIP_MODEL_IDENTITY: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
 }
 
 fn specification(mask: u8) -> ProviderSpec {
@@ -88,6 +89,119 @@ proptest! {
         operations in proptest::collection::vec((any::<bool>(),0u8..8,proptest::option::of(0u8..3)),0..24),
     ) {
         sequence(&operations);
+    }
+
+    #[test]
+    fn malformed_model_keys_never_commit_in_either_entry_point(
+        operations in proptest::collection::vec(
+            (any::<bool>(), 0u8..8, proptest::option::of(model_name()),
+             proptest::collection::vec(model_name(), 0..5)), 0..20),
+    ) {
+        model_sequence(&operations);
+    }
+}
+
+fn model_name() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just(String::new()),
+        "[ \\t\\r\\n\\u{2003}]{1,8}",
+        "model[0-2]",
+        "[a-z][a-z /λ]{0,16}",
+    ]
+}
+
+fn model_sequence(operations: &[(bool, u8, Option<String>, Vec<String>)]) {
+    let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+    load(&mut registry, 7, Some(0)).unwrap();
+    for (reload, mask, proposed, names) in operations {
+        let mut spec = specification(*mask);
+        let model = specification(1).models.remove("model0").unwrap();
+        spec.models
+            .extend(names.iter().cloned().map(|name| (name, model.clone())));
+        let proposed = proposed.as_ref().filter(|_| *reload);
+        let candidate = proposed
+            .map(String::as_str)
+            .unwrap_or_else(|| registry.default_model().strip_prefix("fixture/").unwrap());
+        // Independent oracle: all identities must contain a non-whitespace character,
+        // including entries that are never selected as the default.
+        let expected = spec
+            .models
+            .keys()
+            .all(|name| name.chars().any(|c| !c.is_whitespace()))
+            && spec.models.contains_key(candidate);
+        let before = catalog_snapshot(&registry);
+        let default_before = registry.default_model().to_owned();
+        let expected_keys: Vec<_> = spec.models.keys().cloned().collect();
+        let result = if *reload {
+            let mut document = serde_json::json!({"fixture":spec});
+            if let Some(default) = proposed {
+                document["default_model"] = serde_json::json!(format!("fixture/{default}"));
+            }
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
+            registry.load_catalog(file.path())
+        } else {
+            registry.register("fixture".into(), spec)
+        };
+        assert_eq!(
+            result.is_ok(),
+            expected,
+            "catalog transaction validates every model identity"
+        );
+        if expected {
+            assert_eq!(
+                registry.catalog()["fixture"]
+                    .models
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                expected_keys
+            );
+            if let Some(default) = proposed {
+                assert_eq!(registry.default_model(), format!("fixture/{default}"));
+            }
+        } else {
+            assert_eq!(
+                catalog_snapshot(&registry),
+                before,
+                "malformed identity leaves the entire catalog unchanged"
+            );
+            assert_eq!(registry.default_model(), default_before);
+        }
+        assert!(registry.resolve(registry.default_model()).is_ok());
+    }
+}
+
+fn catalog_snapshot(registry: &Registry) -> Vec<u8> {
+    let specs: BTreeMap<_, _> = registry
+        .catalog()
+        .iter()
+        .map(|(id, spec)| (id, spec.as_ref()))
+        .collect();
+    serde_json::to_vec(&specs).unwrap()
+}
+
+#[test]
+fn negative_control_detects_empty_model_keys_even_when_not_the_default() {
+    for reload in [false, true] {
+        for selected in [false, true] {
+            if selected && !reload {
+                continue;
+            }
+            let operations = [(reload, 1, selected.then(String::new), vec![String::new()])];
+            model_sequence(&operations);
+            SKIP_MODEL_IDENTITY.with(|flag| flag.set(true));
+            let detected = std::panic::catch_unwind(|| model_sequence(&operations));
+            SKIP_MODEL_IDENTITY.with(|flag| flag.set(false));
+            let panic =
+                detected.expect_err("unvalidated model keys must fail the same transaction oracle");
+            assert!(
+                panic
+                    .downcast_ref::<String>()
+                    .unwrap()
+                    .contains("catalog transaction validates every model identity")
+            );
+        }
     }
 }
 
