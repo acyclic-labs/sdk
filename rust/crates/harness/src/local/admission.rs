@@ -360,6 +360,11 @@ impl LocalHarness {
             {
                 return Err(Error::GoalBlocked(unreachable));
             }
+            // A goal whose final state is blocked is the loop's result, so a
+            // headless caller reports it instead of a completed turn.
+            if goal.status == GoalStatus::Blocked {
+                return Err(Error::GoalBlocked(GoalBlockedReason::Declared));
+            }
             match policy.on_settle(
                 &goal,
                 crate::runtime::task_id_for_admission(current.root),
@@ -403,7 +408,7 @@ impl LocalHarness {
                     let blocked = self.block_goal(&goal, settled, &contents).await?;
                     self.record_goal_revision(&current, &generation, &blocked.0, Some(blocked.1))
                         .await?;
-                    Ok(None)
+                    Err(Error::GoalBlocked(GoalBlockedReason::Declared))
                 }
             }
         })

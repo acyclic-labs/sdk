@@ -423,3 +423,68 @@ async fn prompt_just_under_request_bound_has_independent_observation_budget() ->
     drop(client);
     close(harness).await
 }
+
+/// Whether a recorded model request carried the default GOAL.md guidance.
+fn goal_guided(request: &crate::model::ModelRequest) -> bool {
+    request.messages.iter().any(|message| {
+        matches!(&message.content, crate::model::ModelContent::Text(text)
+            if text.starts_with("Keep the current goal in GOAL.md"))
+    })
+}
+
+#[tokio::test]
+async fn goal_guidance_and_the_blocked_exit_follow_goal_md() -> Result<()> {
+    for (goal, prompt, guided, outcome) in [
+        // One-shot prompts get no goal framing.
+        (
+            None,
+            "Reply with exactly PONG.",
+            false,
+            HeadlessOutcome::Completed,
+        ),
+        (
+            None,
+            "Work in goal mode on the release.",
+            true,
+            HeadlessOutcome::Completed,
+        ),
+        // Negative control: a goal that settled done completes.
+        (
+            Some("---\nstatus: done\n---\nShip"),
+            "hello",
+            true,
+            HeadlessOutcome::Completed,
+        ),
+        (
+            Some("---\nstatus: blocked\nreason: waiting\n---\nShip"),
+            "hello",
+            true,
+            HeadlessOutcome::Blocked,
+        ),
+    ] {
+        let (_directory, harness, provider) = local().await?;
+        if let Some(goal) = goal {
+            super::goals::write_goal(&harness, goal).await?;
+        }
+        let operation = OperationId::new();
+        let (mut client, target) = connect_local(harness.clone(), operation).await?;
+        let command = local_prompt(&harness, operation, prompt).await?;
+        let mut output = Vec::new();
+        let settled = run_headless(&mut client, command, target, &mut output).await?;
+        assert_eq!(settled, outcome, "{prompt} with {goal:?}");
+        assert_eq!(
+            settled.exit_code(),
+            if goal.is_some_and(|goal| goal.contains("blocked")) {
+                3
+            } else {
+                0
+            }
+        );
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(goal_guided(&requests[0]), guided, "{prompt} with {goal:?}");
+        drop(client);
+        close(harness).await?;
+    }
+    Ok(())
+}

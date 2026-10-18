@@ -165,7 +165,7 @@ async fn run(case: Case) -> Result<()> {
             "stock writer's actual destination"
         );
     }
-    if case.unreachable {
+    if case.unreachable || declared_blocked(&case) {
         check_output(&case, harness.resume(task_id).await)?;
         assert_eq!(provider.requests().len(), case.calls);
     }
@@ -209,9 +209,26 @@ fn goal_config(
     })
 }
 
+/// Whether the loop settles on a blocked GOAL.md that the agent or the cap wrote.
+fn declared_blocked(case: &Case) -> bool {
+    !case.unreachable
+        && case.enabled != Some(false)
+        && case.final_goal.as_deref().is_some_and(|goal| {
+            goal.starts_with(
+                "---
+status: blocked
+",
+            )
+        })
+}
+
 fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Result<()> {
-    if case.unreachable {
-        let reason = crate::goal::GoalBlockedReason::TaskViewUnreachable;
+    if case.unreachable || declared_blocked(case) {
+        let reason = if case.unreachable {
+            crate::goal::GoalBlockedReason::TaskViewUnreachable
+        } else {
+            crate::goal::GoalBlockedReason::Declared
+        };
         assert!(
             matches!(&output, Err(Error::GoalBlocked(actual)) if actual == &reason),
             "{}: {output:?}",
@@ -220,6 +237,11 @@ fn check_output(case: &Case, output: Result<crate::executor::TurnOutput>) -> Res
         let error = Error::GoalBlocked(reason);
         assert_eq!(error.code(), crate::wire::ErrorCode::Unsupported);
         assert!(!error.is_native_failure());
+        // `-p` exits with the stable blocked code, never as completed.
+        assert_eq!(
+            crate::client::HeadlessOutcome::from_error(&error),
+            crate::client::HeadlessOutcome::Blocked
+        );
     } else {
         assert_eq!(
             output?.text,
@@ -304,7 +326,7 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
     Ok(())
 }
 
-async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
+pub(super) async fn write_goal(harness: &LocalHarness, contents: &str) -> Result<()> {
     use crate::conversation::ContentPublisher;
     crate::filesystem::FilesystemContentPublisher::new(
         harness.files.clone(),

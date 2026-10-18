@@ -46,6 +46,13 @@ impl ContextManifest {
         })
     }
 
+    /// Drops the default GOAL.md and plan guidance, for a turn that isn't goal-driven.
+    /// The defaults are exactly that guidance, so later conventions are kept.
+    pub fn without_goal_guidance(mut self) -> Self {
+        self.conventions.clear();
+        self
+    }
+
     /// Validates one bounded selection before reading skill bodies or changing model visibility.
     pub fn validate(&self, limits: Limits) -> Result<()> {
         self.validate_observed(limits, None)

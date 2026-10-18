@@ -31,6 +31,10 @@ pub enum GoalBlockedReason {
     /// The stock file tools cannot reach the private goal's destination.
     #[error("GOAL.md is not reachable through the task view.")]
     TaskViewUnreachable,
+    /// The goal settled with a blocked status: the agent declared it, or its
+    /// continuation allowance ran out. Its reason stays in GOAL.md.
+    #[error("GOAL.md is blocked.")]
+    Declared,
 }
 
 /// Parsed contents of an observed GOAL.md, without inventing a filesystem reference.

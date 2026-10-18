@@ -25,6 +25,12 @@ fn manifest_operation(operation: OperationId) -> OperationId {
     )
 }
 
+/// A prompt asks for goal mode when it names GOAL.md or goal mode itself.
+fn requests_goal_mode(prompt: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    prompt.contains("goal.md") || prompt.contains("goal mode")
+}
+
 fn manifest_path(operation: OperationId) -> String {
     format!("inputs/{operation}.manifest.json")
 }
@@ -76,13 +82,36 @@ impl LocalHarness {
 
     #[cfg(test)]
     pub(super) async fn stage_context_manifest(&self, operation: OperationId) -> Result<FileRef> {
-        self.stage_context_manifest_with(operation, self.input_publisher()?.as_ref())
+        self.stage_context_manifest_with(operation, None, self.input_publisher()?.as_ref())
             .await
     }
 
+    /// Whether the agent's private volume holds a GOAL.md.
+    async fn goal_exists(&self) -> Result<bool> {
+        match self
+            .files
+            .read_private_path_indexed(
+                &self.scratch,
+                &self.read_grant(&self.scratch)?,
+                "GOAL.md",
+                None,
+                self.limits.file_bytes,
+                None,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::NotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Stages the turn's manifest once. GOAL.md guidance is included only when a
+    /// GOAL.md exists or `prompt` asks for goal mode, so one-shot prompts carry none.
     pub(super) async fn stage_context_manifest_with(
         &self,
         operation: OperationId,
+        prompt: Option<&str>,
         publisher: &dyn ContentPublisher,
     ) -> Result<FileRef> {
         if let Some(reference) = self.observe_context_manifest(operation, publisher).await? {
@@ -110,6 +139,11 @@ impl LocalHarness {
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
         let manifest = ContextManifest::new(discovery, Vec::new(), self.tools())?;
+        let manifest = if prompt.is_some_and(requests_goal_mode) || self.goal_exists().await? {
+            manifest
+        } else {
+            manifest.without_goal_guidance()
+        };
         #[cfg(any(feature = "native-execution", feature = "hooks"))]
         let mut manifest = manifest;
         #[cfg(feature = "native-execution")]
@@ -197,6 +231,20 @@ impl LocalHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_prompts_naming_goal_mode_or_goal_md_request_it() {
+        for prompt in [
+            "Work in GOAL MODE on this",
+            "update goal.md",
+            "Use Goal.md please",
+        ] {
+            assert!(requests_goal_mode(prompt), "{prompt}");
+        }
+        for prompt in ["Reply with exactly PONG.", "my goal is speed", "goals.md"] {
+            assert!(!requests_goal_mode(prompt), "{prompt}");
+        }
+    }
     use proptest::prelude::*;
 
     proptest! {
