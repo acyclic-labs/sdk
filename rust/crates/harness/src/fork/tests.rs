@@ -346,3 +346,104 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     assert!(seed.validate(&mut None).is_err());
     Ok(())
 }
+
+// The attachment-manifest check re-encodes the decoded items and releases the
+// encoder's returned capacity, so when it returns the quota and the ledger own
+// exactly the manifest's schema reservation, whatever slack the encoder left.
+// Restoring the former second slack charge in `decode_fork_manifest` leaves
+// `schema + slack` owned and fails on any slack case. Returns whether the
+// re-encoding left slack.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn manifest_check_owns_exactly_its_schema(labels: &[String]) -> bool {
+    use crate::{conversation::Attachment, store::history::HistoryIo};
+    let volume = seed().unwrap().child_private_volume;
+    let file = |path: String, bytes: &[u8], media: &str| {
+        FileRef::new(
+            volume.clone(),
+            path.clone(),
+            "one".into(),
+            FileDescriptor::from_bytes(bytes, media, &mut None).unwrap(),
+            path,
+            &mut None,
+        )
+        .unwrap()
+    };
+    let items: Vec<Attachment> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| Attachment {
+            file: file(format!("f{index}"), b"x", "text/plain"),
+            // An empty caption is absent; validation rejects an empty label.
+            label: (!label.is_empty()).then(|| label.clone()),
+        })
+        .collect();
+    let maximum = crate::store::default_projection_read_limits().maximum_bytes;
+    let bounds = crate::executor::json::JsonBounds {
+        maximum_bytes: maximum,
+        maximum_items: maximum.saturating_add(1),
+        maximum_depth: 256,
+    };
+    // The manifest is exactly the check's own re-encoding, and that encoding's
+    // capacity is the slack the check must not charge twice.
+    let encoded =
+        crate::executor::json::json_bytes_bounded(&items, bounds, None, &mut |_| Ok(())).unwrap();
+    let slack = encoded.capacity() > encoded.len();
+    let bytes = encoded.as_slice().to_vec();
+    let manifest = file(
+        "attachments.json".into(),
+        &bytes,
+        "application/vnd.acyclic.harness.attachments+json",
+    );
+    // The schema reservation `decode_fork_manifest` retains for the decoded items.
+    let schema = (bytes.len() as u64).max(8)
+        * 2
+        * (std::mem::size_of::<Attachment>() + std::mem::size_of::<String>() + 1) as u64;
+    let io = crate::filesystem::PreparationIo::from_budget(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .unwrap();
+    let mut observer = &io;
+    let mut work: Option<&mut dyn HistoryIo> = Some(&mut observer);
+    let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0).unwrap();
+    let decoded = decode_fork_manifest(&manifest, &bytes, &mut quota).unwrap();
+    assert_eq!(decoded, items);
+    assert_eq!(quota.retained(), schema, "labels={labels:?}");
+    assert_eq!(io.owned_bytes().unwrap(), schema, "labels={labels:?}");
+    drop(quota);
+    assert_eq!(io.owned_bytes().unwrap(), 0, "labels={labels:?}");
+    slack
+}
+
+// Every manifest length across several encoder growth steps; the sweep must
+// see slack so the exact-ownership assertion is not vacuous.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn manifest_check_owns_exactly_its_schema_at_every_length() {
+    let mut slack_seen = false;
+    for length in 0..=600 {
+        slack_seen |= manifest_check_owns_exactly_its_schema(&["l".repeat(length)]);
+    }
+    assert!(slack_seen, "no manifest exercised encoder slack");
+}
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    // Several items with escaped and multi-byte labels; shrinking reports the
+    // smallest unbalanced manifest.
+    #[test]
+    fn manifest_check_owns_exactly_its_schema_for_any_labels(
+        // Any valid caption: no control characters or path separators.
+        labels in proptest::collection::vec(
+            proptest::strategy::Strategy::prop_filter(
+                r"[^\p{Cc}/\\]{0,120}",
+                "dot labels are reserved",
+                |label: &String| label != "." && label != "..",
+            ),
+            0..4,
+        ),
+    ) {
+        manifest_check_owns_exactly_its_schema(&labels);
+    }
+}
