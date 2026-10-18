@@ -6,15 +6,15 @@ thread_local! {
     static TRACE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
 }
 
-/// Record an event; inactive recording does nothing. A mismatched event type panics.
+/// Record an event into an active capture of the same event type. Inactive
+/// recording, or an event of another type, does nothing: independent
+/// observation points share code paths, and a capture subscribes to exactly
+/// one of them by its type.
 pub fn record<T: 'static>(event: T) {
     let mut pending = Some(event);
     TRACE.with_borrow_mut(|trace| {
-        if let Some(trace) = trace {
-            trace
-                .downcast_mut::<Vec<T>>()
-                .expect("trace event type")
-                .push(pending.take().unwrap());
+        if let Some(trace) = trace.as_mut().and_then(|trace| trace.downcast_mut::<Vec<T>>()) {
+            trace.push(pending.take().unwrap());
         }
     });
     // Inactive events may themselves record from Drop.
