@@ -253,6 +253,7 @@ fn precondition(error: &ObjectStoreError) -> bool {
 }
 mod requests;
 use requests::*;
+mod index;
 mod read;
 mod write;
 
