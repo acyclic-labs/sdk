@@ -54,6 +54,11 @@ pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     loom::future::block_on(Box::pin(future))
 }
 
+/// Drives adapter models with the same parked-thread waker as snapshot workers.
+pub fn park<F: std::future::Future>(future: F) -> F::Output {
+    crate::snapshot::park(future)
+}
+
 /// Applies the production recovery path to the existing provider object.
 pub async fn recover(
     provider: &MemoryStream,
