@@ -130,9 +130,7 @@ impl Registry {
             };
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
-            if config.adapter != crate::Adapter::Responses
-                || config.base_url != "https://api.openai.com/v1"
-            {
+            if !codex_route(&config) {
                 return Err(invalid(
                     "Codex CLI credentials require the built-in Responses route",
                 ));
@@ -175,6 +173,22 @@ impl Registry {
             codex_login,
         })
     }
+}
+
+/// The built-in Responses route that a native Codex CLI login may replace.
+#[cfg(not(target_arch = "wasm32"))]
+fn codex_route(config: &ProviderSpec) -> bool {
+    config.adapter == crate::Adapter::Responses && config.base_url == "https://api.openai.com/v1"
+}
+
+/// Whether a route can count input when resolved: a verified counter, or the
+/// native Codex login exception `resolve_with_options` grants its built-in route.
+fn counts_input(config: &ProviderSpec) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if config.authentication == Authentication::ApiKeyOrCodexLogin && codex_route(config) {
+        return true;
+    }
+    config.token_counter.is_some()
 }
 
 pub(crate) fn validate_url(base: &str) -> Result<url::Url> {

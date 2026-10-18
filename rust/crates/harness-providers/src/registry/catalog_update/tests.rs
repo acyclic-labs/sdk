@@ -3,15 +3,20 @@ use proptest::prelude::*;
 
 thread_local! {
     pub(super) static SKIP_RETAINED_DEFAULT: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
+    pub(super) static SKIP_DEFAULT_COUNTER: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
     pub(in crate::registry) static SKIP_MODEL_IDENTITY: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};
 }
 
 fn specification(mask: u8) -> ProviderSpec {
+    counted_specification(mask, true)
+}
+
+fn counted_specification(mask: u8, counted: bool) -> ProviderSpec {
     let base = crate::catalog::default_catalog()["openai"].clone();
     let model = base.models.values().next().unwrap().clone();
     ProviderSpec {
         authentication: Authentication::Optional,
-        token_counter: Some(crate::TokenCounterSpec {
+        token_counter: counted.then(|| crate::TokenCounterSpec {
             path: "count".into(),
             adapter: base.adapter,
             response_field: crate::TokenCountField::InputTokens,
@@ -25,8 +30,8 @@ fn specification(mask: u8) -> ProviderSpec {
     }
 }
 
-fn load(registry: &mut Registry, mask: u8, default: Option<u8>) -> Result<()> {
-    let mut document = serde_json::json!({"fixture":specification(mask)});
+fn load(registry: &mut Registry, spec: ProviderSpec, default: Option<u8>) -> Result<()> {
+    let mut document = serde_json::json!({"fixture":spec});
     if let Some(default) = default {
         document["default_model"] = serde_json::json!(format!("fixture/model{default}"));
     }
@@ -35,19 +40,21 @@ fn load(registry: &mut Registry, mask: u8, default: Option<u8>) -> Result<()> {
     registry.load_catalog(file.path())
 }
 
-fn sequence(operations: &[(bool, u8, Option<u8>)]) {
+fn sequence(operations: &[(bool, u8, Option<u8>, bool)]) {
     let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
-    load(&mut registry, 7, Some(0)).unwrap();
+    load(&mut registry, specification(7), Some(0)).unwrap();
     let (mut retained_mask, mut retained_default) = (7u8, 0u8);
-    for &(reload, mask, proposed) in operations {
+    for &(reload, mask, proposed, counted) in operations {
         let proposed = if reload { proposed } else { None };
         let candidate = proposed.unwrap_or(retained_default);
-        let expected = mask & (1 << candidate) != 0;
+        // Independent oracle: the default's model survives and its endpoint can count input.
+        let expected = mask & (1 << candidate) != 0 && counted;
         let before = serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap();
+        let spec = counted_specification(mask, counted);
         let result = if reload {
-            load(&mut registry, mask, proposed)
+            load(&mut registry, spec, proposed)
         } else {
-            registry.register("fixture".into(), specification(mask))
+            registry.register("fixture".into(), spec)
         };
         assert_eq!(
             result.is_ok(),
@@ -86,7 +93,8 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
     fn arbitrary_load_and_register_sequences_keep_defaults_resolvable(
-        operations in proptest::collection::vec((any::<bool>(),0u8..8,proptest::option::of(0u8..3)),0..24),
+        operations in proptest::collection::vec(
+            (any::<bool>(), 0u8..8, proptest::option::of(0u8..3), any::<bool>()), 0..24),
     ) {
         sequence(&operations);
     }
@@ -112,7 +120,7 @@ fn model_name() -> impl Strategy<Value = String> {
 
 fn model_sequence(operations: &[(bool, u8, Option<String>, Vec<String>)]) {
     let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
-    load(&mut registry, 7, Some(0)).unwrap();
+    load(&mut registry, specification(7), Some(0)).unwrap();
     for (reload, mask, proposed, names) in operations {
         let mut spec = specification(*mask);
         let model = specification(1).models.remove("model0").unwrap();
@@ -209,7 +217,7 @@ fn negative_control_detects_empty_model_keys_even_when_not_the_default() {
 fn negative_control_detects_retained_default_loss_in_both_entry_points() {
     for reload in [false, true] {
         SKIP_RETAINED_DEFAULT.with(|flag| flag.set(true));
-        let detected = std::panic::catch_unwind(|| sequence(&[(reload, 2, None)]));
+        let detected = std::panic::catch_unwind(|| sequence(&[(reload, 2, None, true)]));
         SKIP_RETAINED_DEFAULT.with(|flag| flag.set(false));
         let panic =
             detected.expect_err("unvalidated replacement must fail the same default oracle");
@@ -221,5 +229,42 @@ fn negative_control_detects_retained_default_loss_in_both_entry_points() {
             text.contains("catalog transaction preserves its declared default"),
             "{text}"
         );
+    }
+}
+
+#[test]
+fn negative_control_detects_uncountable_defaults_in_both_entry_points() {
+    for (reload, proposed) in [(false, None), (true, None), (true, Some(1))] {
+        let operations = [(reload, 7, proposed, false)];
+        sequence(&operations);
+        SKIP_DEFAULT_COUNTER.with(|flag| flag.set(true));
+        let detected = std::panic::catch_unwind(|| sequence(&operations));
+        SKIP_DEFAULT_COUNTER.with(|flag| flag.set(false));
+        let panic = detected.expect_err("an uncountable default must fail the same oracle");
+        let text = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or("");
+        assert!(
+            text.contains("catalog transaction preserves its declared default"),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn codex_login_route_remains_a_countable_default_without_a_counter() {
+    let mut openai = crate::catalog::default_catalog()["openai"].clone();
+    openai.token_counter = None;
+    for (authentication, accepted) in [
+        (Authentication::ApiKeyOrCodexLogin, true),
+        (Authentication::ApiKey, false),
+    ] {
+        openai.authentication = authentication;
+        let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+        let document = serde_json::json!({"default_model":"openai/gpt-5","openai":openai});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(registry.load_catalog(file.path()).is_ok(), accepted);
     }
 }

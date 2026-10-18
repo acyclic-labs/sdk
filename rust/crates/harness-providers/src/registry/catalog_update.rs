@@ -60,8 +60,16 @@ impl Registry {
             let entry = changes
                 .get(provider)
                 .or_else(|| self.providers.get(provider).map(Arc::as_ref));
-            if entry.is_none_or(|entry| !entry.models.contains_key(name)) {
-                return Err(invalid("catalog default_model is absent from its models"));
+            let entry = entry
+                .filter(|entry| entry.models.contains_key(name))
+                .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
+            let counted = counts_input(entry);
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let counted = counted || tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get);
+            if !counted {
+                return Err(invalid(
+                    "catalog default_model requires a verified input token counter",
+                ));
             }
         }
         self.providers.extend(
