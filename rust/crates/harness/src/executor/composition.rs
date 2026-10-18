@@ -52,7 +52,7 @@ impl StockExecutor {
             task: None,
             inherited_prefix: None,
             task_context: None,
-            compaction: crate::context::CompactionPolicy::default(),
+            compaction: None,
             reconciliation_only: false,
         }
     }
@@ -69,7 +69,7 @@ impl StockExecutor {
     #[cfg(any(test, feature = "filesystem"))]
     pub(crate) fn with_summary_source(mut self, source: Option<Box<FileRef>>) -> Self {
         if source.is_some() {
-            self.compaction = crate::context::CompactionPolicy::Disabled;
+            self.compaction = Some(crate::context::CompactionPolicy::Disabled);
         }
         self.summary_source = source;
         self
@@ -78,7 +78,7 @@ impl StockExecutor {
     /// Replaces or disables the ordinary threshold policy without starting effects.
     #[must_use]
     pub fn with_compaction_policy(mut self, policy: crate::context::CompactionPolicy) -> Self {
-        self.compaction = policy;
+        self.compaction = Some(policy);
         self
     }
     /// Appends one validated context stage to the existing ordered pipeline.

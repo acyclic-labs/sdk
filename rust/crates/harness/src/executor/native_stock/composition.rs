@@ -100,7 +100,7 @@ impl NativeStockExecutor {
         stock.policy_identity = policy_identity;
         stock.task = Some((host, task, fence));
         stock.task_context = Some((context, operation));
-        stock.compaction = compaction;
+        stock.compaction = Some(compaction);
         stock.max_output_tokens = max_output_tokens;
         Ok(Self {
             stock,

@@ -42,10 +42,16 @@ impl<'a> StockExecution<'a> {
             .map_or(&self.stock.context, |(pipeline, _)| pipeline)
     }
     pub(in crate::executor) fn compaction_policy(&self) -> &crate::context::CompactionPolicy {
-        if self.summary.is_some() {
-            &crate::context::CompactionPolicy::Disabled
-        } else {
-            &self.stock.compaction
+        static THRESHOLD: std::sync::LazyLock<crate::context::CompactionPolicy> =
+            std::sync::LazyLock::new(crate::context::CompactionPolicy::default);
+        match (&self.summary, &self.stock.compaction, self.context) {
+            (Some(_), _, _) => &crate::context::CompactionPolicy::Disabled,
+            (None, Some(policy), _) => policy,
+            // The default needs somewhere private to publish summaries.
+            (None, None, Some((context, _))) if context.private_summaries(None).is_err() => {
+                &crate::context::CompactionPolicy::Disabled
+            }
+            (None, None, _) => &THRESHOLD,
         }
     }
     pub(in crate::executor) fn output_tokens(&self) -> Option<u32> {

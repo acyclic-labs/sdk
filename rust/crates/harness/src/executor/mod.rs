@@ -454,7 +454,10 @@ pub struct StockExecutor {
         Arc<dyn crate::conversation::ContentResidencyVerifier>,
     )>,
     task_context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
-    compaction: crate::context::CompactionPolicy,
+    // `None` is the default: threshold compaction wherever the bound task can
+    // publish private summaries, and none elsewhere. An explicit policy is
+    // verified at turn entry.
+    compaction: Option<crate::context::CompactionPolicy>,
     reconciliation_only: bool,
 }
 

@@ -9,7 +9,7 @@ pub struct HarnessBuilder {
     journal: Option<Arc<dyn ExecutionJournal>>,
     model: Option<(Model, Arc<dyn ModelProvider>)>,
     context: ContextPipeline,
-    compaction: crate::context::CompactionPolicy,
+    compaction: Option<crate::context::CompactionPolicy>,
     bindings: Bindings,
     capabilities: Vec<String>,
     limits: Limits,
@@ -84,7 +84,7 @@ impl HarnessBuilder {
     /// Replaces or disables stock threshold compaction for this composition.
     #[must_use]
     pub fn compaction(mut self, value: crate::context::CompactionPolicy) -> Self {
-        self.compaction = value;
+        self.compaction = Some(value);
         self
     }
 
@@ -326,16 +326,20 @@ impl HarnessBuilder {
                 ));
             }
             bindings.tools.definitions(None)?;
+            let executor = StockExecutor::new(
+                model.clone(),
+                Arc::clone(provider),
+                self.context.clone(),
+                bindings.tools.clone(),
+            );
+            let executor = match self.compaction {
+                Some(policy) => executor.with_compaction_policy(policy),
+                None => executor,
+            };
             let executor = Arc::new(
-                StockExecutor::new(
-                    model.clone(),
-                    Arc::clone(provider),
-                    self.context.clone(),
-                    bindings.tools.clone(),
-                )
-                .with_compaction_policy(self.compaction)
-                .with_limits(self.limits)
-                .with_tool_authority(scope, bindings.policy.clone())?,
+                executor
+                    .with_limits(self.limits)
+                    .with_tool_authority(scope, bindings.policy.clone())?,
             ) as Arc<dyn Executor>;
             let task_executor = Arc::clone(&executor);
             let task_journal = Arc::clone(journal);

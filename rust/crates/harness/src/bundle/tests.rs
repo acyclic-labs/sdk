@@ -465,12 +465,38 @@ async fn builder_rejects_missing_or_conflicting_bindings() -> Result<()> {
             .task::<TurnInput, TurnOutput>("acyclic.stock_turn@2")
             .is_ok()
     );
-    assert!(matches!(bundle.run(TurnInput {
-            operation_id: crate::OperationId::new(),
-            input: crate::model::ModelContent::Text("typed failure".into()),
-            selected_context: None,
-            max_steps: 1,
-        }).await, Err(Error::Unsupported(message)) if message == "selected model context capacity is unavailable"));
+    let turn = || TurnInput {
+        operation_id: crate::OperationId::new(),
+        input: crate::model::ModelContent::Text("typed failure".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    // Without a private summary volume the default runs uncompacted: it needs
+    // no context capacity and passes turn entry to its first journal append.
+    let uncompacted = bundle.run(turn()).await;
+    assert!(
+        matches!(&uncompacted, Err(Error::Unsupported(message)) if message == "stock journal dispatch forbidden"),
+        "{uncompacted:?}"
+    );
+    // Explicitly arming compaction there is rejected at turn entry, before
+    // any capacity lookup, journal append or model dispatch.
+    let armed_journal = Arc::new(RecordingTurnJournal::default());
+    let armed = HarnessBuilder::new()
+        .model(
+            model.clone(),
+            Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()),
+        )
+        .journal(armed_journal.clone())
+        .grant("model:generate")
+        .compaction(crate::context::CompactionPolicy::default())
+        .build()?
+        .run(turn())
+        .await;
+    assert!(
+        matches!(&armed, Err(Error::Unauthorized(message)) if message == "summaries require the task's private volume"),
+        "{armed:?}"
+    );
+    assert!(armed_journal.events.lock().unwrap().is_empty());
     assert!(matches!(HarnessBuilder::new()
             .model(model.clone(), Arc::new(crate::test_support::ScriptedModelProvider::new([]).without_accounting()))
             .journal(Arc::new(RecordingTurnJournal::default()))
