@@ -402,7 +402,7 @@ fn real_terminal() -> io::Result<(acyclic_harness_tui::term::Output, Box<dyn std
     });
     let mut tty = acyclic_harness_tui::term::Tty::from_file(std::fs::File::from(pty.user))?;
     tty.negotiate(&acyclic_harness_tui::term::Environment(
-        [("TERM".into(), "xterm-256color".into())].into(),
+        [("TERM".into(), "alacritty".into())].into(),
     ))?;
     let (tty, output) = tty.split();
     Ok((output, Box::new((tty, drain))))

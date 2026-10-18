@@ -770,45 +770,50 @@ proptest! {
 #[path = "terminal/mouse.rs"]
 mod mouse;
 #[test]
-fn scrolling_requires_a_known_profile_or_native_vt_fact() {
+fn scrolling_requires_a_screen_oracle_and_dumb_always_disables_it() {
     for native in [false, true] {
-        let mut script = Script {
-            sent: Vec::new(),
-            replies: Vec::new(),
-            reads: 0,
-            native_scroll: native,
-        };
-        let (caps, _) = detect(&mut script, &Environment::default()).unwrap();
-        assert_eq!(caps.scroll_regions, native);
+        for term in ["", "dumb"] {
+            let mut script = Script {
+                sent: Vec::new(),
+                replies: Vec::new(),
+                reads: 0,
+                native_scroll: native,
+            };
+            let env = Environment([("TERM".into(), term.into())].into());
+            let (caps, _) = detect(&mut script, &env).unwrap();
+            assert_eq!(caps.scroll_regions, native && term != "dumb");
+        }
     }
     for identity in [
+        "alacritty",
+        "tmux",
+        "screen",
         "kitty",
         "wezterm",
         "ghostty",
         "iTerm2",
         "foot",
-        "alacritty",
         "Windows Terminal",
         "xterm",
+        "xterm-256color",
         "Apple_Terminal",
         "VTE(7800)",
         "konsole",
-        "tmux",
-        "screen",
+        "",
+        "vt100",
+        "unknown",
     ] {
-        let caps = ProbeReplies {
-            identity: Some(identity.into()),
-            ..ProbeReplies::default()
+        for term in ["", "dumb"] {
+            let caps = ProbeReplies {
+                identity: Some(identity.into()),
+                ..ProbeReplies::default()
+            }
+            .capabilities(&Environment([("TERM".into(), term.into())].into()));
+            assert_eq!(
+                caps.scroll_regions,
+                term != "dumb" && ["alacritty", "tmux", "screen"].contains(&identity),
+                "{identity} {term}"
+            );
         }
-        .capabilities(&Environment::default());
-        assert!(caps.scroll_regions, "{identity}");
-    }
-    for identity in ["", "vt100", "unknown"] {
-        let caps = ProbeReplies {
-            identity: Some(identity.into()),
-            ..ProbeReplies::default()
-        }
-        .capabilities(&Environment::default());
-        assert!(!caps.scroll_regions, "{identity}");
     }
 }

@@ -501,7 +501,7 @@ pub fn detect(
         decoder.feed(bytes)?;
     }
     let mut caps = decoder.replies().capabilities(env);
-    caps.scroll_regions |= io.native_scroll_regions();
+    caps.scroll_regions = !caps.dumb && (caps.scroll_regions || io.native_scroll_regions());
     io.detected(&caps)?;
     Ok((caps, decoder))
 }

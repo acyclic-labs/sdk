@@ -80,11 +80,16 @@ pub async fn run(
         if client::frame_due(&batch) {
             let scroll = maximum_scroll.saturating_sub(back);
             let transcript = screen.areas(area, &input).transcript;
-            let moved = RegionScroll::between(shown.filter(|_| !inline), transcript, scroll);
-            terminal.draw_scrolled(size, moved, |frame| {
-                areas = screen.render(frame, &input, &mut viewport, scroll, now);
-            })?;
-            shown = Some((transcript, scroll));
+            present(
+                &mut terminal,
+                size,
+                &mut shown,
+                !inline,
+                (transcript, scroll),
+                |frame| {
+                    areas = screen.render(frame, &input, &mut viewport, scroll, now);
+                },
+            )?;
         } else {
             // More of this read is queued: route it against the same layout
             // and present once, after the read.
@@ -124,4 +129,20 @@ pub async fn run(
         .await?;
         prompt_files.save(&mut commands, &mut input).await?;
     }
+}
+
+/// The presentation boundary shared by the executable and its file-backed Rig.
+/// Only successful device output advances the remembered transcript position.
+pub(super) fn present<P: tui::term::Present>(
+    terminal: &mut FrameTerminal<P>,
+    size: Size,
+    shown: &mut Option<(Rect, usize)>,
+    regions: bool,
+    (band, top): (Rect, usize),
+    render: impl FnOnce(&mut tui::ratatui::Frame<'_>),
+) -> std::io::Result<()> {
+    let moved = RegionScroll::between(shown.filter(|_| regions), band, top);
+    terminal.draw_scrolled(size, moved, render)?;
+    *shown = Some((band, top));
+    Ok(())
 }

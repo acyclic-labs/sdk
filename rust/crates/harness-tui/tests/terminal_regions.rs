@@ -23,7 +23,7 @@ use acyclic_harness_tui::term::{
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line as Row, Point};
-use alacritty_terminal::term::{Config, Term, TermMode};
+use alacritty_terminal::term::{Config, Term, TermMode, cell::Flags};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 
@@ -147,7 +147,9 @@ fn screens_with_support(frames: &[Vec<u8>], supported: bool) -> Vec<String> {
 /// Each frame reaches an emulator first resized to the frame's size, as a
 /// window resize precedes the frame drawn for it.
 fn screens_sized(frames: &[(Size, Vec<u8>)], supported: bool) -> Vec<String> {
-    let first = frames.first().map_or(Size::new(WIDTH, HEIGHT), |frame| frame.0);
+    let first = frames
+        .first()
+        .map_or(Size::new(WIDTH, HEIGHT), |frame| frame.0);
     let mut term = Term::new(Config::default(), &Grid(first), Events);
     let mut parser: Processor = Processor::new();
     let mut current = first;
@@ -168,6 +170,14 @@ fn screens_sized(frames: &[(Size, Vec<u8>)], supported: bool) -> Vec<String> {
                 for column in 0..usize::from(size.width) {
                     let cell = &term.grid()[Point::new(Row(row as i32), Column(column))];
                     text.push(cell.c);
+                    let styles = cell.flags
+                        - (Flags::WRAPLINE
+                            | Flags::WIDE_CHAR
+                            | Flags::WIDE_CHAR_SPACER
+                            | Flags::LEADING_WIDE_CHAR_SPACER);
+                    if !styles.is_empty() {
+                        text.push_str(&format!("{styles:?}"));
+                    }
                     if format!("{:?}{:?}", cell.fg, cell.bg) != DEFAULT_COLOURS {
                         text.push_str(&format!("{:?}{:?}", cell.fg, cell.bg));
                     }
@@ -230,15 +240,11 @@ fn steps() -> impl Strategy<Value = Vec<(Scene, Option<RegionScroll>)>> {
 }
 
 fn scene() -> impl Strategy<Value = Scene> {
-    let style = (0u8..8, 0u8..8, any::<bool>()).prop_map(|(fg, bg, bold)| {
+    let style = (0u8..8, 0u8..8, 0u16..512).prop_map(|(fg, bg, modifiers)| {
         Style::default()
             .fg(Color::Indexed(fg))
             .bg(Color::Indexed(bg))
-            .add_modifier(if bold {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            })
+            .add_modifier(Modifier::from_bits_truncate(modifiers))
     });
     let row = (
         prop::collection::vec(("[a-z日 ]{0,12}", style.clone()), 0..4),
@@ -836,8 +842,20 @@ fn a_band_meeting_fixed_rows_scrolls_exactly_and_off_by_one_margins_are_caught()
     let band = Rect::new(0, 1, WIDTH, HEIGHT - 2);
     let steps = [
         (framed(10), None),
-        (framed(13), Some(RegionScroll { region: band, rows: 3 })),
-        (framed(11), Some(RegionScroll { region: band, rows: -2 })),
+        (
+            framed(13),
+            Some(RegionScroll {
+                region: band,
+                rows: 3,
+            }),
+        ),
+        (
+            framed(11),
+            Some(RegionScroll {
+                region: band,
+                rows: -2,
+            }),
+        ),
     ];
     let scenes: Vec<_> = steps.iter().map(|(scene, _)| scene.clone()).collect();
     let expected = screens(&per_command(&scenes));
@@ -892,4 +910,79 @@ fn a_render_unwinding_after_a_region_scroll_leaves_the_next_frame_exact() {
         "a render unwind must not leave a scrolled baseline: {:?}",
         String::from_utf8_lossy(&frames[2])
     );
+}
+
+#[path = "terminal_regions/native_profiles.rs"]
+mod native_profiles;
+
+#[test]
+fn the_screen_oracle_observes_wide_cell_style_loss() {
+    for modifier in [
+        Modifier::BOLD,
+        Modifier::DIM,
+        Modifier::ITALIC,
+        Modifier::UNDERLINED,
+        Modifier::REVERSED,
+        Modifier::HIDDEN,
+        Modifier::CROSSED_OUT,
+    ] {
+        let scene = |styled| {
+            (
+                vec![Line::styled(
+                    "日 a日",
+                    Style::default().add_modifier(if styled {
+                        modifier
+                    } else {
+                        Modifier::empty()
+                    }),
+                )],
+                None,
+            )
+        };
+        let baseline = screens(&per_command(&[scene(true)]));
+        let candidate = scrolled(&[(scene(true), None)], Size::new(WIDTH, HEIGHT));
+        assert_eq!(screens(&candidate), baseline, "{modifier:?}");
+        assert_ne!(
+            screens(&per_command(&[scene(false)])),
+            baseline,
+            "{modifier:?} stripping must fail the same screen oracle"
+        );
+    }
+}
+
+#[test]
+fn blink_attributes_reach_the_device_in_wide_cell_frames() {
+    // Alacritty intentionally ignores blink; check its wire attributes too.
+    for (modifier, sequence) in [
+        (Modifier::SLOW_BLINK, b"\x1b[5m".as_slice()),
+        (Modifier::RAPID_BLINK, b"\x1b[6m".as_slice()),
+    ] {
+        let scene = |modifier| {
+            (
+                vec![Line::styled(
+                    "日 a日",
+                    Style::default().add_modifier(modifier),
+                )],
+                None,
+            )
+        };
+        let has_attribute = |frames: Vec<Vec<u8>>| {
+            frames
+                .concat()
+                .windows(sequence.len())
+                .any(|bytes| bytes == sequence)
+        };
+        assert!(has_attribute(scrolled(
+            &[(scene(modifier), None)],
+            Size::new(WIDTH, HEIGHT)
+        )));
+        assert!(has_attribute(per_command(&[scene(modifier)])));
+        assert!(
+            !has_attribute(scrolled(
+                &[(scene(Modifier::empty()), None)],
+                Size::new(WIDTH, HEIGHT)
+            )),
+            "removing the production attribute must fail the same wire oracle"
+        );
+    }
 }

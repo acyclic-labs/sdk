@@ -306,13 +306,8 @@ impl Capabilities {
         } else {
             NotificationProtocol::Bell
         };
-        self.scroll_regions = modern
-            || xterm
-            || name.contains("apple_terminal")
-            || name.contains("vte")
-            || name.contains("konsole")
-            || name.contains("tmux")
-            || name.contains("screen");
+        // Each enabled profile has a screen oracle, not just a byte-count test.
+        self.scroll_regions = alacritty || name.contains("tmux") || name.contains("screen");
         self.hyperlinks = modern;
         self.clipboard = modern || xterm;
         self.progress = windows || ghostty || iterm;
