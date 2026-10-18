@@ -558,7 +558,21 @@ impl StockExecution<'_> {
         }
         let (projection, content) =
             match stock_project_tool(tool, invocation, result, self.stock.limits, self.io) {
-                Ok(projected) => projected,
+                Ok(Ok(projected)) => projected,
+                // A projection outside its pinned schema is the tool's mistake on either path.
+                Ok(Err(violation)) => {
+                    return self
+                        .settle_tool_failure(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ProjectionRejected,
+                            violation,
+                        )
+                        .await
+                        .map(Err);
+                }
                 Err(error) => {
                     return self
                         .reject_tool_call(

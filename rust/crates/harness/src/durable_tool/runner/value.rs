@@ -27,16 +27,19 @@ pub(super) fn tool_validate_projection(
     value: &Value,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<()> {
-    let content = definition.validate_projection(value, limits, io)?;
+) -> Result<Result<()>> {
+    let content = match definition.check_projection(value, limits, io)? {
+        Ok(content) => content,
+        Err(violation) => return Ok(Err(violation)),
+    };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io.filter(|io| native_work(Some(io)).is_some()) {
         let bytes = content.logical_owned_bytes()?;
         drop(content);
-        return io.release(bytes).map_err(Into::into);
+        return io.release(bytes).map(Ok).map_err(Into::into);
     }
     drop(content);
-    Ok(())
+    Ok(Ok(()))
 }
 pub(super) fn tool_text(
     value: std::fmt::Arguments<'_>,

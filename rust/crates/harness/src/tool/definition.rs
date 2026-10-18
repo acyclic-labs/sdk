@@ -170,19 +170,32 @@ impl ToolDefinition {
         limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<crate::model::ToolResultContent> {
+        self.check_projection(value, limits, io)?
+    }
+
+    /// Separates a projection that violates its pinned schema (inner error), which is the tool's
+    /// mistake for the model to see, from a budget, decode or diagnostic failure (outer error).
+    pub(crate) fn check_projection(
+        &self,
+        value: &Value,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Result<crate::model::ToolResultContent>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
         {
             let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::executor::with_history_io(Some(&decode), |work| {
-                crate::executor::validate_json_schema_value(
+            if let Err(violation) = crate::executor::with_history_io(Some(&decode), |work| {
+                crate::executor::check_json_schema_value(
                     &self.projection_schema,
                     value,
                     "tool projection",
                     work,
                 )
-            })?;
+            })? {
+                return Ok(Err(violation));
+            }
             let content: crate::model::ToolResultContent =
                 decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
             crate::executor::with_history_io(Some(&decode), |work| {
@@ -190,21 +203,23 @@ impl ToolDefinition {
             })?;
             let retained = content.logical_owned_bytes()?;
             io.absorb_native_custody(decode.into_native_custody(retained)?)?;
-            return Ok(content);
+            return Ok(Ok(content));
         }
-        crate::executor::with_history_io(io, |work| {
-            crate::executor::validate_json_schema_value(
+        if let Err(violation) = crate::executor::with_history_io(io, |work| {
+            crate::executor::check_json_schema_value(
                 &self.projection_schema,
                 value,
                 "tool projection",
                 work,
             )
-        })?;
+        })? {
+            return Ok(Err(violation));
+        }
         let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })?;
         crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
-        Ok(content)
+        Ok(Ok(content))
     }
 
     /// Immutable approval identity for the exact model-visible definition.

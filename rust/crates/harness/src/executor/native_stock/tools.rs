@@ -83,7 +83,7 @@ pub(in crate::executor) fn stock_project_tool(
     result: &ToolResult,
     limits: Limits,
     io: Option<&PreparationIo>,
-) -> Result<(Value, crate::model::ToolResultContent)> {
+) -> Result<Result<(Value, crate::model::ToolResultContent)>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let work = io.and_then(PreparationIo::original_native_work);
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -101,9 +101,12 @@ pub(in crate::executor) fn stock_project_tool(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = custody;
-    let content = tool.definition.validate_projection(&value, limits, io)?;
+    let content = match tool.definition.check_projection(&value, limits, io)? {
+        Ok(content) => content,
+        Err(violation) => return Ok(Err(violation)),
+    };
     stock_json_bound(&value, limits.render_bytes, io)?;
-    Ok((value, content))
+    Ok(Ok((value, content)))
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

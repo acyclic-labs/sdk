@@ -396,7 +396,8 @@ impl<'tools> DurableToolRunner<'tools> {
                 work,
             )
         })?;
-        tool_validate_projection(definition, &projection.0, limits, io)?;
+        // Recorded history must already satisfy its schema: a violation here is corruption.
+        tool_validate_projection(definition, &projection.0, limits, io)??;
         tool_success(result, io)
     }
 
@@ -491,9 +492,20 @@ impl<'tools> DurableToolRunner<'tools> {
         if native_work(io).is_some() && projection.1.is_none() {
             return Err(boundary(io, Unsupported, "tool projection has no custody"));
         }
-        if let Err(error) = tool_validate_projection(definition, &projection.0, limits, io)
-            .and_then(|()| tool_json_bound(&projection.0, limits.render_bytes, io))
+        // A projection outside its pinned schema is the tool's mistake on either path; only a
+        // budget, decode or diagnostic failure stops the native turn.
+        if let Err(violation) = tool_validate_projection(definition, &projection.0, limits, io)
+            .or_else(|error| {
+                if tool_propagate(&error, io) {
+                    Err(error)
+                } else {
+                    Ok(Err(error))
+                }
+            })?
         {
+            return Ok(Err((ToolFailureKind::ProjectionRejected, violation)));
+        }
+        if let Err(error) = tool_json_bound(&projection.0, limits.render_bytes, io) {
             if tool_propagate(&error, io) {
                 return Err(error);
             }

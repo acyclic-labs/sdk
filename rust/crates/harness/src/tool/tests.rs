@@ -254,3 +254,44 @@ async fn scoped_install_requires_capability_and_exact_approval_operation() -> Re
     assert!(registry.get("example.echo", None, None)?.is_some());
     Ok(())
 }
+
+/// A projection outside its pinned schema is the tool's mistake on both paths: it comes back as
+/// the inner error for the model, never as the outer failure that stops a native turn.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn projection_schema_violation_is_the_tools_mistake_on_the_native_path() -> Result<()> {
+    let definition = ToolDefinition {
+        name: "example.result".into(),
+        revision: "1".into(),
+        description: "Structured result with text projection".into(),
+        input_schema: json!({"type":"null"}),
+        output_schema: json!({}),
+        projection_schema: json_projection_schema(json!({"type":"string"})),
+    };
+    let violating = json!({"kind":"json","value":7});
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(100_000, 4 * 1024 * 1024),
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&work)?;
+    for io in [Some(&io), None] {
+        let violation = definition
+            .check_projection(&violating, Limits::default(), io)?
+            .expect_err("a schema violation is the inner error");
+        // The native violation keeps its funded diagnostic; its place, not its class, settles it.
+        assert_eq!(violation.code(), crate::wire::ErrorCode::Invalid, "{violation:?}");
+        assert!(
+            definition
+                .check_projection(&json!({"kind":"json","value":"seven"}), Limits::default(), io)?
+                .is_ok()
+        );
+    }
+    // Negative control: the flattened check this replaces turns the same native violation into
+    // a native failure, which the executor and durable runner propagate and stop the turn.
+    let flattened = definition
+        .validate_projection(&violating, Limits::default(), Some(&io))
+        .expect_err("the violation still fails validation");
+    assert!(flattened.is_native_failure(), "{flattened:?}");
+    Ok(())
+}
