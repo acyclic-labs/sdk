@@ -260,11 +260,11 @@ fn command(index: u8) -> Component {
 }
 /// Pool covering display kinds, reasoning chunks, task and session command
 /// lifecycles, UI files and replacements of every key.
-fn pooled((index, size): (u8, u8)) -> FileValue {
+fn pooled((index, size, identity): (u8, u8, u8)) -> FileValue {
     let task = component(if index < 32 { "a" } else { "b" });
     let call = component(format!("c{}", index % 2));
     let turn = u64::from(index % 3);
-    let id = command(index / 3);
+    let id = command(identity);
     let bytes = vec![index; usize::from(size)];
     let (file, channel) = match index % 16 {
         0 => (TaskFile::Status, None),
@@ -428,11 +428,45 @@ proptest! {
     /// independently built old index over dense/sparse lifecycles and replacements.
     #[test]
     fn derived_indexes_match_independent_old_index(
-        files in prop::collection::vec((0u8..64, 0u8..4).prop_map(pooled), 0..48),
+        files in prop::collection::vec((0u8..64, 0u8..4, 0u8..12).prop_map(pooled), 0..48),
         recent in 0u32..4,
         maximum in 1usize..12,
     ) {
         prop_assert_eq!(candidate(&files, recent, maximum), baseline(&files, recent, maximum));
+    }
+
+    #[test]
+    fn completed_task_and_session_lifecycles_remove_pending_requests(
+        scope in 0u8..4,
+        identity in 0u8..9,
+        payload in prop::collection::vec(any::<u8>(), 0..8),
+    ) {
+        // Event kind never determines identity. Every generated trace includes
+        // a valid matching request, claim and result, followed by replacements.
+        let id = command(identity / 3 * 4 + identity % 3);
+        let mut files = Vec::new();
+        for make in [
+            TaskFile::Request,
+            TaskFile::ExecutionClaim,
+            TaskFile::ExecutionResult,
+            TaskFile::ExecutionResult,
+            TaskFile::Request,
+            TaskFile::ExecutionClaim,
+        ] {
+            let file = make(id.clone());
+            let key = if scope < 2 {
+                FileKey::Task { task: component(if scope == 0 { "a" } else { "b" }), file }
+            } else {
+                FileKey::Session { session: component(SESSIONS[usize::from(scope - 2)]), file }
+            };
+            files.push(FileValue::new(key, payload.clone()));
+            prop_assert_eq!(candidate(&files, 1, 12), baseline(&files, 1, 12));
+            if files.len() >= 3 {
+                let (_, (executions, pending, _, _)) = candidate(&files, 1, 12);
+                prop_assert!(pending.is_empty(), "completed request remained pending");
+                prop_assert_eq!(executions.len(), 1, "result replacement duplicated execution");
+            }
+        }
     }
 }
 
