@@ -19,7 +19,7 @@ impl Epochs {
 }
 
 /// The collections begun when it was read; only [`CollectionEpoch::read`] makes one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct CollectionEpoch(u64);
 
 impl CollectionEpoch {

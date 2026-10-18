@@ -21,7 +21,7 @@ fn check<const ORDERED: bool>(deliveries: &[(u16, bool)]) {
         if ORDERED {
             ticket.publish(&outcome(u64::from(sequence), retry));
         } else {
-            ticket.install::<false>(Sequence::new(u64::from(sequence)));
+            ticket.install::<false, true>(Sequence::new(u64::from(sequence)));
         }
         maximum = Some(maximum.map_or(sequence, |prior: u16| prior.max(sequence)));
         let current = slot.current(None);
@@ -63,4 +63,62 @@ fn retrying_g1_after_g2_preserves_g2() {
 #[should_panic(expected = "proof slot regressed durable sequence")]
 fn negative_control_detects_unconditional_install() {
     check::<false>(&[(1, false), (2, false), (1, true)]);
+}
+
+fn check_epochs<const REFRESH: bool>(deliveries: &[(u16, u8, bool)]) {
+    let epochs = Epochs::default();
+    let slot = Arc::new(ProofSlot::default());
+    let mut stamps = vec![CollectionEpoch::read(Some(&epochs))];
+    for _ in 0..3 {
+        epochs.begin();
+        stamps.push(CollectionEpoch::read(Some(&epochs)));
+    }
+    let mut maximum = None;
+    for &(sequence, epoch, retry) in deliveries {
+        let value = (sequence, epoch);
+        let previous = slot.current_in_any_epoch();
+        let ticket = Unpublished::new(slot.clone(), stamps[usize::from(epoch)], value);
+        if REFRESH {
+            ticket.publish(&outcome(u64::from(sequence), retry));
+        } else {
+            ticket.install::<true, false>(Sequence::new(u64::from(sequence)));
+        }
+        maximum = Some(maximum.map_or(value, |prior: (u16, u8)| prior.max(value)));
+        let current = slot.current_in_any_epoch().unwrap();
+        assert_eq!(Some(*current), maximum, "proof slot lost the newest epoch");
+        assert_eq!(
+            slot.current(Some(&epochs)).as_deref(),
+            maximum.as_ref().filter(|(_, epoch)| *epoch == 3)
+        );
+        if let Some(previous) = previous
+            && value <= *previous
+        {
+            assert!(
+                Arc::ptr_eq(&previous, &current),
+                "equal or older proof replaced custody"
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn retries_and_delayed_proofs_preserve_sequence_then_epoch(
+        deliveries in prop::collection::vec((0u16..4, 0u8..4, any::<bool>()), 1..24)
+    ) {
+        check_epochs::<true>(&deliveries);
+    }
+}
+
+#[test]
+fn cross_epoch_retry_refreshes_without_regressing_or_replacing_exact_ties() {
+    check_epochs::<true>(&[(1, 0, false), (1, 3, true), (1, 0, false), (1, 3, true)]);
+    check_epochs::<true>(&[(2, 0, false), (1, 3, true), (2, 3, true), (2, 1, false)]);
+}
+
+#[test]
+#[should_panic(expected = "proof slot lost the newest epoch")]
+fn negative_control_detects_sequence_only_install() {
+    check_epochs::<false>(&[(1, 0, false), (1, 3, true)]);
 }

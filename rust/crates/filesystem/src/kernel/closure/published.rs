@@ -38,7 +38,7 @@ impl<T> ProofSlot<T> {
             .map(|(_, _, proof)| Arc::clone(proof))
     }
 
-    #[cfg(all(test, acyclic_fs_loom))]
+    #[cfg(test)]
     pub(super) fn current_in_any_epoch(&self) -> Option<Arc<T>> {
         self.published
             .lock()
@@ -70,23 +70,24 @@ impl<T> Unpublished<T> {
     pub(crate) fn publish(self, outcome: &AppendOutcome) {
         match outcome {
             AppendOutcome::Committed(commit) | AppendOutcome::AlreadyCommitted(commit) => {
-                self.install::<true>(commit.sequence);
+                self.install::<true, true>(commit.sequence);
             }
             _ => {}
         }
     }
 
-    fn install<const ORDERED: bool>(self, sequence: Sequence) {
+    fn install<const ORDERED: bool, const REFRESH: bool>(self, sequence: Sequence) {
         let mut published = self
             .slot
             .published
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        // Durable history wins first; only a newer collection proof may refresh
+        // the same generation. Exact ties keep their existing custody.
         let replaced = if !ORDERED
-            || published
-                .as_ref()
-                .is_none_or(|(_, current, _)| sequence > *current)
-        {
+            || published.as_ref().is_none_or(|(epoch, current, _)| {
+                sequence > *current || (REFRESH && sequence == *current && self.began > *epoch)
+            }) {
             published.replace((self.began, sequence, self.proof))
         } else {
             None
@@ -97,7 +98,7 @@ impl<T> Unpublished<T> {
 
     #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn install_unpublished(self) {
-        self.install::<true>(Sequence::new(1));
+        self.install::<true, true>(Sequence::new(1));
     }
 }
 

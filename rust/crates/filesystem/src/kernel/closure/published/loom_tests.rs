@@ -249,7 +249,7 @@ fn ordered_publications<const ORDERED: bool>(retry: bool) {
             if ORDERED {
                 ticket.publish(&outcome(sequence, retry));
             } else {
-                ticket.install::<false>(Sequence::new(sequence));
+                ticket.install::<false, true>(Sequence::new(sequence));
             }
         };
         let first = loom::thread::spawn(move || publish(delayed, 1, false));
@@ -277,4 +277,50 @@ fn delayed_publication_and_retry_keep_the_newest_durable_proof() {
 #[should_panic(expected = "proof slot regressed durable sequence")]
 fn negative_control_detects_unconditional_install() {
     ordered_publications::<false>(true);
+}
+
+fn epoch_refresh<const REFRESH: bool>() {
+    loom::model(move || {
+        // Lock order: proof slot only. Epoch reads are the production atomic.
+        let epochs = Epochs::default();
+        let slot = Arc::new(ProofSlot::default());
+        let old_epoch = CollectionEpoch::read(Some(&epochs));
+        Unpublished::new(slot.clone(), old_epoch, 0).publish(&outcome(1, false));
+        let delayed = Unpublished::new(slot.clone(), old_epoch, 0);
+        epochs.begin();
+        assert!(slot.current(Some(&epochs)).is_none());
+        let fresh = Unpublished::new(slot.clone(), CollectionEpoch::read(Some(&epochs)), 1);
+        let expected = fresh.proof.clone();
+        let old = loom::thread::spawn(move || delayed.publish(&outcome(1, false)));
+        let retry = loom::thread::spawn(move || {
+            if REFRESH {
+                fresh.publish(&outcome(1, true));
+            } else {
+                fresh.install::<true, false>(Sequence::new(1));
+            }
+        });
+        old.join().unwrap();
+        retry.join().unwrap();
+        let current = slot
+            .current(Some(&epochs))
+            .expect("retry lost the fresh epoch proof");
+        assert!(Arc::ptr_eq(&current, &expected));
+        Unpublished::new(slot.clone(), CollectionEpoch::read(Some(&epochs)), 2)
+            .publish(&outcome(1, true));
+        assert!(Arc::ptr_eq(
+            &slot.current(Some(&epochs)).unwrap(),
+            &expected
+        ));
+    });
+}
+
+#[test]
+fn cross_epoch_retry_survives_delayed_publication_and_exact_ties() {
+    epoch_refresh::<true>();
+}
+
+#[test]
+#[should_panic(expected = "retry lost the fresh epoch proof")]
+fn negative_control_detects_sequence_only_install() {
+    epoch_refresh::<false>();
 }
