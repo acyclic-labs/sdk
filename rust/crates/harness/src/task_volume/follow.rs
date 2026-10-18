@@ -71,6 +71,13 @@ pub struct Change {
     pub cursor: Cursor,
 }
 
+impl Change {
+    /// A cursor-only observation contains no presentation changes.
+    pub fn is_checkpoint(&self) -> bool {
+        self.file.is_none() && self.files.is_empty() && self.removed.is_empty()
+    }
+}
+
 /// Backpressured push follow; no task or unbounded notification queue is spawned.
 pub type ChangeStream = acyclic_stream::BoxProviderStream<'static, Result<Change>>;
 

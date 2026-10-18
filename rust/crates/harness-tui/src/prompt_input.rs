@@ -38,6 +38,8 @@ pub enum InputEffect {
     Quit,
     /// Host-owned dock, transcript, and escape actions.
     Host(Action),
+    /// Move the focused scrollable view by rows; positive reveals older rows.
+    Scroll(isize),
 }
 
 #[derive(Clone, Debug)]

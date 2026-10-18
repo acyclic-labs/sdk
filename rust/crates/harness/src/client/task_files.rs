@@ -175,8 +175,7 @@ impl TaskFileClient {
     }
     /// Apply a pushed ordinary-file publication with its original cursor.
     pub fn apply_change(&mut self, change: Change) -> Result<()> {
-        let visible =
-            change.file.is_some() || !change.files.is_empty() || !change.removed.is_empty();
+        let visible = !change.is_checkpoint();
         if self.views.query_change(change)? && visible {
             self.advance_presentation();
         }

@@ -38,6 +38,9 @@ pub async fn run(
         || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
+    // Events of the current read not yet handled; each gets its own frame.
+    let mut batch = client::InputBatch::new();
+    let mut effects = Vec::new();
     let mut input = PromptInput::default();
     let mut prompt_files = client::PromptFiles::default();
     prompt_files.refresh(&commands, &mut input)?;
@@ -76,37 +79,38 @@ pub async fn run(
             let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
         })?;
-        let Some(event) = client::next_file_tui_event(
-            &mut client,
-            &mut events,
-            &mut completions,
-            &mut input,
-            &mut commands,
-            areas.animation,
-            &mut renderer,
-            &mut documents,
-        )
-        .await?
-        else {
-            continue;
-        };
-        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let effects = input.event(
-            event,
-            PromptBox::input_area(areas.prompt),
-            &mut viewport,
-            now,
-        );
-        for effect in effects {
-            client::file_tui_input(
+        if batch.is_empty() {
+            let Some(read) = client::next_file_tui_event(
+                &mut client,
+                &mut events,
+                &mut completions,
+                &mut input,
                 &mut commands,
-                reader.as_ref(),
-                effect,
-                usize::from(areas.transcript.height),
-                maximum_scroll,
+                areas.animation,
+                &mut renderer,
+                &mut documents,
             )
-            .await?;
+            .await?
+            else {
+                continue;
+            };
+            batch = read;
         }
+        let now = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let area = PromptBox::input_area(areas.prompt);
+        let page_rows = usize::from(areas.transcript.height);
+        // A flick or held PageUp is one input batch: one scroll, one frame.
+        client::input_burst(&mut batch, page_rows, &mut effects, |event| {
+            input.event(event, area, &mut viewport, now)
+        });
+        client::file_tui_inputs(
+            &mut commands,
+            reader.as_ref(),
+            effects.drain(..),
+            page_rows,
+            maximum_scroll,
+        )
+        .await?;
         prompt_files.save(&mut commands, &mut input).await?;
     }
 }

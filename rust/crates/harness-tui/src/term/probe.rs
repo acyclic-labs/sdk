@@ -11,7 +11,14 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 /// Bound both hostile reply strings and startup input buffering.
 pub const PROBE_LIMIT: usize = 16 * 1024;
 const GRAPHICS_ID: &str = "314159";
-const MODES: [u16; 10] = [2026, 2027, 1004, 2004, 1049, 1000, 1002, 1003, 1006, 1016];
+const INDEPENDENT_MODES: [u16; 5] = [2026, 2027, 1004, 2004, 1049];
+
+fn modes() -> impl Iterator<Item = u16> {
+    INDEPENDENT_MODES
+        .into_iter()
+        .chain(super::restore::MOUSE_PROTOCOLS)
+        .chain(super::restore::MOUSE_ENCODINGS)
+}
 
 /// Polling transport; implementations must honor the supplied absolute deadline.
 pub trait ProbeIo {
@@ -143,7 +150,7 @@ impl Probe {
     /// One batch, with DA1 last so its response acts as a completion sentinel.
     pub fn batch(multiplexer: Multiplexer) -> Vec<u8> {
         let mut batch = b"\x1b[?u".to_vec();
-        for mode in MODES {
+        for mode in modes() {
             batch.extend_from_slice(format!("\x1b[?{mode}$p").as_bytes());
         }
         for query in [
@@ -336,7 +343,7 @@ impl vte::Perform for ReplyHandler<'_> {
                 self.replies.sixel = Some(attributes.contains(&4));
             }
             ('u', b"?", [flags]) => self.replies.keyboard_flags = Some(*flags),
-            ('y', b"?$", [mode, value]) if MODES.contains(mode) && *value <= 4 => {
+            ('y', b"?$", [mode, value]) if modes().any(|known| known == *mode) && *value <= 4 => {
                 let state = match value {
                     0 => ModeState::Unsupported,
                     1 => ModeState::Set,

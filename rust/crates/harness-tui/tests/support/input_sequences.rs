@@ -161,7 +161,7 @@ fn dispatch(
         // bounds and grapheme structure remain valid, so semantics must catch it.
         input.editor.set_cursor(input.editor.text().len(), false);
     }
-    input.event(event, area, viewport, at)
+    input.event(event, area, viewport, at).collect()
 }
 
 /// A prompt with a Super chord override and CR/CRLF-separated history.

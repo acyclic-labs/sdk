@@ -81,8 +81,27 @@ public static class TerminalSignalConPty {
                 Thread.Sleep(1);
             }
             Require(File.Exists(probeReady),"negotiation setup deadline");
-            byte[] replies=Encoding.ASCII.GetBytes("\x1b[?1004;2$y\x1b[?2004;2$y\x1b[?1049;2$y\x1b[?1003;2$y\x1b[?62;1c");
+            byte[] replies=Encoding.ASCII.GetBytes("\x1b[?1004;2$y\x1b[?2004;2$y\x1b[?2027;2$y\x1b[?1049;2$y\x1b[?9;2$y\x1b[?1000;2$y\x1b[?1001;2$y\x1b[?1002;2$y\x1b[?1003;2$y\x1b[?1005;2$y\x1b[?1006;2$y\x1b[?1015;2$y\x1b[?1016;2$y\x1b[?62;1c");
             Require(WriteFile(iw,replies,(uint)replies.Length,out written,IntPtr.Zero)&&written==replies.Length,"negotiation fixture write");
+            foreach(int count in new[]{32,64}) {
+                string wheelReady=Path.ChangeExtension(report,"wheel"+count+"-ready");
+                while(!File.Exists(wheelReady)&&timer.ElapsedMilliseconds<1500) {
+                    if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before wheel fixture");
+                    Thread.Sleep(1);
+                }
+                Require(File.Exists(wheelReady),"physical wheel fixture ready");
+                var packet=new StringBuilder();
+                for(int index=0;index<count;index++) packet.Append(index%3==0?"\x1b[<65;2;1M":"\x1b[<64;2;1M");
+                byte[] wheels=Encoding.ASCII.GetBytes(packet.ToString());
+                Require(WriteFile(iw,wheels,(uint)wheels.Length,out written,IntPtr.Zero)&&written==wheels.Length,"physical wheel packet write");
+                string done=Path.ChangeExtension(report,"wheel"+count+"-done");
+                while(!File.Exists(done)&&timer.ElapsedMilliseconds<1500) {
+                    if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited during wheel fixture");
+                    Thread.Sleep(1);
+                }
+                Require(File.Exists(done),"physical wheel count acknowledgement");
+                Console.WriteLine("ConPTY "+scenario+": "+File.ReadAllText(done));
+            }
             string ready=Path.ChangeExtension(report,"ready");
             while(!File.Exists(ready)&&timer.ElapsedMilliseconds<1500) {
                 if(WaitForSingleObject(process.process,0)==0) throw new Exception("child exited before terminal setup");
@@ -112,6 +131,17 @@ public static class TerminalSignalConPty {
             Require(fields[0]==(scenario=="close"?"2":"1"),"real OS control event type");
             for(int i=1;i<=4;i++) Require(fields[i]==fields[i+4],"exact original console state field "+i);
             Require(fields[3]=="437"&&fields[4]=="437","non-UTF8 original code pages");
+            string mouseTrace="", outputLog=Path.ChangeExtension(report,"output");
+            do {
+                if(File.Exists(outputLog)) using(var read=new StreamReader(new FileStream(outputLog,FileMode.Open,FileAccess.Read,FileShare.ReadWrite))) mouseTrace=read.ReadToEnd();
+                if(mouseTrace.Contains("\x1b[?1002l")&&mouseTrace.Contains("\x1b[?1006l")) break;
+                Thread.Sleep(1);
+            } while(timer.ElapsedMilliseconds<1500);
+            foreach(int mode in new[]{1002,1006}) {
+                int enabled=mouseTrace.IndexOf("\x1b[?"+mode+"h",StringComparison.Ordinal);
+                int restored=mouseTrace.LastIndexOf("\x1b[?"+mode+"l",StringComparison.Ordinal);
+                Require(enabled>=0&&restored>enabled,"physical mouse mode restored "+mode);
+            }
             Console.WriteLine("ConPTY "+scenario+": original input/output modes and code pages restored");
         } finally {
             draining.Set();

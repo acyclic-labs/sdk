@@ -309,6 +309,10 @@ impl Drop for Tty {
 }
 
 #[cfg(test)]
+#[path = "windows_wheel_tests.rs"]
+mod wheel_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -405,6 +409,7 @@ mod tests {
         std::fs::write(path.with_extension("negotiated"), b"negotiated")?;
         tty.setup(ScreenMode::Alternate)?;
         std::fs::write(path.with_extension("setup"), b"setup")?;
+        wheel_tests::read_bursts(&mut tty, &path)?;
         tty.enable_mode(1004)?;
         let blocked = std::env::var("ACYCLIC_TERMINAL_WINDOWS_EVENT").as_deref() == Ok("blocked");
         let payload = vec![b'B'; 1024 * 1024];

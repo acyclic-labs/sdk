@@ -36,3 +36,6 @@ fn input_regression_corpus() {
 fn fuzz_negative_control_rejects_broken_selection_replacement() {
     sequences::exercise_broken(b"negative control");
 }
+
+#[path = "input/routing_allocations.rs"]
+mod routing_allocations;
