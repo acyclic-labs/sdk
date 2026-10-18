@@ -34,18 +34,13 @@ fn main() -> ExitCode {
     }
 }
 
-async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
-    let operation = args
-        .operation
-        .as_deref()
-        .map(OperationId::parse)
-        .transpose()?;
-    let credentials = args
-        .credentials
-        .as_deref()
-        .map(Credentials::from_file)
-        .transpose()?
-        .unwrap_or_default();
+/// The local owner exactly as the shipping binary composes it from argv and
+/// resolved credentials: the provider registry, its catalog and the
+/// workspace's native settings.
+async fn open(
+    args: &Args,
+    credentials: Credentials,
+) -> Result<Arc<LocalHarness>, Box<dyn std::error::Error>> {
     let mut registry = Registry::new(credentials)?;
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
@@ -58,7 +53,22 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
                 .codex_home(root.join(".codex")),
         );
     }
-    let local = Arc::new(LocalHarness::open(config).await?);
+    Ok(Arc::new(LocalHarness::open(config).await?))
+}
+
+async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
+    let operation = args
+        .operation
+        .as_deref()
+        .map(OperationId::parse)
+        .transpose()?;
+    let credentials = args
+        .credentials
+        .as_deref()
+        .map(Credentials::from_file)
+        .transpose()?
+        .unwrap_or_default();
+    let local = open(&args, credentials).await?;
     let operation = client::local_identity(&local, args.prompt.as_deref(), operation).await?;
     let command = args
         .prompt
