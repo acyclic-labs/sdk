@@ -89,13 +89,14 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
         )
         .await
     } else {
-        client::run_jsonl(
-            &mut connection,
-            target,
-            client::stdin_jsonl(),
-            &mut std::io::stdout().lock(),
-        )
-        .await
+        // An unopenable stdin still settles the connection through finish.
+        match client::stdin_jsonl() {
+            Ok(input) => {
+                client::run_jsonl(&mut connection, target, input, &mut std::io::stdout().lock())
+                    .await
+            }
+            Err(error) => Err(error),
+        }
     };
     Ok(connection.finish(outcome).await?.exit_code())
 }

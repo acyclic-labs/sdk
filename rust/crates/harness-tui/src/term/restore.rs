@@ -23,6 +23,14 @@ pub struct RestoreGuard<W: Write> {
     outside: u64,
 }
 
+#[cfg(all(unix, not(acyclic_harness_tui_loom)))]
+impl RestoreGuard<super::tty::RawTty> {
+    /// Native input cannot change the screen or invalidate a presented frame.
+    pub(crate) fn read_input(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.writer.read(bytes)
+    }
+}
+
 impl<W: Write> RestoreGuard<W> {
     /// No terminal changes occur until setup or `enable_mode` is called.
     pub fn new(writer: W, caps: &Capabilities) -> Self {

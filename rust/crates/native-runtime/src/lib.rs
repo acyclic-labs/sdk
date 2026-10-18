@@ -17,6 +17,9 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+pub mod input_batch;
+#[cfg(unix)]
+pub use process_tree::input_reader;
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod obs;

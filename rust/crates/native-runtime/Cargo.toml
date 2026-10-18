@@ -13,10 +13,15 @@ categories = ["filesystem"]
 
 [features]
 test-support = ["dep:tokio"]
+# Windows process input awaited on the runtime (overlapped pipes on its IOCP).
+async-stdin = ["dep:tokio", "tokio/net"]
 
 [dependencies]
 bytes.workspace = true
 tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
+
+[build-dependencies]
+cc = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }

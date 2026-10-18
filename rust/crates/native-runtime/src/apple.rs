@@ -15,6 +15,10 @@
     reason = "positional transfers hand held descriptors and owned buffers to the kernel"
 )]
 
+#[cfg(target_os = "macos")]
+#[path = "terminal.rs"]
+pub(crate) mod controlling_terminal;
+
 use crate::sync::Mutex;
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;

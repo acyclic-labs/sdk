@@ -7,15 +7,14 @@ use signal_hook::consts::signal::SIGTSTP;
 use super::lifecycle::{self, Arc, Mutex, Owner, State};
 use super::tty::RawTty;
 use super::{Capabilities, Decoder, Environment, ProbeIo, ScreenMode, detect};
-use crate::key_event::{InputEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 /// Process-owned terminal lifecycle. The signal worker restores even while the
 /// application is computing or blocked outside terminal I/O. The one state lock
 /// serializes every output mutation with restore/close, including on resume.
 pub struct Tty {
-    state: Arc<Mutex<State<RawTty>>>,
+    pub(in crate::term) state: Arc<Mutex<State<RawTty>>>,
     owner: &'static Owner<RawTty>,
-    decoder: Decoder,
+    pub(in crate::term) decoder: Decoder,
     capabilities: Option<Capabilities>,
 }
 
@@ -69,7 +68,7 @@ impl Tty {
     }
     /// Open the controlling terminal, including when stdout is redirected.
     pub fn open() -> io::Result<Self> {
-        Self::from_file(OpenOptions::new().read(true).write(true).open("/dev/tty")?)
+        Self::from_file(controlling_terminal()?)
     }
 
     /// Install signal handling BEFORE making the terminal raw. A process owns
@@ -119,34 +118,36 @@ impl Tty {
         signal_hook::low_level::emulate_default_handler(SIGTSTP)?;
         lifecycle::resume(&self.state, RawTty::reapply)
     }
+}
 
-    /// Read only classified events. Late probe replies remain in this decoder.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
-        let mut events = self.decoder.take_events();
-        while events.is_empty() {
-            let mut bytes = [0; 1024];
-            let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
-            self.decoder
-                .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
-            if count == 0 || Instant::now() >= deadline {
-                self.decoder.finish_input()?;
-                events = self.decoder.take_events();
-                break;
-            }
-            events = self.decoder.take_events();
+#[cfg(not(target_os = "macos"))]
+fn controlling_terminal() -> io::Result<File> {
+    OpenOptions::new().read(true).write(true).open("/dev/tty")
+}
+
+// Darwin kqueue rejects the /dev/tty alias (EINVAL), so input readiness needs
+// the device itself: the standard stream that is this session's terminal, or,
+// with every stream redirected, the device the kernel records as this
+// process's controlling terminal.
+#[cfg(target_os = "macos")]
+fn controlling_terminal() -> io::Result<File> {
+    use std::os::unix::ffi::OsStrExt;
+    let session = rustix::process::getsid(None)?;
+    for stream in [
+        rustix::stdio::stdin(),
+        rustix::stdio::stdout(),
+        rustix::stdio::stderr(),
+    ] {
+        if rustix::termios::tcgetsid(stream).is_ok_and(|owner| owner == session) {
+            let path = rustix::termios::ttyname(stream, Vec::new())?;
+            return OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(std::ffi::OsStr::from_bytes(path.as_bytes()));
         }
-        let mut output = Vec::new();
-        for event in events {
-            if matches!(&event, InputEvent::Key(key) if key.code == KeyCode::Char('z')
-                && key.modifiers == KeyModifiers::CONTROL && key.kind == KeyEventKind::Press)
-            {
-                self.suspend()?;
-            } else {
-                output.push(event);
-            }
-        }
-        Ok(output)
     }
+    let path = acyclic_native_runtime::terminal::controlling_device()?;
+    OpenOptions::new().read(true).write(true).open(path)
 }
 
 impl ProbeIo for Tty {
@@ -209,6 +210,7 @@ mod status_flags;
 mod tests {
     use super::status_flags::settable_status_flags as status_flags;
     use super::*;
+    use crate::key_event::{InputEvent, KeyCode};
     use rustix::fs::OFlags;
     use rustix::termios::{LocalModes, tcgetattr};
 
@@ -219,7 +221,12 @@ mod tests {
         let pty = rustix_openpty::openpty(None, None)?;
         let mut master = File::from(pty.controller);
         rustix::fs::fcntl_setfl(&master, OFlags::NONBLOCK)?;
-        let (mut tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let (tty, output) = Tty::from_file(File::from(pty.user))?.split();
+        let state = Arc::clone(&tty.state);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let mut events = runtime.block_on(async { tty.events() })?;
         let size = Size::new(20, 4);
         let mut terminal = FrameTerminal::new(output, size)?;
         let mut draw = || terminal.draw(size, |frame| frame.set_cursor_position((3, 2)));
@@ -242,13 +249,17 @@ mod tests {
                 if tracked_read {
                     // Negative control: the former polling path classified a
                     // read as outside output through the generic writer.
-                    let count = lifecycle::active(&tty.state, |guard| {
+                    let count = lifecycle::active(&state, |guard| {
                         guard.writer().receive(&mut [0; 8], deadline)
                     })?;
                     assert_eq!(count, 1);
                 } else {
-                    let events = tty.read_events(deadline)?;
-                    assert_eq!(events.len(), 1);
+                    let event = runtime.block_on(std::future::poll_fn(|cx| {
+                        futures_core::Stream::poll_next(std::pin::Pin::new(&mut events), cx)
+                    }));
+                    assert!(
+                        matches!(event, Some(Ok(InputEvent::Key(key))) if key.code == KeyCode::Char('x'))
+                    );
                 }
                 draw()?;
                 redundant += drain(&mut master)?.len();
@@ -279,8 +290,21 @@ mod tests {
         // Keep the old descriptor alive past detach, exactly as a concurrent
         // signal callback can. No scheduling or timing assumptions are needed.
         let retained = Arc::clone(&old.state);
-        let (mut old, output) = old.split();
-        let events = old.read_events(Instant::now())?;
+        let (old, output) = old.split();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let mut old = runtime.block_on(async { old.events() })?;
+        let events = runtime.block_on(async {
+            let mut events = Vec::new();
+            while events.len() < "/delegate say hello".len() + 1 {
+                let next = std::future::poll_fn(|cx| {
+                    futures_core::Stream::poll_next(std::pin::Pin::new(&mut old), cx)
+                });
+                events.push(next.await.ok_or(io::ErrorKind::UnexpectedEof)??);
+            }
+            io::Result::Ok(events)
+        })?;
         let typed: String = events
             .iter()
             .filter_map(|event| match event {

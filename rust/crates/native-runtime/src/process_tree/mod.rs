@@ -3,6 +3,10 @@
     reason = "process containment and bounded pipes use platform OS calls"
 )]
 
+#[cfg(unix)]
+#[path = "../input_reader.rs"]
+pub mod input_reader;
+
 use crate::obs;
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};
@@ -24,7 +28,9 @@ thread_local! {
 
 #[cfg(test)]
 fn capture_now() -> Instant {
-    CAPTURE_CLOCK.with(std::cell::Cell::get).unwrap_or_else(Instant::now)
+    CAPTURE_CLOCK
+        .with(std::cell::Cell::get)
+        .unwrap_or_else(Instant::now)
 }
 
 /// Freezes this thread's capture clock at `now`, or restores wall time.
