@@ -42,9 +42,9 @@ proptest! {
     #[test]
     fn digest_attempts_are_funded_exactly_before_hashing(length in 65usize..180, taken in 0u32..8) {
         let long = format!("mcp.server.{}", "t".repeat(length));
-        let mut names = crate::tool_name_tests::adversarial(taken);
+        let mut names = crate::tests::tool_name_tests::adversarial(taken);
         names.push(long.clone());
-        let request = crate::tool_name_tests::request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let request = crate::tests::tool_name_tests::request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
         // Independent byte count for the literal digest framing and salt.
         let expected = 21 + 4 + long.len() as u64 + u64::from(taken + 1) * (21 + 4 + 7);
         funded(&request, expected, expected, true);
@@ -57,7 +57,7 @@ proptest! {
 #[test]
 fn negative_control_detects_unfunded_production_digest() {
     let long = format!("mcp.server.{}", "t".repeat(80));
-    let request = crate::tool_name_tests::request_with(&[&long]);
+    let request = crate::tests::tool_name_tests::request_with(&[&long]);
     SKIP_HASH_ADMISSION.with(|flag| flag.set(true));
     let detected = std::panic::catch_unwind(|| funded(&request, 0, 116, true));
     SKIP_HASH_ADMISSION.with(|flag| flag.set(false));
@@ -71,8 +71,9 @@ fn negative_control_detects_unfunded_production_digest() {
 }
 
 fn collision_free(names: &[String]) {
-    let request =
-        crate::tool_name_tests::request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    let request = crate::tests::tool_name_tests::request_with(
+        &names.iter().map(String::as_str).collect::<Vec<_>>(),
+    );
     let (_, built) = Names::built(&request);
     assert_eq!(
         built.wire_sorts,
