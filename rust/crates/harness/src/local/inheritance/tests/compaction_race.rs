@@ -45,7 +45,7 @@ async fn first_compaction_admission_model_retains_only_the_captured_binding() ->
             ScriptedModelProvider::new([ScriptedTurn::Text(marker.clone())]).with_context_capacity(
                 crate::context::ModelContextCapacity {
                     context_tokens: 32_768,
-                    output_tokens: 4096,
+                    output_tokens: Some(4096),
                 },
             ),
         );

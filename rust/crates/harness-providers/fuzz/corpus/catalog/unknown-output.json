@@ -1,0 +1,1 @@
+{"default_model":"fixture/model","fixture":{"adapter":"responses","authentication":"optional","base_url":"http://localhost:1234","max_event_bytes":4096,"models":{"model":{"capacity":{"context_tokens":500000,"output_tokens":null}}}}}

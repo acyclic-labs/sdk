@@ -168,8 +168,8 @@ pub(crate) fn body_named<'a>(
     system.retain(|text| !text.trim().is_empty());
     let max = request
         .max_output_tokens
-        .unwrap_or(provider.context_output());
-    if max == 0 || max > provider.context_output() {
+        .unwrap_or(provider.default_output_budget());
+    if !provider.capacity.permits_output(max) {
         return Err(invalid("requested output exceeds selected model capacity"));
     }
     let mut body = request.model.options.clone();

@@ -11,16 +11,33 @@ use serde::{Deserialize, Serialize};
 pub struct ModelContextCapacity {
     /// Maximum tokens in the provider's complete input plus generated output.
     pub context_tokens: u32,
-    /// Maximum generated tokens supported by the selected model.
-    pub output_tokens: u32,
+    /// Verified maximum generated tokens; absent when the provider has no known bound.
+    #[serde(default)]
+    pub output_tokens: Option<u32>,
 }
 
 impl ModelContextCapacity {
+    /// A request budget for callers that did not choose one, not an output capacity.
+    #[must_use]
+    pub fn default_output_budget(self) -> u32 {
+        self.output_tokens
+            .unwrap_or(16_384.min(self.context_tokens / 2).max(1))
+    }
+
+    /// Checks a request budget against every known hard bound.
+    #[must_use]
+    pub fn permits_output(self, output: u32) -> bool {
+        output > 0
+            && output <= self.context_tokens
+            && self.output_tokens.is_none_or(|limit| output <= limit)
+    }
+
     /// Rejects impossible provider advertisements.
     pub fn validate(self) -> Result<()> {
         if self.context_tokens == 0
-            || self.output_tokens == 0
-            || self.output_tokens > self.context_tokens
+            || self
+                .output_tokens
+                .is_some_and(|n| n == 0 || n > self.context_tokens)
         {
             return Err(Error::Invalid("selected model capacity is invalid".into()));
         }
@@ -125,7 +142,7 @@ mod tests {
             assert!(
                 ModelContextCapacity {
                     context_tokens,
-                    output_tokens
+                    output_tokens: Some(output_tokens)
                 }
                 .validate()
                 .is_err()
@@ -134,7 +151,7 @@ mod tests {
         assert!(
             ModelContextCapacity {
                 context_tokens: 8,
-                output_tokens: 8
+                output_tokens: Some(8)
             }
             .validate()
             .is_ok()

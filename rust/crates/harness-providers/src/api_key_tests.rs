@@ -115,9 +115,13 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
             )])),
             transport.clone(),
         );
+        let builtin = registry.resolve("openai/gpt-6-luna")?;
+        let capacity = builtin.context_capacity(builtin.model())?;
+        assert_eq!(capacity.context_tokens, 272_000);
+        assert_eq!(capacity.output_tokens, None);
         assert!(
-            registry.resolve("openai/gpt-6-luna").is_err(),
-            "unknown capacity is never guessed"
+            registry.resolve("openai/unregistered-model").is_err(),
+            "unregistered context capacity is never guessed"
         );
         let file = tempfile::NamedTempFile::new().map_err(|_| invalid("fixture catalog"))?;
         std::fs::write(file.path(), include_str!("fixtures/luna-catalog.json"))
@@ -131,7 +135,7 @@ async fn configured_luna_streams_api_key_reasoning_and_tools_on_ordinary_and_nat
         );
         assert_eq!(
             provider.context_capacity(provider.model())?.output_tokens,
-            1024
+            Some(1024)
         );
         let mut request = ModelRequest {
             model: provider.model().clone(),

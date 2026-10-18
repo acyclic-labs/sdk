@@ -358,7 +358,7 @@ fn capacity_and_token_accounting_are_configurable() -> Result<()> {
     }
     let capacity = crate::context::ModelContextCapacity {
         context_tokens: 512,
-        output_tokens: 64,
+        output_tokens: Some(64),
     };
     let provider = ScriptedModelProvider::new([])
         .with_context_capacity(capacity)

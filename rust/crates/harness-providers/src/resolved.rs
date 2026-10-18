@@ -69,8 +69,8 @@ impl ResolvedModel {
         Ok(())
     }
 
-    pub(crate) fn context_output(&self) -> u32 {
-        self.capacity.output_tokens
+    pub(crate) fn default_output_budget(&self) -> u32 {
+        self.capacity.default_output_budget()
     }
     pub(crate) fn validate(&self, model: &Model) -> Result<()> {
         if model != &self.model {

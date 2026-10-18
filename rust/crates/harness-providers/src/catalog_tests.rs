@@ -23,9 +23,10 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
         models: BTreeMap::from([(
             "m".into(),
             ModelSpec {
+                max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
-                    output_tokens: 1024,
+                    output_tokens: Some(1024),
                 },
                 features: ModelFeatures::default(),
             },
@@ -73,9 +74,10 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     openai.models.insert(
         "gpt-5".into(),
         ModelSpec {
+            max_context_tokens: None,
             capacity: ModelContextCapacity {
                 context_tokens: 32768,
-                output_tokens: 2048,
+                output_tokens: Some(2048),
             },
             features: ModelFeatures::default(),
         },
@@ -171,7 +173,7 @@ fn invalid_catalog_files_do_not_partially_replace_registered_policy() -> Result<
             .load_catalog(file.path())
             .expect_err("malformed catalog")
             .to_string(),
-        "invalid request: invalid provider catalog"
+        "invalid request: provider catalog: key must be a string at line 1 column 2"
     );
     Ok(())
 }
@@ -254,19 +256,19 @@ proptest! {
     // retains the subset's minimum capacity without contacting a provider.
     #[test]
     fn stock_alloy_subsets_preserve_declared_features_and_minimum_capacity(
-        indices in proptest::collection::btree_set(0usize..8, 1..=8),
+        indices in proptest::collection::btree_set(0usize..10, 1..=10),
         tools in any::<bool>(), images in any::<bool>(), ordinal in any::<u64>(),
     ) {
         let (registry, transport) = stock_registry();
         let stock = stock_models(&registry);
-        prop_assert_eq!(stock.len(), 8);
+        prop_assert_eq!(stock.len(), 10);
         let models: Vec<_> = indices.into_iter().map(|index| stock[index].clone()).collect();
-        let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: u32::MAX };
+        let mut expected = ModelContextCapacity { context_tokens: u32::MAX, output_tokens: None};
         for selection in &models {
             let (provider, name) = selection.split_once('/').unwrap();
             let entry = &registry.catalog()[provider].models[name];
             expected.context_tokens = expected.context_tokens.min(entry.capacity.context_tokens);
-            expected.output_tokens = expected.output_tokens.min(entry.capacity.output_tokens);
+            expected.output_tokens = expected.output_tokens.into_iter().chain(entry.capacity.output_tokens).min();
         }
         let alloy = registry.resolve_alloy(AlloySpec {
             models: models.clone(), select: AlloySelection::RoundRobin,

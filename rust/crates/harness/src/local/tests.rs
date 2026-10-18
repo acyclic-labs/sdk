@@ -60,7 +60,7 @@ fn checkout_config(
 fn capacity() -> ModelContextCapacity {
     ModelContextCapacity {
         context_tokens: 32_768,
-        output_tokens: 4096,
+        output_tokens: Some(4096),
     }
 }
 
@@ -72,11 +72,14 @@ fn model() -> Result<Model> {
 fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -> Result<()> {
     let capacity = ModelContextCapacity {
         context_tokens: 32_768,
-        output_tokens: 4096,
+        output_tokens: Some(4096),
     };
     let explicit = acyclic_harness::context::ThresholdCompaction::default();
     let automatic = acyclic_harness::context::ThresholdCompaction::for_capacity(capacity, 24_000)?;
-    assert_eq!(automatic.validate(capacity, None)?, capacity.output_tokens);
+    assert_eq!(
+        Some(automatic.validate(capacity, None)?),
+        capacity.output_tokens
+    );
     assert!(automatic.recent_tokens < explicit.recent_tokens);
     assert!(
         24_000 + automatic.response_reserve_tokens + 2 * automatic.recent_tokens
@@ -87,7 +90,7 @@ fn automatic_compaction_fits_small_models_without_rewriting_explicit_budgets() -
         acyclic_harness::context::ThresholdCompaction::for_capacity(
             ModelContextCapacity {
                 context_tokens: 2,
-                output_tokens: 1
+                output_tokens: Some(1)
             },
             0
         )

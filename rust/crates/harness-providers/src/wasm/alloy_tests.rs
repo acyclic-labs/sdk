@@ -30,9 +30,10 @@ fn parity(
             (
                 format!("model-{index}"),
                 ModelSpec {
+                    max_context_tokens: None,
                     capacity: ModelContextCapacity {
                         context_tokens: capacity,
-                        output_tokens: capacity / 4,
+                        output_tokens: Some(capacity / 4),
                     },
                     features: ModelFeatures {
                         tools: true,

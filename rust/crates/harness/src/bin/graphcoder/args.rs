@@ -13,8 +13,8 @@ pub enum InputFormat {
 pub struct Args {
     #[arg(long, default_value = ".")]
     pub workspace: PathBuf,
-    #[arg(long, env = "GRAPHCODER_MODEL", default_value = "openai/gpt-5")]
-    pub model: String,
+    #[arg(long, env = "GRAPHCODER_MODEL")]
+    pub model: Option<String>,
     #[arg(long)]
     pub catalog: Option<PathBuf>,
     #[arg(long)]

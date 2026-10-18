@@ -109,7 +109,7 @@ async fn exercise(parent_fails: bool) -> Result<()> {
     let provider = Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
         ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         },
     ));
     let model = Model::new("scripted".into(), "errors".into(), "1".into(), Value::Null)?;

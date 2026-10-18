@@ -14,7 +14,7 @@ async fn fixture(count: u64) -> (tempfile::TempDir, LocalHarness, crate::task_vo
         ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>()).with_context_capacity(
             ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

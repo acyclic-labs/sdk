@@ -285,7 +285,7 @@ pub(super) async fn run(value: Value) -> TestResult {
                         Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
                             ModelContextCapacity {
                                 context_tokens: 32_768,
-                                output_tokens: 4096,
+                                output_tokens: Some(4096),
                             },
                         )),
                     )

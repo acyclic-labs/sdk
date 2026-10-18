@@ -45,14 +45,25 @@ async fn open(
     if let Some(path) = &args.catalog {
         registry.load_catalog(path)?;
     }
-    let provider = Arc::new(registry.resolve(&args.model)?);
-    let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
-    if let Some(root) = &args.settings_root {
-        config = config.settings(
-            acyclic_harness::native_settings::SettingsConfig::new(&args.workspace, root)
-                .codex_home(root.join(".codex")),
-        );
+    let home = args
+        .settings_root
+        .clone()
+        .or_else(dirs::home_dir)
+        .ok_or("user settings directory is unavailable")?;
+    let mut settings =
+        acyclic_harness::native_settings::SettingsConfig::new(&args.workspace, &home);
+    if args.settings_root.is_some() {
+        settings = settings.codex_home(home.join(".codex"));
     }
+    let selection = match &args.model {
+        Some(selection) => selection.clone(),
+        None => settings
+            .configured_model()?
+            .unwrap_or_else(|| registry.default_model().into()),
+    };
+    let provider = Arc::new(registry.resolve(&selection)?);
+    let mut config = LocalHarnessConfig::new(&args.workspace, (provider.model().clone(), provider));
+    config = config.settings(settings);
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 

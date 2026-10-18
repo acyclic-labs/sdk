@@ -784,3 +784,16 @@ fn unordered(model: &serde_json::Value, user: &serde_json::Value) -> bool {
     });
     !calls.is_empty() && distinct && complete && leading != calls
 }
+
+/// Accepted provider catalogs preserve capacities/defaults through the production parser.
+pub fn assert_catalog_invariants(input: &[u8]) {
+    if let Ok(document) = crate::catalog_document::parse(input) {
+        let encoded = serde_json::to_vec(&document).unwrap();
+        let replay = crate::catalog_document::parse(&encoded).unwrap();
+        assert_eq!(document.default_model, replay.default_model);
+        assert_eq!(
+            serde_json::to_value(document.providers).unwrap(),
+            serde_json::to_value(replay.providers).unwrap()
+        );
+    }
+}

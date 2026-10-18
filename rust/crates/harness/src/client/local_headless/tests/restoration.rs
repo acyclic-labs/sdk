@@ -93,7 +93,7 @@ async fn local() -> (tempfile::TempDir, Arc<LocalHarness>) {
         crate::test_support::ScriptedModelProvider::new([]).with_context_capacity(
             crate::context::ModelContextCapacity {
                 context_tokens: 32768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

@@ -142,7 +142,7 @@ impl StockExecution<'_> {
                 "summary requires a caller-selected output token budget",
             )
         })?;
-        if output == 0 || output > capacity.output_tokens {
+        if !capacity.permits_output(output) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

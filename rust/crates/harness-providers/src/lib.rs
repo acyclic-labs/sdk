@@ -6,6 +6,8 @@ mod alloy;
 mod alloy_spec;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
+mod catalog_document;
+#[cfg(not(target_arch = "wasm32"))]
 mod codex;
 #[cfg(not(target_arch = "wasm32"))]
 mod codex_count;

@@ -27,7 +27,7 @@ fn sampling_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedMode
     ScriptedModelProvider::new(turns)
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 65_536,
-            output_tokens: 1024,
+            output_tokens: Some(1024),
         })
         .with_token_counter(|request| {
             Ok(ModelTokenCount::from_upper_bounds(

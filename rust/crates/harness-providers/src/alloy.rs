@@ -17,7 +17,7 @@ impl Registry {
         let mut models = Vec::with_capacity(spec.models.len());
         let mut capacity = ModelContextCapacity {
             context_tokens: u32::MAX,
-            output_tokens: u32::MAX,
+            output_tokens: None,
         };
         for selection in &spec.models {
             let (provider, name) = selection.split_once('/').expect("validated model identity");
@@ -31,9 +31,16 @@ impl Registry {
             }
             let model = self.resolve(selection)?;
             capacity.context_tokens = capacity.context_tokens.min(model.capacity.context_tokens);
-            capacity.output_tokens = capacity.output_tokens.min(model.capacity.output_tokens);
+            capacity.output_tokens = capacity
+                .output_tokens
+                .into_iter()
+                .chain(model.capacity.output_tokens)
+                .min();
             models.push(model);
         }
+        capacity.output_tokens = capacity
+            .output_tokens
+            .map(|limit| limit.min(capacity.context_tokens));
         capacity.validate()?;
         let models = models
             .into_iter()

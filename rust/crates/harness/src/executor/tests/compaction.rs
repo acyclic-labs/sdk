@@ -84,75 +84,95 @@ async fn incomplete_summaries_reconcile_until_completion_without_redispatch() ->
 
 #[tokio::test]
 async fn default_threshold_compacts_through_ordinary_model_admission() -> Result<()> {
-    let journal = Journal::default();
-    let (provider, _accounting_calls) = counted_model(
-        65_536,
-        None,
-        [
-            ScriptedTurn::Text("summary".into()),
-            ScriptedTurn::Text("answer".into()),
-        ],
-        [],
-    );
-    let source = crate::context::Context {
-        messages: vec![
-            ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text("keep".into()),
-            },
-            ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("o".repeat(28_000)),
-            },
-            ModelMessage {
-                role: ModelRole::Assistant,
-                content: ModelContent::Text("a".repeat(28_000)),
-            },
-        ],
-        ..crate::context::Context::default()
-    };
-    let executor = StockExecutor::new(
-        Model::new(
-            "synthetic".into(),
-            "byte-counter".into(),
-            "1".into(),
-            json!({}),
-        )?,
-        provider.clone(),
-        ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
-            "history",
-            "1",
-            Arc::new(source),
-            crate::context::ContextPlacement::Prepend,
-        )) as Arc<dyn crate::context::ContextStage>]),
-        ToolRegistry::default(),
-    );
-    let input = TurnInput {
-        operation_id: OperationId::new(),
-        input: ModelContent::Text("c".repeat(5_000)),
-        selected_context: None,
-        max_steps: 1,
-    };
-    let output = executor.execute(input.clone(), &journal).await?;
-    assert_eq!(output.text, "answer");
-    assert_eq!(executor.execute(input, &journal).await?, output);
-    let requests = provider.requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].max_output_tokens, Some(4_096));
-    assert_eq!(requests[1].max_output_tokens, Some(4_096));
-    assert_eq!(requests[1].messages.len(), 4);
-    assert!(matches!(
-        &requests[1].messages[0].content,
-        ModelContent::Part(ModelContentPart::File { .. })
-    ));
-    assert_eq!(
-        requests[1].messages[1].content,
-        ModelContent::Text("keep".into())
-    );
-    assert_eq!(
-        requests[1].messages.last().map(|message| &message.content),
-        Some(&ModelContent::Text("c".repeat(5_000)))
-    );
+    for output_capacity in [Some(4096), None] {
+        let journal = Journal::default();
+        let (provider, _accounting_calls) = counted_model(
+            65_536,
+            None,
+            [
+                ScriptedTurn::Text("summary".into()),
+                ScriptedTurn::Text("answer".into()),
+            ],
+            [],
+        );
+        let provider = Arc::new(
+            Arc::into_inner(provider)
+                .expect("unique fixture model")
+                .with_context_capacity(crate::context::ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: output_capacity,
+                }),
+        );
+        let source = crate::context::Context {
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text("keep".into()),
+                },
+                ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("o".repeat(28_000)),
+                },
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Text("a".repeat(28_000)),
+                },
+            ],
+            ..crate::context::Context::default()
+        };
+        let executor = StockExecutor::new(
+            Model::new(
+                "synthetic".into(),
+                "byte-counter".into(),
+                "1".into(),
+                json!({}),
+            )?,
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(source),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("c".repeat(5_000)),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "answer");
+        assert_eq!(executor.execute(input, &journal).await?, output);
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0].max_output_tokens,
+            Some(output_capacity.unwrap_or(16_384))
+        );
+        assert_eq!(
+            requests[1].max_output_tokens,
+            Some(output_capacity.unwrap_or(16_384))
+        );
+        assert_eq!(
+            provider.context_capacity(&requests[0].model)?.output_tokens,
+            output_capacity
+        );
+        assert_eq!(requests[1].messages.len(), 4);
+        assert!(matches!(
+            &requests[1].messages[0].content,
+            ModelContent::Part(ModelContentPart::File { .. })
+        ));
+        assert_eq!(
+            requests[1].messages[1].content,
+            ModelContent::Text("keep".into())
+        );
+        assert_eq!(
+            requests[1].messages.last().map(|message| &message.content),
+            Some(&ModelContent::Text("c".repeat(5_000)))
+        );
+    }
     Ok(())
 }
 

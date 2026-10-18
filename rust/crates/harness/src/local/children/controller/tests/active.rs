@@ -43,7 +43,7 @@ async fn exercise(control: Control) -> Result<()> {
         ])
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         })
         .with_dispatch_observer(move |dispatch| {
             dispatches.send(dispatch).unwrap();

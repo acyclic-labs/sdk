@@ -133,7 +133,7 @@ async fn manual_summary_reserves_actual_input_on_a_small_model() -> Result<()> {
     let project = volume(directory.path()).await?;
     let capacity = ModelContextCapacity {
         context_tokens: 8_192,
-        output_tokens: 8_192,
+        output_tokens: Some(8_192),
     };
     let provider = Arc::new(
         ScriptedModelProvider::new([ScriptedTurn::Text("small-model summary".into())])

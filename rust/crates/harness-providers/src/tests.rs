@@ -317,7 +317,7 @@ pub(super) fn provider_with(
         }),
         capacity: ModelContextCapacity {
             context_tokens: 8192,
-            output_tokens: 1024,
+            output_tokens: Some(1024),
         },
         key: Some("scripted-key".into()),
         transport: crate::deadline::Bounded::new(transport, crate::TimeoutSpec::DEFAULT),
@@ -488,9 +488,10 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
         models: BTreeMap::from([(
             "org/model".into(),
             ModelSpec {
+                max_context_tokens: None,
                 capacity: ModelContextCapacity {
                     context_tokens: 8192,
-                    output_tokens: 1024,
+                    output_tokens: Some(1024),
                 },
                 features: ModelFeatures::default(),
             },
@@ -706,3 +707,6 @@ mod reasoning;
 
 #[path = "files_tests.rs"]
 mod files;
+
+#[path = "catalog_capacity_tests.rs"]
+mod catalog_capacity_tests;

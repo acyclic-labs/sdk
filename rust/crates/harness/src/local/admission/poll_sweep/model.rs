@@ -44,7 +44,7 @@ impl ModelEffects {
             script = script
                 .with_context_capacity(ModelContextCapacity {
                     context_tokens: 1024,
-                    output_tokens: 64,
+                    output_tokens: Some(64),
                 })
                 .with_token_counter(|request| {
                     Ok(ModelTokenCount::from_upper_bounds(

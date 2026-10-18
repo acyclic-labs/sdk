@@ -184,7 +184,7 @@ fn provider(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelP
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(
         acyclic_harness::context::ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         },
     ))
 }

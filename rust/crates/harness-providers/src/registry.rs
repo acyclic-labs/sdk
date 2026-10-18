@@ -6,6 +6,7 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
+    default_model: Option<String>,
     credentials: Credentials,
     transport: Arc<dyn HttpTransport>,
     files: crate::files::Files,
@@ -33,6 +34,7 @@ impl Registry {
             .map(Arc::new);
         Self {
             providers,
+            default_model: None,
             credentials,
             transport,
             files: crate::files::Files::default(),
@@ -61,6 +63,13 @@ impl Registry {
         self
     }
 
+    /// Catalog-declared fallback when neither argv nor settings select a model.
+    pub fn default_model(&self) -> &str {
+        self.default_model
+            .as_deref()
+            .unwrap_or(crate::catalog::DEFAULT_MODEL)
+    }
+
     /// Borrows declarative endpoint, authentication and capacity specifications.
     pub fn catalog(&self) -> &BTreeMap<String, Arc<ProviderSpec>> {
         &self.providers
@@ -77,13 +86,31 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
-        let catalog: BTreeMap<String, ProviderSpec> =
-            serde_json::from_slice(&bytes).map_err(|_| invalid("invalid provider catalog"))?;
-        for (provider, spec) in &catalog {
+        let catalog = crate::catalog_document::parse(&bytes)?;
+        for (provider, spec) in &catalog.providers {
             validate_spec(provider, spec)?;
         }
-        self.providers
-            .extend(catalog.into_iter().map(|(id, spec)| (id, Arc::new(spec))));
+        if let Some(default) = &catalog.default_model {
+            let (provider, name) = default
+                .split_once('/')
+                .ok_or_else(|| invalid("catalog default_model requires provider/model"))?;
+            let entry = catalog
+                .providers
+                .get(provider)
+                .or_else(|| self.providers.get(provider).map(Arc::as_ref));
+            if entry.is_none_or(|entry| !entry.models.contains_key(name)) {
+                return Err(invalid("catalog default_model is absent from its models"));
+            }
+        }
+        self.providers.extend(
+            catalog
+                .providers
+                .into_iter()
+                .map(|(id, spec)| (id, Arc::new(spec))),
+        );
+        if let Some(default) = catalog.default_model {
+            self.default_model = Some(default);
+        }
         Ok(())
     }
 
@@ -113,9 +140,7 @@ impl Registry {
             .models
             .get(name)
             .map(|entry| entry.capacity)
-            .ok_or_else(|| {
-                invalid("register the exact selected model context and output capacities")
-            })?;
+            .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -230,6 +255,14 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
     }
     for model in config.models.values() {
         model.capacity.validate()?;
+        if model
+            .max_context_tokens
+            .is_some_and(|max| max < model.capacity.context_tokens)
+        {
+            return Err(invalid(
+                "model maximum context is below its selected context",
+            ));
+        }
     }
     Ok(())
 }

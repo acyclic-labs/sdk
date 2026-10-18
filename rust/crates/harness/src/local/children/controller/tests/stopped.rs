@@ -18,7 +18,7 @@ async fn reopen_finishes_a_retained_model_stop_before_running_the_next_message()
         ])
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         })
         .with_dispatch_observer(move |_| {
             sent.send(()).unwrap();

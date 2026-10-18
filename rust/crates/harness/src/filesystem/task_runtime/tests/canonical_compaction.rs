@@ -190,7 +190,7 @@ async fn task_bound_canonical_private_summary_recovers_without_journal_read_gran
         })
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 1024,
-            output_tokens: 64,
+            output_tokens: Some(64),
         })
         .with_token_counter(|request| {
             Ok(crate::context::ModelTokenCount::from_upper_bounds(

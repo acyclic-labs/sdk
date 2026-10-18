@@ -181,7 +181,7 @@ fn task_model(turns: impl IntoIterator<Item = ScriptedTurn>) -> ScriptedModelPro
     ScriptedModelProvider::new(turns)
         .with_context_capacity(acyclic_harness::context::ModelContextCapacity {
             context_tokens: 131_072,
-            output_tokens: 16_384,
+            output_tokens: Some(16_384),
         })
         .with_token_counter(|request| {
             let message_tokens = request

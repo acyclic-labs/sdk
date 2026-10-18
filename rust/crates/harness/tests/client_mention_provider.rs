@@ -117,9 +117,10 @@ async fn scenario(
             models: BTreeMap::from([(
                 "model".into(),
                 ModelSpec {
+                    max_context_tokens: None,
                     capacity: ModelContextCapacity {
                         context_tokens: 8192,
-                        output_tokens: 64,
+                        output_tokens: Some(64),
                     },
                     features: ModelFeatures {
                         tools: false,

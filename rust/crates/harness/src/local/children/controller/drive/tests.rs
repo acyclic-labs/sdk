@@ -14,7 +14,7 @@ async fn outcome_after_ready_child_io(broken: bool) -> Result<bool> {
         ScriptedModelProvider::new(std::iter::empty::<ScriptedTurn>()).with_context_capacity(
             ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

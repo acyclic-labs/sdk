@@ -32,7 +32,7 @@ fn summary_model_turns(turns: impl IntoIterator<Item = ScriptedTurn>) -> Scripte
     ScriptedModelProvider::new(turns)
         .with_context_capacity(ModelContextCapacity {
             context_tokens: 131_072,
-            output_tokens: 4_096,
+            output_tokens: Some(4_096),
         })
         .with_token_counter(|request| {
             let message_tokens = request

@@ -383,7 +383,7 @@ async fn prompt_just_under_request_bound_has_independent_observation_budget() ->
         ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_context_capacity(
             ModelContextCapacity {
                 context_tokens: 131_072,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

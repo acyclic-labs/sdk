@@ -48,7 +48,7 @@ async fn in_place_git_advances_switched_and_unswitched_mounts_once() -> Result<(
         crate::test_support::ScriptedModelProvider::new([]).with_context_capacity(
             crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

@@ -339,7 +339,7 @@ impl ModelProvider for MockAdapter {
                 .as_u64()
                 .and_then(|tokens| u32::try_from(tokens).ok())
                 .unwrap_or(131_072),
-            output_tokens: 4_096,
+            output_tokens: Some(4_096),
         })
     }
     fn count_tokens<'a>(

@@ -1,0 +1,8 @@
+{
+  "source": "Codex models_cache.json metadata, 2026-10-18",
+  "source_schema": "openai/codex models-manager ModelInfo",
+  "models": [
+    {"slug":"gpt-6.1-sol","context_window":500000,"max_context_window":872000,"effective_context_window_percent":95},
+    {"slug":"gpt-6-luna","context_window":272000,"max_context_window":872000,"effective_context_window_percent":95}
+  ]
+}

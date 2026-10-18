@@ -43,7 +43,11 @@ impl ThresholdCompaction {
         let mut policy = Self::default();
         policy.response_reserve_tokens = policy
             .response_reserve_tokens
-            .min(capacity.output_tokens)
+            .min(
+                capacity
+                    .output_tokens
+                    .unwrap_or(policy.response_reserve_tokens),
+            )
             .min(available / 2);
         let usable = available - policy.response_reserve_tokens;
         policy.recent_tokens = policy.recent_tokens.min(usable / 2);
@@ -60,13 +64,16 @@ impl ThresholdCompaction {
         capacity.validate()?;
         self.retention.validate(None)?;
         let required = u64::from(self.response_reserve_tokens) + u64::from(self.recent_tokens);
-        let output =
-            output_tokens.unwrap_or(capacity.output_tokens.min(self.response_reserve_tokens));
+        let output = output_tokens.unwrap_or(
+            capacity
+                .output_tokens
+                .unwrap_or(self.response_reserve_tokens)
+                .min(self.response_reserve_tokens),
+        );
         if self.response_reserve_tokens == 0
             || self.recent_tokens == 0
             || required >= u64::from(capacity.context_tokens)
-            || output == 0
-            || output > capacity.output_tokens
+            || !capacity.permits_output(output)
             || output > self.response_reserve_tokens
         {
             return Err(Error::Invalid(
@@ -138,3 +145,6 @@ mod copying_tests;
 mod defaults_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod unknown_output_tests;

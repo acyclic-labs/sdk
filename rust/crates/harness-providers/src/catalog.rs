@@ -4,6 +4,8 @@ use crate::{
 use acyclic_harness::context::ModelContextCapacity;
 use std::collections::BTreeMap;
 
+pub(crate) const DEFAULT_MODEL: &str = "openai/gpt-5";
+
 const ENDPOINTS: &[(&str, Adapter, Authentication, &str)] = &[
     (
         "anthropic",
@@ -134,15 +136,34 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                     (
                         name.into(),
                         crate::ModelSpec {
+                            max_context_tokens: None,
                             capacity: ModelContextCapacity {
                                 context_tokens,
-                                output_tokens,
+                                output_tokens: Some(output_tokens),
                             },
                             features,
                         },
                     )
                 })
                 .collect();
+            let mut models: BTreeMap<String, crate::ModelSpec> = models;
+            if id == "openai" {
+                // Codex models_cache.json metadata, 2026-10-18. max_context_window
+                // is an input/context override ceiling, never an output capacity.
+                for (name, context) in [("gpt-6.1-sol", 500_000), ("gpt-6-luna", 272_000)] {
+                    models.insert(
+                        name.into(),
+                        crate::ModelSpec {
+                            max_context_tokens: Some(872_000),
+                            capacity: ModelContextCapacity {
+                                context_tokens: context,
+                                output_tokens: None,
+                            },
+                            features: TOOLS_AND_IMAGES,
+                        },
+                    );
+                }
+            }
             (
                 id.into(),
                 ProviderSpec {

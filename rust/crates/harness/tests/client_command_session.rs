@@ -57,7 +57,7 @@ async fn published_shell_request_causes_a_real_tool_effect_and_does_not_replay()
     let provider = Arc::new(ScriptedModelProvider::new([]).with_context_capacity(
         acyclic_harness::context::ModelContextCapacity {
             context_tokens: 32_768,
-            output_tokens: 4096,
+            output_tokens: Some(4096),
         },
     ));
     let local = LocalHarness::open(crate::client_local::config(

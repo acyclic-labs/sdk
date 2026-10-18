@@ -118,7 +118,7 @@ impl ScriptedModelProvider {
             })),
             capacity: Some(ModelContextCapacity {
                 context_tokens: 131_072,
-                output_tokens: 4_096,
+                output_tokens: Some(4_096),
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
             dispatch_observer: None,

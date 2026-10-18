@@ -136,8 +136,8 @@ impl TaskContext {
         .await?;
         let capacity = binding.provider.context_capacity(&binding.model)?;
         capacity.validate()?;
-        let output_tokens = max_output_tokens.unwrap_or(capacity.output_tokens);
-        if output_tokens > capacity.output_tokens {
+        let output_tokens = max_output_tokens.unwrap_or_else(|| capacity.default_output_budget());
+        if !capacity.permits_output(output_tokens) {
             return Err(Error::Invalid(
                 "model output budget exceeds selected capacity".into(),
             ));

@@ -32,7 +32,7 @@ async fn automatic_compaction_fits_equal_small_context_and_output_capacities() -
     automatic_compaction_case(
         ModelContextCapacity {
             context_tokens: 8192,
-            output_tokens: 8192,
+            output_tokens: Some(8192),
         },
         2000,
     )
@@ -158,7 +158,7 @@ async fn automatic_compaction_case(capacity: ModelContextCapacity, bytes: usize)
 async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> Result<()> {
     let capacity = ModelContextCapacity {
         context_tokens: 8192,
-        output_tokens: 8192,
+        output_tokens: Some(8192),
     };
     for legacy in [false, true] {
         let directory = tempfile::tempdir().map_err(super::super::storage)?;

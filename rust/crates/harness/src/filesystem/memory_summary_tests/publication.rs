@@ -794,7 +794,10 @@ async fn assert_summary_child_import(
         .count_tokens(&request)
         .await?
         .validate(&request, &mut None)?;
-    assert!(input_tokens + u64::from(capacity.output_tokens) <= u64::from(capacity.context_tokens));
+    assert!(
+        input_tokens + u64::from(capacity.output_tokens.unwrap())
+            <= u64::from(capacity.context_tokens)
+    );
     assert_eq!(
         request.request().messages.get(..captured.messages.len()),
         Some(captured.messages.as_slice())

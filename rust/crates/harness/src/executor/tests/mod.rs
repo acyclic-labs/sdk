@@ -51,7 +51,7 @@ fn counted_model(
         .with_reconciliations(recoveries)
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: capacity,
-            output_tokens: 4_096,
+            output_tokens: Some(4_096),
         })
         .with_token_counter(move |request| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

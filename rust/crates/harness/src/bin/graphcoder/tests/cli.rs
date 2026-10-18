@@ -21,6 +21,11 @@ enum Mode {
     Prompt,
     Instructions,
     FsRefusals,
+    ConfiguredModel,
+    UnknownOutput,
+    CatalogDefault,
+    EnvironmentModel,
+    ExplicitModel,
     Jsonl,
     OpenJsonl,
     Dumb,
@@ -45,7 +50,7 @@ async fn execute_with(
     expected: (&str, i32),
 ) -> Vec<u8> {
     let (prompt, exit) = expected;
-    let jsonl = !matches!(mode, Mode::Prompt | Mode::Instructions | Mode::FsRefusals);
+    let jsonl = matches!(mode, Mode::Jsonl | Mode::OpenJsonl | Mode::Dumb);
     let keep_open = matches!(mode, Mode::OpenJsonl);
     let mut input = tempfile::NamedTempFile::new().unwrap();
     let request = if jsonl {
@@ -60,7 +65,10 @@ async fn execute_with(
     input.write_all(&request).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
-        .env("CODEX_HOME", settings)
+        .env("CODEX_HOME", settings.join("codex-home"))
+        .env("HOME", settings)
+        .env("USERPROFILE", settings)
+        .env_remove("GRAPHCODER_MODEL")
         .env("LOCALAPPDATA", settings)
         .env("XDG_DATA_HOME", settings)
         .env_remove("OPENAI_API_KEY")
@@ -69,14 +77,7 @@ async fn execute_with(
         .arg(workspace)
         .arg("--catalog")
         .arg(catalog)
-        .arg("--settings-root")
-        .arg(settings)
-        .args([
-            "--model",
-            "graphcoder-qual/tiny",
-            "--operation",
-            &operation.to_string(),
-        ])
+        .args(["--operation", &operation.to_string()])
         .stdin(if keep_open {
             Stdio::piped()
         } else {
@@ -84,6 +85,17 @@ async fn execute_with(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if !matches!(mode, Mode::ConfiguredModel) {
+        command.arg("--settings-root").arg(settings);
+    }
+    if matches!(mode, Mode::ExplicitModel) {
+        command.env("GRAPHCODER_MODEL", "missing/environment");
+    }
+    if matches!(mode, Mode::EnvironmentModel) {
+        command.env("GRAPHCODER_MODEL", "graphcoder-qual/tiny");
+    } else if !matches!(mode, Mode::ConfiguredModel | Mode::CatalogDefault) {
+        command.args(["--model", "graphcoder-qual/tiny"]);
+    }
     if matches!(mode, Mode::Dumb) {
         command.env("TERM", "dumb");
     } else if jsonl {
@@ -185,12 +197,43 @@ async fn scenario(mode: Mode) {
         )
         .unwrap();
     }
+    std::fs::create_dir(settings.join(".codex")).unwrap();
+    let configured = match mode {
+        Mode::CatalogDefault => "",
+        Mode::ExplicitModel | Mode::EnvironmentModel => "model = \"missing/model\"\n",
+        _ => "model = \"tiny\"\nmodel_provider = \"graphcoder-qual\"\n",
+    };
+    std::fs::write(settings.join(".codex/config.toml"), configured).unwrap();
+    std::fs::create_dir(settings.join("codex-home")).unwrap();
+    if matches!(mode, Mode::ConfiguredModel) {
+        std::fs::write(settings.join("codex-home/config.toml"), configured).unwrap();
+        std::fs::write(
+            settings.join(".codex/config.toml"),
+            "model = \"missing/decoy\"\n",
+        )
+        .unwrap();
+    }
     let catalog = directory.path().join("catalog.json");
     std::fs::write(&catalog, serde_json::to_vec(&json!({"graphcoder-qual":{
         "adapter":"responses","authentication":"optional","base_url":format!("http://{address}"),
         "models":{"tiny":{"capacity":{"context_tokens":8192,"output_tokens":1024},"features":{"tools":true,"images":false}}},"max_event_bytes":4096,
         "token_counter":{"path":"count","adapter":"responses","response_field":"input_tokens","framing_tokens":0}
     }})).unwrap()).unwrap();
+    if matches!(
+        mode,
+        Mode::CatalogDefault | Mode::EnvironmentModel | Mode::ExplicitModel
+    ) {
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+        document["default_model"] = json!("graphcoder-qual/tiny");
+        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
+    if matches!(mode, Mode::UnknownOutput) {
+        let mut document: Value =
+            serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+        document["graphcoder-qual"]["models"]["tiny"]["capacity"]["output_tokens"] = Value::Null;
+        std::fs::write(&catalog, serde_json::to_vec(&document).unwrap()).unwrap();
+    }
     let operation = OperationId::new();
     let output = execute(&workspace, &catalog, &settings, operation, mode).await;
     let mut lines = std::str::from_utf8(&output).unwrap().lines();
@@ -312,4 +355,51 @@ async fn settled_jsonl_exits_while_the_input_pipe_stays_open() {
 #[tokio::test]
 async fn dumb_terminal_uses_the_shared_headless_runner_without_tty() {
     scenario(Mode::Dumb).await;
+}
+
+#[test]
+fn catalog_parse_error_reports_field_and_line_through_binary() {
+    let fixture = tempfile::tempdir().unwrap();
+    let catalog = fixture.path().join("catalog.json");
+    std::fs::write(
+        &catalog,
+        "{\n  \"broken\": {\n    \"adapter\": 42\n  }\n}\n",
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_graphcoder"))
+        .env("CODEX_HOME", fixture.path())
+        .env("XDG_DATA_HOME", fixture.path())
+        .env_remove("GRAPHCODER_MODEL")
+        .args(["--catalog", catalog.to_str().unwrap(), "-p", "hello"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("broken.adapter"), "{error}");
+    assert!(error.contains("line 3"), "{error}");
+}
+
+#[tokio::test]
+async fn catalog_configured_model_reaches_http() {
+    scenario(Mode::ConfiguredModel).await;
+}
+
+#[tokio::test]
+async fn catalog_declared_default_reaches_http() {
+    scenario(Mode::CatalogDefault).await;
+}
+
+#[tokio::test]
+async fn catalog_environment_overrides_configured_model() {
+    scenario(Mode::EnvironmentModel).await;
+}
+
+#[tokio::test]
+async fn catalog_explicit_model_overrides_configured_model() {
+    scenario(Mode::ExplicitModel).await;
+}
+
+#[tokio::test]
+async fn catalog_unknown_output_still_initializes_compaction_and_reaches_http() {
+    scenario(Mode::UnknownOutput).await;
 }

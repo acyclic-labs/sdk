@@ -11,10 +11,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde = { version = "=1.0.229", features = ["derive"] }
+toml = "=1.1.6"
 
 [[bin]]
 name = "workspace_key"
 path = "fuzz_targets/workspace_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "model_selection"
+path = "fuzz_targets/model_selection.rs"
 test = false
 doc = false
 bench = false

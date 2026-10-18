@@ -61,7 +61,7 @@ async fn unsaved_indeterminate_owner_result_preserves_exit_class() -> Result<()>
         crate::test_support::ScriptedModelProvider::new([]).with_context_capacity(
             crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );

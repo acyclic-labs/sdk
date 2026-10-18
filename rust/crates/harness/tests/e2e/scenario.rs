@@ -197,7 +197,7 @@ fn defaults_merge_from_root_to_family_and_keep_case_overrides() -> super::TestRe
     assert_eq!(case.expect.request_count, Some(1));
     let capacity = case.capacity.ok_or("missing capacity")?;
     assert_eq!(capacity.context_tokens, 80);
-    assert_eq!(capacity.output_tokens, 10);
+    assert_eq!(capacity.output_tokens, Some(10));
     std::fs::write(&path, r#"{"typo":1}"#)?;
     assert!(Scenario::load(temp.path(), &path).is_err());
     std::fs::write(family.join("_defaults.json"), "{")?;

@@ -416,7 +416,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         ])
         .with_context_capacity(crate::context::ModelContextCapacity {
             context_tokens: 131_072,
-            output_tokens: 8_192,
+            output_tokens: Some(8_192),
         })
         .with_token_counter(|request| {
             Ok(crate::context::ModelTokenCount::from_upper_bounds(

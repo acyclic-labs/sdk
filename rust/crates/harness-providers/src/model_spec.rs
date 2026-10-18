@@ -23,7 +23,10 @@ impl ModelFeatures {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct ModelSpec {
-    /// Complete context and generated-output limits.
+    /// Maximum context accepted by an explicit context override, when advertised.
+    #[serde(default)]
+    pub max_context_tokens: Option<u32>,
+    /// Selected context limit and any verified generated-output limit.
     pub capacity: ModelContextCapacity,
     /// Undeclared features fail closed during alloy resolution.
     #[serde(default)]

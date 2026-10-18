@@ -57,7 +57,7 @@ async fn child_file_recovery(point: &'static str) -> Result<()> {
         ScriptedModelProvider::new([ScriptedTurn::Text("retained answer".into())])
             .with_context_capacity(ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             }),
     );
     let model = crate::model::Model::new(

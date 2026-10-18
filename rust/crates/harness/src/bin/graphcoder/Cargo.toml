@@ -16,6 +16,7 @@ path = "../graphcoder.rs"
 acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 clap.workspace = true
+dirs.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 
