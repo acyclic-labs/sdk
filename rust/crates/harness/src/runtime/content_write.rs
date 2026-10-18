@@ -79,9 +79,32 @@ use crate::conversation::{ContentIo, content_error};
 use crate::wire::ErrorCode;
 
 /// A validated agent-owned private writer, constructed only by
-/// [`TaskContext::private_summaries`].
+/// [`TaskContext::summary_destination`].
 #[derive(Clone, Copy)]
 pub(crate) struct PrivateSummaries<'a>(&'a ContentBindings);
+
+/// Missing authority is data; failure to check authority remains an error.
+#[derive(Clone, Copy)]
+pub(crate) enum SummaryDestination<'a> {
+    Writer(PrivateSummaries<'a>),
+    Unavailable(&'static str),
+}
+
+impl<'a> SummaryDestination<'a> {
+    pub(crate) fn writer(self) -> Option<PrivateSummaries<'a>> {
+        match self {
+            Self::Writer(writer) => Some(writer),
+            Self::Unavailable(_) => None,
+        }
+    }
+
+    pub(crate) fn require(self, io: Option<&ContentIo>) -> Result<PrivateSummaries<'a>> {
+        match self {
+            Self::Writer(writer) => Ok(writer),
+            Self::Unavailable(reason) => Err(content_error(io, ErrorCode::Unauthorized, reason)),
+        }
+    }
+}
 
 pub(super) enum ContentPublication<'a> {
     PathBound,
@@ -95,32 +118,39 @@ impl TaskContext {
     /// private. Compaction is armed only when this resolves, so a due summary
     /// never discovers a missing writer.
     pub(crate) fn private_summaries(&self, io: Option<&ContentIo>) -> Result<PrivateSummaries<'_>> {
+        self.summary_destination(io)?.require(io)
+    }
+
+    pub(crate) fn summary_destination(
+        &self,
+        io: Option<&ContentIo>,
+    ) -> Result<SummaryDestination<'_>> {
+        use SummaryDestination::{Unavailable, Writer};
         let binding = self
             .scope
             .created_private_content()
             .or(self.harness.artifacts.as_ref())
-            .or_else(|| self.content_binding(None))
-            .ok_or_else(|| {
-                content_error(
-                    io,
-                    ErrorCode::Unauthorized,
-                    "summaries require the task's private volume",
-                )
-            })?;
-        let writer = bound_content_writer(Some(binding), &self.scope, io)?;
+            .or_else(|| self.content_binding(None));
+        let Some(binding) = binding else {
+            return Ok(Unavailable("summaries require the task's private volume"));
+        };
+        let Some(writer) = binding.writer.as_ref() else {
+            return Ok(Unavailable("task has no owner-bound content writer"));
+        };
+        if !can_write_volume(writer.volume(), &self.scope, io)? {
+            return Ok(Unavailable("task scope cannot write this volume"));
+        }
         if writer.volume().class() != crate::conversation::VolumeClass::AgentPrivate
             || !matches!(
                 writer.volume().owner(),
                 crate::conversation::VolumeOwner::Agent(_)
             )
         {
-            return Err(content_error(
-                io,
-                ErrorCode::Unauthorized,
+            return Ok(Unavailable(
                 "private content requires an agent-owned private volume",
             ));
         }
-        Ok(PrivateSummaries(binding))
+        Ok(Writer(PrivateSummaries(binding)))
     }
 
     pub(crate) async fn stage_private_file_once(
@@ -401,14 +431,7 @@ fn authorize_volume_write(
     scope: &RuntimeScope,
     io: Option<&ContentIo>,
 ) -> Result<()> {
-    if !crate::executor::with_history_io(io, |work| {
-        contains_content_grant_with_work(
-            &scope.grants,
-            volume,
-            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
-            work,
-        )
-    })? {
+    if !can_write_volume(volume, scope, io)? {
         return Err(content_error(
             io,
             ErrorCode::Unauthorized,
@@ -416,6 +439,21 @@ fn authorize_volume_write(
         ));
     }
     Ok(())
+}
+
+fn can_write_volume(
+    volume: &VolumeRef,
+    scope: &RuntimeScope,
+    io: Option<&ContentIo>,
+) -> Result<bool> {
+    crate::executor::with_history_io(io, |work| {
+        contains_content_grant_with_work(
+            &scope.grants,
+            volume,
+            acyclic_fs::access::VolumeOperation::Write.capability_prefix(),
+            work,
+        )
+    })
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]

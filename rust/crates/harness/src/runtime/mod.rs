@@ -86,7 +86,7 @@ mod content_read;
 #[cfg(feature = "filesystem")]
 pub use content_read::*;
 mod content_write;
-pub(crate) use content_write::PrivateSummaries;
+pub(crate) use content_write::{PrivateSummaries, SummaryDestination};
 mod groups;
 mod interactions;
 mod model_context;

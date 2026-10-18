@@ -184,7 +184,7 @@ impl StockExecution<'_> {
             Some(prepared) => prepared,
             None => {
                 let request = if matches!(
-                    self.compaction_policy(),
+                    self.compaction_policy()?,
                     crate::context::CompactionPolicy::Disabled
                 ) {
                     self.request_taking_context(&mut projection.context)?
@@ -254,7 +254,7 @@ impl StockExecution<'_> {
             }
             self.validate_compacted_checkpoint(journal, input, projection, &retained, &proof)
                 .await?;
-            let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()
+            let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()?
             else {
                 return Err(stock_boundary(
                     self.io,
@@ -306,7 +306,7 @@ impl StockExecution<'_> {
         records: &[ExecutionRecord],
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
-        match (self.compaction_policy(), accounting) {
+        match (self.compaction_policy()?, accounting) {
             (crate::context::CompactionPolicy::Disabled, None) => Ok(prepared),
             (crate::context::CompactionPolicy::Threshold(policy), Some(accounting)) => {
                 if self.model_capacity()? != Some(accounting.capacity) {

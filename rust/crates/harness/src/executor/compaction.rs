@@ -18,7 +18,7 @@ impl StockExecution<'_> {
         accounting: ContextAccounting,
         context: crate::context::Context,
     ) -> Result<crate::model::PreparedModelRequest> {
-        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy() else {
+        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -279,7 +279,7 @@ impl StockExecution<'_> {
         request: crate::model::PreparedModelRequest,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
-        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy() else {
+        let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy()? else {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

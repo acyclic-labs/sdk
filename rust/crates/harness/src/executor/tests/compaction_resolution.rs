@@ -91,10 +91,9 @@ fn executor(
 
 fn native_work() -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(
-            1 << 20,
-            acyclic_fs::NativeMaterializationWork::accounting_state_bytes(),
-        ),
+        // Use the production operation allowance. Funding only the accounting
+        // state made the supposed successful reference an allocation failure.
+        acyclic_fs::performance::BOUNDARY_BUDGET,
         &acyclic_fs::CancellationToken::new(),
     )
     .map_err(|(cause, _)| Error::NativeWork {
@@ -129,10 +128,28 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
                     (false, None) => &CompactionPolicy::Disabled,
                 };
                 let case = format!("writer {writer}, override {policy:?}, summary {summary}");
-                let resolved = execution.compaction();
-                assert_eq!(resolved.policy, expected, "{case}");
                 let armed = matches!(expected, CompactionPolicy::Threshold(_));
-                assert_eq!(resolved.summaries.is_some(), armed && writer, "{case}");
+                if armed && !writer {
+                    assert!(
+                        matches!(execution.compaction(), Err(Error::Unauthorized(_))),
+                        "{case}"
+                    );
+                    assert!(
+                        execution.verify_task_context_binding(operation).is_err(),
+                        "{case}"
+                    );
+                    continue;
+                }
+                let resolved = execution.compaction()?;
+                assert_eq!(resolved.policy, expected, "{case}");
+                assert_eq!(
+                    resolved
+                        .destination
+                        .and_then(crate::runtime::SummaryDestination::writer)
+                        .is_some(),
+                    armed && writer,
+                    "{case}"
+                );
                 // An armed turn without a writer is rejected at entry.
                 assert_eq!(
                     execution.verify_task_context_binding(operation).is_err(),
@@ -145,7 +162,166 @@ async fn compaction_policy_matrix_resolves_through_the_task_writer() -> Result<(
     Ok(())
 }
 
-// One resolution on the original native IO; every later read reuses it.
+// The default may omit unavailable authority, but must never convert a failed
+// native operation into successful admission. Each fault uses the real writer
+// resolver, original ledger and entry check, with both default and explicit policy.
+#[tokio::test]
+async fn native_resolution_failures_reject_before_journal_or_model_work() -> Result<()> {
+    let context = admitted(true).await?;
+    for fault in 0..5 {
+        for policy in [None, Some(CompactionPolicy::default())] {
+            let operation = OperationId::new();
+            let executor = executor(&context, operation, policy)?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let mut budget = acyclic_fs::performance::work_budget(1 << 20, 1 << 20);
+            match fault {
+                0 => budget.bytes_hashed = 0,
+                1 => budget.allocation_operations = 1, // the original ledger only
+                2 => budget.items_examined = 0,
+                4 => {
+                    budget.peak_allocation_bytes =
+                        acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
+                }
+                _ => {}
+            }
+            let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).map_err(
+                |(cause, _)| Error::NativeWork {
+                    cause,
+                    custody: None,
+                },
+            )?;
+            let io = crate::executor::PreparationIo::from_native_work(&work)?;
+            if fault == 3 {
+                cancellation.cancel();
+            }
+            let execution = StockExecution {
+                io: Some(&io),
+                ..StockExecution::ordinary(&executor)
+            };
+            let journal = Journal::default();
+            let input = TurnInput {
+                operation_id: operation,
+                input: ModelContent::Text("rejected".into()),
+                selected_context: None,
+                max_steps: 1,
+            };
+            // Inspect the entry verifier directly: a later ledger operation
+            // must not mask a swallowed error by failing on the poisoned work.
+            let admission = execution.verify_task_context_binding(operation);
+            assert!(
+                match (&admission, fault) {
+                    (
+                        Err(Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                            ..
+                        }),
+                        3,
+                    ) => true,
+                    (
+                        Err(Error::NativeWork {
+                            cause: acyclic_fs::NativeTreeMaterializationError::Work(_),
+                            ..
+                        }),
+                        0..=2,
+                    ) => true,
+                    (Err(Error::NativeFilesystem { .. }), 4) => true,
+                    _ => false,
+                },
+                "fault {fault}: {admission:?}"
+            );
+            let result = execution.ensure_started(&journal, &input).await;
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::NativeWork { .. } | Error::NativeFilesystem { .. })
+                ),
+                "fault {fault}: {result:?}"
+            );
+            assert!(journal.0.lock().unwrap().is_empty());
+            assert!(journal.1.lock().unwrap().is_empty());
+            // Negative control: the previous `.ok()` fallback treats this same
+            // failed writer lookup as an unavailable writer and admits Disabled.
+            let rejected = execution.context.unwrap().0.private_summaries(Some(&io));
+            assert!(matches!(
+                rejected,
+                Err(Error::NativeWork { .. } | Error::NativeFilesystem { .. })
+            ));
+            let dropped = rejected.ok();
+            let mutant = if dropped.is_some() {
+                CompactionPolicy::default()
+            } else {
+                CompactionPolicy::Disabled
+            };
+            assert_eq!(
+                mutant,
+                CompactionPolicy::Disabled,
+                "failure-swallowing mutant escaped"
+            );
+            let mutant_executor = executor.clone().with_compaction_policy(mutant);
+            let mutant_execution = StockExecution {
+                io: Some(&io),
+                ..StockExecution::ordinary(&mutant_executor)
+            };
+            assert!(
+                mutant_execution
+                    .verify_task_context_binding(operation)
+                    .is_ok(),
+                "the negative control must violate the same rejection detector"
+            );
+        }
+    }
+    Ok(())
+}
+
+// Missing authority is cached without constructing discarded diagnostics.
+#[tokio::test]
+async fn writerless_summary_reports_one_error_without_repeating_resolution() -> Result<()> {
+    let context = admitted(false).await?;
+    for policy in [
+        None,
+        Some(CompactionPolicy::default()),
+        Some(CompactionPolicy::Disabled),
+    ] {
+        for prepared in [false, true] {
+            let operation = OperationId::new();
+            let executor = executor(&context, operation, policy.clone())?;
+            let execution = StockExecution::ordinary(&executor);
+            if prepared {
+                let _ = execution.compaction();
+            }
+            let expected = acyclic_test_support::measure(|| {
+                assert!(matches!(
+                    execution.context.unwrap().0.private_summaries(None),
+                    Err(Error::Unauthorized(_))
+                ));
+            });
+            let journal = Journal::default();
+            let instruction = ModelContent::Text(String::new());
+            let actual = acyclic_test_support::measure(|| {
+                let result = futures::FutureExt::now_or_never(execution.summarize(
+                    &journal,
+                    None,
+                    operation,
+                    0,
+                    crate::context::Context::default(),
+                    instruction,
+                ));
+                assert!(matches!(result, Some(Err(Error::Unauthorized(_)))));
+            });
+            assert_eq!(actual, expected, "policy {policy:?}, prepared {prepared}");
+            // Restore the old default's discarded error followed by the manual
+            // summary's second lookup: the same exact allocation guard rejects it.
+            let mutant = acyclic_test_support::measure(|| {
+                let _ = execution.context.unwrap().0.private_summaries(None).ok();
+                let _ = execution.context.unwrap().0.private_summaries(None);
+            });
+            assert!(mutant.count_total > expected.count_total);
+        }
+    }
+    Ok(())
+}
+
+// One successful resolution on the original native IO; later reads reuse it.
 #[tokio::test]
 async fn compaction_resolves_once_with_original_work() -> Result<()> {
     // Initialize the process-wide default before measuring.
@@ -155,7 +331,7 @@ async fn compaction_resolves_once_with_original_work() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    let _ = StockExecution::ordinary(&unbound).compaction_policy();
+    let _ = StockExecution::ordinary(&unbound).compaction_policy()?;
     for writer in [true, false] {
         let context = admitted(writer).await?;
         for policy in [None, Some(CompactionPolicy::default())] {
@@ -166,12 +342,17 @@ async fn compaction_resolves_once_with_original_work() -> Result<()> {
             let reference_work = native_work()?;
             let reference_io = crate::executor::PreparationIo::from_native_work(&reference_work)?;
             let reference = acyclic_test_support::measure(|| {
-                let _ = std::hint::black_box(
+                let result = std::hint::black_box(
                     StockExecution::ordinary(&executor)
                         .context
                         .unwrap()
                         .0
                         .private_summaries(Some(&reference_io)),
+                );
+                assert_eq!(
+                    result.is_ok(),
+                    writer,
+                    "reference did not authorize its writer"
                 );
             });
             let work = native_work()?;
@@ -181,16 +362,28 @@ async fn compaction_resolves_once_with_original_work() -> Result<()> {
                 ..StockExecution::ordinary(&executor)
             };
             let first = acyclic_test_support::measure(|| {
-                std::hint::black_box(execution.compaction());
+                let result = std::hint::black_box(execution.verify_task_context_binding(operation));
+                assert_eq!(result.is_ok(), writer || policy.is_none(), "{case}");
             });
             assert_eq!(first.count_total, reference.count_total, "{case}");
             assert_eq!(first.bytes_total, reference.bytes_total, "{case}");
             assert_eq!(work.receipt(), reference_work.receipt(), "{case}");
+            if !writer && policy.is_some() {
+                // A rejected turn returns that first error to its caller.
+                continue;
+            }
             let resolved = work.receipt();
             let repeated = acyclic_test_support::measure(|| {
                 for _ in 0..3 {
-                    std::hint::black_box(execution.compaction_policy());
-                    std::hint::black_box(execution.compaction().summaries.is_some());
+                    std::hint::black_box(execution.compaction_policy().unwrap());
+                    std::hint::black_box(
+                        execution
+                            .compaction()
+                            .unwrap()
+                            .destination
+                            .and_then(crate::runtime::SummaryDestination::writer)
+                            .is_some(),
+                    );
                 }
             });
             assert_eq!(repeated, Default::default(), "{case}");
@@ -215,12 +408,15 @@ async fn repeated_resolution_negative_control_is_detected() -> Result<()> {
         io: Some(&io),
         ..StockExecution::ordinary(&executor)
     };
-    std::hint::black_box(execution.compaction());
+    std::hint::black_box(execution.compaction().unwrap());
     let resolved = work.receipt();
     let repeated = acyclic_test_support::measure(|| {
         for _ in 0..3 {
-            std::hint::black_box(execution.compaction_policy());
-            let _ = std::hint::black_box(execution.context.unwrap().0.private_summaries(Some(&io)));
+            std::hint::black_box(execution.compaction_policy().unwrap());
+            assert!(
+                std::hint::black_box(execution.context.unwrap().0.private_summaries(Some(&io)))
+                    .is_ok()
+            );
         }
     });
     assert!(

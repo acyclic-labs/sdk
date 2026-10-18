@@ -218,6 +218,7 @@ machines = ["dep:acyclic-machines"]
 grpc = ["acyclic-stream/grpc", "dep:tonic", "dep:tonic-prost", "dep:tonic-prost-build"]
 
 [dependencies]
+once_cell = "1.21.3"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }

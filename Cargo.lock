@@ -336,6 +336,7 @@ dependencies = [
  "jsonschema",
  "keyring",
  "loom",
+ "once_cell",
  "proptest",
  "prost",
  "prost-build",
