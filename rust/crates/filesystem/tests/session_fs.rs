@@ -46,7 +46,8 @@ proptest! {
         sub.workspace_name = acyclic_fs::WorkspaceName::new(format!("ws-{}", parts.join("-")), &WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap().value;
         prop_assert_eq!(Subscription::decode(&sub.encode().unwrap()).unwrap(), sub.clone());
         let expected = allocations::wire_subscription(&sub).encode_to_vec();
-        prop_assert_eq!(sub.encode().unwrap().as_ref(), expected.as_slice());
+        let encoded = sub.encode().unwrap();
+        prop_assert_eq!(encoded.as_ref(), expected.as_slice());
         let publication = Publication {
             workspace_name: sub.workspace_name.clone(),
             generation: acyclic_fs::kernel::PublishedGeneration {
@@ -63,14 +64,16 @@ proptest! {
             version: 1, volume_id: volume.to_vec(), generation: Some(publication.generation_ref()),
             sequence, commit_id: commit.to_vec(),
         }.encode_to_vec();
-        prop_assert_eq!(publication.encode().unwrap().as_ref(), expected.as_slice());
+        let encoded = publication.encode().unwrap();
+        prop_assert_eq!(encoded.as_ref(), expected.as_slice());
         prop_assert_eq!(Publication::decode(&publication.encode().unwrap()).unwrap(), publication);
         let cursor = Cursor { subscription: sub, next: sequence+1, preceding_commit_id: acyclic_stream::CommitId::from_bytes(commit) };
         let expected = wire::SessionFsCursor {
             version: 1, subscription: Some(allocations::wire_subscription(&cursor.subscription)),
             next: cursor.next, preceding_commit_id: commit.to_vec(),
         }.encode_to_vec();
-        prop_assert_eq!(cursor.encode().unwrap().as_ref(), expected.as_slice());
+        let encoded = cursor.encode().unwrap();
+        prop_assert_eq!(encoded.as_ref(), expected.as_slice());
         prop_assert_eq!(Cursor::decode(&cursor.encode().unwrap()).unwrap(), cursor);
     }
     // Every accepted arbitrary protobuf normalizes to a stable typed round-trip.
