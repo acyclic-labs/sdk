@@ -473,7 +473,9 @@ fn a_band_moved_by_its_height_or_not_full_width_is_repainted() {
             paint(frame, &window(1, HEIGHT + 2))
         })
         .unwrap();
-    assert!(!device.take().windows(3).any(|bytes| bytes == b"\x1b[r"));
+    let resized = device.take();
+    assert!(resized.windows(3).any(|bytes| bytes == b"\x1b[r"));
+    assert!(!resized.windows(4).any(|bytes| bytes == b"\x1b[1S"));
 }
 
 /// A device that fails one write at byte `at`, after writing the prefix.
@@ -914,6 +916,9 @@ fn a_render_unwinding_after_a_region_scroll_leaves_the_next_frame_exact() {
 
 #[path = "terminal_regions/native_profiles.rs"]
 mod native_profiles;
+
+#[path = "terminal_regions/recovery.rs"]
+mod recovery;
 
 #[test]
 fn the_screen_oracle_observes_wide_cell_style_loss() {

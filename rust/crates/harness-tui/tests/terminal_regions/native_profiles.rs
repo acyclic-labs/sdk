@@ -73,7 +73,7 @@ fn export_windows_screen_fixtures() {
 }
 
 #[cfg(target_os = "linux")]
-mod linux {
+pub(super) mod linux {
     use super::*;
     use std::process::Command;
     use std::time::{Duration, Instant};
@@ -102,7 +102,7 @@ mod linux {
         );
         output.stdout
     }
-    fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
+    pub(crate) fn capture(tool: &str, bytes: &[u8]) -> Vec<String> {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("frame.bin");
         let dump = dir.path().join("screen.txt");

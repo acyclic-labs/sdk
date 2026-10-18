@@ -169,6 +169,11 @@ impl<D: Present> Write for FrameOutput<D> {
 }
 
 impl<D: Present> FrameOutput<D> {
+    fn reset_margins(&mut self) {
+        self.frame.extend_from_slice(b"\x1b[r");
+        self.effects.margins = true;
+    }
+
     fn commit(&mut self, expected: Option<u64>) -> io::Result<Option<u64>> {
         // Empty frames must cross the same boundary as nonempty ones: the
         // signal worker can invalidate a cursor while the caller is rendering.
@@ -437,19 +442,16 @@ impl<D: Present> FrameTerminal<D> {
     }
 
     fn recover_contents(&mut self) -> io::Result<()> {
-        let mut bytes = std::mem::take(&mut self.terminal.backend_mut().output.frame);
-        bytes.clear();
+        let backend = self.terminal.backend_mut();
+        backend.output.frame.clear();
         // Restate every device assumption before repainting: attributes,
         // margins, cells, then the requested cursor at the checked boundary.
-        bytes.extend_from_slice(b"\x1b[0m");
+        backend.output.frame.extend_from_slice(b"\x1b[0m");
         if self.scroll_regions {
-            bytes.extend_from_slice(b"\x1b[r");
+            backend.output.reset_margins();
         }
-        bytes.extend_from_slice(b"\x1b[2J");
-        let encoded = encode_diff(&self.staging, &self.shown, &mut bytes);
-        let backend = self.terminal.backend_mut();
-        backend.output.frame = bytes;
-        backend.output.effects.margins = self.scroll_regions;
+        backend.output.frame.extend_from_slice(b"\x1b[2J");
+        let encoded = encode_diff(&self.staging, &self.shown, &mut backend.output.frame);
         backend.shown = Shown {
             attributes: true,
             ..Shown::default()
@@ -462,6 +464,12 @@ impl<D: Present> FrameTerminal<D> {
         scroll: Option<RegionScroll>,
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
+        // A failed abort or writer unwind can leave the device's margins set.
+        // Reset before autoresize/clear/repaint and journal the reset itself.
+        let reset_margins = self.invalid && self.scroll_regions;
+        if reset_margins {
+            self.terminal.backend_mut().output.reset_margins();
+        }
         let previous_area = self.terminal.get_frame().area();
         let size = self.terminal.backend().size;
         let requested = ratatui::layout::Rect::new(0, 0, size.width, size.height);
@@ -578,7 +586,7 @@ impl<D: Present> FrameTerminal<D> {
         *cursor = std::mem::replace(&mut output.frame, bytes);
         // Pair the effect with its encoded reset only after the body is back.
         // A render panic must not let cursor teardown retire older margins.
-        output.effects.margins = margins;
+        output.effects.margins = margins || reset_margins;
         drawn.and(encoded)
     }
 }
