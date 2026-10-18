@@ -186,8 +186,14 @@ where
                             cause = ?error,
                             "task command failed"
                         );
+                        // Formatted under the work's accounting, like an uncertain cause.
                         return Ok(CommandDispatch::Failed {
-                            message: error.to_string(),
+                            message: crate::executor::with_history_io(io, |work| {
+                                crate::executor::preparation_format(
+                                    format_args!("{error}"),
+                                    work,
+                                )
+                            })?,
                         });
                     }
                     Ok(TaskCommandProgress::Indeterminate) => {
