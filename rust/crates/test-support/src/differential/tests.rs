@@ -73,11 +73,15 @@ fn negative_control_detects_missing_kind_subscription() {
     let captures = pair::<_, _, Operation>(
         || (),
         |(), old| {
-            record(("read", 1));
-            record(("foreign", 2));
+            record(("read", 1u64));
+            record(("foreign", 2u64));
             old
         },
     );
+    // The control must capture the foreign kind, or its rejection is vacuous.
+    for (_, trace) in &captures {
+        assert_eq!(trace, &[("read", 1), ("foreign", 2)]);
+    }
     catch_unwind(|| assert_named_captures(captures, &[("read", 1)]))
         .expect_err("the oracle accepted an unfiltered capture");
 }
