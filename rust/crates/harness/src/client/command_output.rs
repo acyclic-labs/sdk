@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::{borrow::Cow, collections::BTreeMap};
 
+mod display;
+use display::DisplayMetadata;
+
 #[derive(Deserialize)]
 struct Outcome<'a> {
     sequence: u64,
@@ -134,7 +137,7 @@ impl<'a> CommandOutputView<'a> {
         Some(Self {
             sequence: outcome.sequence,
             completion,
-            text: value.text.and_then(text),
+            text: value.display(),
             task: value.task,
             error: outcome.error.and_then(text),
         })
@@ -145,12 +148,6 @@ struct Metadata {
     sequence: u64,
     task: Option<crate::TaskId>,
     has_text: bool,
-}
-#[derive(Default, Deserialize)]
-struct DisplayMetadata<'a> {
-    #[serde(borrow)]
-    text: Option<&'a RawValue>,
-    task: Option<crate::TaskId>,
 }
 impl Metadata {
     fn from_file(file: &FileValue) -> Option<Self> {
@@ -164,7 +161,7 @@ impl Metadata {
         Some(Self {
             sequence: outcome.sequence,
             task: display.task,
-            has_text: display.text.is_some_and(|text| text.get().starts_with('"')),
+            has_text: display.has_text(),
         })
     }
 }

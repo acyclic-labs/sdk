@@ -11,7 +11,7 @@ use crate::{
 use futures::{FutureExt, Stream, StreamExt};
 use std::{future::Future, io::Write, pin::Pin, sync::Arc};
 
-const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
+pub(super) const MAXIMUM_BYTES: usize = super::jsonl::MAXIMUM_REQUEST_BYTES;
 const MAXIMUM_FILES: usize = 4096;
 // Request size is a per-file admission bound, independent of retained display.
 const OBSERVATION_BYTES: u64 = 4 * 1024 * 1024;
@@ -39,12 +39,23 @@ pub fn prepare_local_prompt(operation: OperationId, prompt: &str) -> Result<File
     if prompt.is_empty() {
         return Err(Error::Invalid("empty local prompt".into()));
     }
-    let bytes = serde_json::to_vec(&CommandResolution::Prompt {
-        text: prompt.into(),
-        source: None,
-        mentions: Vec::new(),
-    })
-    .map_err(|error| Error::Invalid(error.to_string()))?;
+    prepare_local_resolution(
+        operation,
+        &CommandResolution::Prompt {
+            text: prompt.into(),
+            source: None,
+            mentions: Vec::new(),
+        },
+    )
+}
+
+/// Builds this session's immutable request file for an already resolved input.
+pub(super) fn prepare_local_resolution(
+    operation: OperationId,
+    resolution: &CommandResolution,
+) -> Result<FileValue> {
+    let bytes =
+        serde_json::to_vec(resolution).map_err(|error| Error::Invalid(error.to_string()))?;
     let file = FileValue::new(key(operation, TaskFile::Request)?, bytes);
     validate(&file, operation)?;
     Ok(file)

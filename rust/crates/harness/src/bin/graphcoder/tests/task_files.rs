@@ -159,3 +159,68 @@ proptest::proptest! {
         })?;
     }
 }
+
+#[tokio::test]
+async fn shell_command_output_renders_in_the_session_transcript() {
+    struct NoFiles;
+    impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+    let volume = Arc::new(
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("shell-output").unwrap(),
+        )
+        .await
+        .unwrap(),
+    );
+    let owner = wire::Authority {
+        kind: wire::AggregateKind::Task as i32,
+        id: "owner".into(),
+    };
+    let mut commands = acyclic_harness::client::CommandSession::open(
+        volume.clone(),
+        acyclic_harness::OperationId::new()
+            .to_string()
+            .parse()
+            .unwrap(),
+        65_536,
+        128,
+    )
+    .await
+    .unwrap();
+    let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    // The bash owner's result envelope, as `/shell` receives it from LocalHarness.
+    for (command, value) in [
+        (
+            "/shell echo LPSHELL",
+            serde_json::json!({"success":true,"exit_code":0,"stdout":"LPSHELL\n","stderr":"","stop":null}),
+        ),
+        (
+            "/shell false",
+            serde_json::json!({"success":false,"exit_code":3,"stdout":"","stderr":"LPERR\n","stop":null}),
+        ),
+    ] {
+        commands.submit(command, &NoFiles).await.unwrap();
+        let request = commands.take_request().unwrap();
+        commands
+            .consume(&request, |_, _, _| async { Ok(value) })
+            .await
+            .unwrap();
+    }
+    // Results written after observation reach the view through its command follow.
+    client.follow_commands(&commands).await.unwrap();
+    let mut renderer = ClientRenderer::default();
+    renderer.update(client.views(), &owner);
+    let visible = picture(&renderer);
+    assert!(visible.contains("LPSHELL"), "{visible}");
+    assert!(visible.contains("LPERR"), "{visible}");
+    assert!(visible.contains("exit 3"), "{visible}");
+    let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536)
+        .await
+        .unwrap();
+    replay.follow_commands(&commands).await.unwrap();
+    let mut replayed = ClientRenderer::default();
+    replayed.update(replay.views(), &owner);
+    assert_eq!(picture(&replayed), visible);
+}

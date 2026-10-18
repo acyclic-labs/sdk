@@ -60,11 +60,10 @@ async fn run(args: Args) -> Result<u8, Box<dyn std::error::Error>> {
     }
     let local = Arc::new(LocalHarness::open(config).await?);
     let operation = client::local_identity(&local, args.prompt.as_deref(), operation).await?;
-    let command = args
-        .prompt
-        .as_deref()
-        .map(|prompt| client::prepare_local_prompt(operation, prompt))
-        .transpose()?;
+    let command = match args.prompt.as_deref() {
+        Some(prompt) => Some(client::local_input(&local, operation, prompt).await?),
+        None => None,
+    };
     if args.prompt.is_none()
         && args.input_format != InputFormat::Jsonl
         && !acyclic_harness::tui::term::Environment::capture().is_dumb()

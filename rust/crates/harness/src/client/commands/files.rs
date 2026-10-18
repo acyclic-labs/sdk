@@ -3,6 +3,24 @@ use crate::OperationId;
 use serde_json::{Map, Value, json};
 
 impl CommandCatalog {
+    /// The one-file query selecting the saved catalog.
+    pub(crate) fn saved_query() -> Result<crate::task_volume::Query> {
+        Ok(crate::task_volume::Query::File(session::catalog_key()?))
+    }
+
+    /// The catalog a command session folds from the saved catalog file at
+    /// this snapshot, or the builtins before any catalog is saved.
+    pub(crate) fn saved(
+        snapshot: &crate::task_volume::Snapshot,
+        maximum_bytes: u64,
+    ) -> Result<Self> {
+        let key = session::catalog_key()?;
+        match snapshot.files.iter().find(|file| file.key == key) {
+            Some(file) => Self::from_bytes(&file.bytes, maximum_bytes),
+            None => Self::builtins(),
+        }
+    }
+
     /// Decode a bounded catalog-file snapshot; duplicate names/aliases fail.
     pub fn from_bytes(bytes: &[u8], maximum_bytes: u64) -> Result<Self> {
         if maximum_bytes == 0 || bytes.len() as u64 > maximum_bytes {

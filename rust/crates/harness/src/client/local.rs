@@ -25,6 +25,52 @@ pub async fn disconnect_local(local: Arc<LocalHarness>) -> Result<()> {
     Ok(())
 }
 
+/// Resolve one headless input exactly as the TUI would: from the same
+/// `commands/catalog.json` file its CommandSession folds, read at one
+/// snapshot, so saved commands, renames and removals apply to `-p` too. Plain text is a prompt;
+/// slash input is a command or an error, never chat.
+pub async fn local_input(
+    local: &LocalHarness,
+    operation: OperationId,
+    input: &str,
+) -> Result<crate::task_volume::FileValue> {
+    let reader = local.client_reader()?;
+    let snapshot = local
+        .task_files()
+        .snapshot(&super::CommandCatalog::saved_query()?, 1)
+        .await?;
+    let catalog =
+        super::CommandCatalog::saved(&snapshot, super::local_headless::MAXIMUM_BYTES as u64)?;
+    headless_input(&catalog, reader.as_ref(), operation, input).await
+}
+
+/// Selections, confirmations and renderer-only requests have no headless form.
+async fn headless_input(
+    catalog: &super::CommandCatalog,
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+    operation: OperationId,
+    input: &str,
+) -> Result<crate::task_volume::FileValue> {
+    use super::{CommandRequest, CommandResolution};
+    let resolution = catalog
+        .resolve(input, reader, super::local_headless::MAXIMUM_BYTES as u64)
+        .await?;
+    match &resolution {
+        CommandResolution::Select { .. }
+        | CommandResolution::Confirm { .. }
+        | CommandResolution::Sdk { .. }
+        | CommandResolution::Submit {
+            request: CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+        } => Err(crate::Error::Unsupported(
+            "this command has no headless form; run it in the terminal UI".into(),
+        )),
+        _ => super::local_headless::prepare_local_resolution(operation, &resolution),
+    }
+}
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
+
 /// Stages an immutable request for the client outbox, without admitting it.
 pub async fn local_prompt(
     _local: &LocalHarness,

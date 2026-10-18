@@ -70,6 +70,11 @@ fn ui(directory: &str, name: &str) -> Result<files::FileKey> {
     })
 }
 
+/// The saved command catalog file (logical `config/commands.json`).
+pub(super) fn catalog_key() -> Result<files::FileKey> {
+    ui("config", "commands.json")
+}
+
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Open one atomic snapshot and its exact cursor follow. Reopening discovers
     /// unconsumed requests and never reruns a claimed external effect.
@@ -472,7 +477,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         }
         self.make_room(usize::from(!self.files.contains_key(&file.key)))?;
         self.fold_activity_file(&file)?;
-        if file.key == ui("config", "commands.json")? {
+        if file.key == catalog_key()? {
             let mut catalog = CommandCatalog::from_bytes(&file.bytes, self.maximum_bytes)?;
             catalog.set_themes(self.catalog.themes.clone())?;
             self.catalog = catalog;
