@@ -395,7 +395,11 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
     ));
     drop(harness);
     let harness = LocalHarness::open(config()?).await?;
-    assert_eq!(harness.resume(task_id).await?.text, "recovered");
+    // The one allowed continuation runs, then the cap leaves GOAL.md blocked.
+    assert!(matches!(
+        harness.resume(task_id).await,
+        Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared))
+    ));
     assert_eq!(
         harness.recover_turn_inputs(continuation).await?,
         Some(original)
@@ -459,12 +463,17 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
     assert_eq!(provider.requests().len(), 2);
     drop(harness);
     let harness = LocalHarness::open(config()?).await?;
-    assert_eq!(harness.resume(first).await?.text, "second");
-    assert!(matches!(
-        harness.runtime.task_host().outcome(second).await?,
-        Some(crate::Outcome::Succeeded(_))
-    ));
-    assert_eq!(harness.resume(first).await?.text, "second");
+    // The pending successor runs, then the cap leaves GOAL.md blocked.
+    for _ in 0..2 {
+        assert!(matches!(
+            harness.resume(first).await,
+            Err(Error::GoalBlocked(crate::goal::GoalBlockedReason::Declared))
+        ));
+        assert!(matches!(
+            harness.runtime.task_host().outcome(second).await?,
+            Some(crate::Outcome::Succeeded(_))
+        ));
+    }
     assert_eq!(provider.requests().len(), 3);
     assert_eq!(provider.remaining(), 0);
     Ok(())
