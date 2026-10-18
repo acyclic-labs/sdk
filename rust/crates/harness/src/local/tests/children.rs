@@ -225,165 +225,165 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
 
 #[tokio::test]
 async fn child_agent_keeps_its_admission_and_waits_after_each_received_turn() -> Result<()> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        let directory = tempfile::tempdir().map_err(super::super::storage)?;
-        let project = volume(directory.path()).await?;
-        let provider = scripted([
-            ScriptedTurn::Text("first child turn".into()),
-            ScriptedTurn::Text("second child turn".into()),
-        ]);
-        let harness =
-            LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
-        let parent_operation = OperationId::new();
-        let Admission::Accepted(RuntimeTask::Durable {
-            task_id: parent, ..
-        }) = harness.submit(parent_operation, "parent").await?
-        else {
-            panic!("parent admission");
-        };
-        let worker = Worker {
-            id: "child-agent-test".into(),
-            available: Default::default(),
-            labels: Default::default(),
-        };
-        let host = harness.runtime.task_host();
-        let WorkPull::Claimed(lease) = host
-            .pull_work(&worker, Some(parent_operation), &mut None)
-            .await?
-        else {
-            panic!("parent lease");
-        };
-        host.start_task(&lease, &mut None).await?;
-        let fence = LeaseFence::from(&lease.reservation);
-        let admitted = host.observe_admission(parent).await?;
-        let scope = RuntimeScope::new(admitted.grants, admitted.limits)?
-            .with_run_limits(admitted.run_limits, &mut None)?;
-        let operation = OperationId::new();
-        let (receive, model) = harness
-            .stage_turn_with_limits(
-                operation,
-                "follow the received child request",
-                scope.limits(),
-            )
-            .await?;
-        let definition = harness
-            .runtime
-            .harness()
-            .task::<serde_json::Value, serde_json::Value>("acyclic.child_agent@1")?;
-        let record = harness
-            .runtime
-            .harness()
-            .registered_admission(
-                operation,
-                &definition.identity().name,
-                &definition.identity().version,
-                serde_json::json!({"receive":receive,"model":model}),
-                Some((parent, &scope)),
-                None,
+    // Every wait below is bounded by readiness, not time: the scripted model
+    // fails once exhausted, and advance returns when no authenticated wake
+    // makes the child claimable (the second advance of each input proves it).
+    // A wall-clock deadline here only raced host load in the full suite.
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([
+        ScriptedTurn::Text("first child turn".into()),
+        ScriptedTurn::Text("second child turn".into()),
+    ]);
+    let harness =
+        LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
+    let parent_operation = OperationId::new();
+    let Admission::Accepted(RuntimeTask::Durable {
+        task_id: parent, ..
+    }) = harness.submit(parent_operation, "parent").await?
+    else {
+        panic!("parent admission");
+    };
+    let worker = Worker {
+        id: "child-agent-test".into(),
+        available: Default::default(),
+        labels: Default::default(),
+    };
+    let host = harness.runtime.task_host();
+    let WorkPull::Claimed(lease) = host
+        .pull_work(&worker, Some(parent_operation), &mut None)
+        .await?
+    else {
+        panic!("parent lease");
+    };
+    host.start_task(&lease, &mut None).await?;
+    let fence = LeaseFence::from(&lease.reservation);
+    let admitted = host.observe_admission(parent).await?;
+    let scope = RuntimeScope::new(admitted.grants, admitted.limits)?
+        .with_run_limits(admitted.run_limits, &mut None)?;
+    let operation = OperationId::new();
+    let (receive, model) = harness
+        .stage_turn_with_limits(
+            operation,
+            "follow the received child request",
+            scope.limits(),
+        )
+        .await?;
+    let definition = harness
+        .runtime
+        .harness()
+        .task::<serde_json::Value, serde_json::Value>("acyclic.child_agent@1")?;
+    let record = harness
+        .runtime
+        .harness()
+        .registered_admission(
+            operation,
+            &definition.identity().name,
+            &definition.identity().version,
+            serde_json::json!({"receive":receive,"model":model}),
+            Some((parent, &scope)),
+            None,
+            None,
+        )?
+        .0;
+    let Admission::Accepted(child) = host.admit_owned(record, fence.clone()).await? else {
+        panic!("child admission");
+    };
+    let publisher = crate::filesystem::FilesystemContentPublisher::new(
+        harness.files.clone(),
+        &harness.journal,
+        &harness.verifier,
+        &harness.signed,
+        scope.limits().file_bytes,
+        None,
+    )?;
+    use crate::runtime::TaskStateProvider as _;
+    for (index, text) in [(1, "first request"), (2, "second request")] {
+        let message = OperationId::new();
+        let (payload, _) = publisher
+            .stage_once(
+                message,
+                &format!("inputs/child-agent/{index}.md"),
+                text.as_bytes(),
+                "text/plain",
+                "request.md",
                 None,
             )?
-            .0;
-        let Admission::Accepted(child) = host.admit_owned(record, fence.clone()).await? else {
-            panic!("child admission");
-        };
-        let publisher = crate::filesystem::FilesystemContentPublisher::new(
-            harness.files.clone(),
-            &harness.journal,
-            &harness.verifier,
-            &harness.signed,
-            scope.limits().file_bytes,
-            None,
-        )?;
-        use crate::runtime::TaskStateProvider as _;
-        for (index, text) in [(1, "first request"), (2, "second request")] {
-            let message = OperationId::new();
-            let (payload, _) = publisher
+            .await?;
+        host.send_mail(parent, &fence, child, message, payload, None)
+            .await?;
+        harness.advance(child, &harness.commands()?).await?;
+        let outcome = host.outcome(child).await?;
+        assert!(
+            outcome.is_none(),
+            "child stopped after input {index}: {outcome:?}"
+        );
+        assert_eq!(provider.requests().len(), index);
+        if index == 1 {
+            let (hidden, _) = publisher
                 .stage_once(
-                    message,
-                    &format!("inputs/child-agent/{index}.md"),
-                    text.as_bytes(),
-                    "text/plain",
-                    "request.md",
+                    OperationId::new(),
+                    "private/unreadable.json",
+                    b"1",
+                    "application/json",
+                    "private.json",
                     None,
                 )?
                 .await?;
-            host.send_mail(parent, &fence, child, message, payload, None)
-                .await?;
-            harness.advance(child, &harness.commands()?).await?;
-            let outcome = host.outcome(child).await?;
-            assert!(
-                outcome.is_none(),
-                "child stopped after input {index}: {outcome:?}"
-            );
-            assert_eq!(provider.requests().len(), index);
-            if index == 1 {
-                let (hidden, _) = publisher
-                    .stage_once(
-                        OperationId::new(),
-                        "private/unreadable.json",
-                        b"1",
-                        "application/json",
-                        "private.json",
-                        None,
-                    )?
-                    .await?;
-                let slot = host.workflow_suspension(child, &mut None).await?.unwrap();
-                assert!(matches!(
-                    host.resume_workflow(
-                        child,
-                        slot.revision,
-                        hidden,
-                        crate::IdempotencyKey::new("unreadable-wake")?,
-                        slot.waiting_command,
-                        &mut None,
-                    )
-                    .await,
-                    Err(crate::Error::Unauthorized(_))
-                ));
-                let (readable, _) = publisher
-                    .stage_once(
-                        OperationId::new(),
-                        "inputs/readable-wake.json",
-                        b"1",
-                        "application/json",
-                        "readable.json",
-                        None,
-                    )?
-                    .await?;
+            let slot = host.workflow_suspension(child, &mut None).await?.unwrap();
+            assert!(matches!(
                 host.resume_workflow(
                     child,
                     slot.revision,
-                    readable,
-                    crate::IdempotencyKey::new("readable-wake")?,
+                    hidden,
+                    crate::IdempotencyKey::new("unreadable-wake")?,
                     slot.waiting_command,
                     &mut None,
                 )
+                .await,
+                Err(crate::Error::Unauthorized(_))
+            ));
+            let (readable, _) = publisher
+                .stage_once(
+                    OperationId::new(),
+                    "inputs/readable-wake.json",
+                    b"1",
+                    "application/json",
+                    "readable.json",
+                    None,
+                )?
                 .await?;
-                let WorkPull::Claimed(resumed) =
-                    host.pull_work(&worker, Some(operation), &mut None).await?
-                else {
-                    panic!("readable input did not wake the child");
-                };
-                host.start_task(&resumed, &mut None).await?;
-                assert_eq!(
-                    host.workflow_input(child, &LeaseFence::from(&resumed.reservation), None)
-                        .await?,
-                    Some((slot.revision, serde_json::json!(1)))
-                );
-            }
-            harness.advance(child, &harness.commands()?).await?;
-            assert_eq!(provider.requests().len(), index);
+            host.resume_workflow(
+                child,
+                slot.revision,
+                readable,
+                crate::IdempotencyKey::new("readable-wake")?,
+                slot.waiting_command,
+                &mut None,
+            )
+            .await?;
+            let WorkPull::Claimed(resumed) =
+                host.pull_work(&worker, Some(operation), &mut None).await?
+            else {
+                panic!("readable input did not wake the child");
+            };
+            host.start_task(&resumed, &mut None).await?;
+            assert_eq!(
+                host.workflow_input(child, &LeaseFence::from(&resumed.reservation), None)
+                    .await?,
+                Some((slot.revision, serde_json::json!(1)))
+            );
         }
-        host.cancel(child).await?;
-        assert!(matches!(
-            host.outcome(child).await?,
-            Some(crate::Outcome::Cancelled)
-        ));
-        host.cancel(parent).await?;
-        Ok::<(), crate::Error>(())
-    })
-    .await
-    .map_err(super::super::storage)?
+        harness.advance(child, &harness.commands()?).await?;
+        assert_eq!(provider.requests().len(), index);
+    }
+    host.cancel(child).await?;
+    assert!(matches!(
+        host.outcome(child).await?,
+        Some(crate::Outcome::Cancelled)
+    ));
+    host.cancel(parent).await?;
+    Ok(())
 }
 
 #[cfg(feature = "native-execution")]
