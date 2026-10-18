@@ -351,6 +351,18 @@ fn pointer_kinds() -> Vec<MouseEventKind> {
     kinds
 }
 
+/// Input-independent, so it runs once rather than per proptest case: every
+/// pointer kind/button between two notches presents and publishes once per
+/// read, plus one boundary only before left down/drag.
+#[test]
+fn pointer_kinds_present_and_publish_once_per_read() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(assert_pointer_publications());
+}
+
 async fn assert_pointer_publications() {
     let per_write = drive(vec![vec![notch(true)]], true).await.1;
     for kind in pointer_kinds() {
@@ -431,8 +443,6 @@ proptest::proptest! {
         count in 32usize..96, width in 8u16..24, wrap in proptest::bool::ANY,
     ) {
         assert_pointer_after_motions::<false>(count, width, wrap);
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(assert_pointer_publications());
     }
 }
 
