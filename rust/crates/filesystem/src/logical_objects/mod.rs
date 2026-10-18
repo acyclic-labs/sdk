@@ -259,5 +259,6 @@ mod write;
 
 #[cfg(all(test, feature = "memory"))]
 mod tests;
+
 #[cfg(all(test, feature = "memory"))]
-pub(crate) use tests::expected_batch_probes;
+pub(crate) use tests::restore_eager_index;

@@ -138,7 +138,15 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         }
         let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
         let (mut unique, unique_custody) = vector::<Option<&T>>(writes.len(), work)?;
-        let mut index = super::index::Index::new(writes.len(), work)?;
+        // Different object kinds cannot have equal ObjectIds. Remember kind
+        // membership in registers; only repeated kinds need an identity table.
+        // The existing unique list supplies the seed if promotion is necessary.
+        let mut kinds = [0u64; 4];
+        let mut index = None;
+        #[cfg(all(test, feature = "memory"))]
+        if super::tests::eager_index() {
+            index = Some(super::index::Index::new(writes.len(), work)?);
+        }
         let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
@@ -152,7 +160,23 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             }
             #[cfg(all(test, feature = "memory"))]
             super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
-            if let Some(previous) = index.insert(id, write, work)? {
+            let tag = usize::from(id.kind.canonical_tag());
+            let bit = 1u64 << (tag % 64);
+            if index.is_none() && kinds[tag / 64] & bit != 0 {
+                let mut promoted = super::index::Index::new(writes.len(), work)?;
+                for previous in unique.iter().flatten() {
+                    if promoted
+                        .insert(parts(previous).0, *previous, work)?
+                        .is_some()
+                    {
+                        return Err(ObjectStoreError::Corrupt.into());
+                    }
+                }
+                index = Some(promoted);
+            }
+            if let Some(index) = &mut index
+                && let Some(previous) = index.insert(id, write, work)?
+            {
                 work.charge(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
@@ -162,6 +186,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 }
                 continue;
             }
+            kinds[tag / 64] |= bit;
             let (request, mut allocation) = put_request(&self.bucket, id, body.clone(), work)?;
             request_bytes = request_bytes
                 .checked_add(request.0.object_key.capacity() as u64)
@@ -191,7 +216,9 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
                 .checked_add(body.len() as u64)
                 .ok_or(WorkError::Overflow)?;
         }
-        index.release(work)?;
+        if let Some(index) = index {
+            index.release(work)?;
+        }
         work.admit(WorkCounters {
             object_bytes_written: total,
             ..WorkCounters::UNCHARGED
