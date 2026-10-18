@@ -121,6 +121,10 @@ mod tree;
 pub(crate) use sparse::*;
 #[cfg(any(windows, test, feature = "native-watch"))]
 mod ranges;
+#[cfg(unix)]
+include!("spare.rs");
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+pub(crate) mod charged;
 #[cfg(windows)]
 mod yielding;
 #[cfg(all(

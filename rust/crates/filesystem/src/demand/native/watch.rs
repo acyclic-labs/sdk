@@ -120,40 +120,41 @@ impl NativeDemandInner {
         &self,
         relative: &Path,
         work: &mut W,
-    ) -> Result<(NamespacePath, bool, u64, Option<crate::NativeAllocation>), DemandError> {
-        let (mut names, mut claimed) = crate::native_host::buffer::<crate::kernel::LogicalName, _>(
+    ) -> Result<(Charged<NamespacePath>, bool, u64), DemandError> {
+        let (names, mut claimed) = crate::native_host::buffer::<crate::kernel::LogicalName, _>(
             relative.components().count(),
             work,
         )?;
-        let mut native: Option<crate::NativeAllocation> = None;
+        let mut names = Charged::new(names, None);
         let result = (|| {
             for component in relative.components() {
                 work.check()?;
                 let std::path::Component::Normal(name) = component else {
                     break;
                 };
-                let ((encoding, bytes), mut guard) =
-                    match crate::native_name::host_name_bytes_with_source_work(
-                        name,
-                        self.profile,
-                        self.limits.maximum_component_bytes,
-                        work,
-                    ) {
-                        Ok(name) => name,
-                        Err(DemandError::InvalidRequest) => break,
-                        Err(error) => return Err(error),
-                    };
+                let (bytes, guard) = match crate::native_name::host_name_bytes_with_source_work(
+                    name,
+                    self.profile,
+                    self.limits.maximum_component_bytes,
+                    work,
+                ) {
+                    Ok(name) => name,
+                    Err(DemandError::InvalidRequest) => break,
+                    Err(error) => return Err(error),
+                };
                 let ordinary = if guard.is_none() {
-                    bytes.capacity() as u64
+                    bytes.1.capacity() as u64
                 } else {
                     0
                 };
-                let Ok(name) = crate::kernel::LogicalName::new(
-                    encoding,
-                    bytes,
-                    self.limits.maximum_component_bytes,
-                ) else {
-                    drop(guard);
+                let Ok(name) = Charged::new(bytes, guard).map(|(encoding, bytes)| {
+                    crate::kernel::LogicalName::new(
+                        encoding,
+                        bytes,
+                        self.limits.maximum_component_bytes,
+                    )
+                    .map_err(drop)
+                }) else {
                     work.release(ordinary)?;
                     break;
                 };
@@ -167,33 +168,21 @@ impl NativeDemandInner {
                 .is_err()
                 {
                     drop(name);
-                    drop(guard);
                     work.release(ordinary)?;
                     break;
                 }
                 claimed += ordinary;
-                names.push(name);
-                if let Some(mut guard) = guard.take() {
-                    if let Some(native) = &mut native {
-                        native
-                            .absorb(&mut guard)
-                            .map_err(crate::native_name::original_name_error)?;
-                    } else {
-                        native = Some(guard);
-                    }
-                }
+                names.absorb(name, Vec::push)?;
             }
-            let exact = names.len() == relative.components().count();
-            Ok((
-                NamespacePath::new(std::mem::take(&mut names), self.limits)?,
-                exact,
-            ))
+            Ok(names.len() == relative.components().count())
         })();
-        match result {
-            Ok((path, exact)) => Ok((path, exact, claimed, native)),
+        let path = result.and_then(|exact| {
+            let path = names.map(|names| NamespacePath::new(names, self.limits))?;
+            Ok((path, exact))
+        });
+        match path {
+            Ok((path, exact)) => Ok((path, exact, claimed)),
             Err(error) => {
-                drop(names);
-                drop(native);
                 work.release(claimed)?;
                 Err(error)
             }
@@ -215,9 +204,8 @@ impl NativeChanges {
             .len()
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)?;
-        let (mut reported, mut claimed) =
-            crate::native_host::buffer::<SourceChange, _>(maximum, work)?;
-        let mut native: Option<crate::NativeAllocation> = None;
+        let (reported, mut claimed) = crate::native_host::buffer::<SourceChange, _>(maximum, work)?;
+        let mut reported = Charged::new(reported, None);
         let result = (|| {
             for change in changes {
                 work.check()?;
@@ -230,17 +218,8 @@ impl NativeChanges {
                         windows_file_identity(inner.root.identity().device, *index),
                     )),
                     HostChange::Rebound(relative) | HostChange::Altered(relative) => {
-                        let (name, exact, allocation, mut guard) = inner.name(relative, work)?;
+                        let (name, exact, allocation) = inner.name(relative, work)?;
                         claimed += allocation;
-                        if let Some(mut incoming) = guard.take() {
-                            if let Some(native) = &mut native {
-                                native
-                                    .absorb(&mut incoming)
-                                    .map_err(crate::native_name::original_name_error)?;
-                            } else {
-                                native = Some(incoming);
-                            }
-                        }
                         let metadata = {
                             #[cfg(unix)]
                             {
@@ -264,21 +243,20 @@ impl NativeChanges {
                             {
                                 None
                             }
-                            Err(error) => {
-                                drop(name);
-                                return Err(error);
-                            }
+                            Err(error) => return Err(error),
                         };
                         let altered = matches!(change, HostChange::Altered(_))
                             && exact
                             && (node.is_some() || name.is_root());
-                        reported.push(if altered {
-                            SourceChange::Entry(name)
-                        } else if name.is_root() {
-                            SourceChange::Everything
-                        } else {
-                            SourceChange::Name(name)
-                        });
+                        reported.absorb(name, |reported, name| {
+                            reported.push(if altered {
+                                SourceChange::Entry(name)
+                            } else if name.is_root() {
+                                SourceChange::Everything
+                            } else {
+                                SourceChange::Name(name)
+                            });
+                        })?;
                         reported.extend(node.map(SourceChange::Node));
                     }
                 }
@@ -298,7 +276,6 @@ impl NativeChanges {
             Ok(())
         })();
         drop(reported);
-        drop(native);
         work.release(claimed)?;
         result
     }

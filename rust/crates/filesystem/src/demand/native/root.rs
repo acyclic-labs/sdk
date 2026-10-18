@@ -13,6 +13,8 @@ struct NativeDemandInner {
     root: HostRoot,
     /// Whether host I/O beneath the root may block a native callback
     inline: bool,
+    /// Readers for roots that are not local: shared by the whole process.
+    remote: Arc<remote::RemoteReaders<RemoteDemandRead>>,
     identity: [u8; 16],
     epoch: AtomicU64,
     profile: FilesystemProfile,
@@ -28,6 +30,35 @@ struct NativeDemandInner {
 }
 
 struct CancelWorkerOnDrop(CancellationToken);
+
+#[cfg(test)]
+impl Drop for NativeDemandInner {
+    fn drop(&mut self) {
+        if !Arc::ptr_eq(&self.remote, &REMOTE_READERS) {
+            self.remote.close();
+        }
+    }
+}
+
+#[cfg(all(test, not(acyclic_fs_native_loom)))]
+#[test]
+fn dropping_remote_source_retires_its_private_readers() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (_directory, source, file) = super::native_read_tests::held(&runtime, b"data", true)?;
+    let readers = Arc::clone(&source.inner.remote);
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    file.read_range(0, 4, &mut accounting)?;
+    assert_eq!(readers.started(), 1);
+    drop(file);
+    drop(source);
+    readers.wait_closed();
+    assert_eq!(readers.started(), 0);
+    Ok(())
+}
 
 impl Drop for CancelWorkerOnDrop {
     fn drop(&mut self) {
@@ -109,6 +140,7 @@ impl NativeDemandSource {
                                     path,
                                     root,
                                     inline,
+                                    remote: Arc::clone(&REMOTE_READERS),
                                     identity: reference.identity,
                                     epoch: AtomicU64::new(reference.epoch),
                                     profile,
@@ -146,11 +178,19 @@ impl NativeDemandSource {
         }
     }
 
+    /// Readers this source's reads under a root that is not local have started.
+    #[cfg(test)]
+    pub(crate) fn remote_readers_started(&self) -> usize {
+        self.inner.remote.started()
+    }
+
     /// This source as if its root were not local, so tests cover the
+    /// off-callback read path, with readers of its own to count.
     #[cfg(test)]
     pub(crate) fn remote(mut self) -> Self {
         if let Some(inner) = Arc::get_mut(&mut self.inner) {
             inner.inline = false;
+            inner.remote = remote::RemoteReaders::new(MAXIMUM_BLOCKED_REMOTE_READS);
         }
         self
     }

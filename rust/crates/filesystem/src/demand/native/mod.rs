@@ -24,7 +24,12 @@ include!("provider.rs");
 include!("watch.rs");
 include!("metadata.rs");
 
+#[cfg(test)]
+#[path = "read_work.rs"]
+pub(crate) mod demand_read_work;
 mod queue;
+mod remote;
+use crate::native_host::charged::Charged;
 
 #[cfg(unix)]
 type DemandPath = PathBuf;
@@ -54,4 +59,27 @@ fn account_source<T>(
             stop,
         )
     })
+}
+
+#[cfg(test)]
+mod read_baseline;
+
+#[cfg(test)]
+pub(super) fn baseline_file(
+    source: NativeDemandSource,
+    path: &NamespacePath,
+    expected: SourceVersion,
+) -> Result<Box<dyn DemandFile>, DemandError> {
+    let reference = source.reference();
+    let mut context = CallbackWork::Ordinary(DemandWork::new(
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    ));
+    Ok(Box::new(read_baseline::BaselineDemandFile::open(
+        source,
+        reference,
+        path,
+        expected,
+        &mut context,
+    )?))
 }

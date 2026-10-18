@@ -5,7 +5,6 @@ use windows::Win32::{
     Foundation::{
         ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_TIMEOUT,
     },
-    Storage::FileSystem::ReadFile,
     System::{
         IO::{CancelIoEx, DeviceIoControl, GetOverlappedResult, OVERLAPPED},
         Ioctl::{
@@ -35,6 +34,9 @@ impl std::error::Error for Yielded {}
 pub struct YieldingFile {
     held: Arc<YieldingHeld>,
     wait: Option<HANDLE>,
+    // Declared after held storage: Drop closes the request, then fields free
+    // the Arc storage before this guard refunds the original ledger.
+    allocation: Option<crate::NativeAllocation>,
 }
 struct YieldingHeld {
     file: Mutex<Option<Arc<File>>>,
@@ -67,7 +69,16 @@ impl YieldingFile {
         let output_length = u32::try_from(size_of::<REQUEST_OPLOCK_OUTPUT_BUFFER>())
             .map_err(|_| DemandError::InvalidRequest)?;
         let bytes = (size_of::<File>() + size_of::<YieldingHeld>()) as u64;
-        work.claim_allocation(bytes, 2, WorkCounters::UNCHARGED)?;
+        let allocation = if let Some(original) = work.native_source_work() {
+            Some(
+                original
+                    .claim(bytes, 2, WorkCounters::UNCHARGED)
+                    .map_err(crate::native_name::original_name_error)?,
+            )
+        } else {
+            work.claim_allocation(bytes, 2, WorkCounters::UNCHARGED)?;
+            None
+        };
         let handle = HANDLE(file.as_raw_handle());
         let mut yielding = Self {
             held: Arc::new(YieldingHeld {
@@ -75,6 +86,7 @@ impl YieldingFile {
                 request: std::ptr::null_mut(),
             }),
             wait: None,
+            allocation,
         };
         let result = (|| {
             let held = Arc::get_mut(&mut yielding.held).ok_or(DemandError::InvalidRequest)?;
@@ -83,7 +95,13 @@ impl YieldingFile {
                 Owned::new(CreateEventW(None, true, false, None).map_err(io::Error::other)?)
             };
             let bytes = size_of::<OplockRequest>() as u64;
-            work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+            if let Some(allocation) = &mut yielding.allocation {
+                allocation
+                    .grow(bytes)
+                    .map_err(crate::native_name::original_name_error)?;
+            } else {
+                work.claim_allocation(bytes, 1, WorkCounters::UNCHARGED)?;
+            }
             let request = Box::new(OplockRequest {
                 overlapped: OVERLAPPED {
                     hEvent: *event,
@@ -100,7 +118,13 @@ impl YieldingFile {
             });
             if let Err(error) = work.started_io(READ) {
                 drop(request);
-                work.release(bytes)?;
+                if let Some(allocation) = &mut yielding.allocation {
+                    allocation
+                        .release(bytes)
+                        .map_err(crate::native_name::original_name_error)?;
+                } else {
+                    work.release(bytes)?;
+                }
                 return Err(error);
             }
             let request = Box::into_raw(request);
@@ -122,7 +146,13 @@ impl YieldingFile {
                 held.request = std::ptr::null_mut();
                 // SAFETY: no pending request or registered callback refers to this storage.
                 drop(unsafe { Box::from_raw(request) });
-                work.release(bytes)?;
+                if let Some(allocation) = &mut yielding.allocation {
+                    allocation
+                        .release(bytes)
+                        .map_err(crate::native_name::original_name_error)?;
+                } else {
+                    work.release(bytes)?;
+                }
                 return Ok(());
             }
             let mut wait = HANDLE::default();
@@ -142,9 +172,12 @@ impl YieldingFile {
             Ok(())
         })();
         if let Err(error) = result {
+            let ordinary = yielding.allocation.is_none();
             let bytes = yielding.logical_owned_bytes();
             drop(yielding);
-            work.release(bytes)?;
+            if ordinary {
+                work.release(bytes)?;
+            }
             return Err(error);
         }
         Ok(yielding)
@@ -177,14 +210,17 @@ impl YieldingFile {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         operation(held.as_ref().ok_or_else(|| io::Error::other(Yielded))?)
     }
-    pub(crate) fn read_at<W: SourceDemandReadWork>(
+    /// Appends at most `length` bytes read at `offset` to `data`'s
+    /// uninitialized capacity; zero means end of file.
+    pub(crate) fn read_spare_at<W: SourceDemandReadWork>(
         &self,
         offset: u64,
-        destination: &mut [u8],
+        data: &mut Vec<u8>,
+        length: usize,
         work: &mut W,
     ) -> Result<usize, DemandError> {
         work.check()?;
-        if destination.is_empty() {
+        if length == 0 {
             return Ok(0);
         }
         work.with_native_read_meter(|meter| {
@@ -194,8 +230,9 @@ impl YieldingFile {
             let mut operations =
                 NativeOperationReservation::new(meter, NativeOperationKind::Read, 2)
                     .map_err(crate::demand::native_demand_error)?;
-            let length = destination.len().min(u32::MAX as usize);
-            let destination = destination
+            let length = length.min(u32::MAX as usize);
+            let destination = data
+                .spare_capacity_mut()
                 .get_mut(..length)
                 .ok_or(DemandError::InvalidRequest)?;
             let mut bytes = NativeByteReservation::new(meter, NativeOperationKind::Read, length)
@@ -217,14 +254,23 @@ impl YieldingFile {
             };
             overlapped.Anonymous.Anonymous.Offset = (offset & 0xffff_ffff) as u32;
             overlapped.Anonymous.Anonymous.OffsetHigh = (offset >> 32) as u32;
-            // SAFETY: storage remains live through terminal completion, including cancellation.
-            let (started, start_charge) = operations.attempt(|| unsafe {
-                ReadFile(
-                    handle,
-                    Some(&mut *destination),
-                    None,
-                    Some(&raw mut overlapped),
-                )
+            let (started, start_charge) = operations.attempt(|| {
+                // SAFETY: the spare storage remains live through terminal completion,
+                // including cancellation, and ReadFile writes at most `length` bytes.
+                let started = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::ReadFile(
+                        handle.0,
+                        destination.as_mut_ptr().cast(),
+                        length as u32,
+                        std::ptr::null_mut(),
+                        (&raw mut overlapped).cast(),
+                    )
+                };
+                if started == 0 {
+                    Err(windows::core::Error::from_thread())
+                } else {
+                    Ok(())
+                }
             });
             let pending = started
                 .as_ref()
@@ -234,6 +280,8 @@ impl YieldingFile {
             let mut interrupted = None;
             if pending {
                 loop {
+                    #[cfg(test)]
+                    acyclic_test_support::differential::record(("wait", 0_u64, 0_u64));
                     let status = meter
                         .examine(1, 0)
                         .map_err(crate::demand::native_demand_error)
@@ -283,7 +331,15 @@ impl YieldingFile {
             }
             meter.check().map_err(crate::demand::native_demand_error)?;
             match read {
-                Ok(()) => Ok(transferred as usize),
+                Ok(()) => {
+                    let count = transferred as usize;
+                    if count > length {
+                        return Err(io::Error::from(io::ErrorKind::InvalidData).into());
+                    }
+                    // SAFETY: the completed read initialized `count` bytes at the start of the spare capacity.
+                    unsafe { data.set_len(data.len() + count) };
+                    Ok(count)
+                }
                 Err(error) if error.code() == ERROR_HANDLE_EOF.to_hresult() => Ok(0),
                 Err(_) if self.was_yielded() => Err(io::Error::other(Yielded).into()),
                 Err(error) => Err(io::Error::from_raw_os_error(error.code().0 & 0xffff).into()),
@@ -353,3 +409,7 @@ impl HostRoot {
         YieldingFile::new(file, work)
     }
 }
+
+#[cfg(test)]
+#[path = "yielding_baseline.rs"]
+mod yielding_baseline;
