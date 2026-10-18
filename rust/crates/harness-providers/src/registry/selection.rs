@@ -95,7 +95,11 @@ impl Registry {
     }
 }
 
-pub(super) fn counts_input(config: &ProviderSpec, credential: Credential) -> Result<()> {
+pub(super) fn counts_input(
+    config: &ProviderSpec,
+    model: &str,
+    credential: Credential,
+) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     let credential = credential.for_config(config);
     #[cfg(not(target_arch = "wasm32"))]
@@ -104,21 +108,23 @@ pub(super) fn counts_input(config: &ProviderSpec, credential: Credential) -> Res
             "Codex CLI credentials require the built-in Responses route",
         ));
     }
-    if config.token_counter.is_some() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(credential, Credential::Codex(_)) {
+        // Resolution replaces the inherited remote counter with local counting.
         return Ok(());
     }
+    if let Some(counter) = &config.token_counter {
+        return crate::counting::wire::endpoint(&config.base_url, model, counter).map(|_| ());
+    }
     #[cfg(not(target_arch = "wasm32"))]
-    if codex_route(config) {
-        match credential {
-            Credential::Codex(_) => return Ok(()),
-            Credential::Key(_) if config.authentication == Authentication::ApiKeyOrCodexLogin => {
-                return Err(invalid(
-                    "catalog default_model requires a verified input token counter: \
-                     the provider API key displaces the Codex login that counts input locally",
-                ));
-            }
-            _ => {}
-        }
+    if codex_route(config)
+        && matches!(credential, Credential::Key(_))
+        && config.authentication == Authentication::ApiKeyOrCodexLogin
+    {
+        return Err(invalid(
+            "catalog default_model requires a verified input token counter: \
+             the provider API key displaces the Codex login that counts input locally",
+        ));
     }
     #[cfg(target_arch = "wasm32")]
     let _ = credential;

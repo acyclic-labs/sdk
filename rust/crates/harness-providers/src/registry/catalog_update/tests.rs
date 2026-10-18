@@ -389,3 +389,55 @@ fn negative_control_detects_assuming_the_codex_counting_exception() {
         }
     }
 }
+
+#[test]
+fn default_counter_expands_the_selected_model_before_catalog_commit() {
+    for name in [
+        "vendor/tiny",
+        "vendor:tiny",
+        "vendor?tiny",
+        "vendor#tiny",
+        "vendor%tiny",
+    ] {
+        for mutation in 0..3 {
+            let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+            let mut spec = specification(1);
+            let model = spec.models.remove("model0").unwrap();
+            spec.models.insert(name.into(), model);
+            let default = format!("fixture/{name}");
+            let reload = |registry: &mut Registry, spec: ProviderSpec, incoming: bool| {
+                let mut document = serde_json::json!({"fixture": spec});
+                if incoming {
+                    document["default_model"] = serde_json::json!(default);
+                }
+                let file = tempfile::NamedTempFile::new().unwrap();
+                std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
+                registry.load_catalog(file.path())
+            };
+            reload(&mut registry, spec.clone(), true).unwrap();
+            let before = serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap();
+            spec.token_counter.as_mut().unwrap().path = "models/{model}/count".into();
+            let result = match mutation {
+                0 => registry.register("fixture".into(), spec),
+                1 => reload(&mut registry, spec, false),
+                _ => reload(&mut registry, spec, true),
+            };
+            assert!(
+                result.is_err(),
+                "mutation {mutation} accepted an unusable default counter"
+            );
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("invalid count model name")
+            );
+            assert_eq!(
+                serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap(),
+                before
+            );
+            assert_eq!(registry.default_model(), default);
+            assert!(registry.resolve(registry.default_model()).is_ok());
+        }
+    }
+}

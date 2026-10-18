@@ -82,11 +82,18 @@ impl CodexLogin { fn discover() -> Option<Self> { None } }
 #[derive(PartialEq)]
 enum Authentication { ApiKeyOrCodexLogin }
 struct ProviderSpec {
+    base_url: String,
     models: BTreeMap<String, ()>,
     token_counter: Option<()>,
     #[cfg(not(target_arch = "wasm32"))]
     authentication: Authentication,
 }
+// Endpoint behavior is covered by the provider suite; this fixture proves cfg/API wiring.
+mod counting { pub mod wire {
+    pub fn endpoint(_: &str, _: &str, _: &()) -> acyclic_harness::Result<String> {
+        Ok(String::new())
+    }
+} }
 struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
@@ -112,6 +119,7 @@ pub fn exercise() -> Result<()> {
     };
     registry.update_catalog(catalog_update::Changes::One(
         "fixture".into(), ProviderSpec {
+            base_url: "https://fixture.invalid".into(),
             models: BTreeMap::new(), token_counter: Some(()),
             #[cfg(not(target_arch = "wasm32"))]
             authentication: Authentication::ApiKeyOrCodexLogin,
