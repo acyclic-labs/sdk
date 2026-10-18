@@ -884,3 +884,47 @@ async fn assert_lossless_name(
     assert_eq!(answer.value.bytes.as_ref(), b"data");
     Ok(())
 }
+
+/// Binds a source to a root held before its path was replaced, or by path
+/// after the replacement when `by_path`, and reports which root it serves.
+async fn bound_across_replacement(by_path: bool) -> Result<bool, Box<dyn Error>> {
+    let parent = tempfile::tempdir()?;
+    let checkout = parent.path().join("checkout");
+    std::fs::create_dir(&checkout)?;
+    let held = crate::hold_root(&checkout)?;
+    let original = held.identity();
+    // A replacement in the window between capture and binding; a host that
+    // refuses to move a held root leaves nothing to replace.
+    if std::fs::rename(&checkout, parent.path().join("moved")).is_ok() {
+        std::fs::create_dir(&checkout)?;
+        assert_ne!(crate::capture_root_identity(&checkout)?, original);
+    }
+    let source = if by_path {
+        native_source(&checkout).await?
+    } else {
+        NativeDemandSource::open_held(
+            held,
+            FilesystemProfile::Portable,
+            VolumeLimits::default(),
+            None,
+            None,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?
+    };
+    Ok(source.root_identity() == original)
+}
+
+#[tokio::test]
+async fn a_held_root_binds_the_root_it_captured_across_a_replacement() {
+    assert!(bound_across_replacement(false).await.unwrap());
+}
+
+#[tokio::test]
+async fn negative_control_binding_by_path_attaches_the_replacement() {
+    let replaced = !bound_across_replacement(true).await.unwrap();
+    assert!(replaced || cfg!(windows));
+}

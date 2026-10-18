@@ -577,7 +577,7 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
     harness.close().await?;
     // Delete and re-clone. A filesystem that frees the inode may hand the
     // same device and object id to the new directory; its file handle's
-    // generation, or its birth time, differs.
+    // generation differs, or the filesystem never reissues the object id.
     std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
     std::fs::create_dir(&workspace).map_err(super::super::storage)?;
     // The previous clone's state refuses the new clone.
@@ -594,87 +594,78 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
 }
 
 proptest::proptest! {
-    /// A recycled object id is a new incarnation whenever its file handle or
-    /// birth time differs, with or without the other; identities are
-    /// injected, so this never depends on the filesystem reusing one.
+    /// A recycled object id is a new incarnation whenever its generation
+    /// differs; generations are injected, so this never depends on the
+    /// filesystem reusing an inode.
     #[test]
     fn a_recycled_object_id_is_a_new_incarnation(
         object: [u8; 16],
         handles: ([u8; 32], [u8; 32]),
-        births: (u64, u64),
-        timed: bool,
     ) {
         use super::super::owner::incarnation_of;
-        use std::time::Duration;
-        let born = |nanos: u64| timed.then(|| Duration::from_nanos(nanos));
-        let first = incarnation_of(object, Some(handles.0), born(births.0)).unwrap();
+        use acyclic_fs::NativeRootGeneration::{FileHandle, UniqueObjectId};
+        let first = incarnation_of(object, FileHandle(handles.0));
         proptest::prop_assert_eq!(
             first,
-            incarnation_of(object, Some(handles.0), born(births.0)).unwrap(),
+            incarnation_of(object, FileHandle(handles.0)),
             "an unchanged checkout keeps its incarnation"
         );
-        // Without a birth time, the handle generation alone separates a re-clone.
         if handles.0 != handles.1 {
             proptest::prop_assert_ne!(
                 first,
-                incarnation_of(object, Some(handles.1), born(births.0)).unwrap(),
+                incarnation_of(object, FileHandle(handles.1)),
                 "a re-clone on a recycled inode kept its state"
             );
         }
-        // Without a handle, the birth time alone separates a re-clone.
-        let untimed = |nanos| incarnation_of(object, None, Some(Duration::from_nanos(nanos)));
-        if births.0 != births.1 {
-            proptest::prop_assert_ne!(untimed(births.0).unwrap(), untimed(births.1).unwrap());
-        }
-        // A handle never collides with a birth time, nor one object with another.
-        proptest::prop_assert_ne!(first, untimed(births.0).unwrap());
+        // A handle never collides with a unique object id, nor one object
+        // with another.
+        proptest::prop_assert_ne!(first, incarnation_of(object, UniqueObjectId));
         let mut other = object;
         other[0] ^= 1;
+        proptest::prop_assert_ne!(first, incarnation_of(other, FileHandle(handles.0)));
         proptest::prop_assert_ne!(
-            first,
-            incarnation_of(other, Some(handles.0), born(births.0)).unwrap()
+            incarnation_of(object, UniqueObjectId),
+            incarnation_of(other, UniqueObjectId)
         );
-        // A host recording neither cannot tell a re-clone apart, so it is refused.
-        proptest::prop_assert!(matches!(
-            incarnation_of(object, None, None),
-            Err(Error::Unsupported(_))
-        ));
     }
 }
 
-/// Opening a checkout reads its root once for state selection and owner
-/// validation together; the negative control repeats the read per consumer,
-/// as before, and the same guard counts it.
+/// Opening a checkout through the default entry point, with default per-user
+/// state selection under a temporary data root, captures its root once for
+/// state selection, owner validation and binding together. The negative
+/// control restores the per-consumer capture in production, and the same
+/// guard counts it. Each capture's physical queries are counted exactly by
+/// the filesystem's held-root tests.
 #[tokio::test]
 async fn opening_a_checkout_captures_its_root_once() -> Result<()> {
-    use super::super::owner::{CAPTURES, Checkout, Owner, state_directory_in};
+    use super::super::owner::{CAPTURES, RECAPTURE, STATE_ROOT};
     let workspace = tempfile::tempdir().map_err(super::super::storage)?;
     let users = tempfile::tempdir().map_err(super::super::storage)?;
-    let config = super::checkout_config(workspace.path(), (model()?, text()))?;
-    let captures = |run: &mut dyn FnMut() -> Result<()>| {
-        CAPTURES.with(|captures| captures.set(0));
-        run()?;
-        Ok::<_, Error>(CAPTURES.with(std::cell::Cell::get))
+    STATE_ROOT.set(Some(users.path().to_path_buf()));
+    let captures = async |recapture: bool| -> Result<usize> {
+        CAPTURES.set(0);
+        RECAPTURE.set(recapture);
+        let opened = LocalHarness::open(super::checkout_config(
+            workspace.path(),
+            (model()?, text()),
+        )?)
+        .await;
+        RECAPTURE.set(false);
+        opened?.close().await?;
+        Ok(CAPTURES.get())
     };
-    let state = super::super::owner::directory(&users.path().join("state"))?;
-    let shared = captures(&mut || {
-        let checkout = Checkout::capture(workspace.path())?;
-        state_directory_in(users.path(), &config.project, Some(&checkout))?;
-        Owner::open(&state, &config.project, Some(&checkout)).map(drop)
-    })?;
-    assert_eq!(shared, 1);
-    let repeated = captures(&mut || {
-        let selected = Checkout::capture(workspace.path())?;
-        state_directory_in(users.path(), &config.project, Some(&selected))?;
-        let validated = Checkout::capture(workspace.path())?;
-        Owner::open(&state, &config.project, Some(&validated)).map(drop)
-    })?;
-    assert_eq!(repeated, 2, "the guard missed a duplicate root read");
-    // The whole open path holds to the same single capture.
-    CAPTURES.with(|captures| captures.set(0));
-    let harness = LocalHarness::open(config.state_directory(users.path().join("opened"))).await?;
-    assert_eq!(CAPTURES.with(std::cell::Cell::get), 1);
-    harness.close().await?;
+    let shared = captures(false).await;
+    let repeated = captures(true).await;
+    STATE_ROOT.set(None);
+    assert_eq!(shared?, 1);
+    assert_eq!(repeated?, 2, "the guard missed a duplicate root capture");
+    // Default selection placed the state under the temporary data root.
+    assert!(
+        std::fs::read_dir(users.path())
+            .map_err(super::super::storage)?
+            .next()
+            .is_some()
+    );
     Ok(())
 }
 

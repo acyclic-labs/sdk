@@ -16,35 +16,46 @@ impl HostRoot {
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
     }
-    /// The held root's incarnation attributes, from one metadata query.
-    pub(crate) fn incarnation<W: NativeHostWork>(
+    /// The held root's incarnation, from one generation query of the held
+    /// root beside the identity its open already read. Hosts without stable
+    /// generation data are `Unsupported`.
+    pub(crate) fn incarnation<W: NativeHostWork<Error = DemandError>>(
         &self,
         work: &mut W,
-    ) -> Result<crate::NativeRootIncarnation, W::Error> {
-        let since_epoch = |time: cap_std::time::SystemTime| {
-            time.into_std().duration_since(std::time::UNIX_EPOCH).ok()
+    ) -> Result<crate::NativeRootIncarnation, DemandError> {
+        #[cfg(all(test, target_os = "linux"))]
+        if stat_probe::duplicate() {
+            directory_identity(&self.directory, work)?;
+        }
+        #[cfg(target_os = "linux")]
+        let generation = crate::NativeRootGeneration::FileHandle(root_file_handle(
+            self.directory.as_raw_fd(),
+            work,
+        )?);
+        #[cfg(target_os = "macos")]
+        let generation = {
+            let fd = self.directory.as_raw_fd();
+            let unique = retry_io(work, READ, || {
+                let mut stat = std::mem::MaybeUninit::<libc::statfs>::uninit();
+                // SAFETY: the held descriptor and complete output remain live.
+                if unsafe { libc::fstatfs(fd, stat.as_mut_ptr()) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: the successful call initialized the complete record.
+                let name = unsafe { stat.assume_init() }.f_fstypename;
+                let name = name.map(|unit| unit.to_ne_bytes()[0]);
+                Ok(name.starts_with(b"apfs\0") || name.starts_with(b"hfs\0"))
+            })?;
+            unique_object_ids(unique)?
         };
-        #[cfg(unix)]
-        {
-            let stat = stat_at(self.directory.as_raw_fd(), c"", work)?;
-            Ok(crate::NativeRootIncarnation {
-                identity: self.identity,
-                handle: stat.handle().copied(),
-                birth_time: stat.birth_time().and_then(since_epoch),
-            })
-        }
         #[cfg(windows)]
-        {
-            // The NTFS file index already carries the record's reuse sequence.
-            let info = work.attempt_io(READ, || windows_file_information(&self.directory))?;
-            let created = (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
-                | u64::from(info.ftCreationTime.dwLowDateTime);
-            Ok(crate::NativeRootIncarnation {
-                identity: self.identity,
-                handle: None,
-                birth_time: since_epoch(windows_time(created)),
-            })
-        }
+        let generation = unique_object_ids(reports_every_change(&self.directory, work)?)?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        let generation = unique_object_ids(false)?;
+        Ok(crate::NativeRootIncarnation {
+            identity: self.identity,
+            generation,
+        })
     }
     #[cfg(unix)]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
@@ -470,4 +481,19 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     let marks = before & MARKS;
     let ignored = marks | if before & 0x0040_0000 != 0 { 0x20 } else { 0 };
     before & !ignored == after & !ignored && after & MARKS & !marks == 0
+}
+
+/// The generation of a filesystem that never reissues an object id; any other
+/// filesystem without file handles cannot tell a re-created root apart.
+#[cfg(not(target_os = "linux"))]
+fn unique_object_ids(unique: bool) -> Result<crate::NativeRootGeneration, DemandError> {
+    if unique {
+        Ok(crate::NativeRootGeneration::UniqueObjectId)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "checkout filesystem has neither kernel file handles nor unique object ids",
+        )
+        .into())
+    }
 }

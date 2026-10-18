@@ -7,13 +7,53 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         .map_err(|_| CaptureError::InvalidOptions)
 }
 
-/// Opens the root once and returns its identity with its incarnation
-/// attributes.
-pub fn capture_root_incarnation(path: &Path) -> Result<crate::NativeRootIncarnation, CaptureError> {
-    let mut work = crate::native_host::ordinary_work();
-    HostRoot::open(path, &mut work)
-        .and_then(|root| root.incarnation(&mut work))
-        .map_err(|_| CaptureError::InvalidOptions)
+/// A root held open from its capture through its binding, so the root a
+/// caller validated is the root it binds, whatever replaces the path in
+/// between.
+pub struct HeldRoot {
+    pub(crate) root: HostRoot,
+    pub(crate) path: PathBuf,
+}
+
+impl HeldRoot {
+    /// The held root's device and object id, read when it was opened.
+    #[must_use]
+    pub const fn identity(&self) -> NativeRootIdentity {
+        self.root.identity()
+    }
+
+    /// The held root's identity and generation, from one generation query of
+    /// the held root. A failed query keeps its cause; a host without stable
+    /// generation data is `Unsupported`.
+    pub fn incarnation(&self) -> Result<crate::NativeRootIncarnation, DemandError> {
+        self.root
+            .incarnation(&mut crate::native_host::ordinary_work())
+    }
+
+    /// The path the root was opened at.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl std::fmt::Debug for HeldRoot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HeldRoot")
+            .field("path", &self.path)
+            .field("identity", &self.identity())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Opens a no-follow root once and holds it. Every query failure keeps its
+/// cause.
+pub fn hold_root(path: &Path) -> Result<HeldRoot, DemandError> {
+    Ok(HeldRoot {
+        root: HostRoot::open(path, &mut crate::native_host::ordinary_work())?,
+        path: path.to_path_buf(),
+    })
 }
 
 /// Reads a bounded set of final host states and applies one atomic checkout transaction.

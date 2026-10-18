@@ -264,16 +264,18 @@ pub(super) async fn open(
     filesystem: &acyclic_fs::Fs<LocalAuthorityBackend, LocalObjectBackend>,
     volume: &VolumeRef,
     scratch: &VolumeRef,
-    path: &Path,
+    root: acyclic_fs::HeldRoot,
     directory: &Path,
-    identity: Option<[u8; 16]>,
     operation: acyclic_fs::OperationId,
     existing: bool,
     native_mounts: bool,
     state: OwnerState,
 ) -> Result<LocalWorkspace> {
     let OwnerState { store, processes } = state;
-    let path = std::fs::canonicalize(path).map_err(storage)?;
+    // The held root is the root its holder validated; binding never reopens
+    // the path, so a replacement there cannot attach this state.
+    let path = root.path().to_path_buf();
+    let identity = root.identity();
     #[cfg(target_os = "linux")]
     if native_mounts {
         volumes::recover_after_crash(&path)?;
@@ -305,8 +307,8 @@ pub(super) async fn open(
         || acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable),
         |workspace| workspace.volume_config(),
     );
-    let source = NativeDemandSource::open(
-        std::borrow::Cow::Borrowed(&path),
+    let source = NativeDemandSource::open_held(
+        root,
         config.profile,
         config.limits,
         original.as_ref().map(|state| state.source),
@@ -316,11 +318,6 @@ pub(super) async fn open(
     )
     .await
     .map_err(storage)?;
-    if identity != Some(source.root_identity().to_bytes()) {
-        return Err(Error::Unauthorized(
-            "local checkout root was replaced during open".into(),
-        ));
-    }
     let exclusions = if native_mounts {
         volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
     } else {
@@ -396,9 +393,7 @@ pub(super) async fn open(
         mounted: None,
         filesystem: filesystem.clone(),
         store,
-        identity: acyclic_fs::NativeRootIdentity::from_bytes(
-            identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
-        ),
+        identity,
         state,
         context_line,
         mounts,
@@ -458,16 +453,12 @@ pub(super) async fn open_volume(
         )
         .await?;
     }
-    let identity = acyclic_fs::capture_root_identity(&path)
-        .map_err(storage)?
-        .to_bytes();
     open(
         filesystem,
         volume,
         scratch,
-        &path,
+        acyclic_fs::hold_root(&std::fs::canonicalize(&path).map_err(storage)?).map_err(storage)?,
         directory,
-        Some(identity),
         operation,
         true,
         native_mounts,

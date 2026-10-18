@@ -73,6 +73,9 @@ mod rescan_probe_tests;
 #[cfg(test)]
 #[cfg(all(target_os = "linux", feature = "memory"))]
 mod stat_probe_tests;
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod held_root_tests;
 use metadata::*;
 #[cfg(test)]
 #[cfg(feature = "memory")]
@@ -107,8 +110,7 @@ mod windows_sparse_tests;
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
-    capture_baseline, capture_paths, capture_root_identity, capture_root_incarnation,
-    capture_subtree,
+    HeldRoot, capture_baseline, capture_paths, capture_root_identity, capture_subtree, hold_root,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;

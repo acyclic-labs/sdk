@@ -27,6 +27,12 @@ struct NativeDemandInner {
     _ownership: SourcePayloadOwnership,
 }
 
+/// The root a source opens: a path to open, or a root already held.
+enum SourceRoot<'a> {
+    Path(std::borrow::Cow<'a, Path>),
+    Held(crate::HeldRoot),
+}
+
 struct CancelWorkerOnDrop(CancellationToken);
 
 impl Drop for CancelWorkerOnDrop {
@@ -52,6 +58,54 @@ impl NativeDemandSource {
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Self, DemandError> {
+        Self::open_root(
+            SourceRoot::Path(path),
+            profile,
+            limits,
+            reference,
+            observer,
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Binds an already held root without reopening its path, so the source
+    /// serves exactly the root its holder captured and validated.
+    pub async fn open_held<W: FsWork + Send>(
+        held: crate::HeldRoot,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        reference: Option<SourceReference>,
+        observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Self, DemandError> {
+        Self::open_root(
+            SourceRoot::Held(held),
+            profile,
+            limits,
+            reference,
+            observer,
+            work,
+            cancellation,
+        )
+        .await
+    }
+
+    async fn open_root<W: FsWork + Send>(
+        root: SourceRoot<'_>,
+        profile: FilesystemProfile,
+        limits: VolumeLimits,
+        reference: Option<SourceReference>,
+        observer: Option<Arc<dyn DemandDirectoryObserver>>,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<Self, DemandError> {
+        let (path, held) = match root {
+            SourceRoot::Path(path) => (path, None),
+            SourceRoot::Held(held) => (std::borrow::Cow::Owned(held.path), Some(held.root)),
+        };
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let mut context = callback_work(&mut accounting)?;
@@ -90,7 +144,10 @@ impl NativeDemandSource {
                     crate::obs::caller_context(),
                     move || {
                         let result = (|| {
-                            let root = HostRoot::open(&path, &mut context)?;
+                            let root = match held {
+                                Some(root) => root,
+                                None => HostRoot::open(&path, &mut context)?,
+                            };
                             let inline = crate::native_host::filesystem_is_local(
                                 &root.directory,
                                 &mut context,

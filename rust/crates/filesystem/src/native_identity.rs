@@ -7,18 +7,27 @@ pub struct NativeRootIdentity {
     pub(crate) object: u64,
 }
 
-/// A held root's identity with the attributes that tell it from a directory
-/// created later at its recycled object id.
+/// What makes a held root's object id name exactly one incarnation of it, so
+/// a directory created later at a recycled object id is a different root.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeRootGeneration {
+    /// A digest of the root's kernel file handle, which carries the inode
+    /// generation (Linux).
+    FileHandle([u8; 32]),
+    /// The filesystem never reissues an object id: an NTFS file index carries
+    /// the record's reuse sequence, and APFS and HFS+ allocate ids
+    /// monotonically. The object id alone is the incarnation.
+    UniqueObjectId,
+}
+
+/// A held root's identity and generation, from stable generation data only:
+/// never a mutable timestamp, and never a query error folded into a value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeRootIncarnation {
     /// The root's device and object id.
     pub identity: NativeRootIdentity,
-    /// A digest of the root's kernel file handle, which carries the inode
-    /// generation, where the filesystem issues handles (Linux).
-    pub handle: Option<[u8; 32]>,
-    /// The root's birth time since the Unix epoch, where the filesystem
-    /// records one.
-    pub birth_time: Option<std::time::Duration>,
+    /// What makes that object id one incarnation.
+    pub generation: NativeRootGeneration,
 }
 
 impl NativeRootIdentity {

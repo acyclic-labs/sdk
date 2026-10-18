@@ -23,6 +23,17 @@ pub(super) fn user_state_root() -> Result<PathBuf> {
 pub(super) const UNIT_TESTS_INJECT_STATE: &str =
     "unit tests must inject LocalHarnessConfig::state_directory; the per-user store is unreachable";
 
+#[cfg(test)]
+thread_local! {
+    /// A temporary per-user data root for default state selection, so tests
+    /// exercise it without touching real per-user state.
+    pub(super) static STATE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    /// Restores the duplicate-capture defect: owner validation captures the
+    /// root again instead of sharing state selection's capture.
+    pub(super) static RECAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Per-user state is keyed by the checkout's path and its directory incarnation:
 /// a checkout deleted and cloned again at the same path is a new workspace and
 /// starts with new state instead of being refused the old one.
@@ -33,17 +44,21 @@ pub(super) fn state_directory_in(
 ) -> Result<PathBuf> {
     // The scope separates a volume's state by its storage name and a
     // checkout's by its incarnation.
-    let (canonical, kind, scope) = match (project, checkout) {
+    let storage_name;
+    let (canonical, kind, scope): (PathBuf, &[u8], &[u8]) = match (project, checkout) {
         (LocalProject::Workspace(_), Some(checkout)) => (
             checkout.path.clone(),
             b"checkout\0".as_slice(),
-            checkout.incarnation.to_vec(),
+            &checkout.incarnation,
         ),
-        (LocalProject::Volume { directory, volume }, None) => (
-            fs::canonicalize(directory).map_err(storage)?,
-            b"volume\0".as_slice(),
-            volume.storage_name(&mut None)?.as_bytes().to_vec(),
-        ),
+        (LocalProject::Volume { directory, volume }, None) => {
+            storage_name = volume.storage_name(&mut None)?;
+            (
+                fs::canonicalize(directory).map_err(storage)?,
+                b"volume\0".as_slice(),
+                storage_name.as_bytes(),
+            )
+        }
         _ => {
             return Err(Error::Invalid(
                 "checkout capture does not match the project".into(),
@@ -56,7 +71,7 @@ pub(super) fn state_directory_in(
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
     hash.update(path_bytes);
-    hash.update(&scope);
+    hash.update(scope);
     let directory = root.join(hash.finalize().to_hex().as_str());
     let planned = directory::planned_directory(&directory).ok_or_else(|| {
         Error::Invalid("local state directory has an unresolved path suffix".into())
@@ -72,14 +87,17 @@ pub(super) fn state_directory_in(
 mod directory;
 pub(super) use directory::separated_directory;
 
-/// One capture of a checkout root, from a single held root: its canonical
-/// path, its object identity and its incarnation. State selection and owner
-/// validation share it instead of each querying the root again.
-#[derive(Clone, Debug)]
+/// One capture of a checkout root: its canonical path, object identity and
+/// incarnation, with the root itself held open. State selection and owner
+/// validation share the capture, and workspace binding consumes the held
+/// root, so the root that selected and validated state is the root bound.
+#[derive(Debug)]
 pub(super) struct Checkout {
     pub(super) path: PathBuf,
     pub(super) identity: [u8; 16],
     pub(super) incarnation: [u8; 16],
+    #[cfg(feature = "native-execution")]
+    pub(super) root: acyclic_fs::HeldRoot,
 }
 
 #[cfg(test)]
@@ -95,12 +113,21 @@ impl Checkout {
         #[cfg(feature = "native-execution")]
         {
             let path = fs::canonicalize(path).map_err(storage)?;
-            let root = acyclic_fs::capture_root_incarnation(&path).map_err(storage)?;
-            let identity = root.identity.to_bytes();
+            let root = acyclic_fs::hold_root(&path).map_err(storage)?;
+            let incarnation = root.incarnation().map_err(|error| match error {
+                acyclic_fs::demand::DemandError::Io(error)
+                    if error.kind() == std::io::ErrorKind::Unsupported =>
+                {
+                    Error::Unsupported(error.to_string())
+                }
+                error => storage(error),
+            })?;
+            let identity = incarnation.identity.to_bytes();
             Ok(Self {
                 path,
                 identity,
-                incarnation: incarnation_of(identity, root.handle, root.birth_time)?,
+                incarnation: incarnation_of(identity, incarnation.generation),
+                root,
             })
         }
         #[cfg(not(feature = "native-execution"))]
@@ -113,41 +140,30 @@ impl Checkout {
     }
 }
 
-/// A checkout's incarnation: its object identity bound to an attribute a
-/// directory created later at the recycled object id cannot repeat. The
-/// kernel file handle carries the inode generation and needs no birth time;
-/// the birth time covers hosts without handles. A host recording neither
-/// cannot tell a re-created checkout from the old one, so it is refused.
+/// A checkout's incarnation: its object identity bound to the generation that
+/// a directory created later at the recycled object id cannot repeat. It is
+/// derived from stable generation data only, never from a timestamp.
+#[cfg(any(test, feature = "native-execution"))]
 pub(super) fn incarnation_of(
     object: [u8; 16],
-    handle: Option<[u8; 32]>,
-    born: Option<std::time::Duration>,
-) -> Result<[u8; 16]> {
-    if handle.is_none() && born.is_none() {
-        return Err(Error::Unsupported(
-            "checkout filesystem records neither file handles nor birth times".into(),
-        ));
-    }
+    generation: acyclic_fs::NativeRootGeneration,
+) -> [u8; 16] {
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.workspace-incarnation/v2\0");
+    hash.update(b"acyclic.local.workspace-incarnation/v3");
+    hash.update(&[0]);
     hash.update(&object);
-    for (tag, attribute) in [
-        (1, handle.map(|handle| handle.to_vec())),
-        (2, born.map(|born| born.as_nanos().to_le_bytes().to_vec())),
-    ] {
-        match attribute {
-            Some(bytes) => {
-                hash.update(&[tag]);
-                hash.update(&bytes);
-            }
-            None => {
-                hash.update(&[0]);
-            }
+    match generation {
+        acyclic_fs::NativeRootGeneration::FileHandle(handle) => {
+            hash.update(&[1]);
+            hash.update(&handle);
+        }
+        acyclic_fs::NativeRootGeneration::UniqueObjectId => {
+            hash.update(&[2]);
         }
     }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    Ok(identity)
+    identity
 }
 
 
