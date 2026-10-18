@@ -1,0 +1,2 @@
+# Standalone carriage returns remain visible instead of being mistaken for CRLF.
+cc 6cceacf476a95a9eb38a096ecf46ccaebe9d3805c411263a151dac1fc14c1d81

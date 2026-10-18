@@ -84,9 +84,6 @@ proptest! {
         lines in prop::collection::vec("[a-z日\u{301}\t\u{1b}\u{202e} ]{0,6}", 1..5),
         crlf in any::<bool>(),
     ) {
-        let (files, owner) = pending(&lines.join(if crlf { "\r\n" } else { "\n" }));
-        let mut archive = Archive::default();
-        archive.update(Some((&files, owner)));
         let expected: Vec<String> = lines
             .iter()
             .enumerate()
@@ -98,6 +95,17 @@ proptest! {
                 )
             })
             .collect();
-        prop_assert_eq!(painted(&archive), expected);
+        // A CR is a line delimiter only immediately before LF. In particular,
+        // trailing standalone CRs must remain visible, including after an
+        // empty final line. Check every suffix for each generated prompt.
+        for suffix in ["", "\r", "\r\r"] {
+            let text = format!("{}{suffix}", lines.join(if crlf { "\r\n" } else { "\n" }));
+            let (files, owner) = pending(&text);
+            let mut archive = Archive::default();
+            archive.update(Some((&files, owner)));
+            let mut expected = expected.clone();
+            expected.last_mut().unwrap().push_str(&suffix.replace('\r', "\\r"));
+            prop_assert_eq!(painted(&archive), expected);
+        }
     }
 }

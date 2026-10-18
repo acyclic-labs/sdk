@@ -23,10 +23,15 @@ mod tests;
 /// One row per prompt line. Lines are split before sanitizing: the sanitizer
 /// escapes `\n` itself, so splitting its output would never break a line.
 fn prompt_rows(text: &str) -> Vec<Line<'static>> {
-    text.split('\n')
+    text.split_inclusive('\n')
+        .chain((text.is_empty() || text.ends_with('\n')).then_some(""))
         .enumerate()
         .map(|(index, row)| {
-            let row = row.strip_suffix('\r').unwrap_or(row);
+            // Consume only complete delimiters; a standalone CR is content.
+            let row = row
+                .strip_suffix("\r\n")
+                .or_else(|| row.strip_suffix('\n'))
+                .unwrap_or(row);
             Line::raw(format!(
                 "{}{}",
                 if index == 0 { "You: " } else { "     " },
