@@ -186,14 +186,8 @@ where
                             cause = ?error,
                             "task command failed"
                         );
-                        // Formatted under the work's accounting, like an uncertain cause.
                         return Ok(CommandDispatch::Failed {
-                            message: crate::executor::with_history_io(io, |work| {
-                                crate::executor::preparation_format(
-                                    format_args!("{error}"),
-                                    work,
-                                )
-                            })?,
+                            message: failed_message(&error, io)?,
                         });
                     }
                     Ok(TaskCommandProgress::Indeterminate) => {
@@ -222,6 +216,17 @@ where
         })?
         .await
     }
+}
+
+/// A definitive failure's retained message, formatted under the work's accounting like an
+/// uncertain cause: on the native path its bytes are charged to the original ledger.
+pub(super) fn failed_message(
+    error: &Error,
+    io: Option<&super::super::PreparationIo>,
+) -> Result<String> {
+    crate::executor::with_history_io(io, |work| {
+        crate::executor::preparation_format(format_args!("{error}"), work)
+    })
 }
 
 /// Records why a command left its task uncertain, so the cause reaches the
