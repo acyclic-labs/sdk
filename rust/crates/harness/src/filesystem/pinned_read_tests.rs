@@ -79,7 +79,11 @@ fn exact_unmetered_allocation(
     candidate: acyclic_test_support::AllocationInfo,
     saved: u64,
 ) -> proptest::test_runner::TestCaseResult {
-    prop_assert_eq!(candidate.count_total, original.count_total);
+    prop_assert_eq!(
+        candidate.count_total,
+        original.count_total,
+        "pinned read allocation count"
+    );
     prop_assert_eq!(original.bytes_total - candidate.bytes_total, saved);
     Ok(())
 }
@@ -104,19 +108,22 @@ proptest! {
             (host, file)
         };
         let (layout_host, layout_file) = initialize();
-        let saved = legacy::saved_frame_bytes(&layout_host, &layout_file, maximum);
-        prop_assert!(saved > 0);
-        let observe = |(host, file): (Arc<Host>, FileRef), old| {
+        let observe = |(host, file): (Arc<Host>, FileRef), old, extra_box| {
             let mut result = None;
             let allocation = acyclic_test_support::measure(|| {
-                result = Some(runtime.block_on(read(&host, &file, maximum, None, old))
-                    .map(|bytes| bytes.as_ref().to_vec()).map_err(|e| e.to_string()));
+                let future = read(&host, &file, maximum, None, old);
+                let read = if extra_box { runtime.block_on(Box::pin(future)) }
+                    else { runtime.block_on(future) };
+                result = Some(read.map(|bytes| bytes.as_ref().to_vec()).map_err(|e| e.to_string()));
             });
             let frame = if old { std::mem::size_of_val(&legacy::read_pinned(&host, &file, maximum, None)) }
                 else { std::mem::size_of_val(&host.read_pinned_io(&file, maximum, None)) };
             (result.unwrap(), allocation, frame)
         };
-        let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, observe);
+        let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize,
+            |fixture, old| observe(fixture, old, false));
+        let saved = legacy::saved_frame_bytes(&layout_host, &layout_file, maximum);
+        prop_assert!(saved > 0);
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(&before.1, &after.1);
         eprintln!("pinned frame before={} after={} allocations before={:?} after={:?}",
@@ -125,11 +132,18 @@ proptest! {
         prop_assert_eq!(after.0.2, before.0.2, "enclosing frame differs from the original concrete type");
         // Restore the old factory on a third, independently initialized store.
         let broken = differential::observe::<_, _, (&'static str, u64)>(initialize,
-            |fixture| observe(fixture, true));
+            |fixture| observe(fixture, true, false));
         prop_assert_eq!(&before.0.0, &broken.0.0);
         prop_assert_eq!(&before.1, &broken.1);
         prop_assert!(exact_unmetered_allocation(before.0.1, broken.0.1, saved).is_err(),
             "restored original factory passed the same allocation guard");
+        let boxed = differential::observe::<_, _, (&'static str, u64)>(initialize,
+            |fixture| observe(fixture, false, true));
+        prop_assert_eq!(&before.0.0, &boxed.0.0);
+        prop_assert_eq!(&before.1, &boxed.1);
+        let error = exact_unmetered_allocation(before.0.1, boxed.0.1, saved).unwrap_err();
+        prop_assert!(error.to_string().contains("pinned read allocation count"),
+            "extra factory box bypassed the exact count guard");
         for allowance in [budget, 64 * 1024 * 1024] {
             for native in [false, true] {
                 let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old|

@@ -125,34 +125,43 @@ fn paired(
             crate::executor::json::baseline::LEGACY.set(false);
         }
     }
-    let _reset = Reset;
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .build()
-        .unwrap();
-    let mut old = true;
-    differential::pair::<_, _, (&'static str, u64)>(
-        || {
-            crate::executor::json::baseline::LEGACY.set(old && !reference);
-            let state = runtime.block_on(initialize(old, denied, unbound, old && reference));
-            old = false;
-            state
-        },
-        |(publisher, verifier), old| {
-            crate::executor::json::baseline::LEGACY.set(old && !reference);
-            let mut result = None;
-            let allocations = acyclic_test_support::measure(|| {
-                if let Ok(publisher) = &publisher {
-                    result = Some(runtime.block_on(exercise(publisher, &verifier, bytes)));
-                }
-            });
-            let result = match (publisher, result) {
-                (Err(error), None) | (Ok(_), Some(Err(error))) => Err(format!("{error:?}")),
-                (Ok(_), Some(Ok(result))) => Ok(result),
-                _ => unreachable!("only successful publishers execute"),
-            };
-            (result, allocations)
-        },
-    )
+    // Separate threads also isolate lazy thread-local instrumentation. Neither
+    // side inherits allocations or warmed state from the other's first write.
+    std::thread::scope(|scope| {
+        [true, false].map(|old| {
+            scope
+                .spawn(move || {
+                    let _reset = Reset;
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .build()
+                        .unwrap();
+                    crate::executor::json::baseline::LEGACY.set(old && !reference);
+                    differential::observe::<_, _, (&'static str, u64)>(
+                        || runtime.block_on(initialize(old, denied, unbound, old && reference)),
+                        |(publisher, verifier)| {
+                            let mut result = None;
+                            let allocations = acyclic_test_support::measure(|| {
+                                if let Ok(publisher) = &publisher {
+                                    result = Some(
+                                        runtime.block_on(exercise(publisher, &verifier, bytes)),
+                                    );
+                                }
+                            });
+                            let result = match (publisher, result) {
+                                (Err(error), None) | (Ok(_), Some(Err(error))) => {
+                                    Err(format!("{error:?}"))
+                                }
+                                (Ok(_), Some(Ok(result))) => Ok(result),
+                                _ => unreachable!("only successful publishers execute"),
+                            };
+                            (result, allocations)
+                        },
+                    )
+                })
+                .join()
+                .unwrap()
+        })
+    })
 }
 
 fn check(bytes: &[Vec<u8>; 2], denied: bool) -> TestCaseResult {
@@ -212,16 +221,16 @@ fn exact_for(bytes: &[Vec<u8>; 2], unbound: bool) -> TestCaseResult {
     let [(old, expected_trace), (new, trace)] = paired(bytes, false, unbound, true);
     let expected = differential::allocation_counts(old.1);
     let actual = differential::allocation_counts(new.1);
-    prop_assert!(
-        old.0 == new.0
-            && actual == expected
-            && trace == expected_trace
-            && trace
-                .iter()
-                .filter(|(op, _)| *op == "open workspace")
-                .count()
-                == 0,
-        "exact binding allocation differs: actual={actual:?}, expected={expected:?}"
+    prop_assert_eq!(old.0, new.0, "binding outputs differ");
+    prop_assert_eq!(actual, expected, "exact binding allocation differs");
+    prop_assert_eq!(&trace, &expected_trace, "binding operation trace differs");
+    prop_assert_eq!(
+        trace
+            .iter()
+            .filter(|(op, _)| *op == "open workspace")
+            .count(),
+        0,
+        "binding performed a redundant workspace open"
     );
     Ok(())
 }
