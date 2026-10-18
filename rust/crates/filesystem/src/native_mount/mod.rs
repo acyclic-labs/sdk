@@ -289,7 +289,9 @@ pub use session::*;
 mod disconnected;
 mod lifecycle;
 #[cfg(target_os = "linux")]
-pub use disconnected::recover_disconnected_native_mount_destination;
+pub use disconnected::{
+    recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
+};
 pub use lifecycle::*;
 mod fence;
 use fence::*;

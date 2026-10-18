@@ -575,9 +575,8 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
     let harness = LocalHarness::open(config(&first)?).await?;
     assert_eq!(harness.run("first clone").await?.text, "done");
     harness.close().await?;
-    // Delete and re-clone. A filesystem that frees the inode may hand the
-    // same device and object id to the new directory; its file handle's
-    // generation differs, or the filesystem never reissues the object id.
+    // Delete and re-clone. The new directory has no incarnation token, so it
+    // is a new incarnation even where the filesystem reissues the object id.
     std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
     std::fs::create_dir(&workspace).map_err(super::super::storage)?;
     // The previous clone's state refuses the new clone.
@@ -591,43 +590,6 @@ async fn a_checkout_cloned_again_at_the_same_path_gets_new_state() -> Result<()>
     assert_eq!(harness.run("second clone").await?.text, "done");
     harness.close().await?;
     Ok(())
-}
-
-proptest::proptest! {
-    /// A recycled object id is a new incarnation whenever its generation
-    /// differs; generations are injected, so this never depends on the
-    /// filesystem reusing an inode.
-    #[test]
-    fn a_recycled_object_id_is_a_new_incarnation(
-        object: [u8; 16],
-        handles: ([u8; 32], [u8; 32]),
-    ) {
-        use super::super::owner::incarnation_of;
-        use acyclic_fs::NativeRootGeneration::{FileHandle, UniqueObjectId};
-        let first = incarnation_of(object, FileHandle(handles.0));
-        proptest::prop_assert_eq!(
-            first,
-            incarnation_of(object, FileHandle(handles.0)),
-            "an unchanged checkout keeps its incarnation"
-        );
-        if handles.0 != handles.1 {
-            proptest::prop_assert_ne!(
-                first,
-                incarnation_of(object, FileHandle(handles.1)),
-                "a re-clone on a recycled inode kept its state"
-            );
-        }
-        // A handle never collides with a unique object id, nor one object
-        // with another.
-        proptest::prop_assert_ne!(first, incarnation_of(object, UniqueObjectId));
-        let mut other = object;
-        other[0] ^= 1;
-        proptest::prop_assert_ne!(first, incarnation_of(other, FileHandle(handles.0)));
-        proptest::prop_assert_ne!(
-            incarnation_of(object, UniqueObjectId),
-            incarnation_of(other, UniqueObjectId)
-        );
-    }
 }
 
 /// Opening a checkout through the default entry point, with default per-user

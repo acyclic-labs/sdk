@@ -93,7 +93,16 @@ async fn checkout_without_bash_uses_directory_capture_without_mounts() -> Result
     .await?;
     let workspace = harness.workspace().unwrap();
     assert_eq!(workspace.mounts.mounts().count(), 1);
-    assert!(!directory.path().join(".volumes").exists());
+    // No scratch volume: the harness's only checkout entry is the
+    // incarnation token.
+    assert_eq!(
+        std::fs::read_dir(directory.path().join(".volumes"))
+            .map_err(super::super::storage)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(super::super::storage)?,
+        [std::ffi::OsString::from(".incarnation")]
+    );
     assert_eq!(
         workspace
             .view()

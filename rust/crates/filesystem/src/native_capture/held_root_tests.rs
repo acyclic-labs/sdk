@@ -7,16 +7,33 @@ fn capture(path: &std::path::Path) -> Result<crate::NativeRootIncarnation, Deman
 }
 
 /// What one held-root capture must do when one native query fails once.
-fn expected(query: &str, errno: i32) -> Option<i32> {
+enum Expected {
+    /// The unchanged incarnation.
+    Same,
+    /// The same identity, classified as a filesystem without stable ids.
+    Unstable,
+    /// A failure with the injected cause.
+    Cause(i32),
+}
+
+fn expected(query: &str, errno: i32) -> Expected {
     // An interrupted query is retried, and an `EPERM` open is retried without
-    // `O_NOATIME`; both name the same incarnation. Every other failure keeps
+    // `O_NOATIME`; both name the same incarnation. A kernel without file
+    // handles is a filesystem without stable ids. Every other failure keeps
     // its cause.
-    (errno != libc::EINTR && !(query == "openat" && errno == libc::EPERM)).then_some(errno)
+    if errno == libc::EINTR || (query == "openat" && errno == libc::EPERM) {
+        Expected::Same
+    } else if query == "handle" && errno == libc::ENOSYS {
+        Expected::Unstable
+    } else {
+        Expected::Cause(errno)
+    }
 }
 
 /// Every native query on the identity path, failed once with every
-/// transient or capability errno, either names the unchanged incarnation or
-/// fails with the injected cause: never a different incarnation.
+/// transient or capability errno, names the unchanged incarnation, classifies
+/// a kernel without file handles, or fails with the injected cause: never a
+/// different incarnation.
 fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let baseline = capture(directory.path()).map_err(|error| error.to_string())?;
@@ -31,8 +48,11 @@ fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
                 return Err(format!("{query} was never queried"));
             }
             match (expected(query, errno), held) {
-                (None, Ok(held)) if held == baseline => {}
-                (Some(errno), Err(crate::demand::DemandError::Io(error)))
+                (Expected::Same, Ok(held)) if held == baseline => {}
+                (Expected::Unstable, Ok(held))
+                    if held.identity == baseline.identity
+                        && held.generation == crate::NativeRootGeneration::Unstable => {}
+                (Expected::Cause(errno), Err(crate::demand::DemandError::Io(error)))
                     if error.raw_os_error() == Some(errno) => {}
                 (_, held) => return Err(format!("{query} errno {errno}: {held:?}")),
             }
@@ -70,4 +90,99 @@ fn a_held_root_capture_makes_exactly_one_open_identity_and_handle_query() {
 #[test]
 fn negative_control_a_repeated_identity_query_is_counted() {
     assert_ne!(capture_queries(true), ["openat", "fstat", "handle"]);
+}
+
+/// A kill after a step of a record publication, then a later publication
+/// with another candidate, in a fresh held directory.
+fn killed_then_published(step: usize, torn: bool) -> Result<[u8; 16], DemandError> {
+    use crate::native_host::publish_probe;
+    let directory = tempfile::tempdir().unwrap();
+    let held = hold_root(directory.path())?;
+    let leaf = std::path::Path::new("token");
+    publish_probe::tear(torn);
+    publish_probe::kill_at(Some(step));
+    let killed = held.read_or_publish(leaf, [1; 16]);
+    publish_probe::kill_at(None);
+    publish_probe::tear(false);
+    assert!(killed.is_err(), "step {step} was not killed");
+    held.read_or_publish(leaf, [2; 16])
+}
+
+/// A kill after every durable step of a publication leaves no record (the
+/// next publication wins) or the complete one (once renamed into place).
+#[test]
+fn a_kill_at_any_publication_step_leaves_no_record_or_the_complete_one() {
+    use crate::native_host::publish_probe::STEPS;
+    for step in 0..STEPS {
+        let published = killed_then_published(step, false).unwrap();
+        assert_eq!(
+            published,
+            if step == 3 { [1; 16] } else { [2; 16] },
+            "step {step}"
+        );
+    }
+}
+
+/// Negative control: a record written in place is torn by a kill mid-write,
+/// and every later read refuses it.
+#[test]
+fn negative_control_a_record_published_in_place_is_torn_by_a_kill() {
+    assert!(killed_then_published(1, true).is_err());
+}
+
+/// Concurrent first publications in one directory all return one record.
+#[test]
+fn concurrent_publishers_return_one_record() {
+    let directory = tempfile::tempdir().unwrap();
+    let records: Vec<[u8; 16]> = std::thread::scope(|scope| {
+        let publishers: Vec<_> = (0..8_u8)
+            .map(|candidate| {
+                let path = directory.path();
+                scope.spawn(move || {
+                    hold_root(path)
+                        .and_then(|held| {
+                            held.read_or_publish(std::path::Path::new("token"), [candidate; 16])
+                        })
+                        .unwrap()
+                })
+            })
+            .collect();
+        publishers
+            .into_iter()
+            .map(|publisher| publisher.join().unwrap())
+            .collect()
+    });
+    assert!(
+        records.iter().all(|record| *record == records[0]),
+        "{records:?}"
+    );
+}
+
+/// A directory created below a held root is created in the held root, never
+/// in a replacement at the root's path; one created below the reopened path
+/// lands in the replacement.
+#[test]
+fn held_directories_are_created_in_the_held_root_across_a_replacement() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("root");
+    let moved = parent.path().join("moved");
+    let replaced = |reopen: bool| {
+        std::fs::create_dir(&root).unwrap();
+        let held = hold_root(&root).unwrap();
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        let held = if reopen {
+            hold_root(held.path()).unwrap()
+        } else {
+            held
+        };
+        held.create_directories(std::path::Path::new("a/b"))
+            .unwrap();
+        let landed = (moved.join("a/b").is_dir(), root.join("a").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+        std::fs::remove_dir_all(&moved).unwrap();
+        landed
+    };
+    assert_eq!(replaced(false), (true, false));
+    assert_eq!(replaced(true), (false, true), "negative control");
 }

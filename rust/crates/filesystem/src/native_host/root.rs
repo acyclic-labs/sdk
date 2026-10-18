@@ -17,8 +17,8 @@ impl HostRoot {
         self.identity
     }
     /// The held root's incarnation, from one generation query of the held
-    /// root beside the identity its open already read. Hosts without stable
-    /// generation data are `Unsupported`.
+    /// root beside the identity its open already read. A host whose object
+    /// ids are not stable reports `Unstable`; a failed query keeps its cause.
     pub(crate) fn incarnation<W: NativeHostWork<Error = DemandError>>(
         &self,
         work: &mut W,
@@ -28,10 +28,13 @@ impl HostRoot {
             directory_identity(&self.directory, work)?;
         }
         #[cfg(target_os = "linux")]
-        let generation = crate::NativeRootGeneration::FileHandle(root_file_handle(
-            self.directory.as_raw_fd(),
-            work,
-        )?);
+        let generation = match root_file_handle(self.directory.as_raw_fd(), work) {
+            Ok(handle) => crate::NativeRootGeneration::FileHandle(handle),
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::Unsupported => {
+                crate::NativeRootGeneration::Unstable
+            }
+            Err(error) => return Err(error),
+        };
         #[cfg(target_os = "macos")]
         let generation = {
             let fd = self.directory.as_raw_fd();
@@ -46,12 +49,12 @@ impl HostRoot {
                 let name = name.map(|unit| unit.to_ne_bytes()[0]);
                 Ok(name.starts_with(b"apfs\0") || name.starts_with(b"hfs\0"))
             })?;
-            unique_object_ids(unique)?
+            stable_object_ids(unique)
         };
         #[cfg(windows)]
-        let generation = unique_object_ids(reports_every_change(&self.directory, work)?)?;
+        let generation = stable_object_ids(reports_every_change(&self.directory, work)?);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        let generation = unique_object_ids(false)?;
+        let generation = stable_object_ids(false);
         Ok(crate::NativeRootIncarnation {
             identity: self.identity,
             generation,
@@ -483,17 +486,13 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     before & !ignored == after & !ignored && after & MARKS & !marks == 0
 }
 
-/// The generation of a filesystem that never reissues an object id; any other
-/// filesystem without file handles cannot tell a re-created root apart.
+/// A filesystem whose object ids stay stable for a root's lifetime, or one
+/// that may renumber them.
 #[cfg(not(target_os = "linux"))]
-fn unique_object_ids(unique: bool) -> Result<crate::NativeRootGeneration, DemandError> {
-    if unique {
-        Ok(crate::NativeRootGeneration::UniqueObjectId)
+const fn stable_object_ids(stable: bool) -> crate::NativeRootGeneration {
+    if stable {
+        crate::NativeRootGeneration::StableObjectId
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "checkout filesystem has neither kernel file handles nor unique object ids",
-        )
-        .into())
+        crate::NativeRootGeneration::Unstable
     }
 }

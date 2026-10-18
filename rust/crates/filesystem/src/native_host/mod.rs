@@ -85,6 +85,9 @@ mod reader;
 pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
+mod held_files;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use held_files::publish_probe;
 #[cfg(all(unix, any(test, feature = "native-mount")))]
 mod unix_metadata;
 #[cfg(all(unix, any(test, feature = "native-mount")))]

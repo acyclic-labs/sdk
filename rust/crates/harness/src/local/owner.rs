@@ -34,13 +34,21 @@ thread_local! {
     pub(super) static RECAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // Negative control for accidentally rekeying configured volumes.
     static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Replaces a capture's object id and generation, as a filesystem that
+    /// reissues ids or renumbers them across remounts.
+    pub(super) static INJECTED: std::cell::Cell<Option<([u8; 16], acyclic_fs::NativeRootGeneration)>> =
+        const { std::cell::Cell::new(None) };
+    /// Negative control: an incarnation without the root's token.
+    pub(super) static UNTOKENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: a root without stable ids is keyed on its id.
+    pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
 mod state_key_tests;
 
-/// Per-user state is keyed by the checkout's path and its directory incarnation:
-/// a checkout deleted and cloned again at the same path is a new workspace and
+/// Per-user state is keyed by the checkout's path and its incarnation: a
+/// checkout deleted and cloned again at the same path is a new workspace and
 /// starts with new state instead of being refused the old one.
 pub(super) fn state_directory_in(
     root: &Path,
@@ -108,7 +116,8 @@ pub(super) use directory::separated_directory;
 #[derive(Debug)]
 pub(super) struct Checkout {
     pub(super) path: PathBuf,
-    pub(super) identity: [u8; 16],
+    /// The root's object id, where the filesystem keeps it stable.
+    pub(super) identity: Option<[u8; 16]>,
     pub(super) incarnation: [u8; 16],
     #[cfg(feature = "native-execution")]
     pub(super) root: acyclic_fs::HeldRoot,
@@ -128,19 +137,16 @@ impl Checkout {
         {
             let path = fs::canonicalize(path).map_err(storage)?;
             let root = acyclic_fs::hold_root(&path).map_err(storage)?;
-            let incarnation = root.incarnation().map_err(|error| match error {
-                acyclic_fs::demand::DemandError::Io(error)
-                    if error.kind() == std::io::ErrorKind::Unsupported =>
-                {
-                    Error::Unsupported(error.to_string())
-                }
-                error => storage(error),
-            })?;
-            let identity = incarnation.identity.to_bytes();
+            let incarnation = root.incarnation().map_err(storage)?;
+            let token = incarnation_token(&root)?;
+            let (object, generation) = (incarnation.identity.to_bytes(), incarnation.generation);
+            #[cfg(test)]
+            let (object, generation) = INJECTED.get().unwrap_or((object, generation));
             Ok(Self {
                 path,
-                identity,
-                incarnation: incarnation_of(identity, incarnation.generation),
+                identity: (generation != acyclic_fs::NativeRootGeneration::Unstable)
+                    .then_some(object),
+                incarnation: incarnation_of(object, generation, token),
                 root,
             })
         }
@@ -154,25 +160,54 @@ impl Checkout {
     }
 }
 
-/// A checkout's incarnation: its object identity bound to the generation that
-/// a directory created later at the recycled object id cannot repeat. It is
-/// derived from stable generation data only, never from a timestamp.
+/// The checkout's incarnation token: 128 random bits published once in the
+/// held root, exclusively and atomically. A checkout cloned again, even at a
+/// recycled object id, has no token and publishes a new one.
+#[cfg(feature = "native-execution")]
+fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
+    let mut candidate = [0; 16];
+    getrandom::fill(&mut candidate).map_err(storage)?;
+    super::workspace::volumes::held_directories(
+        root,
+        Path::new(super::workspace::volumes::INCARNATION_PATH),
+    )?
+    .read_or_publish(Path::new("token"), candidate)
+    .map_err(storage)
+}
+
+/// A checkout's incarnation: the token published in its root, bound to the
+/// root's object id where the filesystem keeps that id stable. The token
+/// tells a re-created root from its predecessor even when the filesystem
+/// reissues the id; a filesystem that may renumber ids is keyed on the token
+/// alone.
 #[cfg(any(test, feature = "native-execution"))]
 pub(super) fn incarnation_of(
     object: [u8; 16],
     generation: acyclic_fs::NativeRootGeneration,
+    token: [u8; 16],
 ) -> [u8; 16] {
+    #[cfg(test)]
+    let token = if UNTOKENED.get() { [0; 16] } else { token };
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.workspace-incarnation/v3");
+    hash.update(b"acyclic.local.workspace-incarnation/v4");
     hash.update(&[0]);
-    hash.update(&object);
+    hash.update(&token);
     match generation {
         acyclic_fs::NativeRootGeneration::FileHandle(handle) => {
             hash.update(&[1]);
+            hash.update(&object);
             hash.update(&handle);
         }
-        acyclic_fs::NativeRootGeneration::UniqueObjectId => {
+        acyclic_fs::NativeRootGeneration::StableObjectId => {
             hash.update(&[2]);
+            hash.update(&object);
+        }
+        acyclic_fs::NativeRootGeneration::Unstable => {
+            hash.update(&[3]);
+            #[cfg(test)]
+            if UNSTABLE_KEYED.get() {
+                hash.update(&object);
+            }
         }
     }
     let mut identity = [0; 16];
@@ -197,7 +232,7 @@ impl Owner {
             }
         };
         let path = directory.join("owner.json");
-        let workspace_identity = checkout.map(|checkout| checkout.identity);
+        let workspace_identity = checkout.and_then(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
         let owner = match Self::load(&path) {
             Ok(owner) => owner,

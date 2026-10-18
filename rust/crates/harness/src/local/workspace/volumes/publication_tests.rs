@@ -252,7 +252,7 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
     attach(
         &workspace.filesystem,
         &workspace.store,
-        task.path(),
+        &acyclic_fs::hold_root(task.path()).map_err(storage)?,
         &mut rebound,
     )
     .await?;

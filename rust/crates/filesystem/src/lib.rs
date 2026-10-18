@@ -287,8 +287,6 @@ pub use native_exchange::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_identity::{NativeRootGeneration, NativeRootIdentity, NativeRootIncarnation};
-#[cfg(all(feature = "native-mount", target_os = "linux"))]
-pub use native_mount::recover_disconnected_native_mount_destination;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
     CheckoutMountSource, ContentSink, HostPathReplacement, HostPathRestore, LazyMount,
@@ -309,6 +307,10 @@ pub use native_mount::{
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, recover_native_mount_destination,
     restore_checkout_host_path, seal_checkout, seal_checkout_with_permit,
+};
+#[cfg(all(feature = "native-mount", target_os = "linux"))]
+pub use native_mount::{
+    recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
 };
 pub use notification::{
     AsyncNotificationStore, MemoryNotificationStore, NotificationError, NotificationPoll,

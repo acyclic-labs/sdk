@@ -7,13 +7,18 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const OWNER_ROOT: &str = "ACYCLIC_SCRATCH_RECOVERY_TEST_ROOT";
 const OWNER_TEST: &str = "local::workspace::volumes::recovery_tests::scratch_mount_owner";
 
+/// Recovers scratch in the root held at `root`, as checkout open does.
+fn recover(root: &Path) -> Result<()> {
+    recover_after_crash(&acyclic_fs::hold_root(root).map_err(storage)?)
+}
+
 // Own the real provider process through every assertion, including failures.
 struct Owner(Child, PathBuf);
 impl Drop for Owner {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
-        let _ = recover_after_crash(&self.1);
+        let _ = recover(&self.1);
     }
 }
 
@@ -129,14 +134,14 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
     std::fs::create_dir(alias.path().join(".volumes"))?;
     std::os::unix::fs::symlink(&destination, alias.path().join(SCRATCH_PATH))?;
     let reject_alias = || {
-        let error = recover_after_crash(alias.path()).expect_err("scratch alias was accepted");
+        let error = recover(alias.path()).expect_err("scratch alias was accepted");
         assert!(matches!(error, Error::NativeView { cause, .. }
             if matches!(*cause, acyclic_fs::MountLifecycleError::Native(
                 acyclic_fs::NativeMountError::InvalidDestination))));
     };
     reject_alias();
     let original = std::fs::metadata(&destination)?;
-    require_recovered(&root, recover_after_crash)?;
+    require_recovered(&root, recover)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
 
     let mut owner = start_owner(&root)?;
@@ -147,7 +152,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         "fixture must be a real FUSE mount"
     );
     reject_alias();
-    recover_after_crash(&root)?;
+    recover(&root)?;
     assert_eq!(std::fs::metadata(&destination)?.dev(), live.dev());
     assert!(matches!(
         acyclic_fs::NativeMountRecoveryOwner::acquire(&destination),
@@ -164,7 +169,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             if std::fs::metadata(root.join(SCRATCH_PATH)).is_ok() {
                 Ok(())
             } else {
-                recover_after_crash(root)
+                recover(root)
             }
         })
         .is_err()
@@ -197,10 +202,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
             .spawn()?,
     );
     fence.try_lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
-    assert!(
-        recover_after_crash(&root).is_err(),
-        "recovery bypassed the fence"
-    );
+    assert!(recover(&root).is_err(), "recovery bypassed the fence");
     assert_eq!(
         std::fs::read(destination.join("authored"))
             .unwrap_err()
@@ -208,7 +210,7 @@ fn scratch_recovery_preserves_live_mounts_and_uses_the_exclusive_fence() -> Test
         std::io::ErrorKind::NotConnected
     );
     drop(fence);
-    require_recovered(&root, recover_after_crash)?;
+    require_recovered(&root, recover)?;
     assert_eq!(std::fs::metadata(&destination)?.ino(), original.ino());
     let _remounted = start_owner(&root)?;
     reject_alias();

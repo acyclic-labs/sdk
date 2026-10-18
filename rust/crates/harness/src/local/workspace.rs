@@ -100,7 +100,13 @@ impl LocalWorkspace {
         #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts)?;
         #[cfg(not(any(target_os = "linux", windows)))]
-        volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
+        volumes::attach(
+            &self.filesystem,
+            &self.store,
+            &acyclic_fs::hold_root(path).map_err(storage)?,
+            &mut mounts,
+        )
+        .await?;
         Ok(Arc::new(mounts))
     }
 
@@ -158,6 +164,7 @@ impl LocalWorkspace {
             None,
             private.map(|volume| ("scratch".into(), volume, None)),
         )?;
+        let root = acyclic_fs::hold_root(&root).map_err(storage)?;
         volumes::attach(&self.filesystem, &self.store, &root, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
@@ -272,13 +279,21 @@ pub(super) async fn open(
     state: OwnerState,
 ) -> Result<LocalWorkspace> {
     let OwnerState { store, processes } = state;
-    // The held root is the root its holder validated; binding never reopens
-    // the path, so a replacement there cannot attach this state.
+    // The held root is the root its holder validated; binding and every setup
+    // side effect work in it and never reopen the path, so a replacement
+    // there can neither attach this state nor receive its scratch setup.
     let path = root.path().to_path_buf();
     let identity = root.identity();
+    #[cfg(test)]
+    setup_probe::before_setup(&path);
+    let setup = if native_mounts {
+        Some(setup_probe::setup_root(&root)?)
+    } else {
+        None
+    };
     #[cfg(target_os = "linux")]
-    if native_mounts {
-        volumes::recover_after_crash(&path)?;
+    if let Some(setup) = &setup {
+        volumes::recover_after_crash(setup)?;
     }
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
@@ -318,11 +333,16 @@ pub(super) async fn open(
     )
     .await
     .map_err(storage)?;
-    let exclusions = if native_mounts {
+    let mut exclusions = if native_mounts {
         volumes::excluded(&path, config, volumes::SCRATCH_PATH)?
     } else {
         Vec::new()
     };
+    exclusions.push(volumes::namespace(
+        &path,
+        config,
+        &path.join(volumes::INCARNATION_PATH),
+    )?);
     let source = source
         .exclude(exclusions, &&work, &cancellation)
         .map_err(|error| Error::from(acyclic_fs::LazyWorkspaceError::from(error)))?;
@@ -362,15 +382,13 @@ pub(super) async fn open(
         None,
         native_mounts.then(|| ("scratch".into(), scratch.clone(), None)),
     )?;
-    if native_mounts {
-        volumes::attach(filesystem, &store, &path, &mut mounts).await?;
+    if let Some(setup) = &setup {
+        volumes::attach(filesystem, &store, setup, &mut mounts).await?;
         Box::pin(volumes::parents::bind(
             &view,
             &path,
             &mounts,
-            acyclic_fs::NativeRootIdentity::from_bytes(
-                identity.ok_or_else(|| Error::Invalid("checkout identity is absent".into()))?,
-            ),
+            identity,
             &cancellation,
         ))
         .await?;
@@ -400,6 +418,50 @@ pub(super) async fn open(
         processes,
     })
 }
+
+/// The root that scratch setup works in: the held root itself. Under test,
+/// a hook can replace the checkout's path before setup, and the negative
+/// control restores setup that re-resolves the saved path.
+mod setup_probe {
+    use super::*;
+
+    #[cfg(test)]
+    thread_local! {
+        static BEFORE_SETUP: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+            const { std::cell::RefCell::new(None) };
+        static FOLLOW_PATH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Runs `hook` with the checkout's path after its root is held and
+    /// before setup.
+    #[cfg(test)]
+    pub(in crate::local) fn replace_before_setup(hook: impl FnOnce(&Path) + 'static) {
+        BEFORE_SETUP.set(Some(Box::new(hook)));
+    }
+
+    /// Negative control: setup reopens the saved path.
+    #[cfg(test)]
+    pub(in crate::local) fn follow_path(follow: bool) {
+        FOLLOW_PATH.set(follow);
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_setup(path: &Path) {
+        if let Some(hook) = BEFORE_SETUP.take() {
+            hook(path);
+        }
+    }
+
+    pub(super) fn setup_root(root: &acyclic_fs::HeldRoot) -> Result<acyclic_fs::HeldRoot> {
+        #[cfg(test)]
+        if FOLLOW_PATH.get() {
+            return acyclic_fs::hold_root(root.path()).map_err(storage);
+        }
+        root.try_clone().map_err(storage)
+    }
+}
+#[cfg(test)]
+pub(super) use setup_probe::{follow_path, replace_before_setup};
 
 // A configured SDK volume gets one persistent private native view. Bootstrap
 // into a sibling and rename only the complete generation, before binding its

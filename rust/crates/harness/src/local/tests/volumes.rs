@@ -239,12 +239,12 @@ async fn bash_crosses_granted_volumes_without_capturing_a_mount_in_the_project()
         b"from tool"
     );
     // Bash's scope retired its projection and fences, retaining user files.
-    let entries: Vec<_> = std::fs::read_dir(directory.path().join(".volumes"))
+    let entries: std::collections::BTreeSet<_> = std::fs::read_dir(directory.path().join(".volumes"))
         .map_err(super::super::storage)?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<_>>()
         .map_err(super::super::storage)?;
-    assert_eq!(entries, [std::ffi::OsString::from("user-owned")]);
+    assert_eq!(entries, std::collections::BTreeSet::from([std::ffi::OsString::from("user-owned"), std::ffi::OsString::from(".incarnation")]));
     let workspace = harness.workspace().unwrap();
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::WorkBudget::UNBOUNDED;

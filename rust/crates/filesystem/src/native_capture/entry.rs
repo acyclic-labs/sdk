@@ -23,11 +23,46 @@ impl HeldRoot {
     }
 
     /// The held root's identity and generation, from one generation query of
-    /// the held root. A failed query keeps its cause; a host without stable
-    /// generation data is `Unsupported`.
+    /// the held root. A failed query keeps its cause; a filesystem whose
+    /// object ids may change across remounts is `Unstable`.
     pub fn incarnation(&self) -> Result<crate::NativeRootIncarnation, DemandError> {
         self.root
             .incarnation(&mut crate::native_host::ordinary_work())
+    }
+
+    /// A second handle on the same held root, never reopened by path.
+    pub fn try_clone(&self) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .try_clone(&mut crate::native_host::ordinary_work())?,
+            path: self.path.clone(),
+        })
+    }
+
+    /// The held directory at `relative` below this root, each missing
+    /// component created in its held parent and never through a link.
+    pub fn create_directories(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .create_directories(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// The `N` bytes published at `leaf` in this held directory, after
+    /// publishing `candidate` there exclusively and atomically if nothing is:
+    /// a kill at any step leaves no record or the complete one, and every
+    /// concurrent publisher returns the same record.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn read_or_publish<const N: usize>(
+        &self,
+        leaf: &Path,
+        candidate: [u8; N],
+    ) -> Result<[u8; N], DemandError> {
+        self.root
+            .read_or_publish(leaf, candidate, &mut crate::native_host::ordinary_work())
     }
 
     /// The path the root was opened at.
