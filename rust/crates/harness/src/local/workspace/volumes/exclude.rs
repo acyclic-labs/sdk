@@ -62,14 +62,14 @@ pub(super) fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Re
             pattern::pattern(&relative.join(path))
         })
         .collect::<std::io::Result<Vec<_>>>()?;
-    let existing = match std::fs::read_to_string(&exclude) {
+    let existing = match std::fs::read(&exclude) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error),
     };
     let mut appended = String::new();
     for pattern in patterns {
-        if !existing.lines().any(|line| line == pattern) {
+        if !pattern::contains(&existing, &pattern) {
             appended.push_str(MARKER);
             appended.push('\n');
             appended.push_str(&pattern);
@@ -82,7 +82,7 @@ pub(super) fn exclude_mount_paths(root: &Path, paths: &[PathBuf]) -> std::io::Re
     if let Some(parent) = exclude.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if !existing.is_empty() && !existing.ends_with('\n') {
+    if !existing.is_empty() && !existing.ends_with(b"\n") {
         appended.insert(0, '\n');
     }
     use std::io::Write as _;
@@ -231,6 +231,37 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(16))]
+        // User patterns are opaque native bytes. Appending our rule preserves
+        // every byte and a second call is idempotent, including CRLF rules.
+        #[test]
+        fn arbitrary_existing_bytes_survive_exclusion_updates(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+            crlf in any::<bool>(),
+        ) {
+            let directory = tempfile::tempdir().unwrap();
+            let repository = directory.path();
+            git(repository, &["init", "-q"]);
+            let exclude = repository.join(".git/info/exclude");
+            let mut original = vec![b'#', 0xff];
+            original.extend(bytes);
+            if crlf { original.extend_from_slice(b"\r\n/.volumes/scratch\r\n"); }
+            std::fs::write(&exclude, &original).unwrap();
+            // The former UTF-8 read rejects the same input before any mount.
+            prop_assert!(std::fs::read_to_string(&exclude).is_err());
+            let mount = repository.join(".volumes/scratch");
+            exclude_mount_paths(repository, &[mount.clone()]).unwrap();
+            let updated = std::fs::read(&exclude).unwrap();
+            prop_assert!(updated.starts_with(&original));
+            if crlf { prop_assert_eq!(&updated, &original); }
+            else {
+                // Arbitrary input can already contain the rule in its middle;
+                // only a newly appended suffix must end with that rule.
+                prop_assert!(updated == original || updated.ends_with(b"/.volumes/scratch\n"));
+            }
+            exclude_mount_paths(repository, &[mount]).unwrap();
+            prop_assert_eq!(std::fs::read(&exclude).unwrap(), updated);
+        }
+
         #[test]
         fn exact_rules_preserve_authored_siblings(
             parts in prop::collection::vec(native_component(), 0..3),

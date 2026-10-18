@@ -9,6 +9,17 @@ pub(super) type ProjectionCleanup = (
     crate::NativeWorkReservation,
 );
 
+fn cleanup_work(files: usize) -> Result<crate::WorkCounters, crate::WorkError> {
+    Ok(crate::WorkCounters {
+        // POSIX disposition, then legacy disposition if necessary; root tag last.
+        backend_write_operations: (files as u64)
+            .checked_mul(2)
+            .and_then(|writes| writes.checked_add(1))
+            .ok_or(crate::WorkError::Overflow)?,
+        ..crate::WorkCounters::UNCHARGED
+    })
+}
+
 #[cfg(test)]
 pub(in crate::native_mount) fn detach_projection(
     destination: &std::path::Path,
@@ -57,22 +68,16 @@ pub(super) fn prepare_projection_cleanup(
         &mut files,
         &mut allocation,
     )?;
-    let credit = work.reserve_work(crate::WorkCounters {
-        // delete_through first tries POSIX disposition, then the legacy
-        // disposition on filesystems which reject that operation.
-        backend_write_operations: (files.len() as u64)
-            .checked_mul(2)
-            .ok_or(crate::WorkError::Overflow)?
-            .checked_add(1)
-            .ok_or(crate::WorkError::Overflow)?,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
+    let credit = work.reserve_work(cleanup_work(files.len())?)?;
     Ok((files, root_handle, allocation, credit))
 }
 
 pub(super) fn finish_projection_cleanup(
     (files, root_handle, _, credit): &mut ProjectionCleanup,
 ) -> Result<(), NativeMountError> {
+    // Each attempt funds only the still-held entries from the original finite
+    // ledger. Failed syscalls consume credit; cancellation cannot revoke cleanup.
+    credit.refill_cleanup(cleanup_work(files.len())?)?;
     // Held no-follow handles name only source-backed entries sampled before detach.
     while let Some(file) = files.last() {
         match delete_through(file, || credit.started_io(WriteOperations.delta(1), None)) {

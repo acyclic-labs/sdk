@@ -1,6 +1,12 @@
 use std::io::{Error, ErrorKind, Result};
 use std::path::{Component, Path};
 
+pub(super) fn contains(existing: &[u8], pattern: &str) -> bool {
+    existing
+        .split(|byte| *byte == b'\n')
+        .any(|line| line.strip_suffix(b"\r").unwrap_or(line) == pattern.as_bytes())
+}
+
 pub(super) fn pattern(path: &Path) -> Result<String> {
     let mut result = String::new();
     for part in path.components() {

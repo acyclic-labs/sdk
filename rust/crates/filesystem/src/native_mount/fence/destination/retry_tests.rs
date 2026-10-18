@@ -8,6 +8,7 @@ struct Fixture {
     live: u64,
     destination: PathBuf,
     fence: PathBuf,
+    registry: PathBuf,
     _root: tempfile::TempDir,
 }
 
@@ -28,6 +29,19 @@ impl Fixture {
         .map_err(|(error, _)| error)?;
         let mut guard = None;
         MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+        // Startup has released the user-wide registry. Give this retirement
+        // fixture its own real registry descriptor, so an independent probe
+        // can distinguish its leaked lock from another fixture's valid lock.
+        // All retirement, refill, unlink and unlock operations stay unchanged.
+        let registry = root.path().join("registry.lock");
+        guard.as_mut().unwrap().registry_file = Some(
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&registry)?
+                .into(),
+        );
         let before = work.receipt();
         let live = work.live_allocation_bytes();
         let fence = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?.0;
@@ -53,6 +67,7 @@ impl Fixture {
             live,
             destination,
             fence,
+            registry,
             _root: root,
         })
     }
@@ -61,7 +76,7 @@ impl Fixture {
         let registry = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(registry::path().unwrap())?;
+            .open(&self.registry)?;
         match fs2::FileExt::try_lock_exclusive(&registry) {
             Ok(()) => Ok(true),
             Err(error) if lock_is_contended(&error) => Ok(false),
@@ -141,6 +156,41 @@ fn legacy_release(guard: &mut MountDestinationGuard) -> Result<(), NativeMountEr
     removed?;
     unlocked?;
     guard.file.take();
+    Ok(())
+}
+
+#[test]
+fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new(false)?;
+    let global_path = registry::path()?;
+    let global = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&global_path)?;
+    fs2::FileExt::lock_exclusive(&global)?;
+    // Negative control: the former user-wide probe mistakes this unrelated
+    // owner for a leaked retirement lock, even though the fixture is unlocked.
+    let old_probe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&global_path)?;
+    assert!(lock_is_contended(
+        &fs2::FileExt::try_lock_exclusive(&old_probe).unwrap_err()
+    ));
+    assert!(fixture.registry_is_unlocked()?);
+    let private = fixture
+        .packet
+        .destination_guard
+        .as_ref()
+        .unwrap()
+        .registry_file
+        .as_ref()
+        .unwrap();
+    fs2::FileExt::lock_exclusive(private)?;
+    assert!(!fixture.registry_is_unlocked()?);
+    fence_io::unlock(private)?;
+    assert!(fixture.registry_is_unlocked()?);
     Ok(())
 }
 

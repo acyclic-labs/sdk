@@ -83,3 +83,78 @@ async fn accepted_command_cleanup_finishes_on_original_credit_after_cancellation
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::super::cleanup::{finish_projection_cleanup, prepare_projection_cleanup};
+    // Empty and populated projections must both recover after root-tag failure.
+    for count in 0..3 {
+        let cancellation = CancellationToken::new();
+        let ledger = Arc::new(crate::demand::NativeDemandReadMeter::new(
+            crate::demand::DemandWork::new(
+                WorkBudget {
+                    backend_write_operations: 256,
+                    ..WorkBudget::UNBOUNDED
+                },
+                &cancellation,
+            ),
+        ));
+        let work = crate::NativeMaterializationWork::from_meter(Arc::clone(&ledger));
+        let source = windows_checkout_source().await?;
+        for index in 0..count {
+            source.create_file(
+                &windows_path(&format!("file-{index}")),
+                crate::kernel::FileMetadata::default(),
+                None,
+                &work,
+            )?;
+        }
+        let (_root, destination, mut session) = mount_source(&source)?;
+        let mut cleanup = prepare_projection_cleanup(
+            &destination,
+            session.native_root_identity().unwrap(),
+            source.as_ref(),
+            &work,
+        )?;
+        session.stop()?;
+        // An ordinary file cannot accept FSCTL_DELETE_REPARSE_POINT. Retain
+        // the authentic root handle while forcing actual Windows failures.
+        let authentic_root = std::mem::replace(&mut cleanup.1, tempfile::tempfile()?);
+        cancellation.cancel();
+        let allocations = work.receipt().allocation_operations;
+        for attempt in 0..4 {
+            let before = work.receipt().backend_write_operations;
+            let error = finish_projection_cleanup(&mut cleanup).unwrap_err();
+            assert!(matches!(error, NativeMountError::Io(_)), "{error:?}");
+            assert!(cleanup.0.is_empty());
+            if attempt > 0 {
+                assert_eq!(work.receipt().backend_write_operations, before + 1);
+            }
+        }
+        // Negative control: the former fixed reservation denies the next
+        // write instead of attempting Windows again, despite original budget.
+        assert!(
+            cleanup
+                .3
+                .started_io(WriteOperations.delta(1), None)
+                .is_err()
+        );
+        let before = work.receipt();
+        ledger.lock().budget.backend_write_operations = before.backend_write_operations;
+        assert!(finish_projection_cleanup(&mut cleanup).is_err());
+        assert_eq!(work.receipt(), before, "denied refill performed work");
+        ledger.lock().budget.backend_write_operations = 256;
+        cleanup.1 = authentic_root;
+        finish_projection_cleanup(&mut cleanup)?;
+        assert_eq!(
+            work.receipt().backend_write_operations,
+            before.backend_write_operations + 1
+        );
+        assert_eq!(work.receipt().allocation_operations, allocations);
+        drop(cleanup);
+        assert_eq!(super::reparse_tag(&destination)?.0, None);
+        assert!(sorted_names(&destination)?.is_empty());
+    }
+    Ok(())
+}

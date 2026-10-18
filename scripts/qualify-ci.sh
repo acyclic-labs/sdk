@@ -218,6 +218,9 @@ case "$lane" in
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
+  mount-exclusion)
+    bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2
+    ;;
   docs)
     # Independent workspaces qualify alongside the root workspace.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
