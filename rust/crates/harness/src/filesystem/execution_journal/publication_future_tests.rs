@@ -420,6 +420,7 @@ fn journal_unmetered_task_files_match_main() {
 
 fn journal_wrapper_observations(
     mut digest: [u8; 32],
+    restore_box: bool,
     mut observe: impl FnMut(
         usize,
         acyclic_test_support::AllocationInfo,
@@ -437,7 +438,7 @@ fn journal_wrapper_observations(
     };
     let oversized = vec![0; 4097];
     let initializations = std::cell::Cell::new(0);
-    let [before, after] = [true, false].map(|old| {
+    let [before, after] = [true, restore_box].map(|old| {
         initializations.set(initializations.get() + 1);
         let mut journal = runtime.block_on(fixture()).unwrap();
         let file = runtime
@@ -496,7 +497,11 @@ fn journal_wrapper_observations(
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(before.1, after.1);
         let (before, after) = (before.0.1, after.0.1);
-        prop_assert_eq!(after.count_total, before.count_total - 1);
+        prop_assert_eq!(
+            after.count_total,
+            before.count_total - 1,
+            "journal wrapper allocation count"
+        );
         observe(mode, before, after)?;
     }
     Ok(())
@@ -504,7 +509,7 @@ fn journal_wrapper_observations(
 
 #[test]
 fn journal_wrapper_frame_measurements() {
-    journal_wrapper_observations([1; 32], |mode, before, after| {
+    journal_wrapper_observations([1; 32], false, |mode, before, after| {
         eprintln!(
             "JOURNAL_FRAME {}",
             serde_json::json!({
@@ -579,23 +584,36 @@ proptest! {
     // wrapper's exact one-box saving from the full operation above.
     #[test]
     fn journal_wrapper_removes_exactly_one_allocation(digest in any::<[u8;32]>()) {
-        let expected: Vec<u64> = serde_json::from_str(&std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/filesystem/execution_journal/publication_future_expected.json"),
-        ).unwrap()).unwrap();
-        prop_assert_eq!(expected.len(), 5);
-        journal_wrapper_observations(digest, |mode, before, after| {
-            let saved = expected[mode];
-            eprintln!("journal method={mode} before={before:?} after={after:?} saved={saved}");
-            prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
-            prop_assert_ne!(before.count_total, before.count_total - 1, "old nested box passed");
-            Ok(())
-        })?;
+        exact_wrapper_layout(digest, false)?;
     }
 
     // Every old/new factory is compared at its exact admission boundary, after
     // drop, and with cancellation. The smaller unmetered frame must not change
     // original accounting or move the success/failure threshold.
+}
+
+fn exact_wrapper_layout(
+    digest: [u8; 32],
+    restore_box: bool,
+) -> proptest::test_runner::TestCaseResult {
+    // Old outer box + old nested trace box - independent unmetered frame.
+    // Each term comes from a concrete reference type in this feature closure.
+    journal_wrapper_observations(digest, restore_box, |mode, before, after| {
+        let saved = legacy::expected_saved_bytes(mode) as u64;
+        prop_assert!(saved > 0, "original factory layout was not captured");
+        prop_assert_eq!(before.bytes_total - after.bytes_total, saved);
+        Ok(())
+    })
+}
+
+#[test]
+fn restoring_the_nested_factory_box_fails_the_exact_guard() {
+    let error = exact_wrapper_layout([1; 32], true).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("journal wrapper allocation count")
+    );
 }
 
 #[test]

@@ -6,7 +6,21 @@ pub(super) async fn read_pinned(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
+    crate::conversation::BoundedContentFuture::new(io, || {
+        original_future(host, reference, maximum_bytes, io)
+    })?
+    .await
+}
+
+fn original_future<'a>(
+    host: &'a Host,
+    reference: &'a FileRef,
+    maximum_bytes: u64,
+    io: Option<&'a PreparationIo>,
+) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async move {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = io.and_then(PreparationIo::original_native_work) {
             let scratch = PreparationIo::from_native_work(original)?;
@@ -102,6 +116,39 @@ pub(super) async fn read_pinned(
         drop(generation);
         drop(generation_hold);
         Ok(bytes)
-    })?
-    .await
+    }
+}
+
+// Independent reference for the representation selected by an unmetered read.
+// Keep the original metered/native state machine above as the baseline.
+fn unmetered_future<'a>(
+    host: &'a Host,
+    reference: &'a FileRef,
+    maximum_bytes: u64,
+) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
++ acyclic_stream::ProviderTask
++ 'a {
+    async move {
+        if reference.volume().provider() != &host.provider
+            || reference.descriptor().byte_length() > maximum_bytes
+        {
+            return Err(Error::Invalid(
+                "content provider or size limit mismatch".into(),
+            ));
+        }
+        let generation = host.file_generation(reference, None)?;
+        let workspace =
+            fork_preparer_io::content_workspace(&host.provider, reference.volume(), None)?;
+        let path = format!("/{}", reference.path());
+        let bytes = host
+            .read(&workspace, Some(&generation), &path, maximum_bytes, None)
+            .await?;
+        reference.descriptor().verify(&bytes, &mut None)?;
+        Ok(bytes)
+    }
+}
+
+pub(super) fn saved_frame_bytes(host: &Host, reference: &FileRef, maximum_bytes: u64) -> u64 {
+    (std::mem::size_of_val(&original_future(host, reference, maximum_bytes, None))
+        - std::mem::size_of_val(&unmetered_future(host, reference, maximum_bytes))) as u64
 }
