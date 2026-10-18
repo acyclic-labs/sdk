@@ -198,6 +198,8 @@ harness_tests() {
 
 case "$lane" in
   gate)
+    node --test scripts/target-features-cargo.test.mjs
+    node scripts/check-target-features.mjs
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \

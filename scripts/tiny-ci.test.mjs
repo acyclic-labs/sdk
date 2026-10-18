@@ -173,9 +173,12 @@ test('the required job checks Cargo lock consistency and committed lane artifact
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  'node --test scripts/target-features.test.mjs',
+  'node --test scripts/local-cloud.test.mjs',
   'cargo update --workspace --locked',
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);
+ assert.match(fs.readFileSync('scripts/qualify-ci.sh','utf8'), /gate\)\s+node --test scripts\/target-features-cargo\.test\.mjs\s+node scripts\/check-target-features\.mjs/);
  assert.doesNotMatch(JSON.stringify(job),/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)|(?:npm|bun|yarn|pnpm) (?:install|add)|cargo install/);
 });
 test('README approval guard runs on pull requests without manual dispatch',()=>{
