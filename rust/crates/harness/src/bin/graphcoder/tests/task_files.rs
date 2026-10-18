@@ -13,7 +13,10 @@ async fn catch_up(client: &mut TaskFileClient, volume: &TaskVolume<MemoryStream>
         client.next_change().await.unwrap();
     }
 }
-fn outputs(client: &TaskFileClient, after: u64) -> Vec<String> {
+fn outputs(
+    client: &TaskFileClient,
+    commands: &acyclic_harness::client::CommandSession<MemoryStream>,
+) -> Vec<String> {
     let selection = client
         .views()
         .selections()
@@ -24,6 +27,16 @@ fn outputs(client: &TaskFileClient, after: u64) -> Vec<String> {
         panic!("command session");
     };
     let owner = acyclic_harness::client::OutputOwner::Session(session.clone());
+    // The archive cut lives in layout.json, which CommandSession follows
+    // outside the answer selection, exactly as the renderer reads it.
+    let after = commands
+        .state(
+            acyclic_harness::client::CommandFileRoot::Session,
+            "layout.json",
+        )
+        .unwrap()
+        .and_then(|layout| layout["history_after"].as_u64())
+        .unwrap_or(0);
     selection
         .outputs(&owner, after)
         .filter_map(|(_, row)| row.text.map(|text| text.into_owned()))
@@ -91,13 +104,13 @@ proptest::proptest! {
                 commands.consume(&request, |_,_,_| async { Ok(value) }).await.unwrap();
                 expected.push(text);
                 catch_up(&mut client,volume.as_ref()).await;
-                proptest::prop_assert_eq!(outputs(&client,0),expected.clone());
+                proptest::prop_assert_eq!(outputs(&client, &commands),expected.clone());
                 let mut renderer = ClientRenderer::default(); renderer.update(client.views(), &owner);
                 let visible = picture(&renderer);
                 for text in &expected { proptest::prop_assert!(visible.contains(text)); }
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
                 replay.follow_commands(&commands).await.unwrap();
-                proptest::prop_assert_eq!(outputs(&replay,0),outputs(&client,0));
+                proptest::prop_assert_eq!(outputs(&replay, &commands),outputs(&client, &commands));
             }
             Ok(())
         })?;
@@ -130,20 +143,22 @@ proptest::proptest! {
                 layout["unrelated_navigation"] = serde_json::json!(index);
                 if index == cut { layout["history_after"] = serde_json::json!(commands.output_sequence()); }
                 commands.write_state(CommandFileRoot::Session, "layout.json", &layout).await.unwrap();
-                // UI state has its own authoritative query; it is deliberately
-                // absent from the bounded command-display selection.
-                let after = layout["history_after"].as_u64().unwrap_or(0);
-                let mut expected = Vec::new();
+                // Derived without session state: the texts after the cut, within
+                // the recent-outcome bound (maximum_files / 4) both views retain.
+                let visible = &texts[if cut <= index { cut + 1 } else { 0 }..=index];
+                let expected = visible[visible.len().saturating_sub(24 / 4)..].to_vec();
+                let mut paged = Vec::new();
                 for back in 0..24 {
                     let Some(value) = commands.output_page(back).unwrap() else { break };
-                    expected.push(value["ok"]["text"].as_str().unwrap().to_owned());
+                    paged.push(value["ok"]["text"].as_str().unwrap().to_owned());
                 }
-                expected.reverse();
+                paged.reverse();
+                proptest::prop_assert_eq!(&paged, &expected);
                 catch_up(&mut client,volume.as_ref()).await;
-                proptest::prop_assert_eq!(outputs(&client,after),expected.clone());
+                proptest::prop_assert_eq!(outputs(&client, &commands),expected.clone());
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
                 replay.follow_commands(&commands).await.unwrap();
-                proptest::prop_assert_eq!(outputs(&replay,after),outputs(&client,after));
+                proptest::prop_assert_eq!(outputs(&replay, &commands),outputs(&client, &commands));
             }
             Ok(())
         })?;
