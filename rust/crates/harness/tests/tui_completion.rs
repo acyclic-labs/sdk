@@ -45,9 +45,13 @@ fn files_snapshot_follow_and_resume() -> Result {
                 include_bytes!("../src/client/commands.json"),
             )
             .await?;
-            put(&volume, "commands/theme.md", b"Choose a theme").await?;
+            // Builtins are reserved: a prompt may never reuse a catalog name.
+            let catalog: Vec<serde_json::Value> =
+                serde_json::from_slice(include_bytes!("../src/client/commands.json"))?;
+            assert!(!catalog.iter().any(|command| command["name"] == "thesis"));
+            put(&volume, "commands/thesis.md", b"Draft a thesis").await?;
             put(&volume, "workspace/Straße.rs", b"source").await?;
-            let mut input = PromptInput::new(Editor::new("/th"));
+            let mut input = PromptInput::new(Editor::new("/thes"));
             let mut files = CompletionFiles::observe(&volume, &mut input, None, 100).await?;
             assert_eq!(
                 input
@@ -55,7 +59,7 @@ fn files_snapshot_follow_and_resume() -> Result {
                     .items()
                     .map(|i| i.value.as_str())
                     .collect::<Vec<_>>(),
-                ["theme"]
+                ["thesis"]
             );
             input.editor.set_text("@STRASSE", 0);
             input.refresh_completions();
@@ -73,9 +77,9 @@ fn files_snapshot_follow_and_resume() -> Result {
             let mut files =
                 CompletionFiles::observe(&volume, &mut input, Some(cursor), 100).await?;
             assert_eq!(input.completion.work, work);
-            put(&volume, "commands/theme.md", b"Updated description").await?;
+            put(&volume, "commands/thesis.md", b"Updated description").await?;
             files.next(&mut input).await?;
-            input.editor.set_text("/th", 3);
+            input.editor.set_text("/thes", 5);
             input.refresh_completions();
             assert_eq!(
                 input.completion.items().next().unwrap().description,
