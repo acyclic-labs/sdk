@@ -122,8 +122,8 @@ pub(super) async fn run(case: impl Into<Case>) -> TestResult {
         std::path::Path::new("driver"),
         dispatch(case.into()),
     ))
-        .await
-        .map_err(std::io::Error::other)?
+    .await
+    .map_err(std::io::Error::other)?
 }
 
 async fn dispatch(case: Case) -> TestResult {
