@@ -4,8 +4,8 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, PublicationPermit, W
 use acyclic_harness::{
     AgentId, Capabilities, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     conversation::{
-        ContentGrant, ContentPublisher, ContentResidencyVerifier, Limits, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ContentGrant, ContentPublisher, ContentResidencyVerifier, Limits, MAX_EXACT_JS_INTEGER,
+        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, EffectStatus,
@@ -610,7 +610,7 @@ fn native_request(
                 method: method.into(),
                 params: match method {
                     "tools/call" => {
-                        json!({"name":"echo","arguments":{"text":"héllo","sequence":u64::MAX}})
+                        json!({"name":"echo","arguments":{"text":"héllo","sequence":MAX_EXACT_JS_INTEGER}})
                     }
                     "tools/list" => json!({"cursor":"next"}),
                     "resources/list" | "resources/templates/list" | "prompts/list" => json!({}),

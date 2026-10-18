@@ -56,7 +56,7 @@ pub(super) fn verify_result(
     } else if request.mcp_response(output)?
         != json!({
             "content":[{"type":"text","text":"héllo"}],
-            "structuredContent":{"text":"héllo","sequence":u64::MAX}
+            "structuredContent":{"text":"héllo","sequence":MAX_EXACT_JS_INTEGER}
         })
     {
         return Err("incorrect MCP process result".into());
@@ -75,7 +75,7 @@ fn mcp_peer_result(
         Some("tools/call")
             if call.pointer("/params/name").and_then(Value::as_str) == Some("echo")
                 && call.pointer("/params/arguments")
-                    == Some(&json!({"text":"héllo","sequence":u64::MAX})) =>
+                    == Some(&json!({"text":"héllo","sequence":MAX_EXACT_JS_INTEGER})) =>
         {
             Ok((
                 json!({"content":[{"type":"text","text":"héllo"}],"structuredContent":call.pointer("/params/arguments")}),
