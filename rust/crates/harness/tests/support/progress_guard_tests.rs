@@ -13,7 +13,6 @@ fn accepted_native_io_may_outlive_the_shared_idle_budget() -> crate::TestResult 
             let (entered, ready) = tokio::sync::oneshot::channel();
             let started = tokio::time::Instant::now();
             let work = crate::stall::run(io, registry.clone(), "native-io".into(), async move {
-                crate::stall::waiting("native completion before follow");
                 let operation = acyclic_native_runtime::run_blocking_io(
                     move || {
                         entered.send(()).unwrap();
@@ -29,8 +28,11 @@ fn accepted_native_io_may_outlive_the_shared_idle_budget() -> crate::TestResult 
                     tokio::time::sleep(std::time::Duration::from_secs(20)).await;
                     release.send(()).unwrap();
                 };
-                let (value, ()) = tokio::join!(operation, finish);
-                value.unwrap()
+                crate::stall::waiting("native completion before follow", async {
+                    let (value, ()) = tokio::join!(operation, finish);
+                    value.unwrap()
+                })
+                .await
             });
             assert_eq!(guard.run(work).await.unwrap().unwrap(), 42);
             assert!(started.elapsed() >= std::time::Duration::from_secs(20));

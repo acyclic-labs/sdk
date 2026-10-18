@@ -8,11 +8,31 @@ use std::{
 tokio::task_local! { static CURRENT: Registration; }
 
 async fn admitted<F: Future>(registry: Arc<Registry>, path: &Path, scenario: F) -> F::Output {
-    CURRENT.scope(registry.register(path), scenario).await
+    let mut scenario = std::pin::pin!(scenario);
+    let mut wakers: Option<(std::task::Waker, std::task::Waker)> = None;
+    let observed = std::future::poll_fn(|cx| {
+        CURRENT.with(|registration| {
+            // Cache the wrapper while the executor's parent waker is unchanged.
+            if wakers
+                .as_ref()
+                .is_none_or(|(parent, _)| !parent.will_wake(cx.waker()))
+            {
+                wakers = Some((cx.waker().clone(), registration.observed_waker(cx.waker())));
+            }
+            let _polling = registration.polling();
+            scenario.as_mut().poll(&mut std::task::Context::from_waker(
+                &wakers.as_ref().unwrap().1,
+            ))
+        })
+    });
+    CURRENT.scope(registry.register(path), observed).await
 }
 
-pub(super) fn waiting(on: &'static str) {
-    let _ = CURRENT.try_with(|registration| registration.waiting(on));
+pub(super) async fn waiting<F: Future>(on: &'static str, future: F) -> F::Output {
+    let _waiting = CURRENT
+        .try_with(|registration| registration.waiting(on))
+        .ok();
+    future.await
 }
 
 pub(super) async fn run<F>(
@@ -53,8 +73,7 @@ async fn permanently_stalled_follow_is_rejected_without_external_termination() {
         registry.clone(),
         PathBuf::from("negative-control/stalled-follow.json"),
         async {
-            waiting("status follow");
-            std::future::pending::<()>().await;
+            waiting("status follow", std::future::pending::<()>()).await;
         },
     );
     let error = guard
@@ -78,12 +97,14 @@ async fn panic_and_abort_retire_the_actual_task_local_registration() {
         let worker = registry.clone();
         let (entered, ready) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(admitted(worker, Path::new("cancelled"), async move {
-            waiting("status follow");
-            entered.send(()).unwrap();
-            if panic {
-                panic!("scenario panic control");
-            }
-            std::future::pending::<()>().await;
+            waiting("status follow", async move {
+                entered.send(()).unwrap();
+                if panic {
+                    panic!("scenario panic control");
+                }
+                std::future::pending::<()>().await;
+            })
+            .await;
         }));
         ready.await.unwrap();
         if !panic {
@@ -93,4 +114,28 @@ async fn panic_and_abort_retire_the_actual_task_local_registration() {
         assert_eq!(error.is_panic(), panic);
         assert!(registry.snapshot().1.is_empty());
     }
+}
+
+#[path = "../support/progress_runnable_tests.rs"]
+mod runnable_tests;
+
+#[tokio::test]
+async fn completed_or_cancelled_waits_restore_the_current_operation() {
+    let registry = Arc::new(Registry::default());
+    admitted(registry.clone(), Path::new("labels"), async {
+        waiting("completed follow", std::future::ready(())).await;
+        assert_eq!(registry.snapshot().1[0].1, "admitted");
+        let mut pending = Box::pin(waiting("cancelled follow", std::future::pending::<()>()));
+        assert!(
+            pending
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_pending()
+        );
+        assert_eq!(registry.snapshot().1[0].1, "cancelled follow");
+        drop(pending);
+        assert_eq!(registry.snapshot().1[0].1, "admitted");
+    })
+    .await;
+    assert!(registry.snapshot().1.is_empty());
 }

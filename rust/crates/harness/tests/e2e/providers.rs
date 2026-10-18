@@ -161,9 +161,10 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
     }
     let cut = stream.tail(path).await?;
     let mut wire = Vec::new();
-    super::stall::waiting("provider task wire replay");
     for sequence in 0..cut {
-        let record = frames.next().await.ok_or("provider task wire ended")??;
+        let record = super::stall::waiting("provider task wire replay", frames.next())
+            .await
+            .ok_or("provider task wire ended")??;
         if record.sequence != sequence {
             return Err("provider task wire has a gap".into());
         }

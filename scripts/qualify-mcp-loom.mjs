@@ -48,7 +48,8 @@ export function qualifyGuestLoom(run = spawnSync) {
 export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "e2e-progress-model", features, run, {
     targetCfg: ["--", "--cfg", "acyclic_e2e_progress_loom"],
-    filters: ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "forgotten_cleanup_is_detected_on_the_real_registration"],
+    filters: ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "forgotten_cleanup_is_detected_on_the_real_registration",
+      "polling_wake_and_reporting_never_lose_runnability", "an_unobserved_wake_fails_the_same_runnability_oracle"],
     timeout: 9500,
   });
 }

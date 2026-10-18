@@ -152,9 +152,10 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let path = StreamPath::new("harness/v3/coordinator/events")?;
     let cut = stream.tail(path).await?;
     let mut wire_frames = Vec::new();
-    super::stall::waiting("scheduler wire replay");
     for sequence in 0..cut {
-        let record = frames.next().await.ok_or("scheduler wire ended")??;
+        let record = super::stall::waiting("scheduler wire replay", frames.next())
+            .await
+            .ok_or("scheduler wire ended")??;
         if record.sequence != sequence {
             return Err("scheduler wire has a sequence gap".into());
         }
@@ -196,12 +197,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut paths = std::collections::BTreeSet::new();
     let mut removed = std::collections::BTreeSet::new();
     while seen != target.cursor.position {
-        super::stall::waiting("workspace follow before the settled cut");
-        let change = observation
-            .changes
-            .next()
-            .await
-            .ok_or("diff follow ended")??;
+        let change = super::stall::waiting(
+            "workspace follow before the settled cut",
+            observation.changes.next(),
+        )
+        .await
+        .ok_or("diff follow ended")??;
         if change.cursor.position <= seen || change.cursor.position > target.cursor.position {
             return Err("diff publication cursor did not advance to the accepted cut".into());
         }

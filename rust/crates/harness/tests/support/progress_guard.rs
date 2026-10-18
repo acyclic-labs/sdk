@@ -58,15 +58,15 @@ impl Guard {
                     idle.as_mut().reset(tokio::time::Instant::now() + quiet);
                 }
                 _ = &mut idle => {
-                    let (current, open) = self.registry.snapshot();
-                    if current == revision && self.io.pending_native_work() == 0 {
+                    if let Some(open) = self.registry.blocked_snapshot(revision)
+                        && self.io.pending_native_work() == 0 {
                         return Err(if open.is_empty() {
                             "stalled: accepted native/task cleanup made no progress".into()
                         } else { open.iter().map(|(path, on)| {
                             format!("stalled: {} at {on}", path.display())
                         }).collect::<Vec<_>>().join("\n") });
                     }
-                    revision = current;
+                    revision = self.registry.snapshot().0;
                     idle.as_mut().reset(tokio::time::Instant::now() + quiet);
                 }
             }

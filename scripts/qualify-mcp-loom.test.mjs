@@ -7,20 +7,22 @@ import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoo
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
-test("progress qualification instruments the shared registry and requires the cleanup negative control", () => {
-  for (const missing of [null, 1, 2]) {
+test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
+  const names = ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
+    "forgotten_cleanup_is_detected_on_the_real_registration",
+    "polling_wake_and_reporting_never_lose_runnability",
+    "an_unobserved_wake_fails_the_same_runnability_oracle"];
+  for (const missing of [null, 1, 2, 3, 4]) {
     let models = 0;
     const run = (command, args) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(-3), ["--", "--cfg", "acyclic_e2e_progress_loom"]);
         return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "e2e-progress-model"}})};
       }
-      assert.equal(args[0], models++ === 0
-        ? "registration_reporting_and_cancel_or_panic_cleanup_are_atomic"
-        : "forgotten_cleanup_is_detected_on_the_real_registration");
+      assert.equal(args[0], names[models++]);
       return {status: 0, stdout: summary(models === missing ? 0 : 1, 0, 1)};
     };
-    if (missing === null) { qualifyE2eProgressLoom(undefined, run); assert.equal(models, 2); }
+    if (missing === null) { qualifyE2eProgressLoom(undefined, run); assert.equal(models, 4); }
     else assert.throws(() => qualifyE2eProgressLoom(undefined, run), /requires a nonzero/);
   }
 });
