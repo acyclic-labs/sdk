@@ -99,6 +99,15 @@ fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
         .into_iter()
         .enumerate()
         .map(|(index, payload)| {
+            if index == 0 {
+                return Bytes::from(
+                    [
+                        b"acyclic-fs-stream-genesis-v1\0".as_slice(),
+                        &Epoch::GENESIS.get().to_le_bytes(),
+                    ]
+                    .concat(),
+                );
+            }
             let sequence = Sequence::new(index as u64);
             let operation_id = OperationId::from_bytes([u8::try_from(index).unwrap(); 16]);
             let fingerprint = Digest::from_bytes(*blake3::hash(&payload).as_bytes());
@@ -360,7 +369,7 @@ fn revocation(skip_authorization: bool) {
         let outcome = run(output.next()).unwrap().unwrap();
         assert_eq!(
             calls.load(Ordering::Relaxed),
-            2,
+            3,
             "delivery skipped authorization"
         );
         if last.load(Ordering::Relaxed) {
@@ -509,4 +518,95 @@ fn fresh_delivery_replacement(unchecked: bool) {
 fn fresh_deliveries_exhaust_history_replacement() {
     fresh_delivery_replacement(false);
     control(|| fresh_delivery_replacement(true), "mixed histories");
+}
+
+fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
+    let fixture = input(&["original", "deleted"]);
+    verification::check(move || {
+        let (sub, records) = fixture.clone();
+        let stream = Arc::new(MemoryStream::default());
+        append(&stream, &sub, &records[..3], 0);
+        let keeper = ManuallyDrop::new(stream.clone());
+        let provider = Arc::new(support::Broken {
+            inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
+            skip_deletion: skip_terminal,
+            skip_authorization: false,
+        });
+        let (sender, incoming) = mpsc::unbounded();
+        let mut output = engine::serve_with_publications(
+            stream.clone(),
+            Some(provider),
+            "node".into(),
+            engine::Limits::default(),
+            Box::pin(incoming),
+        )
+        .unwrap();
+        sender
+            .unbounded_send(Ok(frame(
+                0,
+                Body::Hello(wire::SessionHello {
+                    version: 1,
+                    client_id: Bytes::from_static(b"model"),
+                    destination_node: "node".into(),
+                    receive_bytes: 0,
+                    receive_frames: 0,
+                }),
+            )))
+            .unwrap();
+        sender
+            .unbounded_send(Ok(frame(
+                0,
+                Body::Interest(wire::SessionInterest {
+                    revision: 1,
+                    remove: vec![],
+                    upsert: vec![wire::SessionSubscription {
+                        channel: Some(wire::SessionChannel {
+                            channel_id: 1,
+                            generation: 1,
+                        }),
+                        resume: Some(wire::SessionCursor::default()),
+                        kind: Some(wire::session_subscription::Kind::FsPublications(
+                            sub.encode().unwrap(),
+                        )),
+                    }],
+                }),
+            )))
+            .unwrap();
+        for expected in 0..2 {
+            let body = run(output.next()).unwrap().unwrap().body;
+            assert!(matches!(
+                (expected, body),
+                (0, Some(Body::Welcome(_))) | (1, Some(Body::InterestApplied(_)))
+            ));
+        }
+        if !opening {
+            assert!(matches!(
+                run(output.next()).unwrap().unwrap().body,
+                Some(Body::Opened(_))
+            ));
+            assert!(output.next().now_or_never().is_none());
+        }
+        let writer = loom::thread::spawn(move || {
+            append(&stream, &sub, &records[3..], 3);
+        });
+        let mut outcome = run(output.next()).unwrap().unwrap().body;
+        if matches!(outcome, Some(Body::Opened(_))) {
+            assert!(opening);
+            outcome = run(output.next()).unwrap().unwrap().body;
+        }
+        let Some(Body::Closed(close)) = outcome else {
+            panic!("deletion needs credit")
+        };
+        assert_eq!(close.code, StreamError::NotFound.code());
+        writer.join().unwrap();
+        assert!(output.next().now_or_never().is_none());
+        drop(ManuallyDrop::into_inner(keeper));
+        Ok(())
+    });
+}
+#[test]
+fn terminal_watch_exhausts_zero_credit_deletion() {
+    zero_credit_deletion(false, false);
+    zero_credit_deletion(false, true);
+    control(|| zero_credit_deletion(true, false), "deadlock");
 }

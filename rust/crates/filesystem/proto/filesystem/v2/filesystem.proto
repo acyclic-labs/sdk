@@ -729,7 +729,8 @@ message SessionFsSubscription {
   string path_prefix = 3; // canonical absolute PortablePath; / selects the volume
   SessionFsDelivery delivery = 4;
   // Inclusive authority-stream offset. Zero starts at creation; metadata records
-  // are skipped. The provider opens the existing replay-plus-live follow once.
+  // are skipped. Fresh opens anchor the preceding commit, as resumes do; every
+  // later read checks that anchor. History replacement closes prefix_not_retained.
   uint64 start_next = 5;
   // Required canonical name plus ID; workspace_id equals volume_id byte-for-byte.
   // The host validates the name/ID binding against its filesystem before opening.
@@ -751,7 +752,10 @@ enum SessionFsDelivery {
 // generation. Unrelated paths may cause conservative invalidation. No file bodies
 // or backing-store credentials are carried. Creation publishes its initial root.
 // A WorkspaceDeleted authority fact terminates the channel with not_found; it must
-// never be skipped as metadata. No further publications follow deletion.
+// never be skipped as metadata. Providers observe termination independently of
+// channel and connection data credit, including immediately after Opened; discard
+// buffered data and close without a Window grant. Control observation retains no
+// publication queue. No further publications follow deletion.
 message SessionFsPublication {
   uint32 version = 1;
   bytes volume_id = 2;

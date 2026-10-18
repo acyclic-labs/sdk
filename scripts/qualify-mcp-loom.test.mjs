@@ -45,7 +45,7 @@ test("native progress qualification instruments the real mutex and requires ever
 });
 
 test("fs Session qualification instruments real provider and Session locks and requires every model", () => {
-  for (const missing of [null, 1, 2, 3, 4, 5]) {
+  for (const missing of [null, 1, 2, 3, 4, 5, 6]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
@@ -60,7 +60,7 @@ test("fs Session qualification instruments real provider and Session locks and r
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 2) };
     };
-    if (missing === null) { qualifySessionFsLoom(run); assert.equal(models, 5); }
+    if (missing === null) { qualifySessionFsLoom(run); assert.equal(models, 6); }
     else assert.throws(() => qualifySessionFsLoom(run), /requires a nonzero/);
   }
   assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --session-fs/);

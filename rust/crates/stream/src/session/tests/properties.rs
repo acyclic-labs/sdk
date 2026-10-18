@@ -28,6 +28,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
             },
         )]),
         sources: sources::Sources::new(),
+        terminals: sources::Sources::new(),
         incoming: stream::empty().boxed(),
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),

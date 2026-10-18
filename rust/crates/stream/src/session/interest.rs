@@ -41,11 +41,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         for remove in interest.remove {
             self.remove(remove.channel_id)?;
         }
-        for (identity, channel, source) in opened {
+        for (identity, channel, source, terminal) in opened {
             self.remove(identity.channel_id)?;
             let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
             self.sources.insert(identity, source, mode);
+            if let Some(terminal) = terminal {
+                self.terminals.insert(identity, terminal, None);
+            }
         }
         self.revision = interest.revision;
         self.controls.push_back(frame(
@@ -61,7 +64,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
     fn open(
         &self,
         subscription: wire::SessionSubscription,
-    ) -> Result<(wire::SessionChannel, Channel, Source), StreamError> {
+    ) -> Result<(wire::SessionChannel, Channel, Source, Option<Source>), StreamError> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
@@ -69,6 +72,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             subscription.kind,
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
+        let mut terminal = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
@@ -119,6 +123,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     wire::SessionDelivery::Latest => true,
                     _ => return Err(StreamError::InvalidArgument),
                 };
+                terminal = Some(publications::terminal(subscription.terminal, identity));
                 (
                     latest,
                     publications::source(subscription.open, identity),
@@ -142,11 +147,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 ending: None,
             },
             source,
+            terminal,
         ))
     }
 
     pub(super) fn remove(&mut self, id: u64) -> Result<(), StreamError> {
         self.sources.remove(id);
+        self.terminals.remove(id);
         if let Some(channel) = self.channels.remove(&id) {
             if let Some(length) = channel.indexed {
                 self.runnable.remove(&(length, id));

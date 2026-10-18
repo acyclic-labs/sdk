@@ -118,6 +118,7 @@ struct Session<P: ?Sized> {
     revision: u64,
     channels: BTreeMap<u64, Channel>,
     sources: sources::Sources,
+    terminals: sources::Sources,
     incoming: transport::Responses,
     credit: wire::SessionWindow,
     controls: VecDeque<wire::SessionFrame>,
@@ -193,6 +194,7 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
         revision: 0,
         channels: BTreeMap::new(),
         sources: sources::Sources::new(),
+        terminals: sources::Sources::new(),
         incoming,
         credit: wire::SessionWindow::default(),
         controls: VecDeque::new(),
@@ -213,7 +215,7 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                 if let Some(frame) = session.ready()? {
                     return Ok(Some((frame, session)));
                 }
-                if session.sources.is_empty() {
+                if session.sources.is_empty() && session.terminals.is_empty() {
                     let Some(frame) = session.incoming.next().await else {
                         return Ok(None);
                     };
@@ -231,7 +233,9 @@ fn serve_on_with_publications<P: StreamProvider + ?Sized>(
                     DATA_FRAME_BYTES,
                     session.credit.frames > 0 && session.credit.bytes > 0,
                 );
-                let source = session.sources.next(room);
+                let source = session
+                    .sources
+                    .next_with_control(&mut session.terminals, room);
                 let event = if session.prefer_control {
                     match future::select(input, source).await {
                         future::Either::Left((input, _)) => future::Either::Left(input),

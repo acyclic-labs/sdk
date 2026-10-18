@@ -172,6 +172,15 @@ impl Connection {
         sub: &Subscription,
         resume: session::SessionCursor,
     ) -> Result<Self> {
+        Self::start_with_credit(stream, provider, sub, resume, true).await
+    }
+    async fn start_with_credit<P: acyclic_stream::StreamProvider>(
+        stream: Arc<P>,
+        provider: Arc<dyn PublicationProvider>,
+        sub: &Subscription,
+        resume: session::SessionCursor,
+        credit: bool,
+    ) -> Result<Self> {
         let (sender, receiver) = mpsc::unbounded();
         let output = engine::serve_with_publications(
             stream,
@@ -186,8 +195,8 @@ impl Connection {
                 version: 1,
                 client_id: Bytes::from_static(b"fs-client"),
                 destination_node: "local".into(),
-                receive_bytes: 1_000_000,
-                receive_frames: 100,
+                receive_bytes: if credit { 1_000_000 } else { 0 },
+                receive_frames: if credit { 100 } else { 0 },
             }),
         )))?;
         sender.unbounded_send(Ok(frame(
@@ -445,11 +454,15 @@ async fn publication_during_checked_resume_has_no_gap_or_duplicate() -> Result {
             drop(first);
             let entered = Arc::new(tokio::sync::Barrier::new(2));
             let release = Arc::new(tokio::sync::Barrier::new(2));
+            let control = Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(())));
             let mut history = support::History::new(stream);
             history.gate = Some((entered.clone(), release.clone(), after_registration));
             history.skip = skip;
             let history = Arc::new(history);
-            let provider = Arc::new(Provider::new(history.clone(), |_: &Subscription| Ok(())));
+            let provider = Arc::new(support::SeparateTerminal {
+                data: Arc::new(Provider::new(history.clone(), |_: &Subscription| Ok(()))),
+                control,
+            });
             let mut connection = Connection::start(history, provider, &sub, cursor).await?;
             let open = connection.next();
             let publish = async {
@@ -701,3 +714,62 @@ async fn authorization_is_current_when_the_provider_open_is_polled() -> Result {
 
 #[path = "session_fs/allocations.rs"]
 mod allocations;
+
+#[tokio::test]
+async fn deletion_closes_all_without_channel_or_connection_credit() -> Result {
+    for global_credit in [false, true] {
+        for buffered in [false, true] {
+            for skip_deletion in [false, true] {
+                let (_fs, workspace, stream) = fixture().await?;
+                let sub = subscription(workspace.id().volume_id(), false);
+                let provider = Arc::new(support::Broken {
+                    inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
+                    skip_deletion,
+                    skip_authorization: false,
+                });
+                let mut connection = Connection::start_with_credit(
+                    stream,
+                    provider,
+                    &sub,
+                    session::SessionCursor::default(),
+                    global_credit,
+                )
+                .await?;
+                assert!(matches!(
+                    connection.next().await?.body,
+                    Some(Body::Opened(_))
+                ));
+                if buffered {
+                    // Channel has credit, global credit can still be zero. ALL
+                    // keeps at most one queued publication while control follows.
+                    connection.sender.unbounded_send(Ok(frame(
+                        1,
+                        Body::Window(session::SessionWindow {
+                            bytes: 1_000_000,
+                            frames: 1,
+                        }),
+                    )))?;
+                    if global_credit {
+                        connection.data().await?; // exhaust channel credit
+                    }
+                    assert!(connection.output.next().now_or_never().is_none());
+                    for text in ["one", "two", "three"] {
+                        workspace.write_text("/entry", text).await?;
+                        assert!(connection.output.next().now_or_never().is_none());
+                    }
+                }
+                workspace.delete(acyclic_fs::IdempotencyKey::new()).await?;
+                if skip_deletion {
+                    assert!(
+                        connection.output.next().now_or_never().is_none(),
+                        "negative control unexpectedly observes deletion"
+                    );
+                } else {
+                    assert!(closed(&connection.next().await?, StreamError::NotFound));
+                    assert!(connection.output.next().now_or_never().is_none());
+                }
+            }
+        }
+    }
+    Ok(())
+}

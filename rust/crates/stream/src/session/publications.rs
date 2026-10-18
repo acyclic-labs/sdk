@@ -17,6 +17,8 @@ pub struct PublicationSubscription {
     pub delivery: wire::SessionDelivery,
     /// Required authorization query at the delivery boundary.
     pub revalidate: PublicationRevalidation,
+    /// Independent terminal observation; polled even with no data credit.
+    pub terminal: crate::BoxProviderFuture<'static, StreamError>,
     /// Asynchronous provider open.
     pub open: crate::BoxProviderFuture<'static, Result<PublicationStream, StreamError>>,
 }
@@ -54,4 +56,11 @@ pub(super) fn source(
         )
         .map(move |event| (identity, event)),
     )
+}
+
+pub(super) fn terminal(
+    terminal: crate::BoxProviderFuture<'static, StreamError>,
+    identity: wire::SessionChannel,
+) -> Source {
+    Box::pin(stream::once(async move { (identity, Err(terminal.await)) }))
 }

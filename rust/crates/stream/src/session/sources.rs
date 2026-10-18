@@ -250,6 +250,29 @@ impl Sources {
         }
         None
     }
+    pub(super) fn next_with_control(
+        &mut self,
+        control: &mut Self,
+        room: (bool, bool, bool),
+    ) -> impl std::future::Future<Output = Result<Option<SourceItem>, StreamError>> + Unpin {
+        // Terminal entries stay in OPENING until their sole result. Reuse the
+        // same bounded, wake-driven queues, independently of all data credit.
+        std::future::poll_fn(move |cx| {
+            if !control.is_empty() {
+                match control.poll((false, false, false), cx) {
+                    Poll::Ready(Ok(Some(event))) => return Poll::Ready(Ok(Some(event))),
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    _ => {}
+                }
+            }
+            if self.is_empty() && !control.is_empty() {
+                Poll::Pending
+            } else {
+                self.poll(room, cx)
+            }
+        })
+    }
+    #[cfg(test)]
     pub(super) fn next(
         &mut self,
         room: (bool, bool, bool),

@@ -57,8 +57,20 @@ where
         let provider = self.stream.clone();
         let scope = subscription.clone();
         let policy = authorize.clone();
+        let terminal_provider = provider.clone();
+        let terminal_scope = subscription.clone();
+        let terminal_policy = authorize.clone();
+        let resumed = anchor.is_some();
         Ok(PublicationSubscription {
             delivery,
+            terminal: Box::pin(async move {
+                match watch_terminal(terminal_provider, terminal_scope, terminal_policy, resumed)
+                    .await
+                {
+                    Err(error) => error,
+                    Ok(()) => StreamError::Unavailable,
+                }
+            }),
             revalidate: Arc::new(move || policy(&scope)),
             open: Box::pin(async move {
                 authorize(&subscription)?;
@@ -79,8 +91,13 @@ where
                             from: tail.checked_sub(1).ok_or(StreamError::PrefixNotRetained)?,
                             limit: 1,
                         })
-                        .await?;
-                    let record = head.next().await.ok_or(StreamError::PrefixNotRetained)??;
+                        .await
+                        .map_err(history_error)?;
+                    let record = head
+                        .next()
+                        .await
+                        .ok_or(StreamError::PrefixNotRetained)?
+                        .map_err(history_error)?;
                     check_record_deletion(&subscription, &record)?;
                     let from = subscription.start_next.max(1);
                     if from > tail {
@@ -92,11 +109,13 @@ where
                             from: from - 1,
                             limit: 1,
                         })
-                        .await?;
+                        .await
+                        .map_err(history_error)?;
                     let preceding = preceding
                         .next()
                         .await
-                        .ok_or(StreamError::PrefixNotRetained)??;
+                        .ok_or(StreamError::PrefixNotRetained)?
+                        .map_err(history_error)?;
                     check_record_deletion(&subscription, &preceding)?;
                     provider
                         .follow_checked(path, from, preceding.commit_id)
@@ -211,6 +230,10 @@ fn check_record_deletion(
     subscription: &Subscription,
     record: &acyclic_stream::Record,
 ) -> Result<(), StreamError> {
+    // Offset zero is the authority genesis header, not a durable fs fact.
+    if record.sequence == 0 {
+        return Ok(());
+    }
     let durable = crate::StreamsDurableRecord::decode_borrowed(
         &record.value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -220,4 +243,44 @@ fn check_record_deletion(
         return Err(StreamError::InvalidArgument);
     }
     check_deletion(subscription, durable.payload)
+}
+
+async fn watch_terminal<P: StreamProvider, A>(
+    provider: Arc<P>,
+    subscription: Arc<Subscription>,
+    authorize: Arc<A>,
+    resumed: bool,
+) -> Result<(), StreamError>
+where
+    A: Fn(&Subscription) -> Result<(), StreamError> + Send + Sync + 'static,
+{
+    authorize(&subscription)?;
+    let path = crate::distributed::authority_records_path(subscription.volume_id)
+        .map_err(|_| StreamError::InvalidArgument)?;
+    let tail = provider
+        .tail(path.clone())
+        .await
+        .map_err(|error| if resumed { history_error(error) } else { error })?;
+    let mut head = provider
+        .read(acyclic_stream::ReadRequest {
+            path: path.clone(),
+            from: tail.checked_sub(1).ok_or(StreamError::PrefixNotRetained)?,
+            limit: 1,
+        })
+        .await
+        .map_err(history_error)?;
+    let head = head
+        .next()
+        .await
+        .ok_or(StreamError::PrefixNotRetained)?
+        .map_err(history_error)?;
+    check_record_deletion(&subscription, &head)?;
+    let mut records = provider
+        .follow_checked(path, tail, head.commit_id)
+        .await
+        .map_err(history_error)?;
+    while let Some(record) = records.next().await {
+        check_record_deletion(&subscription, &record.map_err(history_error)?)?;
+    }
+    Err(StreamError::Unavailable)
 }

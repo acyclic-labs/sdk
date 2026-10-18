@@ -113,6 +113,7 @@ impl session::PublicationProvider for Broken {
             source.revalidate = Arc::new(|| Ok(()));
         }
         if self.skip_deletion {
+            source.terminal = Box::pin(futures::future::pending());
             let open = source.open;
             source.open = Box::pin(async move {
                 let records = open.await?;
@@ -126,5 +127,23 @@ impl session::PublicationProvider for Broken {
             });
         }
         Ok(source)
+    }
+}
+
+// The publication-race barrier belongs to the data registration only. Control
+// observation uses the same authority through an ungated production provider.
+pub struct SeparateTerminal {
+    pub data: Arc<dyn session::PublicationProvider>,
+    pub control: Arc<dyn session::PublicationProvider>,
+}
+impl session::PublicationProvider for SeparateTerminal {
+    fn subscribe(
+        &self,
+        encoded: bytes::Bytes,
+        resume: wire::SessionCursor,
+    ) -> Result<session::PublicationSubscription, StreamError> {
+        let mut data = self.data.subscribe(encoded.clone(), resume.clone())?;
+        data.terminal = self.control.subscribe(encoded, resume)?.terminal;
+        Ok(data)
     }
 }

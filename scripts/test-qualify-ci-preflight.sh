@@ -198,7 +198,7 @@ cat >"$gate/bin/mcp_loom" <<'EOF'
 case "${1:-}" in
   distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  registration_reporting_and_cancel_or_panic_cleanup_are_atomic|forgotten_cleanup_is_detected_on_the_real_registration|polling_wake_and_reporting_never_lose_runnability|an_unobserved_wake_fails_the_same_runnability_oracle|testing::model::*|testing::queue_model::*|hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement|fresh_deliveries_exhaust_history_replacement) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
+  registration_reporting_and_cancel_or_panic_cleanup_are_atomic|forgotten_cleanup_is_detected_on_the_real_registration|polling_wake_and_reporting_never_lose_runnability|an_unobserved_wake_fails_the_same_runnability_oracle|testing::model::*|testing::queue_model::*|hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement|fresh_deliveries_exhaust_history_replacement|terminal_watch_exhausts_zero_credit_deletion) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
 esac
 EOF
