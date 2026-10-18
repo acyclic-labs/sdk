@@ -36,7 +36,7 @@ pub(crate) fn related(key: &FileKey, make: fn(Component) -> TaskFile) -> Option<
     })
 }
 
-fn is_result(key: &FileKey) -> bool {
+pub(crate) fn is_result(key: &FileKey) -> bool {
     matches!(
         key,
         FileKey::Session {
