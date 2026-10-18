@@ -53,6 +53,42 @@ async fn reopen(
     .await;
 }
 
+async fn find(
+    renderer: &mut ClientRenderer,
+    commands: &mut CommandSession<MemoryStream>,
+    query: &str,
+    count: usize,
+) {
+    let mut layout = commands
+        .state(CommandFileRoot::Session, "layout.json")
+        .unwrap()
+        .unwrap();
+    layout["open_view"] = "find".into();
+    layout["view_input"] = "find".into();
+    layout["search_query"] = query.into();
+    commands
+        .write_state(CommandFileRoot::Session, "layout.json", &layout)
+        .await
+        .unwrap();
+    let mut status = String::new();
+    for _ in 0..MAXIMUM_SEARCH_STEPS {
+        let painted = frame(renderer, commands, 120, 40).unwrap();
+        status = painted
+            .lines()
+            .find_map(|row| row.trim().strip_prefix("Find: "))
+            .unwrap_or_default()
+            .to_owned();
+        if !status.contains('\u{2026}') {
+            break;
+        }
+        renderer.search_progress().await;
+    }
+    assert!(
+        status.starts_with(&format!("1/{count} matches")),
+        "each command identity has exactly one searchable transcript owner: {query}: {status}"
+    );
+}
+
 async fn ownership(bodies: &[String], result_first: bool) {
     let volume = Arc::new(
         TaskVolume::open(
@@ -162,36 +198,18 @@ async fn ownership(bodies: &[String], result_first: bool) {
     client.follow_task(volume.as_ref(), root).await.unwrap();
     show(&mut renderer, &client, &authority, &commands, &expected).await;
     reopen(volume.as_ref(), &authority, root, &commands, &expected).await;
+    for query in std::iter::once(REQUEST.to_owned()).chain(
+        bodies
+            .iter()
+            .enumerate()
+            .map(|(section, body)| format!("Body {section}: {body}.")),
+    ) {
+        find(&mut renderer, &mut commands, &query, 1).await;
+    }
     let mut layout = commands
         .state(CommandFileRoot::Session, "layout.json")
         .unwrap()
         .unwrap();
-    layout["open_view"] = "find".into();
-    layout["view_input"] = "find".into();
-    for (section, body) in bodies.iter().enumerate() {
-        layout["search_query"] = format!("Body {section}: {body}.").into();
-        commands
-            .write_state(CommandFileRoot::Session, "layout.json", &layout)
-            .await
-            .unwrap();
-        let mut status = String::new();
-        for _ in 0..MAXIMUM_SEARCH_STEPS {
-            let painted = frame(&mut renderer, &commands, 120, 40).unwrap();
-            status = painted
-                .lines()
-                .find_map(|row| row.trim().strip_prefix("Find: "))
-                .unwrap_or_default()
-                .to_owned();
-            if !status.contains('…') {
-                break;
-            }
-            renderer.search_progress().await;
-        }
-        assert!(
-            status.starts_with("1/1 matches"),
-            "every body has exactly one searchable archive owner: {status}"
-        );
-    }
     // Equal content is still two different admitted commands. A content-based
     // deduplication pass would erase the second prompt and answer here.
     layout["open_view"] = serde_json::Value::Null;
@@ -218,6 +236,14 @@ async fn ownership(bodies: &[String], result_first: bool) {
     twice = [expected.clone(), expected].concat();
     show(&mut renderer, &client, &authority, &commands, &twice).await;
     reopen(volume.as_ref(), &authority, root, &commands, &twice).await;
+    for query in std::iter::once(REQUEST.to_owned()).chain(
+        bodies
+            .iter()
+            .enumerate()
+            .map(|(section, body)| format!("Body {section}: {body}.")),
+    ) {
+        find(&mut renderer, &mut commands, &query, 2).await;
+    }
 }
 
 proptest! {
