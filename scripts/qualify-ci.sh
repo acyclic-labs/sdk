@@ -422,6 +422,7 @@ case "$lane" in
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
+    python3 scripts/test-provider-catalog-targets.py
     # The host clippy run cannot see code that only the browser build
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \

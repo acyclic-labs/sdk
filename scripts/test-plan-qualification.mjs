@@ -11,6 +11,22 @@ import { languageGeneratorBackends, parseGeneratorBackends } from "./plan-qualif
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 
+test("browser catalog target proof precedes dependency qualification", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
+  const command = "python3 scripts/test-provider-catalog-targets.py";
+  const check = source => {
+    const web = source.match(/^  web\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
+    assert.ok(web, "missing browser qualification");
+    const target = web.indexOf("bash scripts/ensure-rust-target.sh wasm32-unknown-unknown");
+    const proof = web.indexOf(command);
+    const dependencies = web.indexOf("cargo clippy");
+    assert.ok(target >= 0 && proof > target && dependencies > proof,
+      "bounded catalog target proof must run before dependency qualification");
+  };
+  check(script);
+  assert.throws(() => check(script.replace(command, "")), /bounded catalog target proof/);
+});
+
 test("release selection executes the complete registry without Git or GitHub reuse", () => {
   assert.equal(new Set(lanes.map(lane => lane.lane)).size, lanes.length);
   assert.ok(lanes.every(lane => lane.lane !== "typescript"));
