@@ -83,12 +83,16 @@ printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
 printf '%s\n' "${RUSTFLAGS:-}" >>"${FAKE_RUSTFLAGS_LOG:-/dev/null}"
 if [[ " $* " == *' --message-format=json '* ]]; then
   model=mcp-loom
-  [[ " $* " != *' --test timer_loom '* ]] || model=timer_loom
-  [[ " $* " != *' --test guest_loom '* ]] || model=guest_loom
-  [[ " $* " != *' --test native_binding_model '* ]] || model=native_binding_model
-  [[ " $* " != *' --test memory-accounting-model '* ]] || model=memory-accounting-model
-  [[ " $* " != *' --test session_fs_model '* ]] || model=session_fs_model
-  [[ " $* " != *' --lib '* ]] || model=acyclic_harness
+  package=""
+  previous=""
+  for argument in "$@"; do
+    case "$previous" in
+      --test) model="$argument" ;;
+      -p|--package) package="${argument//-/_}" ;;
+    esac
+    previous="$argument"
+  done
+  [[ " $* " != *' --lib '* ]] || model="$package"
   printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
 elif [[ "$1" == test ]]; then
   case "${FAKE_MODEL_RESULTS:-complete}" in
@@ -194,7 +198,7 @@ cat >"$gate/bin/mcp_loom" <<'EOF'
 case "${1:-}" in
   distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
+  registration_reporting_and_cancel_or_panic_cleanup_are_atomic|forgotten_cleanup_is_detected_on_the_real_registration|polling_wake_and_reporting_never_lose_runnability|an_unobserved_wake_fails_the_same_runnability_oracle|testing::model::*|testing::queue_model::*|hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
   *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
 esac
 EOF
@@ -206,7 +210,7 @@ chmod +x "$gate/bin/mcp_loom"
     bash scripts/qualify-ci.sh gate
 )
 mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 16 ]]
+[[ "${#cargo_calls[@]}" -eq 18 ]]
 [[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness-fuzz --bins' ]]
 [[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --features model-checking --lib' ]]
 [[ "${cargo_calls[2]}" == 'check --locked -p acyclic-harness --features filesystem-local,model-checking --lib' ]]
@@ -216,18 +220,21 @@ mapfile -t cargo_calls <"$gate/cargo.log"
 for index in 6 7 8; do
   [[ "${cargo_calls[index]}" == 'test --locked --message-format=json -p acyclic-harness --lib --no-run --all-features --features model-checking' ]]
 done
+[[ "${cargo_calls[9]}" == 'rustc --locked --message-format=json -p acyclic-harness --test e2e-progress-model --features filesystem-local,native-execution,test-support,grpc -- --cfg acyclic_e2e_progress_loom' ]]
+[[ "${cargo_calls[10]}" == 'test --locked --message-format=json -p acyclic-native-runtime --lib --no-run --features test-support' ]]
 timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
-[[ "${cargo_calls[9]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
-[[ "${cargo_calls[10]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
-[[ "${cargo_calls[11]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
+[[ "${cargo_calls[11]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
+[[ "${cargo_calls[12]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
+[[ "${cargo_calls[13]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
 memory_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"))')"
-[[ "${cargo_calls[12]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
-[[ "${cargo_calls[13]}" == 'rustc --locked --message-format=json -p acyclic-fs --test session_fs_model --no-default-features --features memory,session,acyclic-stream/local' ]]
-[[ "${cargo_calls[14]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
-[[ "${cargo_calls[15]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
+[[ "${cargo_calls[14]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
+[[ "${cargo_calls[15]}" == 'rustc --locked --message-format=json -p acyclic-fs --test session_fs_model --no-default-features --features memory,session,acyclic-stream/local' ]]
+[[ "${cargo_calls[16]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
+[[ "${cargo_calls[17]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
 mapfile -t flags <"$gate/flags.log"
-for index in 0 1 2 3 4 12; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
-[[ "${flags[13]}" == *'--cfg acyclic_loom'* && "${flags[13]}" == *'--cfg acyclic_stream_loom'* ]]
+[[ "${flags[10]}" == *'--cfg acyclic_native_runtime_loom'* ]]
+for index in 0 1 2 3 4 14; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
+[[ "${flags[15]}" == *'--cfg acyclic_loom'* && "${flags[15]}" == *'--cfg acyclic_stream_loom'* ]]
 for index in 1 2 3 4; do
   [[ "${flags[index]}" == *'--cfg acyclic_harness_loom'* ]]
   [[ "${flags[index]}" == *'--cfg acyclic_loom'* ]]
