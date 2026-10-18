@@ -64,7 +64,6 @@ where
                 authorize(&subscription)?;
                 let path = crate::distributed::authority_records_path(subscription.volume_id)
                     .map_err(|_| StreamError::InvalidArgument)?;
-                let checked = anchor.is_some();
                 let records = if let Some(anchor) = anchor {
                     #[cfg(test)]
                     acyclic_test_support::differential::record(("checked_follow", anchor.next));
@@ -73,28 +72,39 @@ where
                         .await
                         .map_err(history_error)?
                 } else {
-                    let records = provider
-                        .follow(path.clone(), subscription.start_next.max(1))
-                        .await?;
                     let tail = provider.tail(path.clone()).await?;
                     let mut head = provider
                         .read(acyclic_stream::ReadRequest {
-                            path,
+                            path: path.clone(),
                             from: tail.checked_sub(1).ok_or(StreamError::PrefixNotRetained)?,
                             limit: 1,
                         })
                         .await?;
                     let record = head.next().await.ok_or(StreamError::PrefixNotRetained)??;
-                    let durable = crate::streams_record::StreamsDurableRecord::decode_borrowed(
-                        &record.value,
-                        acyclic_stream::MAX_RECORD_BYTES as u64,
-                    )
-                    .map_err(|_| StreamError::InvalidArgument)?;
-                    check_deletion(&subscription, durable.payload)?;
-                    records
+                    check_record_deletion(&subscription, &record)?;
+                    let from = subscription.start_next.max(1);
+                    if from > tail {
+                        return Err(StreamError::OutOfRange);
+                    }
+                    let mut preceding = provider
+                        .read(acyclic_stream::ReadRequest {
+                            path: path.clone(),
+                            from: from - 1,
+                            limit: 1,
+                        })
+                        .await?;
+                    let preceding = preceding
+                        .next()
+                        .await
+                        .ok_or(StreamError::PrefixNotRetained)??;
+                    check_record_deletion(&subscription, &preceding)?;
+                    provider
+                        .follow_checked(path, from, preceding.commit_id)
+                        .await
+                        .map_err(history_error)?
                 };
                 let output = records
-                    .map_err(move |error| if checked { history_error(error) } else { error })
+                    .map_err(history_error)
                     .try_filter_map(move |record| {
                         futures::future::ready(publication(&subscription, record))
                     });
@@ -195,4 +205,19 @@ fn check_deletion(subscription: &Subscription, payload: &[u8]) -> Result<(), Str
         });
     }
     Ok(())
+}
+
+fn check_record_deletion(
+    subscription: &Subscription,
+    record: &acyclic_stream::Record,
+) -> Result<(), StreamError> {
+    let durable = crate::StreamsDurableRecord::decode_borrowed(
+        &record.value,
+        acyclic_stream::MAX_RECORD_BYTES as u64,
+    )
+    .map_err(|_| StreamError::InvalidArgument)?;
+    if durable.sequence.get() != record.sequence {
+        return Err(StreamError::InvalidArgument);
+    }
+    check_deletion(subscription, durable.payload)
 }

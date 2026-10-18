@@ -100,7 +100,8 @@ export function qualifySessionFsLoom(run = spawnSync) {
     targetCfg: [], timeout: 9500,
     filters: ["checked_resume_exhausts_append_registration_and_wakeup",
       "checked_resume_exhausts_independent_history_replacement", "resumed_buffered_delivery_exhausts_revocation",
-      "fresh_open_exhausts_deletion_and_history_replacement"],
+      "fresh_open_exhausts_deletion_and_history_replacement",
+      "fresh_deliveries_exhaust_history_replacement"],
   });
 }
 

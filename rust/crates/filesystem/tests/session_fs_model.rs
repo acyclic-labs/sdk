@@ -416,6 +416,7 @@ fn fresh_open(replace: bool, start_next: u64, stale_head: bool) {
         });
         let mut history = support::History::new(stream);
         history.stale_head = stale_head;
+        history.unchecked = stale_head;
         let provider = Provider::new(Arc::new(history), |_: &Subscription| Ok(()));
         let error = run(async {
             match provider
@@ -433,12 +434,12 @@ fn fresh_open(replace: bool, start_next: u64, stale_head: bool) {
             }
         });
         // A future start can be rejected before the append linearizes. Replacing
-        // a live unchecked follow closes its old watch with Unavailable. Neither
+        // a live checked follow rejects its old anchor with PrefixNotRetained. Neither
         // permits advancing a cursor or remaining idle after the terminal fact.
         match error {
             StreamError::NotFound => {}
             StreamError::OutOfRange if !replace && start_next == 4 => {}
-            StreamError::Unavailable if replace => {}
+            StreamError::PrefixNotRetained if replace => {}
             other => panic!("unexpected fresh-open error: {other:?}"),
         }
         writer.join().unwrap();
@@ -453,4 +454,59 @@ fn fresh_open_exhausts_deletion_and_history_replacement() {
     fresh_open(true, 4, false);
     control(|| fresh_open(false, 4, true), "deadlock");
     control(|| fresh_open(true, 4, true), "deadlock");
+}
+
+fn fresh_delivery_replacement(unchecked: bool) {
+    let fixture = input(&["original"]);
+    let other = input(&["replacement"]);
+    verification::check(move || {
+        let (sub, records) = fixture.clone();
+        let stream = Arc::new(MemoryStream::default());
+        append(&stream, &sub, &records, 0);
+        let keeper = ManuallyDrop::new(stream.clone());
+        let replacement = MemoryStream::default();
+        append(&replacement, &sub, &other.1, 0);
+        let mut history = support::History::new(stream.clone());
+        history.unchecked = unchecked;
+        let mut source = run(Provider::new(Arc::new(history), |_: &Subscription| Ok(()))
+            .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
+            .unwrap()
+            .open)
+        .unwrap();
+        let first = run(source.next()).unwrap().unwrap();
+        assert_eq!(first.after.unwrap().next, 2);
+        let writer = loom::thread::spawn(move || {
+            run(verification::recover(&stream, &replacement)).unwrap();
+        });
+        let mut terminal = false;
+        for _ in 0..2 {
+            match run(source.next()).expect("fresh follow ended") {
+                Err(error) => {
+                    assert_eq!(error, StreamError::PrefixNotRetained, "mixed histories");
+                    terminal = true;
+                    break;
+                }
+                Ok(data) => {
+                    let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
+                        panic!("missing publication")
+                    };
+                    let publication = Publication::decode(&bytes).unwrap();
+                    assert_eq!(
+                        publication.generation.generation_root.digest.as_bytes(),
+                        blake3::hash(b"original").as_bytes(),
+                        "mixed histories"
+                    );
+                }
+            }
+        }
+        assert!(terminal, "mixed histories");
+        writer.join().unwrap();
+        drop(ManuallyDrop::into_inner(keeper));
+        Ok(())
+    });
+}
+#[test]
+fn fresh_deliveries_exhaust_history_replacement() {
+    fresh_delivery_replacement(false);
+    control(|| fresh_delivery_replacement(true), "mixed histories");
 }
