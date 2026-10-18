@@ -197,6 +197,13 @@ fn decode_task(
 // Independent former replay: one decoder, a boundary between heads, no task
 // cache, changed-head query, row patches or cached render state.
 fn replay_task(task: &crate::client::TaskQueryView<'_>, channel: Channel) -> Vec<Line<'static>> {
+    replay_task_work(task, channel).0
+}
+
+fn replay_task_work(
+    task: &crate::client::TaskQueryView<'_>,
+    channel: Channel,
+) -> (Vec<Line<'static>>, usize) {
     let mut decoder = StreamText::default();
     let mut turn = None;
     for text in task.text().filter(|text| text.channel == channel) {
@@ -217,7 +224,7 @@ fn replay_task(task: &crate::client::TaskQueryView<'_>, channel: Channel) -> Vec
     }) {
         decoder.boundary();
     }
-    decoder.rows(0)
+    (decoder.rows(0), decoder.work)
 }
 
 async fn journal_chunk(
@@ -765,16 +772,33 @@ fn interleaved_whole_renderer_has_exact_work_and_allocations_with_replay_negativ
                     });
                     let before = if replay { 0 } else { renderer.text_work() };
                     let row_before = if replay { 0 } else { renderer.rendered_rows() };
+                    let mut replayed = Vec::new();
+                    let mut replay_work = 0;
                     let (allocated, work) = crate::test_support::measure_task_volume_work(|| {
                         measure(|| {
                             if replay {
-                                renderer = ClientRenderer::default();
+                                let (selection, task) =
+                                    crate::tui::render::selection::selected::<true>(
+                                        &views, &authority,
+                                    )
+                                    .unwrap();
+                                (replayed, replay_work) =
+                                    replay_task_work(&selection.task(task), Channel::Text);
+                            } else {
+                                renderer.update(&views, &authority);
                             }
-                            renderer.update(&views, &authority);
                         })
                     });
-                    parsed += renderer.text_work() - before;
-                    rendered_rows += renderer.rendered_rows() - row_before;
+                    parsed += if replay {
+                        replay_work
+                    } else {
+                        renderer.text_work() - before
+                    };
+                    rendered_rows += if replay {
+                        replayed.len()
+                    } else {
+                        renderer.rendered_rows() - row_before
+                    };
                     items += work;
                     allocations += allocated.count_total;
                     bytes += allocated.bytes_total;
@@ -787,18 +811,13 @@ fn interleaved_whole_renderer_has_exact_work_and_allocations_with_replay_negativ
                             "an A update copied B's unchanged row through the renderer"
                         );
                     }
-                    if replay {
-                        let selection = views.selections().next().unwrap().1;
-                        let task = Component::new(authority.id.clone()).unwrap();
-                        assert_eq!(
-                            renderer.transcript,
-                            replay_task(&selection.task(&task), Channel::Text)
-                        );
-                    }
+                    let rows = if replay {
+                        &replayed
+                    } else {
+                        &renderer.transcript
+                    };
                     differential::record(
-                        renderer
-                            .transcript
-                            .iter()
+                        rows.iter()
                             .map(|line| format!("{line:?}"))
                             .collect::<Vec<_>>(),
                     );
