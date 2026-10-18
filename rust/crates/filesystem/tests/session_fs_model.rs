@@ -528,12 +528,12 @@ fn fresh_deliveries_exhaust_history_replacement() {
     control(|| fresh_delivery_replacement(true), &["mixed histories"]);
 }
 
-fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
+fn zero_credit_deletion(skip_terminal: bool) {
     let fixture = input(&["deleted"]);
     verification::check(move || {
         let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
-        let anchor = append(&stream, &sub, &records[..2], 0);
+        append(&stream, &sub, &records[..2], 0);
         let keeper = ManuallyDrop::new(stream.clone());
         let provider = Arc::new(support::Broken {
             inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
@@ -572,14 +572,7 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
                             channel_id: 1,
                             generation: 1,
                         }),
-                        // Fresh data-open races are covered by fresh_open; the
-                        // opening race here isolates terminal registration while
-                        // still driving the real Session and checked data follow.
-                        resume: Some(if opening {
-                            cursor(&sub, 2, anchor)
-                        } else {
-                            wire::SessionCursor::default()
-                        }),
+                        resume: Some(wire::SessionCursor::default()),
                         kind: Some(wire::session_subscription::Kind::FsPublications(
                             sub.encode().unwrap(),
                         )),
@@ -594,22 +587,15 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
                 (0, Some(Body::Welcome(_))) | (1, Some(Body::InterestApplied(_)))
             ));
         }
-        if !opening {
-            assert!(matches!(
-                run(output.next()).unwrap().unwrap().body,
-                Some(Body::Opened(_))
-            ));
-            assert!(output.next().now_or_never().is_none());
-        }
+        assert!(matches!(
+            run(output.next()).unwrap().unwrap().body,
+            Some(Body::Opened(_))
+        ));
+        assert!(output.next().now_or_never().is_none());
         let writer = loom::thread::spawn(move || {
             append(&stream, &sub, &records[2..], 2);
         });
-        let mut outcome = run(output.next()).unwrap().unwrap().body;
-        if matches!(outcome, Some(Body::Opened(_))) {
-            assert!(opening);
-            outcome = run(output.next()).unwrap().unwrap().body;
-        }
-        let Some(Body::Closed(close)) = outcome else {
+        let Some(Body::Closed(close)) = run(output.next()).unwrap().unwrap().body else {
             panic!("deletion needs credit")
         };
         assert_eq!(close.code, StreamError::NotFound.code());
@@ -621,7 +607,37 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
 }
 #[test]
 fn terminal_watch_exhausts_zero_credit_deletion() {
-    zero_credit_deletion(false, false);
-    zero_credit_deletion(false, true);
-    control(|| zero_credit_deletion(true, false), &["deadlock"]);
+    zero_credit_deletion(false);
+    control(|| zero_credit_deletion(true), &["deadlock"]);
+}
+
+// Registration and scheduler wakeup compose at the required terminal future:
+// this model races its opening, the preceding model races its Session polling.
+fn terminal_opening(skip_terminal: bool) {
+    let fixture = input(&["deleted"]);
+    verification::check(move || {
+        let (sub, records) = fixture.clone();
+        let stream = Arc::new(MemoryStream::default());
+        append(&stream, &sub, &records[..2], 0);
+        let keeper = ManuallyDrop::new(stream.clone());
+        let provider = support::Broken {
+            inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
+            skip_deletion: skip_terminal,
+            skip_authorization: false,
+        };
+        let terminal = provider
+            .subscribe(sub.encode().unwrap(), wire::SessionCursor::default())
+            .unwrap()
+            .terminal;
+        let writer = loom::thread::spawn(move || append(&stream, &sub, &records[2..], 2));
+        assert_eq!(run(terminal), StreamError::NotFound);
+        writer.join().unwrap();
+        drop(ManuallyDrop::into_inner(keeper));
+        Ok(())
+    });
+}
+#[test]
+fn terminal_opening_exhausts_deletion_registration() {
+    terminal_opening(false);
+    control(|| terminal_opening(true), &["deadlock"]);
 }
