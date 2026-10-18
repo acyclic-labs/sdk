@@ -117,3 +117,6 @@ fn negative_control_independent_usage_fields_can_tear() {
 
 #[path = "models/cancellation.rs"]
 mod cancellation;
+
+#[path = "models/credential_snapshot.rs"]
+mod credential_snapshot;

@@ -53,25 +53,43 @@ impl Registry {
         } else {
             retained
         };
-        if let Some(default) = default.as_ref().or(retained) {
-            let (provider, name) = default
-                .split_once('/')
-                .ok_or_else(|| invalid("catalog default_model requires provider/model"))?;
-            let entry = changes
-                .get(provider)
-                .or_else(|| self.providers.get(provider).map(Arc::as_ref));
-            let entry = entry
-                .filter(|entry| entry.models.contains_key(name))
-                .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
-            let counted = self.counts_input(provider, entry)?;
-            #[cfg(all(test, not(target_arch = "wasm32")))]
-            let counted = counted || tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get);
-            if !counted {
-                return Err(invalid(
-                    "catalog default_model requires a verified input token counter",
-                ));
+        let observed = self.observe_credentials(
+            self.providers
+                .iter()
+                .filter(|(id, _)| changes.get(id).is_none())
+                .map(|(id, spec)| (id.as_str(), spec.as_ref()))
+                .chain(changes.entries().map(|(id, spec)| (id.as_str(), spec))),
+        );
+        let validation = (|| {
+            let credentials = observed.as_ref().map_err(|failure| failure.error())?;
+            if let Some(default) = default.as_ref().or(retained) {
+                let (provider, name) = default
+                    .split_once('/')
+                    .ok_or_else(|| invalid("catalog default_model requires provider/model"))?;
+                let entry = changes
+                    .get(provider)
+                    .or_else(|| self.providers.get(provider).map(Arc::as_ref));
+                let entry = entry
+                    .filter(|entry| entry.models.contains_key(name))
+                    .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
+                let credential = credentials
+                    .get(provider)
+                    .ok_or_else(|| invalid("provider is absent from credential snapshot"))?;
+                let counted = selection::counts_input(entry, credential);
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                let counted = counted || tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get);
+                if !counted {
+                    return Err(invalid(
+                        "catalog default_model requires a verified input token counter",
+                    ));
+                }
             }
-        }
+            Ok(())
+        })();
+        self.selection
+            .publish(observed, validation.is_ok())
+            .map_err(|()| invalid("credential selection lock poisoned"))?;
+        validation?;
         self.providers.extend(
             changes
                 .into_entries()

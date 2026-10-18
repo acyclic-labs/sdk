@@ -3,13 +3,17 @@ use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 mod catalog_update;
+mod selection;
+mod snapshot;
 use catalog_update::Changes;
+use selection::{Credential, CredentialSelection};
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
     credentials: Credentials,
+    selection: snapshot::Snapshot<CredentialSelection>,
     transport: Arc<dyn HttpTransport>,
     files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
@@ -28,20 +32,15 @@ impl Registry {
             .into_iter()
             .map(|(id, spec)| (id, Arc::new(spec)))
             .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let codex_login = credentials
-            .allows_native_sources()
-            .then(crate::CodexLogin::discover)
-            .flatten()
-            .map(Arc::new);
         Self {
             providers,
             default_model: None,
             credentials,
+            selection: snapshot::Snapshot::default(),
             transport,
             files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
-            codex_login,
+            codex_login: None,
         }
     }
 
@@ -118,11 +117,16 @@ impl Registry {
             .map(|entry| entry.capacity)
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
-        let key = self.credentials.api_key(provider)?;
+        let credential = self.selected_credential(provider, &config)?;
+        let key = match &credential {
+            Credential::Key(key) => Some(key.clone()),
+            _ => None,
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        let codex_login = self
-            .selected_codex_login(&config, key.as_deref())
-            .map(|login| Arc::new(login.fresh()));
+        let codex_login = match credential {
+            Credential::Codex(login) => Some(Arc::new(login.fresh())),
+            _ => None,
+        };
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
             if !codex_route(&config) {
@@ -168,34 +172,10 @@ impl Registry {
             codex_login,
         })
     }
-
-    /// Credential precedence is shared by dispatch and catalog admission.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn selected_codex_login(
-        &self,
-        config: &ProviderSpec,
-        key: Option<&str>,
-    ) -> Option<&crate::CodexLogin> {
-        self.codex_login.as_deref().filter(|_| {
-            config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none()
-        })
-    }
-
-    /// Count routes must exist for the credentials dispatch actually selects.
-    fn counts_input(&self, provider: &str, config: &ProviderSpec) -> Result<bool> {
-        if config.token_counter.is_some() {
-            return Ok(true);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        if codex_route(config) && self.selected_codex_login(config, None).is_some() {
-            let key = self.credentials.api_key(provider)?;
-            return Ok(self.selected_codex_login(config, key.as_deref()).is_some());
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = provider;
-        Ok(false)
-    }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod credential_tests;
 
 /// The built-in Responses route that a native Codex CLI login may replace.
 #[cfg(not(target_arch = "wasm32"))]

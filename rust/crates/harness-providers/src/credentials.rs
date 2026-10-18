@@ -10,6 +10,35 @@ pub struct Credentials {
     pub api_keys: BTreeMap<String, String>,
     #[serde(skip, default = "native_sources")]
     native_sources: bool,
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    #[serde(skip)]
+    pub(crate) source: Option<std::sync::Arc<dyn Fn(&str, Source) -> KeyResult + Send + Sync>>,
+}
+
+pub(crate) type KeyResult = std::result::Result<Option<String>, KeychainDecode>;
+
+/// A failed observation remains attached to its provider in the snapshot.
+#[derive(Clone)]
+pub(crate) struct KeychainDecode {
+    pub(crate) provider: String,
+}
+
+impl KeychainDecode {
+    pub(crate) fn error(&self) -> acyclic_harness::Error {
+        super::invalid(format!(
+            "provider {}: cannot decode keychain credential",
+            self.provider
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum Source {
+    #[cfg(not(target_arch = "wasm32"))]
+    Keychain,
+    #[cfg(not(target_arch = "wasm32"))]
+    Environment,
+    Configuration,
 }
 
 fn native_sources() -> bool {
@@ -21,6 +50,8 @@ impl Default for Credentials {
         Self {
             api_keys: BTreeMap::new(),
             native_sources: true,
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            source: None,
         }
     }
 }
@@ -35,13 +66,40 @@ impl Credentials {
         Self {
             api_keys,
             native_sources: false,
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            source: None,
         }
     }
     /// Resolves OS keychain, then environment, then this configuration.
     pub fn api_key(&self, provider: &str) -> Result<Option<String>> {
+        self.observe_key(provider)
+            .map_err(|failure| failure.error())
+    }
+
+    pub(crate) fn observe_key(&self, provider: &str) -> KeyResult {
         if self.native_sources {
             #[cfg(not(target_arch = "wasm32"))]
-            {
+            for source in [Source::Keychain, Source::Environment] {
+                if let Some(key) = self.read(provider, source)? {
+                    if !key.trim().is_empty() {
+                        return Ok(Some(key));
+                    }
+                }
+            }
+        }
+        Ok(self
+            .read(provider, Source::Configuration)?
+            .filter(|key| !key.trim().is_empty()))
+    }
+
+    fn read(&self, provider: &str, source: Source) -> KeyResult {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if let Some(read) = &self.source {
+            return read(provider, source);
+        }
+        match source {
+            #[cfg(not(target_arch = "wasm32"))]
+            Source::Keychain => {
                 if let Ok(entry) = keyring::Entry::new("acyclic-harness", provider) {
                     match entry.get_password() {
                         Ok(key) if !key.trim().is_empty() => return Ok(Some(key)),
@@ -49,9 +107,17 @@ impl Credentials {
                         | Err(keyring::Error::NoEntry)
                         | Err(keyring::Error::NoStorageAccess(_))
                         | Err(keyring::Error::PlatformFailure(_)) => {}
-                        Err(_) => return Err(super::invalid("cannot decode keychain credential")),
+                        Err(_) => {
+                            return Err(KeychainDecode {
+                                provider: provider.into(),
+                            });
+                        }
                     }
                 }
+                Ok(None)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Source::Environment => {
                 let variable = match provider {
                     "anthropic" => "ANTHROPIC_API_KEY",
                     "openai" => "OPENAI_API_KEY",
@@ -71,13 +137,10 @@ impl Credentials {
                         }
                     }
                 }
+                Ok(None)
             }
+            Source::Configuration => Ok(self.api_keys.get(provider).cloned()),
         }
-        Ok(self
-            .api_keys
-            .get(provider)
-            .filter(|key| !key.trim().is_empty())
-            .cloned())
     }
 
     /// Reads a JSON credential file. Missing files mean no configured keys.
