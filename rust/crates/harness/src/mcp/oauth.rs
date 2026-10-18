@@ -8,10 +8,20 @@ use acyclic_stream::BoxProviderFuture;
 pub use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationRequest, CredentialRefreshGuard, CredentialStore,
     OAuthClientConfig, OAuthHttpClient, StateStore, StoredAuthorizationState, StoredCredentials,
-    default_oauth_http_client,
 };
 use rmcp::transport::auth::{AuthorizationCallback, AuthorizationSession};
 use std::sync::Arc;
+
+/// The OAuth HTTP client over the build's one rustls provider, ring. rmcp's
+/// reqwest carries no provider of its own, so a second (aws-lc-rs) provider
+/// never enters the graph and provider-less rustls builders stay unambiguous.
+pub fn default_oauth_http_client() -> std::result::Result<impl OAuthHttpClient, AuthError> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        // A concurrent first install of the same provider is equivalent.
+        drop(rustls::crypto::ring::default_provider().install_default());
+    }
+    rmcp::transport::auth::default_oauth_http_client()
+}
 
 /// Private browser/callback capability.
 pub trait McpOAuthInteraction: Send + Sync {
