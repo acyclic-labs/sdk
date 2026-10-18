@@ -22,8 +22,8 @@
     "requests":[
       {},
       {
-        "/input/4":{"type":"function_call","call_id":"call","name":"write"},
-        "/input/5":{
+        "/input/2":{"type":"function_call","call_id":"call","name":"write"},
+        "/input/3":{
           "type":"function_call_output",
           "call_id":"call",
           "output":{
@@ -43,8 +43,8 @@
             }
           }
         },
-        "/input/5/call_id":"call",
-        "/input/4/arguments":{
+        "/input/3/call_id":"call",
+        "/input/2/arguments":{
           "$json":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}
         }
       }

@@ -21,9 +21,9 @@
       {"/tools":[{"type":"function","name":"mcp__docs__search"}]},
       {
         "/tools":[{"type":"function","name":"mcp__docs__search"}],
-        "/input/4":{"type":"function_call","call_id":"call","name":"mcp__docs__search"},
-        "/input/4/arguments":{"$json":{"query":"wren"}},
-        "/input/5":{"type":"function_call_output","call_id":"call","output":{"$json":{"query":"wren"}}}
+        "/input/2":{"type":"function_call","call_id":"call","name":"mcp__docs__search"},
+        "/input/2/arguments":{"$json":{"query":"wren"}},
+        "/input/3":{"type":"function_call_output","call_id":"call","output":{"$json":{"query":"wren"}}}
       }
     ],
     "events":[

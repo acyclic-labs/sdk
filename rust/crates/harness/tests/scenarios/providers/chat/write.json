@@ -18,8 +18,8 @@
     "requests":[
       {},
       {
-        "/messages/4/tool_calls/0":{"type":"function","id":"call","function":{"name":"write"}},
-        "/messages/5":{
+        "/messages/2/tool_calls/0":{"type":"function","id":"call","function":{"name":"write"}},
+        "/messages/3":{
           "role":"tool",
           "tool_call_id":"call",
           "content":{
@@ -39,8 +39,8 @@
             }
           }
         },
-        "/messages/5/tool_call_id":"call",
-        "/messages/4/tool_calls/0/function/arguments":{
+        "/messages/3/tool_call_id":"call",
+        "/messages/2/tool_calls/0/function/arguments":{
           "$json":{"path":"plans/a.md","text":"after\n","media_type":"text/markdown","display_name":"a.md"}
         }
       }
