@@ -151,30 +151,31 @@ proptest! {
         }
     }
 
-    // Records written before the diagnostic field existed are authoritative
-    // history too. Replaying them must preserve uncertainty and its identity.
+    // The cause is a required field of the record: every variant, including
+    // `Unobserved`, is written explicitly and round-trips byte for byte through
+    // the canonical codec that retry matching authenticates. Negative control:
+    // a record without `cause` is rejected rather than silently read as
+    // `Unobserved`, so no cause can be dropped by a defaulted decode.
     #[test]
-    fn indeterminate_legacy_records_replay(operation in any::<[u8;16]>()) {
+    fn indeterminate_cause_is_a_required_round_tripping_field(
+        operation in any::<[u8;16]>(), command in ".{0,32}", code in ".{0,32}", error in ".{0,64}",
+    ) {
         let operation_id = OperationId::from_bytes(operation);
-        let legacy = serde_json::json!({"kind":"completed", "operation_id":operation_id,
-            "outcome":{"Indeterminate":{"operation_id":operation_id}},
-            "fence":fence(0)});
-        let decoded: SchedulerEvent = serde_json::from_value(legacy.clone()).unwrap();
-        // Coordinator retry matching authenticates the canonical event digest,
-        // so decoding must preserve the old serialized shape as well as data.
-        prop_assert_eq!(crate::contract::canonical_json_bytes(&decoded).unwrap(),
-            crate::contract::canonical_json_bytes(&legacy).unwrap());
-        let mut scheduler = Scheduler::new();
-        scheduler.apply(&scheduler.declare(spec(operation_id, Orchestration::Leaf).unwrap()).unwrap(), &mut None).unwrap();
-        start(&mut scheduler, operation_id, reservation(0, 0)).unwrap();
-        scheduler.apply(&decoded, &mut None).unwrap();
-        let state = scheduler.operation(operation_id).unwrap();
-        prop_assert_eq!(state.outcome.as_ref(), Some(&Outcome::Indeterminate {
-            operation_id, cause: IndeterminateCause::Unobserved,
-        }));
-        let mut snapshot = serde_json::to_value(state).unwrap();
-        snapshot["outcome"]["Indeterminate"].as_object_mut().unwrap().remove("cause");
-        let recovered: OperationState = serde_json::from_value(snapshot).unwrap();
-        prop_assert_eq!(&recovered, state);
+        for cause in causes(command, code, error) {
+            let event = SchedulerEvent::Completed {
+                operation_id,
+                outcome: Outcome::Indeterminate { operation_id, cause },
+                fence: Some(fence(0)),
+                execution_duration_ns: None,
+            };
+            let mut value = serde_json::to_value(&event).unwrap();
+            prop_assert!(value["outcome"]["Indeterminate"].get("cause").is_some());
+            let decoded: SchedulerEvent = serde_json::from_value(value.clone()).unwrap();
+            prop_assert_eq!(&decoded, &event);
+            prop_assert_eq!(crate::contract::canonical_json_bytes(&decoded).unwrap(),
+                crate::contract::canonical_json_bytes(&event).unwrap());
+            value["outcome"]["Indeterminate"].as_object_mut().unwrap().remove("cause");
+            prop_assert!(serde_json::from_value::<SchedulerEvent>(value).is_err());
+        }
     }
 }

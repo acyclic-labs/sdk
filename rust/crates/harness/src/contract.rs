@@ -284,7 +284,6 @@ pub enum Outcome<T> {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         operation_id: OperationId,
         /// Why completion is uncertain.
-        #[serde(default, skip_serializing_if = "IndeterminateCause::is_unobserved")]
         cause: IndeterminateCause,
     },
 }

@@ -2,11 +2,10 @@ use super::{Error, OperationId, Result};
 use serde::{Deserialize, Serialize};
 
 /// Why the completion of admitted work is uncertain.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum IndeterminateCause {
     /// Completion was not observed; only reconciliation can settle it.
-    #[default]
     Unobserved,
     /// A task command left the work uncertain.
     Command(CommandIndeterminacy),
@@ -44,10 +43,6 @@ pub enum CommandIndeterminacyReason {
 }
 
 impl IndeterminateCause {
-    pub(crate) fn is_unobserved(&self) -> bool {
-        matches!(self, Self::Unobserved)
-    }
-
     /// The error a caller sees when work ends with this cause, keeping the cause.
     #[must_use]
     pub fn into_error(self, operation_id: OperationId) -> Error {
