@@ -391,7 +391,7 @@ case "$lane" in
     node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
-    cargo fmt --all -- --check
+    bash scripts/qualify-rustfmt.sh
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     # Production-only reduced sets must not inherit test/dev features. Keep
     # these with the lane feature-set checks, outside the tiny SDK Static job.
