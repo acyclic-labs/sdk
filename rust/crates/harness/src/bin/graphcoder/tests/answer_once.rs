@@ -43,13 +43,50 @@ fn frame<P: acyclic_stream::StreamProvider + ?Sized>(
     Ok(screen_text(&terminal))
 }
 
-/// What the transcript holds once the turn has settled: every painted section
-/// heading on a frame tall enough for the whole answer, and Find's match count
-/// for one heading.
+/// Every visible answer row, including bodies, and a body-text search count.
 #[derive(Debug, PartialEq)]
 struct Transcript {
-    sections: Vec<usize>,
+    rows: Vec<String>,
     find: String,
+}
+
+fn rows(renderer: &ClientRenderer) -> Vec<String> {
+    renderer
+        .screen()
+        .transcript
+        .iter()
+        .map(ToString::to_string)
+        .filter(|row| !row.trim().is_empty())
+        .collect()
+}
+
+fn expected_rows(answer: &str) -> Vec<String> {
+    answer
+        .lines()
+        .filter(|row| !row.trim().is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn assert_painted(
+    renderer: &mut ClientRenderer,
+    commands: &CommandSession<impl acyclic_stream::StreamProvider + ?Sized>,
+    expected: &[String],
+) -> Result<(), Error> {
+    let painted = frame(renderer, commands, 100, 200)?;
+    assert_eq!(
+        rows(renderer),
+        expected,
+        "a completed answer must be painted exactly once"
+    );
+    for row in expected {
+        assert_eq!(
+            painted.lines().filter(|line| line.trim() == row).count(),
+            1,
+            "every owned transcript body row reaches the actual screen once: {row}"
+        );
+    }
+    Ok(())
 }
 
 /// A twelve-section Markdown answer.
@@ -200,6 +237,7 @@ enum Provider {
 }
 
 async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
+    let expected = expected_rows(&answer);
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -247,6 +285,12 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
                     .await?;
                 renderer.update_files(&client, &authority);
                 renderer.configure(client.views(), &authority, &commands)?;
+                // Paint every observed live/final cut, not only settlement.
+                frame(&mut renderer, &commands, 100, 200)?;
+                assert!(
+                    expected.starts_with(&rows(&renderer)),
+                    "a completed answer must be painted exactly once"
+                );
                 submitted |= commands.active_task().is_some();
                 // Settled: the request was claimed, its canonical result file
                 // is followed and the root is followed again. The screen is
@@ -264,17 +308,29 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
                     change = commands.observe_change().fuse() => change?,
                 }
             }
-            let sections = frame(&mut renderer, &commands, 100, 200)?
-                .lines()
-                .filter_map(|line| line.trim().strip_prefix("# Section "))
-                .map(|number| number.trim().parse().unwrap())
-                .collect();
+            assert_painted(&mut renderer, &commands, &expected)?;
+            let rows = rows(&renderer);
+            // Reopen the production snapshot/follow path and rebuild every
+            // disposable render cache from the same durable transcript files.
+            let mut reopened = TaskFileClient::observe_task(
+                local.task_files().as_ref(),
+                &authority,
+                root,
+                1024,
+                4 * 1024 * 1024,
+            )
+            .await?;
+            reopened.follow_commands(&commands).await?;
+            let mut replay = ClientRenderer::default();
+            replay.update_files(&reopened, &authority);
+            replay.configure(reopened.views(), &authority, &commands)?;
+            assert_painted(&mut replay, &commands, &expected)?;
             let mut layout = commands
                 .state(CommandFileRoot::Session, "layout.json")?
                 .unwrap_or_default();
             layout["open_view"] = "find".into();
             layout["view_input"] = "find".into();
-            layout["search_query"] = "Section 7".into();
+            layout["search_query"] = "Body 7.".into();
             commands
                 .write_state(CommandFileRoot::Session, "layout.json", &layout)
                 .await?;
@@ -295,7 +351,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
                 }
                 renderer.search_progress().await;
             }
-            Ok::<_, Error>(Transcript { sections, find })
+            Ok::<_, Error>(Transcript { rows, find })
         }
     };
     let transcript = tokio::time::timeout(
@@ -318,7 +374,7 @@ fn assert_answer_once(transcript: &Transcript) {
     assert_eq!(
         transcript,
         &Transcript {
-            sections: (0..SECTIONS).collect(),
+            rows: expected_rows(&sections()),
             find: "1/1".into(),
         },
         "a completed answer must be painted exactly once"
@@ -351,9 +407,12 @@ async fn a_missing_answer_is_detected_negative_control() {
 #[test]
 #[should_panic(expected = "a completed answer must be painted exactly once")]
 fn a_duplicated_answer_is_detected_negative_control() {
-    let once: Vec<_> = (0..SECTIONS).collect();
+    let once = expected_rows(&sections());
     assert_answer_once(&Transcript {
-        sections: [once.clone(), once].concat(),
+        rows: [once.clone(), once].concat(),
         find: "1/2".into(),
     });
 }
+
+#[path = "answer_ownership.rs"]
+mod ownership;
