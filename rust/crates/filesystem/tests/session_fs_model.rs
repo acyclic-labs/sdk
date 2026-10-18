@@ -150,8 +150,15 @@ fn cursor(sub: &Subscription, next: u64, anchor: CommitId) -> wire::SessionCurso
 }
 
 fn resume(omit_wake: bool) {
+    let fixture = input(&["next"]);
+    let iterations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = iterations.clone();
     verification::check(move || {
-        let (sub, records) = input(&["next"]);
+        let iteration = count.fetch_add(1, Ordering::Relaxed);
+        if iteration % 1000 == 0 {
+            eprintln!("resume omit_wake={omit_wake}: schedule {iteration}");
+        }
+        let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
         let anchor = append(&stream, &sub, &records[..2], 0);
         let keeper = ManuallyDrop::new(stream.clone());
@@ -195,9 +202,11 @@ fn checked_resume_exhausts_append_registration_and_wakeup() {
 }
 
 fn replacement(unchecked: bool) {
+    let fixture = input(&["original"]);
+    let other_fixture = input(&["replacement", "later"]);
     verification::check(move || {
-        let (sub, records) = input(&["original"]);
-        let (other, replacement) = input(&["replacement", "later"]);
+        let (sub, records) = fixture.clone();
+        let (other, replacement) = other_fixture.clone();
         assert_eq!(sub.volume_id, other.volume_id);
         let stream = Arc::new(MemoryStream::default());
         let anchor = append(&stream, &sub, &records, 0);
@@ -249,8 +258,9 @@ fn frame(id: u64, body: Body) -> wire::SessionFrame {
     }
 }
 fn revocation(skip_authorization: bool) {
+    let fixture = input(&["buffered"]);
     verification::check(move || {
-        let (sub, records) = input(&["buffered"]);
+        let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
         let anchor = append(&stream, &sub, &records, 0);
         // Host authority is a Loom atomic. Observation fields below are touched

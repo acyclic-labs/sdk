@@ -127,9 +127,9 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   if (binaries.length !== 1) throw new Error("MCP Loom build must produce exactly one test binary");
   for (const filter of options.filters ?? [options.filter]) {
     const result = run(binaries[0], filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [], { encoding: "utf8", ...(options.timeout ? { timeout: options.timeout } : {}) });
-    if (result.error) throw result.error;
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
+    if (result.error) throw result.error;
     if (result.status !== 0) throw new Error(`MCP Loom tests failed: ${result.status}`);
     const complete = options.exact === false
       ? /^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out;/m
