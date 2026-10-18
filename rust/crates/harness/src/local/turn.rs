@@ -178,7 +178,7 @@ impl LocalHarness {
                 (selected, through)
             }
         };
-        let (retained, checkpoint) = self
+        let (retained, _) = self
             .retain_continuation(task, parent, selected, through, prompt)
             .await?;
         let prompt = &retained
@@ -190,14 +190,15 @@ impl LocalHarness {
         let (receive, model) = match self.recover_turn_inputs(operation).await? {
             Some(inputs) => inputs,
             None => {
+                let publisher = self.input_publisher()?;
+                // History retains its checkpoint; each new user admission selects
+                // current guidance from its own question, before history is added.
+                let manifest = self
+                    .turn_manifest(operation, prompt, publisher.as_ref())
+                    .await?;
                 let prompt = self.prompt_context(Some(task), prompt).await?;
-                self.stage_bound_turn(
-                    operation,
-                    &prompt,
-                    checkpoint.boundary.manifest,
-                    self.input_publisher()?.as_ref(),
-                )
-                .await?
+                self.stage_bound_turn(operation, &prompt, manifest, publisher.as_ref())
+                    .await?
             }
         };
         self.admit_turn(operation, None, receive, model).await
@@ -308,13 +309,7 @@ impl LocalHarness {
         WorkflowCommand,
         crate::conversation::FileRef,
     )> {
-        let manifest = match &self.context_manifest {
-            Some(reference) => reference.clone(),
-            None => {
-                self.stage_context_manifest_with(operation, Some(prompt), publisher)
-                    .await?
-            }
-        };
+        let manifest = self.turn_manifest(operation, prompt, publisher).await?;
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
@@ -326,6 +321,21 @@ impl LocalHarness {
             )
             .await?;
         Ok((receive, model, manifest))
+    }
+
+    async fn turn_manifest(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<crate::conversation::FileRef> {
+        Ok(match &self.context_manifest {
+            Some(reference) => reference.clone(),
+            None => {
+                self.stage_context_manifest_with(operation, Some(prompt), publisher)
+                    .await?
+            }
+        })
     }
 
     pub(super) async fn stage_bound_turn(

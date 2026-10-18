@@ -4,6 +4,7 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
     filesystem::FilesystemContentPublisher,
 };
+mod continuations;
 pub(super) mod crash_cuts;
 mod generation;
 
