@@ -63,7 +63,7 @@ impl Registry {
             let entry = entry
                 .filter(|entry| entry.models.contains_key(name))
                 .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
-            let counted = counts_input(entry);
+            let counted = self.counts_input(provider, entry)?;
             #[cfg(all(test, not(target_arch = "wasm32")))]
             let counted = counted || tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get);
             if !counted {

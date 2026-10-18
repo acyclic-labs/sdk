@@ -30,7 +30,9 @@ struct Registry {
 }
 fn invalid(message: &str) -> String { message.into() }
 fn validate_spec(_: &str, _: &ProviderSpec) -> Result<()> { Ok(()) }
-fn counts_input(_: &ProviderSpec) -> bool { true }
+impl Registry {
+    fn counts_input(&self, _: &str, _: &ProviderSpec) -> Result<bool> { Ok(true) }
+}
 #[path = "catalog_update.rs"] mod catalog_update;
 pub fn exercise() -> Result<()> {
     let mut registry = Registry { providers: BTreeMap::new(), default_model: None };

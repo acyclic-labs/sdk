@@ -261,10 +261,120 @@ fn codex_login_route_remains_a_countable_default_without_a_counter() {
         (Authentication::ApiKey, false),
     ] {
         openai.authentication = authentication;
-        let mut registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+        let mut registry = Registry::new(Credentials::explicit(BTreeMap::new()))
+            .unwrap()
+            .with_codex_login(crate::CodexLogin::from_path("unused-auth.json".into()));
         let document = serde_json::json!({"default_model":"openai/gpt-5","openai":openai});
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), serde_json::to_vec(&document).unwrap()).unwrap();
         assert_eq!(registry.load_catalog(file.path()).is_ok(), accepted);
+    }
+}
+
+// Five independent bits: counter, built-in URL, Responses dialect, API key,
+// Codex login. The remaining dimension selects all three authentication policies.
+fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
+    let counter = case & 1 != 0;
+    let builtin = case & 2 != 0;
+    let responses = case & 4 != 0;
+    let key = case & 8 != 0;
+    let login = case & 16 != 0;
+    let authentication = match case / 32 {
+        0 => Authentication::Optional,
+        1 => Authentication::ApiKey,
+        _ => Authentication::ApiKeyOrCodexLogin,
+    };
+    let credentials = Credentials::explicit(if key {
+        BTreeMap::from([("fixture".into(), "test-key".into())])
+    } else {
+        BTreeMap::new()
+    });
+    let mut registry = Registry::new(credentials).unwrap();
+    if login {
+        registry =
+            registry.with_codex_login(crate::CodexLogin::from_path("unused-auth.json".into()));
+    }
+    load(&mut registry, specification(7), Some(0)).unwrap();
+    let mut spec = counted_specification(7, counter);
+    spec.authentication = authentication;
+    if !builtin {
+        spec.base_url = "https://fixture.invalid/v1".into();
+    }
+    if !responses {
+        spec.adapter = crate::Adapter::Chat;
+        if let Some(counter) = &mut spec.token_counter {
+            counter.adapter = spec.adapter;
+        }
+    }
+    // Independent counting oracle: an available login is selected only without
+    // an API key; its local counter exists only on the native Responses route.
+    let selected_login = login && !key && case / 32 == 2;
+    let accepted = counter || (selected_login && builtin && responses);
+    for &(reload, proposed) in operations {
+        let before = catalog_snapshot(&registry);
+        let default_before = registry.default_model().to_owned();
+        let result = if reload {
+            load(&mut registry, spec.clone(), proposed)
+        } else {
+            registry.register("fixture".into(), spec.clone())
+        };
+        assert_eq!(
+            result.is_ok(),
+            accepted,
+            "actual credential selection must supply the default counter: case {case}"
+        );
+        if accepted {
+            let authenticated = key || selected_login || case / 32 == 0;
+            let valid_route = !selected_login || (builtin && responses);
+            assert_eq!(
+                registry.resolve(registry.default_model()).is_ok(),
+                authenticated && valid_route,
+                "resolution agrees with credential and route selection: case {case}"
+            );
+        } else {
+            assert_eq!(catalog_snapshot(&registry), before);
+            assert_eq!(registry.default_model(), default_before);
+            assert!(registry.resolve(registry.default_model()).is_ok());
+        }
+    }
+}
+
+#[test]
+fn every_counting_credential_configuration_is_atomic_in_both_entry_points() {
+    for case in 0..96 {
+        credential_sequence(case, &[(false, None), (true, None), (true, Some(1))]);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn credential_selection_sequences_preserve_default_counting(
+        case in 0u8..96,
+        operations in proptest::collection::vec(
+            (any::<bool>(), proptest::option::of(0u8..3)), 0..12),
+    ) {
+        credential_sequence(case, &operations);
+    }
+}
+
+#[test]
+fn negative_control_detects_assuming_the_codex_counting_exception() {
+    // Both have a built-in Responses route and allow Codex authentication:
+    // one has no login, the other has a login displaced by an API key.
+    for case in [70, 94] {
+        for operations in [[(false, None)], [(true, None)], [(true, Some(1))]] {
+            credential_sequence(case, &operations);
+            SKIP_DEFAULT_COUNTER.with(|flag| flag.set(true));
+            let detected = std::panic::catch_unwind(|| credential_sequence(case, &operations));
+            SKIP_DEFAULT_COUNTER.with(|flag| flag.set(false));
+            let panic = detected.expect_err("assuming a login must fail the credential oracle");
+            assert!(
+                panic
+                    .downcast_ref::<String>()
+                    .unwrap()
+                    .contains("actual credential selection must supply the default counter")
+            );
+        }
     }
 }

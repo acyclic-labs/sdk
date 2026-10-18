@@ -120,14 +120,9 @@ impl Registry {
         let model = Model::new(provider.into(), name.into(), "provider-v1".into(), options)?;
         let key = self.credentials.api_key(provider)?;
         #[cfg(not(target_arch = "wasm32"))]
-        let codex_login =
-            if config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none() {
-                self.codex_login
-                    .as_ref()
-                    .map(|login| Arc::new(login.fresh()))
-            } else {
-                None
-            };
+        let codex_login = self
+            .selected_codex_login(&config, key.as_deref())
+            .map(|login| Arc::new(login.fresh()));
         #[cfg(not(target_arch = "wasm32"))]
         let config = if codex_login.is_some() {
             if !codex_route(&config) {
@@ -173,22 +168,39 @@ impl Registry {
             codex_login,
         })
     }
+
+    /// Credential precedence is shared by dispatch and catalog admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn selected_codex_login(
+        &self,
+        config: &ProviderSpec,
+        key: Option<&str>,
+    ) -> Option<&crate::CodexLogin> {
+        self.codex_login.as_deref().filter(|_| {
+            config.authentication == Authentication::ApiKeyOrCodexLogin && key.is_none()
+        })
+    }
+
+    /// Count routes must exist for the credentials dispatch actually selects.
+    fn counts_input(&self, provider: &str, config: &ProviderSpec) -> Result<bool> {
+        if config.token_counter.is_some() {
+            return Ok(true);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if codex_route(config) && self.selected_codex_login(config, None).is_some() {
+            let key = self.credentials.api_key(provider)?;
+            return Ok(self.selected_codex_login(config, key.as_deref()).is_some());
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = provider;
+        Ok(false)
+    }
 }
 
 /// The built-in Responses route that a native Codex CLI login may replace.
 #[cfg(not(target_arch = "wasm32"))]
 fn codex_route(config: &ProviderSpec) -> bool {
     config.adapter == crate::Adapter::Responses && config.base_url == "https://api.openai.com/v1"
-}
-
-/// Whether a route can count input when resolved: a verified counter, or the
-/// native Codex login exception `resolve_with_options` grants its built-in route.
-fn counts_input(config: &ProviderSpec) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    if config.authentication == Authentication::ApiKeyOrCodexLogin && codex_route(config) {
-        return true;
-    }
-    config.token_counter.is_some()
 }
 
 pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
