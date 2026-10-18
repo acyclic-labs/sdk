@@ -450,7 +450,7 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     Ok(())
 }
 
-fn request_with(tools: &[&str]) -> ModelRequest {
+pub(crate) fn request_with(tools: &[&str]) -> ModelRequest {
     let (provider, _) = provider(Adapter::Responses, 200);
     let (prepared, _) = request(&provider).unwrap();
     let mut request = prepared.request().clone();
@@ -477,6 +477,9 @@ fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
             allocations: 4,
             bytes: 40 + 64 + 64 + 8,
             probes: 0,
+            hashed: 116,
+            wire_sorts: 1,
+            wire_comparisons: 0,
         }
     );
     assert!(built.within(&Names::claim(1).unwrap()));
@@ -512,7 +515,7 @@ fn negative_control_a_grown_alias_retains_slack_beyond_its_claim() {
 
 /// The reviewer's input: an alias, its declared readable name, and the
 /// alias's first `taken` salted digests, all declared as canonical names.
-fn adversarial(taken: u32) -> Vec<String> {
+pub(crate) fn adversarial(taken: u32) -> Vec<String> {
     let mut tools = vec!["mcp.a.b".to_owned(), "mcp__a__b".to_owned()];
     tools.extend((1..=taken).map(|salt| Names::candidate("mcp.a.b", salt)));
     tools
@@ -533,19 +536,6 @@ fn occupied_candidates_cost_one_probe_each() {
         Names::candidate("mcp.a.b", 1025)
     );
     Names::assert_round_trip(&request);
-}
-
-#[test]
-#[should_panic(expected = "quadratic resolution exceeds the claim")]
-fn negative_control_resorting_every_round_exceeds_the_probe_claim() {
-    // The former loop re-sorted and pair-checked the whole table each round.
-    let names = adversarial(1024).len() as u64;
-    let rounds = 1025;
-    let pair_checks = rounds * (names - 1);
-    assert!(
-        pair_checks <= Names::claim(names).unwrap().probes,
-        "quadratic resolution exceeds the claim"
-    );
 }
 
 #[test]

@@ -13,6 +13,7 @@ use std::borrow::Cow;
 // canonical name. Every retained alias is allocated at its exact size.
 const DIGEST_HEX: usize = 16;
 const MAXIMUM: usize = crate::protocol::name::TOOL.maximum;
+const DIGEST_DOMAIN: &[u8] = b"acyclic:tool-name:v1\0";
 
 struct Binding<'a> {
     canonical: &'a str,
@@ -35,6 +36,9 @@ pub(crate) struct Built {
     pub(crate) bytes: u64,
     /// Candidate names checked against occupied names.
     pub(crate) probes: u64,
+    pub(crate) hashed: u64,
+    pub(crate) wire_sorts: u64,
+    pub(crate) wire_comparisons: u64,
 }
 
 impl Built {
@@ -125,7 +129,24 @@ fn readable(name: &str) -> Option<String> {
 }
 
 /// Writes the salted digest alias into `buffer`, which holds `MAXIMUM` bytes.
-fn digest_into(buffer: &mut String, name: &str, salt: u32) {
+fn digest_into(
+    buffer: &mut String,
+    name: &str,
+    salt: u32,
+    built: &mut Built,
+    fund: &mut impl FnMut(u64) -> Result<()>,
+) -> Result<()> {
+    let hashed = (DIGEST_DOMAIN.len() + size_of::<u32>() + name.len()) as u64;
+    #[cfg(test)]
+    let skip = tests::SKIP_HASH_ADMISSION.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let skip = false;
+    if !skip {
+        fund(hashed)?;
+    }
+    #[cfg(test)]
+    tests::ACTUAL_HASHED.with(|counter| counter.set(counter.get() + hashed));
+    built.hashed += hashed;
     buffer.clear();
     push_readable(
         buffer,
@@ -133,11 +154,12 @@ fn digest_into(buffer: &mut String, name: &str, salt: u32) {
         readable_len(name).min(MAXIMUM - DIGEST_HEX - 1),
     );
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic:tool-name:v1\0");
+    hasher.update(DIGEST_DOMAIN);
     hasher.update(&salt.to_le_bytes());
     hasher.update(name.as_bytes());
     buffer.push('_');
     buffer.push_str(&hasher.finalize().to_hex()[..DIGEST_HEX]);
+    Ok(())
 }
 
 /// An exactly sized copy, so retained capacity equals the alias length.
@@ -243,7 +265,9 @@ impl<'a> Names<'a> {
     }
 
     pub(crate) fn new(request: &'a ModelRequest) -> Self {
-        Self::build(request, names(request).count()).0
+        Self::build(request, names(request).count(), &mut |_| Ok(()))
+            .expect("unfunded tool-name construction cannot deny admission")
+            .0
     }
 
     /// The native claim for a table over `count` names. Bytes: every binding,
@@ -263,12 +287,13 @@ impl<'a> Names<'a> {
             allocations: count.checked_mul(2)?.checked_add(4)?,
             bytes: count.checked_mul(per_name)?.checked_add(MAXIMUM as u64)?,
             probes: count.checked_mul(2)?,
+            ..Built::default()
         })
     }
 
     #[cfg(test)]
     pub(crate) fn built(request: &'a ModelRequest) -> (Self, Built) {
-        Self::build(request, names(request).count())
+        Self::build(request, names(request).count(), &mut |_| Ok(())).unwrap()
     }
 
     /// Each retained alias's length and capacity.
@@ -286,20 +311,27 @@ impl<'a> Names<'a> {
     #[cfg(test)]
     pub(crate) fn candidate(name: &str, salt: u32) -> String {
         let mut buffer = String::with_capacity(MAXIMUM);
-        digest_into(&mut buffer, name, salt);
+        digest_into(&mut buffer, name, salt, &mut Built::default(), &mut |_| {
+            Ok(())
+        })
+        .unwrap();
         buffer
     }
 
-    fn build(request: &'a ModelRequest, count: usize) -> (Self, Built) {
+    fn build(
+        request: &'a ModelRequest,
+        count: usize,
+        fund: &mut impl FnMut(u64) -> Result<()>,
+    ) -> Result<(Self, Built)> {
         let mut built = Built::default();
         if count == 0 {
-            return (
+            return Ok((
                 Self {
                     bindings: Vec::new(),
                     by_wire: Vec::new(),
                 },
                 built,
-            );
+            ));
         }
         fn charge(built: &mut Built, bytes: usize) {
             built.allocations += 1;
@@ -316,14 +348,16 @@ impl<'a> Names<'a> {
         let mut buffer = String::new();
         for binding in &mut bindings {
             if !unchanged(binding.canonical) {
-                let alias = readable(binding.canonical).unwrap_or_else(|| {
+                let alias = if let Some(alias) = readable(binding.canonical) {
+                    alias
+                } else {
                     if buffer.capacity() == 0 {
                         buffer.reserve_exact(MAXIMUM);
                         charge(&mut built, MAXIMUM);
                     }
-                    digest_into(&mut buffer, binding.canonical, 0);
+                    digest_into(&mut buffer, binding.canonical, 0, &mut built, fund)?;
                     exact(&buffer)
-                });
+                };
                 charge(&mut built, alias.capacity());
                 binding.wire = Cow::Owned(alias);
             }
@@ -340,7 +374,7 @@ impl<'a> Names<'a> {
         let mut by_wire = Vec::with_capacity(bindings.len());
         charge(&mut built, bindings.len() * std::mem::size_of::<usize>());
         by_wire.extend(0..bindings.len());
-        by_wire.sort_unstable_by(|&a, &b| order(&bindings, a, b));
+        sort_wire(&mut by_wire, &bindings, &mut built, order);
         let mut resalted: Vec<Resalted> = Vec::new();
         for pair in by_wire.windows(2) {
             if bindings[pair[0]].wire == bindings[pair[1]].wire {
@@ -368,7 +402,7 @@ impl<'a> Names<'a> {
                 let canonical = bindings[entry.index].canonical;
                 loop {
                     entry.salt += 1;
-                    digest_into(&mut buffer, canonical, entry.salt);
+                    digest_into(&mut buffer, canonical, entry.salt, &mut built, fund)?;
                     built.probes += 1;
                     let taken = by_wire
                         .binary_search_by(|&index| bindings[index].wire.as_ref().cmp(&buffer))
@@ -392,16 +426,21 @@ impl<'a> Names<'a> {
                 break;
             }
         }
+        let changed = !resalted.is_empty();
         for entry in resalted {
             bindings[entry.index].wire = Cow::Owned(entry.alias);
         }
-        by_wire.sort_unstable_by(|&a, &b| order(&bindings, a, b));
+        #[cfg(test)]
+        let changed = changed || tests::REDUNDANT_WIRE_SORT.with(std::cell::Cell::get);
+        if changed {
+            sort_wire(&mut by_wire, &bindings, &mut built, order);
+        }
         let table = Self { bindings, by_wire };
         debug_assert!(
             Self::claim(count as u64).is_some_and(|claim| built.within(&claim)),
             "tool name table exceeded its claim: {built:?}"
         );
-        (table, built)
+        Ok((table, built))
     }
 
     /// The provider name for `name`, borrowed from the table or from `name`.
@@ -444,30 +483,57 @@ impl<'a> Names<'a> {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn native(
+    pub(crate) fn funded(
         request: &'a ModelRequest,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let count = names(request).count() as u64;
-        let claim =
-            Self::claim(count).ok_or_else(|| crate::invalid("tool name binding size overflow"))?;
-        let custody = work.claim(
-            claim.bytes,
-            claim.allocations,
-            acyclic_fs::WorkCounters {
-                bytes_copied: claim.bytes,
-                items_examined: count
-                    .checked_add(claim.probes)
-                    .ok_or_else(|| crate::invalid("tool name binding size overflow"))?,
-                ..acyclic_fs::WorkCounters::UNCHARGED
-            },
-        )?;
-        let (table, built) = Self::build(request, count as usize);
-        // The claim is a bound the build must respect, not an estimate.
-        if !built.within(&claim) {
-            return Err(crate::invalid("tool name table exceeded its native claim"));
+        work: acyclic_harness::NativeWork<'_>,
+    ) -> Result<(Self, acyclic_harness::NativeCustody)> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            let count = names(request).count() as u64;
+            let claim = Self::claim(count)
+                .ok_or_else(|| crate::invalid("tool name binding size overflow"))?;
+            let custody = work.claim(
+                claim.bytes,
+                claim.allocations,
+                acyclic_fs::WorkCounters {
+                    bytes_copied: claim.bytes,
+                    items_examined: count
+                        .checked_add(claim.probes)
+                        .ok_or_else(|| crate::invalid("tool name binding size overflow"))?,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                },
+            )?;
+            let (table, built) = Self::build(request, count as usize, &mut |bytes_hashed| {
+                work.charge(acyclic_fs::WorkCounters {
+                    bytes_hashed,
+                    ..acyclic_fs::WorkCounters::UNCHARGED
+                })?;
+                Ok(())
+            })?;
+            // The claim is a bound the build must respect, not an estimate.
+            if !built.within(&claim) {
+                return Err(crate::invalid("tool name table exceeded its native claim"));
+            }
+            return Ok((table, Some(custody)));
         }
-        Ok((table, custody))
+        let _ = work;
+        Ok((Self::new(request), None))
     }
 }
+
+fn sort_wire<'a>(
+    indices: &mut [usize],
+    bindings: &[Binding<'a>],
+    built: &mut Built,
+    order: impl Fn(&[Binding<'a>], usize, usize) -> std::cmp::Ordering,
+) {
+    built.wire_sorts += 1;
+    indices.sort_unstable_by(|&a, &b| {
+        built.wire_comparisons += 1;
+        order(bindings, a, b)
+    });
+}
+
+#[cfg(test)]
+#[path = "tool_names_budget_tests.rs"]
+mod tests;
