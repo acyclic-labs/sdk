@@ -311,6 +311,9 @@ pub struct FrameTerminal<D: Present> {
     staging: Buffer,
     scroll_regions: bool,
     invalid: bool,
+    /// A draw is in progress. Still set at the next draw, the previous one
+    /// unwound (render or device panic) after the baseline may have moved.
+    drawing: bool,
     repaired: Vec<usize>,
     cursor: Vec<u8>,
     #[cfg(test)]
@@ -359,6 +362,7 @@ impl<D: Present> FrameTerminal<D> {
             staging: Buffer::default(),
             scroll_regions,
             invalid: false,
+            drawing: false,
             repaired: Vec::new(),
             cursor: Vec::new(),
             #[cfg(test)]
@@ -381,7 +385,9 @@ impl<D: Present> FrameTerminal<D> {
     ) -> io::Result<()> {
         let backend = self.terminal.backend_mut();
         let outside = backend.output.device.outside_writes();
-        let invalidated = outside.is_none() || outside != backend.ours || backend.size != size;
+        let unwound = std::mem::replace(&mut self.drawing, true);
+        let invalidated =
+            unwound || outside.is_none() || outside != backend.ours || backend.size != size;
         backend.ours = outside;
         backend.size = size;
         if invalidated {
@@ -420,6 +426,7 @@ impl<D: Present> FrameTerminal<D> {
             // The device may hold any part of the frame.
             self.invalidate();
         }
+        self.drawing = false;
         drawn.and(committed.map(|_| ()))
     }
 

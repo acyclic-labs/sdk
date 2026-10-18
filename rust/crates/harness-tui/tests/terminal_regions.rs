@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io::{self, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use acyclic_harness_tui::ratatui::{
@@ -51,18 +52,26 @@ type Scene = (Vec<Line<'static>>, Option<(u16, u16)>);
 
 fn paint(frame: &mut Frame<'_>, (rows, cursor): &Scene) {
     frame.render_widget(Paragraph::new(rows.clone()), frame.area());
-    if let Some(position) = cursor {
-        frame.set_cursor_position(*position);
+    if let Some((x, y)) = cursor {
+        let area = frame.area();
+        frame.set_cursor_position((
+            (*x).min(area.width.saturating_sub(1)),
+            (*y).min(area.height.saturating_sub(1)),
+        ));
     }
 }
 
 /// The independent baseline: ratatui writing each command to the device.
 fn per_command(scenes: &[Scene]) -> Vec<Vec<u8>> {
+    per_command_sized(scenes, Size::new(WIDTH, HEIGHT))
+}
+
+fn per_command_sized(scenes: &[Scene], size: Size) -> Vec<Vec<u8>> {
     let device = Device::default();
     let mut terminal = Terminal::with_options(
         CrosstermBackend::new(device.clone()),
         TerminalOptions {
-            viewport: Viewport::Fixed(Rect::new(0, 0, WIDTH, HEIGHT)),
+            viewport: Viewport::Fixed(Rect::new(0, 0, size.width, size.height)),
         },
     )
     .unwrap();
@@ -106,16 +115,16 @@ fn scrolled_profile(
 }
 
 #[derive(Clone, Copy)]
-struct Grid;
+struct Grid(Size);
 impl Dimensions for Grid {
     fn total_lines(&self) -> usize {
-        usize::from(HEIGHT)
+        usize::from(self.0.height)
     }
     fn screen_lines(&self) -> usize {
-        usize::from(HEIGHT)
+        usize::from(self.0.height)
     }
     fn columns(&self) -> usize {
-        usize::from(WIDTH)
+        usize::from(self.0.width)
     }
 }
 #[derive(Clone, Copy)]
@@ -130,19 +139,33 @@ fn screens(frames: &[Vec<u8>]) -> Vec<String> {
 }
 
 fn screens_with_support(frames: &[Vec<u8>], supported: bool) -> Vec<String> {
-    let mut term = Term::new(Config::default(), &Grid, Events);
+    let size = Size::new(WIDTH, HEIGHT);
+    let sized: Vec<_> = frames.iter().map(|bytes| (size, bytes.clone())).collect();
+    screens_sized(&sized, supported)
+}
+
+/// Each frame reaches an emulator first resized to the frame's size, as a
+/// window resize precedes the frame drawn for it.
+fn screens_sized(frames: &[(Size, Vec<u8>)], supported: bool) -> Vec<String> {
+    let first = frames.first().map_or(Size::new(WIDTH, HEIGHT), |frame| frame.0);
+    let mut term = Term::new(Config::default(), &Grid(first), Events);
     let mut parser: Processor = Processor::new();
+    let mut current = first;
     frames
         .iter()
-        .map(|bytes| {
+        .map(|(size, bytes)| {
+            if *size != current {
+                term.resize(Grid(*size));
+                current = *size;
+            }
             if supported {
                 parser.advance(&mut term, bytes);
             } else {
                 parser.advance(&mut term, &without_scrolling(bytes));
             }
             let mut text = String::new();
-            for row in 0..usize::from(HEIGHT) {
-                for column in 0..usize::from(WIDTH) {
+            for row in 0..usize::from(size.height) {
+                for column in 0..usize::from(size.width) {
                     let cell = &term.grid()[Point::new(Row(row as i32), Column(column))];
                     text.push(cell.c);
                     if format!("{:?}{:?}", cell.fg, cell.bg) != DEFAULT_COLOURS {
@@ -203,6 +226,10 @@ fn hint() -> impl Strategy<Value = Option<RegionScroll>> {
 }
 
 fn steps() -> impl Strategy<Value = Vec<(Scene, Option<RegionScroll>)>> {
+    prop::collection::vec((scene(), hint()), 1..10)
+}
+
+fn scene() -> impl Strategy<Value = Scene> {
     let style = (0u8..8, 0u8..8, any::<bool>()).prop_map(|(fg, bg, bold)| {
         Style::default()
             .fg(Color::Indexed(fg))
@@ -226,14 +253,13 @@ fn steps() -> impl Strategy<Value = Vec<(Scene, Option<RegionScroll>)>> {
             )
             .style(style)
         });
-    let scene = prop_oneof![
-        (0usize..40).prop_map(|top| window(top, HEIGHT)),
+    prop_oneof![
+        (0usize..40).prop_map(|top| window(top, HEIGHT + 3)),
         (
-            prop::collection::vec(row, 0..=usize::from(HEIGHT)),
-            prop::option::of((0..WIDTH, 0..HEIGHT)),
+            prop::collection::vec(row, 0..=usize::from(HEIGHT + 3)),
+            prop::option::of((0..WIDTH, 0..HEIGHT + 3)),
         ),
-    ];
-    prop::collection::vec((scene, hint()), 1..10)
+    ]
 }
 
 #[test]
@@ -729,4 +755,141 @@ fn changed_and_scrolled_bodies_restore_an_unchanged_cursor_position() {
 #[should_panic(expected = "body encoding must restore the requested cursor")]
 fn negative_control_caching_the_position_across_body_encoding_is_detected() {
     assert_changed_body_cursor::<false>();
+}
+
+/// Window sizes a session moves between: shorter, narrower and taller.
+const SIZES: [(u16, u16); 4] = [
+    (WIDTH, HEIGHT),
+    (WIDTH, HEIGHT - 3),
+    (WIDTH - 6, HEIGHT),
+    (WIDTH - 6, HEIGHT + 2),
+];
+
+fn sized_steps() -> impl Strategy<Value = Vec<(Size, Scene, Option<RegionScroll>)>> {
+    let step = (
+        prop::sample::select(SIZES.to_vec()),
+        scene(),
+        prop::option::of((0u16..2, 0u16..64, 0u16..64, -10isize..10)),
+    )
+        .prop_map(|((width, height), scene, hint)| {
+            // Bands anywhere in this frame's area, meeting its edges included.
+            let hint = hint.map(|(x, y, rows, moved)| RegionScroll {
+                region: Rect::new(x, y % height, width - x, rows % (height + 1)),
+                rows: moved,
+            });
+            (Size::new(width, height), scene, hint)
+        });
+    prop::collection::vec(step, 1..12)
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    // Property: across resizes, any hint at any band leaves exactly the
+    // screen a fresh per-command repaint shows at that size, on supported
+    // and unsupported profiles.
+    #[test]
+    fn every_hint_across_resizes_shows_the_per_command_screen(steps in sized_steps()) {
+        let old: Vec<_> = steps
+            .iter()
+            .map(|(size, scene, _)| {
+                let frame = per_command_sized(std::slice::from_ref(scene), *size).remove(0);
+                screens_sized(&[(*size, frame)], true).remove(0)
+            })
+            .collect();
+        for supported in [false, true] {
+            let device = Device::default();
+            let guard = RestoreGuard::new(device.clone(), &region_caps(supported));
+            let mut terminal = FrameTerminal::new(guard, steps[0].0).unwrap();
+            let frames: Vec<_> = steps
+                .iter()
+                .map(|(size, scene, moved)| {
+                    terminal.draw_scrolled(*size, *moved, |frame| paint(frame, scene)).unwrap();
+                    (*size, device.take())
+                })
+                .collect();
+            prop_assert_eq!(&screens_sized(&frames, supported), &old);
+        }
+    }
+}
+
+/// A transcript band between a fixed header row and a fixed prompt row.
+fn framed(top: usize) -> Scene {
+    let mut rows = vec![Line::raw("HEADER fixed")];
+    rows.extend(window(top, HEIGHT - 2).0);
+    rows.push(Line::raw("> prompt fixed"));
+    (rows, Some((2, HEIGHT - 1)))
+}
+
+fn mutated(frames: &[Vec<u8>], from: &str, to: &str) -> Vec<Vec<u8>> {
+    let all: Vec<_> = frames
+        .iter()
+        .map(|frame| String::from_utf8(frame.clone()).unwrap())
+        .collect();
+    assert!(all.iter().any(|frame| frame.contains(from)), "{from:?}");
+    all.iter()
+        .map(|frame| frame.replace(from, to).into_bytes())
+        .collect()
+}
+
+#[test]
+fn a_band_meeting_fixed_rows_scrolls_exactly_and_off_by_one_margins_are_caught() {
+    let band = Rect::new(0, 1, WIDTH, HEIGHT - 2);
+    let steps = [
+        (framed(10), None),
+        (framed(13), Some(RegionScroll { region: band, rows: 3 })),
+        (framed(11), Some(RegionScroll { region: band, rows: -2 })),
+    ];
+    let scenes: Vec<_> = steps.iter().map(|(scene, _)| scene.clone()).collect();
+    let expected = screens(&per_command(&scenes));
+    let frames = scrolled(&steps, Size::new(WIDTH, HEIGHT));
+    assert_eq!(screens(&frames), expected);
+    // Negative controls: each margin one row off, into or away from a fixed
+    // row, and each distance one line off, is visible to the oracle.
+    let (top, bottom) = (2, HEIGHT - 1);
+    let margins = format!("\x1b[{top};{bottom}r");
+    for (from, to) in [
+        (margins.clone(), format!("\x1b[{};{bottom}r", top - 1)),
+        (margins.clone(), format!("\x1b[{};{bottom}r", top + 1)),
+        (margins.clone(), format!("\x1b[{top};{}r", bottom + 1)),
+        (margins.clone(), format!("\x1b[{top};{}r", bottom - 1)),
+        ("\x1b[3S".into(), "\x1b[4S".into()),
+        ("\x1b[3S".into(), "\x1b[2S".into()),
+        ("\x1b[2T".into(), "\x1b[3T".into()),
+        ("\x1b[2T".into(), "\x1b[1T".into()),
+    ] {
+        assert_ne!(screens(&mutated(&frames, &from, &to)), expected, "{to:?}");
+    }
+}
+
+#[test]
+fn a_render_unwinding_after_a_region_scroll_leaves_the_next_frame_exact() {
+    let size = Size::new(WIDTH, HEIGHT);
+    let region = Rect::new(0, 0, WIDTH, HEIGHT);
+    let device = Device::default();
+    let guard = RestoreGuard::new(device.clone(), &region_caps(true));
+    let mut terminal = FrameTerminal::new(guard, size).unwrap();
+    terminal
+        .draw(size, |frame| paint(frame, &window(0, HEIGHT)))
+        .unwrap();
+    let mut frames = vec![device.take()];
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        terminal.draw_scrolled(size, Some(RegionScroll { region, rows: 2 }), |_| {
+            panic!("render failed")
+        })
+    }));
+    assert!(unwound.is_err());
+    frames.push(device.take());
+    terminal
+        .draw(size, |frame| paint(frame, &window(2, HEIGHT)))
+        .unwrap();
+    frames.push(device.take());
+    let expected = screens(&per_command(&[window(0, HEIGHT), window(2, HEIGHT)]));
+    // Without invalidation the baseline keeps the scroll the device never
+    // received, and only the two rows it exposed are repainted.
+    assert_eq!(
+        screens(&frames)[2],
+        expected[1],
+        "a render unwind must not leave a scrolled baseline: {:?}",
+        String::from_utf8_lossy(&frames[2])
+    );
 }
