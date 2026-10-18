@@ -61,6 +61,7 @@ fn default_limits_are_valid() {
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn native_component_limit_matches_host_encoding() {
     let native = VolumeConfig::native(Lifecycle::Durable);

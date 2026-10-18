@@ -220,12 +220,14 @@ impl FaultControl {
 }
 
 fn authority_context(work: &crate::AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+    #[cfg(not(target_arch = "wasm32"))]
     if work.is_native() {
         return Err(AuthorityStoreError::NativeOriginalUnsupported);
     }
     Ok(())
 }
 fn object_context(work: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    #[cfg(not(target_arch = "wasm32"))]
     if work.is_native() {
         return Err(ObjectStoreError::NativeUnavailable);
     }

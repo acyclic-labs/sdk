@@ -119,6 +119,7 @@ impl AsyncObjectStore for OwnedReadObjectStore {
 }
 
 fn ordinary(context: &crate::AuthorityWork<'_>) -> Result<(), ObjectStoreError> {
+    #[cfg(not(target_arch = "wasm32"))]
     if context.is_native() {
         return Err(ObjectStoreError::NativeUnavailable);
     }
