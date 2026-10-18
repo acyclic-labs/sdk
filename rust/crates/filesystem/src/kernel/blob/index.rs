@@ -272,9 +272,15 @@ pub(super) async fn put_blob_page<S: AsyncObjectStore>(
             return Err(error);
         }
     };
-    let page = object.object_id();
+    let page_id = object.object_id();
     store
-        .put(object, retained, accounting, cancellation)
+        .put(
+            object,
+            retained,
+            (page.first_offset, page.end_offset),
+            accounting,
+            cancellation,
+        )
         .await?;
-    Ok(page)
+    Ok(page_id)
 }

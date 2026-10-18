@@ -46,15 +46,60 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, FsError> {
     accounting.check()?;
+    let chunk_capacity = validate_blob_options(options)?;
+    let batching = BlobBatchStore::new(store, accounting)?;
+    build_blob_through(
+        batching,
+        chunk_capacity,
+        source,
+        options,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+/// Hashes each source chunk once and persists only missing immutable objects.
+pub(crate) async fn reuse_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
+    store: &S,
+    source: &mut R,
+    options: BlobBuildOptions,
+    prior: (ObjectId, DecodeLimits),
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<BlobBuild, FsError> {
+    accounting.check()?;
+    let chunk_capacity = validate_blob_options(options)?;
+    let batching = BlobBatchStore::reusing(store, (prior.0, prior.1, options.maximum_blob_bytes));
+    build_blob_through(
+        batching,
+        chunk_capacity,
+        source,
+        options,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+fn validate_blob_options(options: BlobBuildOptions) -> Result<usize, FsError> {
     if options.chunk_bytes == 0
         || effective_page_width(options).is_none()
         || options.maximum_blob_bytes == 0
     {
         return Err(BlobBuildError::InvalidOptions.into());
     }
-    let chunk_capacity =
-        usize::try_from(options.chunk_bytes).map_err(|_| BlobBuildError::InvalidOptions)?;
-    let mut batching = BlobBatchStore::new(store, accounting)?;
+    Ok(usize::try_from(options.chunk_bytes).map_err(|_| BlobBuildError::InvalidOptions)?)
+}
+
+async fn build_blob_through<S: AsyncObjectStore, R: AsyncBlobSource>(
+    mut batching: BlobBatchStore<'_, S>,
+    chunk_capacity: usize,
+    source: &mut R,
+    options: BlobBuildOptions,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<BlobBuild, FsError> {
     let mut index = BlobIndexBuilder::new(options);
     let result = async {
         let mut logical_bytes = 0_u64;
@@ -309,7 +354,13 @@ pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
         };
     let chunk_id = object.object_id();
     batching
-        .put(object, retained, accounting, cancellation)
+        .put(
+            object,
+            retained,
+            (logical_bytes, end),
+            accounting,
+            cancellation,
+        )
         .await?;
     index
         .push_chunk(
@@ -333,6 +384,8 @@ pub(super) struct BlobBatchStore<'a, S> {
     inner: &'a S,
     writes: ReadOwned<Vec<HashedObject>>,
     bytes: u64,
+    prior: Option<(ObjectId, DecodeLimits, u64)>,
+    prior_pages: ReadOwned<Vec<(ObjectId, ReadOwned<BlobPage>)>>,
 }
 
 impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
@@ -349,7 +402,19 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             inner,
             writes,
             bytes: 0,
+            prior: None,
+            prior_pages: empty_blob_vec(),
         })
+    }
+
+    pub(super) fn reusing(inner: &'a S, prior: (ObjectId, DecodeLimits, u64)) -> Self {
+        Self {
+            inner,
+            writes: empty_blob_vec(),
+            bytes: 0,
+            prior: Some(prior),
+            prior_pages: empty_blob_vec(),
+        }
     }
 
     pub(super) async fn flush(
@@ -416,9 +481,47 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         &mut self,
         object: HashedObject,
         retained: u64,
+        range: (u64, u64),
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
+        if let Some(prior) = self.prior {
+            let present = super::reuse::matches_prior(
+                self.inner,
+                prior,
+                &mut self.prior_pages,
+                object.object_id(),
+                range,
+                accounting,
+                cancellation,
+            )
+            .await;
+            #[cfg(all(test, feature = "memory"))]
+            let present = if super::tests::force_prior_match() {
+                Ok(true)
+            } else {
+                present
+            };
+            match present {
+                Ok(true) => {
+                    drop(object);
+                    return release_blob_bytes(retained, accounting);
+                }
+                Err(error) => {
+                    drop(object);
+                    let _ = release_blob_bytes(retained, accounting);
+                    return Err(error);
+                }
+                Ok(false) => (),
+            }
+        }
+        if self.writes.value.capacity() == 0 {
+            if let Err(error) = reserve_blob_vec(&mut self.writes, BLOB_BATCH_OBJECTS, accounting) {
+                drop(object);
+                let _ = release_blob_bytes(retained, accounting);
+                return Err(error);
+            }
+        }
         self.bytes = self
             .bytes
             .checked_add(retained)
@@ -432,6 +535,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
 
     pub(super) fn release(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         let bytes = self.bytes;
+        super::reuse::release_pages(self.prior_pages, accounting)?;
         release_blob_vec(self.writes, accounting)?;
         release_blob_bytes(bytes, accounting)
     }

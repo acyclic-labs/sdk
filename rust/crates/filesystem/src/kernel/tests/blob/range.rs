@@ -226,7 +226,14 @@ async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
         ]);
         let object = HashedObject::new(ObjectKind::BlobChunk, bytes);
         let _custody = accounting.claim_owned(retained_per_object, 0)?;
-        (batch.put(object, retained_per_object, &mut accounting, &cancellation)).await?;
+        (batch.put(
+            object,
+            retained_per_object,
+            (0, retained_per_object),
+            &mut accounting,
+            &cancellation,
+        ))
+        .await?;
     }
     assert_eq!(store.calls.load(Ordering::Relaxed), 1);
     batch.release(&mut accounting)?;
@@ -247,6 +254,7 @@ async fn blob_batch_passes_only_the_residual_peak_budget_to_backends()
     (final_batch.put(
         object,
         retained_per_object,
+        (0, retained_per_object),
         &mut final_accounting,
         &cancellation,
     ))

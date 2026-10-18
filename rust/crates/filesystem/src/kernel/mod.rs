@@ -63,7 +63,9 @@ pub(crate) use attribute_list::list_attributes_async_with_accounting;
 pub(crate) use attribute_mutation::apply_attribute_mutations_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use blob::BlobDemandFailure;
-pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
+pub(crate) use blob::{
+    build_blob_with_accounting, read_blob_range_with_accounting, reuse_blob_with_accounting,
+};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};

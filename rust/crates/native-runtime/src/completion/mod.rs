@@ -159,17 +159,16 @@ impl<T> Future for NativeCompletion<T> {
         if let Some(early) = this.poll_test_completion(context) {
             return early;
         }
-        if std::ptr::eq(this.pool, &BLOCKING_WORKERS)
-            && inline_blocking_allowed()
-            && let Some(job) = this.pending.take()
-        {
-            let _ = job.run();
-        }
+        #[cfg(target_vendor = "apple")]
+        let inline = inline_blocking_allowed();
+        #[cfg(not(target_vendor = "apple"))]
+        let inline = std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed();
         #[cfg(windows)]
-        if !std::ptr::eq(this.pool, &BLOCKING_WORKERS)
-            && inline_blocking_allowed()
-            && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
-        {
+        let inline = inline
+            || (!std::ptr::eq(this.pool, &BLOCKING_WORKERS)
+                && inline_blocking_allowed()
+                && this.pending.as_ref().is_some_and(NativeJob::runs_in_place));
+        if inline && let Some(job) = this.pending.take() {
             let _ = job.run();
         }
         match poll_submission(this.pool, &mut this.pending, &mut this.waiter, context) {

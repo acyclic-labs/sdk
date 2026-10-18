@@ -117,6 +117,46 @@ fn native_write_batch_preserves_empty_writes_and_port_reuse() -> io::Result<()> 
     Ok(())
 }
 
+#[cfg(target_vendor = "apple")]
+#[test]
+fn inline_file_controls_honor_the_calling_thread() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("inline-control");
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
+    let caller = std::thread::current().id();
+    for (inline, length) in [(false, 3), (true, 5)] {
+        let observed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = Arc::clone(&observed);
+        let _scope = inline.then(InlineBlocking::enter);
+        complete(native.control_async(
+            move |file, _| {
+                result.store(std::thread::current().id() == caller, Ordering::Release);
+                file.set_len(length)
+            },
+            None,
+        )?)?;
+        // Omitting the requested guard is the negative control: the same
+        // production completion then runs on a worker, not this caller.
+        assert_eq!(observed.load(Ordering::Acquire), inline);
+        assert_eq!(std::fs::read(&path)?, vec![0; length as usize]);
+    }
+    let readonly = NativeFile::from_file(File::open(&path)?, None).map_err(|(error, _)| error)?;
+    let mut errors = Vec::new();
+    for inline in [false, true] {
+        let _scope = inline.then(InlineBlocking::enter);
+        let error = complete(readonly.control_async(|file, _| file.set_len(1), None)?).unwrap_err();
+        errors.push((error.kind(), error.raw_os_error()));
+    }
+    assert_eq!(errors[0], errors[1]);
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 #[allow(

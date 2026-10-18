@@ -9,7 +9,7 @@ thread_local! {
     static EVENTS: RefCell<Option<(usize, [&'static str; 512])>> = const { RefCell::new(None) };
     static DUPLICATE: Cell<bool> = const { Cell::new(false) };
     static RESTORE_WALK: Cell<bool> = const { Cell::new(false) };
-    static EXAMINATIONS: Cell<Option<u64>> = const { Cell::new(None) };
+    static EXAMINATIONS: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
     static LEGACY_BIRTH_TIME: Cell<bool> = const { Cell::new(false) };
     #[cfg(target_os = "linux")]
     static STATX_OPTIONS: Cell<(bool, bool)> = const { Cell::new((false, false)) };
@@ -58,7 +58,7 @@ pub(crate) fn uses_fallback(file: &File) -> bool {
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn fstat_query() {
     event("fstat");
     if EVENTS.with_borrow(Option::is_none) {
@@ -73,7 +73,7 @@ impl Probe {
     pub(crate) fn rescan(old: bool) -> Self {
         let probe = Self::new(old, None);
         EVENTS.set(Some((0, [""; 512])));
-        EXAMINATIONS.set(Some(0));
+        EXAMINATIONS.set(Some((0, 0)));
         probe
     }
     pub(crate) fn publish(&self) {
@@ -85,7 +85,7 @@ impl Probe {
         });
     }
     pub(crate) fn examinations(&self) -> u64 {
-        EXAMINATIONS.get().unwrap()
+        EXAMINATIONS.get().unwrap().0
     }
     pub(crate) fn duplicate_queries(&self) {
         DUPLICATE.set(true);
@@ -155,10 +155,17 @@ pub(crate) fn event(event: &'static str) {
         }
     });
 }
-pub(crate) fn examined(items: u64) {
-    if let Some(examined) = EXAMINATIONS.get() {
-        EXAMINATIONS.set(Some(examined.checked_add(items).unwrap()));
+pub(crate) fn examined(items: u64, copied: u64) {
+    if let Some((examined, bytes)) = EXAMINATIONS.get() {
+        EXAMINATIONS.set(Some((
+            examined.checked_add(items).unwrap(),
+            bytes.checked_add(copied).unwrap(),
+        )));
     }
+}
+#[cfg(target_os = "macos")]
+pub(crate) fn copied_bytes() -> u64 {
+    EXAMINATIONS.get().map_or(0, |(_, copied)| copied)
 }
 #[cfg(target_os = "linux")]
 fn edit_at(point: u64) {

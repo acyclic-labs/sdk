@@ -94,7 +94,10 @@ macro_rules! demand_meter {
                 self.io(|state| state.admit(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
             }
             fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
-                self.io(|state| state.record(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
+                let result = self.io(|state| state.record(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }));
+                #[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
+                if result.is_ok() { crate::native_host::stat_probe::examined(items, copied); }
+                result
             }
             fn reserve_examination(&self, items: u64) -> std::io::Result<()> {
                 self.io(|state| state.reserve(crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED }))
@@ -110,9 +113,9 @@ macro_rules! demand_meter {
             }
             fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
                 let result = self.io(|state| state.charge(crate::WorkCounters { items_examined: items, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }));
-                #[cfg(all(test, any(target_os = "linux", windows)))]
+                #[cfg(all(test, any(target_os = "linux", target_os = "macos", windows)))]
                 if result.is_ok() {
-                    crate::native_host::stat_probe::examined(items);
+                    crate::native_host::stat_probe::examined(items, copied);
                 }
                 result
             }

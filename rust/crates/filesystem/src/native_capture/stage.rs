@@ -3,6 +3,10 @@ use crate::kernel::allocation::KernelOwnedAllocation;
 use acyclic_native_runtime::ReadAllocationReservation;
 
 type NativeSourceStorage = (Vec<u8>, (KernelOwnedAllocation, ReadAllocationReservation));
+type NativeBody = (
+    acyclic_native_runtime::NativeFile,
+    Option<Vec<HostDataRange>>,
+);
 
 pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &Checkout<A, O>,
@@ -13,6 +17,38 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     meter: &NativeMaterializationWork,
     staged_file_bytes: &mut u64,
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+    match prepare_regular_body(
+        source_root,
+        host_path,
+        snapshot,
+        maximum_extent_spans,
+        meter,
+    )
+    .await?
+    {
+        Some(prepared) => {
+            read_prepared_body(
+                stager,
+                source_root,
+                host_path,
+                snapshot,
+                (prepared, None, maximum_extent_spans),
+                meter,
+                staged_file_bytes,
+            )
+            .await
+        }
+        None => Ok(Vec::new()),
+    }
+}
+
+pub(super) async fn prepare_regular_body(
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    maximum_extent_spans: u32,
+    meter: &NativeMaterializationWork,
+) -> Result<Option<NativeBody>, CaptureError> {
     meter.cancellation().check()?;
     #[cfg(unix)]
     let file = source_root
@@ -50,17 +86,16 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     #[cfg(all(test, feature = "memory"))]
     let skip_import = super::empty_stage_tests::after_ranges(skip_import);
     if skip_import {
-        let staged = capture_vec(0, meter)?;
+        let staged = capture_vec::<(HostDataRange, StagedContent)>(0, meter)?;
         finish_regular_capture(source_root, host_path, snapshot, &file, meter)?;
         let bytes = ranges.as_ref().map_or(0, vector_bytes);
         drop(ranges);
         drop(file);
         meter.clone().release(bytes).map_err(capture_demand_error)?;
-        return Ok(staged);
+        drop(staged);
+        return Ok(None);
     }
     let native = native_positional_file(file, meter)?;
-    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
-    let native = super::owner_allocation_tests::owner(native, meter);
     #[cfg(windows)]
     let ranges = match ranges {
         Some(ranges) => Some(
@@ -68,11 +103,36 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         ),
         None => None,
     };
+    Ok(Some((native, ranges)))
+}
+
+pub(super) async fn read_prepared_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    snapshot: &HostStat,
+    ((native, ranges), prior, maximum_extent_spans): (NativeBody, Option<crate::ObjectId>, u32),
+    meter: &NativeMaterializationWork,
+    staged_file_bytes: &mut u64,
+) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
+    #[cfg(test)]
+    let initial_staged = *staged_file_bytes;
+    #[cfg(not(test))]
+    let _ = maximum_extent_spans;
+    #[cfg(all(test, feature = "memory", any(windows, target_os = "linux")))]
+    let native = super::owner_allocation_tests::owner(native, meter);
     let full = [HostDataRange {
         offset: 0,
-        length: metadata.len(),
+        length: snapshot.len(),
     }];
     let data_ranges = ranges.as_deref().unwrap_or(&full);
+    // Reuse can compare only a single full-file root. Decide while holding
+    // the opened file, before reading: layouts that cannot be reused must
+    // persist their objects on this pass rather than read them twice.
+    let dense = data_ranges == full;
+    #[cfg(test)]
+    let repeat = super::verified_reuse_tests::repeat_read(!dense);
+    let prior_root = prior.filter(|_| dense);
     let mut staged = capture_vec(data_ranges.len(), meter)?;
     for range in data_ranges {
         let mut bounded = acyclic_native_runtime::AsyncRangeReader::new(
@@ -81,14 +141,26 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
             range.length,
         );
         let mut accounting = crate::kernel::KernelAccounting::native(meter, meter.cancellation());
-        let content = stager
-            .stage_content_with_accounting(
-                &mut bounded,
-                range.length,
-                &mut accounting,
-                meter.cancellation(),
-            )
-            .await;
+        let content = if let Some(prior_root) = prior_root {
+            stager
+                .reuse_content_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    prior_root,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        } else {
+            stager
+                .stage_content_with_accounting(
+                    &mut bounded,
+                    range.length,
+                    &mut accounting,
+                    meter.cancellation(),
+                )
+                .await
+        };
         drop(bounded);
 
         let content = content?;
@@ -97,7 +169,7 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
         }
         *staged_file_bytes = staged_file_bytes
             .checked_add(range.length)
-            .ok_or(CaptureError::from(WorkError::Overflow))?;
+            .ok_or(WorkError::Overflow)?;
         staged.push((*range, content));
     }
     finish_regular_capture(source_root, host_path, snapshot, native.as_file(), meter)?;
@@ -105,7 +177,70 @@ pub(super) async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectSto
     drop(ranges);
     drop(native);
     meter.clone().release(bytes).map_err(capture_demand_error)?;
+    #[cfg(test)]
+    if repeat {
+        let bytes = vector_bytes(&staged);
+        drop(staged);
+        meter.clone().release(bytes).map_err(capture_demand_error)?;
+        *staged_file_bytes = initial_staged;
+        let _once = super::verified_reuse_tests::single_read();
+        return Box::pin(stage_regular_body(
+            stager,
+            source_root,
+            host_path,
+            snapshot,
+            maximum_extent_spans,
+            meter,
+            staged_file_bytes,
+        ))
+        .await;
+    }
     Ok(staged)
+}
+
+pub(super) async fn prior_regular_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    record: FileRecord,
+    length: u64,
+    maximum_spans: u32,
+    meter: &NativeMaterializationWork,
+) -> Result<Option<crate::ObjectId>, CaptureError> {
+    let cancellation = meter.cancellation();
+    let mut accounting = crate::kernel::KernelAccounting::native(meter, cancellation);
+    let planned = checkout
+        .plan_record_extents(
+            record,
+            crate::ByteRange { offset: 0, length },
+            maximum_spans,
+            &mut accounting,
+            cancellation,
+        )
+        .await;
+    let planned = match planned {
+        Ok(value) => value,
+        Err(crate::FsError::FileRead(crate::kernel::FileRangeReadError::Extent(
+            crate::kernel::ExtentReadError::TooManySpans,
+        ))) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    Ok(planned
+        .0
+        .as_ref()
+        .and_then(|plan| match plan.spans.as_slice() {
+            [
+                crate::kernel::ExtentSlice {
+                    offset: 0,
+                    length: observed,
+                    source_end,
+                    kind:
+                        crate::kernel::ExtentKind::Content {
+                            object,
+                            object_offset: 0,
+                        },
+                },
+            ] if *observed == length && *source_end == length => Some(*object),
+            _ => None,
+        }))
 }
 
 pub(super) fn finish_regular_capture(
@@ -115,6 +250,18 @@ pub(super) fn finish_regular_capture(
     file: &std::fs::File,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if snapshot.len() > 65_536 {
+        match super::verified_reuse_tests::mode() {
+            super::verified_reuse_tests::Reuse::OmitLargeValidation => return Ok(()),
+            super::verified_reuse_tests::Reuse::RedundantLargeStat => {
+                source_root
+                    .stat_file_metadata(file, &mut meter.clone())
+                    .map_err(capture_demand_error)?;
+            }
+            _ => (),
+        }
+    }
     #[cfg(all(test, feature = "memory"))]
     if super::empty_stage_tests::omit_finish() {
         return Ok(());

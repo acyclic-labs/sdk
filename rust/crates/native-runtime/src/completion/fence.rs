@@ -2,8 +2,9 @@ use crate::*;
 
 #[derive(Default)]
 pub(crate) struct OperationFence {
-    pub(crate) state: Mutex<OperationFenceState>,
-    pub(crate) settled: Condvar,
+    // Never held while running a job, waking a successor, or locking health.tail.
+    pub(crate) state: crate::sync::Mutex<OperationFenceState>,
+    pub(crate) settled: crate::sync::Condvar,
     pub(crate) health: Option<Weak<FileHealth>>,
     pub(crate) _allocation: Option<ReadAllocation>,
 }

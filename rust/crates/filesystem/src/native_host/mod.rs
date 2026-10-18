@@ -75,7 +75,7 @@ mod metadata;
 pub(crate) use macos_metadata::*;
 mod stat;
 pub(crate) use stat::*;
-#[cfg(all(test, windows))]
+#[cfg(all(test, any(windows, target_os = "macos")))]
 pub(crate) mod stat_probe;
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use unix_stat::stat_probe;

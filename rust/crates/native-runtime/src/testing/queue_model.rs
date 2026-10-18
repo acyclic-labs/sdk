@@ -343,7 +343,11 @@ fn waiter_charge(cancel: bool, broken: bool) {
                 .is_pending()
         );
         assert!(waiter.is_some());
-        assert_ne!(meter.memory.load(Ordering::SeqCst), before, "waiter uncharged");
+        assert_ne!(
+            meter.memory.load(Ordering::SeqCst),
+            before,
+            "waiter uncharged"
+        );
 
         let released = workers.admission.clone();
         let receiving = receiver.clone();
@@ -397,4 +401,67 @@ fn an_admitted_waiter_charge_left_on_its_node_is_detected() {
 #[should_panic(expected = "waiter charge outlived its owner")]
 fn a_cancelled_waiter_charge_left_on_its_node_is_detected() {
     waiter_charge(true, true);
+}
+
+#[cfg(target_vendor = "apple")]
+fn inline_native_fence(broken: bool) {
+    loom::model(move || {
+        let predecessor = Arc::new(crate::OperationFence::default());
+        let finished = Arc::new(AtomicUsize::new(0));
+        let prior = predecessor.clone();
+        let completed = finished.clone();
+        let worker = thread::spawn(move || {
+            completed.store(1, Ordering::SeqCst);
+            prior.complete();
+        });
+        let effects = Arc::new(AtomicUsize::new(0));
+        let ran = effects.clone();
+        let mut task = run_blocking_io(
+            move || {
+                assert_eq!(finished.load(Ordering::SeqCst), 1, "predecessor bypassed");
+                ran.fetch_add(1, Ordering::SeqCst);
+                17
+            },
+            None,
+        )
+        .unwrap();
+        task.pool = &crate::NATIVE_WORKERS;
+        task.predecessor = Some(predecessor);
+        if broken {
+            // The rejected ordering executes the same real job before its fence.
+            let _ = task.pending.take().unwrap().run();
+        }
+        let flag = Arc::new(Woken(AtomicUsize::new(0)));
+        let waker = Waker::from(flag.clone());
+        let mut cx = std::task::Context::from_waker(&waker);
+        let _inline = crate::InlineBlocking::enter();
+        let result = Pin::new(&mut task).poll(&mut cx);
+        if result.is_pending() {
+            assert_eq!(effects.load(Ordering::SeqCst), 0);
+        }
+        worker.join().unwrap();
+        if result.is_pending() {
+            assert_ne!(flag.0.load(Ordering::SeqCst), 0, "terminal wake lost");
+            assert!(matches!(
+                Pin::new(&mut task).poll(&mut cx),
+                Poll::Ready(Ok(17))
+            ));
+        } else {
+            assert!(matches!(result, Poll::Ready(Ok(17))));
+        }
+        assert_eq!(effects.load(Ordering::SeqCst), 1);
+    });
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn inline_native_completion_preserves_the_predecessor_fence() {
+    inline_native_fence(false);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+#[should_panic(expected = "predecessor bypassed")]
+fn inline_native_completion_detects_a_bypassed_fence() {
+    inline_native_fence(true);
 }
