@@ -38,7 +38,7 @@ pub async fn run(
         || crossterm::terminal::size().map(|(width, height)| Size::new(width, height));
     let mut terminal = FrameTerminal::new(output, terminal_size()?)?;
     let mut events = client::terminal_events(tty);
-    // Events of the current read not yet handled; each gets its own frame.
+    // Events of the current read not yet handled; the read presents one frame.
     let mut batch = client::InputBatch::new();
     let mut effects = Vec::new();
     let mut input = PromptInput::default();
@@ -74,11 +74,19 @@ pub async fn run(
         let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
         let screen = renderer.screen_for(&commands)?;
-        terminal.draw(size, |frame| {
-            maximum_scroll = screen.tail_scroll(frame.area(), &input);
-            let scroll = maximum_scroll.saturating_sub(back);
-            areas = screen.render(frame, &input, &mut viewport, scroll, now);
-        })?;
+        if client::frame_due(&batch) {
+            terminal.draw(size, |frame| {
+                maximum_scroll = screen.tail_scroll(frame.area(), &input);
+                let scroll = maximum_scroll.saturating_sub(back);
+                areas = screen.render(frame, &input, &mut viewport, scroll, now);
+            })?;
+        } else {
+            // More of this read is queued: route it against the same layout
+            // and present once, after the read.
+            let area = tui::ratatui::layout::Rect::new(0, 0, size.width, size.height);
+            maximum_scroll = screen.tail_scroll(area, &input);
+            areas = screen.areas(area, &input);
+        }
         if batch.is_empty() {
             let Some(read) = client::next_file_tui_event(
                 &mut client,

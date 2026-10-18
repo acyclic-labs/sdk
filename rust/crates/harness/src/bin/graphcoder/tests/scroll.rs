@@ -1,8 +1,8 @@
 use acyclic_harness::{
     OperationId,
     client::{
-        CommandFileRoot, CommandSession, InputBatch, file_tui_inputs, input_burst, scroll_tui,
-        transcript_motion, tui_scroll,
+        CommandFileRoot, CommandSession, InputBatch, file_tui_inputs, frame_due, input_burst,
+        scroll_tui, transcript_motion, tui_scroll,
     },
     task_volume::{Query, TaskVolume},
     tui::{
@@ -63,35 +63,57 @@ async fn position(volume: &TaskVolume<MemoryStream>) -> u64 {
         .position
 }
 
+/// How the driven loop handles a decoded read.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// Route one event and present a frame per event (the pre-wheel loop).
+    PerEvent,
+    /// Coalesce motions, but present after every burst (negative control).
+    PerBurst,
+    /// The `GraphCoder` loop: coalesce motions, present when `frame_due`.
+    Loop,
+}
+
 /// Drive the input step of the `GraphCoder` loop over decoded reads, returning
-/// frames drawn, layout positions appended and the final offset.
-async fn drive(reads: Vec<Vec<InputEvent>>, coalesce: bool) -> (usize, u64, usize) {
+/// frames presented, layout positions appended and the final offset.
+async fn drive_with(
+    reads: Vec<Vec<InputEvent>>,
+    mode: Mode,
+    input: &mut PromptInput,
+) -> (usize, u64, usize) {
     let (volume, mut files) = session("burst").await;
-    let mut input = PromptInput::new(Editor::new("draft"));
     let before = position(&volume).await;
     let mut frames = 0;
     let mut effects = Vec::new();
     for read in reads {
         let mut batch: InputBatch = read.into();
         while !batch.is_empty() {
-            frames += 1;
             let mut route =
                 |event| input.event(event, Rect::new(0, 9, 80, 1), &mut Viewport::default(), 1);
-            if coalesce {
-                input_burst(&mut batch, PAGE, &mut effects, route);
-            } else {
+            if mode == Mode::PerEvent {
                 effects.clear();
                 if let Some(event) = batch.pop_front() {
                     effects.extend(route(event));
                 }
+            } else {
+                input_burst(&mut batch, PAGE, &mut effects, route);
             }
             file_tui_inputs(&mut files, &NoFiles, effects.drain(..), PAGE, 10_000)
                 .await
                 .unwrap();
+            // The loop's next iteration presents only when `frame_due`.
+            if mode != Mode::Loop || frame_due(&batch) {
+                frames += 1;
+            }
         }
     }
     let appended = position(&volume).await - before;
     (frames, appended, tui_scroll(&files).unwrap())
+}
+
+async fn drive(reads: Vec<Vec<InputEvent>>, coalesce: bool) -> (usize, u64, usize) {
+    let mode = if coalesce { Mode::Loop } else { Mode::PerEvent };
+    drive_with(reads, mode, &mut PromptInput::new(Editor::new("draft"))).await
 }
 
 #[test]
@@ -124,13 +146,53 @@ fn a_wheel_flick_or_held_page_key_is_one_scroll_and_one_frame_per_input_batch() 
             let per_event = drive(vec![read], false).await;
             assert_eq!(per_event, (motions + 1, per_write * motions as u64, rows));
         }
-        // A non-motion event ends the burst: later motions are a new frame.
+        // A non-motion event ends the burst: later motions are a new layout
+        // change, presented in the same single frame of the read.
         let read = vec![notch(true), key(KeyCode::Char('x')), notch(true)];
-        assert_eq!(drive(vec![read], true).await, (2, 2 * per_write, 6));
+        assert_eq!(drive(vec![read], true).await, (1, 2 * per_write, 6));
         // Reads are never merged: one frame each, however soon the next
         // read completes.
         let reads = vec![vec![notch(true), notch(true)], vec![notch(true)]];
         assert_eq!(drive(reads, true).await, (2, 2 * per_write, 9));
+    });
+}
+
+/// Held keys and pasted text without bracketed paste decode as one key event
+/// per character. Every event of the read is routed, in order, and the read
+/// presents exactly one frame; a pointer event that reads the presented prompt
+/// viewport is the only event preceded by its own frame.
+#[test]
+fn a_key_repeat_or_unbracketed_paste_read_presents_one_frame() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for n in [32usize, 64] {
+            let read: Vec<_> = (0..n).map(|_| key(KeyCode::Char('z'))).collect();
+            let mut input = PromptInput::new(Editor::new("draft"));
+            let coalesced = drive_with(vec![read.clone()], Mode::Loop, &mut input).await;
+            assert_eq!(coalesced.0, 1, "one read must present one frame");
+            assert_eq!(input.editor.text().matches('z').count(), n);
+            // Negative control: presenting after every burst, as each
+            // non-motion event ends one, presents N frames for the same text.
+            let mut control = PromptInput::new(Editor::new("draft"));
+            let per_burst = drive_with(vec![read], Mode::PerBurst, &mut control).await;
+            assert_eq!(per_burst.0, n);
+            assert_eq!((coalesced.1, coalesced.2), (per_burst.1, per_burst.2));
+            assert_eq!(input.editor.text(), control.editor.text());
+        }
+        // A click routes against a presented viewport: one frame before it,
+        // one after the read.
+        let click = InputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(acyclic_harness::tui::key_event::MouseButton::Left),
+            column: 3,
+            row: 9,
+            modifiers: KeyModifiers::NONE,
+        });
+        let read = vec![key(KeyCode::Char('a')), click, key(KeyCode::Char('b'))];
+        let mut input = PromptInput::new(Editor::new("draft"));
+        assert_eq!(drive_with(vec![read], Mode::Loop, &mut input).await.0, 2);
     });
 }
 

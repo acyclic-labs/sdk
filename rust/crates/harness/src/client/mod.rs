@@ -180,7 +180,7 @@ pub use prompt_files::PromptFiles;
 #[cfg(feature = "tui")]
 mod scroll_files;
 #[cfg(feature = "tui")]
-pub use scroll_files::{input_burst, scroll_tui, transcript_motion, tui_scroll};
+pub use scroll_files::{frame_due, input_burst, scroll_tui, transcript_motion, tui_scroll};
 
 #[cfg(all(
     feature = "terminal",

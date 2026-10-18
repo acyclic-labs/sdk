@@ -105,3 +105,20 @@ pub fn input_burst<I: IntoIterator<Item = crate::tui::InputEffect>>(
         }
     }
 }
+
+/// Whether the frame must reach the terminal before the batch's next event is
+/// routed. Only a pointer event other than the wheel reads presented state
+/// (the prompt viewport); every other event routes against layout recomputed
+/// without presenting. So one read presents one frame, however many keys,
+/// pasted characters or bursts it decoded.
+pub fn frame_due(batch: &std::collections::VecDeque<crate::tui::key_event::InputEvent>) -> bool {
+    use crate::tui::key_event::{InputEvent, MouseEventKind};
+    match batch.front() {
+        None => true,
+        Some(InputEvent::Mouse(mouse)) => !matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ),
+        Some(_) => false,
+    }
+}
