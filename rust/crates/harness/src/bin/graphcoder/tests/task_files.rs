@@ -143,12 +143,17 @@ proptest::proptest! {
                 layout["unrelated_navigation"] = serde_json::json!(index);
                 if index == cut { layout["history_after"] = serde_json::json!(commands.output_sequence()); }
                 commands.write_state(CommandFileRoot::Session, "layout.json", &layout).await.unwrap();
-                let mut expected = Vec::new();
+                // Derived without session state: the texts after the cut, within
+                // the recent-outcome bound (maximum_files / 4) both views retain.
+                let visible = &texts[if cut <= index { cut + 1 } else { 0 }..=index];
+                let expected = visible[visible.len().saturating_sub(24 / 4)..].to_vec();
+                let mut paged = Vec::new();
                 for back in 0..24 {
                     let Some(value) = commands.output_page(back).unwrap() else { break };
-                    expected.push(value["ok"]["text"].as_str().unwrap().to_owned());
+                    paged.push(value["ok"]["text"].as_str().unwrap().to_owned());
                 }
-                expected.reverse();
+                paged.reverse();
+                proptest::prop_assert_eq!(&paged, &expected);
                 catch_up(&mut client,volume.as_ref()).await;
                 proptest::prop_assert_eq!(outputs(&client, &commands),expected.clone());
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
