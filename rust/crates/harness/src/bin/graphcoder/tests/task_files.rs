@@ -13,7 +13,10 @@ async fn catch_up(client: &mut TaskFileClient, volume: &TaskVolume<MemoryStream>
         client.next_change().await.unwrap();
     }
 }
-fn outputs(client: &TaskFileClient) -> Vec<String> {
+fn outputs(
+    client: &TaskFileClient,
+    commands: &acyclic_harness::client::CommandSession<MemoryStream>,
+) -> Vec<String> {
     let selection = client
         .views()
         .selections()
@@ -24,18 +27,15 @@ fn outputs(client: &TaskFileClient) -> Vec<String> {
         panic!("command session");
     };
     let owner = acyclic_harness::client::OutputOwner::Session(session.clone());
-    let after = selection
-        .files()
-        .values()
-        .find_map(|file| match &file.key {
-            FileKey::Ui { name, .. } if name.as_str() == "layout.json" => {
-                let [bytes] = file.segments.as_slice() else {
-                    return None;
-                };
-                serde_json::from_slice::<serde_json::Value>(bytes).ok()?["history_after"].as_u64()
-            }
-            _ => None,
-        })
+    // The archive cut lives in layout.json, which CommandSession follows
+    // outside the answer selection, exactly as the renderer reads it.
+    let after = commands
+        .state(
+            acyclic_harness::client::CommandFileRoot::Session,
+            "layout.json",
+        )
+        .unwrap()
+        .and_then(|layout| layout["history_after"].as_u64())
         .unwrap_or(0);
     selection
         .outputs(&owner, after)
@@ -104,13 +104,13 @@ proptest::proptest! {
                 commands.consume(&request, |_,_,_| async { Ok(value) }).await.unwrap();
                 expected.push(text);
                 catch_up(&mut client,volume.as_ref()).await;
-                proptest::prop_assert_eq!(outputs(&client),expected.clone());
+                proptest::prop_assert_eq!(outputs(&client, &commands),expected.clone());
                 let mut renderer = ClientRenderer::default(); renderer.update(client.views(), &owner);
                 let visible = picture(&renderer);
                 for text in &expected { proptest::prop_assert!(visible.contains(text)); }
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
                 replay.follow_commands(&commands).await.unwrap();
-                proptest::prop_assert_eq!(outputs(&replay),outputs(&client));
+                proptest::prop_assert_eq!(outputs(&replay, &commands),outputs(&client, &commands));
             }
             Ok(())
         })?;
@@ -150,10 +150,10 @@ proptest::proptest! {
                 }
                 expected.reverse();
                 catch_up(&mut client,volume.as_ref()).await;
-                proptest::prop_assert_eq!(outputs(&client),expected.clone());
+                proptest::prop_assert_eq!(outputs(&client, &commands),expected.clone());
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
                 replay.follow_commands(&commands).await.unwrap();
-                proptest::prop_assert_eq!(outputs(&replay),outputs(&client));
+                proptest::prop_assert_eq!(outputs(&replay, &commands),outputs(&client, &commands));
             }
             Ok(())
         })?;
