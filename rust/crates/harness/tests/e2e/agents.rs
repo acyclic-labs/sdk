@@ -341,7 +341,11 @@ pub(super) async fn run(value: Value) -> TestResult {
     };
     let output = match outcome {
         Ok(output) => Some(output),
-        Err(Error::Indeterminate(_)) if case.expect.indeterminate => None,
+        Err(Error::Indeterminate(_) | Error::CommandIndeterminate { .. })
+            if case.expect.indeterminate =>
+        {
+            None
+        }
         Err(error) => {
             let requests: BTreeMap<_, _> = provider
                 .scripts
