@@ -79,6 +79,8 @@ fn native_attempt(count: usize, remaining: u64) -> Result<(bool, u64, u64, u64),
         &cancellation,
     )
     .map_err(|(error, _)| TestCaseError::fail(error.to_string()))?;
+    // Initialize the test lock-order checker before measuring index storage.
+    prop_assert_eq!(original.live_allocation_bytes(), baseline);
     let mut work = KernelAccounting::native(&original, &cancellation);
     let mut accepted = false;
     let physical = measure(|| {
