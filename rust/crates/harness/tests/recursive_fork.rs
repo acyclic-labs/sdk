@@ -131,21 +131,10 @@ fn fork_command(id: u16, revision: u64, scope: &Scope, seed: ForkSeed) -> Result
     Ok(prepared)
 }
 
-#[test]
-fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project() -> Result<()> {
-    std::thread::Builder::new()
-        .name("recursive-fork-e2e".into())
-        .stack_size(16 * 1024 * 1024)
-        .spawn(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-            runtime.block_on(run_thousand_twenty_four_recursive_forks())
-        })
-        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?
-        .join()
-        .map_err(|_| acyclic_harness::Error::Invalid("recursive E2E thread panicked".into()))?
+#[tokio::test(flavor = "current_thread")]
+async fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_project()
+-> Result<()> {
+    run_thousand_twenty_four_recursive_forks().await
 }
 
 #[path = "recursive_fork/setup.rs"]

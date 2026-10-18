@@ -3,6 +3,36 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import test from "node:test";
+import { checkHarnessTestStacks } from "./check-harness-test-stacks.mjs";
+
+test("Harness qualification cannot enlarge production or test stacks", () => {
+  checkHarnessTestStacks(process.cwd());
+});
+
+test("stack check rejects both former stack enlargements", () => {
+  mkdirSync(".tools", { recursive: true });
+  const root = mkdtempSync(".tools/harness-stacks-");
+  const harness = join(root, "rust/crates/harness/tests");
+  const script = join(root, "scripts/check-harness-package.sh");
+  mkdirSync(harness, { recursive: true });
+  mkdirSync(join(root, "scripts"));
+  try {
+    writeFileSync(script, "cargo test\n");
+    writeFileSync(join(harness, "recursive_fork.rs"), "run().await\n");
+    checkHarnessTestStacks(root);
+    writeFileSync(join(harness, "recursive_fork.rs"), "std::thread::Builder::new().stack_size(16 * 1024 * 1024)\n");
+    assert.throws(() => checkHarnessTestStacks(root), /Harness stack enlargement:.*recursive_fork\.rs/);
+    writeFileSync(join(harness, "recursive_fork.rs"), "run().await\n");
+    writeFileSync(script, 'export RUST_MIN_STACK="${RUST_MIN_STACK:-8388608}"\ncargo test\n');
+    assert.throws(() => checkHarnessTestStacks(root), /Harness stack enlargement: scripts\/check-harness-package\.sh/);
+    writeFileSync(script, "cargo test\n");
+    writeFileSync(join(harness, "recursive_fork.rs"), 'std::env::set_var("RUST_MIN_STACK", "8388608");\n');
+    assert.throws(() => checkHarnessTestStacks(root), /Harness stack enlargement:.*recursive_fork\.rs/);
+  } finally {
+    assert.ok(resolve(root).startsWith(resolve(".tools") + sep));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("packaged Harness tests and native consumer use the private target despite an inherited shared target", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8").replaceAll("\r\n", "\n");
@@ -57,7 +87,7 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
   assert.ok(workspaceTests >= 0 && packageCheck > workspaceTests, "packaging requires preceding workspace qualification");
   assert.ok(lane.includes("bun scripts/check-metadata.mjs"));
   const start = source.indexOf("for generated in acyclic_harness_wasm.js");
-  const end = source.indexOf('cd "$npm_stage"', start);
+  const end = source.indexOf('observer_stage="$work/observer-package"', start);
   assert.ok(start >= 0 && end > start);
   const command = source.slice(start, end);
   mkdirSync(".tools", { recursive: true });
@@ -95,9 +125,9 @@ test("Harness packaging stages the qualified bytes and rejects missing WASM befo
   }
 });
 
-test("packaged Harness tests retain their inventory, logs and failure status at the lane's worker budget", () => {
+test("packaged Harness tests retain their inventory, logs and failure status on default stacks", () => {
   const source = readFileSync("scripts/check-harness-package.sh", "utf8");
-  const start = source.indexOf('export RUST_MIN_STACK=');
+  const start = source.indexOf('"$cargo_bin" test --manifest-path');
   const end = source.indexOf('"$cargo_bin" run --manifest-path', start);
   assert.ok(start >= 0 && end > start);
   const command = source.slice(start, end);
@@ -112,6 +142,7 @@ test("packaged Harness tests retain their inventory, logs and failure status at 
     for (const [workers, status] of cases) {
       const env = { ...process.env };
       delete env.RUST_TEST_THREADS;
+      delete env.RUST_MIN_STACK;
       if (workers) env.RUST_TEST_THREADS = workers;
       const result = spawnSync(bash, ["-c", `set -euo pipefail
 work='${root}'
@@ -120,7 +151,7 @@ cargo_bin=cargo
 cargo_package_target="$work/package-target"
 cargo() {
   [[ "$*" == "test --manifest-path acyclic-harness-0.2.0/Cargo.toml --all-features --offline --target-dir $cargo_package_target -- --test-threads=${workers ?? "1"}" ]]
-  [[ "$RUST_MIN_STACK" -ge 8388608 ]]
+  [[ ! -v RUST_MIN_STACK ]]
   printf 'test fixture ... ok\\n'
   return ${status}
 }
