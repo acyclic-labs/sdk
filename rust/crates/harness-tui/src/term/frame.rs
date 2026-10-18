@@ -172,7 +172,7 @@ struct FrameBackend<D: Present> {
     ours: Option<u64>,
 }
 
-/// The cursor the device shows after the last presented frame. A command that
+/// Cursor and default attribute state after the last presented frame. A command that
 /// restates it is not encoded, so a frame identical to the screen encodes no
 /// bytes and reaches no device. `None` is unknown: the command is encoded.
 /// Valid only while the device was reached by nothing but our frames since:
@@ -181,9 +181,18 @@ struct FrameBackend<D: Present> {
 struct Shown {
     visible: Option<bool>,
     position: Option<Position>,
+    attributes: bool,
 }
 
 impl<D: Present> FrameBackend<D> {
+    fn reset_attributes(&mut self) -> io::Result<()> {
+        if !self.shown.attributes {
+            self.output.write_all(b"\x1b[0m")?;
+            self.shown.attributes = true;
+        }
+        Ok(())
+    }
+
     // Encoding is stateless; borrowing the frame keeps ownership here.
     fn crossterm(&mut self) -> CrosstermBackend<&mut FrameOutput<D>> {
         CrosstermBackend::new(&mut self.output)
@@ -193,8 +202,9 @@ impl<D: Present> FrameBackend<D> {
 impl<D: Present> Backend for FrameBackend<D> {
     type Error = io::Error;
     fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
-        // An empty diff would encode only an attribute reset, which the
-        // previous drawn frame already ended with.
+        // Crossterm starts each diff assuming default attributes. Restore that
+        // precondition even for an empty diff after outside output or failure.
+        self.reset_attributes()?;
         let mut content = content.peekable();
         if content.peek().is_none() {
             return Ok(());
@@ -203,6 +213,7 @@ impl<D: Present> Backend for FrameBackend<D> {
         self.crossterm().draw(content)
     }
     fn append_lines(&mut self, lines: u16) -> io::Result<()> {
+        self.reset_attributes()?;
         self.shown.position = None;
         self.crossterm().append_lines(lines)
     }
@@ -231,10 +242,12 @@ impl<D: Present> Backend for FrameBackend<D> {
         self.crossterm().set_cursor_position(position)
     }
     fn clear(&mut self) -> io::Result<()> {
+        self.reset_attributes()?;
         self.shown.position = None;
         self.crossterm().clear()
     }
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.reset_attributes()?;
         self.shown.position = None;
         self.crossterm().clear_region(clear_type)
     }
@@ -305,6 +318,13 @@ impl<D: Present> FrameTerminal<D> {
                 // change before presentation is then harmless.
                 let desired = backend.shown;
                 backend.shown = Shown::default();
+                // The retained diff was encoded before the outside access.
+                // Repair attributes BEFORE its cells, not just the cursor after.
+                backend
+                    .output
+                    .frame
+                    .splice(0..0, b"\x1b[0m".iter().copied());
+                backend.shown.attributes = true;
                 let repair = match desired.visible {
                     Some(true) => backend.show_cursor().and_then(|()| {
                         desired

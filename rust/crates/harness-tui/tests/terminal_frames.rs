@@ -747,3 +747,6 @@ fn resume_between_observation_and_commit_repairs_empty_and_changed_frames() {
 fn negative_control_snapshot_then_empty_skip_loses_resume() {
     resume_inside_render::<false>(true, false);
 }
+
+#[path = "terminal_frames/attributes.rs"]
+mod attributes;
