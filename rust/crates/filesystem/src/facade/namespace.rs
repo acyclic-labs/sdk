@@ -297,7 +297,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> W::OwnedOutput<PathBatchLookup> {
         let mut accounting = budget.accounting(cancellation);
         let result = self
-            .lookup_batch_no_follow_with_accounting(paths, false, &mut accounting, cancellation)
+            .lookup_batch_no_follow_with_accounting::<true>(
+                paths,
+                false,
+                &mut accounting,
+                cancellation,
+            )
             .await;
         let work = accounting.spent();
         let result = result.map(|(mut lookup, allocation)| {
@@ -307,7 +312,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish_owned(result, &accounting)
     }
 
-    pub(crate) async fn lookup_batch_no_follow_with_accounting(
+    /// `TERMINAL` observes each resolved file record. Callers that consume only
+    /// existence and kind observe just the name bindings, so a sibling added
+    /// under a resolved directory does not conflict with them on rebase.
+    pub(crate) async fn lookup_batch_no_follow_with_accounting<const TERMINAL: bool>(
         &mut self,
         paths: &[NamespacePath],
         selected_restore: bool,
@@ -354,16 +362,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
             // The unchanged root answers and observes in the same shared walk.
             if *self.root == self.base_root {
-                let (value, allocation) = crate::kernel::observe_paths_async_with_accounting(
-                    &self.volume.fs.inner.objects,
-                    &self.root,
-                    paths,
-                    config,
-                    accounting,
-                    cancellation,
-                    Some(&self.dependencies.data_custody),
-                )
-                .await?;
+                let (value, allocation) =
+                    crate::kernel::observe_paths_async_with_accounting::<TERMINAL, _>(
+                        &self.volume.fs.inner.objects,
+                        &self.root,
+                        paths,
+                        config,
+                        accounting,
+                        cancellation,
+                        Some(&self.dependencies.data_custody),
+                    )
+                    .await?;
                 let mut observed = (value, allocation);
                 let dependencies = std::mem::take(&mut observed.0.dependencies);
                 self.dependencies.extend_observations(
@@ -413,16 +422,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
             let lookup = (value, allocation);
-            let (value, allocation) = crate::kernel::observe_paths_async_with_accounting(
-                &self.volume.fs.inner.objects,
-                &self.base_root,
-                paths,
-                config,
-                accounting,
-                cancellation,
-                Some(&self.dependencies.data_custody),
-            )
-            .await?;
+            let (value, allocation) =
+                crate::kernel::observe_paths_async_with_accounting::<TERMINAL, _>(
+                    &self.volume.fs.inner.objects,
+                    &self.base_root,
+                    paths,
+                    config,
+                    accounting,
+                    cancellation,
+                    Some(&self.dependencies.data_custody),
+                )
+                .await?;
             let mut observed = (value, allocation);
             let dependencies = std::mem::take(&mut observed.0.dependencies);
             self.dependencies.extend_observations(

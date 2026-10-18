@@ -217,6 +217,51 @@ async fn batch_observation_captures_exactly_each_paths_observation()
         assert!(prior.is_none_or(|prior| prior == dependency.expected));
     }
     assert_eq!(batched, expected);
+    // Binding-only mode drops exactly the terminal records, never a name
+    // binding, and matches the single-path walk in the same mode.
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let bindings = observe_paths_async_with_accounting::<false, _>(
+        &store,
+        &generation,
+        &paths,
+        config(),
+        &mut accounting,
+        &cancellation,
+        None,
+    )
+    .await?
+    .0;
+    assert_eq!(bindings.lookup.entries, looked_up.entries);
+    let mut single_bindings = std::collections::BTreeMap::new();
+    for path in &paths {
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let single = observe_path_async_with_accounting(
+            &store,
+            &generation,
+            path,
+            config(),
+            &mut accounting,
+            &cancellation,
+            None,
+            false,
+        )
+        .await?
+        .0;
+        for dependency in single.dependencies {
+            single_bindings.insert(dependency.region, dependency.expected);
+        }
+    }
+    let mut batched_bindings = std::collections::BTreeMap::new();
+    for dependency in bindings.dependencies {
+        let prior = batched_bindings.insert(dependency.region, dependency.expected);
+        assert!(prior.is_none_or(|prior| prior == dependency.expected));
+    }
+    assert_eq!(batched_bindings, single_bindings);
+    let names_only = expected
+        .into_iter()
+        .filter(|(region, _)| !matches!(region, DependencyRegion::FileRecord(_)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(batched_bindings, names_only);
     Ok(())
 }
 

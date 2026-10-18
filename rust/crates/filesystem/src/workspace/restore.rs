@@ -223,7 +223,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         }
         let (records, allocation) = source_root
             .value
-            .lookup_batch_no_follow_with_accounting(&parsed.value, true, accounting, cancellation)
+            .lookup_batch_no_follow_with_accounting::<true>(
+                &parsed.value,
+                true,
+                accounting,
+                cancellation,
+            )
             .await?;
         let bytes = records.retained_allocation_bytes;
         let records = crate::kernel::Owned::new(records, allocation, bytes);

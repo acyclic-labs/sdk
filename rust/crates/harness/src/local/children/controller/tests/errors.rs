@@ -261,8 +261,20 @@ async fn exercise(parent_fails: bool) -> Result<()> {
         drop(child_context);
         Ok::<_, Error>(child)
     };
-    let (result, child) = futures::join!(run, client);
-    let child = child?;
+    // The client waits only for events the controller publishes before it can
+    // finish, so a controller that finishes first fails here with its result
+    // instead of leaving the client waiting.
+    let (result, child) =
+        match futures::future::select(std::pin::pin!(run), std::pin::pin!(client)).await {
+            futures::future::Either::Left((result, _)) => {
+                panic!("the controller finished before the client released the sibling: {result:?}")
+            }
+            // A client error can precede the release the controller waits on.
+            futures::future::Either::Right((child, run)) => {
+                let child = child?;
+                (run.await, child)
+            }
+        };
     assert!(result.is_err());
     let snapshot = files
         .observe(Query::Child(sibling.clone()), None, 16)

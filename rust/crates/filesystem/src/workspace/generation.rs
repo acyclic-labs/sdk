@@ -259,7 +259,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         let result = async {
             accounting.claim_owned(checkout.logical_owned_bytes(), 0)?;
             let (lookup, allocation) = checkout
-                .lookup_batch_no_follow_with_accounting(paths, false, &mut accounting, cancellation)
+                .lookup_batch_no_follow_with_accounting::<true>(
+                    paths,
+                    false,
+                    &mut accounting,
+                    cancellation,
+                )
                 .await?;
             let bytes = lookup.retained_allocation_bytes;
             let lookup = crate::kernel::Owned::new(lookup, allocation, bytes);
