@@ -13,6 +13,23 @@ enum ToolCallRejection {
     Refused(Error),
 }
 
+impl ToolCallRejection {
+    fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error) {
+        match self {
+            Self::Unavailable => (
+                ToolFailureKind::Unavailable,
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "tool is not available",
+                ),
+            ),
+            Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation),
+            Self::Refused(denial) => (ToolFailureKind::Refused, denial),
+        }
+    }
+}
+
 /// Why the bound policy stopped a call before dispatch.
 pub(in crate::executor) enum PolicyStop {
     /// Approval is pending or was rejected; the turn's progress reports it.
@@ -201,16 +218,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         rejection: ToolCallRejection,
     ) -> Result<crate::model::ToolResultContent> {
-        let (reason, error) = match rejection {
-            ToolCallRejection::Unavailable => (
-                ToolFailureKind::Unavailable,
-                Error::NotFound("tool is not available".into()),
-            ),
-            ToolCallRejection::InvalidInput(violation) => {
-                (ToolFailureKind::InvalidInput, violation)
-            }
-            ToolCallRejection::Refused(denial) => (ToolFailureKind::Refused, denial),
-        };
+        let (reason, error) = rejection.into_failure(self.io);
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
@@ -707,4 +715,36 @@ pub(super) fn metadata_for_call<'a>(
         ));
     }
     Ok(&call.metadata)
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod refusal_admission_tests {
+    use super::*;
+
+    #[test]
+    fn native_unavailable_cause_allocates_nothing_before_ledger_admission() -> Result<()> {
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 64 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let before = work.live_allocation_bytes();
+        let mut refusal = None;
+        let allocated = acyclic_test_support::measure(|| {
+            refusal = Some(ToolCallRejection::Unavailable.into_failure(Some(&io)));
+        });
+        let (kind, error) = refusal.unwrap();
+        assert_eq!(kind, ToolFailureKind::Unavailable);
+        assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
+        assert_eq!(allocated.count_total, 0);
+        assert_eq!(work.live_allocation_bytes(), before);
+        // Negative control: the former portable error allocated without any ledger claim.
+        let portable = acyclic_test_support::measure(|| {
+            std::hint::black_box(Error::NotFound("tool is not available".into()));
+        });
+        assert!(portable.count_total > 0);
+        assert_eq!(work.live_allocation_bytes(), before);
+        Ok(())
+    }
 }

@@ -339,20 +339,21 @@ async fn exchange_count(
             return Err(failure);
         };
         drop(failure);
-        let delay = provider.transport.delay(wait);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = work {
+            let delay = provider.transport.delay_with_native_work(wait, work)?;
             let cancelled = work.cancellation_wait()?;
             futures::pin_mut!(cancelled, delay);
-            if let futures::future::Either::Left(_) =
-                futures::future::select(cancelled, delay).await
-            {
-                return Err(Error::from(
-                    acyclic_fs::NativeTreeMaterializationError::Cancelled,
-                ));
+            match futures::future::select(cancelled, delay).await {
+                futures::future::Either::Left(_) => {
+                    return Err(Error::from(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ));
+                }
+                futures::future::Either::Right((result, _)) => result?,
             }
             continue;
         }
-        delay.await;
+        provider.transport.delay(wait).await;
     }
 }

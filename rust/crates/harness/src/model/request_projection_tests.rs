@@ -341,12 +341,48 @@ proptest! {
                     && message.len() <= 32
             };
         prop_assert_eq!(request.clone().validate(limits, None).is_ok(), admitted);
-        prop_assert_eq!(
-            PreparedModelRequest::prepare(request.clone(), limits, None).is_ok(),
-            admitted
-        );
+        let prepared = PreparedModelRequest::prepare(request.clone(), limits, None);
+        prop_assert_eq!(prepared.is_ok(), admitted);
+        if let Ok(prepared) = prepared {
+            let decoded = PreparedModelRequest::decode(prepared.bytes(), limits, None).unwrap();
+            prop_assert_eq!(decoded.request(), prepared.request());
+            prop_assert_eq!(decoded.request_digest(), prepared.request_digest());
+        }
         let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
         prop_assert_eq!(PreparedModelRequest::decode(&bytes, limits, None).is_ok(), admitted);
+    }
+}
+
+#[test]
+fn tool_error_fuzz_corpus_round_trips_only_admitted_exchanges() {
+    let seeds: [(&[u8], bool); 4] = [
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-bound"),
+            true,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-refused"),
+            true,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-control"),
+            false,
+        ),
+        (
+            include_bytes!("../../../harness-fuzz/corpus/model_request/error-unpaired"),
+            false,
+        ),
+    ];
+    for (bytes, admitted) in seeds {
+        let request = crate::contract::json_from_slice(bytes).unwrap();
+        let prepared = PreparedModelRequest::prepare(request, Limits::default(), None);
+        assert_eq!(prepared.is_ok(), admitted);
+        if let Ok(prepared) = prepared {
+            let decoded =
+                PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
+            assert_eq!(decoded.request(), prepared.request());
+            assert_eq!(decoded.request_digest(), prepared.request_digest());
+        }
     }
 }
 

@@ -28,8 +28,10 @@ tool's projection contract: the model reads why and the turn continues. A record
 failure carries a `ToolFailureCause` (a stable `ToolErrorClass` plus at most 256
 bytes of the error text with control characters removed); the raw error stays in
 the `warn` log. Error results in supplied or retained history are admitted by their
-shape and paired call identity; they bypass tool binding, argument and projection
-schema validation. They carry no authenticated evidence that a tool ran or that
+shape and paired call identity. Every paired call's binding and argument schema
+are checked: a refused call admits only an error, and a bound, valid call admits
+either an error or a result meeting its projection schema. Errors carry no
+authenticated evidence that a tool ran or that
 the harness recorded the failure. A tool's own authority check
 (`ToolExecutor::authorize`) still stops the turn, as does a declined approval. Only
 an effect left uncertain ends the turn as indeterminate.

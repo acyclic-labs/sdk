@@ -274,7 +274,7 @@ pub(crate) fn generate<'a>(
                         if let Some(wait) = redelivery.next(&error, retry_after, recovery.output) {
                             drop(error);
                             let exchange = async {
-                                provider.transport.delay(wait).await;
+                                provider.transport.delay_with_native_work(wait, work)?.await?;
                                 work.remaining()?;
                                 Ok::<_, Error>(send(provider, body.clone(), dispatch_id,
                                     (auth.0.as_deref(), auth.1.as_deref()), work).await)

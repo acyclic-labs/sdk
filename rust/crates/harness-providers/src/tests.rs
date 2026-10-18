@@ -40,6 +40,9 @@ mod gemini_tests;
 #[path = "input/projection_tests.rs"]
 mod input_projection_tests;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "native_retry_tests.rs"]
+mod native_retry_tests;
+#[cfg(not(target_arch = "wasm32"))]
 #[path = "native_tests.rs"]
 pub(crate) mod native_tests;
 #[path = "input/portable_projection_tests.rs"]

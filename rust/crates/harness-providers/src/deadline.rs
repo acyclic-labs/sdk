@@ -299,15 +299,16 @@ impl Stream for Guarded {
         if this.ended {
             return Poll::Ready(None);
         }
-        // The total deadline is checked before the producer: consumer work may have crossed it
-        // while a chunk (or EOF) waited, and readiness must never bypass it.
-        if let Some(Expired::Total) = this.deadlines.expired(false) {
-            let error = this.deadlines.timeout(Expired::Total);
+        // Measure both deadlines before polling the producer. A late or starved timer must
+        // not let a newly ready chunk (or EOF) erase the silence that already expired.
+        if let Some(expired) = this.deadlines.expired(true) {
+            let error = this.deadlines.timeout(expired);
             return this.end(Err(error));
         }
-        // Idle means the producer had nothing: a chunk that is ready is progress.
         if let Poll::Ready(item) = this.body.poll_next_unpin(context) {
-            this.deadlines.progress = this.deadlines.transport.now();
+            if matches!(&item, Some(Ok(bytes)) if !bytes.is_empty()) {
+                this.deadlines.progress = this.deadlines.transport.now();
+            }
             if item.is_none() {
                 this.ended = true;
                 this.deadlines.wake = None;

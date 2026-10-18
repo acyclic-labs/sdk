@@ -299,6 +299,49 @@ impl HttpTransport for Starved {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
+    // A starved timer cannot let ready bytes or EOF erase an already expired idle deadline.
+    // Empty chunks never count as bytes of progress, even when polled frequently.
+    #[test]
+    fn idle_expiry_precedes_ready_body_and_empty_chunks(
+        late in 1..1000u64, eof in any::<bool>(), partial in any::<bool>(),
+        empty in any::<bool>(),
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time().start_paused(true).build().unwrap();
+        runtime.block_on(async {
+            let transport: Arc<dyn HttpTransport> = Arc::new(Starved(History {
+                head: 0, gaps: vec![], silent: true,
+            }));
+            let deadlines = Deadlines::start(transport, TimeoutSpec {
+                idle_ms: 100, total_ms: u32::MAX,
+            }, false);
+            let ready: BoxProviderStream<'static, Result<Bytes>> = if eof {
+                Box::pin(futures::stream::empty())
+            } else {
+                Box::pin(futures::stream::repeat_with(move || Ok(if empty {
+                    Bytes::new()
+                } else { Bytes::from_static(b"x") })))
+            };
+            let prefix = futures::stream::iter(partial.then(|| Ok(Bytes::from_static(b"prefix"))));
+            let mut guarded = Guarded::new(Box::pin(prefix.chain(ready)), deadlines);
+            if partial { assert!(guarded.next().await.unwrap().is_ok()); }
+            if empty && !eof {
+                // No single gap exceeds idle, but empty chunks cannot postpone its expiry.
+                for _ in 0..3 {
+                    tokio::time::advance(Duration::from_millis(25)).await;
+                    assert!(guarded.next().await.unwrap().unwrap().is_empty());
+                }
+            }
+            tokio::time::advance(Duration::from_millis(100 + late)).await;
+            // Negative control: polling the producer first, as the old guard did, reports
+            // ready data/EOF and skips the clock check entirely.
+            assert!(guarded.body.next().now_or_never().is_some());
+            let error = guarded.next().await.unwrap().expect_err("expired idle before ready body");
+            assert_eq!(cause(&error), "no response bytes for 100 ms");
+            assert!(guarded.next().await.is_none());
+        });
+    }
+
     // The clock, not the timer, is the measure: time advances, no timer ever fires, and the next
     // poll still fails as a typed timeout, before or after partial output, for either deadline.
     #[test]

@@ -63,8 +63,8 @@ pub struct ProviderSpec {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct TimeoutSpec {
-    /// Longest silence of a response body; a body silent for two such windows always fails,
-    /// one silent for less than one never does.
+    /// Longest interval between consuming nonempty body chunks, measured on the monotonic
+    /// clock before each read. An expired deadline takes precedence over ready bytes or EOF.
     pub idle_ms: u32,
     /// Longest exchange, from the send to the end of the body.
     pub total_ms: u32,
