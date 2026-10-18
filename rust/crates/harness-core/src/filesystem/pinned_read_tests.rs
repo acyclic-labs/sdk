@@ -4,10 +4,18 @@ use proptest::prelude::*;
 
 type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 mod legacy;
+pub(super) mod retained;
 
 async fn fixture(bytes: &[u8]) -> Result<(Arc<Host>, FileRef)> {
+    fixture_with_filesystem(bytes, Fs::memory()).await
+}
+
+async fn fixture_with_filesystem(
+    bytes: &[u8],
+    filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>,
+) -> Result<(Arc<Host>, FileRef)> {
     let provider = ProviderRef::new("pinned".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider,

@@ -161,7 +161,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 work,
             )
         })?;
-        let bytes = self.read_pinned_io(&reference, maximum_bytes, io).await?;
+        let bytes = self
+            .read_retained_file(&original, &reference, maximum_bytes, io)
+            .await?;
         Ok(Some((reference, bytes)))
     }
 
