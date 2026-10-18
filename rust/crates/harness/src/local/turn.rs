@@ -81,7 +81,7 @@ impl LocalHarness {
         }
         let task = crate::runtime::task_id_for_admission(operation);
         let continuation = self.continuation_selection(task).await?;
-        let mut selected = compact::checkpoints::capture_selection(
+        let selected = compact::checkpoints::capture_selection(
             &self.task_files.inner,
             parent,
             self.limits.file_bytes,
@@ -90,8 +90,9 @@ impl LocalHarness {
         .1
         .is_some();
         // A completed conversation is continued, never parented: without a
-        // compaction its whole history becomes the selected checkpoint.
-        if continuation.is_none()
+        // compaction its whole history becomes the selected checkpoint, which
+        // is captured under the admission gate below.
+        let history = continuation.is_none()
             && !selected
             && matches!(
                 self.runtime.task_host().outcome(parent).await?,
@@ -105,14 +106,10 @@ impl LocalHarness {
                 Err(Error::NotFound(_)) => true,
                 Ok(_) => false,
                 Err(error) => return Err(error),
-            }
-        {
-            self.checkpoint_history(operation, parent).await?;
-            selected = true;
-        }
+            };
         // Ordinary active children need no terminal-parent probe. Their existing
         // admission/parent check is already performed by prepare_inheritance.
-        if continuation.is_some() || selected {
+        if continuation.is_some() || selected || history {
             let existing = match self.runtime.task_host().observe_admission(task).await {
                 Ok(record) => Some(record.parent),
                 Err(Error::NotFound(_)) => None,
@@ -150,12 +147,22 @@ impl LocalHarness {
                             (selected, through)
                         }
                         None => {
-                            let (cut, selected, _) = compact::checkpoints::capture_selection(
-                                &self.task_files.inner,
-                                parent,
-                                self.limits.file_bytes,
-                            )
-                            .await?;
+                            let capture = async || {
+                                compact::checkpoints::capture_selection(
+                                    &self.task_files.inner,
+                                    parent,
+                                    self.limits.file_bytes,
+                                )
+                                .await
+                            };
+                            let (mut cut, mut selected, _) = capture().await?;
+                            // Captured under the gate, so a concurrent retry of
+                            // this operation finds the checkpoint instead of
+                            // capturing another history position.
+                            if selected.is_none() && history {
+                                self.checkpoint_history(operation, parent).await?;
+                                (cut, selected, _) = capture().await?;
+                            }
                             let selected = selected.ok_or_else(|| {
                                 Error::Conflict("continuation lost its checkpoint".into())
                             })?;

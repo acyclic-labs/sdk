@@ -197,6 +197,8 @@ impl LocalHarness {
         operation: OperationId,
         target: TaskId,
     ) -> Result<()> {
+        #[cfg(test)]
+        let _capturing = Capturing::enter();
         let publisher = self.input_publisher()?;
         let checkpoint = staged_id(b"history-checkpoint", operation);
         let (source, captured) = self
@@ -241,6 +243,37 @@ impl LocalHarness {
         )
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// History captures in flight on this thread, and their peak.
+    pub(in crate::local) static HISTORY_CAPTURES: std::cell::Cell<(usize, usize)> =
+        const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+struct Capturing;
+
+#[cfg(test)]
+impl Capturing {
+    fn enter() -> Self {
+        HISTORY_CAPTURES.with(|captures| {
+            let (active, peak) = captures.get();
+            captures.set((active + 1, peak.max(active + 1)));
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for Capturing {
+    fn drop(&mut self) {
+        HISTORY_CAPTURES.with(|captures| {
+            let (active, peak) = captures.get();
+            captures.set((active - 1, peak));
+        });
     }
 }
 
