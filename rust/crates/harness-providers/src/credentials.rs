@@ -39,6 +39,9 @@ pub(crate) enum Source {
     #[cfg(not(target_arch = "wasm32"))]
     Environment,
     Configuration,
+    /// The test double's CODEX_HOME, so tests never discover the user's login.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    CodexHome,
 }
 
 fn native_sources() -> bool {
@@ -57,9 +60,19 @@ impl Default for Credentials {
 }
 
 impl Credentials {
+    /// The source after keychain, environment and configuration: an existing
+    /// Codex CLI login, discovered only when native sources are allowed.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn allows_native_sources(&self) -> bool {
-        self.native_sources
+    pub(crate) fn codex_login(&self) -> Option<crate::CodexLogin> {
+        if !self.native_sources {
+            return None;
+        }
+        #[cfg(test)]
+        if let Some(read) = &self.source {
+            let root = read("", Source::CodexHome).ok().flatten()?;
+            return crate::CodexLogin::in_home(std::path::Path::new(&root));
+        }
+        crate::CodexLogin::discover()
     }
     /// Uses only supplied keys, with no keychain, environment or filesystem reads.
     pub fn explicit(api_keys: BTreeMap<String, String>) -> Self {
@@ -140,6 +153,8 @@ impl Credentials {
                 Ok(None)
             }
             Source::Configuration => Ok(self.api_keys.get(provider).cloned()),
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            Source::CodexHome => Ok(None),
         }
     }
 

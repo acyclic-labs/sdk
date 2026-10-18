@@ -447,3 +447,64 @@ fn a_rejected_first_update_keeps_source_observations_without_its_policy() {
     );
     assert_eq!(reads(&sources), before);
 }
+
+/// Discovers the Codex login from a fixture CODEX_HOME, never the user's.
+/// Returns discovery count, admission and whether resolution used the login.
+fn discovery(native: bool, auth: bool, live: bool) -> (usize, bool, bool) {
+    let home = tempfile::tempdir().unwrap();
+    if auth {
+        std::fs::write(home.path().join("auth.json"), "{}").unwrap();
+    }
+    let mut credentials = if native {
+        Credentials::default()
+    } else {
+        Credentials::explicit(BTreeMap::new())
+    };
+    let discovered = Arc::new(Mutex::new(0));
+    let (counter, root) = (discovered.clone(), home.path().to_str().unwrap().to_owned());
+    credentials.source = Some(Arc::new(move |_, source| {
+        if source != Source::CodexHome {
+            return Ok(None);
+        }
+        *counter.lock().unwrap() += 1;
+        Ok(Some(root.clone()))
+    }));
+    let mut registry = Registry::new(credentials).unwrap();
+    registry.selection.live = live;
+    // The uncounted default is admitted only through the login's local counter.
+    let admitted = load(&mut registry, false).is_ok();
+    let mut selected = false;
+    for _ in 0..3 {
+        selected = registry
+            .resolve("openai/gpt-5")
+            .is_ok_and(|resolved| resolved.codex_login.is_some());
+        assert!(registry.resolve("anthropic/claude-sonnet-4-5").is_err());
+    }
+    let count = *discovered.lock().unwrap();
+    assert!(
+        count <= 1,
+        "Codex login discovered more than once per generation"
+    );
+    load(&mut registry, true).unwrap();
+    assert_eq!(*discovered.lock().unwrap(), count * 2);
+    (count, admitted, selected)
+}
+
+#[test]
+fn codex_login_is_the_last_source_discovered_once_per_generation_only_natively() {
+    for native in [false, true] {
+        for auth in [false, true] {
+            assert_eq!(
+                discovery(native, auth, false),
+                (usize::from(native), native && auth, native && auth),
+                "native={native} auth={auth}"
+            );
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "Codex login discovered more than once per generation")]
+fn negative_control_detects_discovery_outside_the_generation_memo() {
+    discovery(true, true, true);
+}

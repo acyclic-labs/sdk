@@ -73,13 +73,7 @@ impl Registry {
         if let Some(login) = self.codex_login.clone().or_else(|| {
             observations
                 .login
-                .get_or_insert_with(|| {
-                    self.credentials
-                        .allows_native_sources()
-                        .then(crate::CodexLogin::discover)
-                        .flatten()
-                        .map(Arc::new)
-                })
+                .get_or_insert_with(|| self.credentials.codex_login().map(Arc::new))
                 .clone()
         }) {
             return Ok(Credential::Codex(login));

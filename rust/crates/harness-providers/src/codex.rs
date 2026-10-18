@@ -185,6 +185,11 @@ impl CodexLogin {
                 std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                     .map(|home| PathBuf::from(home).join(".codex"))
             })?;
+        Self::in_home(&root)
+    }
+
+    /// `root/auth.json` when it exists; the file is read only on first use.
+    pub(crate) fn in_home(root: &Path) -> Option<Self> {
         let path = root.join("auth.json");
         path.is_file().then(|| Self::from_path(path))
     }
