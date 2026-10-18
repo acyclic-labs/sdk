@@ -1,2 +1,4 @@
 # Standalone carriage returns remain visible instead of being mistaken for CRLF.
 cc 6cceacf476a95a9eb38a096ecf46ccaebe9d3805c411263a151dac1fc14c1d81
+# A content CR right before a CRLF delimiter stays visible (lines = ["\r", ""], crlf = true).
+cc 7dda83d2688740a02295b9a8648616861bc624e99e384990736da9acf9ce378b
