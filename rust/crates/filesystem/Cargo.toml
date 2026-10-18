@@ -223,6 +223,7 @@ windows = { version = "0.62.2", features = [
 
 
 [features]
+session = ["distributed", "acyclic-stream/grpc"]
 fuzzing = []
 model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]
@@ -284,3 +285,8 @@ required-features = ["memory"]
 name = "object_batches_alloc"
 harness = false
 required-features = ["memory"]
+
+[[test]]
+name = "session_fs"
+path = "tests/session_fs.rs"
+required-features = ["memory", "session"]

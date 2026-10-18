@@ -65,7 +65,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let channel = subscription.channel.ok_or(StreamError::InvalidArgument)?;
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
         let identity = channel;
-        let children = matches!(subscription.kind, Some(Kind::Children(_)));
+        let opaque_cursor = matches!(
+            subscription.kind,
+            Some(Kind::Children(_) | Kind::FsPublications(_))
+        );
         let (latest, source) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
@@ -104,6 +107,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     ),
                 )
             }
+            Some(Kind::FsPublications(encoded)) => {
+                let subscription = self
+                    .publications
+                    .as_ref()
+                    .ok_or(StreamError::Unsupported)?
+                    .subscribe(encoded, resume.clone())?;
+                let latest = match subscription.delivery {
+                    wire::SessionDelivery::All => false,
+                    wire::SessionDelivery::Latest => true,
+                    _ => return Err(StreamError::InvalidArgument),
+                };
+                (latest, publications::source(subscription, identity))
+            }
             _ => return Err(StreamError::Unsupported),
         };
         Ok((
@@ -111,7 +127,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Channel {
                 generation: identity.generation,
                 latest,
-                children,
+                opaque_cursor,
                 pending: VecDeque::new(),
                 indexed: None,
                 credit: wire::SessionWindow::default(),

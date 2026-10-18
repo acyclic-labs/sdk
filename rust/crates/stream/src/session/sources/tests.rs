@@ -198,7 +198,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                             let channel = Channel {
                                 generation: 1,
                                 latest,
-                                children: false,
+                                opaque_cursor: false,
                                 pending: (0..pending)
                                     .map(|_| Pending {
                                         frame: Default::default(),

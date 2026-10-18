@@ -17,6 +17,8 @@ mod sources;
 #[cfg(acyclic_stream_loom)]
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod children;
+mod publications;
+pub use publications::{PublicationProvider, PublicationStream, PublicationSubscription};
 mod client;
 mod connection;
 mod local;
@@ -81,7 +83,7 @@ impl Default for Limits {
 struct Channel {
     generation: u64,
     latest: bool,
-    children: bool,
+    opaque_cursor: bool,
     pending: VecDeque<Pending>,
     indexed: Option<usize>,
     credit: wire::SessionWindow,
@@ -97,12 +99,14 @@ enum Event {
     Opened(Option<crate::CommitId>),
     Record(crate::Record),
     Child(crate::Child, wire::SessionCursor),
+    Publication(wire::SessionData),
 }
 type SourceItem = (wire::SessionChannel, Result<Event, StreamError>);
 type Source = crate::BoxProviderStream<'static, SourceItem>;
 
 struct Session<P: ?Sized> {
     provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
     executor: Arc<dyn runtime::Executor>,
     limits: Limits,
     node: String,
@@ -130,8 +134,20 @@ pub fn serve<P: StreamProvider + ?Sized>(
     limits: Limits,
     incoming: transport::Responses,
 ) -> Result<transport::Responses, StreamError> {
-    serve_on(
+    serve_with_publications(provider, None, node, limits, incoming)
+}
+
+/// Opens a session with a filesystem publication provider.
+pub fn serve_with_publications<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_publications(
         provider,
+        publications,
         node,
         limits,
         incoming,
@@ -140,6 +156,17 @@ pub fn serve<P: StreamProvider + ?Sized>(
 }
 fn serve_on<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
+    node: String,
+    limits: Limits,
+    incoming: transport::Responses,
+    executor: Arc<dyn runtime::Executor>,
+) -> Result<transport::Responses, StreamError> {
+    serve_on_with_publications(provider, None, node, limits, incoming, executor)
+}
+
+fn serve_on_with_publications<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    publications: Option<Arc<dyn PublicationProvider>>,
     node: String,
     limits: Limits,
     incoming: transport::Responses,
@@ -154,6 +181,7 @@ fn serve_on<P: StreamProvider + ?Sized>(
     }
     let session = Session {
         provider,
+        publications,
         executor,
         node,
         limits,
@@ -304,7 +332,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             Body::Ack(ack) => {
                 let channel = self.channel(input.channel_id, input.generation)?;
                 let applied = ack.applied.ok_or(StreamError::InvalidArgument)?;
-                if (!channel.children && !applied.opaque.is_empty())
+                if (!channel.opaque_cursor && !applied.opaque.is_empty())
                     || (applied.next == channel.sent.next && applied.opaque != channel.sent.opaque)
                     || applied.next < channel.applied.next
                     || applied.next > channel.sent.next

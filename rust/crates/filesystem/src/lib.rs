@@ -79,6 +79,8 @@ pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
+/// Session filesystem payloads.
+pub mod session;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
