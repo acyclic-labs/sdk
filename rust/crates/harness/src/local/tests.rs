@@ -594,9 +594,14 @@ async fn assert_checkout(harness: &LocalHarness, other: &Path) -> Result<()> {
     assert!(!state.starts_with(checkout));
     assert!(!checkout.join(".acyclic").exists());
     assert!(!checkout.join("owner.json").exists());
-    // Default workspace tools expose their declared scratch volume. It is the
-    // only checkout entry; authority and owner state still live outside it.
-    assert!(checkout.join(".volumes/scratch").is_dir());
+    // Default workspace tools bind their declared scratch volume, but its
+    // native projection waits for bash. The namespace parent is the only
+    // checkout entry; authority and owner state still live outside it.
+    assert!(checkout.join(".volumes").is_dir());
+    assert!(
+        !checkout.join(".volumes/scratch").exists(),
+        "scratch was projected before bash needed it"
+    );
     assert_eq!(
         std::fs::read_dir(checkout)
             .map_err(super::storage)?

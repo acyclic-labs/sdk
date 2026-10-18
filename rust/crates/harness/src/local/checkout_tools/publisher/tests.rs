@@ -374,12 +374,38 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
         .stage_at(OperationId::new(), &file, b"edited", None)?
         .await?;
     assert_eq!(edited.volume(), harness.scratch());
+    // Publication selects the bound scratch volume without starting its
+    // native projection; the bytes live in that volume's head.
+    let stop = acyclic_fs::CancellationToken::new();
+    let scratch = harness
+        .workspace
+        .as_ref()
+        .unwrap()
+        .mounts
+        .named(Some("scratch"))?
+        .1
+        .view
+        .source
+        .clone()
+        .ok_or_else(|| Error::NotFound("scratch source".into()))?;
+    assert!(!scratch.destination.exists(), "publication projected scratch");
+    assert!(!directory.path().join(".volumes/scratch/note").exists());
     assert_eq!(
-        std::fs::read(directory.path().join(".volumes/scratch/note")).map_err(storage)?,
+        scratch
+            .workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(storage)?
+            .value
+            .read("/note", 64, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+            .await
+            .map_err(storage)?
+            .value
+            .as_ref(),
         b"edited"
     );
     let view = harness.workspace.as_ref().unwrap().view();
-    let stop = acyclic_fs::CancellationToken::new();
     let primary_absent = async |path: &str| -> Result<bool> {
         let head = view
             .workspace()
