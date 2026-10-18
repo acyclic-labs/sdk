@@ -11,7 +11,6 @@ mod limits_tests;
 mod local_admission;
 mod local_case;
 mod local_cloud;
-mod local_execution;
 mod local_tests;
 mod local_tool_files;
 mod local_tool_files_check;

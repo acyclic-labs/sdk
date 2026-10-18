@@ -312,7 +312,7 @@ fn dispatch_retains_only_the_selected_driver_frame() -> TestResult {
     let baseline = serde_json::from_slice::<serde_json::Value>(include_bytes!(
         "../../../harness-fuzz/corpus/client_diff/local-read"
     ))?;
-    let direct = crate::local_execution::run(serde_json::from_value(baseline.clone())?);
+    let direct = super::local_execution::run(serde_json::from_value(baseline.clone())?);
     let dispatched = run(baseline);
     let bytes = std::mem::size_of_val(&dispatched);
     let inline = std::mem::size_of_val(&direct);

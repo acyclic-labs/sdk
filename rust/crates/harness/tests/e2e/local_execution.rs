@@ -1,4 +1,4 @@
-use super::{
+use crate::{
     TestResult,
     local_case::{ExpectedOutcome, LocalCase},
     local_workspace, matchers,
@@ -69,8 +69,8 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             entry.insert(serde_json::to_value(file)?);
         }
     }
-    let turns = super::local_case::bind_seed_files(case.turns, &references)?;
-    let scripted_calls = super::local_tool_files::calls(&turns);
+    let turns = crate::local_case::bind_seed_files(case.turns, &references)?;
+    let scripted_calls = crate::local_tool_files::calls(&turns);
     let provider = Arc::new(ScriptedModelProvider::new(turns));
     let config = local_harness_config(&directory, (model, provider.clone()))?
         .state_directory(&state)
@@ -83,13 +83,13 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     }
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
-        super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
-    let tool_files = super::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
+        crate::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;
+    let tool_files = crate::local_tool_files::observe(&harness, task_id, &scripted_calls).await?;
     let mut frames = stream
         .follow(StreamPath::new("harness/v3/coordinator/events")?, 0)
         .await?;
     let output = harness.resume(task_id).await;
-    super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
+    crate::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
             if Some(&output.text) == case.expect.text.as_ref() => {}
@@ -136,7 +136,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
         {
             return Err("local model execution or step binding differs".into());
         }
-        super::local_tool_files::verify(
+        crate::local_tool_files::verify(
             &harness,
             task_id,
             execution,
@@ -153,7 +153,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let cut = stream.tail(path).await?;
     let mut wire_frames = Vec::new();
     for sequence in 0..cut {
-        let record = super::stall::waiting("scheduler wire replay", frames.next())
+        let record = crate::stall::waiting("scheduler wire replay", frames.next())
             .await
             .ok_or("scheduler wire ended")??;
         if record.sequence != sequence {
@@ -197,7 +197,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     let mut paths = std::collections::BTreeSet::new();
     let mut removed = std::collections::BTreeSet::new();
     while seen != target.cursor.position {
-        let change = super::stall::waiting(
+        let change = crate::stall::waiting(
             "workspace follow before the settled cut",
             observation.changes.next(),
         )

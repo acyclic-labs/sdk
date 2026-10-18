@@ -2,6 +2,10 @@ use super::task_query_case::TaskQueryCase;
 use super::{TestResult, composer::Composer, execution, notifications::Notifications, scenario};
 use serde_json::Value;
 
+// Raw local execution is visible only inside this guarded dispatcher.
+#[path = "local_execution.rs"]
+mod local_execution;
+
 trait Driver {
     type Case;
     fn execute(case: Self::Case) -> impl Future<Output = TestResult>;
@@ -57,7 +61,7 @@ impl Driver for TaskQueryCase {
 impl Driver for super::local_case::LocalCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        super::local_execution::run(case).await
+        local_execution::run(case).await
     }
 }
 
