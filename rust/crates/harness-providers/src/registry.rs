@@ -2,6 +2,8 @@ use crate::{Authentication, Credentials, HttpTransport, ProviderSpec, ResolvedMo
 use acyclic_harness::{Result, model::Model};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
+mod catalog_update;
+use catalog_update::Changes;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
@@ -77,9 +79,7 @@ impl Registry {
 
     /// Adds or replaces one endpoint. Local models require their configured capacities.
     pub fn register(&mut self, provider: String, config: ProviderSpec) -> Result<()> {
-        validate_spec(&provider, &config)?;
-        self.providers.insert(provider, Arc::new(config));
-        Ok(())
+        self.update_catalog(Changes::One(provider, config), None)
     }
 
     /// Loads endpoint, credential policy and exact capacities from a JSON catalog.
@@ -87,31 +87,7 @@ impl Registry {
     pub fn load_catalog(&mut self, path: &std::path::Path) -> Result<()> {
         let bytes = std::fs::read(path).map_err(|_| invalid("cannot read provider catalog"))?;
         let catalog = crate::catalog_document::parse(&bytes)?;
-        for (provider, spec) in &catalog.providers {
-            validate_spec(provider, spec)?;
-        }
-        if let Some(default) = &catalog.default_model {
-            let (provider, name) = default
-                .split_once('/')
-                .ok_or_else(|| invalid("catalog default_model requires provider/model"))?;
-            let entry = catalog
-                .providers
-                .get(provider)
-                .or_else(|| self.providers.get(provider).map(Arc::as_ref));
-            if entry.is_none_or(|entry| !entry.models.contains_key(name)) {
-                return Err(invalid("catalog default_model is absent from its models"));
-            }
-        }
-        self.providers.extend(
-            catalog
-                .providers
-                .into_iter()
-                .map(|(id, spec)| (id, Arc::new(spec))),
-        );
-        if let Some(default) = catalog.default_model {
-            self.default_model = Some(default);
-        }
-        Ok(())
+        self.update_catalog(Changes::Many(catalog.providers), catalog.default_model)
     }
 
     /// Resolves a model without doing network I/O. Remaining slashes belong to the model.
