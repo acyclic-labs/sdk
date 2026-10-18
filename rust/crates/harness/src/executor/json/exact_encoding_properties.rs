@@ -1,4 +1,7 @@
 // Fixed 64-bit production allocation totals, including the four-slot trace buffer.
+// A canonical encoding decodes its own output, so its retained, released and
+// peak bytes include one decoder diagnostic allowance, whose size depends on
+// the enabled error variants; it is added symbolically as `D`.
 // Fixtures cover a scalar, array indexing/object decode, and output growth.
 use super::*;
 
@@ -10,15 +13,17 @@ fn values() -> [Value; 3] {
     ]
 }
 
+const D: u64 = sdk_json_diagnostic_bytes();
+
 const CODEC: [[([u64; 9], [i128; 6]); 2]; 3] = [
     [
         ([4, 1, 4, 0, 0, 1, 64, 0, 4], [2, 2, 2, 160, 160, 160]),
-        ([8, 1, 8, 0, 0, 1, 1408, 1344, 4], [2, 2, 2, 160, 160, 160]),
+        ([8, 1, 8, 0, 0, 1, 472 + D, 408 + D, 4], [2, 2, 2, 160, 160, 160]),
     ],
     [
         ([21, 7, 21, 0, 0, 1, 64, 0, 1], [2, 2, 2, 160, 160, 160]),
         (
-            [42, 7, 70, 0, 7, 10, 3868, 3804, 29],
+            [42, 7, 70, 0, 7, 10, 2932 + D, 2868 + D, 29],
             [11, 2, 10, 1076, 160, 1012],
         ),
     ],
@@ -28,16 +33,16 @@ const CODEC: [[([u64; 9], [i128; 6]); 2]; 3] = [
             [4, 2, 3, 1723, 1138, 1659],
         ),
         (
-            [1046, 3, 2092, 0, 0, 7, 5847, 4805, 1560],
+            [1046, 3, 2092, 0, 0, 7, 4911 + D, 3869 + D, 1560],
             [8, 2, 6, 2935, 1138, 2350],
         ),
     ],
 ];
 
 const LEDGER: [[(u64, u64, u64, u64, u64); 2]; 3] = [
-    [(4, 4, 1, 1, 64), (8, 8, 1, 1, 1408)],
-    [(21, 21, 7, 1, 64), (70, 42, 14, 10, 3868)],
-    [(1053, 523, 3, 3, 1563), (2092, 1046, 3, 7, 5262)],
+    [(4, 4, 1, 1, 64), (8, 8, 1, 1, 472 + D)],
+    [(21, 21, 7, 1, 64), (70, 42, 14, 10, 2932 + D)],
+    [(1053, 523, 3, 3, 1563), (2092, 1046, 3, 7, 4326 + D)],
 ];
 
 fn check_encoder(index: usize, canonical: bool, repeat: bool) -> TestCaseResult {
@@ -109,6 +114,19 @@ fn encode_with_ledger(
     })
 }
 
+// Live bytes a fresh original native ledger holds before any work, under the
+// same budget `accounted` uses.
+fn original_ledger_bytes() -> u64 {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::work_budget(1_000_000, 64_000_000),
+        &cancellation,
+    )
+    .map_err(|(cause, _)| cause.to_string())
+    .unwrap()
+    .live_allocation_bytes()
+}
+
 fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> TestCaseResult {
     use acyclic_fs::WorkCounters;
     let value = values().into_iter().nth(index).unwrap();
@@ -131,16 +149,19 @@ fn check_ledger(index: usize, canonical: bool, native: bool, repeat: bool) -> Te
     let (copied, encoded, items, operations, peak) = LEDGER[index][usize::from(canonical)];
     let capacity =
         CODEC[index][usize::from(canonical)].0[6] - CODEC[index][usize::from(canonical)].0[7];
-    // The 64-bit original ledger owns 1,248 bytes; native output custody adds
-    // two allocations and a 112-byte control beside the existing output.
-    let ledger_bytes = if native { 1248 } else { 0 };
+    // The original ledger owns its own fixed allocations, and native output
+    // custody adds two allocations and the guard header beside the existing
+    // output. Both sizes are layout- and feature-dependent, so they come from
+    // the real types rather than one build's constants.
+    let ledger_bytes = if native { original_ledger_bytes() } else { 0 };
+    let header = acyclic_stream::OwnedBytes::vec_guard_header_bytes::<acyclic_fs::NativeAllocation>();
     let expected = WorkCounters {
         bytes_copied: copied,
         bytes_encoded: encoded,
         items_examined: items,
         allocation_operations: operations + if native { 2 } else { 0 },
         peak_allocation_bytes: if native {
-            ledger_bytes + peak.max(capacity + 112)
+            ledger_bytes + peak.max(capacity + header)
         } else {
             peak
         },

@@ -106,12 +106,19 @@ impl OwnedBytes {
         result
     }
 
+    /// Ownership header bytes charged for a native vector guarded by `G`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub const fn vec_guard_header_bytes<G: Send + Sync + 'static>() -> u64 {
+        std::mem::size_of::<GuardBundle<G>>() as u64
+    }
+
     /// Reserves the ownership header before a native producer starts I/O.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn reserve_vec_guard<G: Send + Sync + 'static>(
         meter: &Arc<dyn NativeReadMeter>,
     ) -> io::Result<ReadAllocationReservation> {
-        ReadAllocationReservation::new(meter, std::mem::size_of::<GuardBundle<G>>() as u64)
+        ReadAllocationReservation::new(meter, Self::vec_guard_header_bytes::<G>())
     }
 
     /// Publishes initialized vector bytes using the header reserved before I/O.
@@ -123,7 +130,7 @@ impl OwnedBytes {
         let (length, capacity) = (storage.0.len(), storage.0.capacity());
         GuardBundle::with_allocation(
             storage,
-            reservation.allocate_exact(std::mem::size_of::<GuardBundle<G>>()),
+            reservation.allocate_exact(Self::vec_guard_header_bytes::<G>() as usize),
         )
         .map(|guard| Self {
             data: Data::Native(guard),
@@ -141,7 +148,7 @@ impl OwnedBytes {
         if guard.is_none() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let metadata = ReadAllocation::new(meter, std::mem::size_of::<GuardBundle<G>>())?;
+        let metadata = ReadAllocation::new(meter, Self::vec_guard_header_bytes::<G>() as usize)?;
         let original_guard = guard.take().ok_or(io::ErrorKind::InvalidInput)?;
         let (length, capacity) = (data.len(), data.capacity());
         let guard = Arc::new(GuardBundle {
