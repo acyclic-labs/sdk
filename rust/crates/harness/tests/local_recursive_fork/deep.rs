@@ -4,7 +4,6 @@ use super::*;
 async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<()> {
     const N: u8 = 1;
     const DEPTH: u8 = 10 * N;
-    let mut observations = Vec::new();
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -423,37 +422,60 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 None,
             )
             .await?;
-        if level == N || level == DEPTH {
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let opened = fs
-                .open_workspace(
-                    child_private.storage_name(&mut None)?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
-            let listed = opened
-                .value
-                .list_directory(
-                    "/",
-                    None,
-                    3,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| Error::Storage(failure.error.to_string()))?;
-            observations.push(
-                serde_json::to_value(
-                    opened
-                        .work
-                        .checked_add(listed.work)
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                )
-                .map_err(|error| Error::Storage(error.to_string()))?,
-            );
+        // Fork depth must not change what reading a workspace costs. Each
+        // level's tree has its own hashed file identities, which order its
+        // file table differently, and a fork's first generation records its
+        // source, so a level is not compared with its parent. Instead two
+        // successive untouched forks of the level, whose trees and head
+        // records have the same shape, must cost exactly the same.
+        let child_verifier = child_issuer.verifier(&mut None).expect("verifier copy");
+        let mut source = (child_private.clone(), child_scope.clone());
+        let mut work = Vec::new();
+        for echo in ["echo", "echo-echo"] {
+            let echo = volume(
+                &provider,
+                VolumeClass::AgentPrivate,
+                echo.into(),
+                VolumeOwner::Agent(child_agent),
+            )?;
+            let echo_scope = scope(&child_issuer, child_agent, &echo, &child_project)?;
+            host.fork_volume(
+                &source.0,
+                &ContentGrant::verify(
+                    &child_verifier,
+                    &source.1,
+                    &source.0,
+                    VolumeOperation::Read,
+                    65_536,
+                    &mut None,
+                )?,
+                &host
+                    .resolve(
+                        &workspace_ref(provider.clone(), &source.0.storage_name(&mut None)?)?,
+                        None,
+                    )
+                    .await?
+                    .generation,
+                &echo,
+                &ContentGrant::verify(
+                    &child_verifier,
+                    &echo_scope,
+                    &echo,
+                    VolumeOperation::Write,
+                    65_536,
+                    &mut None,
+                )?,
+                None,
+                &IdempotencyKey::new(format!("deep-echo-{level}-{}", work.len()))?,
+            )
+            .await?;
+            work.push(read_work(&fs, &echo).await?);
+            source = (echo, echo_scope);
         }
+        assert_eq!(
+            work[1], work[0],
+            "one more fork level changed the read work at level {level}"
+        );
         previous_file = child_file;
         previous_attachment = child_attachment;
         private = child_private;
@@ -468,18 +490,40 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     assert_eq!(aggregate.reducer().revision(), 2);
     assert_eq!(agent, AgentId::from_bytes([DEPTH; 16]));
     assert_eq!(project.id(), format!("deep-project-{DEPTH}"));
-    let [small, large] = observations.as_slice() else {
-        panic!("missing growth observations")
-    };
-    for (counter, value) in small.as_object().expect("work counters") {
-        assert!(
-            large
-                .get(counter)
-                .and_then(serde_json::Value::as_u64)
-                .expect("counter")
-                <= value.as_u64().expect("counter"),
-            "{counter} must stay bounded"
-        );
-    }
     Ok(())
+}
+
+/// Exact work to open a workspace and list its root.
+async fn read_work<A, O>(fs: &Fs<A, O>, volume: &VolumeRef) -> Result<serde_json::Value>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let opened = fs
+        .open_workspace(
+            volume.storage_name(&mut None)?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+    let listed = opened
+        .value
+        .list_directory(
+            "/",
+            None,
+            3,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(|failure| Error::Storage(failure.error.to_string()))?;
+    serde_json::to_value(
+        opened
+            .work
+            .checked_add(listed.work)
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    )
+    .map_err(|error| Error::Storage(error.to_string()))
 }
