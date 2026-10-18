@@ -407,7 +407,18 @@ proptest::proptest! {
 #[tokio::test]
 async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
 -> Result<(), Box<dyn Error>> {
-    for batched in [false, true] {
+    #[derive(Clone, Copy, Debug)]
+    enum WriteMode {
+        Serial,
+        Batched,
+        PendingBatch,
+    }
+    for mode in [
+        WriteMode::Serial,
+        WriteMode::Batched,
+        WriteMode::PendingBatch,
+    ] {
+        let batched = !matches!(mode, WriteMode::Serial);
         for observe_directory in [false, true] {
             for replace_prefix in [false, true] {
                 let fs = Fs::memory();
@@ -417,43 +428,93 @@ async fn shared_directory_writers_rebase_only_semantically_disjoint_batches()
                 commit(&mut seed).await?;
                 let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
                 let mut winner = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
+                if matches!(mode, WriteMode::PendingBatch) {
+                    // A prior mutation forces write_batch's serial fallback.
+                    pending.write_text("/staged", "pending").await?;
+                }
                 if observe_directory {
                     let limits = pending.checkout.volume_config().limits;
                     let path = crate::kernel::NamespacePath::new(
-                        [".system", "harness-uploads"].into_iter().map(|name| {
-                            crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
-                                name.as_bytes().to_vec(), limits.maximum_component_bytes)
-                        }).collect::<Result<Vec<_>, _>>()?, limits)?;
+                        [".system", "harness-uploads"]
+                            .into_iter()
+                            .map(|name| {
+                                crate::kernel::LogicalName::new(
+                                    crate::kernel::NameEncoding::Utf8,
+                                    name.as_bytes().to_vec(),
+                                    limits.maximum_component_bytes,
+                                )
+                            })
+                            .collect::<Result<Vec<_>, _>>()?,
+                        limits,
+                    )?;
                     unbounded!(pending.checkout, lookup_no_follow(&path))?;
                 }
                 if batched {
-                    unbounded!(pending, write_batch(&["/.system/harness-uploads"], &[
-                        ("/.system/harness-uploads/local", OwnedBytes::from_static(b"local"))
-                    ]))?;
+                    unbounded!(
+                        pending,
+                        write_batch(
+                            &["/.system/harness-uploads"],
+                            &[(
+                                "/.system/harness-uploads/local",
+                                OwnedBytes::from_static(b"local")
+                            )]
+                        )
+                    )?;
                 } else {
                     unbounded!(pending, create_dir_all("/.system/harness-uploads"))?;
-                    pending.write_text("/.system/harness-uploads/local", "local").await?;
+                    pending
+                        .write_text("/.system/harness-uploads/local", "local")
+                        .await?;
                 }
                 if replace_prefix {
                     unbounded!(winner, remove("/.system/harness-uploads"))?;
-                    winner.write_text("/.system/harness-uploads", "replacement").await?;
+                    winner
+                        .write_text("/.system/harness-uploads", "replacement")
+                        .await?;
                 } else {
-                    unbounded!(winner, write_batch(&["/.system/harness-uploads"], &[
-                        ("/.system/harness-uploads/remote", OwnedBytes::from_static(b"remote"))
-                    ]))?;
+                    unbounded!(
+                        winner,
+                        write_batch(
+                            &["/.system/harness-uploads"],
+                            &[(
+                                "/.system/harness-uploads/remote",
+                                OwnedBytes::from_static(b"remote")
+                            )]
+                        )
+                    )?;
                 }
-                assert!(matches!(commit(&mut winner).await?, TransactionCommit::Committed(_)));
-                assert!(matches!(commit(&mut pending).await?, TransactionCommit::Conflict { .. }));
+                assert!(matches!(
+                    commit(&mut winner).await?,
+                    TransactionCommit::Committed(_)
+                ));
+                assert!(matches!(
+                    commit(&mut pending).await?,
+                    TransactionCommit::Conflict { .. }
+                ));
                 let outcome = unbounded!(pending, rebase(16))?;
                 if observe_directory || replace_prefix {
-                    assert!(matches!(outcome, TransactionRebase::Conflicted { .. }),
-                        "batched={batched}, observed={observe_directory}, replaced={replace_prefix}");
+                    assert!(
+                        matches!(outcome, TransactionRebase::Conflicted { .. }),
+                        "batched={batched}, observed={observe_directory}, replaced={replace_prefix}"
+                    );
                 } else {
-                    assert!(matches!(outcome, TransactionRebase::Rebased(_)),
-                        "batched={batched}: {outcome:?}");
-                    assert!(matches!(commit(&mut pending).await?, TransactionCommit::Committed(_)));
-                    assert_eq!(unbounded!(workspace, read("/.system/harness-uploads/local", 16))?.as_ref(), b"local");
-                    assert_eq!(unbounded!(workspace, read("/.system/harness-uploads/remote", 16))?.as_ref(), b"remote");
+                    assert!(
+                        matches!(outcome, TransactionRebase::Rebased(_)),
+                        "mode={mode:?} failed to rebase disjoint sibling writes"
+                    );
+                    assert!(matches!(
+                        commit(&mut pending).await?,
+                        TransactionCommit::Committed(_)
+                    ));
+                    assert_eq!(
+                        unbounded!(workspace, read("/.system/harness-uploads/local", 16))?.as_ref(),
+                        b"local"
+                    );
+                    assert_eq!(
+                        unbounded!(workspace, read("/.system/harness-uploads/remote", 16))?
+                            .as_ref(),
+                        b"remote"
+                    );
                 }
             }
         }
@@ -471,12 +532,25 @@ async fn directory_batches_still_observe_replaced_file_contents() -> Result<(), 
     seed.write_text("/shared/file", "base").await?;
     commit(&mut seed).await?;
     let mut pending = unbounded!(workspace, begin_transaction(IdempotencyKey::new()))?;
-    unbounded!(pending, write_batch(&["/shared"], &[
-        ("/shared/file", OwnedBytes::from_static(b"replacement"))
-    ]))?;
+    unbounded!(
+        pending,
+        write_batch(
+            &["/shared"],
+            &[("/shared/file", OwnedBytes::from_static(b"replacement"))]
+        )
+    )?;
     workspace.write_text("/shared/file", "concurrent").await?;
-    assert!(matches!(commit(&mut pending).await?, TransactionCommit::Conflict { .. }));
-    assert!(matches!(unbounded!(pending, rebase(16))?, TransactionRebase::Conflicted { .. }));
-    assert_eq!(unbounded!(workspace, read("/shared/file", 16))?.as_ref(), b"concurrent");
+    assert!(matches!(
+        commit(&mut pending).await?,
+        TransactionCommit::Conflict { .. }
+    ));
+    assert!(matches!(
+        unbounded!(pending, rebase(16))?,
+        TransactionRebase::Conflicted { .. }
+    ));
+    assert_eq!(
+        unbounded!(workspace, read("/shared/file", 16))?.as_ref(),
+        b"concurrent"
+    );
     Ok(())
 }
