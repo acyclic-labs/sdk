@@ -10,10 +10,11 @@ fn projected_identity(adapter: Adapter, name: &str, counting: bool) {
     let (mut provider, _) = provider(adapter, 200);
     provider.model.name = name.into();
     let (request, _) = request(&provider).unwrap();
+    let names = crate::tool_names::Names::new(request.request());
     let body = projection::body_named(
         &provider,
         request.request(),
-        &crate::tool_names::Names::new(request.request()),
+        &names,
         &provider.reasoning_origin(None, None),
         &mut Default::default(),
     )
