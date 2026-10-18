@@ -108,7 +108,7 @@ async fn scripted(workspace: &std::path::Path, answer: String) -> Arc<LocalHarne
         ScriptedModelProvider::new([ScriptedTurn::Text(answer)]).with_context_capacity(
             ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );
