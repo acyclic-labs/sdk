@@ -1,0 +1,1 @@
+fn p() { serde_json::json!({ { let lock = std::sync::Mutex::new(()); "key" }: 0 }); }

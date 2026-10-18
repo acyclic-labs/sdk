@@ -1,0 +1,24 @@
+[package]
+name = "loom-lock-scan"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Parsed lock-construction scan behind scripts/check-loom-models.mjs"
+
+# Standalone: the Loom gate builds only this scanner, never the SDK workspace.
+[workspace]
+
+[dependencies]
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing", "clone-impls", "visit", "visit-mut"] }
+quote = { version = "1", default-features = false }
+proc-macro2 = { version = "1", default-features = false }
+
+[dev-dependencies]
+proptest = { version = "1", default-features = false, features = ["std"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

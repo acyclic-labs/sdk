@@ -2,10 +2,6 @@ use super::{Error, Generation, Result, TaskVolume, apply, item_examined, segment
 use acyclic_stream::{ReadRequest, StreamProvider, StreamWatermarks};
 use futures::StreamExt as _;
 
-#[cfg(all(test, acyclic_harness_loom))]
-#[path = "../../tests/task_volume/refresh_model.rs"]
-mod tests;
-
 impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     // Lock order: index only. Provider calls and stream polls never hold it.
     // Every staged record is applied only to its captured generation.
@@ -13,7 +9,8 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         self.refresh_to_tail::<true>().await
     }
 
-    // RESUME=false is the model's deliberately broken early-success variant.
+    // RESUME=false is the durability model's deliberately broken early-success
+    // variant: a partial peer advance must not count as reaching the tail.
     pub(super) async fn refresh_to_tail<const RESUME: bool>(&self) -> Result<StreamWatermarks> {
         Ok(self.refresh_bounded::<RESUME>(u64::MAX).await?.0)
     }

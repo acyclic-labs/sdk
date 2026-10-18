@@ -1,0 +1,1 @@
+trait Factory { type Lock; } impl Factory for () { type Lock = std::sync::Mutex<()>; } fn p() { <() as Factory>::Lock::default(); }

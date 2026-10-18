@@ -300,18 +300,40 @@ impl ReadPauses {
     }
 }
 
-fn concurrent_refresh<const RESUME: bool>(snapshot: bool, short_first: bool) {
+#[derive(Clone, Copy)]
+struct Refresh {
+    snapshot: bool,
+    short_first: bool,
+    // Accepted tail captured by both readers: 2 after one write, 3 after two.
+    tail: u64,
+    // Reader two applies every captured record while reader one is suspended,
+    // instead of stopping after the first one.
+    peer_finishes: bool,
+}
+
+fn concurrent_refresh<const RESUME: bool>(case: Refresh) {
+    let Refresh {
+        snapshot,
+        short_first,
+        tail,
+        peer_finishes,
+    } = case;
     loom::model(move || {
-        let (mut histories, _, path) = block_on(histories());
+        let (mut histories, old, path) = block_on(histories());
         let mut records = histories.original.clone();
-        let latest = FileValue::new(FileKey::Goal, b"latest".to_vec());
-        let mut last = records.last().unwrap().clone();
-        last.sequence += 1;
-        last.commit_id = CommitId::from_bytes([7; 32]);
-        last.value = crate::task_volume::segment::encode(&latest, None)
-            .unwrap()
-            .0;
-        records.push(last);
+        let mut expected = old.bytes;
+        if tail == 3 {
+            let latest = FileValue::new(FileKey::Goal, b"latest".to_vec());
+            let mut last = records.last().unwrap().clone();
+            last.sequence += 1;
+            last.commit_id = CommitId::from_bytes([7; 32]);
+            last.value = crate::task_volume::segment::encode(&latest, None)
+                .unwrap()
+                .0;
+            records.push(last);
+            expected = latest.bytes;
+        }
+        assert_eq!(records.len() as u64, tail);
         histories.original.truncate(1);
         let pauses = Arc::new(ReadPauses {
             short_first,
@@ -365,45 +387,62 @@ fn concurrent_refresh<const RESUME: bool>(snapshot: bool, short_first: bool) {
             move || block_on(volume.head()).unwrap()
         });
         pauses.second.reached();
-        // Reader two has applied only the first record. Reader one must finish
-        // the captured tail without waiting for reader two's remaining I/O.
+        // Reader two has applied only the first record (with one write, that
+        // is the whole tail and it is suspended at the page's EOF). Reader one
+        // must finish the captured tail without waiting for reader two's
+        // remaining I/O, or adopt reader two's completed advance.
+        let mut second = Some(second);
+        if peer_finishes {
+            pauses.second.release();
+            second.take().unwrap().join().unwrap();
+        }
         pauses.first.release();
         let observed = first.join().unwrap();
-        pauses.second.release();
-        second.join().unwrap();
+        if let Some(second) = second {
+            pauses.second.release();
+            second.join().unwrap();
+        }
         assert_eq!(
             observed,
-            (3, latest.bytes),
+            (tail, expected),
             "refresh returned a partial accepted prefix"
         );
     });
 }
 
+fn cases(tail: u64, peer_finishes: bool) -> impl Iterator<Item = Refresh> {
+    [(false, false), (false, true), (true, false), (true, true)]
+        .into_iter()
+        .map(move |(snapshot, short_first)| Refresh {
+            snapshot,
+            short_first,
+            tail,
+            peer_finishes,
+        })
+}
+
 #[test]
 fn concurrent_readers_finish_the_tail_captured_at_entry() {
-    for snapshot in [false, true] {
-        for short_first in [false, true] {
-            concurrent_refresh::<true>(snapshot, short_first);
-        }
+    // Captured tail 2 with the peer reaching it; tail 3 with the peer stopping
+    // at 2; tail 3 with the peer reaching 3 before reader one resumes.
+    for (tail, peer_finishes) in [(2, false), (3, false), (3, true)] {
+        cases(tail, peer_finishes).for_each(concurrent_refresh::<true>);
     }
 }
 
 #[test]
 fn negative_control_partial_peer_advance_cannot_count_as_complete() {
-    for snapshot in [false, true] {
-        for short_first in [false, true] {
-            let failure =
-                std::panic::catch_unwind(|| concurrent_refresh::<false>(snapshot, short_first))
-                    .expect_err("the broken refresh unexpectedly reached its accepted tail");
-            let message = failure
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| failure.downcast_ref::<&str>().copied())
-                .unwrap_or("");
-            assert!(
-                message.contains("refresh returned a partial accepted prefix"),
-                "unexpected model failure: {message}"
-            );
-        }
+    for case in cases(3, false) {
+        let failure = std::panic::catch_unwind(|| concurrent_refresh::<false>(case))
+            .expect_err("the broken refresh unexpectedly reached its accepted tail");
+        let message = failure
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| failure.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(
+            message.contains("refresh returned a partial accepted prefix"),
+            "unexpected model failure: {message}"
+        );
     }
 }

@@ -110,19 +110,26 @@ fn exercise(reentrant: bool, omit_invocation: bool, context: u8, shadow: bool) {
     );
 }
 
-macro_rules! context_model {
-    ($name:ident, $context:expr) => {
-        #[test]
-        fn $name() {
-            for shadow in [false, true] {
-                exercise(false, false, $context, shadow);
-            }
-        }
-    };
+fn context_model(context: u8) {
+    for shadow in [false, true] {
+        exercise(false, false, context, shadow);
+    }
 }
-context_model!(root_hash_preserves_prefix_and_competing_charge, 0);
-context_model!(resource_hash_preserves_prefix_and_competing_charge, 1);
-context_model!(invocation_hash_preserves_prefix_and_competing_charge, 2);
+
+#[test]
+fn root_hash_preserves_prefix_and_competing_charge() {
+    context_model(0);
+}
+
+#[test]
+fn resource_hash_preserves_prefix_and_competing_charge() {
+    context_model(1);
+}
+
+#[test]
+fn invocation_hash_preserves_prefix_and_competing_charge() {
+    context_model(2);
+}
 
 fn counterexample(action: impl FnOnce() + std::panic::UnwindSafe, expected: &str) {
     let error = std::panic::catch_unwind(action).expect_err("broken hash must fail");

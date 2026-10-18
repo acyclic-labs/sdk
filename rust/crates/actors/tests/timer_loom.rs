@@ -103,38 +103,61 @@ fn timer_fire_survives_lost_ack_restart_and_concurrent_append() {
 
 struct UnkeyedRetry(MemoryStream);
 
-macro_rules! delegate {
-    ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
-        #[async_trait::async_trait]
-        impl StreamProvider for UnkeyedRetry {
-            $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
-                self.0.$name($arg).await
-            })*
-            async fn follow(&self, path: StreamPath, from: u64)
-                -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError>
-            {
-                self.0.follow(path, from).await
-            }
-            async fn append(&self, mut request: AppendRequest)
-                -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
-            {
-                // Deliberately drop the production fire's stable retry key.
-                request.idempotency_key = None;
-                self.0.append(request).await
-            }
-        }
-    };
-}
+type Provided<T> = std::result::Result<T, acyclic_stream::StreamError>;
 
-delegate! {
-    inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
-    tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> acyclic_stream::StreamBounds;
-    fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
-    read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
-    children(request: acyclic_stream::ChildrenRequest) -> acyclic_stream::ChildStream;
-    commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
-    read_commit(id: acyclic_stream::CommitId) -> acyclic_stream::CommittedEnvelope;
+// Delegates every operation except the deliberately broken append.
+#[async_trait::async_trait]
+impl StreamProvider for UnkeyedRetry {
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Provided<Option<acyclic_stream::IdempotencyObservation>> {
+        self.0.inspect_idempotency(key).await
+    }
+    async fn tail(&self, path: StreamPath) -> Provided<u64> {
+        self.0.tail(path).await
+    }
+    async fn bounds(&self, path: StreamPath) -> Provided<acyclic_stream::StreamBounds> {
+        self.0.bounds(path).await
+    }
+    async fn fork(
+        &self,
+        request: acyclic_stream::ForkRequest,
+    ) -> Provided<acyclic_stream::ForkReceipt> {
+        self.0.fork(request).await
+    }
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> Provided<acyclic_stream::RecordStream> {
+        self.0.read(request).await
+    }
+    async fn children(
+        &self,
+        request: acyclic_stream::ChildrenRequest,
+    ) -> Provided<acyclic_stream::ChildStream> {
+        self.0.children(request).await
+    }
+    async fn commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+    ) -> Provided<acyclic_stream::CommitOutcome> {
+        self.0.commit(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> Provided<acyclic_stream::CommittedEnvelope> {
+        self.0.read_commit(id).await
+    }
+    async fn follow(&self, path: StreamPath, from: u64) -> Provided<acyclic_stream::RecordStream> {
+        self.0.follow(path, from).await
+    }
+    async fn append(&self, mut request: AppendRequest) -> Provided<acyclic_stream::AppendOutcome> {
+        // Deliberately drop the production fire's stable retry key.
+        request.idempotency_key = None;
+        self.0.append(request).await
+    }
 }
 
 #[test]

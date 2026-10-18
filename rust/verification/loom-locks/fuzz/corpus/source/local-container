@@ -1,0 +1,1 @@
+#[derive(Default)] struct Vec(std::sync::Arc<std::sync::Mutex<()>>); fn p() { Vec::default(); }

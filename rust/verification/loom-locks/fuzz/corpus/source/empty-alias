@@ -1,0 +1,1 @@
+type Slot<T> = Option<T>; fn p() { let _: Slot<std::sync::Mutex<u8>> = Default::default(); }

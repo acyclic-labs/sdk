@@ -1,0 +1,23 @@
+[package]
+name = "loom-lock-scan-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+loom-lock-scan = { path = ".." }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+quote = "1"
+
+[[bin]]
+name = "source"
+path = "fuzz_targets/source.rs"
+test = false
+doc = false
+bench = false

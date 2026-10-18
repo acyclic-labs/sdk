@@ -173,6 +173,7 @@ test('the required job checks Cargo lock consistency and committed lane artifact
    +'fi\n'
    +'node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"\n',
   'node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs',
+  'node --test scripts/local-cloud.test.mjs',
   'cargo update --workspace --locked',
  ]);
  assert.equal(job.steps.filter(step=>step.uses).length,1);

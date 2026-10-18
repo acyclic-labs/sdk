@@ -1,0 +1,13 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f5de7e699e491d5ee2d0ea85ad6678d2c4ab8f450cae25264b4653e373d8a65f # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Typed(Default), wraps: [Paren] }
+cc 28158bdf9ee3e286d7e54074c4cecbac0b4a709ca0eaf98670d7ddd7b60a3596 # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Tuple(Default), wraps: [Paren] }
+cc bc7f64c713958b7b49310f694d91c595eeda20914fa572db191cafc6e972550d # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Tuple(MethodInto), wraps: [] }
+cc c3a66742c82555d17efd604ef92968d214641928cf94531e1377e7b5a38c51a0 # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Argument(Default), wraps: [] }
+cc 230ddd8188fa23b32a381bea3ac424cd36dc58ed542844dcb568f61876211181 # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Argument(Default), wraps: [] }
+cc ec29810a65f23555d2473902c03db79edf041bb4402729bad1fa98f07a6c9ef5 # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Typed(Default), wraps: [Unsafe] }
+cc 7e08814316db55543fbb542f43bb5a2d828105f86ff1c2e3c157e4e4c20b850f # shrinks to case = Case { prefix: 0, lock: 0, chain: [], form: Tuple(Default), wraps: [Unsafe] }
