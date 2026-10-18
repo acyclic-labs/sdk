@@ -122,7 +122,7 @@ proptest! {
         let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let mut index = Index::new(entries.len(), &mut work).map_err(|error| TestCaseError::fail(error.to_string()))?;
         let identity = |key: u8| ObjectId { kind: crate::ObjectKind::BlobChunk, digest: object_digest(crate::ObjectKind::BlobChunk, &[key]) };
-        let mut baseline = HashMap::new();
+        let mut baseline: HashMap<ObjectId, &u8> = HashMap::new();
         let expected: Vec<_> = entries.iter().map(|(key, value)| match baseline.entry(identity(*key)) {
             std::collections::hash_map::Entry::Occupied(previous) => Some(**previous.get()),
             std::collections::hash_map::Entry::Vacant(empty) => { empty.insert(value); None }
