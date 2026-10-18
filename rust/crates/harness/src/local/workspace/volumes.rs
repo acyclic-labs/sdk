@@ -147,15 +147,23 @@ pub(in crate::local) async fn native_scope<T>(
             }
         }
     }
-    let result = match projected {
-        // Boxed, as are projection entry and exit: these deep futures stay
-        // out of every caller's layout.
-        Ok(()) => Box::pin(body(Claims(entered))).await,
-        Err(error) => Err(error),
-    };
-    // The body returns claims only after physical cleanup and verification.
-    // Cancellation leaves them in the worker, rather than this caller future.
-    let (value, Claims(entered)) = result?;
+    if let Err(error) = projected {
+        // No command ran, so the volumes already entered leave through the
+        // same exit. A failed leave keeps its projection, and the next exit
+        // or retirement retries it and reports that cause again.
+        let _ = leave_all(entered).await;
+        return Err(error);
+    }
+    // Boxed, as are projection entry and exit: these deep futures stay out of
+    // every caller's layout. The body returns claims only after physical
+    // cleanup and verification. Cancellation leaves them in the worker,
+    // rather than this caller future.
+    let (value, Claims(entered)) = Box::pin(body(Claims(entered))).await?;
+    leave_all(entered).await?;
+    Ok(value)
+}
+
+async fn leave_all(entered: Vec<(Arc<MountedVolume>, projection::Entered)>) -> Result<()> {
     let mut retired = Ok(());
     for (source, entry) in entered.into_iter().rev() {
         if let Err(error) = Box::pin(source.leave(entry)).await
@@ -164,8 +172,7 @@ pub(in crate::local) async fn native_scope<T>(
             retired = Err(error);
         }
     }
-    retired?;
-    Ok(value)
+    retired
 }
 
 /// Negative controls only: projects outside any execution scope, so nothing

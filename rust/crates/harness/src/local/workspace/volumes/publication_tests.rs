@@ -1,9 +1,7 @@
 use super::*;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 
-async fn published_while_another_command_waits(skip_publication: bool) -> Result<bool> {
-    let root = tempfile::tempdir().map_err(storage)?;
-    let state = tempfile::tempdir().map_err(storage)?;
+async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
     let model = crate::model::Model::new(
         "scripted".into(),
         "test".into(),
@@ -18,12 +16,18 @@ async fn published_while_another_command_waits(skip_publication: bool) -> Result
             },
         ),
     );
-    let harness = crate::LocalHarness::open(
-        crate::test_support::local_harness_config(root.path(), (model, provider))?
-            .state_directory(state.path())
+    crate::LocalHarness::open(
+        crate::test_support::local_harness_config(root, (model, provider))?
+            .state_directory(state)
             .compaction(crate::context::CompactionPolicy::Disabled),
     )
-    .await?;
+    .await
+}
+
+async fn published_while_another_command_waits(skip_publication: bool) -> Result<bool> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
     let mounts = &harness.workspace().unwrap().mounts;
     let scratch = mounts
         .named(Some("scratch"))?
@@ -89,5 +93,59 @@ async fn acknowledged_command_is_reopenable_while_another_command_owns_projectio
         !published_while_another_command_waits(true).await?,
         "omitted publication escaped the independent head oracle"
     );
+    Ok(())
+}
+
+// A scope whose later volume cannot be entered runs no command; the volumes it
+// already projected leave through the same exit instead of staying mounted.
+#[tokio::test]
+async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let (_, mount) = mounts.named(Some("scratch"))?;
+    let scratch = mount.view.source.as_ref().unwrap();
+    // `.volumes/scratch` enters first; `.volumes/zzz` names a binding its
+    // source does not own, so its entry fails after scratch is projected.
+    let table = super::super::mounts::owner(
+        &mounts.root,
+        &mounts.named(None)?.1.view.volume,
+        None,
+        ["scratch", "zzz"].map(|name| {
+            (
+                name.to_owned(),
+                mount.view.volume.clone(),
+                Some(Arc::clone(scratch)),
+            )
+        }),
+    )?;
+    let ran = std::sync::atomic::AtomicBool::new(false);
+    let failure = native_scope(&table, async |claims| {
+        ran.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(((), claims))
+    })
+    .await
+    .expect_err("an unowned binding entered");
+    assert!(
+        failure.to_string().contains("outside its binding"),
+        "{failure:?}"
+    );
+    assert!(!ran.into_inner());
+    assert!(
+        scratch.native().await.is_none(),
+        "failed entry stranded a projection"
+    );
+    assert!(!scratch.destination.exists());
+    // Negative control: the former exit dropped entered claims without leaving.
+    // The same oracle sees that projection remain mounted.
+    let root_path = projection_root(&scratch.destination, SCRATCH_PATH)?;
+    drop(scratch.enter(root_path, SCRATCH_PATH, false).await?);
+    assert!(
+        scratch.native().await.is_some(),
+        "oracle missed a stranded projection"
+    );
+    retire(mounts).await?;
+    assert!(scratch.native().await.is_none());
     Ok(())
 }
