@@ -89,7 +89,7 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
                     format!("data: {}\n\ndata: {}\n\n",
                         json!({"type":"response.output_item.done","item":{"type":"function_call",
                             "id":format!("item-{calls}"),"call_id":format!("call-{calls}"),
-                            "name":"test.large","arguments":"{}"}}),
+                            "name":body["tools"].as_array().unwrap().iter().find(|tool| tool["type"] == "function").expect("declared tool")["name"],"arguments":"{}"}}),
                         json!({"type":"response.completed","response":{"status":"completed",
                             "usage":{"input_tokens":input,"output_tokens":2}}}))
                 };
