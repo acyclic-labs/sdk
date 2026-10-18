@@ -320,17 +320,27 @@ async fn child() -> TestResult {
         return Ok(());
     };
     let config: Child = serde_json::from_str(config.to_str().ok_or("child config is not UTF-8")?)?;
-    let identity = Identity::new(config.seed);
-    let stream = config.remote.connect().await?;
-    let journal = journal(stream, &config.files, &identity, true).await?;
-    executor(Arc::new(PausedPrefix {
-        journal: journal.clone(),
-        operation: identity.operation,
-        accounting: ScriptedModelProvider::new([]),
-    }))?
-    .execute(identity.input(), journal.as_ref())
-    .await?;
-    Err("the pending turn finished".into())
+    child_turn(async move {
+        let identity = Identity::new(config.seed);
+        let stream = config.remote.connect().await?;
+        let journal = journal(stream, &config.files, &identity, true).await?;
+        executor(Arc::new(PausedPrefix {
+            journal: journal.clone(),
+            operation: identity.operation,
+            accounting: ScriptedModelProvider::new([]),
+        }))?
+        .execute(identity.input(), journal.as_ref())
+        .await?;
+        Err("the pending turn finished".into())
+    })
+    .await
+}
+
+/// The child's liveness is judged where its work runs: its own progress guard
+/// sees its connection, journal and stream wakes. A stalled child returns, and
+/// its exit closes the stdout the parent follows.
+async fn child_turn(turn: impl std::future::Future<Output = TestResult>) -> TestResult {
+    super::stall::guarded(Path::new("resume child"), turn).await?
 }
 
 /// Runs a child turn on `remote`, kills it once its prefix is journaled, and
@@ -356,17 +366,14 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         .kill_on_drop(true)
         .spawn()?;
     let stdout = child.stdout.take().ok_or("child has no stdout")?;
-    let journaled = journaled(stdout);
-    let journaled = super::stall::guarded(
-        Path::new("resume child"),
-        super::stall::waiting("journaled prefix", journaled),
-    )
-    .await;
-    // Killed, not asked: nothing in the child runs after this point. Async
-    // pipe reads cancel on drop; no detached blocking reader survives a stall.
+    // Readiness is the child's own event: its line, or end of file once it
+    // exits, including after its guard rejects a stall. No parent-side idle
+    // budget applies to work this process cannot observe.
+    let journaled = journaled(stdout).await;
+    // Killed, not asked: nothing in the child runs after this point.
     child.kill().await?;
     let status = child.wait().await?;
-    if !journaled?? {
+    if !journaled? {
         return Err(format!("the child exited ({status}) without journaling its prefix").into());
     }
     let identity = Identity::new(seed);
@@ -466,21 +473,7 @@ async fn journaled(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result
     Ok(false)
 }
 
-#[tokio::test(start_paused = true)]
-async fn journaled_pipe_distinguishes_readiness_from_permanent_silence() -> TestResult {
-    use tokio::io::AsyncWriteExt as _;
-    let (mut writer, reader) = tokio::io::duplex(128);
-    writer
-        .write_all(format!("noise\n{JOURNALED}\n").as_bytes())
-        .await?;
-    assert!(super::stall::guarded(Path::new("ready child"), journaled(reader)).await??);
-    let (_writer, reader) = tokio::io::duplex(128);
-    let error = super::stall::guarded(
-        Path::new("silent child"),
-        super::stall::waiting("journaled prefix", journaled(reader)),
-    )
-    .await
-    .expect_err("accepted an open pipe that never delivers a prefix");
-    assert_eq!(error, "stalled: silent child at journaled prefix");
-    Ok(())
-}
+// Virtual-clock controls live with the other guard controls, outside the
+// deadline scan of scenario sources.
+#[path = "../support/resume_readiness_tests.rs"]
+mod readiness_tests;

@@ -45,6 +45,7 @@ fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
         "scenario_data.rs",
         "swarm_session.rs",
         "progress_registry.rs",
+        "notification_runtime_tests.rs",
     ] {
         sources.push(tests.join("support").join(name));
     }
