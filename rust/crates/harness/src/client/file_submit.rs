@@ -8,11 +8,15 @@ use crate::{
     },
 };
 use acyclic_stream::StreamProvider;
+use confirmation::{Barrier, confirm};
 use futures::StreamExt as _;
 use pending::PendingRequests;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod confirmation;
+#[cfg(all(test, acyclic_harness_loom))]
+mod model;
 mod pending;
 
 type Result<T> = std::result::Result<T, FileClientError>;
@@ -103,14 +107,7 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
             return Err(Error::Invalid("outbox and target are the same volume".into()).into());
         }
         let cursor = if let Some(file) = state.files.first() {
-            if limits.durability == FileClientDurability::Durable
-                && !outbox
-                    .file_is_durable(file)
-                    .await
-                    .map_err(FileClientError::publication)?
-            {
-                return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
-            }
+            confirm(&outbox, file, limits.durability, Barrier::Checkpoint).await?;
             let state: Checkpoint =
                 serde_json::from_slice(&file.bytes).map_err(|e| Error::Storage(e.to_string()))?;
             if state.target != target_id
@@ -314,15 +311,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 )
                 .into());
             }
-            if self.limits.durability == FileClientDurability::Durable
-                && !self
-                    .outbox
-                    .file_is_durable(&pending.write)
-                    .await
-                    .map_err(FileClientError::publication)?
-            {
-                return Err(Error::Conflict("outbox publication awaits durability".into()).into());
-            }
+            confirm(
+                &self.outbox,
+                &pending.write,
+                self.limits.durability,
+                Barrier::Intent,
+            )
+            .await?;
             let head = self
                 .target
                 .head()
@@ -341,15 +336,14 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                     Err(error) if terminal_rejection(&error) => Some(error.to_string()),
                     Err(error) => return Err(FileClientError::publication(error)),
                 };
-            if rejected.is_none()
-                && self.limits.durability == FileClientDurability::Durable
-                && !self
-                    .target
-                    .file_is_durable(&pending.write)
-                    .await
-                    .map_err(FileClientError::publication)?
-            {
-                return Err(Error::Conflict("target publication awaits durability".into()).into());
+            if rejected.is_none() {
+                confirm(
+                    &self.target,
+                    &pending.write,
+                    self.limits.durability,
+                    Barrier::Target,
+                )
+                .await?;
             }
             let state = Checkpoint {
                 target: self.target_id,
@@ -363,15 +357,13 @@ impl<P: StreamProvider + ?Sized, T: StreamProvider + ?Sized> FileClient<P, T> {
                 .append(checkpoint.generation, &checkpoint_write)
                 .await
                 .map_err(FileClientError::publication)?;
-            if self.limits.durability == FileClientDurability::Durable
-                && !self
-                    .outbox
-                    .file_is_durable(&checkpoint_write)
-                    .await
-                    .map_err(FileClientError::publication)?
-            {
-                return Err(Error::Conflict("outbox checkpoint awaits durability".into()).into());
-            }
+            confirm(
+                &self.outbox,
+                &checkpoint_write,
+                self.limits.durability,
+                Barrier::Checkpoint,
+            )
+            .await?;
             let done = self
                 .pending
                 .retire_front()
