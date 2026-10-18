@@ -110,7 +110,9 @@ impl Registration {
         assert!(!entry.polling);
         entry.ready = false;
         entry.polling = true;
-        state.revision += 1;
+        // A reporter may cause another poll of an unchanged Pending future.
+        // Polling alone is not progress; only observed wakes and lifecycle
+        // changes advance the idle revision.
         Polling(self)
     }
 
@@ -147,8 +149,7 @@ impl Drop for Polling<'_> {
             .get_mut(&self.0.id)
             .expect("retired registration")
             .polling = false;
-        // Preserve a wake racing with this poll's return or panic.
-        state.revision += 1;
+        // Preserve readiness and its revision if a wake raced this return.
     }
 }
 

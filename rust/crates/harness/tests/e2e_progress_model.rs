@@ -96,6 +96,14 @@ fn wake_oracle(broken: bool) {
         assert!(registry.blocked_snapshot(registry.snapshot().0).is_none());
         drop(polling);
         assert!(registry.blocked_snapshot(registry.snapshot().0).is_some());
+        let idle_revision = registry.snapshot().0;
+        for _ in 0..2 {
+            drop(admitted.polling());
+            assert!(
+                registry.blocked_snapshot(idle_revision).is_some(),
+                "polling a still-pending future fabricated progress"
+            );
+        }
         let late = admitted.observed_waker(std::task::Waker::noop());
         drop(admitted);
         late.wake();
