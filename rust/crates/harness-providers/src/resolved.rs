@@ -1,4 +1,6 @@
-use crate::{HttpTransport, ProviderSpec, invalid};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::HttpTransport;
+use crate::{ProviderSpec, invalid};
 use acyclic_harness::{
     Result,
     context::{ModelContextCapacity, ModelTokenCount},
