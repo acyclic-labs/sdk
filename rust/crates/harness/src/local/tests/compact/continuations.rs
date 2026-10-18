@@ -277,7 +277,7 @@ async fn active_child_inherits_only_checkpoint_references_and_the_pinned_model()
     local
         .compact(OperationId::new(), parent, "retain B")
         .await?;
-    local.close().await?;
+    local.disconnect_unfinished().await?;
     let local = LocalHarness::open(config()?).await?;
     assert_eq!(local.resume(child).await?.text, "child answer");
     let request =
@@ -285,6 +285,7 @@ async fn active_child_inherits_only_checkpoint_references_and_the_pinned_model()
     assert!(request.contains("CHECKPOINT_ONLY_A"));
     assert!(!request.contains("CHECKPOINT_ONLY_B"));
     assert_eq!(provider.requests()[2].model.name, checkpoint.boundary.model);
-    local.close().await?;
+    // The parent is still the unfinished HEAD after its child settles.
+    local.disconnect_unfinished().await?;
     Ok(())
 }

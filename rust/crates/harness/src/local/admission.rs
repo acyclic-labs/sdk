@@ -481,6 +481,21 @@ impl LocalHarness {
         self.disconnect().await
     }
 
+    /// Test teardown for a host that deliberately leaves its HEAD turn
+    /// unfinished. It requires that turn to be unfinished, so each teardown is
+    /// checked either way: `close` proves a settled HEAD, this proves an
+    /// unsettled one, and a test cannot use either to hide the other.
+    #[cfg(test)]
+    pub(crate) async fn disconnect_unfinished(self) -> Result<()> {
+        let (head, _) = self.current_turn().await?;
+        if self.head_is_terminal(head.as_ref()).await? {
+            return Err(Error::Conflict(
+                "a settled local turn must close, not disconnect".into(),
+            ));
+        }
+        self.disconnect().await
+    }
+
     /// Releases this host's native mounts while preserving every durable task,
     /// including unfinished admission. Consuming the host excludes live borrows;
     /// callers must first join active execution and drop client observations.
