@@ -239,7 +239,7 @@ impl ToolExecutor for CheckoutTools {
             let fs = if let Some(command) = command {
                 match self.fs_arguments(&command, context.effective_scope()) {
                     Ok(parsed) => Some(parsed),
-                    Err(error) => return Ok(argument_error(error)),
+                    Err(error) => return Ok(crate::tools::rejected_input(error)),
                 }
             } else {
                 None
@@ -340,11 +340,5 @@ impl ToolExecutor for CheckoutTools {
             // A dispatched process must never be launched again after a lost ack.
             Ok(None)
         })
-    }
-}
-
-fn argument_error(error: Error) -> ToolResult {
-    ToolResult {
-        value: serde_json::json!({"error": error.to_string()}),
     }
 }

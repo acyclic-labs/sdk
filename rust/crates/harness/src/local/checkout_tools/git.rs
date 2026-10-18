@@ -232,7 +232,7 @@ impl CheckoutTools {
             ) => {
                 publication?;
                 advanced?;
-                return Ok(argument_error(error));
+                return Ok(crate::tools::rejected_input(error));
             }
             Err(error) => return Err(error),
         };

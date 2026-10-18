@@ -7,10 +7,36 @@ use libfuzzer_sys::fuzz_target;
 mod command;
 #[path = "../../harness/src/tools/fs_command.rs"]
 mod fs_command;
+#[path = "../../harness/src/tools/agent_selection.rs"]
+mod agent_selection;
+use agent_selection::{AgentTarget, selection};
 use command::parse_command;
 use fs_command::parse_fs_command;
 
+// Independent spelling of the agent namespace rule: split on '/'.
+fn agent_reference(input: &str) -> Option<AgentTarget> {
+    let parsed = parse_fs_command(input).ok()?;
+    if parsed.volume.is_some() || parsed.arguments.len() != 2 {
+        return None;
+    }
+    let parts: Vec<&str> = parsed.arguments[1].split('/').collect();
+    let inside = parts.len() > 2 && parts[0] == ".volumes" && parts[1] == "agents";
+    match (parsed.arguments[0].as_str(), parts.as_slice()) {
+        ("ls", [".volumes", "agents"]) => Some(AgentTarget::Children),
+        ("ls", _) if inside => Some(AgentTarget::Child),
+        ("cat", _) if inside => Some(AgentTarget::File),
+        _ => None,
+    }
+}
+
 fuzz_target!(|input: &str| {
+    // Selection is total, matches the reference and owns exactly the operand.
+    let selected = selection(input);
+    assert_eq!(selected.as_ref().map(|inspection| inspection.target), agent_reference(input));
+    if let Some(inspection) = &selected {
+        assert_eq!(parse_fs_command(input).unwrap().arguments[1], inspection.path);
+        assert!(inspection.path.ends_with(inspection.operand()));
+    }
     if let Ok(arguments) = parse_command(input) {
         assert!(!arguments.is_empty());
         let encoded = arguments

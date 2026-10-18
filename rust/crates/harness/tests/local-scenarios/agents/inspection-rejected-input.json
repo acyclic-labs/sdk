@@ -1,0 +1,122 @@
+{
+  "driver": "agents",
+  "prompt": "inspect names next to and inside the agents namespace",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "adjacent",
+          "name": "fs",
+          "arguments": {
+            "command": "ls .volumes/agents-extra"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "empty-child",
+          "name": "fs",
+          "arguments": {
+            "command": "ls .volumes/agents/"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "missing-file",
+          "name": "fs",
+          "arguments": {
+            "command": "cat .volumes/agents/worker/status.json"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 4
+    },
+    "model_requests": {
+      "parent": [
+        {},
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "adjacent",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "$contains": "error"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "empty-child",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "$contains": "error"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "missing-file",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "$contains": "error"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

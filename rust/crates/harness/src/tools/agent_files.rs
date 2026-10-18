@@ -33,54 +33,57 @@ pub(super) async fn files(context: &ToolContext) -> Result<Arc<TaskFiles<dyn Str
     Ok(root.clone())
 }
 
-/// Selects the registered-agent inspections `fs ls`/`fs cat` under
-/// `.volumes/agents`. A command that does not parse is never an inspection:
-/// the fs facade owner alone parses and reports it, as a model-visible
-/// argument error, so this interception cannot turn it into a task failure.
-/// Returns whether it is a `cat`, the query and the inspected path.
-fn selection(command: &str) -> Result<Option<(bool, crate::task_volume::Query, String)>> {
-    use crate::task_volume::Query;
-    let Ok(command) = super::parse_fs_command(command) else {
-        return Ok(None);
-    };
-    let [verb, path] = command.arguments.as_slice() else {
-        return Ok(None);
-    };
-    if command.volume.is_some() || !path.starts_with(".volumes/agents") {
-        return Ok(None);
-    }
-    let query = match (verb.as_str(), path.as_str()) {
-        ("ls", ".volumes/agents") => Query::Children,
-        ("ls", path) => Query::Child(
-            Component::new(
-                path.strip_prefix(".volumes/agents/")
-                    .ok_or_else(|| Error::Invalid("invalid child directory".into()))?,
-            )
-            .map_err(storage)?,
-        ),
-        ("cat", path) => Query::File(
-            FileKey::parse(
-                path.strip_prefix(".volumes/")
-                    .ok_or_else(|| Error::Invalid("invalid child file".into()))?,
-            )
-            .map_err(storage)?,
-        ),
-        _ => return Ok(None),
-    };
-    Ok(Some((verb == "cat", query, path.clone())))
-}
+/// An fs operand the model must correct. It is only ever reported through
+/// `super::rejected_input`, never returned to the executor.
+struct Rejected(Error);
 
+/// Answers the registered-agent inspections `fs ls`/`fs cat` under the exact
+/// `.volumes/agents` namespace. Anything else, including a command that does
+/// not parse, is left to the fs facade owner.
 pub(super) async fn inspect(
     context: &ToolContext,
     command: &str,
 ) -> Result<Option<crate::tool::ToolResult>> {
-    use crate::task_volume::FileQuerySource;
-    let Some((cat, query, path)) = selection(command)? else {
+    let Some(inspection) = super::agent_selection::selection(command) else {
         return Ok(None);
+    };
+    Ok(Some(match read(context, inspection).await? {
+        Ok(stdout) => crate::tool::ToolResult {
+            value: json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":""}),
+        },
+        Err(Rejected(error)) => super::rejected_input(error),
+    }))
+}
+
+fn query(
+    inspection: &super::agent_selection::AgentInspection,
+) -> std::result::Result<crate::task_volume::Query, Rejected> {
+    use super::agent_selection::AgentTarget;
+    use crate::task_volume::Query;
+    Ok(match inspection.target {
+        AgentTarget::Children => Query::Children,
+        AgentTarget::Child => Query::Child(Component::new(inspection.operand()).map_err(invalid)?),
+        AgentTarget::File => Query::File(FileKey::parse(inspection.operand()).map_err(invalid)?),
+    })
+}
+
+fn invalid(error: impl std::fmt::Display) -> Rejected {
+    Rejected(Error::Invalid(error.to_string()))
+}
+
+/// The outer error is the executor's; the inner one is the model's input.
+async fn read(
+    context: &ToolContext,
+    inspection: super::agent_selection::AgentInspection,
+) -> Result<std::result::Result<String, Rejected>> {
+    use crate::task_volume::FileQuerySource;
+    let query = match query(&inspection) {
+        Ok(query) => query,
+        Err(rejected) => return Ok(Err(rejected)),
     };
     let limits = context.effective_scope().limits();
     let files = files(context).await?;
-    let stdout = if cat {
+    let stdout = if inspection.target == super::agent_selection::AgentTarget::File {
         let snapshot = files
             .observe_files(
                 query,
@@ -93,7 +96,7 @@ pub(super) async fn inspect(
             .snapshot
             .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
         let [file] = snapshot.files.as_slice() else {
-            return Err(Error::NotFound(path));
+            return Ok(Err(Rejected(Error::NotFound(inspection.path))));
         };
         std::str::from_utf8(&file.bytes)
             .map_err(storage)?
@@ -102,13 +105,11 @@ pub(super) async fn inspect(
         listing(&files.inner, &query, limits.attachments).await?
     };
     if stdout.len() as u64 > limits.render_bytes {
-        return Err(Error::Invalid(
+        return Ok(Err(Rejected(Error::Invalid(
             "child inspection exceeds the original render bound".into(),
-        ));
+        ))));
     }
-    Ok(Some(crate::tool::ToolResult {
-        value: json!({"success":true,"exit_code":0,"stdout":stdout,"stderr":""}),
-    }))
+    Ok(Ok(stdout))
 }
 
 async fn listing<P: StreamProvider + ?Sized>(
@@ -233,40 +234,7 @@ fn storage(error: impl std::fmt::Display) -> Error {
 #[cfg(all(test, not(acyclic_harness_loom)))]
 mod tests {
     use super::*;
-    use crate::task_volume::Query;
     use proptest::prelude::*;
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
-        // Every command the fs facade cannot parse is left to the facade owner,
-        // which reports it to the model; an exact agent inspection is selected.
-        #[test]
-        fn only_parsed_agent_inspections_are_intercepted(
-            verb in prop::sample::select(vec!["ls", "cat", "git ls", "status"]),
-            path in prop::sample::select(vec![
-                ".volumes/agents", ".volumes/agents/worker", ".volumes/agents/worker/status.json",
-            ]),
-            suffix in prop::sample::select(vec!["", " | cat", "; ls", " && ls", " `x`", " < in", " > out",
-                " 'open", " \\", " \0", " --volume", " --volume ''"]),
-        ) {
-            let command = format!("{verb} {path}{suffix}");
-            let selected = selection(&command);
-            if super::super::parse_fs_command(&command).is_err() {
-                prop_assert!(matches!(selected, Ok(None)), "{command}: {selected:?}");
-            }
-        }
-    }
-
-    // Negative control: the parse error this interception used to propagate is
-    // real, so the property above is not vacuous.
-    #[test]
-    fn unparseable_agent_listing_is_a_facade_error_not_an_inspection() {
-        let command = "ls .volumes/agents | cat";
-        assert!(super::super::parse_fs_command(command).is_err());
-        assert!(matches!(selection(command), Ok(None)));
-        assert!(matches!(selection("ls .volumes/agents"), Ok(Some((false, Query::Children, _)))));
-        assert!(matches!(selection("cat .volumes/agents/worker/status.json"), Ok(Some((true, Query::File(_), _)))));
-    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
