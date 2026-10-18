@@ -9,20 +9,13 @@ use crate::{
 };
 use acyclic_stream::MemoryStream;
 use futures::Stream;
-use loom::sync::atomic::{AtomicBool, Ordering};
 use std::{
+    mem::ManuallyDrop,
     pin::Pin,
-    task::{Context, Poll, Wake, Waker},
+    task::{Context, Poll, Waker},
 };
 
 const _: fn(acyclic_stream::query_sync::SyncMutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
-
-struct Woken(AtomicBool);
-impl Wake for Woken {
-    fn wake(self: Arc<Self>) {
-        self.0.store(true, Ordering::SeqCst);
-    }
-}
 
 fn files() -> Arc<TaskFiles<MemoryStream>> {
     let volume = volume(AgentId::from_bytes([1; 16]));
@@ -116,6 +109,7 @@ fn gap(broken: bool) {
 
 fn wake(broken: bool) {
     let files = files();
+    let keeper = ManuallyDrop::new(files.clone());
     let mut observation =
         loom::future::block_on(Box::pin(files.observe(query(), None, 8))).unwrap();
     let snapshot = observation.snapshot.take().unwrap();
@@ -126,32 +120,25 @@ fn wake(broken: bool) {
     let producer = loom::thread::spawn(move || {
         loom::future::block_on(Box::pin(writer.write(snapshot.generation, &write))).unwrap()
     });
-    let woken = Arc::new(Woken(AtomicBool::new(false)));
-    let waker = Waker::from(woken.clone());
-    let first = next(
-        &mut observation.changes,
-        if broken { Waker::noop() } else { &waker },
-    );
+    // A contended snapshot can hand off to an independent worker. Writer
+    // completion does not join that worker; await delivery with the real
+    // consumer waker so every intermediate parking/wake is explored.
+    let observed = loom::future::block_on(Box::pin(std::future::poll_fn(|cx| {
+        next(
+            &mut observation.changes,
+            if broken { Waker::noop() } else { cx.waker() },
+        )
+    })))
+    .expect("follow ended")
+    .expect("follow failed")
+    .file;
     producer.join().unwrap();
-    let observed = match first {
-        Poll::Ready(Some(Ok(change))) => change.file,
-        Poll::Pending => {
-            assert!(
-                woken.0.load(Ordering::SeqCst),
-                "accepted request did not wake its follower"
-            );
-            match next(&mut observation.changes, &waker) {
-                Poll::Ready(Some(Ok(change))) => change.file,
-                _ => None,
-            }
-        }
-        other => panic!("unexpected follow result: {other:?}"),
-    };
     assert_eq!(
         observed.as_ref(),
         Some(&expected),
         "accepted request was not delivered"
     );
+    drop(ManuallyDrop::into_inner(keeper));
 }
 
 fn check(scenario: fn(bool), diagnostic: &str) {
@@ -175,7 +162,7 @@ fn a_request_accepted_during_the_snapshot_handoff_is_replayed() {
 }
 #[test]
 fn a_request_accepted_after_registration_wakes_and_reaches_its_follower() {
-    check(wake, "accepted request did not wake its follower");
+    check(wake, "deadlock");
 }
 
 // Partition at the provider's accepted head: either both preparations see the
