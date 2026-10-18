@@ -22,20 +22,16 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     .map(str::to_owned)
     .collect();
     // Older manifests can still be decoded; new generation must capture closure.
-    assert!(
-        parse_generate(base.clone())
-            .unwrap_err()
-            .to_string()
-            .contains("requires a complete registry corpus")
-    );
+    assert!(parse_generate(base.clone())
+        .unwrap_err()
+        .to_string()
+        .contains("requires a complete registry corpus"));
     let mut missing = base.clone();
     missing.extend(["--registry-frontier-repository".into(), "repository".into()]);
-    assert!(
-        parse_generate(missing)
-            .unwrap_err()
-            .to_string()
-            .contains("requires both")
-    );
+    assert!(parse_generate(missing)
+        .unwrap_err()
+        .to_string()
+        .contains("requires both"));
     let mut complete = base;
     complete.extend([
         "--registry-frontier-repository".into(),
@@ -60,11 +56,9 @@ fn release_version_must_match_published_sdk_version() {
     let versions = BTreeSet::from(["0.2.0".to_owned()]);
     let error = validate_release_package_versions("0.1.0", &versions)
         .expect_err("a stale docs version must not be released");
-    assert!(
-        error
-            .to_string()
-            .contains("does not match SDK package version")
-    );
+    assert!(error
+        .to_string()
+        .contains("does not match SDK package version"));
     validate_release_package_versions("0.2.0", &versions)
         .expect("matching SDK and docs versions should be accepted");
 }
@@ -400,9 +394,14 @@ fn missing_owned_generated_source_is_restored_across_root_spellings() {
     // its root to a verbatim path on Windows before checking ownership.
     let missing = root.join("target/producer/wire.rs");
     let receipt = root.join("receipt.json");
-    fs::write(&receipt, serde_json::to_vec(&serde_json::json!({
-        "span": { "filename": missing.to_string_lossy() }
-    })).unwrap()).unwrap();
+    fs::write(
+        &receipt,
+        serde_json::to_vec(&serde_json::json!({
+            "span": { "filename": missing.to_string_lossy() }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let sources = materialize_generated_sources(&root, &[receipt]).unwrap();
     assert_eq!(sources.len(), 1);
     assert_eq!(fs::read(&missing).unwrap(), bytes);
@@ -467,11 +466,9 @@ fn captured_external_restoration_is_owned_and_digest_bound() {
     fs::remove_file(&foreign).unwrap();
     fs::write(root.join(relative), b"changed capture").unwrap();
     let error = materialize_generated_sources(&root, std::slice::from_ref(&receipt)).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("captured Rustdoc source digest changed")
-    );
+    assert!(error
+        .to_string()
+        .contains("captured Rustdoc source digest changed"));
     assert!(!foreign.exists());
     let _ = fs::remove_dir_all(root);
     let _ = fs::remove_dir_all(output);
@@ -613,7 +610,10 @@ fn file_hashes_keep_existing_artifact_and_tool_identities() {
     let check = |bytes: &[u8]| {
         fs::write(&path, bytes).unwrap();
         prop_assert_eq!(sha256_file(&path).unwrap(), sha256_bytes(bytes));
-        prop_assert_eq!(sha256_bytes(bytes), format!("sha256:{:x}", Sha256::digest(bytes)));
+        prop_assert_eq!(
+            sha256_bytes(bytes),
+            format!("sha256:{:x}", Sha256::digest(bytes))
+        );
         Ok(())
     };
     proptest::test_runner::TestRunner::default()

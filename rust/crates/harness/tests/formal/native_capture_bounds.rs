@@ -19,14 +19,16 @@ fn accepted_capture_has_finite_control_and_complete_result_allowance() {
         assert!(result >= 2048);
         assert!(u64::from(output) <= u64::from(result - 2048) / 4);
     } else {
-        assert!(timeout == 0
-            || control == 0
-            || control > timeout
-            || poll == 0
-            || poll > timeout
-            || output == 0
-            || result < 2048
-            || u64::from(output) > u64::from(result - 2048) / 4);
+        assert!(
+            timeout == 0
+                || control == 0
+                || control > timeout
+                || poll == 0
+                || poll > timeout
+                || output == 0
+                || result < 2048
+                || u64::from(output) > u64::from(result - 2048) / 4
+        );
     }
 }
 

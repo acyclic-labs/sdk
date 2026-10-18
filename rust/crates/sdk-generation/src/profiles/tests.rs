@@ -84,24 +84,40 @@ fn paired_owner_plan_sharing_measurement() {
     use crate::parallel::Arc;
     use std::{hint::black_box, time::Instant};
     let plan = Arc::new(historical::Plan {
-        released_packages: (0..16).map(|index| sdk_docs::historical::ReleasedPackage {
-            package: format!("owner-{index}"), version: "1.0.0".into(), yanked: false,
-            registry_checksum: "0".repeat(64), source_revision: "0".repeat(40), path_in_vcs: String::new(),
-        }).collect(),
-        source_files: (0..4096).map(|index| (format!("source/{index}.rs"), "0".repeat(64))).collect(),
-        archives: Vec::new(), captured_source: None, owner_metadata: BTreeMap::new(),
+        released_packages: (0..16)
+            .map(|index| sdk_docs::historical::ReleasedPackage {
+                package: format!("owner-{index}"),
+                version: "1.0.0".into(),
+                yanked: false,
+                registry_checksum: "0".repeat(64),
+                source_revision: "0".repeat(40),
+                path_in_vcs: String::new(),
+            })
+            .collect(),
+        source_files: (0..4096)
+            .map(|index| (format!("source/{index}.rs"), "0".repeat(64)))
+            .collect(),
+        archives: Vec::new(),
+        captured_source: None,
+        owner_metadata: BTreeMap::new(),
     });
     let started = Instant::now();
-    let old = plan.released_packages.iter().map(|release| {
-        // The previous production transport cloned the complete plan per owner.
-        let mut copy = historical::Plan {
-            released_packages: plan.released_packages.clone(), source_files: plan.source_files.clone(),
-            archives: plan.archives.clone(), captured_source: plan.captured_source.clone(),
-            owner_metadata: plan.owner_metadata.clone(),
-        };
-        copy.released_packages = vec![release.clone()];
-        copy
-    }).collect::<Vec<_>>();
+    let old = plan
+        .released_packages
+        .iter()
+        .map(|release| {
+            // The previous production transport cloned the complete plan per owner.
+            let mut copy = historical::Plan {
+                released_packages: plan.released_packages.clone(),
+                source_files: plan.source_files.clone(),
+                archives: plan.archives.clone(),
+                captured_source: plan.captured_source.clone(),
+                owner_metadata: plan.owner_metadata.clone(),
+            };
+            copy.released_packages = vec![release.clone()];
+            copy
+        })
+        .collect::<Vec<_>>();
     black_box(&old);
     let copied_ns = started.elapsed().as_nanos();
     let started = Instant::now();

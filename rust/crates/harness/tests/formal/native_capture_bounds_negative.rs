@@ -10,7 +10,13 @@ fn zero_capture_timeout_is_accepted() {
 
 #[kani::proof]
 fn maximum_output_fits_small_result() {
-    assert!(production::capture_allowances_valid(1, 1, 1, u32::MAX, u32::MAX));
+    assert!(production::capture_allowances_valid(
+        1,
+        1,
+        1,
+        u32::MAX,
+        u32::MAX
+    ));
 }
 
 fn main() {}

@@ -62,10 +62,7 @@ impl NativeTreeMaterializationBackend {
     pub fn operation_directory_path(&self) -> &Path {
         &self.operation
     }
-    fn paths<'a>(
-        &'a self,
-        path: &'a str,
-    ) -> [(&'a HostRoot, &'a Path); 3] {
+    fn paths<'a>(&'a self, path: &'a str) -> [(&'a HostRoot, &'a Path); 3] {
         let path = Path::new(path);
         [
             (&self.held_root, path),

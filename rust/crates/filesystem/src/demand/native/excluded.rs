@@ -38,7 +38,10 @@ impl NativeDemandSource {
                     + paths.iter().map(NamespacePath::retained_bytes).sum::<u64>();
                 let allocation = context.claim(bytes)?;
                 ownership.retain(allocation, &mut context)?;
-                self.excluded = Arc::new(ExcludedPaths { paths, _ownership: ownership });
+                self.excluded = Arc::new(ExcludedPaths {
+                    paths,
+                    _ownership: ownership,
+                });
                 Ok(self)
             })();
             finish_context(result, context, &mut accounting)

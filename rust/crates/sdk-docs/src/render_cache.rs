@@ -32,7 +32,10 @@ struct Derived<T: ?Sized> {
 
 impl<T: ?Sized> Default for Derived<T> {
     fn default() -> Self {
-        Self { content: BTreeMap::new(), handles: BTreeMap::new() }
+        Self {
+            content: BTreeMap::new(),
+            handles: BTreeMap::new(),
+        }
     }
 }
 
@@ -43,18 +46,25 @@ impl<T: ?Sized> Derived<T> {
             return Some(Rc::clone(value));
         }
         let value = Rc::clone(self.content.get(raw)?);
-        self.handles.insert(identity, (Rc::clone(raw), Rc::clone(&value)));
+        self.handles
+            .insert(identity, (Rc::clone(raw), Rc::clone(&value)));
         Some(value)
     }
 
     fn insert(&mut self, raw: Rc<[u8]>, value: Rc<T>) {
         let value = Rc::clone(self.content.entry(Rc::clone(&raw)).or_insert(value));
-        self.handles.insert(Rc::as_ptr(&raw) as *const u8, (raw, value));
+        self.handles
+            .insert(Rc::as_ptr(&raw) as *const u8, (raw, value));
     }
 
     fn retain(&mut self, observed: &BTreeSet<*const u8>) {
-        self.handles.retain(|identity, _| observed.contains(identity));
-        let live = self.handles.values().map(|(raw, _)| Rc::clone(raw)).collect::<BTreeSet<_>>();
+        self.handles
+            .retain(|identity, _| observed.contains(identity));
+        let live = self
+            .handles
+            .values()
+            .map(|(raw, _)| Rc::clone(raw))
+            .collect::<BTreeSet<_>>();
         self.content.retain(|raw, _| live.contains(raw));
     }
 }
@@ -565,11 +575,13 @@ mod tests {
     #[test]
     fn paired_buffer_identity_lookup_measurement() {
         use std::{hint::black_box, time::Instant};
-        let inputs = (0u32..1024).map(|id| {
-            let mut bytes = vec![b'x'; 1024];
-            bytes.extend_from_slice(&id.to_le_bytes());
-            Rc::<[u8]>::from(bytes)
-        }).collect::<Vec<_>>();
+        let inputs = (0u32..1024)
+            .map(|id| {
+                let mut bytes = vec![b'x'; 1024];
+                bytes.extend_from_slice(&id.to_le_bytes());
+                Rc::<[u8]>::from(bytes)
+            })
+            .collect::<Vec<_>>();
         let mut indexed = Derived::default();
         let mut linear = BTreeMap::new();
         for (id, bytes) in inputs.iter().enumerate() {
@@ -577,18 +589,25 @@ mod tests {
             linear.insert(Rc::clone(bytes), Rc::new(id));
         }
         let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len()*4) {
-            let value = linear.iter().find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| Rc::clone(value)))
+        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
+            let value = linear
+                .iter()
+                .find_map(|(key, value)| Rc::ptr_eq(key, raw).then(|| Rc::clone(value)))
                 .or_else(|| linear.get(raw).cloned());
             black_box(value.unwrap());
         }
         let linear_ns = started.elapsed().as_nanos();
         let started = Instant::now();
-        for raw in inputs.iter().cycle().take(inputs.len()*4) {
+        for raw in inputs.iter().cycle().take(inputs.len() * 4) {
             black_box(indexed.get(black_box(raw)).unwrap());
         }
-        eprintln!("PAIRED buffer_lookup entries={} lookups={} linear_ns={} indexed_ns={}",
-            inputs.len(), inputs.len()*4, linear_ns, started.elapsed().as_nanos());
+        eprintln!(
+            "PAIRED buffer_lookup entries={} lookups={} linear_ns={} indexed_ns={}",
+            inputs.len(),
+            inputs.len() * 4,
+            linear_ns,
+            started.elapsed().as_nanos()
+        );
         assert_eq!(indexed.handles.len(), inputs.len());
     }
 

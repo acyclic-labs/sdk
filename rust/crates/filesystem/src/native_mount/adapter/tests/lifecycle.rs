@@ -97,7 +97,10 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
                 .checkout
                 .lock()
                 .await
-                .private_candidate(&mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation), &cancellation)
+                .private_candidate(
+                    &mut crate::kernel::allocation::KernelAccounting::native(&work, &cancellation),
+                    &cancellation,
+                )
                 .map_err(MountSourceError::from)
         })?;
         let result = source.runtime.block_on(

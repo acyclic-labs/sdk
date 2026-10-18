@@ -25,7 +25,8 @@ pub(super) fn with_run<T>(operation: impl FnOnce() -> T) -> T {
     struct Finish;
     impl Drop for Finish {
         fn drop(&mut self) {
-            METADATA.with(|values| METADATA_OBSERVED.with(|recent| finish_metadata(values, recent)));
+            METADATA
+                .with(|values| METADATA_OBSERVED.with(|recent| finish_metadata(values, recent)));
         }
     }
     begin_run();
@@ -34,7 +35,9 @@ pub(super) fn with_run<T>(operation: impl FnOnce() -> T) -> T {
 }
 
 fn finish_metadata<S>(values: &Values<S>, recent: &RefCell<BTreeSet<Key>>) {
-    values.borrow_mut().retain(|key, _| recent.borrow().contains(key));
+    values
+        .borrow_mut()
+        .retain(|key, _| recent.borrow().contains(key));
 }
 
 pub(super) fn begin_run() {

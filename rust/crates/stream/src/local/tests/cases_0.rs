@@ -913,7 +913,8 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
 }
 
 #[tokio::test]
-async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn std::error::Error>> {
+async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let path = StreamPath::new("follow/range")?;

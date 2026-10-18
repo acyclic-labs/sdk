@@ -7,16 +7,30 @@ const BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
 fn main() {
     if env::args().nth(1).as_deref() == Some("--server") {
         let server = env::args().nth(2).expect("server identity");
-        assert_eq!(env::var("ACYCLIC_WORKFLOW_TOKEN").as_deref(), Ok("qualified"));
+        assert_eq!(
+            env::var("ACYCLIC_WORKFLOW_TOKEN").as_deref(),
+            Ok("qualified")
+        );
         let cwd = env::current_dir().unwrap();
         assert!(cwd.join("acyclic-workflow.rs").is_file());
-        std::fs::write(cwd.join(format!(".acyclic-workflow-child-{server}")), b"mounted")
-            .unwrap();
+        std::fs::write(
+            cwd.join(format!(".acyclic-workflow-child-{server}")),
+            b"mounted",
+        )
+        .unwrap();
         serve_one_frame();
         return;
     }
-    assert_eq!(env::var("ACYCLIC_WORKFLOW_TOKEN").as_deref(), Ok("qualified"));
-    assert!(env::current_dir().unwrap().join("acyclic-workflow.rs").is_file());
+    assert_eq!(
+        env::var("ACYCLIC_WORKFLOW_TOKEN").as_deref(),
+        Ok("qualified")
+    );
+    assert!(
+        env::current_dir()
+            .unwrap()
+            .join("acyclic-workflow.rs")
+            .is_file()
+    );
     let output = env::args().nth(1).expect("workflow output path");
     let executable = env::current_exe().unwrap();
     let mut servers = (0..2)
@@ -28,12 +42,7 @@ fn main() {
                 .spawn()
                 .unwrap();
             let mut stdin = child.stdin.take().unwrap();
-            write!(
-                stdin,
-                "Content-Length: {}\r\n\r\n",
-                BODY.len()
-            )
-            .unwrap();
+            write!(stdin, "Content-Length: {}\r\n\r\n", BODY.len()).unwrap();
             stdin.write_all(BODY).unwrap();
             drop(stdin);
             child
@@ -41,7 +50,12 @@ fn main() {
         .collect::<Vec<_>>();
     for (server, child) in servers.iter_mut().enumerate() {
         let mut response = Vec::new();
-        child.stdout.take().unwrap().read_to_end(&mut response).unwrap();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut response)
+            .unwrap();
         assert!(child.wait().unwrap().success());
         assert!(response.ends_with(BODY));
         let marker = env::current_dir()

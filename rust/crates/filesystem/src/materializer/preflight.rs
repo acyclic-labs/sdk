@@ -143,7 +143,15 @@ pub(super) async fn host_directory_holds_unknown_entries<
             .await?;
         let mut allocation = allocation.ok_or(NativeTreeMaterializationError::MissingCustody)?;
         for entry in &page.entries {
-            let Some(logical) = entry.name.unicode_text(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).ok().map(|receipt| receipt.value) else {
+            let Some(logical) = entry
+                .name
+                .unicode_text(
+                    crate::WorkBudget::UNBOUNDED,
+                    &crate::CancellationToken::new(),
+                )
+                .ok()
+                .map(|receipt| receipt.value)
+            else {
                 continue;
             };
             let mut found = None;

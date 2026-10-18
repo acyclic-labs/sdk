@@ -58,7 +58,8 @@ pub(super) fn copy_string(
     text: &str,
     allocation: &mut NativeAllocation,
 ) -> Result<String, NativeTreeMaterializationError> {
-    String::from_utf8(copy_image(text.as_bytes(), allocation)?).map_err(|_| NativeTreeMaterializationError::InvalidLayout)
+    String::from_utf8(copy_image(text.as_bytes(), allocation)?)
+        .map_err(|_| NativeTreeMaterializationError::InvalidLayout)
 }
 pub(super) fn duplicate_edit(
     edit: &MaterializationEdit,
@@ -215,7 +216,8 @@ impl NativeMaterializationWork {
                 .unwrap_or(NativeTreeMaterializationError::InvalidLayout));
         }
         Ok((
-            String::from_utf8(writer.bytes).map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
+            String::from_utf8(writer.bytes)
+                .map_err(|_| NativeTreeMaterializationError::InvalidLayout)?,
             writer.allocation,
         ))
     }
@@ -251,7 +253,11 @@ impl ImageWriter {
             .checked_add(copied)
             .ok_or(crate::WorkError::Overflow)?;
         reserve_buffer(&mut self.bytes, length, &mut self.allocation)?;
-        self.bytes.extend_from_slice(bytes.get(..copied).ok_or(NativeTreeMaterializationError::InvalidLayout)?);
+        self.bytes.extend_from_slice(
+            bytes
+                .get(..copied)
+                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+        );
         reserved.record_completed(delta)?;
         if copied != bytes.len() {
             work.admit(NativeResourceCredit::Copy.delta(1))?;
