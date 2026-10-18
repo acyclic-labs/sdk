@@ -140,7 +140,8 @@ impl HttpTransport for Recorded {
         Box::pin(elapse(self.clock.clone(), wait))
     }
     fn now(&self) -> Duration {
-        Duration::from_millis(self.clock.load(Ordering::SeqCst))
+        // Whole virtual milliseconds, as a millisecond platform timer reports them.
+        Duration::from_nanos(self.clock.load(Ordering::SeqCst).saturating_mul(1_000_000))
     }
     fn delay_with_native_work(
         &self,
@@ -181,7 +182,7 @@ impl HttpTransport for Recorded {
 /// Advances `clock` by `wait` once polled, or never for a wait as long as the total deadline.
 async fn elapse(clock: Arc<AtomicU64>, wait: Duration) {
     let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
-    if wait >= Duration::from_millis(total.into()) {
+    if wait.as_millis() >= u128::from(total) {
         futures::future::pending::<()>().await;
     }
     let millis = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
