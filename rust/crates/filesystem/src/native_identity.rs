@@ -7,6 +7,20 @@ pub struct NativeRootIdentity {
     pub(crate) object: u64,
 }
 
+/// A held root's identity with the attributes that tell it from a directory
+/// created later at its recycled object id.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeRootIncarnation {
+    /// The root's device and object id.
+    pub identity: NativeRootIdentity,
+    /// A digest of the root's kernel file handle, which carries the inode
+    /// generation, where the filesystem issues handles (Linux).
+    pub handle: Option<[u8; 32]>,
+    /// The root's birth time since the Unix epoch, where the filesystem
+    /// records one.
+    pub birth_time: Option<std::time::Duration>,
+}
+
 impl NativeRootIdentity {
     /// Derives identity from an already-open root handle.
     pub fn from_file(file: &std::fs::File) -> std::io::Result<Self> {

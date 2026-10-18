@@ -16,6 +16,36 @@ impl HostRoot {
     pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
     }
+    /// The held root's incarnation attributes, from one metadata query.
+    pub(crate) fn incarnation<W: NativeHostWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<crate::NativeRootIncarnation, W::Error> {
+        let since_epoch = |time: cap_std::time::SystemTime| {
+            time.into_std().duration_since(std::time::UNIX_EPOCH).ok()
+        };
+        #[cfg(unix)]
+        {
+            let stat = stat_at(self.directory.as_raw_fd(), c"", work)?;
+            Ok(crate::NativeRootIncarnation {
+                identity: self.identity,
+                handle: stat.handle().copied(),
+                birth_time: stat.birth_time().and_then(since_epoch),
+            })
+        }
+        #[cfg(windows)]
+        {
+            // The NTFS file index already carries the record's reuse sequence.
+            let info = work.attempt_io(READ, || windows_file_information(&self.directory))?;
+            let created = (u64::from(info.ftCreationTime.dwHighDateTime) << 32)
+                | u64::from(info.ftCreationTime.dwLowDateTime);
+            Ok(crate::NativeRootIncarnation {
+                identity: self.identity,
+                handle: None,
+                birth_time: since_epoch(windows_time(created)),
+            })
+        }
+    }
     #[cfg(unix)]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
         self.directory.as_raw_fd()

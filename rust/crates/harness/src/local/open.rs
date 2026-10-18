@@ -128,11 +128,14 @@ impl Opening {
             return Err(Error::Invalid("local workspace is not a directory".into()));
         }
         let checkout = match &self.config.project {
-            LocalProject::Workspace(path) => Some(path.as_path()),
+            LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
             LocalProject::Volume { .. } => None,
         };
-        let directory = owner::separated_directory(&self.state_directory, checkout)?;
-        let owner = owner::Owner::open(&directory, &self.config.project)?;
+        let directory = owner::separated_directory(
+            &self.state_directory,
+            checkout.as_ref().map(|checkout| checkout.path.as_path()),
+        )?;
+        let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
             LocalProject::Volume { directory, .. } => directory.clone(),

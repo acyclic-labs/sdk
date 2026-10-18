@@ -106,7 +106,10 @@ mod windows_sparse_tests;
 #[cfg(feature = "native-mount")]
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
-pub use entry::{capture_baseline, capture_paths, capture_root_identity, capture_subtree};
+pub use entry::{
+    capture_baseline, capture_paths, capture_root_identity, capture_root_incarnation,
+    capture_subtree,
+};
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;
 pub(crate) use model::NativeViewBaseline;

@@ -7,6 +7,15 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         .map_err(|_| CaptureError::InvalidOptions)
 }
 
+/// Opens the root once and returns its identity with its incarnation
+/// attributes.
+pub fn capture_root_incarnation(path: &Path) -> Result<crate::NativeRootIncarnation, CaptureError> {
+    let mut work = crate::native_host::ordinary_work();
+    HostRoot::open(path, &mut work)
+        .and_then(|root| root.incarnation(&mut work))
+        .map_err(|_| CaptureError::InvalidOptions)
+}
+
 /// Reads a bounded set of final host states and applies one atomic checkout transaction.
 pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,

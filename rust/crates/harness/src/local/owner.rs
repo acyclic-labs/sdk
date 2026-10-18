@@ -26,30 +26,37 @@ pub(super) const UNIT_TESTS_INJECT_STATE: &str =
 /// Per-user state is keyed by the checkout's path and its directory incarnation:
 /// a checkout deleted and cloned again at the same path is a new workspace and
 /// starts with new state instead of being refused the old one.
-pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<PathBuf> {
-    let (path, volume) = match project {
-        LocalProject::Workspace(path) => (path, None),
-        LocalProject::Volume { directory, volume } => (directory, Some(volume)),
+pub(super) fn state_directory_in(
+    root: &Path,
+    project: &LocalProject,
+    checkout: Option<&Checkout>,
+) -> Result<PathBuf> {
+    // The scope separates a volume's state by its storage name and a
+    // checkout's by its incarnation.
+    let (canonical, kind, scope) = match (project, checkout) {
+        (LocalProject::Workspace(_), Some(checkout)) => (
+            checkout.path.clone(),
+            b"checkout\0".as_slice(),
+            checkout.incarnation.to_vec(),
+        ),
+        (LocalProject::Volume { directory, volume }, None) => (
+            fs::canonicalize(directory).map_err(storage)?,
+            b"volume\0".as_slice(),
+            volume.storage_name(&mut None)?.as_bytes().to_vec(),
+        ),
+        _ => {
+            return Err(Error::Invalid(
+                "checkout capture does not match the project".into(),
+            ));
+        }
     };
-    let canonical = fs::canonicalize(path).map_err(storage)?;
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic.local.state/v2\0");
-    hash.update(if volume.is_some() {
-        b"volume\0"
-    } else {
-        b"checkout\0"
-    });
+    hash.update(kind);
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
     hash.update(path_bytes);
-    match volume {
-        Some(volume) => {
-            hash.update(volume.storage_name(&mut None)?.as_bytes());
-        }
-        None => {
-            hash.update(&incarnation(&canonical)?);
-        }
-    }
+    hash.update(&scope);
     let directory = root.join(hash.finalize().to_hex().as_str());
     let planned = directory::planned_directory(&directory).ok_or_else(|| {
         Error::Invalid("local state directory has an unresolved path suffix".into())
@@ -65,71 +72,103 @@ pub(super) fn state_directory_in(root: &Path, project: &LocalProject) -> Result<
 mod directory;
 pub(super) use directory::separated_directory;
 
-/// The directory's device and object id. A filesystem may hand the same pair
-/// to a directory created after this one is deleted.
-pub(super) fn object_identity(workspace: &Path) -> Result<[u8; 16]> {
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::WorkBudget::UNBOUNDED,
-        &cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    Ok(work.root_identity(workspace)?.to_bytes())
+/// One capture of a checkout root, from a single held root: its canonical
+/// path, its object identity and its incarnation. State selection and owner
+/// validation share it instead of each querying the root again.
+#[derive(Clone, Debug)]
+pub(super) struct Checkout {
+    pub(super) path: PathBuf,
+    pub(super) identity: [u8; 16],
+    pub(super) incarnation: [u8; 16],
 }
 
-/// The checkout directory's incarnation: its object identity bound to its
-/// creation time, which a directory created later at a recycled object id
-/// cannot repeat. A filesystem without a birth time contributes the object
-/// identity alone.
-fn incarnation(workspace: &Path) -> Result<[u8; 16]> {
-    Ok(incarnation_of(
-        object_identity(workspace)?,
-        birth_time(workspace),
-    ))
+#[cfg(test)]
+thread_local! {
+    /// Root captures on this thread, for exact-count guards.
+    pub(super) static CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The directory's creation time, where the filesystem records one.
-pub(super) fn birth_time(workspace: &Path) -> Option<std::time::Duration> {
-    fs::metadata(workspace)
-        .and_then(|metadata| metadata.created())
-        .ok()
-        .and_then(|created| created.duration_since(std::time::UNIX_EPOCH).ok())
-}
-
-pub(super) fn incarnation_of(object: [u8; 16], born: Option<std::time::Duration>) -> [u8; 16] {
-    let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.workspace-incarnation/v1\0");
-    hash.update(&object);
-    match born {
-        Some(born) => {
-            hash.update(&[1]);
-            hash.update(&born.as_nanos().to_le_bytes());
+impl Checkout {
+    pub(super) fn capture(path: &Path) -> Result<Self> {
+        #[cfg(test)]
+        CAPTURES.with(|captures| captures.set(captures.get() + 1));
+        #[cfg(feature = "native-execution")]
+        {
+            let path = fs::canonicalize(path).map_err(storage)?;
+            let root = acyclic_fs::capture_root_incarnation(&path).map_err(storage)?;
+            let identity = root.identity.to_bytes();
+            Ok(Self {
+                path,
+                identity,
+                incarnation: incarnation_of(identity, root.handle, root.birth_time)?,
+            })
         }
-        None => {
-            hash.update(&[0]);
+        #[cfg(not(feature = "native-execution"))]
+        {
+            let _ = path;
+            Err(Error::Unsupported(
+                "checkout workspaces require native-execution".into(),
+            ))
+        }
+    }
+}
+
+/// A checkout's incarnation: its object identity bound to an attribute a
+/// directory created later at the recycled object id cannot repeat. The
+/// kernel file handle carries the inode generation and needs no birth time;
+/// the birth time covers hosts without handles. A host recording neither
+/// cannot tell a re-created checkout from the old one, so it is refused.
+pub(super) fn incarnation_of(
+    object: [u8; 16],
+    handle: Option<[u8; 32]>,
+    born: Option<std::time::Duration>,
+) -> Result<[u8; 16]> {
+    if handle.is_none() && born.is_none() {
+        return Err(Error::Unsupported(
+            "checkout filesystem records neither file handles nor birth times".into(),
+        ));
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.local.workspace-incarnation/v2\0");
+    hash.update(&object);
+    for (tag, attribute) in [
+        (1, handle.map(|handle| handle.to_vec())),
+        (2, born.map(|born| born.as_nanos().to_le_bytes().to_vec())),
+    ] {
+        match attribute {
+            Some(bytes) => {
+                hash.update(&[tag]);
+                hash.update(&bytes);
+            }
+            None => {
+                hash.update(&[0]);
+            }
         }
     }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
-    identity
+    Ok(identity)
 }
 
 
 impl Owner {
-    pub(super) fn open(directory: &Path, selection: &LocalProject) -> Result<Self> {
-        let workspace = match selection {
-            LocalProject::Workspace(path) => Some(fs::canonicalize(path).map_err(storage)?),
-            LocalProject::Volume { .. } => None,
+    pub(super) fn open(
+        directory: &Path,
+        selection: &LocalProject,
+        checkout: Option<&Checkout>,
+    ) -> Result<Self> {
+        let workspace = match (selection, checkout) {
+            (LocalProject::Workspace(_), Some(checkout)) => Some(checkout.path.clone()),
+            (LocalProject::Volume { .. }, None) => None,
+            _ => {
+                return Err(Error::Invalid(
+                    "checkout capture does not match the project".into(),
+                ));
+            }
         };
         let path = directory.join("owner.json");
-        let workspace_identity = workspace
-            .as_ref()
-            .map(|workspace| object_identity(workspace))
-            .transpose()?;
-        let workspace_incarnation = workspace
-            .as_ref()
-            .map(|workspace| incarnation(workspace))
-            .transpose()?;
+        let workspace_identity = checkout.map(|checkout| checkout.identity);
+        let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
         let owner = match Self::load(&path) {
             Ok(owner) => owner,
             Err(Error::NotFound(_)) => {

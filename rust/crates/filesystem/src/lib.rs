@@ -277,8 +277,8 @@ pub use multi_root::{
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
-    capture_baseline, capture_paths, capture_root_identity, capture_subtree, capture_watch_batch,
-    host_path_to_namespace, namespace_to_host_path,
+    capture_baseline, capture_paths, capture_root_identity, capture_root_incarnation,
+    capture_subtree, capture_watch_batch, host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
@@ -286,7 +286,7 @@ pub use native_exchange::{
     prepare_native_exchange, publish_native_exchange, recover_native_exchange,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use native_identity::NativeRootIdentity;
+pub use native_identity::{NativeRootIdentity, NativeRootIncarnation};
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::recover_disconnected_native_mount_destination;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
