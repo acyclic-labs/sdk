@@ -19,6 +19,8 @@ pub struct FileMention {
     pub end: usize,
     /// Owner-verified immutable content reference.
     pub file: FileRef,
+    /// Exact model admission policy selected at the prompt's file-query cut.
+    pub image_input: Option<crate::model::ImageInput>,
 }
 
 /// Resolves whitespace-delimited `@path` and `@"path with spaces"` at one revision.
@@ -86,7 +88,12 @@ pub async fn resolve_file_mentions(
             files.insert(path.into(), file.clone());
             file
         };
-        result.push(FileMention { start, end, file });
+        result.push(FileMention {
+            start,
+            end,
+            file,
+            image_input: None,
+        });
         offset = end;
     }
     Ok(result)

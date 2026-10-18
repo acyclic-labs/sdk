@@ -14,6 +14,13 @@ libfuzzer-sys = "0.4"
 acyclic-harness-providers = { path = "..", features = ["fuzzing"] }
 
 [[bin]]
+name = "image_header"
+path = "fuzz_targets/image_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "provider_stream"
 path = "fuzz_targets/provider_stream.rs"
 test = false

@@ -37,13 +37,15 @@ impl CommandSession<dyn acyclic_stream::StreamProvider> {
             .reopen_erased()
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        Self::open(
+        let mut files = Self::open(
             std::sync::Arc::new(volume),
             session,
             maximum_bytes,
             maximum_files,
         )
-        .await
+        .await?;
+        local.bind_client_files(&mut files).await?;
+        Ok(files)
     }
 }
 

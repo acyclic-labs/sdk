@@ -22,19 +22,30 @@ impl PreparedInput {
         .await?;
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let mut files = crate::files::resolve(&provider.files, request.request(), None).await?;
-        let body =
-            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
-        let generation = serde_json::to_vec(&body)
-            .map_err(|_| invalid("model request encoding failed"))?
-            .into();
-        let count = serde_json::to_vec(&counting::wire::body(
-            &body,
-            &provider.model.name,
-            provider.config.adapter,
-        ))
-        .map_err(|_| invalid("token count encoding failed"))?
-        .into();
+        let images = crate::images::load(provider, request.request(), None).await?;
+        let body = projection::body_with_images(
+            provider,
+            request.request(),
+            &names,
+            &origin,
+            images.iter(),
+            &mut files,
+        )?;
+        let mut generation = Vec::with_capacity(body.capacity()?);
+        serde_json::to_writer(&mut generation, &body)
+            .map_err(|_| invalid("model request encoding failed"))?;
+        let mut count = Vec::with_capacity(
+            body.capacity()? + projection::encoded_len(&provider.model.name)? + 256,
+        );
+        serde_json::to_writer(
+            &mut count,
+            &counting::wire::body(&body, &provider.model.name, provider.config.adapter),
+        )
+        .map_err(|_| invalid("token count encoding failed"))?;
+        let generation = generation.into();
+        let count = count.into();
         drop(body);
+        drop(images);
         Ok(Self {
             request,
             generation,

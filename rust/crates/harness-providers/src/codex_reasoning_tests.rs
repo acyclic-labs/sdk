@@ -85,7 +85,14 @@ async fn encrypted_reasoning_survives_login_refresh_and_durable_tool_followup() 
                     } else {
                         provider.count_tokens(&prepared).await?
                     };
-                    assert_eq!(count.input_tokens, provider.codex_count.count(&prepared)?);
+                    assert_eq!(
+                        count.input_tokens,
+                        provider
+                            .codex_count
+                            .count(&prepared, |message| crate::images::tokens(
+                                &provider, message
+                            ))?
+                    );
                     assert!(count.input_tokens >= 8);
                 }
                 let mut events = Vec::new();

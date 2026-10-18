@@ -7,7 +7,9 @@ use acyclic_harness::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+mod image_header;
 mod tool_arguments;
+pub use image_header::assert_image_header;
 mod turn_text;
 pub use tool_arguments::assert_tool_arguments;
 use turn_text::text_matches;

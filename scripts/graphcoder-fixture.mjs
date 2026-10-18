@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export async function fixture() {
+export async function fixture({ images = false } = {}) {
+  const imageRequests = [], imageCounts = [];
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-"));
   const root = join(directory, "workspace"), settings = join(directory, "settings");
   mkdirSync(root); mkdirSync(settings);
@@ -17,6 +18,7 @@ export async function fixture() {
     for await (const bytes of request) body += bytes;
     const input = JSON.parse(body);
     if (request.url === "/count") {
+      if (images) imageCounts.push(input);
       if (countTarget && JSON.stringify(input).includes(countTarget)) { observeCount(); await countBarrier; }
       if (response.destroyed) return;
       response.writeHead(200, { "content-type": "application/json" });
@@ -26,6 +28,7 @@ export async function fixture() {
       response.writeHead(400); response.end("invalid responses request"); return;
     }
     calls++;
+    if (images) imageRequests.push(input);
     if (fail) { response.writeHead(400); response.end("scripted provider error"); return; }
     response.writeHead(200, { "content-type": "text/event-stream" });
     for (const delta of ["graphcoder ", "**test answer**"]) {
@@ -40,12 +43,13 @@ export async function fixture() {
   const catalog = join(directory, "catalog.json");
   writeFileSync(catalog, JSON.stringify({ scripted: {
     adapter: "responses", authentication: "optional", base_url: `http://127.0.0.1:${server.address().port}`,
-    models: { test: { capacity: { context_tokens: 8192, output_tokens: 1024 }, features: { tools: true, images: false } } }, max_event_bytes: 65536,
+    models: { test: { capacity: { context_tokens: 8192, output_tokens: 1024 }, features: { tools: true, images } } }, max_event_bytes: 65536,
+    ...(images ? { images: { test: { maximum_bytes: 4194304, maximum_total_bytes: 8388608, maximum_images: 16, maximum_dimension: 4096, maximum_tokens: 1024 } } } : {}),
     token_counter: { path: "count", adapter: "responses", response_field: "input_tokens", framing_tokens: 0 },
   } }));
   return {
     root, settings, args: ["--workspace", root, "--settings-root", settings, "--model", "scripted/test", "--catalog", catalog],
-    counting,
+    counting, imageRequests, imageCounts,
     holdCount: text => { countTarget = text; countBarrier = new Promise(resolve => { releaseCount = resolve; }); },
     completeCount: () => releaseCount?.(),
     hold: () => { barrier = new Promise(resolve => { release = resolve; }); },

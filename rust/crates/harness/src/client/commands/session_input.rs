@@ -80,10 +80,38 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(operation);
             }
             let cut = self.generation;
-            let resolution = self
+            let mut resolution = self
                 .catalog
                 .resolve(input, reader, self.maximum_bytes)
                 .await?;
+            #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+            if let CommandResolution::Prompt { text, mentions, .. } = &mut resolution {
+                for file in crate::client::host_images::draft_images(self)? {
+                    reader
+                        .verify(&file, file.descriptor().byte_length(), None)?
+                        .await?;
+                    text.push('\n');
+                    let start = text.len();
+                    text.push_str(&format!("@\"{}\"", file.path()));
+                    mentions.push(crate::client::FileMention {
+                        start,
+                        end: text.len(),
+                        file,
+                        image_input: None,
+                    });
+                }
+            }
+            if let CommandResolution::Prompt { mentions, .. } = &mut resolution {
+                let mut image_policy = None;
+                for mention in mentions {
+                    if mention.file.descriptor().media_type().starts_with("image/") {
+                        if image_policy.is_none() {
+                            image_policy = Some(self.image_policy()?);
+                        }
+                        mention.image_input = image_policy.clone();
+                    }
+                }
+            }
             self.load_task_settings().await?;
             if self.generation != cut {
                 if RETRY {
@@ -93,13 +121,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                     "command query advanced during resolution; retry from the new cut".into(),
                 ));
             }
-            return if RETRY {
+            let published = if RETRY {
                 self.publish_input_resolution_at::<true>(resolution, operation)
                     .await
             } else {
                 self.publish_resolution_with_retry::<false>(resolution, operation)
                     .await
-            };
+            }?;
+            return Ok(published);
         }
         Err(Error::Conflict(
             "command resolution remained busy; retry the input".into(),

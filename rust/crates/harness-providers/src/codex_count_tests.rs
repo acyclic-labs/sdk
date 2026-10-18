@@ -19,21 +19,21 @@ proptest! {
         request.messages = vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text(input) }];
         let first = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
         let counter = Counter::default();
-        counter.observe(&first, &json!({"usage":{"input_tokens":tokens,"output_tokens":output}})).unwrap();
-        prop_assert_eq!(counter.count(&first).unwrap(), tokens);
+        counter.observe(&first, &json!({"usage":{"input_tokens":tokens,"output_tokens":output}}), |_| Ok(0)).unwrap();
+        prop_assert_eq!(counter.count(&first, |_| Ok(0)).unwrap(), tokens);
         // Generated assistant content is new input exactly once, independent
         // of the output-token count from the response which produced it.
         request.messages.push(ModelMessage { role: ModelRole::Assistant, content: ModelContent::Text(delta) });
         let next = PreparedModelRequest::prepare(request.clone(), Default::default(), None).unwrap();
-        let (_, before) = footprint(&first, 1).unwrap();
-        let (_, after) = footprint(&next, 1).unwrap();
-        prop_assert_eq!(counter.count(&next).unwrap(), tokens + (after-before).div_ceil(3));
+        let (_, before) = footprint(&first, 1, |_| Ok(0)).unwrap();
+        let (_, after) = footprint(&next, 1, |_| Ok(0)).unwrap();
+        prop_assert_eq!(counter.count(&next, |_| Ok(0)).unwrap(), tokens + (after-before).div_ceil(3));
         request.messages[0].content = ModelContent::Text("unrelated resume".into());
         let resumed = PreparedModelRequest::prepare(request, Default::default(), None).unwrap();
-        let (prefix, total) = footprint(&resumed, 1).unwrap();
+        let (prefix, total) = footprint(&resumed, 1, |_| Ok(0)).unwrap();
         let anchor = counter.0.get().unwrap();
         if anchor.unwrap().digest != prefix {
-            prop_assert_eq!(counter.count(&resumed).unwrap(), total.div_ceil(3));
+            prop_assert_eq!(counter.count(&resumed, |_| Ok(0)).unwrap(), total.div_ceil(3));
         }
     }
     #[test]

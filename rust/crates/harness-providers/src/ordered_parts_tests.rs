@@ -90,6 +90,12 @@ proptest! {
 }
 
 #[test]
+fn adjacent_assistant_text_parts_stay_distinct() {
+    let (actual, expected) = project(Adapter::Responses, &[false, false], "");
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn empty_parts_do_not_fabricate_ordered_content() {
     for adapter in [Adapter::Anthropic, Adapter::Responses, Adapter::Gemini] {
         let (actual, expected) = project(adapter, &[], "");

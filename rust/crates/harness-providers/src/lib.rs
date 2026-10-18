@@ -32,6 +32,7 @@ mod fixtures;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "fuzzing")))]
 pub mod fuzzing;
 mod http;
+mod images;
 mod input;
 pub use input::validate_input;
 #[cfg(not(target_arch = "wasm32"))]
@@ -67,7 +68,7 @@ pub use model_spec::{ModelFeatures, ModelSpec};
 pub use reasoning::{ProjectedReasoning, project_reasoning};
 pub use registry::Registry;
 pub use resolved::ResolvedModel;
-pub use spec::{Authentication, ProviderSpec};
+pub use spec::{Authentication, ImageInput, ProviderSpec};
 
 use acyclic_harness::{Error, Result};
 use serde_json::Value;

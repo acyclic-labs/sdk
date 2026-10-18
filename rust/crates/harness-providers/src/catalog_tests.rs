@@ -18,6 +18,7 @@ async fn arbitrary_provider_ids_follow_their_catalog_authentication_policy() -> 
             framing_tokens: 0,
         }),
         max_event_bytes: 4096,
+        images: BTreeMap::new(),
         models: BTreeMap::from([(
             "m".into(),
             ModelSpec {
@@ -66,6 +67,7 @@ fn serialized_catalogs_own_capacities_without_name_based_fallbacks() -> Result<(
     }
     let mut openai = registry.catalog()["openai"].as_ref().clone();
     openai.models.clear();
+    openai.images.clear();
     registry.register("openai".into(), openai.clone())?;
     assert!(registry.resolve("openai/gpt-5").is_err());
     openai.models.insert(

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "attach-and-paste",
+    "supports_images": true,
+    "replace_after_yield": false,
+    "expected_copies": 1,
+    "expected_image_reads": 2,
+    "expected_fallbacks": 0
+  },
+  {
+    "name": "pinned-images-after-draft-replacement",
+    "supports_images": true,
+    "replace_after_yield": true,
+    "expected_copies": 1,
+    "expected_image_reads": 2,
+    "expected_fallbacks": 0
+  },
+  {
+    "name": "unsupported-model-after-draft-replacement",
+    "supports_images": false,
+    "replace_after_yield": true,
+    "expected_copies": 0,
+    "expected_image_reads": 0,
+    "expected_fallbacks": 2
+  }
+]

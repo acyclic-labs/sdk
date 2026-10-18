@@ -24,6 +24,15 @@ pub struct ResolvedModel {
 }
 
 impl ResolvedModel {
+    /// Binds the caller-authorized filesystem reader; canonical requests retain file references.
+    pub fn with_content_reader(
+        mut self,
+        reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,
+    ) -> Self {
+        self.files.reader = Some(reader);
+        self
+    }
+
     /// Borrows the immutable identity used to bind this provider into the harness.
     pub fn model(&self) -> &Model {
         &self.model
@@ -60,7 +69,9 @@ impl ResolvedModel {
         self.estimator.observe(input_bytes, metadata);
         #[cfg(not(target_arch = "wasm32"))]
         if self.codex_login.is_some() {
-            self.codex_count.observe(request, metadata)?;
+            self.codex_count.observe(request, metadata, |message| {
+                crate::images::tokens(self, message)
+            })?;
         }
         #[cfg(target_arch = "wasm32")]
         let _ = request;
@@ -79,6 +90,11 @@ impl ResolvedModel {
 }
 
 impl ModelProvider for ResolvedModel {
+    fn image_input(&self, model: &Model) -> Result<Option<acyclic_harness::model::ImageInput>> {
+        self.validate(model)?;
+        Ok(self.config.images.get(&model.name).cloned())
+    }
+
     fn bind_content(
         &self,
         reader: Arc<dyn acyclic_harness::conversation::ContentResidencyVerifier>,

@@ -186,10 +186,23 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
             acyclic_fs::performance::work_budget(100_000, 16_000_000),
             &cancellation,
         )?;
-        let mutations = [WorkspaceMutation::PutFile {
-            path: "/content".into(),
-            bytes: bytes.slice(prefix..prefix + expected.len()),
-        }];
+        let mutations = [
+            WorkspaceMutation::CreateDirectory {
+                path: "/nested".into(),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/nested/content".into(),
+                bytes: bytes.slice(prefix..prefix + expected.len()),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/nested/empty".into(),
+                bytes: bytes.slice(prefix..prefix + expected.len()),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/nested/empty".into(),
+                bytes: acyclic_stream::OwnedBytes::new(),
+            },
+        ];
         let key = IdempotencyKey::new(if accounted { "accounted" } else { "ordinary" })?;
         let generation = host
             .apply_generation(
@@ -204,9 +217,16 @@ async fn publication_case(payload: &[u8], prefix: usize, suffix: usize) -> Resul
         drop(mutations);
         let generation = host.generation_ref_id(generation.id(), None)?;
         let actual = host
-            .read(&reference, Some(&generation), "/content", 4096, None)
+            .read(&reference, Some(&generation), "/nested/content", 4096, None)
             .await?;
         assert_eq!(actual.as_ref(), expected.as_slice());
+        let empty = host
+            .read(&reference, Some(&generation), "/nested/empty", 4096, None)
+            .await?;
+        assert!(
+            empty.is_empty(),
+            "ordered replacement must truncate the file"
+        );
         assert_eq!(
             bytes.get(prefix..prefix + expected.len()),
             Some(expected.as_slice())

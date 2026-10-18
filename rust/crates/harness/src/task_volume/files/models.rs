@@ -220,7 +220,7 @@ fn competing_appends(
         loom::future::block_on(Box::pin(writer.inner.commit_append(
             cut,
             right_request,
-            right_file,
+            std::iter::once(right_file),
             right_next,
             None,
         )))
@@ -229,7 +229,7 @@ fn competing_appends(
     let left_ok = loom::future::block_on(Box::pin(first.inner.commit_append(
         cut,
         left_request,
-        left_file,
+        std::iter::once(left_file),
         left_next,
         None,
     )))

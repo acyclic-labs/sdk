@@ -15,6 +15,10 @@ pub enum Fault {
     ResampleFollow,
     /// Replace the caller's original generation fence with a fresh tail sample.
     ResamplePublicationFence,
+    /// Resample a valid tail fence after preparing a single or batch publication.
+    ResampleCommitFence,
+    /// Publish the request without consuming its selected image draft.
+    OmitDraftConsumption,
     /// Keep an index from the replaced history.
     RetainObsoleteIndex,
     /// Apply an old acknowledgement over a rebuilt index.

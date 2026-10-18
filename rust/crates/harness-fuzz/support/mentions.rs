@@ -1,9 +1,11 @@
 //! Independent conversion reference and observations shared by fuzzing/tests.
 use acyclic_harness::{
     Error, Result,
-    client::CommandResolution,
-    conversation::FileRef,
-    model::{FileProjectionPolicy, ModelContent, ModelContentPart},
+    client::{CommandResolution, FileMention},
+    model::{
+        FileProjectionPolicy, ImageDetail, ModelContent, ModelContentPart, NativeMediaIntent,
+        NativeMediaPolicy,
+    },
 };
 
 #[derive(Debug)]
@@ -34,33 +36,57 @@ fn reference(input: &CommandResolution) -> std::result::Result<ModelContent, &'s
         return Err("actions");
     };
     // Ordered linear specification, independent of the production index.
-    let mut unique = Vec::<&FileRef>::new();
+    let mut unique = Vec::<&FileMention>::new();
     for mention in mentions {
         let file = &mention.file;
         if let Some(previous) = unique.iter().find(|previous| {
-            previous.volume() == file.volume()
-                && previous.path() == file.path()
-                && previous.version() == file.version()
+            previous.file.volume() == file.volume()
+                && previous.file.path() == file.path()
+                && previous.file.version() == file.version()
         }) {
-            if *previous != file {
+            if previous.file != mention.file || previous.image_input != mention.image_input {
                 return Err("conflict");
             }
         } else {
-            unique.push(file);
+            unique.push(mention);
         }
     }
-    if text.is_empty() || unique.iter().any(|file| file.validate(&mut None).is_err()) {
+    if text.is_empty()
+        || unique
+            .iter()
+            .any(|mention| mention.file.validate(&mut None).is_err())
+    {
         return Err("invalid");
     }
     Ok(if unique.is_empty() {
         ModelContent::Text(text.clone())
     } else {
         let mut parts = vec![ModelContentPart::Text { text: text.clone() }];
-        parts.extend(unique.into_iter().map(|file| ModelContentPart::File {
-            file: file.clone(),
-            policy: FileProjectionPolicy::BoundedFull,
-        }));
-        ModelContent::Parts(parts)
+        for mention in unique {
+            let policy = if mention.file.descriptor().media_type().starts_with("image/") {
+                let image = mention.image_input.as_ref().ok_or("invalid")?;
+                image.validate().map_err(|_| "invalid")?;
+                FileProjectionPolicy::Native(Box::new(NativeMediaPolicy {
+                    intent: NativeMediaIntent::Image {
+                        detail: ImageDetail::Auto,
+                    },
+                    maximum_bytes: image.maximum_bytes,
+                    maximum_work: u64::from(image.maximum_tokens),
+                    configuration: None,
+                }))
+            } else {
+                FileProjectionPolicy::BoundedFull
+            };
+            parts.push(ModelContentPart::File {
+                file: mention.file.clone(),
+                policy,
+            });
+        }
+        let content = ModelContent::Parts(parts);
+        content
+            .validate_user_input(&mut None)
+            .map_err(|_| "invalid")?;
+        content
     })
 }
 

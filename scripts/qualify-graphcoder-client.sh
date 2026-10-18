@@ -9,11 +9,11 @@ cargo test -p acyclic-harness --features "$features" --test context-discovery ma
 cargo test -p acyclic-harness --features "$features" --test default_tools
 cargo test -p acyclic-harness --features "$features" --test git_executor facade_commits_branches_merges_and_inspects_managed_files
 cargo test -p acyclic-harness --features "$features" --test main saved_tool_metadata::
-for target in ui_prompt client_swarm_views; do
-  cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime "$target" --target x86_64-unknown-linux-gnu --dev -- -runs=64 -max_len=4096 -timeout=2
+for target in ui_prompt client_swarm_views client_mentions bounded_json; do
+  CARGO_TARGET_DIR="$artifact_dir/client-fuzz" cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime "$target" --target x86_64-unknown-linux-gnu --dev -- -runs=64 -max_len=4096 -timeout=2
 done
 RUSTFLAGS="--cfg acyclic_harness_loom --cfg acyclic_loom" cargo test -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests:: client::commands::session::init_models::
+python3 scripts/qualify-graphcoder-artifact.py task_volume::files::models:: local::checkout_tools::tests:: client::commands::session::init_models:: client::commands::session::image_models:: task_volume::commit::models::
 
 cargo test -p acyclic-harness-tui --features tui --lib --no-run --message-format=json |
 python3 scripts/qualify-graphcoder-artifact.py term::session::tests:: term::tty::tests::

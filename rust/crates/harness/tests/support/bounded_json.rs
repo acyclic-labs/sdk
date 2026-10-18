@@ -21,6 +21,16 @@ pub fn check(input: &[u8]) {
     assert_eq!(serde_json::from_slice::<Value>(&compact).unwrap(), expected);
     let bytes = canonical_json_bytes_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap();
     assert_eq!(bytes, serde_json::to_vec(&expected).unwrap());
+    let mut rescanned = 0;
+    let resident = canonical_json_bytes_bounded(&expected, bounds, None, &mut |event| {
+        if let acyclic_harness::executor::json::JsonCodecCharge::Inspect { items } = event {
+            rescanned += items;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(resident, bytes);
+    assert_eq!(rescanned, 0, "canonical array index rescanned its document");
     assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
     assert_eq!(
         json_value_bounded(&raw, bounds, None, &mut |_| Ok(())).unwrap(),

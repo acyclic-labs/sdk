@@ -2,6 +2,8 @@
 
 mod call_id;
 mod content;
+mod image;
+pub use image::{ImageFormat, ImageHeader, ImageInput};
 mod instruction_identity;
 mod instruction_index;
 mod instruction_sources;

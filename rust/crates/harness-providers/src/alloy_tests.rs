@@ -48,6 +48,7 @@ fn registry(capacities: &[u32]) -> (Registry, Arc<Routing>) {
             .register(
                 (*name).into(),
                 ProviderSpec {
+                    images: BTreeMap::new(),
                     adapter: *adapter,
                     authentication: Authentication::Optional,
                     base_url: format!("http://localhost/{name}"),

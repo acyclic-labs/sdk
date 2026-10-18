@@ -486,22 +486,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await,
             )?;
             crate::conversation::BoundedContentFuture::new(Some(io), || async {
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut directories = crate::model::vec_with_capacity(mutations.len(), Some(io))?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let mut files = crate::model::vec_with_capacity(mutations.len(), Some(io))?;
                 for mutation in mutations {
+                    crate::model::charge_items(Some(io), 1)?;
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(work) = io.original_native_work() {
                         native_before(work).await?;
                     }
                     match mutation {
-                        WorkspaceMutation::CreateDirectory { path } => io.sdk(
-                            transaction
-                                .create_dir_all(path, io, io.cancellation())
-                                .await,
-                        )?,
-                        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
+                        WorkspaceMutation::CreateDirectory { path } => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            directories.push(path.as_str());
+                            #[cfg(target_arch = "wasm32")]
+                            io.sdk(
+                                transaction
+                                    .create_dir_all(path, io, io.cancellation())
+                                    .await,
+                            )?;
+                        }
+                        WorkspaceMutation::PutFile { path, bytes } => {
+                            #[cfg(not(target_arch = "wasm32"))]
+                            files.push((path.as_str(), bytes.clone()));
+                            #[cfg(target_arch = "wasm32")]
+                            io.sdk(
+                                transaction
+                                    .write(path, bytes.clone(), io, io.cancellation())
+                                    .await,
+                            )?;
+                        }
                         WorkspaceMutation::Remove { .. } => {
                             return Err(stock_boundary(
                                 Some(io),
@@ -511,6 +526,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         }
                     }
                 }
+                // Match ordinary publication: resolve the paths together instead
+                // of decoding the same file table for each staged file.
+                #[cfg(not(target_arch = "wasm32"))]
+                io.sdk(
+                    transaction
+                        .write_batch(&directories, &files, io, io.cancellation())
+                        .await,
+                )?;
                 Ok(())
             })?
             .await?;

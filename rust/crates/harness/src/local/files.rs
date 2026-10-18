@@ -17,6 +17,18 @@ impl LocalHarness {
         )?)
     }
 
+    /// Publishes host-selected attachments in this agent's private volume.
+    pub fn client_publisher(&self) -> Result<Arc<dyn crate::conversation::ContentPublisher>> {
+        Ok(crate::filesystem::FilesystemContentPublisher::new(
+            Arc::clone(&self.files),
+            &self.scratch,
+            &self.verifier,
+            &self.signed,
+            self.limits.file_bytes,
+            None,
+        )?)
+    }
+
     /// Read-only live queries over the agent's actual private SDK files.
     /// The existing verifier retains owner authority; execution-log files and
     /// the host journal remain distinct volumes.

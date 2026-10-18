@@ -2,6 +2,7 @@
 mod child;
 mod child_queries;
 mod child_result;
+mod commit;
 pub(crate) use child::child_scope;
 pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
 pub use child_result::ChildTurnResult;
@@ -257,6 +258,8 @@ struct Index {
     child_inputs: BTreeMap<Component, Vec<FileKey>>,
 }
 
+mod batch;
+
 /// A disposable index over one durable private task volume.
 /// Hosts authorize writes/queries with the volume's existing access decision.
 pub struct TaskVolume<P: ?Sized> {
@@ -464,8 +467,14 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         else {
             return Ok(expected);
         };
-        self.commit_append(expected, request, files, next, deadline_unix_millis)
-            .await
+        self.commit_append(
+            expected,
+            request,
+            std::iter::once(files),
+            next,
+            deadline_unix_millis,
+        )
+        .await
     }
 
     async fn prepare_append(
@@ -528,59 +537,6 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
         // append acknowledgement is still waiting for its durability barrier.
         drop(index);
         Ok(Some((request, files, next)))
-    }
-
-    async fn commit_append(
-        &self,
-        expected: Generation,
-        request: CommitRequest,
-        files: FileValue,
-        next: u64,
-        deadline_unix_millis: Option<u64>,
-    ) -> Result<Generation> {
-        #[cfg(acyclic_harness_loom)]
-        let deadline_unix_millis = if model_checking::enabled(model_checking::Fault::IgnoreDeadline)
-        {
-            None
-        } else {
-            deadline_unix_millis
-        };
-        #[cfg(acyclic_harness_loom)]
-        model_checking::publication_ready().await;
-        let outcome = if let Some(deadline) = deadline_unix_millis {
-            self.provider.commit_before(request, deadline).await?
-        } else {
-            self.provider.commit(request).await?
-        };
-        match outcome {
-            CommitOutcome::Committed(envelope) => {
-                let mut index = self.index.lock().await;
-                let unchanged = self.generation(&index) == expected;
-                #[cfg(acyclic_harness_loom)]
-                let unchanged = unchanged
-                    || model_checking::enabled(model_checking::Fault::OverwriteRebuiltIndex);
-                if unchanged {
-                    apply(&mut index, files, next);
-                    index.next = next;
-                    index.commit = envelope.commit_id;
-                }
-                Ok(Generation {
-                    volume: expected.volume,
-                    epoch: expected.epoch,
-                    position: next,
-                    commit: *envelope.commit_id.as_bytes(),
-                })
-            }
-            CommitOutcome::Conflict(_) => {
-                self.refresh().await?;
-                let index = self.index.lock().await;
-                if expected == self.generation(&index) {
-                    Err(Error::FenceConflict)
-                } else {
-                    Err(Error::Conflict(self.generation(&index)))
-                }
-            }
-        }
     }
 }
 

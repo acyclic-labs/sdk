@@ -83,6 +83,17 @@ impl<P: StreamProvider + ?Sized> TaskFiles<P> {
         self.inner.append(expected, file).await
     }
 
+    pub(crate) async fn write_many(
+        &self,
+        expected: Generation,
+        files: &[FileValue],
+    ) -> super::Result<Generation> {
+        for file in files {
+            authorize_write(&file.key, file.bytes.len() as u64, self.maximum_bytes)?;
+        }
+        self.inner.append_many(expected, files).await
+    }
+
     pub(crate) async fn write_if(
         &self,
         expected: Generation,

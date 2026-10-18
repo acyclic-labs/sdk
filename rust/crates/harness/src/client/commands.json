@@ -28,5 +28,6 @@
   {"name":"shell","aliases":["run","sh"],"description":"Run a shell command","arguments":"required_text","action":{"tool":"bash","kind":"tool"}},
   {"name":"delegate","aliases":["agent","spawn"],"description":"Delegate a task to a new agent","arguments":"required_text","action":{"tool":"spawn","kind":"tool"}},
   {"name":"search","aliases":["web"],"description":"Search the web","arguments":"required_text","action":{"tool":"web_search","kind":"tool"}},
-  {"name":"fetch","aliases":["get","curl"],"description":"Fetch a URL","arguments":"required_text","action":{"tool":"url_fetch","kind":"tool"}}
+  {"name":"fetch","aliases":["get","curl"],"description":"Fetch a URL","arguments":"required_text","action":{"tool":"url_fetch","kind":"tool"}},
+  {"name":"attach","description":"Attach a host image file to the draft","arguments":"text","action":{"kind":"sdk","command":"attach"}}
 ]

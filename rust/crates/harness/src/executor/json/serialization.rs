@@ -11,6 +11,7 @@ pub(super) struct Scope<'a> {
     retained: u64,
     grow_output: bool,
     lexical: admission::Lexical,
+    array_table: Option<Vec<u8>>,
 }
 impl Scope<'_> {
     pub(super) fn event(&mut self, event: JsonCodecCharge) -> Result<()> {
@@ -63,6 +64,7 @@ impl Scope<'_> {
 }
 impl Drop for Scope<'_> {
     fn drop(&mut self) {
+        drop(self.array_table.take());
         if self.retained != 0 {
             let _ = (self.charge)(JsonCodecCharge::Release {
                 bytes: self.retained,
@@ -82,6 +84,7 @@ struct Writer<'a, 'b, 'c, 'd> {
     written: u64,
     maximum: u64,
     output: Option<&'a mut Vec<u8>>,
+    array_table: Option<Vec<u8>>,
     digest: Option<&'a mut (dyn FnMut(&[u8]) -> Result<()> + 'd)>,
     compare: Option<(&'a [u8], &'a mut bool)>,
 }
@@ -103,44 +106,55 @@ impl Write for Writer<'_, '_, '_, '_> {
                 bytes: bytes.len() as u64,
                 items: 0,
             })?;
-            {
-                let Scope {
-                    lexical,
-                    bounds,
-                    code,
-                    charge,
-                    ..
-                } = &mut **scope;
-                let mut forward = |event| {
-                    let event = match event {
-                        JsonCodecCharge::Work { bytes, items } => {
-                            let admitted = items.min(self.admitted_items);
-                            self.admitted_items -= admitted;
-                            JsonCodecCharge::Work {
-                                bytes,
-                                items: items - admitted,
+            for byte in bytes {
+                let (depth, string, item, arrays) = {
+                    let Scope {
+                        lexical,
+                        bounds,
+                        code,
+                        charge,
+                        ..
+                    } = &mut **scope;
+                    let mut forward = |event| {
+                        let event = match event {
+                            JsonCodecCharge::Work { bytes, items } => {
+                                let admitted = items.min(self.admitted_items);
+                                self.admitted_items -= admitted;
+                                JsonCodecCharge::Work {
+                                    bytes,
+                                    items: items - admitted,
+                                }
                             }
+                            event => event,
+                        };
+                        // The chunk charge above checks cancellation. Items funded
+                        // by the admission pass need no second zero-work callback.
+                        match event {
+                            JsonCodecCharge::Work { bytes: 0, items: 0 } => Ok(()),
+                            event => charge(event),
                         }
-                        event => event,
                     };
-                    // The chunk charge above checks cancellation. Items funded
-                    // by the admission pass need no second zero-work callback.
-                    match event {
-                        JsonCodecCharge::Work { bytes: 0, items: 0 } => Ok(()),
-                        event => charge(event),
-                    }
-                };
-                let charge =
-                    RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
-                for byte in bytes {
+                    let charge =
+                        RefCell::new(&mut forward as &mut dyn FnMut(JsonCodecCharge) -> Result<()>);
                     let depth = lexical.depth;
                     let string = lexical.string;
                     let item = lexical.byte(*byte, *bounds, *code, &charge)?;
-                    if self.prefix != 0 {
-                        let output = self.output.as_deref_mut().expect("indexed output");
-                        self.index
-                            .byte(&mut output[..self.prefix], *byte, depth, string, item)?;
+                    (depth, string, item, lexical.arrays)
+                };
+                if self.prefix != 0 {
+                    let output = self.output.as_deref_mut().expect("indexed output");
+                    self.index
+                        .byte(&mut output[..self.prefix], *byte, depth, string, item)?;
+                } else if let Some(table) = &mut self.array_table {
+                    if !string && *byte == b'[' {
+                        let length = super::arrays::bytes(arrays)?;
+                        let added = (length - table.len()) as u64;
+                        scope.event(JsonCodecCharge::CopyAdmission { bytes: added })?;
+                        reserve_output(table, length as u64, u64::MAX, &mut scope)?;
+                        scope.event(JsonCodecCharge::Copy { bytes: added })?;
+                        table.resize(length, 0);
                     }
+                    self.index.byte(table, *byte, depth, string, item)?;
                 }
             }
             if let Some(output) = &mut self.output {
@@ -352,6 +366,7 @@ fn write<T: Serialize + ?Sized>(
 ) -> Result<u64> {
     let admitted_items = scope.lexical.items;
     scope.lexical = admission::Lexical::default();
+    let array_table = scope.array_table.take();
     let state = RefCell::new(&mut *scope);
     let prefix = output.as_ref().map_or(0, |bytes| bytes.len());
     let mut writer = Writer {
@@ -362,6 +377,7 @@ fn write<T: Serialize + ?Sized>(
         written: 0,
         maximum,
         output,
+        array_table,
         digest,
         compare,
     };
@@ -376,14 +392,21 @@ fn write<T: Serialize + ?Sized>(
     let written = writer.written;
     // Never construct an index diagnostic after the original typed denial.
     let indexed = if result.is_ok() && state.borrow().failed.is_none() {
-        writer
-            .output
-            .as_ref()
-            .map(|output| writer.index.finish(&output[..prefix]))
+        writer.array_table.as_ref().map_or_else(
+            || {
+                writer
+                    .output
+                    .as_ref()
+                    .map(|output| writer.index.finish(&output[..prefix]))
+            },
+            |table| Some(writer.index.finish(table)),
+        )
     } else {
         None
     };
+    let array_table = writer.array_table.take();
     drop(writer);
+    scope.array_table = array_table;
     result.map_err(|error| scope.error(error))?;
     if let Some(error) = scope.failed.take() {
         return Err(error);
@@ -411,6 +434,11 @@ fn build_buffered<T: Serialize + ?Sized>(
 ) -> Result<(Value, Vec<u8>)> {
     let mut bytes = Vec::new();
     scope.grow_output = true;
+    scope.array_table = Some(Vec::new());
+    #[cfg(any(test, feature = "test-support"))]
+    if REBUILD_ARRAY_INDEX.get() {
+        scope.array_table = None;
+    }
     write(
         value,
         scope,
@@ -421,16 +449,19 @@ fn build_buffered<T: Serialize + ?Sized>(
         true,
     )?;
     scope.grow_output = false;
-    let table = super::arrays::build(
-        &bytes,
-        scope.lexical.arrays,
-        scope.bounds,
-        scope.code,
-        &mut |event| match event {
-            JsonCodecCharge::Retain { bytes } => scope.retain(bytes),
-            event => scope.event(event),
-        },
-    )?;
+    let table = match scope.array_table.take() {
+        Some(table) => table,
+        None => super::arrays::build(
+            &bytes,
+            scope.lexical.arrays,
+            scope.bounds,
+            scope.code,
+            &mut |event| match event {
+                JsonCodecCharge::Retain { bytes } => scope.retain(bytes),
+                event => scope.event(event),
+            },
+        )?,
+    };
     let value = decode_buffered(&mut bytes, &table, scope)?;
     let capacity = table.capacity() as u64;
     drop(table);
@@ -476,6 +507,7 @@ fn scope<'a>(
         retained: 0,
         grow_output: false,
         lexical: admission::Lexical::default(),
+        array_table: None,
     }
 }
 /// Compact encoding admitted before its output buffer is allocated. The
@@ -716,3 +748,13 @@ pub(crate) fn json_digest_bounded<T: Serialize + ?Sized>(
 #[cfg(test)]
 #[path = "single_pass_properties.rs"]
 mod single_pass_properties;
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    pub(crate) static REBUILD_ARRAY_INDEX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn rebuild_array_index(enabled: bool) {
+    REBUILD_ARRAY_INDEX.set(enabled);
+}

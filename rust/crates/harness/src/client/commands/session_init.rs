@@ -9,13 +9,14 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         key: files::FileKey,
         bytes: Vec<u8>,
     ) -> Result<()> {
+        let file = files::FileValue::new(key, bytes);
         loop {
-            if self.files.contains_key(&key) {
+            if self.files.contains_key(&file.key) {
                 return Ok(());
             }
             let before = self.generation;
             match self
-                .publish_rebased::<RETRY, true>(key.clone(), bytes.clone(), true)
+                .publish_rebased::<RETRY, true>(file.clone(), true)
                 .await
             {
                 Err(Error::Conflict(_)) if RETRY && self.generation != before => {}

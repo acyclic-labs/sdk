@@ -58,7 +58,10 @@ fn withdrawn<const REBASE: bool>(peer_first: bool) {
             let bytes = serde_json::to_vec(&CommandRequest::ClearAll).unwrap();
             let result = if REBASE {
                 commands
-                    .publish_rebased::<true, true>(request.clone(), bytes, true)
+                    .publish_rebased::<true, true>(
+                        files::FileValue::new(request.clone(), bytes),
+                        true,
+                    )
                     .await
             } else {
                 commands.publish(request.clone(), bytes, true).await

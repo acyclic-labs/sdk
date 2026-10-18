@@ -55,7 +55,7 @@ pub(crate) async fn count(
             .transpose()?;
         let result = provider
             .codex_count
-            .count(request)
+            .count(request, |message| crate::images::tokens(provider, message))
             .and_then(|tokens| projection::plan(provider, request, tokens));
         let mut custody = custody;
         let result = match custody.as_mut() {
@@ -107,6 +107,10 @@ pub(crate) async fn count(
         })
         .transpose()?;
     #[cfg(not(target_arch = "wasm32"))]
+    if let (Some(work), Some(hold)) = (work, admission.as_mut()) {
+        crate::images::admit(provider, request.request(), work, hold)?;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     let content_io = work
         .map(acyclic_harness::filesystem::PreparationIo::from_native_work)
         .transpose()?;
@@ -123,11 +127,21 @@ pub(crate) async fn count(
             names
         };
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let generation =
-            projection::body_named(provider, request.request(), &names, &origin, &mut files)?;
+        let images = crate::images::load(provider, request.request(), content_io.as_ref()).await?;
+        let generation = projection::body_with_images(
+            provider,
+            request.request(),
+            &names,
+            &origin,
+            images.iter(),
+            &mut files,
+        )?;
         let body = wire::body(&generation, &provider.model.name, spec.adapter);
-        let bytes =
-            serde_json::to_vec(&body).map_err(|_| crate::invalid("token count encoding failed"))?;
+        let mut bytes = Vec::with_capacity(
+            generation.capacity()? + projection::encoded_len(&provider.model.name)? + 256,
+        );
+        serde_json::to_writer(&mut bytes, &body)
+            .map_err(|_| crate::invalid("token count encoding failed"))?;
         let headers = dispatch::headers(provider, auth.0.as_deref(), auth.1.as_deref(), false);
         let url = wire::endpoint(&provider.config.base_url, &provider.model.name, spec)?;
         let plan = projection::plan(provider, request, 0)?;

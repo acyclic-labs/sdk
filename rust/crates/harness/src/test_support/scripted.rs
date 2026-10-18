@@ -100,6 +100,7 @@ type TokenCounter = dyn Fn(&PreparedModelRequest) -> Result<ModelTokenCount> + S
 pub struct ScriptedModelProvider {
     state: Mutex<State>,
     capacity: Option<ModelContextCapacity>,
+    image_input: Option<crate::model::ImageInput>,
     token_counter: Option<Arc<TokenCounter>>,
     dispatch_observer: Option<Arc<dyn Fn(ModelDispatch) + Send + Sync>>,
 }
@@ -119,6 +120,7 @@ impl ScriptedModelProvider {
             }),
             token_counter: Some(Arc::new(serialized_tokens)),
             dispatch_observer: None,
+            image_input: None,
         }
     }
 
@@ -126,6 +128,13 @@ impl ScriptedModelProvider {
     #[must_use]
     pub fn with_context_capacity(mut self, capacity: ModelContextCapacity) -> Self {
         self.capacity = Some(capacity);
+        self
+    }
+
+    /// Declares the image admission policy used by shared client bindings.
+    #[must_use]
+    pub fn with_image_input(mut self, policy: crate::model::ImageInput) -> Self {
+        self.image_input = Some(policy);
         self
     }
 
@@ -222,6 +231,9 @@ impl ScriptedModelProvider {
 }
 
 impl ModelProvider for ScriptedModelProvider {
+    fn image_input(&self, _: &Model) -> Result<Option<crate::model::ImageInput>> {
+        Ok(self.image_input.clone())
+    }
     fn context_capacity(&self, _: &Model) -> Result<ModelContextCapacity> {
         self.capacity.ok_or_else(|| {
             Error::Unsupported("selected model context capacity is unavailable".into())

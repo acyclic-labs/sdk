@@ -20,6 +20,10 @@ mod hypothesis;
 pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
+mod attachments;
+pub use attachments::attach_image;
+#[cfg(all(feature = "tui", not(target_arch = "wasm32")))]
+pub use attachments::paste_image;
 mod document_files;
 pub use document_files::document_files;
 mod views;
@@ -198,3 +202,8 @@ pub use local_headless::{LocalFileClient, parse_local_request, prepare_local_pro
 mod local_identity;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local_identity::local_identity;
+
+#[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+mod host_images;
+#[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+pub use host_images::host_tui_input;

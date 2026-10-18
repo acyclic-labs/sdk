@@ -15,6 +15,8 @@ pub enum Authentication {
     Optional,
 }
 
+pub use acyclic_harness::model::ImageInput;
+
 /// Endpoint configuration independent of immutable model identity.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -44,6 +46,13 @@ pub struct ProviderSpec {
     /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
+    /// Exact image input limits; omitted models receive a fallback note.
+    #[serde(default)]
+    #[cfg_attr(
+        all(target_arch = "wasm32", feature = "browser"),
+        tsify(type = "Record<string, ImageInput>")
+    )]
+    pub images: BTreeMap<String, ImageInput>,
     /// Maximum bytes in one SSE event and aggregate retained protocol state.
     pub max_event_bytes: usize,
 }

@@ -104,7 +104,10 @@ fn peer_edit<const MATCH_KEY: bool>(same_file: bool) {
             let peer = files::FileValue::new(peer_key, br#"{"peer":true}"#.to_vec());
             volume.append(expected, &peer).await.unwrap();
             let result = commands
-                .publish_rebased::<true, MATCH_KEY>(key.clone(), b"null".to_vec(), false)
+                .publish_rebased::<true, MATCH_KEY>(
+                    files::FileValue::new(key.clone(), b"null".to_vec()),
+                    false,
+                )
                 .await;
             if same_file {
                 assert!(

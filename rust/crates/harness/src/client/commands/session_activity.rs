@@ -85,7 +85,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 Err(Error::Conflict("cancellation request differs".into()))
             };
         }
-        self.publish_rebased::<true, true>(key, bytes, true).await
+        self.publish_rebased::<true, true>(files::FileValue::new(key, bytes), true)
+            .await
     }
 
     /// Whether an observed request for this session or selected task lacks its

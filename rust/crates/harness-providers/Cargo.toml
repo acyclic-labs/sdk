@@ -20,6 +20,7 @@ acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = 
 acyclic-stream = { path = "../stream", version = "=0.2.0", default-features = false }
 async-stream = "0.3.6"
 bytes.workspace = true
+base64 = "=0.22.1"
 blake3.workspace = true
 futures.workspace = true
 serde.workspace = true
@@ -30,7 +31,6 @@ url = "2.5.7"
 acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["filesystem"] }
 acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false }
 blake3.workspace = true
-base64 = "=0.22.1"
 reqwest.workspace = true
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 tempfile = "3.27.0"
@@ -46,6 +46,7 @@ wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["tui", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 tokio.workspace = true

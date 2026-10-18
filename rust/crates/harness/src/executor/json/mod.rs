@@ -21,6 +21,8 @@ pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
 pub(crate) use serialization::count_json_bytes_trusted;
+#[cfg(feature = "test-support")]
+pub(crate) use serialization::rebuild_array_index;
 mod copy;
 mod decode;
 mod schema;

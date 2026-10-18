@@ -14,6 +14,34 @@ mod archive;
 mod confirmation;
 #[path = "session_consume.rs"]
 mod consumption;
+#[cfg(all(
+    test,
+    feature = "terminal",
+    feature = "tui",
+    not(target_arch = "wasm32"),
+    acyclic_harness_loom
+))]
+#[path = "session_images_models.rs"]
+mod image_models;
+#[path = "session_image_policy.rs"]
+mod image_policy;
+#[cfg(all(
+    test,
+    feature = "terminal",
+    feature = "tui",
+    not(target_arch = "wasm32")
+))]
+#[path = "session_image_support.rs"]
+mod image_test_support;
+#[cfg(all(
+    test,
+    feature = "terminal",
+    feature = "tui",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+#[path = "session_images_tests.rs"]
+mod image_tests;
 #[path = "session_init.rs"]
 mod init;
 #[cfg(all(test, acyclic_harness_loom))]
@@ -334,8 +362,10 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         value: &Value,
     ) -> Result<()> {
         self.publish_rebased::<true, true>(
-            self.state_key(root, name)?,
-            serde_json::to_vec(value).map_err(codec)?,
+            files::FileValue::new(
+                self.state_key(root, name)?,
+                serde_json::to_vec(value).map_err(codec)?,
+            ),
             false,
         )
         .await?;
@@ -356,7 +386,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 "command catalog changed; review the new revision".into(),
             ));
         }
-        self.publish_rebased::<true, true>(key, bytes, false).await
+        self.publish_rebased::<true, true>(files::FileValue::new(key, bytes), false)
+            .await
     }
 
     /// The selected task is persisted in the session layout, not the input loop.
@@ -417,6 +448,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         resolution: CommandResolution,
         operation: OperationId,
     ) -> Result<OperationId> {
+        let mut writes = Vec::new();
         for change in resolution.file_changes(&self.snapshot(&resolution)?, operation)? {
             let key = if change.create_only {
                 let task = if change.root == CommandFileRoot::Session {
@@ -438,12 +470,31 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             } else {
                 self.state_key(change.root, &change.path)?
             };
-            self.publish_rebased::<RETRY, true>(
-                key,
-                serde_json::to_vec(&change.contents).map_err(codec)?,
+            writes.push((
+                files::FileValue::new(key, serde_json::to_vec(&change.contents).map_err(codec)?),
                 change.create_only,
-            )
-            .await?;
+            ));
+        }
+        #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
+        if let CommandResolution::Prompt { mentions, .. } = &resolution {
+            let images = crate::client::host_images::draft_images(self)?;
+            if !images.is_empty()
+                && images
+                    .iter()
+                    .all(|file| mentions.iter().any(|m| &m.file == file))
+            {
+                let mut batch: Vec<_> = writes.into_iter().map(|(f, _)| f).collect();
+                batch.push(files::FileValue::new(
+                    self.state_key(CommandFileRoot::Session, "attachments.json")?,
+                    b"[]".to_vec(),
+                ));
+                self.publish_many::<RETRY>(&batch).await?;
+                return Ok(operation);
+            }
+        }
+        for (file, create_only) in writes {
+            self.publish_rebased::<RETRY, true>(file, create_only)
+                .await?;
         }
         Ok(operation)
     }

@@ -58,6 +58,14 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
             }
             Ok(())
         }
+        FileProjectionPolicy::Native(policy)
+            if matches!(
+                policy.intent,
+                acyclic_harness::model::NativeMediaIntent::Image { .. }
+            ) =>
+        {
+            Ok(())
+        }
         FileProjectionPolicy::Native(_) => Err(Error::Unsupported(
             "native model media is unsupported by this adapter".into(),
         )),
@@ -104,7 +112,10 @@ pub(crate) async fn resolve(
     for message in &request.messages {
         for (file, policy) in message.content.file_parts() {
             validate(file, policy, files.maximum_bytes)?;
-            if !matches!(policy, FileProjectionPolicy::Reference) {
+            if matches!(
+                policy,
+                FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_)
+            ) {
                 remaining = remaining
                     .checked_sub(projected_bytes(file, policy)?)
                     .ok_or_else(|| invalid("model files exceed aggregate projection byte limit"))?;

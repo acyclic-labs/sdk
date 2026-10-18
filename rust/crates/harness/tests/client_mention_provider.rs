@@ -103,6 +103,7 @@ async fn scenario(
     registry.register(
         "scripted".into(),
         ProviderSpec {
+            images: BTreeMap::new(),
             adapter: Adapter::Responses,
             authentication: Authentication::Optional,
             base_url: "https://scripted.invalid/v1".into(),

@@ -16,7 +16,7 @@ pub(super) fn normalize(adapter: Adapter, parts: &mut Vec<Item<'_>>) {
                 .get("text")
                 .and_then(Value::as_str)
                 .map(|text| text.trim().is_empty()),
-            Item::Native(_) | Item::Call(_) => None,
+            _ => None,
         };
         if let (Some(blank), Some((index, previous_blank))) = (blank, previous) {
             if blank || previous_blank {
@@ -44,7 +44,7 @@ pub(super) fn normalize(adapter: Adapter, parts: &mut Vec<Item<'_>>) {
                 .get("text")
                 .and_then(Value::as_str)
                 .is_none_or(|text| !text.trim().is_empty()),
-            Item::Native(_) | Item::Call(_) => true,
+            _ => true,
         });
     }
 }
@@ -106,7 +106,7 @@ pub(crate) fn assert_normalization(fragments: &[String]) {
             })
             .filter_map(|item| match item {
                 Item::Json(value) => value["text"].as_str(),
-                Item::Native(_) | Item::Call(_) => None,
+                _ => None,
             })
             .collect();
         assert_eq!(

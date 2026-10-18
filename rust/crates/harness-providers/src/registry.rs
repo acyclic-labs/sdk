@@ -229,5 +229,15 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
     for model in config.models.values() {
         model.capacity.validate()?;
     }
+    for (model, images) in &config.images {
+        let capacity = config
+            .models
+            .get(model)
+            .ok_or_else(|| invalid("image model has no declared context capacity"))?;
+        images.validate()?;
+        if images.maximum_tokens > capacity.capacity.context_tokens {
+            return Err(invalid("invalid image input bounds"));
+        }
+    }
     Ok(())
 }

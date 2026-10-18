@@ -2,7 +2,9 @@ pub(crate) mod arguments;
 mod call;
 pub(crate) mod gemini;
 mod gemini_results;
+mod image;
 mod json_string;
+mod media;
 pub(crate) mod native_reasoning;
 mod sequence;
 pub(crate) mod text;
@@ -12,8 +14,7 @@ use acyclic_harness::{
     Result,
     context::ModelTokenCount,
     model::{
-        ModelContent, ModelContentPart, ModelDataPart, ModelMessage, ModelRequest, ModelRole,
-        PreparedModelRequest, ToolResultContent,
+        ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole, PreparedModelRequest,
     },
 };
 use serde_json::{Value, json};
@@ -60,16 +61,24 @@ pub(crate) fn plan(
         .messages
         .iter()
         .map(|message| {
-            let bytes = encoded_len(message)?
+            let bytes = encoded_len(message)?;
+            message_bytes = message_bytes
+                .checked_add(bytes)
+                .ok_or_else(|| invalid("token planning size overflow"))?;
+            // An image's volume, version and descriptor are ownership metadata,
+            // not provider text. Its declared image-token bound accounts for media.
+            let bytes = bytes
+                .checked_sub(crate::images::reference_bytes(provider, message)?)
+                .ok_or_else(|| invalid("image reference exceeds message size"))?;
+            let bytes = bytes
                 .checked_add(crate::files::extra_bytes(
                     &message.content,
                     provider.files.maximum_bytes,
                 )?)
-                .ok_or_else(|| invalid("token planning size overflow"))?;
-            message_bytes = message_bytes
-                .checked_add(bytes)
-                .ok_or_else(|| invalid("token planning size overflow"))?;
-            tokens(bytes)
+                .ok_or_else(|| invalid("file planning size overflow"))?;
+            tokens(bytes)?
+                .checked_add(crate::images::tokens(provider, message)?)
+                .ok_or_else(|| invalid("file token planning weight exceeds u32"))
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(ModelTokenCount {
@@ -120,6 +129,7 @@ pub(crate) fn body_with_files(
     .map_err(|_| invalid("cannot encode projected request"))
 }
 
+#[cfg(test)]
 pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
@@ -127,21 +137,70 @@ pub(crate) fn body_named<'a>(
     target: &acyclic_harness::model::ReasoningOrigin,
     files: &mut FileText,
 ) -> Result<Body<'a>> {
+    let mut images = std::iter::empty();
+    project_body(
+        provider,
+        request,
+        names,
+        target,
+        &mut media::Media {
+            provider,
+            files: &mut images,
+            text_files: files,
+            planning: true,
+        },
+    )
+}
+
+pub(crate) fn body_with_images<'a>(
+    provider: &ResolvedModel,
+    request: &'a ModelRequest,
+    names: &crate::tool_names::Names,
+    target: &acyclic_harness::model::ReasoningOrigin,
+    mut images: impl Iterator<Item = &'a [u8]>,
+    files: &mut FileText,
+) -> Result<Body<'a>> {
+    crate::images::encoded_bytes(provider, request)?;
+    project_body(
+        provider,
+        request,
+        names,
+        target,
+        &mut media::Media {
+            provider,
+            files: &mut images,
+            text_files: files,
+            planning: false,
+        },
+    )
+}
+
+fn project_body<'a>(
+    provider: &ResolvedModel,
+    request: &'a ModelRequest,
+    names: &crate::tool_names::Names,
+    target: &acyclic_harness::model::ReasoningOrigin,
+    media: &mut media::Media<'_, '_, 'a>,
+) -> Result<Body<'a>> {
     let adapter = provider.config.adapter;
     let call_ids = crate::call_ids::CallIds::new(request, adapter);
     let mut messages: Vec<Message<'a>> = Vec::new();
     let mut system = Vec::new();
     let mut gemini = gemini::Replay::default();
+    let mut tool_images = Vec::new();
     for message in &request.messages {
+        if message.role != ModelRole::Tool {
+            messages.append(&mut tool_images);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if provider.codex_login.is_some() && message.role == ModelRole::System {
-            system.push(text_content(&message.content, files)?);
+            system.push(media.text(&message.content)?);
             continue;
         }
         if message.role == ModelRole::System
             && matches!(adapter, Adapter::Anthropic | Adapter::Gemini)
         {
-            system.push(text_content(&message.content, files)?);
+            system.push(media.text(&message.content)?);
         } else {
             for projected in project_message(
                 adapter,
@@ -150,12 +209,20 @@ pub(crate) fn body_named<'a>(
                 &call_ids,
                 target,
                 &mut gemini,
-                files,
+                media,
             )? {
-                sequence::push(adapter, &mut messages, projected)?;
+                if adapter == Adapter::Chat
+                    && message.role == ModelRole::Tool
+                    && matches!(&projected, Message::Item(Item::Parts { fields, .. }) if fields["role"] == "user")
+                {
+                    tool_images.push(projected);
+                } else {
+                    sequence::push(adapter, &mut messages, projected)?;
+                }
             }
         }
     }
+    messages.append(&mut tool_images);
     sequence::finish(adapter, &mut messages);
     let tools: Vec<Value> = request.tools.iter().map(|tool| { let name = names.wire(&tool.name)?; Ok(match adapter {
         Adapter::Anthropic => json!({"name":name,"description":tool.description,"input_schema":tool.input_schema}),
@@ -271,7 +338,7 @@ fn project_message<'a>(
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
     gemini: &mut gemini::Replay<'a>,
-    files: &mut FileText,
+    media: &mut media::Media<'_, '_, 'a>,
 ) -> Result<Vec<Message<'a>>> {
     let role: &'static str = match message.role {
         ModelRole::System => "system",
@@ -285,6 +352,8 @@ fn project_message<'a>(
     let mut ordered = Vec::new();
     gemini.begin(message.role);
     let mut chat_reasoning = String::new();
+    let mut chat_parts = Vec::new();
+    let mut extra_images = Vec::new();
     if let ModelContent::Text(text) = &message.content {
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
@@ -294,13 +363,27 @@ fn project_message<'a>(
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
             ModelContentPart::File { file, policy } => {
-                project_text(
-                    adapter,
-                    role,
-                    files.project(file, policy)?,
-                    &mut texts,
-                    &mut ordered,
-                );
+                let part = media.file(file, policy, message.role == ModelRole::User)?;
+                if let Some(text) = part.text() {
+                    project_text(adapter, role, text.to_owned(), &mut texts, &mut ordered);
+                } else {
+                    match adapter {
+                        Adapter::Chat => {
+                            chat_parts.extend(
+                                texts
+                                    .drain(..)
+                                    .map(|text| Item::Json(json!({"type":"text","text":text}))),
+                            );
+                            chat_parts.push(part);
+                        }
+                        Adapter::Responses => ordered.push(Item::Parts {
+                            fields: json!({"type":"message","role":role}),
+                            key: "content",
+                            parts: vec![part],
+                        }),
+                        _ => ordered.push(part),
+                    }
+                }
             }
             ModelContentPart::ToolCall(acyclic_harness::model::ToolCall {
                 call_id,
@@ -379,23 +462,72 @@ fn project_message<'a>(
             } => {
                 let name = names.wire(name)?;
                 let call_id = call_ids.wire(call_id)?;
-                let text = result_text(content, files)?;
+                let mut parts = media.result(content)?;
+                let text = parts
+                    .iter()
+                    .filter_map(Item::text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let has_images = parts.iter().any(|part| part.text().is_none());
                 let result = match adapter {
                     Adapter::Anthropic => {
-                        json!({"type":"tool_result","tool_use_id":call_id,"content":text})
+                        if has_images {
+                            Item::Parts {
+                                fields: json!({"type":"tool_result","tool_use_id":call_id}),
+                                key: "content",
+                                parts: std::mem::take(&mut parts),
+                            }
+                        } else {
+                            Item::Json(
+                                json!({"type":"tool_result","tool_use_id":call_id,"content":text}),
+                            )
+                        }
                     }
                     Adapter::Responses => {
-                        json!({"type":"function_call_output","call_id":call_id,"output":text})
+                        if has_images {
+                            Item::Parts {
+                                fields: json!({"type":"function_call_output","call_id":call_id}),
+                                key: "output",
+                                parts: std::mem::take(&mut parts),
+                            }
+                        } else {
+                            Item::Json(
+                                json!({"type":"function_call_output","call_id":call_id,"output":text}),
+                            )
+                        }
                     }
-                    Adapter::Chat => json!({"role":"tool","tool_call_id":call_id,"content":text}),
-                    Adapter::Gemini => {
-                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}})
+                    Adapter::Chat => {
+                        Item::Json(json!({"role":"tool","tool_call_id":call_id,"content":text}))
                     }
+                    Adapter::Gemini => Item::Json(
+                        json!({"functionResponse":{"id":call_id,"name":name,"response":{"output":text}}}),
+                    ),
                 };
+                if has_images && matches!(adapter, Adapter::Chat | Adapter::Gemini) {
+                    let caption = format!("Images from tool {name} ({call_id}):");
+                    let mut captioned = vec![Item::Json(if adapter == Adapter::Gemini {
+                        json!({"text":caption})
+                    } else {
+                        json!({"type":"text","text":caption})
+                    })];
+                    captioned.extend(parts.into_iter().filter(|part| part.text().is_none()));
+                    if adapter == Adapter::Chat {
+                        extra_images.push(Message::Item(Item::Parts {
+                            fields: json!({"role":"user"}),
+                            key: "content",
+                            parts: captioned,
+                        }));
+                    } else {
+                        extra_images.extend(captioned.into_iter().map(|part| Message::Gemini {
+                            role: "user",
+                            parts: vec![part],
+                        }));
+                    }
+                }
                 if adapter == Adapter::Chat {
                     results.push(result);
                 } else {
-                    ordered.push(Item::Json(result));
+                    ordered.push(result);
                 }
             }
         }
@@ -403,6 +535,18 @@ fn project_message<'a>(
     match adapter {
         Adapter::Chat => {
             let mut output = Vec::new();
+            if !chat_parts.is_empty() {
+                chat_parts.extend(
+                    texts
+                        .drain(..)
+                        .map(|text| Item::Json(json!({"type":"text","text":text}))),
+                );
+                output.push(Message::Item(Item::Parts {
+                    fields: json!({"role":role}),
+                    key: "content",
+                    parts: chat_parts,
+                }));
+            }
             if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
                 output.push(Message::Chat(wire::Chat {
                     role,
@@ -415,14 +559,49 @@ fn project_message<'a>(
                     reasoning_content: (!chat_reasoning.is_empty()).then_some(chat_reasoning),
                 }));
             }
-            output.extend(
-                results
-                    .into_iter()
-                    .map(|value| Message::Item(Item::Json(value))),
-            );
+            output.extend(results.into_iter().map(Message::Item));
+            output.extend(extra_images);
             Ok(output)
         }
-        Adapter::Responses => Ok(ordered.into_iter().map(Message::Item).collect()),
+        Adapter::Responses => {
+            if message.role != ModelRole::User
+                || !message.content.parts().iter().any(|part| {
+                    matches!(
+                        part,
+                        ModelContentPart::File {
+                            policy: acyclic_harness::model::FileProjectionPolicy::Native(_),
+                            ..
+                        }
+                    )
+                })
+            {
+                return Ok(ordered.into_iter().map(Message::Item).collect());
+            }
+            let mut output: Vec<Message<'a>> = Vec::new();
+            for item in ordered {
+                match (output.last_mut(), item) {
+                    (
+                        Some(Message::Item(Item::Parts {
+                            fields: previous,
+                            parts,
+                            ..
+                        })),
+                        Item::Parts {
+                            fields: next,
+                            parts: mut more,
+                            ..
+                        },
+                    ) if previous["type"] == "message"
+                        && next["type"] == "message"
+                        && previous["role"] == next["role"] =>
+                    {
+                        parts.append(&mut more);
+                    }
+                    (_, item) => output.push(Message::Item(item)),
+                }
+            }
+            Ok(output)
+        }
         Adapter::Anthropic => Ok(if ordered.is_empty() {
             Vec::new()
         } else {
@@ -431,14 +610,21 @@ fn project_message<'a>(
                 content: ordered,
             }]
         }),
-        Adapter::Gemini => Ok(if ordered.is_empty() {
-            Vec::new()
-        } else {
-            vec![Message::Gemini {
-                role: if role == "assistant" { "model" } else { "user" },
-                parts: ordered,
-            }]
-        }),
+        Adapter::Gemini => {
+            for extra in extra_images {
+                if let Message::Gemini { mut parts, .. } = extra {
+                    ordered.append(&mut parts);
+                }
+            }
+            Ok(if ordered.is_empty() {
+                Vec::new()
+            } else {
+                vec![Message::Gemini {
+                    role: if role == "assistant" { "model" } else { "user" },
+                    parts: ordered,
+                }]
+            })
+        }
     }
 }
 
@@ -472,45 +658,10 @@ fn project_text(
     }
     match adapter {
         Adapter::Chat => texts.push(text),
-        Adapter::Responses => ordered.push(Item::Json(json!({
-            "type":"message", "role":if role == "tool" { "user" } else { role },
-            "content":[{"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}],
-        }))),
+        Adapter::Responses => ordered.push(Item::Parts {fields:json!({"type":"message", "role":if role == "tool" { "user" } else { role }}),key:"content",parts:vec![Item::Json(json!({"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}))]}),
         Adapter::Anthropic => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Gemini => ordered.push(Item::Json(json!({"text":text}))),
     }
-}
-
-fn result_text(content: &ToolResultContent, files: &mut FileText) -> Result<String> {
-    match content {
-        ToolResultContent::Json { value } => {
-            serde_json::to_string(value).map_err(|error| invalid(error.to_string()))
-        }
-        ToolResultContent::Parts { parts } => parts
-            .iter()
-            .map(|part| match part {
-                ModelDataPart::Text { text } => Ok(text.clone()),
-                ModelDataPart::File { file, policy } => files.project(file, policy),
-            })
-            .collect::<Result<Vec<_>>>()
-            .map(|parts| parts.join("\n")),
-    }
-}
-
-fn text_content(content: &ModelContent, files: &mut FileText) -> Result<String> {
-    if let ModelContent::Text(text) = content {
-        return Ok(text.clone());
-    }
-    content
-        .parts()
-        .iter()
-        .map(|part| match part {
-            ModelContentPart::Text { text } => Ok(text.clone()),
-            ModelContentPart::File { file, policy } => files.project(file, policy),
-            _ => Err(invalid("system messages cannot contain tool exchanges")),
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(|parts| parts.join("\n"))
 }
 
 fn foreign_text(origin: &acyclic_harness::model::ReasoningOrigin, text: &str) -> String {

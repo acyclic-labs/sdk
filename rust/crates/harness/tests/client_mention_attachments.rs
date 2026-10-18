@@ -15,6 +15,7 @@ fn checked_input() -> CommandResolution {
             start: index * 8,
             end: index * 8 + 7,
             file,
+            image_input: None,
         })
         .collect();
     CommandResolution::Prompt {
@@ -32,6 +33,8 @@ fn fuzz_oracle_checks_every_seed() {
         include_bytes!("../../harness-fuzz/corpus/client_mentions/view-selection").as_slice(),
         include_bytes!("../../harness-fuzz/corpus/client_mentions/ordered-mentions").as_slice(),
         include_bytes!("../../harness-fuzz/corpus/client_mentions/conflicting-metadata").as_slice(),
+        include_bytes!("../../harness-fuzz/corpus/client_mentions/selected-image-policy")
+            .as_slice(),
     ] {
         let input: CommandResolution = serde_json::from_slice(data).unwrap();
         oracle::check(&input);
@@ -95,6 +98,7 @@ fn mention_oracle()
         start: 16,
         end: 23,
         file: file(1, 1, 1, b"changed"),
+        image_input: None,
     });
     builder
         .control("projection", checked_input(), Fault::DroppedAttachment)
@@ -156,6 +160,7 @@ fn conflicting_metadata_for_one_pinned_identity_is_rejected() {
             start: index * 8,
             end: index * 8 + 7,
             file: file(1, 1, 1, body),
+            image_input: None,
         })
         .collect();
     assert!(matches!(
@@ -180,6 +185,7 @@ proptest::proptest! {
             start: index * 8,
             end: index * 8 + 7,
             file: file(id, 1, 1, &body),
+            image_input: None,
         }).collect();
         let input = CommandResolution::Prompt { text: "inspect files".into(), source: None, mentions };
         mention_oracle().check(&input);
@@ -203,7 +209,7 @@ proptest::proptest! {
             let start = text.len();
             text.push('@');
             text.push_str(&path);
-            mentions.push(FileMention { start, end: text.len(), file: file(id, revision, volume, b"body") });
+            mentions.push(FileMention { start, end: text.len(), file: file(id, revision, volume, b"body"), image_input: None });
             if !expected.contains(&identity) {
                 expected.push(identity);
             }

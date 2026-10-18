@@ -1,0 +1,1 @@
+[{"volume":{"provider":{"namespace":"fixture","family":"filesystem","version":"2"},"id":"private","class":"agent_private","owner":{"agent":[2,2,2,2]}},"path":"attachments/image.png","descriptor":{"sha256":[0,1,2,3,4,5,6,7,8,9],"byte_length":100,"media_type":"image/png"}},null]

@@ -17,6 +17,7 @@ acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-e
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 clap.workspace = true
 futures.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "io-std", "io-util"] }
 
 [lints]
@@ -25,7 +26,6 @@ workspace = true
 [dev-dependencies]
 acyclic-harness = { path = "../../..", features = ["test-support"] }
 serde.workspace = true
-serde_json.workspace = true
 acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true
 acyclic-test-support = { path = "../../../../test-support" }

@@ -24,6 +24,9 @@ pub(super) struct Probe {
 }
 
 impl ModelProvider for Probe {
+    fn image_input(&self, model: &Model) -> Result<Option<acyclic_harness::model::ImageInput>> {
+        self.provider.image_input(model)
+    }
     fn generate<'a>(
         &'a self,
         _: PreparedModelRequest,

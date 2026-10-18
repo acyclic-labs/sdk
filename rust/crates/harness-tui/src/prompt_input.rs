@@ -572,7 +572,14 @@ impl PromptInput {
     }
 
     fn submit(&mut self, now_ms: u64, effects: &mut Vec<InputEffect>) {
-        if let Some(text) = self.editor.enter(false, now_ms) {
+        let text =
+            if self.images > 0 && self.editing.is_none() && self.editor.text().trim().is_empty() {
+                self.editor.set_text("", now_ms);
+                Some(String::new())
+            } else {
+                self.editor.enter(false, now_ms)
+            };
+        if let Some(text) = text {
             self.history.push(text.clone());
             let edit = self.editing.take().map(|edit| {
                 self.editor = edit.draft;

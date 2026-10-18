@@ -28,6 +28,7 @@ mod bind;
 #[cfg(feature = "native-execution")]
 mod checkout_tools;
 mod children;
+mod client_files;
 mod command_machine;
 mod command_views;
 mod commands;
@@ -39,6 +40,7 @@ mod files;
 mod inheritance;
 mod owner;
 mod owner_record;
+mod prompt_files;
 mod runtime;
 #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
 mod settings;

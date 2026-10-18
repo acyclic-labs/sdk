@@ -132,6 +132,10 @@ fn unsupported() -> Error {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: acyclic_stream::ProviderPlatform {
+    /// Image admission for this exact immutable model selection.
+    fn image_input(&self, _: &Model) -> Result<Option<super::ImageInput>> {
+        Ok(None)
+    }
     /// Binds the composition's authenticated reader for file-backed model input.
     /// Providers that consume canonical file references directly need no rebinding.
     fn bind_content(

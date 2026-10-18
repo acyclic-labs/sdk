@@ -22,7 +22,7 @@ enum Fault {
     Repeat,
     Corrupt,
     OmitCharge,
-    OmitScanCharge,
+    RepeatIndexScan,
 }
 fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
     let calls = Cell::new(0);
@@ -42,9 +42,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
             JsonCodecCharge::Work { bytes, .. } if !matches!(fault, Fault::OmitCharge) => {
                 encoded += bytes
             }
-            JsonCodecCharge::Inspect { items } if !matches!(fault, Fault::OmitScanCharge) => {
-                inspected += items
-            }
+            JsonCodecCharge::Inspect { items } => inspected += items,
             _ => {}
         }
         Ok(())
@@ -54,11 +52,14 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         maximum_items: 65536,
         maximum_depth: 256,
     };
-    let mut actual = if canonical {
-        canonical_json_bytes_bounded(&once, bounds, None, &mut charge).unwrap()
+    REBUILD_ARRAY_INDEX.set(matches!(fault, Fault::RepeatIndexScan));
+    let result = if canonical {
+        canonical_json_bytes_bounded(&once, bounds, None, &mut charge)
     } else {
-        json_bytes_bounded(&once, bounds, None, &mut charge).unwrap()
+        json_bytes_bounded(&once, bounds, None, &mut charge)
     };
+    REBUILD_ARRAY_INDEX.set(false);
+    let mut actual = result.unwrap();
     if matches!(fault, Fault::Repeat) {
         serde_json::to_vec(&once).unwrap();
     }
@@ -76,12 +77,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
             && actual == expected
             && retained == actual.capacity() as u64
             && encoded == minimum * if canonical { 2 } else { 1 }
-            && inspected
-                == if canonical && has_array(value) {
-                    minimum
-                } else {
-                    0
-                }
+            && inspected == 0
             && allocations > 0,
         "single serialization, funded storage or canonical output differs: canonical={}, calls={}, actual={:?}, expected={:?}, retained={}, capacity={}, encoded={}, minimum={}, inspected={}, allocations={}",
         canonical,
@@ -96,13 +92,6 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         allocations
     );
     Ok(())
-}
-fn has_array(value: &Value) -> bool {
-    match value {
-        Value::Array(_) => true,
-        Value::Object(fields) => fields.values().any(has_array),
-        _ => false,
-    }
 }
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
@@ -122,7 +111,7 @@ fn single_pass_negative_controls() {
         check(&value, canonical, Fault::None).unwrap();
         let mut faults = vec![Fault::Repeat, Fault::Corrupt, Fault::OmitCharge];
         if canonical {
-            faults.push(Fault::OmitScanCharge);
+            faults.push(Fault::RepeatIndexScan);
         }
         for fault in faults {
             let error = check(&value, canonical, fault).unwrap_err();

@@ -242,8 +242,11 @@ impl LocalHarness {
         prompt: &str,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
+        let input = self
+            .prompt_input(operation, prompt, publisher, self.limits.file_bytes)
+            .await?;
         let (receive, model, _) = self
-            .stage_turn_with_output_using(operation, prompt, self.limits, None, publisher)
+            .stage_turn_with_output_using(operation, input, self.limits, None, publisher)
             .await?;
         Ok((receive, model))
     }
@@ -272,14 +275,20 @@ impl LocalHarness {
         crate::conversation::FileRef,
     )> {
         let publisher = self.input_publisher_with_limit(limits.file_bytes)?;
-        self.stage_turn_with_output_using(operation, prompt, limits, output, publisher.as_ref())
-            .await
+        self.stage_turn_with_output_using(
+            operation,
+            ModelContent::Text(prompt.into()),
+            limits,
+            output,
+            publisher.as_ref(),
+        )
+        .await
     }
 
     async fn stage_turn_with_output_using(
         &self,
         operation: OperationId,
-        prompt: &str,
+        input: ModelContent,
         limits: Limits,
         output: Option<&VolumeRef>,
         publisher: &dyn ContentPublisher,
@@ -298,7 +307,7 @@ impl LocalHarness {
         let (receive, model) = self
             .stage_bound_turn_using(
                 operation,
-                prompt,
+                input,
                 limits,
                 output,
                 manifest.clone(),
@@ -315,14 +324,17 @@ impl LocalHarness {
         manifest: crate::conversation::FileRef,
         publisher: &dyn ContentPublisher,
     ) -> Result<(WorkflowCommand, WorkflowCommand)> {
-        self.stage_bound_turn_using(operation, prompt, self.limits, None, manifest, publisher)
+        let input = self
+            .prompt_input(operation, prompt, publisher, self.limits.file_bytes)
+            .await?;
+        self.stage_bound_turn_using(operation, input, self.limits, None, manifest, publisher)
             .await
     }
 
     async fn stage_bound_turn_using(
         &self,
         operation: OperationId,
-        prompt: &str,
+        input: ModelContent,
         limits: Limits,
         output: Option<&VolumeRef>,
         manifest: crate::conversation::FileRef,
@@ -338,7 +350,7 @@ impl LocalHarness {
         let model = crate::filesystem::ModelTaskCommand {
             summary_source: None,
             context_manifest: manifest,
-            input: ModelContent::Text(prompt.into()),
+            input,
             selected_context: None,
             max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,

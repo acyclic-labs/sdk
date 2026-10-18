@@ -52,3 +52,9 @@ pub fn local_task_stream(
 pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]
 pub use model_view_work::measure as measure_model_view_work;
+
+/// Restores the redundant canonical JSON scan on this test thread.
+#[cfg(feature = "test-support")]
+pub fn rebuild_json_array_index(enabled: bool) {
+    crate::executor::json::rebuild_array_index(enabled);
+}

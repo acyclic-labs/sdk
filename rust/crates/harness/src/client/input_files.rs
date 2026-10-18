@@ -137,7 +137,15 @@ pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     {
         crate::tui::catalog::configure(files).await?;
     }
-    let messages = match apply_tui_input(files, reader, effect).await {
+    let result = apply_tui_input(files, reader, effect).await;
+    input_feedback(files, result).await
+}
+
+pub(crate) async fn input_feedback<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    result: Result<()>,
+) -> Result<()> {
+    let messages = match result {
         Ok(()) => Vec::new(),
         Err(
             error @ (Error::Invalid(_)

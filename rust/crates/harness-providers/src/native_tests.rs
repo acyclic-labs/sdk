@@ -10,6 +10,8 @@ pub(crate) mod stock;
 pub(super) struct Fixture {
     pub(super) response: Bytes,
     pub(super) sent: AtomicUsize,
+    pub(super) counted: AtomicUsize,
+    pub(super) expected_images: Mutex<Vec<(Vec<u8>, usize)>>,
     cancel: Option<CancellationToken>,
     pending_body: bool,
     prefix: Option<&'static str>,
@@ -20,9 +22,39 @@ impl Fixture {
         Self {
             response: Bytes::from_static(response.as_bytes()),
             sent: AtomicUsize::new(0),
+            counted: AtomicUsize::new(0),
+            expected_images: Mutex::new(Vec::new()),
             cancel: None,
             pending_body: false,
             prefix: None,
+        }
+    }
+    fn assert_images(&self, body: &[u8]) {
+        {
+            let expected = self
+                .expected_images
+                .lock()
+                .expect("fixture image expectations");
+            let mut previous = None;
+            for (bytes, count) in expected.iter() {
+                assert_eq!(
+                    body.windows(bytes.len())
+                        .filter(|part| *part == bytes.as_slice())
+                        .count(),
+                    *count
+                );
+                if *count == 1 {
+                    let position = body
+                        .windows(bytes.len())
+                        .position(|part| part == bytes.as_slice())
+                        .expect("expected image part");
+                    assert!(
+                        previous.is_none_or(|previous| previous < position),
+                        "image parts changed source order"
+                    );
+                    previous = Some(position);
+                }
+            }
         }
     }
 }
@@ -41,7 +73,9 @@ impl HttpTransport for Fixture {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
+            self.assert_images(&request.body);
             if let Some(response) = fixture_count(&request) {
+                self.counted.fetch_add(1, Ordering::SeqCst);
                 return HttpResponse::with_native_body(response.status, response.body, work);
             }
             self.sent.fetch_add(1, Ordering::SeqCst);
@@ -255,6 +289,8 @@ async fn native_counting_cancels_in_flight_http_and_returns_all_custody() -> Res
     provider.transport = Arc::new(Fixture {
         response: Bytes::new(),
         sent: AtomicUsize::new(0),
+        counted: AtomicUsize::new(0),
+        expected_images: Mutex::new(Vec::new()),
         cancel: Some(cancel),
         pending_body: true,
         prefix: None,

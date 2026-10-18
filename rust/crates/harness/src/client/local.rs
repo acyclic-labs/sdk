@@ -62,6 +62,7 @@ pub async fn local_ui(
     let mut files =
         super::CommandSession::open_authorized(local.task_files().clone(), session, 65_536, 4096)
             .await?;
+    local.bind_client_files(&mut files).await?;
     #[cfg(feature = "tui")]
     {
         let mut settings = files
