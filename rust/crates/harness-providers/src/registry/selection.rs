@@ -96,12 +96,20 @@ impl Registry {
 }
 
 pub(super) fn counts_input(config: &ProviderSpec, credential: Credential) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let credential = credential.for_config(config);
+    #[cfg(not(target_arch = "wasm32"))]
+    if matches!(credential, Credential::Codex(_)) && !codex_route(config) {
+        return Err(invalid(
+            "Codex CLI credentials require the built-in Responses route",
+        ));
+    }
     if config.token_counter.is_some() {
         return Ok(());
     }
     #[cfg(not(target_arch = "wasm32"))]
     if codex_route(config) {
-        match credential.for_config(config) {
+        match credential {
             Credential::Codex(_) => return Ok(()),
             Credential::Key(_) if config.authentication == Authentication::ApiKeyOrCodexLogin => {
                 return Err(invalid(

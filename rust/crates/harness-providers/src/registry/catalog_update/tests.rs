@@ -309,7 +309,8 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
     // Independent counting oracle: an available login is selected only without
     // an API key; its local counter exists only on the native Responses route.
     let selected_login = login && !key && case / 32 == 2;
-    let accepted = counter || (selected_login && builtin && responses);
+    let valid_route = !selected_login || (builtin && responses);
+    let accepted = valid_route && (counter || selected_login);
     for &(reload, proposed) in operations {
         let before = catalog_snapshot(&registry);
         let default_before = registry.default_model().to_owned();
@@ -325,7 +326,6 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
         );
         if accepted {
             let authenticated = key || selected_login || case / 32 == 0;
-            let valid_route = !selected_login || (builtin && responses);
             assert_eq!(
                 registry.resolve(registry.default_model()).is_ok(),
                 authenticated && valid_route,
@@ -343,6 +343,17 @@ fn credential_sequence(case: u8, operations: &[(bool, Option<u8>)]) {
 fn every_counting_credential_configuration_is_atomic_in_both_entry_points() {
     for case in 0..96 {
         credential_sequence(case, &[(false, None), (true, None), (true, Some(1))]);
+    }
+}
+
+#[test]
+fn counted_defaults_reject_unusable_login_routes_before_committing() {
+    // Selected login, counter present, custom URL and/or non-Responses adapter.
+    // Cover registration, retained-default reload, and incoming-default reload.
+    for case in [81, 83, 85] {
+        for operation in [(false, None), (true, None), (true, Some(1))] {
+            credential_sequence(case, &[operation]);
+        }
     }
 }
 
