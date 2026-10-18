@@ -6,6 +6,14 @@ use acyclic_harness::client::{
 #[path = "e2e/notification_history.rs"]
 mod notification_history;
 use notification_history::Projection;
+
+fn on_runtime<T>(future: impl Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
 fn notice(sequence: u64, event: AttentionEvent) -> AttentionNotification {
     AttentionNotification {
         task: "task-1".into(),
@@ -78,14 +86,14 @@ impl std::io::Write for Broken {
         Err(std::io::ErrorKind::BrokenPipe.into())
     }
 }
-fn retry_after_removal(retain_removed: bool) {
+async fn retry_after_removal(retain_removed: bool) {
     let options = (
         NotificationMode::On,
         TerminalNotificationProtocol::Osc9,
         false,
     );
     let record = notice(1, AttentionEvent::GoalBlocked);
-    let mut projection = Projection::new();
+    let mut projection = Projection::new().await;
     projection.apply(&record, false).unwrap();
     let mut terminal = Broken::default();
     assert!(
@@ -119,17 +127,17 @@ fn retry_after_removal(retain_removed: bool) {
         "removed file emitted a stale terminal alert"
     );
 }
-#[test]
-fn failed_terminal_write_then_file_removal_retires_the_alert() {
-    retry_after_removal(false);
+#[tokio::test]
+async fn failed_terminal_write_then_file_removal_retires_the_alert() {
+    retry_after_removal(false).await;
 }
 #[test]
 fn retained_queue_negative_control_fails_the_same_removal_check() {
-    assert!(std::panic::catch_unwind(|| retry_after_removal(true)).is_err());
+    assert!(std::panic::catch_unwind(|| on_runtime(retry_after_removal(true))).is_err());
 }
-#[test]
-fn write_failure_can_retry_current_rows_without_mutating_them() {
-    let mut projection = Projection::new();
+#[tokio::test]
+async fn write_failure_can_retry_current_rows_without_mutating_them() {
+    let mut projection = Projection::new().await;
     let record = notice(1, AttentionEvent::GoalDone);
     projection.apply(&record, false).unwrap();
     assert!(
@@ -157,8 +165,8 @@ fn write_failure_can_retry_current_rows_without_mutating_them() {
     assert_eq!(output, b"\x07");
     assert_eq!(projection.records(), [record]);
 }
-#[test]
-fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
+#[tokio::test]
+async fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
     for (mode, focused, event) in [
         (NotificationMode::Off, false, AttentionEvent::TaskFailed),
         (NotificationMode::On, true, AttentionEvent::TaskFailed),
@@ -173,7 +181,7 @@ fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
             TerminalNotificationProtocol::Osc777,
             TerminalNotificationProtocol::Bell,
         ] {
-            let mut projection = Projection::new();
+            let mut projection = Projection::new().await;
             let record = notice(1, event);
             projection.apply(&record, false).unwrap();
             let mut terminal = Broken::default();
@@ -194,9 +202,9 @@ fn suppressed_rows_do_not_call_terminal_or_change_the_projection() {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn current_rows_are_borrowed_without_copying_payloads() {
-    let mut projection = Projection::new();
+#[tokio::test]
+async fn current_rows_are_borrowed_without_copying_payloads() {
+    let mut projection = Projection::new().await;
     projection
         .apply(&notice(1, AttentionEvent::TaskFailed), false)
         .unwrap();
@@ -216,19 +224,19 @@ proptest::proptest! {
     fn file_churn_matches_the_independent_terminal_oracle(
         operations in proptest::collection::vec((0u8..4, 0u8..6, proptest::bool::ANY, ".{0,24}"), 0..24),
     ) {
-        notification_history::verify(operations.into_iter().map(|(id,event,remove,detail)| {
+        on_runtime(notification_history::verify(operations.into_iter().map(|(id,event,remove,detail)| {
             let mut record = notice(id as u64, [AttentionEvent::TaskSettled, AttentionEvent::TaskFailed,
                 AttentionEvent::TaskBlocked, AttentionEvent::GoalDone, AttentionEvent::GoalBlocked, AttentionEvent::NeedsApproval][event as usize]);
             record.detail = detail;
             (record, remove)
-        }), (NotificationMode::On, TerminalNotificationProtocol::Osc777, false), false);
+        }), (NotificationMode::On, TerminalNotificationProtocol::Osc777, false), false));
     }
 }
 #[test]
 fn retained_removal_mutant_fails_the_shrinking_property_oracle() {
     let record = notice(1, AttentionEvent::TaskFailed);
     assert!(
-        std::panic::catch_unwind(|| notification_history::verify(
+        std::panic::catch_unwind(|| on_runtime(notification_history::verify(
             [(record.clone(), false), (record, true)],
             (
                 NotificationMode::On,
@@ -236,14 +244,14 @@ fn retained_removal_mutant_fails_the_shrinking_property_oracle() {
                 false
             ),
             true
-        ))
+        )))
         .is_err()
     );
 }
 
-#[test]
-fn file_removal_keeps_other_rows_and_advances_the_shared_cursor() {
-    let mut projection = Projection::new();
+#[tokio::test]
+async fn file_removal_keeps_other_rows_and_advances_the_shared_cursor() {
+    let mut projection = Projection::new().await;
     let first = notice(1, AttentionEvent::TaskFailed);
     let second = notice(2, AttentionEvent::GoalBlocked);
     projection.apply(&first, false).unwrap();
@@ -257,10 +265,10 @@ fn file_removal_keeps_other_rows_and_advances_the_shared_cursor() {
     }
 }
 
-#[test]
-fn harness_approval_attention_survives_file_follow_and_terminal_policy() {
+#[tokio::test]
+async fn harness_approval_attention_survives_file_follow_and_terminal_policy() {
     let record = notice(1, AttentionEvent::NeedsApproval);
-    let mut projection = Projection::new();
+    let mut projection = Projection::new().await;
     projection.apply(&record, false).unwrap();
     let expected = b"\x1b]9;Approval needed: task-1: Ready\x07";
     for mode in [NotificationMode::On, NotificationMode::AttentionOnly] {
