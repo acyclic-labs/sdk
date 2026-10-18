@@ -732,7 +732,21 @@ fn wheel_rows(height: u16, regions: bool, notches: usize) -> usize {
     });
     assert!(batch.is_empty());
     assert_eq!((work.frames, work.writes), (1, 1));
-    rows_addressed(&rig.output.0.borrow().0[start..]).len()
+    let addressed = rows_addressed(&rig.output.0.borrow().0[start..]);
+    let band = rig.areas.transcript;
+    let transcript = (band.y + 1)..=band.bottom();
+    let outside: Vec<_> = addressed
+        .iter()
+        .copied()
+        .filter(|row| !transcript.contains(row))
+        .collect();
+    // Scrolling homes the device cursor. Its one return to the unchanged
+    // prompt is positioning, not another transcript row being repainted.
+    assert_eq!(outside, [PromptBox::input_area(rig.areas.prompt).y + 1]);
+    addressed
+        .iter()
+        .filter(|row| transcript.contains(row))
+        .count()
 }
 
 #[test]
