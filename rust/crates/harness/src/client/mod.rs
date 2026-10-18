@@ -22,6 +22,8 @@ mod kernel;
 pub use kernel::Client;
 mod document_files;
 pub use document_files::document_files;
+mod overview_files;
+pub use overview_files::task_overview_files;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
 mod headless;
@@ -151,7 +153,9 @@ pub use mailbox::verify_mailbox;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{connect_local, disconnect_local, local_documents, local_prompt};
+pub use local::{
+    connect_local, disconnect_local, local_documents, local_prompt, local_task_overviews,
+};
 #[cfg(all(
     feature = "filesystem-local",
     feature = "tui",
@@ -169,7 +173,8 @@ pub use native_input::terminal_events;
 mod input_files;
 #[cfg(feature = "tui")]
 pub use input_files::{
-    apply_tui_input, file_tui_input, handle_tui_input, restore_tui_prompt, save_tui_draft,
+    apply_tui_input, file_tui_input, handle_tui_input, report_tui_input, restore_tui_prompt,
+    save_tui_draft,
 };
 #[cfg(feature = "tui")]
 mod prompt_files;

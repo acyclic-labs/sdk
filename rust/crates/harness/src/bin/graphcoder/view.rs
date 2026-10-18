@@ -46,7 +46,11 @@ pub async fn run(
     let mut renderer = tui::ClientRenderer::default();
     let start = Instant::now();
     client.follow_commands(&commands).await?;
-    let mut documents = client::local_documents(&local, client.views_mut()).await?;
+    let documents = client::local_documents(&local, client.views_mut()).await?;
+    let overviews = client::local_task_overviews(&local, client.views_mut()).await?;
+    let mut documents: acyclic_harness::task_volume::ChangeStream =
+        Box::pin(futures::stream::select(documents, overviews));
+    let mut agents = tui::AgentPanel::default();
     loop {
         client
             .follow_task(
@@ -67,6 +71,7 @@ pub async fn run(
         let back = client::tui_scroll(&commands)?;
         let mut maximum_scroll = 0;
         renderer.configure(client.views(), &authority, &commands)?;
+        agents.update(client.views(), &commands)?;
         input.busy = renderer.is_busy();
         let size = terminal_size()?;
         renderer.layout(&commands, &input, size.width, size.height)?;
@@ -75,6 +80,7 @@ pub async fn run(
             maximum_scroll = screen.tail_scroll(frame.area(), &input);
             let scroll = maximum_scroll.saturating_sub(back);
             areas = screen.render(frame, &input, &mut viewport, scroll, now);
+            agents.render(frame, areas.transcript, &input.theme);
         })?;
         let Some(event) = client::next_file_tui_event(
             &mut client,
@@ -98,14 +104,15 @@ pub async fn run(
             now,
         );
         for effect in effects {
-            client::file_tui_input(
-                &mut commands,
-                reader.as_ref(),
-                effect,
-                usize::from(areas.transcript.height),
-                maximum_scroll,
-            )
-            .await?;
+            agents
+                .dispatch(
+                    &mut commands,
+                    reader.as_ref(),
+                    effect,
+                    usize::from(areas.transcript.height),
+                    maximum_scroll,
+                )
+                .await?;
         }
         prompt_files.save(&mut commands, &mut input).await?;
     }

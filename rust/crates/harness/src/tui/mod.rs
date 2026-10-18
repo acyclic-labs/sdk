@@ -6,6 +6,11 @@ mod render;
 pub use render::ClientRenderer;
 
 #[cfg(feature = "terminal")]
+mod agents;
+#[cfg(feature = "terminal")]
+pub use agents::AgentPanel;
+
+#[cfg(feature = "terminal")]
 mod diff;
 #[cfg(feature = "terminal")]
 pub use diff::diff_lines;

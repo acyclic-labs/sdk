@@ -97,3 +97,12 @@ pub async fn local_documents(
     let files = local.scratch_files(acyclic_fs::performance::BOUNDARY_BUDGET)?;
     super::document_files(&files, views, 4096, 65_536).await
 }
+
+/// Follow every local task's status file for agent navigation.
+pub async fn local_task_overviews(
+    local: &LocalHarness,
+    views: &mut super::ClientViews,
+) -> Result<crate::task_volume::ChangeStream> {
+    // TODO(#495): obtain the overview file/byte bounds from followed settings.
+    super::task_overview_files(local.task_files().as_ref(), views, 4096, 1 << 20).await
+}

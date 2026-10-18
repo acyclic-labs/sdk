@@ -5,6 +5,9 @@ mod child_result;
 pub(crate) use child::child_scope;
 pub use child::{ChildFile, ChildRequest, ChildState, ChildStatus, Control};
 pub use child_result::ChildTurnResult;
+mod status;
+pub use status::{TaskState, TaskStatus};
+
 pub(crate) mod command_query;
 mod durability;
 mod files;

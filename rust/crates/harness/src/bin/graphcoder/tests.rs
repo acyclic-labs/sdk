@@ -560,3 +560,6 @@ mod feedback_overlay;
 
 #[path = "tests/perf.rs"]
 mod perf;
+
+#[path = "tests/agents.rs"]
+mod agents;

@@ -74,6 +74,17 @@ pub struct FileQueryView {
     materialized: bool,
     maximum_files: usize,
     maximum_bytes: usize,
+    revision: FoldRevision,
+}
+
+/// Position of the latest publication that changed the files. It is fold
+/// history, not fold state, so a reset snapshot of the same files is equal.
+#[derive(Clone, Copy, Debug)]
+struct FoldRevision(u64);
+impl PartialEq for FoldRevision {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 impl FileQueryView {
@@ -171,6 +182,7 @@ impl FileQueryView {
             .iter()
             .map(|key| (key.clone(), super::ModelFileView::Invalid))
             .collect();
+        let revision = FoldRevision(storage.cursor().position);
         let mut view = Self {
             query: Arc::new(query),
             outputs: super::command_output::Outputs::default(),
@@ -187,6 +199,7 @@ impl FileQueryView {
             materialized,
             maximum_files,
             maximum_bytes,
+            revision,
         };
         // Parse only semantic files, directly from the sole segment index.
         // Text/tool heads keep every shared segment; no temporary view is built.
@@ -246,6 +259,13 @@ impl FileQueryView {
     /// Exact resume cut; it advances even for nonmatching publications.
     pub fn cursor(&self) -> &Cursor {
         self.storage.cursor()
+    }
+
+    /// Position of the latest publication that changed these files: the
+    /// snapshot cut or a later change. Cursor-only checkpoints leave it, so
+    /// projections can skip an unchanged fold in O(1).
+    pub fn revision(&self) -> u64 {
+        self.revision.0
     }
 
     /// Admitted file slices, sharing immutable query payloads. Oversized model
@@ -440,6 +460,9 @@ impl FileQueryView {
     pub fn apply(&mut self, change: Change) -> Result<bool> {
         if self.materialized {
             self.apply_materialized(&change)?;
+            if change.file.is_some() {
+                self.revision = FoldRevision(change.cursor.position);
+            }
             return Ok(change.file.is_some());
         }
         let invalid = || Error::Conflict("file query follow requires reset".into());
@@ -523,6 +546,9 @@ impl FileQueryView {
         }
         self.project(&change);
         self.storage.replace(&change, &self.rejected_models);
+        if changed {
+            self.revision = FoldRevision(cursor.position);
+        }
         Ok(changed)
     }
 }

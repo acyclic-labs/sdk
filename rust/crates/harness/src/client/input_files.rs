@@ -51,6 +51,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
                 AppAction::Find => CommandQuery::Find,
                 AppAction::Reasoning => CommandQuery::Reasoning,
                 AppAction::Details => CommandQuery::Details,
+                AppAction::Tree => CommandQuery::Tree,
                 _ => {
                     return Err(Error::Unsupported(
                         "This shortcut is unavailable in this session".into(),
@@ -137,7 +138,20 @@ pub async fn handle_tui_input<P: StreamProvider + ?Sized>(
     {
         crate::tui::catalog::configure(files).await?;
     }
-    let messages = match apply_tui_input(files, reader, effect).await {
+    let outcome = apply_tui_input(files, reader, effect).await;
+    report_tui_input(files, outcome).await
+}
+
+/// The one error policy for user input: input the user can act on (invalid,
+/// missing, unsupported, or a lost race with a peer edit) becomes session
+/// feedback, and an accepted input clears it. Authority, storage and ambiguous
+/// publication failures still reach the caller. Every input path, including
+/// ones that bypass the command catalog, reports through here.
+pub async fn report_tui_input<P: StreamProvider + ?Sized>(
+    files: &mut CommandSession<P>,
+    outcome: Result<()>,
+) -> Result<()> {
+    let messages = match outcome {
         Ok(()) => Vec::new(),
         Err(
             error @ (Error::Invalid(_)
@@ -226,13 +240,14 @@ pub async fn file_tui_input<P: StreamProvider + ?Sized>(
         action @ (crate::tui::Action::TranscriptUp | crate::tui::Action::TranscriptDown),
     ) = effect
     {
-        return super::scroll_tui(
+        let outcome = super::scroll_tui(
             files,
             action == crate::tui::Action::TranscriptUp,
             page_rows,
             maximum_scroll,
         )
         .await;
+        return report_tui_input(files, outcome).await;
     }
     handle_tui_input(files, reader, effect).await
 }

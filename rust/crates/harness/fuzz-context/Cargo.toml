@@ -28,3 +28,10 @@ path = "fuzz_targets/summary_authorization.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "task_status"
+path = "fuzz_targets/task_status.rs"
+test = false
+doc = false
+bench = false
