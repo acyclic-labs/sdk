@@ -21,7 +21,7 @@ pub(super) fn one_chunk_index(bytes: &[u8]) -> (u64, u64) {
         }]),
     };
     let batches = [[chunk, blob_page_id(&page, 1).unwrap()]];
-    let allocations = batches.iter().filter(|batch| !batch.is_empty()).count() as u64;
+    let allocations = batches.len() as u64;
     let probes = batches
         .iter()
         .map(|batch| crate::logical_objects::expected_batch_probes(batch))
