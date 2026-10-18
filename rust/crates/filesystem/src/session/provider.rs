@@ -140,11 +140,6 @@ fn publication(
         .sequence
         .checked_add(1)
         .ok_or(StreamError::OutOfRange)?;
-    let cursor = Cursor {
-        subscription: subscription.clone(),
-        next,
-        preceding_commit_id: record.commit_id,
-    };
     let publication = Publication {
         generation,
         workspace_name: subscription.workspace_name.clone(),
@@ -154,7 +149,7 @@ fn publication(
     Ok(Some(session::SessionData {
         after: Some(session::SessionCursor {
             next,
-            opaque: cursor.encode()?,
+            opaque: Cursor::encode_parts(subscription, next, record.commit_id)?,
         }),
         accepted: next,
         durable: 0,

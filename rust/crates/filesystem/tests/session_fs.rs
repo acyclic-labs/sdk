@@ -682,3 +682,6 @@ async fn authorization_is_current_when_the_provider_open_is_polled() -> Result {
     ));
     Ok(())
 }
+
+#[path = "session_fs/allocations.rs"]
+mod allocations;

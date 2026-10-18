@@ -70,13 +70,21 @@ fn decode<M: Message + Default>(value: &[u8]) -> Result<M, StreamError> {
 impl Subscription {
     /// Encodes the typed payload.
     pub fn encode(&self) -> Result<Bytes, StreamError> {
+        self.validate()?;
         let wire = self.to_wire();
-        Self::from_wire(wire.clone())?;
         Ok(Bytes::from(wire.encode_to_vec()))
     }
     /// Decodes a typed payload.
     pub fn decode(value: &[u8]) -> Result<Self, StreamError> {
         Self::from_wire(decode(value)?)
+    }
+    fn validate(&self) -> Result<(), StreamError> {
+        if self.delivery == wire::SessionFsDelivery::Unspecified {
+            return Err(StreamError::InvalidArgument);
+        }
+        PortablePath::validate(self.path_prefix.as_str(), crate::VolumeLimits::default())
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(())
     }
     fn to_wire(&self) -> wire::SessionFsSubscription {
         wire::SessionFsSubscription {
@@ -131,7 +139,9 @@ impl Publication {
             sequence: self.sequence.get(),
             commit_id: self.commit_id.as_bytes().to_vec(),
         };
-        Self::from_wire(wire.clone())?;
+        if self.sequence.get() == 0 || self.sequence.get() == u64::MAX {
+            return Err(StreamError::InvalidArgument);
+        }
         Ok(Bytes::from(wire.encode_to_vec()))
     }
     /// Decodes a typed payload.
@@ -163,13 +173,23 @@ impl Publication {
 impl Cursor {
     /// Encodes the typed payload.
     pub fn encode(&self) -> Result<Bytes, StreamError> {
+        Self::encode_parts(&self.subscription, self.next, self.preceding_commit_id)
+    }
+    fn encode_parts(
+        subscription: &Subscription,
+        next: u64,
+        preceding_commit_id: CommitId,
+    ) -> Result<Bytes, StreamError> {
+        subscription.validate()?;
+        if next < 2 || next <= subscription.start_next {
+            return Err(StreamError::InvalidArgument);
+        }
         let wire = wire::SessionFsCursor {
             version: 1,
-            subscription: Some(self.subscription.to_wire()),
-            next: self.next,
-            preceding_commit_id: self.preceding_commit_id.as_bytes().to_vec(),
+            subscription: Some(subscription.to_wire()),
+            next,
+            preceding_commit_id: preceding_commit_id.as_bytes().to_vec(),
         };
-        Self::from_wire(wire.clone())?;
         Ok(Bytes::from(wire.encode_to_vec()))
     }
     /// Decodes a typed payload.
