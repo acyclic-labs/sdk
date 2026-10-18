@@ -134,3 +134,55 @@ async fn accepted_append_wakes_only_its_path_and_failure_wakes_every_subscriber(
 async fn negative_control_broadcasts_every_accepted_append() {
     qualify(true).await.unwrap();
 }
+
+// A dropped consumer cancels its snapshot job, so a released publication writer
+// leaves the lock free. The control keeps the consumer, whose job is handed the
+// read reservation until it completes.
+#[tokio::test]
+async fn dropped_consumers_leave_no_queued_publication_reservation()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (keep, children) in [(false, false), (false, true), (true, false), (true, true)] {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let path = StreamPath::new("watched")?;
+        append(&provider, path.clone()).await?;
+        let mut follow = if children {
+            provider
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: 1,
+                })
+                .await?
+                .map(|item| item.map(|_| ()))
+                .boxed()
+        } else {
+            provider
+                .follow(path, 0)
+                .await?
+                .map(|item| item.map(|_| ()))
+                .boxed()
+        };
+        let held = provider.inner.publication.write().await;
+        assert!(
+            follow
+                .as_mut()
+                .poll_next(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        let kept = keep.then_some(follow);
+        // Run the spawned job while the writer still holds the lock.
+        tokio::task::yield_now().await;
+        drop(held);
+        assert_eq!(
+            provider.inner.publication.try_write().is_ok(),
+            !keep,
+            "keep={keep} children={children}"
+        );
+        if let Some(mut follow) = kept {
+            assert!(matches!(follow.next().await, Some(Ok(()))));
+            drop(follow);
+            assert!(provider.inner.publication.try_write().is_ok());
+        }
+    }
+    Ok(())
+}

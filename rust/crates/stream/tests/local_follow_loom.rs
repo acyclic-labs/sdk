@@ -33,6 +33,29 @@ fn negative_control_executor_shutdown_discards_snapshot_ownership() {
 }
 
 #[test]
+fn snapshot_consumer_departures_return_every_reservation() {
+    acyclic_stream::verification::snapshot_consumer_departures("none");
+}
+
+#[test]
+#[should_panic(expected = "reservation")]
+fn negative_control_abandoned_job_leaks_its_reservation() {
+    acyclic_stream::verification::snapshot_consumer_departures("leak-reservation");
+}
+
+#[test]
+#[should_panic(expected = "cancellation did not wake the queued job")]
+fn negative_control_cancellation_skips_the_wake() {
+    acyclic_stream::verification::snapshot_consumer_departures("no-wake");
+}
+
+#[test]
+#[should_panic(expected = "a completed job was woken for cancellation")]
+fn negative_control_completion_leaves_the_job_armed() {
+    acyclic_stream::verification::snapshot_consumer_departures("armed-after-completion");
+}
+
+#[test]
 fn memory_follow_cannot_park_state() {
     acyclic_stream::verification::memory_follow_parking(false, false, false);
     acyclic_stream::verification::memory_follow_parking(false, false, true);

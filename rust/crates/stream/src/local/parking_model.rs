@@ -62,3 +62,46 @@ pub(crate) fn verify(retain_pending: bool, children: bool, memory: bool) {
         drop(ManuallyDrop::into_inner(keeper));
     });
 }
+
+// Every consumer departure from a real dispatched job on the publication lock.
+pub(crate) fn abandon(
+    departure: crate::snapshot::model::Departure,
+    children: bool,
+    mutant: crate::snapshot::model::Mutant,
+) {
+    loom::model(move || {
+        crate::snapshot::model::set_mutant(mutant);
+        let provider = query_model::fixture(false).unwrap();
+        let keeper = ManuallyDrop::new(provider.clone());
+        let path = StreamPath::new("watched").unwrap();
+        block_on(provider.inner.provider.append(AppendRequest {
+            path: path.clone(),
+            records: vec![crate::OwnedBytes::from_static(b"seed")],
+            if_tail: None,
+            idempotency_key: None,
+        }))
+        .unwrap();
+        let follow: futures::stream::BoxStream<'static, _> = if children {
+            block_on(provider.children(ChildrenRequest {
+                parent: None,
+                limit: 1,
+            }))
+            .unwrap()
+            .map(|child| child.map(|_| ()))
+            .boxed()
+        } else {
+            block_on(provider.follow(path, 0))
+                .unwrap()
+                .map(|record| record.map(|_| ()))
+                .boxed()
+        };
+        let held = block_on(provider.inner.publication.write());
+        crate::snapshot::model::depart(
+            follow,
+            held,
+            || provider.inner.publication.try_write().is_ok(),
+            departure,
+        );
+        drop(ManuallyDrop::into_inner(keeper));
+    });
+}
