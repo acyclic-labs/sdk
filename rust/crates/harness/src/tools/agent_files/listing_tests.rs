@@ -114,3 +114,44 @@ fn body_bounded_listing_negative_control_requires_its_property_assertion() {
         }
     });
 }
+
+// An inspection over its bounds is the model's to narrow: a file larger than
+// the render bound and a listing with more entries than the file bound both
+// answer `Rejected`, never an executor error, and fitting ones answer the
+// text. Mapping a volume bound back to an executor error (`map_err(storage)?`)
+// fails this property on every over-bound case.
+async fn answered(command: &str, volume: &TaskVolume<MemoryStream>, files: usize, render: usize)
+    -> Result<std::result::Result<String, Rejected>> {
+    let inspection = crate::tools::agent_selection::selection(command).unwrap();
+    let query = query(&inspection).ok().unwrap();
+    answer(volume, volume, &inspection, query, files, render).await
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn over_bound_inspections_are_rejected_input_and_fitting_ones_answer(
+        prompt in 1usize..8192, files in 1usize..6, render in 1usize..8192,
+    ) {
+        futures::executor::block_on(async {
+            // Three files for one child: request, status and result.
+            let volume = volume(prompt, 0).await;
+            let cat = answered("cat .volumes/agents/worker/request.md", &volume, files, render).await;
+            let cat = cat.map_err(|error| TestCaseError::fail(format!("cat escaped as executor error: {error}")))?;
+            match cat {
+                Ok(text) => prop_assert!(text.len() == prompt && prompt <= render),
+                Err(Rejected(_)) => prop_assert!(prompt > render),
+            }
+            let ls = answered("ls .volumes/agents/worker", &volume, files, render).await;
+            let ls = ls.map_err(|error| TestCaseError::fail(format!("ls escaped as executor error: {error}")))?;
+            let fitting = listing(&volume, &Query::Child(Component::new("worker").unwrap()), 3)
+                .await
+                .unwrap();
+            match ls {
+                Ok(text) => prop_assert!(files >= 3 && text == fitting && text.len() <= render),
+                Err(Rejected(_)) => prop_assert!(files < 3 || fitting.len() > render),
+            }
+            Ok(())
+        })?;
+    }
+}

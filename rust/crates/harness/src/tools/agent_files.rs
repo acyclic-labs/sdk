@@ -76,54 +76,113 @@ async fn read(
     context: &ToolContext,
     inspection: super::agent_selection::AgentInspection,
 ) -> Result<std::result::Result<String, Rejected>> {
-    use crate::task_volume::FileQuerySource;
     let query = match query(&inspection) {
         Ok(query) => query,
         Err(rejected) => return Ok(Err(rejected)),
     };
     let limits = context.effective_scope().limits();
+    let render_bytes = usize::try_from(limits.render_bytes).map_err(storage)?;
     let files = files(context).await?;
+    answer(
+        &*files,
+        &files.inner,
+        &inspection,
+        query,
+        limits.attachments,
+        render_bytes,
+    )
+    .await
+}
+
+/// Answers one selected inspection from the authorized file source and its
+/// volume. Every query bound, missing file and non-text body is the model's
+/// to correct; only storage and integrity failures reach the executor.
+async fn answer<S, P>(
+    source: &S,
+    volume: &crate::task_volume::TaskVolume<P>,
+    inspection: &super::agent_selection::AgentInspection,
+    query: crate::task_volume::Query,
+    maximum_files: usize,
+    render_bytes: usize,
+) -> Result<std::result::Result<String, Rejected>>
+where
+    S: crate::task_volume::FileQuerySource + ?Sized,
+    P: StreamProvider + ?Sized,
+{
     let stdout = if inspection.target == super::agent_selection::AgentTarget::File {
-        let snapshot = files
-            .observe_files(
-                query,
-                None,
-                limits.attachments,
-                usize::try_from(limits.render_bytes).map_err(storage)?,
-            )
+        let observed = match source
+            .observe_files(query, None, maximum_files, render_bytes)
             .await
-            .map_err(storage)?
+        {
+            Ok(observed) => observed,
+            Err(error) => return classify(error).map(Err),
+        };
+        let snapshot = observed
             .snapshot
             .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
         let [file] = snapshot.files.as_slice() else {
-            return Ok(Err(Rejected(Error::NotFound(inspection.path))));
+            return Ok(Err(Rejected(Error::NotFound(inspection.path.clone()))));
         };
-        std::str::from_utf8(&file.bytes)
-            .map_err(storage)?
-            .to_owned()
+        match std::str::from_utf8(&file.bytes) {
+            Ok(text) => text.to_owned(),
+            Err(_) => return Ok(Err(invalid("agent file is not UTF-8 text"))),
+        }
     } else {
-        listing(&files.inner, &query, limits.attachments).await?
+        match volume.list_files(&query, maximum_files).await {
+            Ok(keys) => rendered(&keys),
+            Err(error) => return classify(error).map(Err),
+        }
     };
-    if stdout.len() as u64 > limits.render_bytes {
-        return Ok(Err(Rejected(Error::Invalid(
-            "child inspection exceeds the original render bound".into(),
-        ))));
+    if stdout.len() > render_bytes {
+        return Ok(Err(invalid(
+            "child inspection exceeds the original render bound",
+        )));
     }
     Ok(Ok(stdout))
 }
 
+/// Splits a task-volume failure by who must act. A bound or operand the model
+/// can narrow is `Rejected`; storage, authority and integrity failures stay the
+/// executor's. The match is exhaustive, so a new variant must be classified.
+fn classify(error: crate::task_volume::Error) -> Result<Rejected> {
+    use crate::task_volume::Error as Volume;
+    match error {
+        Volume::LimitExceeded => Ok(invalid(
+            "agent inspection exceeds its file-count or render bound; inspect a narrower path",
+        )),
+        Volume::InvalidPath => Ok(invalid(error)),
+        #[cfg(feature = "filesystem")]
+        Volume::FileRead(error) => Err(error),
+        Volume::Unauthorized
+        | Volume::Storage(_)
+        | Volume::InvalidSegment
+        | Volume::ImmutableConflict(_)
+        | Volume::SequenceConflict(_)
+        | Volume::Conflict(_)
+        | Volume::FenceConflict
+        | Volume::ResetRequired => Err(storage(error)),
+    }
+}
+
+fn rendered(keys: &[FileKey]) -> String {
+    keys.iter()
+        .map(|key| format!(".volumes/{}\n", key.path()))
+        .collect()
+}
+
+/// The selected listing, or the volume's typed failure.
+#[cfg(all(test, not(acyclic_harness_loom)))]
 async fn listing<P: StreamProvider + ?Sized>(
     files: &crate::task_volume::TaskVolume<P>,
     query: &crate::task_volume::Query,
     maximum_files: usize,
 ) -> Result<String> {
-    Ok(files
-        .list_files(query, maximum_files)
-        .await
-        .map_err(storage)?
-        .iter()
-        .map(|key| format!(".volumes/{}\n", key.path()))
-        .collect())
+    Ok(rendered(
+        &files
+            .list_files(query, maximum_files)
+            .await
+            .map_err(storage)?,
+    ))
 }
 
 #[cfg(all(test, not(acyclic_harness_loom)))]
