@@ -1,8 +1,9 @@
 //! Checks normalized facade paths stay contained and round-trip without traversal.
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_harness::Error;
-use libfuzzer_sys::fuzz_target;
 use std::path::{Component, Path};
 
 // Compile the production parser, with the production Error type, without
@@ -10,13 +11,15 @@ use std::path::{Component, Path};
 #[path = "../../crates/harness/src/tools/git/path.rs"]
 mod path;
 
-fuzz_target!(|bytes: &[u8]| {
-    let Ok(argument) = std::str::from_utf8(bytes) else {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    let Some(argument) = fuzz_input.text() else {
         return;
     };
     let root = Path::new("/workspace");
     let destination = Path::new(argument);
-    if let Ok(paths) = acyclic_fs::native_mount_control_paths(destination) {
+    if let Some(paths) = fuzz_support::FuzzInput::parse_text(fuzz_input, |argument| {
+        acyclic_fs::native_mount_control_paths(Path::new(argument))
+    }) {
         assert!(destination.is_absolute());
         assert!(
             !destination
@@ -26,14 +29,17 @@ fuzz_target!(|bytes: &[u8]| {
         for path in &paths {
             assert_eq!(path.parent(), destination.parent());
         }
-        let restored: std::path::PathBuf =
-            serde_json::from_slice(&serde_json::to_vec(destination).unwrap()).unwrap();
-        assert_eq!(
-            acyclic_fs::native_mount_control_paths(&restored).ok(),
-            Some(paths)
+        let encoded = serde_json::to_vec(destination)
+            .unwrap_or_else(|error| unreachable!("path encoding failed: {error}"));
+        let restored = fuzz_support::round_trip(
+            &destination.to_path_buf(),
+            serde_json::from_slice::<std::path::PathBuf>(&encoded),
         );
+        let _ = fuzz_support::round_trip(&paths, acyclic_fs::native_mount_control_paths(&restored));
     }
-    if let Ok(parsed) = path::workspace_path_argument(root, argument) {
+    if let Some(parsed) = fuzz_support::FuzzInput::parse_text(fuzz_input, |argument| {
+        path::workspace_path_argument(Path::new("/workspace"), argument)
+    }) {
         assert!(!parsed.contains('\0'));
         assert!(parsed.starts_with('/'));
         assert!(
@@ -42,9 +48,9 @@ fuzz_target!(|bytes: &[u8]| {
                 .all(|part| !matches!(part, Component::ParentDir))
         );
         let absolute = root.join(parsed.trim_start_matches('/'));
-        let restored = absolute
+        let argument = absolute
             .to_str()
-            .and_then(|argument| path::workspace_path_argument(root, argument).ok());
-        assert_eq!(restored.as_deref(), Some(parsed.as_str()));
+            .unwrap_or_else(|| unreachable!("UTF-8 path"));
+        let _ = fuzz_support::round_trip(&parsed, path::workspace_path_argument(root, argument));
     }
 });

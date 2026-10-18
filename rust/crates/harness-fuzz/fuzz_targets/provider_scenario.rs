@@ -1,14 +1,19 @@
 #![no_main]
+
+pub use acyclic_fuzz_support as fuzz_support;
 #[path = "../../harness/tests/e2e/provider_case.rs"]
 mod provider_case;
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let Ok(case) = serde_json::from_slice::<provider_case::ProviderCase>(bytes) else {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    let Some(case) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<provider_case::ProviderCase>,
+    ) else {
         return;
     };
     let encoded = serde_json::to_vec(&case).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<provider_case::ProviderCase>(&encoded).unwrap(),
-        case
+    let _ = fuzz_support::round_trip(
+        &(case),
+        serde_json::from_slice::<provider_case::ProviderCase>(&encoded),
     );
     if case.validate().is_ok() {
         assert!(!case.responses.is_empty());

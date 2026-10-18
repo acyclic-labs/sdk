@@ -113,6 +113,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
@@ -213,6 +217,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3154,6 +3159,7 @@ dependencies = [
 name = "task-volume-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "acyclic-harness",
  "acyclic-stream",
  "base64 0.22.1",

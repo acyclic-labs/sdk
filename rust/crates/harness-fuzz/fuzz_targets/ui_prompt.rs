@@ -1,7 +1,9 @@
 #![no_main]
-use acyclic_harness as harness;
+
+pub use acyclic_fuzz_support as fuzz_support;
+extern crate acyclic_harness as harness;
 use acyclic_harness::{
-    client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
+    client::{CommandFileRoot, PromptFiles, restore_tui_prompt, tui_scroll},
     task_volume::{FileKey, Query, TaskVolume, Write},
     tui::{
         ClientRenderer, Editor, InputKeymap, PromptInput, WrappedLines,
@@ -9,12 +11,11 @@ use acyclic_harness::{
     },
 };
 use acyclic_stream::{MemoryStream, StreamPath};
-use libfuzzer_sys::fuzz_target;
 #[path = "../../harness/tests/support/file_views.rs"]
 mod file_views;
 use std::sync::Arc;
 
-fuzz_target!(|data: &[u8]| {
+fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     if data.len() > 4096 {
         return;
     }
@@ -26,7 +27,7 @@ fuzz_target!(|data: &[u8]| {
     .max(1);
     let text = String::from_utf8_lossy(data);
     let mut outcome = Write::new(
-        FileKey::parse(".tasks/t/executions/r/result.json").unwrap(),
+        fuzz_support::must_decode(FileKey::parse(".tasks/t/executions/r/result.json")),
         serde_json::to_vec(&serde_json::json!({"sequence":sequence,"ok":{"text":text}})).unwrap(),
     );
     let projected = acyclic_harness::client::CommandOutputView::from_file(&outcome).unwrap();
@@ -34,7 +35,7 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(projected.text.as_deref(), Some(text.as_ref()));
     outcome.bytes = data.to_vec().into();
     if let Some(projected) = acyclic_harness::client::CommandOutputView::from_file(&outcome) {
-        let raw: serde_json::Value = serde_json::from_slice(data).unwrap();
+        let raw: serde_json::Value = fuzz_support::must_decode(serde_json::from_slice(data));
         assert_eq!(Some(projected.sequence), raw["sequence"].as_u64());
         if let Some(text) = projected.text {
             assert_eq!(raw["ok"]["text"].as_str(), Some(text.as_ref()));
@@ -57,18 +58,22 @@ fuzz_target!(|data: &[u8]| {
     {
         assert_eq!(menu.items().cloned().collect::<Vec<_>>(), before);
     }
-    if let Ok(query) = serde_json::from_slice::<Query>(data) {
+    if let Some(query) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Query>)
+    {
         let encoded = serde_json::to_vec(&query).unwrap();
-        assert_eq!(serde_json::from_slice::<Query>(&encoded).unwrap(), query);
+        let _ = fuzz_support::round_trip(&(query), serde_json::from_slice::<Query>(&encoded));
     }
     let operation = acyclic_harness::OperationId::from_bytes([9; 16]);
-    if let Ok(request) =
-        acyclic_harness::client::parse_local_request(&String::from_utf8_lossy(data), operation)
-    {
+    if let Some(request) = fuzz_support::FuzzInput::parse_lossy(fuzz_input, |text| {
+        acyclic_harness::client::parse_local_request(
+            text,
+            acyclic_harness::OperationId::from_bytes([9; 16]),
+        )
+    }) {
         let canonical = acyclic_harness::client::jsonl::request(&request).unwrap();
-        assert_eq!(
-            acyclic_harness::client::parse_local_request(&canonical, operation).unwrap(),
-            request
+        let _ = fuzz_support::round_trip(
+            &request,
+            acyclic_harness::client::parse_local_request(&canonical, operation),
         );
     }
     let width = u16::from(data.first().copied().unwrap_or(0) % 80) + 1;
@@ -121,9 +126,9 @@ fuzz_target!(|data: &[u8]| {
     let notifications = fields.next();
     let layout = fields.next();
     let expected_keymap = keymap.map_or(Some(InputKeymap::default()), |bytes| {
-        std::str::from_utf8(bytes)
-            .ok()
-            .and_then(|text| InputKeymap::parse(text).ok())
+        fuzz_input.view(bytes).and_then(|fuzz_input| {
+            fuzz_support::FuzzInput::parse_text(fuzz_input, InputKeymap::parse)
+        })
     });
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -194,25 +199,18 @@ fuzz_target!(|data: &[u8]| {
                 .into_iter()
                 .enumerate()
             {
-                cut = volume
-                    .append(
-                        cut,
-                        &Write {
-                            publication: None,
-                            key: FileKey::Task {
-                                task: acyclic_harness::task_volume::Component::new(&owner.id)
-                                    .unwrap(),
-                                file: acyclic_harness::task_volume::TaskFile::Chunk {
-                                    turn: 0,
-                                    sequence: index as u64,
-                                },
-                            },
-                            channel: Some(acyclic_harness::task_volume::Channel::Text),
-                            bytes: bytes.to_vec().into(),
+                let mut chunk = Write::new(
+                    FileKey::Task {
+                        task: acyclic_harness::task_volume::Component::new(&owner.id).unwrap(),
+                        file: acyclic_harness::task_volume::TaskFile::Chunk {
+                            turn: 0,
+                            sequence: index as u64,
                         },
-                    )
-                    .await
-                    .unwrap();
+                    },
+                    bytes.to_vec(),
+                );
+                chunk.channel = Some(acyclic_harness::task_volume::Channel::Text);
+                cut = volume.append(cut, &chunk).await.unwrap();
                 client.next_change().await.unwrap();
                 renderer.update(client.views(), &owner);
             }
@@ -256,19 +254,23 @@ fuzz_target!(|data: &[u8]| {
             // covered by the shared chunk/replay property and live renderer.
             file_views::remove(
                 &mut documents,
-                FileKey::parse(&format!(".tasks/{}/turns/0/tools/call/stdout/0", owner.id))
-                    .unwrap(),
+                fuzz_support::must_decode(FileKey::parse(&format!(
+                    ".tasks/{}/turns/0/tools/call/stdout/0",
+                    owner.id
+                ))),
             );
-            let result_key = FileKey::parse(&format!(
+            let result_key = fuzz_support::must_decode(FileKey::parse(&format!(
                 ".tasks/{}/turns/0/tools/call/result.json",
                 owner.id
-            ))
-            .unwrap();
+            )));
             file_views::put(&mut documents, result_key.clone(), data.to_vec(), None);
             renderer.update(&documents, &owner);
             assert!(renderer.screen().transcript.is_empty());
             assert_eq!(renderer.screen().tools.len(), 1);
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+            if let Some(value) = fuzz_support::FuzzInput::parse(
+                fuzz_input,
+                serde_json::from_slice::<serde_json::Value>,
+            ) {
                 // Raw duplicate fields may be rejected by the typed parser even
                 // though Value keeps the last one. Check its canonical form
                 // separately; the arbitrary original was already rendered above.
@@ -317,13 +319,21 @@ fuzz_target!(|data: &[u8]| {
                 volume
                     .append(
                         cut,
-                        &Write::new(FileKey::parse(&path).unwrap(), bytes.to_vec()),
+                        &Write::new(
+                            fuzz_support::must_decode(FileKey::parse(&path)),
+                            bytes.to_vec(),
+                        ),
                     )
                     .await
                     .unwrap();
             }
-            let Ok(mut files) =
-                CommandSession::open(volume, session.parse().unwrap(), 65_536, 64).await
+            let Ok(mut files) = acyclic_harness::client::CommandSession::open(
+                volume,
+                fuzz_support::must_decode(session.parse()),
+                65_536,
+                64,
+            )
+            .await
             else {
                 return;
             };
@@ -338,7 +348,10 @@ fuzz_target!(|data: &[u8]| {
             renderer.update(&documents, &owner);
             renderer.configure(&documents, &owner, &files).unwrap();
             assert!(renderer.screen().tools.len() <= 21);
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+            if let Some(value) = fuzz_support::FuzzInput::parse(
+                fuzz_input,
+                serde_json::from_slice::<serde_json::Value>,
+            ) {
                 if value.as_object().is_some_and(|fields| {
                     fields.contains_key("stdout") || fields.contains_key("stderr")
                 }) {
@@ -346,8 +359,14 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
             if let Some(bytes) = layout {
-                let expected = serde_json::from_slice::<serde_json::Value>(bytes)
-                    .ok()
+                let expected = fuzz_input
+                    .view(bytes)
+                    .and_then(|fuzz_input| {
+                        fuzz_support::FuzzInput::parse(
+                            fuzz_input,
+                            serde_json::from_slice::<serde_json::Value>,
+                        )
+                    })
                     .and_then(|value| {
                         if !value.is_object() {
                             return None;
@@ -361,26 +380,31 @@ fuzz_target!(|data: &[u8]| {
                                 "transcript_back"
                             })
                             .map_or(Some(if modal { usize::MAX } else { 0 }), |value| {
-                                value.as_u64().and_then(|rows| usize::try_from(rows).ok())
+                                value.as_u64().and_then(|rows| fuzz_support::index(rows))
                             })
                     });
-                assert_eq!(tui_scroll(&files).ok(), expected);
+                assert_eq!(
+                    fuzz_support::accepts(expected.is_some(), tui_scroll(&files)),
+                    expected
+                );
             }
             let mut renderer = ClientRenderer::default();
             let result = renderer.screen_for(&files);
-            let expected: Result<Vec<String>, _> =
-                serde_json::from_slice(notifications.unwrap_or(b"[]"));
-            match expected {
-                Err(_) => assert!(result.is_err()),
-                Ok(messages) => {
-                    let screen = result.unwrap();
-                    assert_eq!(screen.notifications.len(), messages.len());
-                    for (row, message) in screen.notifications.iter().zip(messages) {
-                        let text: String =
-                            row.spans.iter().map(|span| span.content.as_ref()).collect();
-                        assert_eq!(text, message.escape_debug().to_string());
-                        assert!(!text.chars().any(char::is_control));
-                    }
+            let expected = notifications.map_or(Some(Vec::new()), |bytes| {
+                fuzz_input.view(bytes).and_then(|fuzz_input| {
+                    fuzz_support::FuzzInput::parse(
+                        fuzz_input,
+                        serde_json::from_slice::<Vec<String>>,
+                    )
+                })
+            });
+            let result = fuzz_support::accepts(expected.is_some(), result);
+            if let Some((messages, screen)) = expected.zip(result) {
+                assert_eq!(screen.notifications.len(), messages.len());
+                for (row, message) in screen.notifications.iter().zip(messages) {
+                    let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+                    assert_eq!(text, message.escape_debug().to_string());
+                    assert!(!text.chars().any(char::is_control));
                 }
             }
             // The notification assertion above includes malformed files. Clear

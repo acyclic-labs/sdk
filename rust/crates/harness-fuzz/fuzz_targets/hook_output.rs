@@ -1,7 +1,8 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_harness::{Error, ProcessError, Result};
-use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
 // Include the production pure decoder and normalized types. No native runner,
@@ -31,14 +32,18 @@ fn apply(
     ledger.finish(output);
 }
 
-fuzz_target!(|bytes: &[u8]| {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     if bytes.len() > 4096 {
         return;
     }
-    if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
+    if let Some(output) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<HookOutput>)
+    {
         let encoded = serde_json::to_vec(&output).unwrap();
-        let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(output, decoded);
+        let decoded: HookOutput =
+            fuzz_support::round_trip(&output, serde_json::from_slice(&encoded));
+        let blocking = decoded.diagnostics.iter().any(|failure| failure.blocking);
+        assert_eq!(decoded.into_result().is_err(), blocking);
     }
     for event in [
         HookEvent::SessionStart,
@@ -86,7 +91,9 @@ fuzz_target!(|bytes: &[u8]| {
             assert!(reports.updated_input.is_none());
             assert!(reports.approval.is_none());
         }
-        if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
+        if let Some(value) =
+            fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Value>)
+        {
             let canonical = serde_json::to_vec(&value).unwrap();
             let mut round_trip = HookOutput::default();
             apply(
@@ -141,10 +148,13 @@ fuzz_target!(|bytes: &[u8]| {
         assert!(outcome.blocks());
         assert!(serde_json::to_vec(&outcome).unwrap().len() <= 4096);
     }
-    if let Ok(rule) = serde_json::from_slice::<spec::HookRule>(bytes) {
+    if let Some(rule) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<spec::HookRule>)
+    {
         let encoded = serde_json::to_vec(&rule).unwrap();
-        let decoded: spec::HookRule = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(rule, decoded);
+        let decoded: spec::HookRule =
+            fuzz_support::round_trip(&rule, serde_json::from_slice(&encoded));
+
         for (original, restored) in rule.hooks.iter().zip(&decoded.hooks) {
             assert_eq!(original.validate().is_ok(), restored.validate().is_ok());
         }

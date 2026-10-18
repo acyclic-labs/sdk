@@ -1,5 +1,6 @@
 #[cfg(test)]
 use crate as acyclic_harness;
+pub use acyclic_fuzz_support as fuzz_support;
 use acyclic_harness::{
     AgentId,
     conversation::{
@@ -10,7 +11,7 @@ use acyclic_harness::{
     executor::json::{JsonBounds, JsonValueSchema, json_from_slice_bounded},
     filesystem::PreparationIo,
     model::{ModelContentPart, ToolCall, ToolResultContent},
-    projection::{SelectedModelContext, select_model_context},
+    projection::select_model_context,
     resources::ProviderRef,
     tool::{ToolInvocation, ToolResult},
 };
@@ -58,7 +59,11 @@ fn reference(path: &str, bytes: &[u8]) -> FileRef {
         .unwrap(),
         path.into(),
         "v1".into(),
-        FileDescriptor::from_bytes(bytes, "application/json", &mut None).unwrap(),
+        fuzz_support::must_decode(FileDescriptor::from_bytes(
+            bytes,
+            "application/json",
+            &mut None,
+        )),
         "fixture".into(),
         &mut None,
     )
@@ -176,38 +181,40 @@ pub fn assert_replay(record: Record, limits: Limits) {
         .with_metadata(record.metadata)
     );
     let bytes = serde_json::to_vec(&projected).unwrap();
-    let replay: SelectedModelContext = json_from_slice_bounded(
-        PhantomData,
-        &bytes,
-        JsonBounds {
-            maximum_bytes: bytes.len() as u64,
-            maximum_items: u64::MAX,
-            maximum_depth: 256,
-        },
-        0,
-        None,
-        Some(JsonValueSchema::Root),
-        &mut |_| Ok(()),
-    )
-    .unwrap();
-    assert_eq!(projected, replay);
+    let _ = fuzz_support::round_trip(
+        &projected,
+        json_from_slice_bounded(
+            PhantomData,
+            &bytes,
+            JsonBounds {
+                maximum_bytes: bytes.len() as u64,
+                maximum_items: u64::MAX,
+                maximum_depth: 256,
+            },
+            0,
+            None,
+            Some(JsonValueSchema::Root),
+            &mut |_| Ok(()),
+        ),
+    );
 }
 
-pub fn check(data: &[u8]) {
-    let parsed = json_from_slice_bounded(
-        PhantomData::<Record>,
-        data,
-        JsonBounds {
-            maximum_bytes: 4096,
-            maximum_items: 4096,
-            maximum_depth: 256,
-        },
-        0,
-        None,
-        Some(JsonValueSchema::Root),
-        &mut |_| Ok(()),
-    );
-    if let Ok(record) = parsed {
+pub fn check(fuzz_input: fuzz_support::FuzzInput<'_>) {
+    if let Some(record) = fuzz_support::FuzzInput::parse(fuzz_input, |data| {
+        json_from_slice_bounded(
+            PhantomData::<Record>,
+            data,
+            JsonBounds {
+                maximum_bytes: 4096,
+                maximum_items: 4096,
+                maximum_depth: 256,
+            },
+            0,
+            None,
+            Some(JsonValueSchema::Root),
+            &mut |_| Ok(()),
+        )
+    }) {
         assert_replay(
             record,
             Limits {

@@ -26,7 +26,7 @@ fn checked_in_fuzz_corpus() -> Result<()> {
         let entry = entry.map_err(|error| Error::Storage(error.to_string()))?;
         let bytes =
             std::fs::read(entry.path()).map_err(|error| Error::Storage(error.to_string()))?;
-        goal_parser_input::check(&bytes)?;
+        goal_parser_input::check(goal_parser_input::fuzz_support::test_input(&bytes))?;
         seeds += 1;
     }
     assert!(seeds >= 14);

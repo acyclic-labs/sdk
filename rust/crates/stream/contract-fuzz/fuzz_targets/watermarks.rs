@@ -1,22 +1,23 @@
 #![no_main]
+
+pub use acyclic_fuzz_support as fuzz_support;
 use acyclic_stream::{StreamError, StreamWatermarks, wire, wire_codec::watermarks_from_wire};
-use libfuzzer_sys::fuzz_target;
 use prost::Message;
 
-fuzz_target!(|input: &[u8]| {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     if input.len() > 4096 {
         return;
     }
-    if let Ok(request) = wire::TailRequest::decode(input) {
-        assert_eq!(
-            wire::TailRequest::decode(request.encode_to_vec().as_slice()).unwrap(),
-            request
+    if let Some(request) = fuzz_support::FuzzInput::parse(fuzz_input, wire::TailRequest::decode) {
+        let _ = fuzz_support::round_trip(
+            &(request),
+            wire::TailRequest::decode(request.encode_to_vec().as_slice()),
         );
     }
-    if let Ok(response) = wire::TailResponse::decode(input) {
-        assert_eq!(
-            wire::TailResponse::decode(response.encode_to_vec().as_slice()).unwrap(),
-            response
+    if let Some(response) = fuzz_support::FuzzInput::parse(fuzz_input, wire::TailResponse::decode) {
+        let _ = fuzz_support::round_trip(
+            &(response),
+            wire::TailResponse::decode(response.encode_to_vec().as_slice()),
         );
         let expected = match response.durable {
             None => Err(StreamError::Unsupported),

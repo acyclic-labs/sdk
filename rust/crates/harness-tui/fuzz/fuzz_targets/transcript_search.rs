@@ -1,12 +1,18 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| {
+pub use acyclic_fuzz_support as fuzz_support;
+
+fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     let Some(at) = data.iter().position(|byte| *byte == 0) else {
         return;
     };
-    let (Ok(query), Ok(text)) = (
-        std::str::from_utf8(&data[..at]),
-        std::str::from_utf8(&data[at + 1..]),
+    let (Some(query), Some(text)) = (
+        fuzz_input
+            .slice(0..at)
+            .and_then(fuzz_support::FuzzInput::text),
+        fuzz_input
+            .slice(at + 1..data.len())
+            .and_then(fuzz_support::FuzzInput::text),
     ) else {
         return;
     };

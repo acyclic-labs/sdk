@@ -98,13 +98,9 @@ impl Budget {
         }
     }
 
-    fn reserve<'a>(
-        &mut self,
-        output: &HookOutput,
-        plan: Plan<'a>,
-    ) -> std::result::Result<Reservation<'a>, Plan<'a>> {
+    fn reserve(&mut self, output: &HookOutput, plan: &Plan<'_>) -> bool {
         let State::Available { used, replacement } = &mut self.state else {
-            return Err(plan);
+            return false;
         };
         let cost = || -> Result<(u64, u64)> {
             let mut next = *used;
@@ -120,12 +116,12 @@ impl Budget {
                     .ok_or_else(exceeded)?
                     - 4;
             }
-            let mut contexts = output.additional_context.len();
-            for text in plan.context.iter().flatten() {
+            for (contexts, text) in
+                (output.additional_context.len()..).zip(plan.context.iter().flatten())
+            {
                 next = next
                     .checked_add(encoded_size(text, self.maximum)? + u64::from(contexts > 0))
                     .ok_or_else(exceeded)?;
-                contexts += 1;
             }
             if let Some((cause, blocking)) = &plan.failure {
                 next = next
@@ -158,57 +154,55 @@ impl Budget {
             Ok((next, input)) => {
                 *used = next;
                 *replacement = input;
-                Ok(Reservation { plan: Some(plan) })
+                true
             }
-            Err(_) => Err(plan),
+            Err(_) => false,
         }
     }
 
     fn fold(&mut self, output: &mut HookOutput, plan: Plan<'_>, blocking_policy: bool) {
-        match self.reserve(output, plan) {
-            Ok(reservation) => {
-                if let Err(error) = reservation.commit(output) {
-                    self.fold(
-                        output,
-                        Plan::failed(error, blocking_policy),
-                        blocking_policy,
-                    );
-                }
+        if self.reserve(output, &plan) {
+            let reservation = Reservation { plan: Some(plan) };
+            if let Err(error) = reservation.commit(output) {
+                self.fold(
+                    output,
+                    Plan::failed(error, blocking_policy),
+                    blocking_policy,
+                );
             }
-            Err(plan) => {
-                let (mut denied, mut asks, mut blocking) = match self.state {
-                    State::Available { .. } => (
-                        output.blocked.is_some(),
-                        output.approval.is_some(),
-                        output.diagnostics.iter().any(|failure| failure.blocking),
-                    ),
-                    State::Exhausted {
-                        denied,
-                        asks,
-                        blocking,
-                    } => (denied, asks, blocking),
-                };
-                // An unretainable delta is itself this command's failure;
-                // honor its policy, without letting a later empty successful
-                // command retroactively block an earlier report-only overflow.
-                let contributes = plan.blocked.is_some()
-                    || plan.approval.is_some()
-                    || plan.context.iter().any(Option::is_some)
-                    || plan.input.is_some()
-                    || plan.failure.is_some();
-                blocking |= blocking_policy && contributes;
-                denied |= plan.blocked.is_some();
-                asks |= plan.approval.is_some();
-                blocking |= plan.failure.is_some_and(|(_, blocking)| blocking);
-                self.state = State::Exhausted {
+        } else {
+            let (mut denied, mut asks, mut blocking) = match self.state {
+                State::Available { .. } => (
+                    output.blocked.is_some(),
+                    output.approval.is_some(),
+                    output.diagnostics.iter().any(|failure| failure.blocking),
+                ),
+                State::Exhausted {
                     denied,
                     asks,
                     blocking,
-                };
-                // Drop all optional allocated data once. Later plans remain
-                // borrowed; no owned reason or argument is decoded on exhaustion.
-                *output = HookOutput::default();
-            }
+                } => (denied, asks, blocking),
+            };
+            // An unretainable delta is itself this command's failure;
+            // honor its policy, without letting a later empty successful
+            // command retroactively block an earlier report-only overflow.
+            let contributes = plan.blocked.is_some()
+                || plan.approval.is_some()
+                || plan.context.iter().any(Option::is_some)
+                || plan.input.is_some()
+                || plan.failure.is_some();
+            blocking |= blocking_policy && contributes;
+            denied |= plan.blocked.is_some();
+            asks |= plan.approval.is_some();
+            blocking |= plan.failure.is_some_and(|(_, blocking)| blocking);
+            self.state = State::Exhausted {
+                denied,
+                asks,
+                blocking,
+            };
+            // Drop all optional allocated data once. Later plans remain
+            // borrowed; no owned reason or argument is decoded on exhaustion.
+            *output = HookOutput::default();
         }
     }
 
@@ -242,9 +236,10 @@ impl Budget {
         let plan = Plan::inspect(output, event, code, stdout, stderr)
             .map_err(|message| Error::Invalid(message.into()))?;
         let updated = plan.input.is_some();
-        self.reserve(output, plan)
-            .map_err(|_| exceeded())?
-            .commit(output)?;
+        if !self.reserve(output, &plan) {
+            return Err(exceeded());
+        }
+        Reservation { plan: Some(plan) }.commit(output)?;
         Ok(updated)
     }
 }

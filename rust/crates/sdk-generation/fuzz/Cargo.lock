@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -480,6 +484,7 @@ dependencies = [
 name = "sdk-generation-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "libfuzzer-sys",
  "sdk-docs",
  "sdk-generation",

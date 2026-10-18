@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../support" }
 libfuzzer-sys = "0.4"
 base64 = "=0.22.1"
 acyclic-harness = { path = "../../crates/harness", default-features = false }

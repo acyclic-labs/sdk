@@ -11,7 +11,11 @@ mod checks {
         "/tests/support/follow_contract.rs"
     ));
 }
-use checks::{Fault, check};
+use acyclic_fuzz_support as fuzz_support;
+use checks::Fault;
+fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
+    checks::check(fuzz_support::test_input(input), fault)
+}
 
 fn tagged(kind: u8, value: &impl Message) -> Vec<u8> {
     [vec![kind], value.encode_to_vec()].concat()

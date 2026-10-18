@@ -24,11 +24,8 @@ pub(super) enum Fault {
 fn require(valid: bool, invariant: &'static str) -> Result<(), &'static str> {
     if valid { Ok(()) } else { Err(invariant) }
 }
-fn round_trip<M: Message + Default + PartialEq>(value: &M) -> Result<(), &'static str> {
-    require(
-        M::decode(value.encode_to_vec().as_slice()).ok().as_ref() == Some(value),
-        "protobuf round trip",
-    )
+fn round_trip<M: Message + Default + PartialEq>(value: &M) {
+    crate::fuzz_support::round_trip(value, M::decode(value.encode_to_vec().as_slice()));
 }
 
 fn guard(
@@ -37,17 +34,20 @@ fn guard(
     fault: Fault,
 ) -> Result<(), &'static str> {
     let expected = if follow.preceding_commit_id.is_empty() {
-        Ok(None)
+        Some(None)
     } else if follow.delivery == wire::SessionDelivery::All as i32
         && resume.next > 0
         && resume.opaque.is_empty()
         && follow.preceding_commit_id.len() == 32
     {
-        <[u8; 32]>::try_from(follow.preceding_commit_id.as_ref())
+        follow
+            .preceding_commit_id
+            .as_ref()
+            .first_chunk::<32>()
+            .copied()
             .map(Some)
-            .map_err(|_| StreamError::InvalidArgument)
     } else {
-        Err(StreamError::InvalidArgument)
+        None
     };
     let mut actual = preceding_follow(follow, resume).map(|anchor| anchor.map(|id| *id.as_bytes()));
     if fault == Fault::AcceptShortGuard && follow.preceding_commit_id.len() == 31 {
@@ -59,8 +59,11 @@ fn guard(
     if fault == Fault::DropChecked {
         actual = actual.map(|_| None);
     }
-    require(actual == expected, "checked guard")?;
-    if let Ok(Some(anchor)) = expected {
+    require(
+        actual == expected.ok_or(StreamError::InvalidArgument),
+        "checked guard",
+    )?;
+    if let Some(Some(anchor)) = expected {
         let mut mismatched = anchor;
         mismatched[0] ^= 1;
         for echo in [anchor.to_vec(), Vec::new(), mismatched.to_vec()] {
@@ -84,10 +87,16 @@ fn guard(
 }
 
 fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static str> {
-    let anchor: Result<[u8; 32], _> = cursor.opaque.as_ref().try_into();
+    let anchor: Option<[u8; 32]> = (cursor.opaque.len() == 32).then(|| {
+        cursor
+            .opaque
+            .as_ref()
+            .try_into()
+            .expect("checked anchor size")
+    });
     let expected = match (cursor.next, anchor) {
         (0, _) if cursor.opaque.is_empty() => Ok(None),
-        (1.., Ok(anchor)) => Ok(Some(anchor)),
+        (1.., Some(anchor)) => Ok(Some(anchor)),
         _ => Err(StreamError::InvalidArgument),
     };
     let mut actual = record_anchor(cursor).map(|anchor| anchor.map(|id| *id.as_bytes()));
@@ -104,19 +113,19 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
     }
     // Compare directly to the independently supplied wire bytes, never to an encoder.
     require(actual == expected, "snapshot decode bytes")?;
-    if let Ok(anchor) = anchor {
-        let mut encoded = record_cursor(cursor.next, CommitId::from_bytes(anchor));
-        if let Ok(cursor) = &mut encoded
-            && matches!(fault, Fault::ReverseEncode | Fault::ReverseBoth)
-        {
-            cursor.opaque = cursor
-                .opaque
-                .iter()
-                .rev()
-                .copied()
-                .collect::<Vec<_>>()
-                .into();
-        }
+    if let Some(anchor) = anchor {
+        let encoded = record_cursor(cursor.next, CommitId::from_bytes(anchor)).map(|mut cursor| {
+            if matches!(fault, Fault::ReverseEncode | Fault::ReverseBoth) {
+                cursor.opaque = cursor
+                    .opaque
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .into();
+            }
+            cursor
+        });
         let expected = if cursor.next == 0 {
             Err(StreamError::InvalidArgument)
         } else {
@@ -130,19 +139,27 @@ fn snapshot(cursor: &wire::SessionCursor, fault: Fault) -> Result<(), &'static s
     Ok(())
 }
 
-pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
-    let Some((&kind, input)) = input.split_first() else {
+pub(super) fn check(
+    fuzz_input: crate::fuzz_support::FuzzInput<'_>,
+    fault: Fault,
+) -> Result<(), &'static str> {
+    let Some((&kind, input)) = fuzz_input.bytes().split_first() else {
         return Ok(());
     };
     if input.len() > 4096 {
         return Ok(());
     }
+    let fuzz_input = fuzz_input
+        .view(input)
+        .unwrap_or_else(|| unreachable!("tagged raw input slice"));
     match kind % 3 {
         0 => {
-            let Ok(subscription) = wire::SessionSubscription::decode(input) else {
+            let Some(subscription) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::SessionSubscription::decode)
+            else {
                 return Ok(());
             };
-            round_trip(&subscription)?;
+            round_trip(&subscription);
             if let (Some(wire::session_subscription::Kind::Follow(follow)), Some(resume)) =
                 (&subscription.kind, &subscription.resume)
             {
@@ -150,17 +167,21 @@ pub(super) fn check(input: &[u8], fault: Fault) -> Result<(), &'static str> {
             }
         }
         1 => {
-            let Ok(cursor) = wire::SessionCursor::decode(input) else {
+            let Some(cursor) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::SessionCursor::decode)
+            else {
                 return Ok(());
             };
-            round_trip(&cursor)?;
+            round_trip(&cursor);
             snapshot(&cursor, fault)?;
         }
         _ => {
-            let Ok(response) = wire::TailResponse::decode(input) else {
+            let Some(response) =
+                fuzz_support::FuzzInput::parse(fuzz_input, wire::TailResponse::decode)
+            else {
                 return Ok(());
             };
-            round_trip(&response)?;
+            round_trip(&response);
             let expected = match response.durable {
                 None => Err(StreamError::Unsupported),
                 Some(durable) if durable > response.tail => Err(StreamError::Unavailable),

@@ -10,6 +10,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 libfuzzer-sys = "0.4"
 acyclic-manifest = { path = ".." }
 acyclic-auth = { path = "../../auth" }

@@ -1,5 +1,7 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 mod checks {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -7,6 +9,6 @@ mod checks {
     ));
 }
 
-libfuzzer_sys::fuzz_target!(|input: &[u8]| {
-    checks::check(input, checks::Fault::None).expect("follow wire contract");
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
+    checks::check(fuzz_input, checks::Fault::None).expect("follow wire contract");
 });

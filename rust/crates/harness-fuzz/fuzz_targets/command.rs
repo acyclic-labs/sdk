@@ -1,7 +1,8 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_harness::{Error, Result};
-use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/src/tools/command.rs"]
 mod command;
@@ -10,8 +11,8 @@ mod fs_command;
 use command::parse_command;
 use fs_command::parse_fs_command;
 
-fuzz_target!(|input: &str| {
-    if let Ok(arguments) = parse_command(input) {
+fuzz_support::fuzz_target!(|input: &str, fuzz_input| {
+    if let Some(arguments) = fuzz_support::FuzzInput::parse_text(fuzz_input, parse_command) {
         assert!(!arguments.is_empty());
         let encoded = arguments
             .iter()
@@ -24,14 +25,13 @@ fuzz_target!(|input: &str| {
             })
             .collect::<Vec<_>>()
             .join(" ");
-        let restored = parse_command(&encoded).unwrap();
-        assert_eq!(restored, arguments);
+        let restored = fuzz_support::round_trip(&arguments, parse_command(&encoded));
         assert_eq!(
             fs_command::agent_diff(&restored),
             fs_command::agent_diff(&arguments)
         );
     }
-    if let Ok(parsed) = parse_fs_command(input) {
+    if let Some(parsed) = fuzz_support::FuzzInput::parse_text(fuzz_input, parse_fs_command) {
         let mut arguments = parsed.arguments.clone();
         if let Some(volume) = &parsed.volume {
             arguments.splice(0..0, ["--volume".into(), volume.clone()]);
@@ -41,6 +41,6 @@ fuzz_target!(|input: &str| {
             .map(|argument| format!("'{}'", argument.replace('\'', "'\\''")))
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(parse_fs_command(&format!("git {encoded}")).unwrap(), parsed);
+        let _ = fuzz_support::round_trip(&parsed, parse_fs_command(&format!("git {encoded}")));
     }
 });

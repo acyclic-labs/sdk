@@ -10,6 +10,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 libfuzzer-sys = "0.4"
 toml = "=0.9.8"
 serde = { version = "1", features = ["derive"] }

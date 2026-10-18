@@ -27,6 +27,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
@@ -81,12 +85,14 @@ dependencies = [
  "tonic-prost",
  "tracing",
  "uuid",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
 name = "acyclic-stream-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "acyclic-stream",
  "bytes",
  "futures",
@@ -879,6 +885,8 @@ version = "0.3.94"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e04e2ef80ce82e13552136fabeef8a5ed1f985a96805761cbb9a2c34e7664d9"
 dependencies = [
+ "cfg-if",
+ "futures-util",
  "once_cell",
  "wasm-bindgen",
 ]
@@ -2034,6 +2042,16 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.67"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03623de6905b7206edd0a75f69f747f134b7f0a2323392d664448bf2d3c5d87e"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

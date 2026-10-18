@@ -240,6 +240,7 @@ name = "acyclic-fs-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fuzz-support",
  "libfuzzer-sys",
  "loom",
  "rustix 1.1.5",
@@ -287,6 +288,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
@@ -309,6 +314,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
+ "acyclic-fuzz-support",
  "acyclic-harness",
  "acyclic-harness-providers",
  "acyclic-harness-tui",
@@ -394,6 +400,7 @@ name = "acyclic-harness-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fuzz-support",
  "acyclic-harness",
  "acyclic-stream",
  "acyclic-test-support",
@@ -746,6 +753,7 @@ name = "acyclic-sdk-fuzz"
 version = "0.0.0"
 dependencies = [
  "acyclic-fs",
+ "acyclic-fuzz-support",
  "acyclic-harness",
  "acyclic-proto-build",
  "libfuzzer-sys",
@@ -758,6 +766,7 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-fuzz-support",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-proto-build",
@@ -832,6 +841,7 @@ dependencies = [
 name = "acyclic-test-support"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "proptest",
 ]
 

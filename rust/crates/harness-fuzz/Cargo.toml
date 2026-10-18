@@ -19,10 +19,13 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "c
 
 [features]
 default = ["runtime"]
-runtime = ["dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+filesystem-local = ["acyclic-harness?/filesystem-local"]
+native-execution = ["acyclic-harness?/native-execution"]
+runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../fuzz/support" }
 blake3.workspace = true
 acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }

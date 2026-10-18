@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -152,6 +156,7 @@ dependencies = [
 name = "sdk-docs-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "cargo_metadata",
  "libfuzzer-sys",
  "rustdoc-types",

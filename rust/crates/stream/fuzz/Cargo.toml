@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 acyclic-stream = { path = ".." }
 bytes = "1.10.1"
 futures = "0.3.31"

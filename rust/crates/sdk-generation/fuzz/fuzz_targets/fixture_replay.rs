@@ -1,4 +1,6 @@
 #![no_main]
+
+pub use acyclic_fuzz_support as fuzz_support;
 #[path = "../../tests/cli_regressions/package_manifest.rs"]
 mod package_manifest;
 #[path = "../../tests/cli_regressions/paths.rs"]
@@ -8,11 +10,11 @@ mod probe;
 #[path = "../../src/source_selection.rs"]
 mod source_selection;
 
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     let _ = probe::graft_path(bytes);
     let _ = paths::fixed_revision(b"ref: refs/heads/sdk-fixture\n", bytes);
     let _ = paths::fixed_revision(bytes, b"0123456789012345678901234567890123456789");
-    if let Ok(text) = std::str::from_utf8(bytes) {
+    if let Some(text) = fuzz_input.text() {
         let fields = text
             .lines()
             .take(8)

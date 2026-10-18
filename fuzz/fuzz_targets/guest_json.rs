@@ -1,39 +1,45 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_actors::guest::{AdmittedCaller, Checkpoint, GuestEvent, GuestEventResult};
-use libfuzzer_sys::fuzz_target;
 
 #[path = "../../rust/crates/actors/tests/support/metadata.rs"]
 mod metadata;
 
-fuzz_target!(|input: &[u8]| {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     metadata::check(input);
-    if let Ok(result) = serde_json::from_slice::<GuestEventResult>(input) {
+    if let Some(result) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<GuestEventResult>)
+    {
         let encoded = serde_json::to_vec(&result).expect("event result must encode");
-        assert_eq!(
-            serde_json::from_slice::<GuestEventResult>(&encoded).expect("result round trip"),
-            result
+        let _ = fuzz_support::round_trip(
+            &(result),
+            serde_json::from_slice::<GuestEventResult>(&encoded),
         );
     }
-    if let Ok(caller) = serde_json::from_slice::<AdmittedCaller>(input) {
+    if let Some(caller) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<AdmittedCaller>)
+    {
         let encoded = serde_json::to_vec(&caller).expect("caller projection must encode");
-        assert_eq!(
-            serde_json::from_slice::<AdmittedCaller>(&encoded).expect("caller round trip"),
-            caller
+        let _ = fuzz_support::round_trip(
+            &(caller),
+            serde_json::from_slice::<AdmittedCaller>(&encoded),
         );
     }
-    if let Ok(event) = serde_json::from_slice::<GuestEvent>(input) {
+    if let Some(event) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<GuestEvent>)
+    {
         let encoded = serde_json::to_vec(&event).expect("accepted event must encode");
-        assert_eq!(
-            serde_json::from_slice::<GuestEvent>(&encoded).expect("event round trip"),
-            event
-        );
+        let _ = fuzz_support::round_trip(&(event), serde_json::from_slice::<GuestEvent>(&encoded));
     }
-    if let Ok(checkpoint) = serde_json::from_slice::<Checkpoint>(input) {
+    if let Some(checkpoint) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Checkpoint>)
+    {
         let encoded = serde_json::to_vec(&checkpoint).expect("accepted checkpoint must encode");
-        assert_eq!(
-            serde_json::from_slice::<Checkpoint>(&encoded).expect("checkpoint round trip"),
-            checkpoint
+        let _ = fuzz_support::round_trip(
+            &(checkpoint),
+            serde_json::from_slice::<Checkpoint>(&encoded),
         );
     }
 });

@@ -1,15 +1,20 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 #[path = "../../harness/tests/e2e/swarm_case.rs"]
 mod swarm_case;
 
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let Ok(case) = serde_json::from_slice::<swarm_case::SwarmCase>(bytes) else {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<swarm_case::SwarmCase>)
+    else {
         return;
     };
     let encoded = serde_json::to_vec(&case).unwrap();
-    let decoded: swarm_case::SwarmCase = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(case, decoded);
+    let _: swarm_case::SwarmCase =
+        fuzz_support::round_trip(&case, serde_json::from_slice(&encoded));
+
     if case.validate().is_ok() {
         for (phase, layout) in case.layouts.iter().enumerate() {
             assert!(layout.selected().all(|id| id < case.agents));

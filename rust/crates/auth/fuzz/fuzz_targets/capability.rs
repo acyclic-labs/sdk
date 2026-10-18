@@ -1,4 +1,5 @@
 #![no_main]
+
 use acyclic_auth::{
     authority::{
         Deny, PolicyDecision, Request, Target, decode_block, decode_capability, decode_caveat,
@@ -12,25 +13,25 @@ use acyclic_auth::{
     socket::valid_dns_name,
     valid_resource,
 };
-use libfuzzer_sys::fuzz_target;
+pub use acyclic_fuzz_support as fuzz_support;
 use prost::Message;
-fuzz_target!(|bytes: &[u8]| {
-    if let Ok(value) = decode_caveat(bytes) {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_caveat) {
         assert_eq!(CaveatProto::from(value).encode_to_vec(), bytes);
     }
-    if let Ok(value) = decode_capability(bytes) {
-        assert_eq!(
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_capability) {
+        let _ = fuzz_support::round_trip(
+            &(value),
             decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
-            Ok(value)
         );
     }
-    if let Ok(value) = decode_block(bytes) {
-        assert_eq!(
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, decode_block) {
+        let _ = fuzz_support::round_trip(
+            &(value),
             decode_block(&BlockProto::from(value.clone()).encode_to_vec()),
-            Ok(value)
         );
     }
-    if let Ok(value) = RecordAttributes::decode(bytes) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, RecordAttributes::decode) {
         assert!(
             value
                 .as_slice()
@@ -38,16 +39,16 @@ fuzz_target!(|bytes: &[u8]| {
                 .enumerate()
                 .all(|(i, a)| value.as_slice()[..i].iter().all(|b| a.name != b.name))
         );
-        assert_eq!(
+        let _ = fuzz_support::round_trip(
+            &(value),
             RecordAttributes::decode(&RecordAttributesProto::from(value.clone()).encode_to_vec()),
-            Ok(value)
         );
     }
-    assert_eq!(
+    let _ = fuzz_support::round_trip(
+        &(bytes.to_vec()),
         decode_component(&encode_component(bytes)),
-        Ok(bytes.to_vec())
     );
-    if let Ok(text) = std::str::from_utf8(bytes) {
+    if let Some(text) = fuzz_input.text() {
         let attributes = RecordAttributes::default();
         let usage = Limits {
             rps: None,
@@ -88,18 +89,19 @@ fuzz_target!(|bytes: &[u8]| {
                 Err(Deny::NonCanonicalAudience)
             );
         }
-        let wire = SocketHostRuleProto {
-            host: text.to_owned(),
-            ports: vec![],
-        };
-        if let Ok(value) = SocketHostRule::try_from(wire) {
+        if let Some(value) = fuzz_support::FuzzInput::parse_text(fuzz_input, |text| {
+            SocketHostRule::try_from(SocketHostRuleProto {
+                host: text.to_owned(),
+                ports: vec![],
+            })
+        }) {
             let bytes = SocketHostRuleProto::from(value.clone()).encode_to_vec();
-            assert_eq!(
+            let _ = fuzz_support::round_trip(
+                &(value),
                 SocketHostRule::try_from(SocketHostRuleProto::decode(bytes.as_slice()).unwrap()),
-                Ok(value)
             );
         }
-        if let Ok(decoded) = decode_component(text) {
+        if let Some(decoded) = fuzz_support::FuzzInput::parse_text(fuzz_input, decode_component) {
             assert_eq!(encode_component(&decoded), text);
         }
     }

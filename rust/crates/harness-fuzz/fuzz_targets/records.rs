@@ -1,9 +1,13 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_harness::{
-    AgentId, OperationId, TaskId, conversation::VolumeRef, tool::files::*, workflow,
+    AgentId, OperationId, TaskId,
+    conversation::VolumeRef,
+    tool::files::{EditFileInput, ReadFileInput, WriteFileInput},
+    workflow,
 };
-use libfuzzer_sys::fuzz_target;
 use serde::{Serialize, de::DeserializeOwned};
 
 // Compile the private production record without adding a public parser API.
@@ -12,22 +16,24 @@ mod owner_record;
 #[path = "../../harness/src/goal/request_head.rs"]
 mod turn_record;
 
-fn round_trip<T: Serialize + DeserializeOwned>(input: &[u8]) {
-    if let Ok(value) = serde_json::from_slice::<T>(input) {
+fn round_trip<T: Serialize + DeserializeOwned>(fuzz_input: fuzz_support::FuzzInput<'_>) {
+    if let Some(value) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<T>) {
         let encoded = serde_json::to_vec(&value).unwrap();
-        let recovered: T = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(serde_json::to_vec(&recovered).unwrap(), encoded);
+        let _ = fuzz_support::round_trip(
+            &encoded,
+            serde_json::from_slice::<T>(&encoded).and_then(|value| serde_json::to_vec(&value)),
+        );
     }
 }
 
-fuzz_target!(|input: &[u8]| {
-    if let Ok(turn) = turn_record::decode(input) {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
+    if let Some(turn) = fuzz_support::FuzzInput::parse(fuzz_input, turn_record::decode) {
         let bytes = serde_json::to_vec(&turn).unwrap();
-        assert_eq!(turn_record::decode(&bytes).unwrap(), turn);
+        let _ = fuzz_support::round_trip(&(turn), turn_record::decode(&bytes));
     }
-    round_trip::<owner_record::Owner>(input);
-    round_trip::<acyclic_fs::GitCompatState>(input);
-    round_trip::<ReadFileInput>(input);
-    round_trip::<WriteFileInput>(input);
-    round_trip::<EditFileInput>(input);
+    round_trip::<owner_record::Owner>(fuzz_input);
+    round_trip::<acyclic_fs::GitCompatState>(fuzz_input);
+    round_trip::<ReadFileInput>(fuzz_input);
+    round_trip::<WriteFileInput>(fuzz_input);
+    round_trip::<EditFileInput>(fuzz_input);
 });

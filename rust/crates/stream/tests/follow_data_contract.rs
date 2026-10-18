@@ -1,4 +1,6 @@
 //! ALL/LATEST wire admission has an independent shrinking and fuzz oracle.
+use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_stream::{StreamError, wire, wire_codec::session::follow_sequence};
 use bytes::Bytes;
 use proptest::prelude::*;
@@ -8,6 +10,10 @@ mod checks {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/support/follow_data.rs"
+    ));
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/follow_data_exercise.rs"
     ));
 }
 use checks::{Fault, check};

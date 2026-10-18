@@ -1,6 +1,6 @@
 #![no_main]
 use acyclic_harness_tui::key_event::{InputEvent, KeyCode, KeyEvent, KeyModifiers};
-use acyclic_harness_tui::term::{Decoder, Environment, encode_key};
+use acyclic_harness_tui::term::{Decoder, Environment};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {
@@ -23,7 +23,7 @@ fuzz_target!(|bytes: &[u8]| {
     let code = bytes.first().map_or('x', |byte| char::from(*byte).max(' '));
     let modifiers = KeyModifiers::from_bits_retain(bytes.get(1).copied().unwrap_or_default() & 63);
     let key = KeyEvent::new(KeyCode::Char(code), modifiers);
-    if let Ok(encoded) = encode_key(key) {
+    if let Ok(encoded) = acyclic_harness_tui::term::encode_key(key) {
         let mut decoder = Decoder::default();
         assert!(decoder.feed(&encoded).is_ok());
         assert_eq!(decoder.take_events(), vec![InputEvent::Key(key)]);

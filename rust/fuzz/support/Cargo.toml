@@ -1,0 +1,16 @@
+[package]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+license = "Apache-2.0"
+
+[lib]
+path = "round_trip.rs"
+
+[features]
+test-input = []
+
+[lints]
+workspace = true

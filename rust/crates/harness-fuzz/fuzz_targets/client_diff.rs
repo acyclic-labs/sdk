@@ -1,6 +1,6 @@
 #![no_main]
 
-use libfuzzer_sys::fuzz_target;
+pub use acyclic_fuzz_support as fuzz_support;
 
 #[path = "../../harness/tests/support/file_diff_case.rs"]
 mod diff_case;
@@ -27,24 +27,21 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 fn check(before: Option<&[u8]>, after: Option<&[u8]>, render: usize, work: usize) {
-    let Ok(Some(diff)) = FileDiff::between(before, after, render, work) else {
+    let Ok(Some(diff)) = crate::file::FileDiff::between(before, after, render, work) else {
         return;
     };
     assert!(diff.patch.len() <= render);
     let encoded = serde_json::to_vec(&diff).expect("encode diff");
-    assert_eq!(
-        serde_json::from_slice::<FileDiff>(&encoded).expect("decode diff"),
-        diff
-    );
+    let _ = fuzz_support::round_trip(&(diff), serde_json::from_slice::<FileDiff>(&encoded));
     if !diff.binary {
-        let before = std::str::from_utf8(before.unwrap_or_default()).expect("text base");
-        let after = std::str::from_utf8(after.unwrap_or_default()).expect("text endpoint");
-        let patch = diffy::Patch::from_str(&diff.patch).expect("generated patch");
+        let before = fuzz_support::must_decode(std::str::from_utf8(before.unwrap_or_default()));
+        let after = fuzz_support::must_decode(std::str::from_utf8(after.unwrap_or_default()));
+        let patch = fuzz_support::must_decode(diffy::Patch::from_str(&diff.patch));
         assert_eq!(diffy::apply(before, &patch).expect("patch applies"), after);
     }
 }
 
-fuzz_target!(|input: &[u8]| {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     let task = acyclic_harness::TaskId::from_bytes([0; 16]);
     let operation = acyclic_harness::OperationId::from_bytes([1; 16]);
     let (mut files, calls, results) =
@@ -74,25 +71,34 @@ fuzz_target!(|input: &[u8]| {
                     ..
                 } => {
                     assert_eq!(
-                        serde_json::from_slice::<serde_json::Value>(input).unwrap(),
-                        serde_json::from_slice::<serde_json::Value>(&original).unwrap()
+                        fuzz_support::must_decode(serde_json::from_slice::<serde_json::Value>(
+                            input
+                        )),
+                        fuzz_support::must_decode(serde_json::from_slice::<serde_json::Value>(
+                            &original
+                        ))
                     );
                 }
                 _ => assert_eq!(input, original.as_ref()),
             }
         }
     }
-    if let Ok(case) = serde_json::from_slice::<local_case::LocalCase>(input) {
+    if let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<local_case::LocalCase>)
+    {
         let encoded = serde_json::to_vec(&case).expect("encode local case");
-        let decoded: local_case::LocalCase =
-            serde_json::from_slice(&encoded).expect("decode local case");
+        let decoded = fuzz_support::round_trip_by(
+            &serde_json::to_value(&case).unwrap(),
+            serde_json::from_slice::<local_case::LocalCase>(&encoded),
+            |value| serde_json::to_value(value),
+        );
         assert_eq!(case.validate(), decoded.validate());
         let references = case
             .seed
             .iter()
             .map(|(path, text)| (path.clone(), serde_json::json!({"path":path,"seed":text})))
             .collect();
-        if let Ok(bound) = local_case::bind_seed_files(case.turns.clone(), &references) {
+        if let Ok(bound) = crate::local_case::bind_seed_files(case.turns.clone(), &references) {
             let repeated = local_case::bind_seed_files(bound.clone(), &references).unwrap();
             assert_eq!(
                 serde_json::to_value(bound).unwrap(),
@@ -105,11 +111,13 @@ fuzz_target!(|input: &[u8]| {
             serde_json::to_value(decoded).unwrap()
         );
     }
-    if let Ok(case) = serde_json::from_slice::<diff_case::DiffCase>(input) {
+    if let Some(case) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<diff_case::DiffCase>)
+    {
         let encoded = serde_json::to_vec(&case).expect("encode diff case");
-        assert_eq!(
-            serde_json::from_slice::<diff_case::DiffCase>(&encoded).expect("decode diff case"),
-            case
+        let _ = fuzz_support::round_trip(
+            &(case),
+            serde_json::from_slice::<diff_case::DiffCase>(&encoded),
         );
         // Exercise valid scripts independently of their mutable fixture oracle.
         check(
@@ -119,12 +127,11 @@ fuzz_target!(|input: &[u8]| {
             case.work.min(65_536),
         );
     }
-    if let Ok(diff) = serde_json::from_slice::<FileDiff>(input) {
+    if let Some(diff) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<FileDiff>)
+    {
         let encoded = serde_json::to_vec(&diff).expect("encode parsed diff");
-        assert_eq!(
-            serde_json::from_slice::<FileDiff>(&encoded).expect("decode parsed diff"),
-            diff
-        );
+        let _ = fuzz_support::round_trip(&(diff), serde_json::from_slice::<FileDiff>(&encoded));
     }
     let Some((&flags, bytes)) = input.split_first() else {
         return;

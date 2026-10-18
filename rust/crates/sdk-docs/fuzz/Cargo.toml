@@ -14,6 +14,7 @@ default = ["test-support"]
 test-support = []
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 cargo_metadata = "=0.23.1"
 libfuzzer-sys = "0.4"
 rustdoc-types = "=0.60.0"

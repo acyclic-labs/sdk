@@ -1,11 +1,12 @@
 #![no_main]
-use libfuzzer_sys::fuzz_target;
+
+pub use acyclic_fuzz_support as fuzz_support;
 use prost::Message;
 
 #[path = "../../../../../rust/crates/stream/tests/support/follow_data.rs"]
 mod follow_data;
 
-fuzz_target!(|bytes: &[u8]| {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
     let mut next = [0; 8];
     for (to, from) in next.iter_mut().zip(bytes.iter()) {
         *to = *from;
@@ -30,15 +31,18 @@ fuzz_target!(|bytes: &[u8]| {
         )),
         ..Default::default()
     };
-    assert_eq!(
-        acyclic_stream::wire_codec::session::decode_frame(&generated.encode_to_vec()).unwrap(),
-        generated
+    let _ = fuzz_support::round_trip(
+        &(generated),
+        acyclic_stream::wire_codec::session::decode_frame(&generated.encode_to_vec()),
     );
-    if let Ok(frame) = acyclic_stream::wire_codec::session::decode_frame(bytes) {
+    if let Some(frame) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        acyclic_stream::wire_codec::session::decode_frame,
+    ) {
         let canonical = frame.encode_to_vec();
-        assert_eq!(
-            acyclic_stream::wire_codec::session::decode_frame(&canonical).unwrap(),
-            frame
+        let _ = fuzz_support::round_trip(
+            &(frame),
+            acyclic_stream::wire_codec::session::decode_frame(&canonical),
         );
     }
 });

@@ -10,6 +10,7 @@ cargo-fuzz = true
 [workspace]
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 acyclic-harness = { path = "..", default-features = false, features = ["filesystem-local", "native-execution", "hooks", "mcp-http", "mcp-stdio", "mcp-oauth", "objects", "machines", "grpc", "terminal", "tui", "test-support", "model-checking"] }
 acyclic-fs = { path = "../../filesystem", default-features = false, features = ["memory", "local", "native-mount"] }
 acyclic-test-support = { path = "../../test-support" }

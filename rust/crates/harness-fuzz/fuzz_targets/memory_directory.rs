@@ -1,6 +1,7 @@
 //! Fuzz directory selection, generation visibility and serialized-page round trips.
 #![no_main]
-use libfuzzer_sys::fuzz_target;
+
+pub use acyclic_fuzz_support as fuzz_support;
 #[path = "../../harness/src/memory_store/directory/page.rs"]
 mod page;
 use page::{MemoryStoreEntry, MemoryStoreEntryKind, MemoryStorePage};
@@ -15,17 +16,20 @@ struct Case {
     after: Option<String>,
     maximum: u32,
 }
-fuzz_target!(|data: &[u8]| {
+fuzz_support::fuzz_target!(|data: &[u8], fuzz_input| {
     if data.len() > 65_536 {
         return;
     }
-    let Ok(case) = serde_json::from_slice::<Case>(data) else {
+    let Some(case) = fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<Case>)
+    else {
         return;
     };
     if case.paths.len() > 256 {
         return;
     }
-    let maximum = case.maximum as usize;
+    let Some(maximum) = fuzz_support::index(u64::from(case.maximum)) else {
+        return;
+    };
     let paths: std::collections::BTreeMap<_, _> = case.paths.into_iter().collect();
     let mut ordered: Vec<_> = paths.iter().collect();
     ordered.sort_by_key(|(_, generation)| generation.unwrap_or(0));
@@ -41,9 +45,7 @@ fuzz_target!(|data: &[u8]| {
         |_| {},
     );
     let encoded = serde_json::to_vec(&actual).expect("serialize generated page");
-    let decoded: page::MemoryStorePage =
-        serde_json::from_slice(&encoded).expect("decode generated page");
-    assert_eq!(decoded, actual);
+    let _ = fuzz_support::round_trip(&actual, serde_json::from_slice(&encoded));
     assert_eq!(
         actual,
         reference::expected(

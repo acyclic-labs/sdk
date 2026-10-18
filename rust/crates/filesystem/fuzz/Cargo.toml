@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 acyclic-fs = { path = "..", features = ["model-checking", "fuzzing"] }
 libfuzzer-sys = "0.4"
 serde.workspace = true

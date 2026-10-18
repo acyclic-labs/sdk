@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dev-dependencies]
+acyclic-fuzz-support = { path = "../../fuzz/support", features = ["test-input"] }
 proptest.workspace = true
 
 [lints.rust]

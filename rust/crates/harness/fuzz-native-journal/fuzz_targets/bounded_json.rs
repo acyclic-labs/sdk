@@ -1,16 +1,21 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
 use acyclic_harness::executor::json::{JsonBounds, JsonCodecCharge, json_value_bounded};
-use libfuzzer_sys::fuzz_target;
 
-fuzz_target!(|input: &[u8]| {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     let Some((&prefix, input)) = input.split_first() else {
         return;
     };
     if input.len() > 4096 {
         return;
     }
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(input) else {
+    let Some(fuzz_input) = fuzz_input.view(input) else {
+        return;
+    };
+    let Some(value) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<serde_json::Value>)
+    else {
         return;
     };
     let bounds = JsonBounds {
@@ -21,9 +26,10 @@ fuzz_target!(|input: &[u8]| {
     let raw = prefix & 1 != 0;
     let prefix = u64::from(prefix >> 1);
     let expected: serde_json::Value =
-        serde_json::from_slice(&serde_json::to_vec(&value).unwrap()).unwrap();
+        fuzz_support::must_decode(serde_json::from_slice(&serde_json::to_vec(&value).unwrap()));
     if raw {
-        let raw: &serde_json::value::RawValue = serde_json::from_slice(input).unwrap();
+        let raw: &serde_json::value::RawValue =
+            fuzz_support::must_decode(serde_json::from_slice(input));
         // Both RawValue preparation passes see even overwritten duplicate
         // values. Count all raw entries, not only the surviving Value tree.
         exercise(raw, expected, bounds, prefix, 2 * raw_entries(input) / 5);
@@ -72,19 +78,28 @@ fn exercise<T: serde::Serialize + ?Sized>(
     extra_slack: u64,
 ) {
     let slack = slack(&expected) + extra_slack;
-    assert_eq!(
-        json_value_bounded(value, bounds, None, &mut |_| Ok(())).unwrap(),
-        expected
+    let mut required = 0;
+    let _ = fuzz_support::round_trip(
+        &expected,
+        json_value_bounded(value, bounds, None, &mut |event| {
+            required += operations(event);
+            Ok(())
+        })
+        .map_err(|error| (error.code(), error.to_string())),
     );
+    let expected_result = if prefix < required {
+        let error = acyclic_harness::Error::Indeterminate(
+            acyclic_harness::OperationId::from_bytes([0; 16]),
+        );
+        Err((error.code(), error.to_string()))
+    } else {
+        Ok(expected)
+    };
     let mut charged = 0;
     let mut result = None;
     let measured = acyclic_test_support::measure(|| {
         result = Some(json_value_bounded(value, bounds, None, &mut |event| {
-            let operations = match event {
-                JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
-                JsonCodecCharge::AllocationOperations { operations } => operations,
-                _ => 0,
-            };
+            let operations = operations(event);
             if charged + operations > prefix {
                 return Err(acyclic_harness::Error::Indeterminate(
                     acyclic_harness::OperationId::from_bytes([0; 16]),
@@ -94,14 +109,19 @@ fn exercise<T: serde::Serialize + ?Sized>(
             Ok(())
         }));
     });
-    match result.unwrap() {
-        Ok(copy) => {
-            assert_eq!(copy, expected);
-            assert!(charged >= measured.count_total && charged <= measured.count_total + slack);
-        }
-        Err(acyclic_harness::Error::Indeterminate(_)) => {
-            assert!(charged >= measured.count_total && charged <= measured.count_total + slack)
-        }
-        Err(error) => panic!("unexpected bounded conversion error: {error}"),
+    let _ = fuzz_support::same_result(
+        &expected_result,
+        result
+            .unwrap()
+            .map_err(|error| (error.code(), error.to_string())),
+    );
+    assert!(charged >= measured.count_total && charged <= measured.count_total + slack);
+}
+
+fn operations(event: JsonCodecCharge) -> u64 {
+    match event {
+        JsonCodecCharge::AllocationOperation { bytes } => u64::from(bytes != 0),
+        JsonCodecCharge::AllocationOperations { operations } => operations,
+        _ => 0,
     }
 }

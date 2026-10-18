@@ -1,32 +1,43 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use acyclic_harness::{
     conversation::Limits,
     model::{ModelRequest, PreparedModelRequest},
 };
 
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    if let Ok(manifest) =
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    if let Some(manifest) = fuzz_support::FuzzInput::parse(fuzz_input, |bytes| {
         acyclic_harness::context::ContextManifest::decode(bytes, Limits::default())
-    {
+    }) {
         let encoded = manifest.encode(Limits::default()).unwrap();
-        assert_eq!(
-            acyclic_harness::context::ContextManifest::decode(&encoded, Limits::default()).unwrap(),
-            manifest
+        let _ = fuzz_support::round_trip(
+            &manifest,
+            acyclic_harness::context::ContextManifest::decode(&encoded, Limits::default()),
         );
     }
-    let Ok(request) = serde_json::from_slice::<ModelRequest>(bytes) else {
+    let Some(request) =
+        fuzz_support::FuzzInput::parse(fuzz_input, serde_json::from_slice::<ModelRequest>)
+    else {
         return;
     };
     let encoded = serde_json::to_vec(&request).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<ModelRequest>(&encoded).unwrap(),
-        request
-    );
-    if let Ok(prepared) = PreparedModelRequest::prepare(request.clone(), Limits::default(), None) {
-        let decoded =
-            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None).unwrap();
-        assert_eq!(decoded.request(), &request);
-        assert_eq!(decoded.request_digest(), prepared.request_digest());
+    let _ = fuzz_support::round_trip(&(request), serde_json::from_slice::<ModelRequest>(&encoded));
+    if let Ok(prepared) = acyclic_harness::model::PreparedModelRequest::prepare(
+        request.clone(),
+        Limits::default(),
+        None,
+    ) {
+        let _ = fuzz_support::round_trip_by(
+            &(request.clone(), prepared.request_digest().to_owned()),
+            PreparedModelRequest::decode(prepared.bytes(), Limits::default(), None),
+            |decoded| {
+                Ok::<_, std::convert::Infallible>((
+                    decoded.request().clone(),
+                    decoded.request_digest().to_owned(),
+                ))
+            },
+        );
     }
 });

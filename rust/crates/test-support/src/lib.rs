@@ -116,4 +116,6 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
 #[global_allocator]
 static GLOBAL: CountingAllocator<System> = CountingAllocator(System);
 #[cfg(test)]
+mod fuzz_round_trip;
+#[cfg(test)]
 mod tests;

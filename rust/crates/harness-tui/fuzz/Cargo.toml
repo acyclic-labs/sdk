@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 libfuzzer-sys = "0.4"
 serde_json = "1"
 acyclic-harness-tui = { path = "..", features = ["tui"] }

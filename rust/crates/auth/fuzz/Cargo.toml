@@ -8,6 +8,7 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 syn = { version = "3", features = ["full"] }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"

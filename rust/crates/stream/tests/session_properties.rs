@@ -7,8 +7,11 @@ use bytes::Bytes;
 use proptest::prelude::*;
 use prost::Message;
 
-#[path = "support/follow_data.rs"]
-mod follow_data;
+use acyclic_fuzz_support as fuzz_support;
+mod follow_data {
+    include!("support/follow_data.rs");
+    include!("support/follow_data_exercise.rs");
+}
 
 #[test]
 #[should_panic(expected = "LATEST accepts a conflated cursor")]

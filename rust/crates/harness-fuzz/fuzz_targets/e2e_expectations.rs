@@ -1,15 +1,21 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 #[path = "../../harness/tests/e2e/expectations.rs"]
 mod expectations;
 
-libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
-    let Ok(case) = serde_json::from_slice::<expectations::Expectations>(bytes) else {
+fuzz_support::fuzz_target!(|bytes: &[u8], fuzz_input| {
+    let Some(case) = fuzz_support::FuzzInput::parse(
+        fuzz_input,
+        serde_json::from_slice::<expectations::Expectations>,
+    ) else {
         return;
     };
-    let decoded: expectations::Expectations =
-        serde_json::from_slice(&serde_json::to_vec(&case).unwrap()).unwrap();
-    assert_eq!(case, decoded);
+    let _ = fuzz_support::round_trip(
+        &case,
+        serde_json::from_slice(&serde_json::to_vec(&case).unwrap()),
+    );
     if let Some(events) = &case.model_events {
         let mut frames: Vec<_> = events
             .iter()

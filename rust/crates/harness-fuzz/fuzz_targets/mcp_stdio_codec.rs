@@ -1,13 +1,13 @@
 #![no_main]
 
+pub use acyclic_fuzz_support as fuzz_support;
+
 use bytes::BytesMut;
-use libfuzzer_sys::fuzz_target;
 use rmcp::model::ServerJsonRpcMessage;
 use std::sync::{
     Arc,
     atomic::{AtomicU32, Ordering},
 };
-use tokio_util::codec::{Decoder as _, Encoder as _};
 
 pub(crate) mod sync {
     include!("../../harness/src/sync/arc.rs");
@@ -21,7 +21,7 @@ mod mcp {
 #[path = "../../harness/src/mcp/stdio/native/codec.rs"]
 mod codec;
 
-fuzz_target!(|input: &[u8]| {
+fuzz_support::fuzz_target!(|input: &[u8], fuzz_input| {
     if input.len() > 4096 {
         return;
     }
@@ -29,31 +29,10 @@ fuzz_target!(|input: &[u8]| {
         let bound = Arc::new(AtomicU32::new(maximum));
         let mut decoder = codec::BoundedCodec::<ServerJsonRpcMessage>::new(Arc::clone(&bound));
         let mut pending = BytesMut::new();
-        for (index, chunk) in input.chunks(17).enumerate() {
+        fuzz_support::stream_round_trip!(fuzz_input, decoder, pending, |index| {
             if index == 1 {
                 bound.store(4096, Ordering::Release);
             }
-            pending.extend_from_slice(chunk);
-            loop {
-                match decoder.decode(&mut pending) {
-                    Ok(Some(value)) => {
-                        let expected = serde_json::to_value(&value).unwrap();
-                        let mut output = BytesMut::new();
-                        if decoder.encode(value, &mut output).is_ok() {
-                            let restored = decoder.decode(&mut output).unwrap().unwrap();
-                            assert_eq!(serde_json::to_value(restored).unwrap(), expected);
-                        } else {
-                            assert!(output.is_empty());
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(_) => {
-                        pending.clear();
-                        break;
-                    }
-                }
-            }
-        }
-        let _ = decoder.decode_eof(&mut pending);
+        });
     }
 });

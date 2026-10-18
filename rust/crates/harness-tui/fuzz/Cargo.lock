@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acyclic-fuzz-support"
+version = "0.0.0"
+
+[[package]]
 name = "acyclic-harness-tui"
 version = "0.2.0"
 dependencies = [
@@ -30,6 +34,7 @@ dependencies = [
 name = "acyclic-harness-tui-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acyclic-fuzz-support",
  "acyclic-harness-tui",
  "libfuzzer-sys",
  "serde_json",

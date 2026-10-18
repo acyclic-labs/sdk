@@ -37,6 +37,7 @@ members = [
   "rust/crates/harness-tui",
   "rust/crates/workers",
   "rust/fuzz",
+  "rust/fuzz/support",
   "rust/crates/manifest",
   "plugin",
 ]

@@ -8,6 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+acyclic-fuzz-support = { path = "../../../fuzz/support" }
 acyclic-stream = { path = "..", default-features = false }
 libfuzzer-sys = "0.4"
 prost = "0.14.4"
