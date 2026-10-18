@@ -1,0 +1,47 @@
+{
+  "tools":["mcp.docs.search"],
+  "responses":[
+    [
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}",
+      "\n\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use",
+      "\",\"id\":\"call\",\"name\":\"mcp__docs__search\",\"input\":{}}}\n\ndata: {\"type\":\"content_b",
+      "lock_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query",
+      "\\\":\\\"wren\\\"}\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":2}\n\ndata",
+      ": {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tok",
+      "ens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+    ],
+    [
+      "data: {\"type\":\"message_start\",\"message\":{\"id\":\"run\",\"usage\":{\"input_tokens\":5}}}",
+      "\n\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"t",
+      "ext\":\"done\"}}\n\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}",
+      ",\"usage\":{\"output_tokens\":1}}\n\ndata: {\"type\":\"message_stop\"}\n\n"
+    ]
+  ],
+  "expect":{
+    "text":"done",
+    "requests":[
+      {"/tools":[{"name":"mcp__docs__search"}]},
+      {
+        "/tools":[{"name":"mcp__docs__search"}],
+        "/messages/1/content/0":{"type":"tool_use","id":"call","name":"mcp__docs__search","input":{"query":"wren"}},
+        "/messages/2/content/0":{"type":"tool_result","tool_use_id":"call","content":{"$json":{"query":"wren"}}}
+      }
+    ],
+    "events":[
+      [
+        {
+          "kind":"tool_call",
+          "name":"mcp.docs.search",
+          "arguments":{"query":"wren"},
+          "metadata":{"provider_call":{"provider":"anthropic","id":"call"}}
+        },
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+      ,
+      [
+        {"kind":"content","delta":"done"},
+        {"kind":"completed","metadata":{"usage":{"input_tokens":5,"output_tokens":1}}}
+      ]
+    ]
+  }
+}
