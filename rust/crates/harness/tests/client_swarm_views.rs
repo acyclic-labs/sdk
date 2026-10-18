@@ -77,9 +77,32 @@ fn every_out_of_range_swarm_bound_is_rejected_without_a_transport() {
         },
     };
     limits.validate(&views).expect("valid bounds");
+    // Independent statement of every relation; each case must break exactly
+    // one, so deleting any single check in `validate` fails this test.
+    let violations = |l: &SwarmClientLimits, v: &ClientViewLimits| {
+        [
+            l.agents == 0,
+            l.selected > l.agents,
+            l.layout_bytes == 0,
+            l.config_files == 0,
+            l.snapshot_files == 0,
+            v.agents < l.agents,
+            v.selected < l.selected,
+        ]
+        .into_iter()
+        .filter(|broken| *broken)
+        .count()
+    };
+    assert_eq!(violations(&limits, &views), 0);
     let broken: [fn(&mut SwarmClientLimits, &mut ClientViewLimits); 7] = [
-        |l, _| l.agents = 0,
-        |l, _| l.selected = 3,
+        |l, _| {
+            l.agents = 0;
+            l.selected = 0;
+        },
+        |l, v| {
+            l.selected = 3;
+            v.selected = 3;
+        },
         |l, _| l.layout_bytes = 0,
         |l, _| l.config_files = 0,
         |l, _| l.snapshot_files = 0,
@@ -89,6 +112,7 @@ fn every_out_of_range_swarm_bound_is_rejected_without_a_transport() {
     for breaking in broken {
         let (mut l, mut v) = (limits, views);
         breaking(&mut l, &mut v);
+        assert_eq!(violations(&l, &v), 1, "{l:?} {v:?}");
         assert!(l.validate(&v).is_err(), "{l:?} {v:?}");
     }
 }
