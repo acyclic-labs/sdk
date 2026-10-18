@@ -48,22 +48,21 @@ pub fn prepare_image_with_settings(
     let image = image::RgbaImage::from_raw(width, height, rgba)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid RGBA image"))?;
     let image = image::DynamicImage::ImageRgba8(image);
-    let image = if width > settings.image_max_dimension as u32
-        || height > settings.image_max_dimension as u32
-    {
-        image.thumbnail(
-            settings.image_max_dimension as u32,
-            settings.image_max_dimension as u32,
-        )
+    let limit = u32::try_from(settings.image_max_dimension).unwrap_or(u32::MAX);
+    let image = if width > limit || height > limit {
+        image.thumbnail(limit, limit)
     } else {
         image
     };
     let image = image.to_rgb8();
     let (width, height) = image.dimensions();
     let mut jpeg = vec![];
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, settings.image_quality as u8)
-        .encode_image(&image)
-        .map_err(io::Error::other)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(
+        &mut jpeg,
+        u8::try_from(settings.image_quality).unwrap_or(u8::MAX),
+    )
+    .encode_image(&image)
+    .map_err(io::Error::other)?;
     Ok(ClipboardContent::Image {
         jpeg,
         width,

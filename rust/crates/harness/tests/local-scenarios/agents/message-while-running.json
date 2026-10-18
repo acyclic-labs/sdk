@@ -1,0 +1,90 @@
+{
+  "driver": "agents",
+  "prompt": "collect a message accepted during the first child model call",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "initial work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "first answer",
+      "second answer"
+    ]
+  },
+  "actions": [
+    {
+      "model": "worker",
+      "request": 1,
+      "agent": "worker",
+      "message": "follow-up work"
+    }
+  ],
+  "routes": {
+    "initial work": "worker",
+    "follow-up work": "worker"
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 3,
+      "worker": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 2
+      },
+      "agents/worker/results/1.json": {
+        "turn": 1,
+        "outcome": {
+          "Succeeded": {
+            "text": "first answer"
+          }
+        }
+      },
+      "agents/worker/results/2.json": {
+        "turn": 2,
+        "outcome": {
+          "Succeeded": {
+            "text": "second answer"
+          }
+        }
+      }
+    }
+  }
+}

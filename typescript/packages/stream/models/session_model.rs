@@ -35,6 +35,163 @@ fn child_selection(fault: &str) {
         assert_eq!(state["outstanding"], 0);
     }
 }
+const BUDGET_EXHAUSTED: i32 = 70;
+impl driver::Driver {
+    /// Closes stdin and returns the process's exit code once it has ended.
+    fn exit_code(mut self) -> Option<i32> {
+        drop(self.input.take());
+        self.child.wait().expect("wait for model process").code()
+    }
+}
+fn repository() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../..")
+}
+
+/// The owner side of the lifetime test, run in its own process: it parks a model command, reports the
+/// acknowledgement, and waits to be killed. The model inherits this process's stderr.
+#[test]
+fn parked_model_owner_process() {
+    let Some(fault) = std::env::var_os("STREAM_MODEL_OWNER") else {
+        return;
+    };
+    let mut driver = driver::Driver::configured(&repository(), "move", fault.to_str().unwrap());
+    driver.send(json!({"action":"park"}));
+    let ack = driver
+        .answer()
+        .expect("model process exited before parking");
+    assert_eq!(ack["ack"], "parked", "{ack}");
+    std::io::Write::write_all(&mut std::io::stderr(), b"parked\n").unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+/// Kills a real owner process while its model command is parked. The model shares the owner's stderr pipe, so that
+/// pipe reaches end of file only once the model process has exited too.
+fn killed_owner_ends_its_model(fault: &str) -> Result<(), String> {
+    use std::io::{BufRead, Read};
+    let name = concat!(module_path!(), "::parked_model_owner_process");
+    let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            name.split_once("::").map_or(name, |(_, test)| test),
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("STREAM_MODEL_OWNER", fault)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut shared = std::io::BufReader::new(owner.stderr.take().unwrap());
+    let mut line = String::new();
+    let parked = loop {
+        line.clear();
+        if shared.read_line(&mut line).unwrap() == 0 {
+            break false;
+        }
+        if line == "parked\n" {
+            break true;
+        }
+    };
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    if !parked {
+        return Err("the owner never saw its model park".into());
+    }
+    // Returns only when every holder of the pipe, the parked model included, has exited.
+    shared.read_to_end(&mut Vec::new()).unwrap();
+    Ok(())
+}
+#[test]
+fn a_parked_model_process_exits_when_its_owner_is_killed() {
+    killed_owner_ends_its_model("").unwrap();
+}
+#[test]
+fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
+    assert!(killed_owner_ends_its_model("startupCrash").is_err());
+}
+
+/// Connects exactly `connections` times in one command against a budget of `steps`: the command itself is one step
+/// and each connection one more. Returns the budget left after the command, or the exit code if the process ended.
+fn connect_at_budget(steps: u64, connections: u64, fault: &str) -> Result<u64, Option<i32>> {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", fault, steps);
+    driver.send(json!({"action":"connect", "count":connections}));
+    match driver.answer() {
+        Some(answer) => {
+            assert!(answer.get("error").is_none(), "{answer}");
+            assert_eq!(answer["result"]["connections"], connections);
+            Ok(driver.remaining)
+        }
+        None => Err(driver.exit_code()),
+    }
+}
+#[test]
+fn every_peer_draws_from_one_process_budget_to_its_exact_boundary() {
+    // 1 command + 15 connections spends exactly 16 steps; the process stays alive with nothing left.
+    assert_eq!(connect_at_budget(16, 15, ""), Ok(0));
+    // One more connection is the 17th step: the process ends with the budget exit code, not a crash.
+    assert_eq!(connect_at_budget(16, 16, ""), Err(Some(BUDGET_EXHAUSTED)));
+    // Negative control: a process that dies on its first command is not mistaken for an exhausted budget.
+    assert_eq!(connect_at_budget(16, 15, "startupCrash"), Err(Some(1)));
+}
+#[test]
+fn a_reconnecting_client_ends_at_the_process_budget() {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 64);
+    driver.send(json!({"action":"storm"}));
+    assert!(driver.answer().is_none());
+    assert_eq!(driver.exit_code(), Some(BUDGET_EXHAUSTED));
+}
+#[test]
+fn fresh_validator_peers_cannot_renew_the_budget() {
+    // Every decode builds a new validator peer; all of them spend the one process budget, so a stream of decodes ends
+    // the process within the budget instead of running forever.
+    let steps = 256;
+    let mut driver = driver::Driver::budgeted(&repository(), "decode", "", steps);
+    let frame = "080110019201090a07756e6b6e6f776e"; // closed(unknown) on channel 1, as in the codes property below
+    let mut answered = 0;
+    loop {
+        driver.send(json!({"action":"decode", "hex":frame}));
+        if driver.answer().is_none() {
+            break;
+        }
+        answered += 1;
+        assert!(answered < steps, "decodes outlived the process budget");
+    }
+    assert!(answered > 0);
+    assert_eq!(driver.exit_code(), Some(BUDGET_EXHAUSTED));
+}
+#[test]
+fn queue_items_draw_from_the_process_budget_to_its_exact_boundary() {
+    let run = |steps: u64| {
+        let mut driver = driver::Driver::budgeted(&repository(), "queue-work", "", steps);
+        driver.send(json!({"action":"work", "capacity":8}));
+        match driver.answer() {
+            Some(answer) => {
+                assert!(answer.get("error").is_none(), "{answer}");
+                Ok(driver.remaining)
+            }
+            None => Err(driver.exit_code()),
+        }
+    };
+    // 1 command + 8 dequeues.
+    assert_eq!(run(9), Ok(0));
+    assert_eq!(run(8), Err(Some(BUDGET_EXHAUSTED)));
+}
+#[test]
+fn a_long_lived_driver_is_renewed_between_runs_not_reset_per_input() {
+    let mut driver = driver::Driver::budgeted(&repository(), "move", "", 16);
+    driver.run().call(json!({"action":"connect", "count":8}));
+    assert_eq!(driver.remaining, 7);
+    // Under half the budget left: the next run gets a fresh process with the whole budget.
+    driver.run();
+    assert_eq!(driver.remaining, 16);
+    assert_eq!(
+        driver.call(json!({"action":"connect", "count":1}))["connections"],
+        1
+    );
+    assert_eq!(driver.remaining, 14);
+}
 #[test]
 fn default_child_selection_and_cancellation_are_independent() {
     child_selection("");
@@ -361,7 +518,7 @@ proptest::proptest! {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
         let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
-        shared.lock().unwrap().call(json!({"action":"decode", "hex":hex}));
+        shared.lock().unwrap().run().call(json!({"action":"decode", "hex":hex}));
     }
 
     #[test]
@@ -369,7 +526,7 @@ proptest::proptest! {
         static DRIVER: std::sync::OnceLock<std::sync::Mutex<driver::Driver>> = std::sync::OnceLock::new();
         let shared = DRIVER.get_or_init(|| std::sync::Mutex::new(driver::Driver::configured(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
         let path = if nested { format!("parent/{name}") } else { name };
-        let result = shared.lock().unwrap().call(json!({"action":"child", "path":path}));
+        let result = shared.lock().unwrap().run().call(json!({"action":"child", "path":path}));
         proptest::prop_assert_eq!(&result["outcome"], &json!(if nested { "unavailable" } else { "child" }));
     }
 
@@ -385,6 +542,6 @@ proptest::proptest! {
         let mut bytes = vec![8, 1, 16, 1, 146, 1, u8::try_from(code.len() + 2).unwrap(), 10, u8::try_from(code.len()).unwrap()];
         bytes.extend_from_slice(code.as_bytes());
         let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        shared.lock().unwrap().call(json!({"action":"decode", "hex":hex}));
+        shared.lock().unwrap().run().call(json!({"action":"decode", "hex":hex}));
     }
 }

@@ -34,6 +34,17 @@ async function attachment(path: string, bytes: Uint8Array, mediaType: string): P
   return contracts.validate("file_ref", file);
 }
 
+test("Pi projects scoped instructions through the shared Rust renderer", async () => {
+  const bytes = new TextEncoder().encode("project marker λ\n");
+  const file = await attachment("archive/retained", bytes, "text/markdown");
+  const input: ModelRequest = { ...request, messages: [{ role: "user", content: {
+    kind: "file", file, policy: { project_instructions: { volume: file.volume, path: "project/AGENTS.md" } },
+  } }] };
+  const projected = await projectPiRequest(input, { resolveFile: async () => bytes, maxResolvedBytes: 4096 });
+  expect(projected.messages[0]?.content).toEqual([{ type: "text",
+    text: "# AGENTS.md instructions for project\n\n<INSTRUCTIONS>\nproject marker λ\n\n</INSTRUCTIONS>" }]);
+});
+
 test("Pi default projection resolves bounded text and leaves image and document references opaque", async () => {
   const imageBytes = Uint8Array.of(1, 2, 3);
   const textBytes = new TextEncoder().encode("file text");
@@ -135,4 +146,30 @@ test("Pi accounting rejects absent capacity and counts without guessing", async 
   const provider = piProvider(bridge);
   expect(() => provider.contextCapacity(request.model)).toThrow();
   await expect((await provider.prepare({ ...request, serializedInput: new Uint8Array() })).countTokens()).rejects.toThrow();
+});
+
+test("Pi preflights combined instruction frames including tool results before any read", async () => {
+  const bytes = new TextEncoder().encode("rules");
+  const file = await attachment("archive/rules", bytes, "text/markdown");
+  const instruction = { kind: "file" as const, file, policy: { project_instructions: { volume: file.volume, path: "nested/AGENTS.md" } } };
+  const first: ModelRequest = { ...request, messages: [{ role: "user", content: instruction }] };
+  const rendered = await projectPiRequest(first, { resolveFile: async () => bytes });
+  const text = rendered.messages[0]!.content[0]!;
+  if (text.type !== "text") throw new Error("expected frame");
+  const length = new TextEncoder().encode(text.text).length;
+  for (const inResult of [false, true]) {
+    const input: ModelRequest = { ...first, messages: [...first.messages, inResult ? {
+      role: "tool", content: { kind: "tool_result", callId: "call", name: "read", content: { kind: "parts", parts: [instruction] } },
+    } : { role: "user", content: instruction }] };
+    let reads = 0;
+    const resolveFile = async () => { reads++; return bytes; };
+    await expect(projectPiRequest(input, { resolveFile, maxResolvedBytes: 2 * length - 1 })).rejects.toThrow();
+    expect(reads).toBe(0);
+    await projectPiRequest(input, { resolveFile, maxResolvedBytes: 2 * length });
+    expect(reads).toBe(2);
+    // The former per-file-only path accepts the same overflowing aggregate.
+    await projectPiRequest(first, { resolveFile, maxResolvedBytes: 2 * length - 1 });
+    await projectPiRequest(first, { resolveFile, maxResolvedBytes: 2 * length - 1 });
+    expect(reads).toBe(4);
+  }
 });

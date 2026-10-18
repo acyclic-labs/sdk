@@ -1,0 +1,1 @@
+{"records":[{"task":"task-1","sequence":1,"event":"needs_approval","detail":"Ready"}],"expect":{"output":"\u001b]777;notify;Approval needed;task-1: Ready\u0007","presented":1,"view":[{"task":"task-1","sequence":1,"event":"needs_approval","detail":"Ready"}]}}

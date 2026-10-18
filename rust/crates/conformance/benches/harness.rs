@@ -1,5 +1,4 @@
 //! Reducer admission and canonical snapshot cost (see `docs/observability.md`).
-#![allow(clippy::unwrap_used, reason = "benchmarks abort on setup failure")]
 
 use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, LifecycleState, Reducer,
@@ -24,6 +23,11 @@ fn main() {
     divan::main();
 }
 
+#[track_caller]
+fn failed<T>(error: impl std::fmt::Debug) -> T {
+    unreachable!("benchmark setup or operation failed: {error:?}");
+}
+
 fn authority() -> Authority {
     Authority {
         kind: AggregateKind::Conversation,
@@ -42,10 +46,10 @@ fn workload(events: u64) -> (Reducer, Vec<Command>) {
             None,
             &mut None,
         )
-        .expect("scope proof");
+        .unwrap_or_else(failed);
     let reducer = Reducer::new(
         authority(),
-        issuer.verifier(&mut None).expect("verifier copy"),
+        issuer.verifier(&mut None).unwrap_or_else(failed),
         SchemaRegistry::new(),
     );
     let commands = (0..events)
@@ -71,11 +75,13 @@ fn workload(events: u64) -> (Reducer, Vec<Command>) {
 #[divan::bench(args = [100, 1000])]
 fn reducer_apply(bencher: Bencher, events: u64) {
     bencher
-        .counter(ItemsCount::new(usize::try_from(events).unwrap()))
+        .counter(ItemsCount::new(
+            usize::try_from(events).unwrap_or_else(failed),
+        ))
         .with_inputs(|| workload(events))
         .bench_local_values(|(mut reducer, commands)| {
             for command in commands {
-                reducer.apply(&command).unwrap();
+                reducer.apply(&command).unwrap_or_else(failed);
             }
             reducer
         });
@@ -86,35 +92,45 @@ fn reducer_apply(bencher: Bencher, events: u64) {
 fn reducer_snapshot(bencher: Bencher, events: u64) {
     let (mut reducer, commands) = workload(events);
     for command in commands {
-        reducer.apply(&command).unwrap();
+        reducer.apply(&command).unwrap_or_else(failed);
     }
     bencher
-        .counter(ItemsCount::new(usize::try_from(events).unwrap()))
-        .bench_local(|| reducer.snapshot(usize::MAX, &mut None).unwrap());
+        .counter(ItemsCount::new(
+            usize::try_from(events).unwrap_or_else(failed),
+        ))
+        .bench_local(|| {
+            reducer
+                .snapshot(usize::MAX, &mut None)
+                .unwrap_or_else(failed)
+        });
 }
 
 #[divan::bench(args = [0, 65536])]
 fn reducer_plan(bencher: Bencher, reason_bytes: usize) {
     let (reducer, mut commands) = workload(1);
-    let mut command = commands.pop().unwrap();
+    let mut command = commands
+        .pop()
+        .unwrap_or_else(|| failed("missing lifecycle command"));
     command.action = Action::TransitionLifecycle {
         to: LifecycleState::Active,
         reason: Some("x".repeat(reason_bytes)),
     };
-    bencher.bench_local(|| reducer.plan(&command).unwrap());
+    bencher.bench_local(|| reducer.plan(&command).unwrap_or_else(failed));
 }
 
 #[divan::bench(args = [0, 65536])]
 fn command_hash_floor(bencher: Bencher, reason_bytes: usize) {
     let (_, mut commands) = workload(1);
-    let mut command = commands.pop().unwrap();
+    let mut command = commands
+        .pop()
+        .unwrap_or_else(|| failed("missing lifecycle command"));
     command.action = Action::TransitionLifecycle {
         to: LifecycleState::Active,
         reason: Some("x".repeat(reason_bytes)),
     };
-    let mut value = serde_json::to_value(&command).unwrap();
+    let mut value = serde_json::to_value(&command).unwrap_or_else(failed);
     value.sort_all_objects();
-    let bytes = serde_json::to_vec(&value).unwrap();
+    let bytes = serde_json::to_vec(&value).unwrap_or_else(failed);
     eprintln!(
         "canonical command ({reason_bytes} reason bytes): {} bytes",
         bytes.len()
@@ -131,7 +147,7 @@ fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
     use acyclic_harness::store::HistoryWork;
     let (mut reducer, commands) = workload(events);
     for command in commands {
-        reducer.apply(&command).unwrap();
+        reducer.apply(&command).unwrap_or_else(failed);
     }
     bencher
         .with_inputs(|| {
@@ -148,11 +164,13 @@ fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
                     },
                     &acyclic_fs::CancellationToken::default(),
                 )
-                .unwrap(),
+                .unwrap_or_else(failed),
             )
         })
         .bench_local_values(|mut work| {
-            let snapshot = reducer.snapshot(usize::MAX, &mut Some(&mut work)).unwrap();
+            let snapshot = reducer
+                .snapshot(usize::MAX, &mut Some(&mut work))
+                .unwrap_or_else(failed);
             (snapshot, work)
         });
 }
@@ -161,11 +179,18 @@ fn reducer_snapshot_accounted(bencher: Bencher, events: u64) {
 fn snapshot_hash_floor(bencher: Bencher, events: u64) {
     let (mut reducer, commands) = workload(events);
     for command in commands {
-        reducer.apply(&command).unwrap();
+        reducer.apply(&command).unwrap_or_else(failed);
     }
-    let mut snapshot =
-        serde_json::to_value(reducer.snapshot(usize::MAX, &mut None).unwrap().0).unwrap();
-    let fields = snapshot.as_object_mut().unwrap();
+    let mut snapshot = serde_json::to_value(
+        reducer
+            .snapshot(usize::MAX, &mut None)
+            .unwrap_or_else(failed)
+            .0,
+    )
+    .unwrap_or_else(failed);
+    let fields = snapshot
+        .as_object_mut()
+        .unwrap_or_else(|| failed("snapshot must be an object"));
     let mut value = serde_json::Value::Array(
         [
             "format_version",
@@ -174,11 +199,11 @@ fn snapshot_hash_floor(bencher: Bencher, events: u64) {
             "events",
             "projection",
         ]
-        .map(|key| fields.remove(key).unwrap())
+        .map(|key| fields.remove(key).unwrap_or_else(|| failed(key)))
         .into(),
     );
     value.sort_all_objects();
-    let bytes = serde_json::to_vec(&value).unwrap();
+    let bytes = serde_json::to_vec(&value).unwrap_or_else(failed);
     eprintln!(
         "canonical snapshot ({events} events): {} bytes",
         bytes.len()
@@ -192,20 +217,26 @@ fn snapshot_hash_floor(bencher: Bencher, events: u64) {
 fn reducer_restore(bencher: Bencher, events: u64) {
     let (mut reducer, commands) = workload(events);
     for command in commands {
-        reducer.apply(&command).unwrap();
+        reducer.apply(&command).unwrap_or_else(failed);
     }
-    let snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let snapshot = reducer
+        .snapshot(usize::MAX, &mut None)
+        .unwrap_or_else(failed)
+        .0;
     let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     bencher
-        .counter(ItemsCount::new(usize::try_from(events).unwrap()))
+        .counter(ItemsCount::new(
+            usize::try_from(events).unwrap_or_else(failed),
+        ))
         .with_inputs(|| {
             (
-                snapshot.copy(&mut None).unwrap(),
-                issuer.verifier(&mut None).unwrap(),
+                snapshot.copy(&mut None).unwrap_or_else(failed),
+                issuer.verifier(&mut None).unwrap_or_else(failed),
             )
         })
         .bench_local_values(|(snapshot, verifier)| {
-            Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut None).unwrap()
+            Reducer::restore(snapshot, verifier, SchemaRegistry::new(), &mut None)
+                .unwrap_or_else(failed)
         });
 }
 
@@ -216,15 +247,18 @@ fn reducer_restore_accounted(bencher: Bencher, events: u64) {
     use acyclic_harness::store::HistoryWork;
     let (mut reducer, commands) = workload(events);
     for command in commands {
-        reducer.apply(&command).unwrap();
+        reducer.apply(&command).unwrap_or_else(failed);
     }
-    let snapshot = reducer.snapshot(usize::MAX, &mut None).unwrap().0;
+    let snapshot = reducer
+        .snapshot(usize::MAX, &mut None)
+        .unwrap_or_else(failed)
+        .0;
     let issuer = AuthorityIssuer::new("bench", [7; 32], authority());
     bencher
         .with_inputs(|| {
             (
-                snapshot.copy(&mut None).unwrap(),
-                issuer.verifier(&mut None).unwrap(),
+                snapshot.copy(&mut None).unwrap_or_else(failed),
+                issuer.verifier(&mut None).unwrap_or_else(failed),
                 HistoryWork::new(
                     PreparationIo::from_budget(
                         acyclic_fs::WorkBudget {
@@ -238,7 +272,7 @@ fn reducer_restore_accounted(bencher: Bencher, events: u64) {
                         },
                         &acyclic_fs::CancellationToken::default(),
                     )
-                    .unwrap(),
+                    .unwrap_or_else(failed),
                 ),
             )
         })
@@ -249,7 +283,7 @@ fn reducer_restore_accounted(bencher: Bencher, events: u64) {
                 SchemaRegistry::new(),
                 &mut Some(&mut work),
             )
-            .unwrap();
+            .unwrap_or_else(failed);
             (reducer, work)
         });
 }

@@ -73,6 +73,21 @@ export function verifiedContentResolver(
   };
 }
 
+export { HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES } from "./limits-contract.js";
+
+/** Exact body/frame allowance required before a model adapter reads any file. */
+export async function modelFileProjectionBytes(part: Extract<ModelContentPart, { kind: "file" }>): Promise<number> {
+  const contracts = await NativeContracts.create();
+  const file = contracts.validate("file_ref", part.file);
+  if (part.policy === "reference") return 0;
+  if (!file.descriptor.media_type.startsWith("text/")) throw new TypeError("unsupported file content for selected projection policy");
+  if (part.policy === "bounded_full") return file.descriptor.byte_length;
+  if (typeof part.policy === "object" && "project_instructions" in part.policy) {
+    return contracts.instructionFrameBytes(file, part.policy.project_instructions);
+  }
+  throw new TypeError("unsupported file projection policy");
+}
+
 /** Shared fail-closed file boundary for default model adapters. */
 export async function projectModelFile(
   part: Extract<ModelContentPart, { kind: "file" }>, options: FileProjectionOptions,
@@ -83,7 +98,9 @@ export async function projectModelFile(
     const hash = file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("");
     return `[file: ${file.display_name}; ${file.descriptor.media_type}; sha256=${hash}; bytes=${file.descriptor.byte_length}]`;
   }
-  if (part.policy !== "bounded_full") {
+  const instructions = typeof part.policy === "object" && "project_instructions" in part.policy
+    ? part.policy.project_instructions : undefined;
+  if (part.policy !== "bounded_full" && instructions === undefined) {
     throw new TypeError("unsupported file projection policy");
   }
   if (!file.descriptor.media_type.startsWith("text/")) {
@@ -92,11 +109,13 @@ export async function projectModelFile(
   const limit = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
   if (!Number.isSafeInteger(limit) || limit < 0) throw new TypeError("maxResolvedBytes must be a non-negative safe integer");
   if (options.resolveFile === undefined) throw new TypeError("file byte resolution is unavailable");
-  if (file.descriptor.byte_length > limit) throw new TypeError("file exceeds projection byte limit");
+  const required = instructions === undefined ? file.descriptor.byte_length : contracts.instructionFrameBytes(file, instructions);
+  if (required > limit) throw new TypeError("file exceeds projection byte limit");
   const bytes = await options.resolveFile(file);
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
     throw new TypeError("resolved file exceeds projection byte limit");
   }
+  if (instructions !== undefined) return contracts.frameInstructions(file, instructions, bytes, limit);
   contracts.verifyFileBytes(file, bytes);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
@@ -183,6 +202,7 @@ export function publicModelContent(content: NativeModel.ModelContent): ModelCont
   const publicFilePart = (part: Extract<NativeModel.ModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
     const file = publicFile(part.file);
     if (typeof part.policy === "string") return { ...part, file, policy: part.policy };
+    if ("project_instructions" in part.policy) return { ...part, file, policy: part.policy };
     const native = part.policy.native;
     const intent = "maximum_duration_ms" in native.intent
       ? { ...native.intent, maximum_duration_ms: normalizeModelInteger(native.intent.maximum_duration_ms) }

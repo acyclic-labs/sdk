@@ -153,7 +153,7 @@ impl ContextDiscovery {
                         };
                         let (file, bytes) = source.read(reader, limits.instruction_bytes).await?;
                         limits.validate_instruction(&bytes)?;
-                        result.instructions.push(file);
+                        result.instructions.push(file.into());
                     }
                 }
             }

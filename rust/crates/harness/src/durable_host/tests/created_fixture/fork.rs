@@ -6,16 +6,36 @@ use crate::store::StreamAggregate;
 
 impl CreationFixture {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn create_filesystem_child(&self) -> Result<PreparedFilesystemChild> {
-        self.create_filesystem_child_with_grants(&[]).await
+    pub(crate) fn create_filesystem_child(
+        &self,
+    ) -> impl std::future::Future<Output = Result<PreparedFilesystemChild>> + '_ {
+        self.create_child_fork(&[], false)
     }
-    pub(crate) async fn create_filesystem_child_with_grants(
+    pub(crate) fn create_filesystem_child_with_grants<'a>(
+        &'a self,
+        additional: &'a [&str],
+    ) -> impl std::future::Future<Output = Result<PreparedFilesystemChild>> + 'a {
+        self.create_child_fork(additional, false)
+    }
+
+    pub(crate) fn create_task_filesystem_child(
+        &self,
+    ) -> impl std::future::Future<Output = Result<PreparedFilesystemChild>> + '_ {
+        self.create_child_fork(&[], true)
+    }
+
+    async fn create_child_fork(
         &self,
         additional: &[&str],
+        task_fork: bool,
     ) -> Result<PreparedFilesystemChild> {
-        let parent = Authority {
-            kind: AggregateKind::Conversation,
-            id: "created-fork-parent".into(),
+        let parent = if task_fork {
+            self.host.verifier.audience().clone()
+        } else {
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "created-fork-parent".into(),
+            }
         };
         let parent_agent = AgentId::from_bytes([80; 16]);
         let child_agent = AgentId::from_bytes([91; 16]);
@@ -56,32 +76,37 @@ impl CreationFixture {
             65_536,
             None,
         )?;
-        let mut aggregate = StreamAggregate::open(
-            &self.stream,
-            (parent.clone(), verifier.clone(), SchemaRegistry::new()),
-            None,
-            crate::store::default_projection_read_limits(),
-            crate::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
-        )
-        .await?;
-        aggregate
-            .execute(
-                Command {
-                    operation_id: OperationId::from_bytes([90; 16]),
-                    idempotency_key: IdempotencyKey::new("created-fork-bind")?,
-                    expected_revision: 0,
-                    scope: parent_scope.clone(),
-                    causal_parent: None,
-                    action: Action::BindConversation {
-                        agent: parent_agent,
-                    },
-                },
+        let reducer = if task_fork {
+            crate::core::Reducer::new(parent.clone(), verifier.clone(), SchemaRegistry::new())
+        } else {
+            let mut aggregate = StreamAggregate::open(
+                &self.stream,
+                (parent.clone(), verifier.clone(), SchemaRegistry::new()),
+                None,
+                crate::store::default_projection_read_limits(),
+                crate::store::DEFAULT_TERMINAL_EFFECTS,
                 None,
                 &mut None,
             )
             .await?;
+            aggregate
+                .execute(
+                    Command {
+                        operation_id: OperationId::from_bytes([90; 16]),
+                        idempotency_key: IdempotencyKey::new("created-fork-bind")?,
+                        expected_revision: 0,
+                        scope: parent_scope.clone(),
+                        causal_parent: None,
+                        action: Action::BindConversation {
+                            agent: parent_agent,
+                        },
+                    },
+                    None,
+                    &mut None,
+                )
+                .await?;
+            aggregate.reducer().copy(&mut None)?
+        };
         let project = VolumeRef::new(
             self.filesystem_provider.clone(),
             "child-project".into(),
@@ -102,13 +127,13 @@ impl CreationFixture {
             "2".into(),
             &mut None,
         )?;
-        let fork = ForkRequest {
+        let mut fork = ForkRequest {
             authorized_source: None,
             operation_id: OperationId::from_bytes([92; 16]),
             parent: parent.clone(),
-            parent_revision: aggregate.reducer().revision(),
+            parent_revision: reducer.revision(),
             child: Authority {
-                kind: AggregateKind::Conversation,
+                kind: parent.kind,
                 id: "created-fork-child".into(),
             },
             child_agent,
@@ -127,14 +152,6 @@ impl CreationFixture {
             selections: vec![
                 ForkSelection {
                     required: true,
-                    revision: ResourceRevision::History(StreamRef::new(
-                        stream_provider.clone(),
-                        parent.stream_path(&mut None)?.into_bytes(),
-                        Some(aggregate.reducer().revision().to_string()),
-                    )?),
-                },
-                ForkSelection {
-                    required: true,
                     revision: ResourceRevision::Project {
                         volume: parent_project.clone(),
                         generation: project_head.generation,
@@ -150,31 +167,63 @@ impl CreationFixture {
                 },
             ],
         };
-        let history =
-            crate::store::HistoryReader::new(&self.stream, &parent, &verifier, &mut None)?
-                .fork_history(
-                    aggregate.reducer(),
-                    0,
-                    crate::store::HistoryReadLimits {
-                        maximum_events: 2,
-                        maximum_bytes: 65_536,
-                    },
-                    &mut None,
-                )
-                .await?;
+        let history = if task_fork {
+            None
+        } else {
+            fork.selections.insert(
+                0,
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent.stream_path(&mut None)?.into_bytes(),
+                        Some(reducer.revision().to_string()),
+                    )?),
+                },
+            );
+            Some(
+                crate::store::HistoryReader::new(&self.stream, &parent, &verifier, &mut None)?
+                    .fork_history(
+                        &reducer,
+                        0,
+                        crate::store::HistoryReadLimits {
+                            maximum_events: 2,
+                            maximum_bytes: 65_536,
+                        },
+                        &mut None,
+                    )
+                    .await?,
+            )
+        };
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(),
-            aggregate.reducer().copy(&mut None)?,
+            reducer,
             verifier.clone(),
             parent_scope.clone(),
             parent_project,
             stream_provider,
             resolver,
-            Some(history),
+            history,
             None,
             #[cfg(not(target_arch = "wasm32"))]
             None,
         )?;
+        if task_fork {
+            assert!(matches!(
+                crate::fork::ForkPreparer::prepare(&preparer, fork.clone()).await,
+                Err(Error::Unauthorized(_))
+            ));
+            for volume in [&project, &private] {
+                let workspace = crate::filesystem::workspace_ref(
+                    volume.provider().clone(),
+                    &volume.storage_name(&mut None)?,
+                )?;
+                assert!(matches!(
+                    self.filesystem.resolve(&workspace, None).await,
+                    Err(Error::NotFound(_))
+                ));
+            }
+        }
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         let mut grants = vec!["task:spawn:test.created@1".to_owned()];
         for volume in [&private, &project] {

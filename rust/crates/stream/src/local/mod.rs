@@ -22,6 +22,12 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 #[cfg(all(not(acyclic_loom), not(feature = "test-support")))]
 use tokio::{spawn, task::spawn_blocking};
+
+mod children;
+#[cfg(acyclic_loom)]
+pub(crate) mod parking_model;
+#[cfg(all(test, not(acyclic_loom)))]
+mod snapshot_ready;
 #[cfg(test)]
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -129,3 +135,6 @@ include!("frames.rs");
 include!("snapshot.rs");
 
 include!("frame_checksum.rs");
+
+#[cfg(all(feature = "test-support", not(acyclic_loom)))]
+mod publication_barrier;

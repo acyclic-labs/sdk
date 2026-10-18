@@ -1,5 +1,5 @@
 
 E
-2@8ca1a864642d384bfff18952d2db6ebf6e6f80451025a989bdd4dbaa53733795native-source3
+2@d8f3c05c86426b0213c828830fae3f4d099ca4293d098379cdf436a1e1594bfbnative-source3
 $1f1f1f1f-1f1f-1f1f-1f1f-1f1f1f1f1f1fnative-once*[
 explicit-producer-scopelifecycle:transitionproducer* :append_customB”{"kind":"append_custom","schema":"example.custom","version":1,"content":{"descriptor":{"byte_length":12,"media_type":"text/plain","sha256":[92,183,47,144,233,104,146,45,48,85,125,10,248,247,25,210,31,97,121,43,236,170,135,235,50,71,119,103,215,57,220,11]},"display_name":"input.txt","path":"messages/input.txt","version":"pinned-generation","volume":{"class":"agent_private","id":"scratch","owner":{"id":"04040404-0404-0404-0404-040404040404","kind":"agent"},"provider":{"family":"filesystem","namespace":"fixture","version":"2"}}}}

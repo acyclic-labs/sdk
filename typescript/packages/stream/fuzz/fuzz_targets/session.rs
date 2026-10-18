@@ -15,12 +15,15 @@ fuzz_target!(|input: &[u8]| {
     let shared = DRIVER.get_or_init(|| {
         Mutex::new(driver::Driver::configured(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
-        , "decode", ""))
+            "decode",
+            "",
+        ))
     });
     let hex: String = input.iter().map(|byte| format!("{byte:02x}")).collect();
     let result = shared
         .lock()
         .unwrap()
+        .run()
         .call(serde_json::json!({"action":"decode", "hex":hex}));
     // Branches expose JavaScript validation outcomes to libFuzzer's feedback;
     // LLVM coverage here instruments the Rust bridge, not the JS engine.

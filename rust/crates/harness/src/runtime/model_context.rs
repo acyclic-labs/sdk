@@ -107,6 +107,8 @@ impl TaskContext {
                 self.scope
                     .grants()
                     .contains(&capability::tool_call(&tool.name))
+                    && (!crate::tools::children::family(&tool.name)
+                        || self.scope.grants().contains("tool:call:spawn"))
             })
             .collect();
         let step_bound = self

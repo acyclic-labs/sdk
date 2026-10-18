@@ -14,14 +14,22 @@
 //! `--input-format jsonl` produce this identical observation stream. EOF drains
 //! accepted work; stderr contains diagnostics, never another stdout protocol.
 //!
-//! JSON values use their Rust serde representations; file bytes are the
-//! `OwnedBytes` representation, with no protobuf wrappers or alternate dialect.
-//! The helpers below are the codecs for this contract. Connection admission
-//! separately checks owner, operation, immutable bytes and authorized paths.
+//! JSON values use their Rust serde representations, except bytes: file
+//! content, materialized heads and cursor/generation digests all take the one
+//! canonical form decided by the `bytes` codec, `{"text":...}` exactly when the
+//! bytes are UTF-8 and padded standard `{"base64":...}` otherwise, never integer
+//! arrays. A materialized head carries its segments as one `bytes` value,
+//! spelled the same way as a live file, and its length is that value's length.
+//! The helpers below are the only codecs for this contract, and the headless
+//! runner writes through them. Connection admission separately checks owner,
+//! operation, immutable bytes and authorized paths.
 use crate::{
     Error, Result,
     task_volume::{Change, FileValue, HeadSnapshot, Query},
 };
+
+mod bytes;
+mod wire;
 
 /// Maximum serialized request line accepted before parsing.
 pub const MAXIMUM_REQUEST_BYTES: usize = 65_536;
@@ -34,28 +42,28 @@ fn decode<T: serde::de::DeserializeOwned>(line: &str) -> Result<T> {
 }
 /// Serialize a request file without a trailing newline.
 pub fn request(file: &FileValue) -> Result<String> {
-    encode(file)
+    encode(&wire::File::from(file))
 }
 /// Parse a bounded request file; the connection enforces its admission policy.
 pub fn parse_request(line: &str) -> Result<FileValue> {
     if line.len() > MAXIMUM_REQUEST_BYTES {
         return Err(Error::Invalid("stdin line exceeds byte bound".into()));
     }
-    decode(line)
+    decode::<wire::File<'_>>(line).map(FileValue::from)
 }
 /// Serialize the initial query and exact materialized-head snapshot.
 pub fn snapshot(query: &Query, head: &HeadSnapshot) -> Result<String> {
-    encode(&(query, head))
+    encode(&(query, wire::Heads::from(head)))
 }
 /// Parse the first observation line.
 pub fn parse_snapshot(line: &str) -> Result<(Query, HeadSnapshot)> {
-    decode(line)
+    decode::<(Query, wire::Heads<'_>)>(line).map(|(query, head)| (query, head.into()))
 }
 /// Serialize one cursor-follow publication.
 pub fn change(value: &Change) -> Result<String> {
-    encode(value)
+    encode(&wire::ChangeForm::from(value))
 }
 /// Parse a subsequent observation publication.
 pub fn parse_change(line: &str) -> Result<Change> {
-    decode(line)
+    decode::<wire::ChangeForm<'_>>(line).map(Change::from)
 }

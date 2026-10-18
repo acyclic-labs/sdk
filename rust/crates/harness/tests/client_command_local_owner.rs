@@ -6,6 +6,8 @@ use acyclic_harness::{
     runtime::RuntimeTask,
     test_support::{ScriptedModelProvider, ScriptedTurn},
 };
+// Workspace lineage is a conversation-turn invariant. /delegate now starts a
+// file-driven agent, with a different result and independently driven lifecycle.
 struct NoReads;
 impl ContentResidencyVerifier for NoReads {}
 
@@ -57,7 +59,7 @@ async fn descendant_named_volume_survives_branch_switch_and_routes_bash_cwd() ->
         panic!("parent admission")
     };
     let mut client = selected(&local, parent).await?;
-    let child = send(&local, &mut client, "/delegate child").await?;
+    let child = send(&local, &mut client, "child prompt").await?;
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
     assert_eq!(local.resume(child).await?.text, "scratch retained");
     let requests = provider.requests();
@@ -135,7 +137,7 @@ async fn child_restore_is_visible_to_the_next_model_bash_without_a_branch_switch
         panic!("parent admission")
     };
     let mut client = selected(&local, parent).await?;
-    let child = send(&local, &mut client, "/delegate child").await?;
+    let child = send(&local, &mut client, "child prompt").await?;
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
     assert_eq!(
         local
@@ -385,7 +387,7 @@ async fn child_shell_writes_and_model_bash_share_only_the_child_fork() -> Result
         panic!("parent")
     };
     let mut client = selected(&local, parent).await?;
-    let child = send(&local, &mut client, "/delegate child").await?;
+    let child = send(&local, &mut client, "child prompt").await?;
     let task = TaskId::parse(child["task"].as_str().unwrap())?;
     client
         .write_state(
@@ -874,7 +876,7 @@ async fn descendants_inherit_selected_branches_and_reopen_their_original_forks()
         panic!("parent admission")
     };
     let mut client = selected(&local, parent).await.unwrap();
-    let child = send(&local, &mut client, "/delegate child").await.unwrap();
+    let child = send(&local, &mut client, "child prompt").await.unwrap();
     let child = TaskId::parse(child["task"].as_str().unwrap())?;
     assert_eq!(local.resume(parent).await.unwrap().text, "parent ready");
     client.refresh_files().await.unwrap();

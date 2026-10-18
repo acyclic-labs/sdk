@@ -412,11 +412,12 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
 
     pub(super) fn remember(
         &self,
-        cache: Option<&Mutex<CachedProofs>>,
+        slot: Option<Arc<super::super::ProofSlot<CachedProof>>>,
+        began: crate::collection::CollectionEpoch,
         proof: &GenerationProof,
         object_count: u64,
-    ) -> Result<(), crate::FsError> {
-        let Some(cache) = cache else { return Ok(()) };
+    ) -> Result<Option<PendingProof>, crate::FsError> {
+        let Some(slot) = slot else { return Ok(None) };
         let root = self.meter.owned(|accounting| {
             let (root, allocation) =
                 crate::collection::clone_generation_root_with_accounting(&proof.root, accounting)?;
@@ -439,10 +440,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             _guard: root.1,
             object_bytes: self.object_bytes,
         };
-        cache
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(Arc::new(cached), &self.meter)
+        Ok(Some(PendingProof::new(slot, began, cached)))
     }
 }
 

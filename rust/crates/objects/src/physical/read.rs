@@ -63,6 +63,8 @@ async fn read_body_at_inner_async(
     let (id, offset) = match location {
         LocalBodyLocation::Segment { id, offset } => (id, offset),
         LocalBodyLocation::Journal { offset } => {
+            #[cfg(test)]
+            crate::body::work::record("journal", *offset, expected_length);
             let (root, offset, digest) = (Arc::clone(root), *offset, *expected_digest);
             let body = acyclic_native_runtime::run_blocking_io(
                 move || root.read_journal_body(offset, &digest, expected_length),
@@ -91,15 +93,18 @@ async fn read_body_at_inner_async(
     let selected_offset = offset
         .checked_add(u64::try_from(start).map_err(|_| Error::from(Unavailable))?)
         .ok_or(Error::from(Unavailable))?;
-    let maximum_prefix = SEGMENT_HEADER_BYTES
-        .checked_add(MAXIMUM_SEGMENT_BODIES * SEGMENT_RECORD_BYTES)
-        .ok_or(Error::from(Unavailable))?;
+    let prefix_length = segment_prefix_length(*offset);
+    #[cfg(test)]
+    {
+        crate::body::work::record("read", 0, prefix_length);
+        crate::body::work::record("read", selected_offset, selected_length);
+    }
     let reads = acyclic_native_runtime::read_batch_async(
         file,
         vec![
             acyclic_native_runtime::OwnedRead {
                 offset: 0,
-                length: maximum_prefix,
+                length: prefix_length,
             },
             acyclic_native_runtime::OwnedRead {
                 offset: selected_offset,
@@ -154,42 +159,35 @@ async fn read_body_at_native_inner(
         LocalBodyLocation::Journal { .. } => expected_length,
         LocalBodyLocation::Segment { .. } => end - start,
     };
-    let storage = crate::body::prepare_native_bytes(length, &meter)?;
-    let maximum_prefix = SEGMENT_HEADER_BYTES + MAXIMUM_SEGMENT_BODIES * SEGMENT_RECORD_BYTES;
+    let (storage, header) = crate::body::native_body_storage(length, &meter)?;
     let prefix = match location {
-        LocalBodyLocation::Segment { .. } => {
-            Some(crate::body::prepare_native_bytes(maximum_prefix, &meter)?)
+        LocalBodyLocation::Segment { offset, .. } => {
+            let prefix_length = segment_prefix_length(*offset);
+            Some((
+                crate::body::native_storage(prefix_length, &meter)?,
+                prefix_length,
+            ))
         }
         LocalBodyLocation::Journal { .. } => None,
     };
     let (file, file_length, location) = open_native_body(root, location, &meter).await?;
     match location {
         LocalBodyLocation::Journal { offset } => {
-            let (storage, actual) = file
-                .read_prepared_bounded_async(
-                    offset,
-                    storage,
-                    expected_length,
-                    true,
-                    Arc::clone(&meter),
-                )?
-                .await?;
-            let body = storage.freeze(actual).map_err(|_| unavailable())?;
+            let storage =
+                read_native(&file, offset, storage, expected_length, true, &meter).await?;
+            let actual = storage.0.len();
             meter.admit_codec(0, 0, actual as u64)?;
-            let digest = blake3::hash(body.as_slice());
+            let digest = blake3::hash(&storage.0);
             meter.record_codec(0, 0, actual as u64)?;
             if actual != expected_length || digest.as_bytes() != expected_digest {
                 return Err(unavailable());
             }
-            Ok(body.slice(start..end))
+            Ok(crate::body::publish_native_storage(storage, header)?.slice(start..end))
         }
         LocalBodyLocation::Segment { offset, .. } => {
-            let prefix = prefix.ok_or_else(unavailable)?;
-            let (prefix, actual) = file
-                .read_prepared_bounded_async(0, prefix, maximum_prefix, false, Arc::clone(&meter))?
-                .await?;
-            let prefix = prefix.freeze(actual).map_err(|_| unavailable())?;
-            let table = segment_table(&prefix)?;
+            let (prefix, prefix_length) = prefix.ok_or_else(unavailable)?;
+            let prefix = read_native(&file, 0, prefix, prefix_length, false, &meter).await?;
+            let table = segment_table(&prefix.0)?;
             let count = table.len() / SEGMENT_RECORD_BYTES;
             meter.admit_examination(count as u64, 0)?;
             let mut examined = 0;
@@ -203,16 +201,45 @@ async fn read_body_at_native_inner(
             );
             meter.record_examination(examined, 0)?;
             let matches = matches.map_err(|_| unavailable())?;
+            drop(prefix);
             if !matches {
                 return Err(unavailable());
             }
             let selected_offset = offset.checked_add(start as u64).ok_or_else(unavailable)?;
-            let (storage, actual) = file
-                .read_prepared_bounded_async(selected_offset, storage, length, true, meter)?
-                .await?;
-            storage.freeze(actual).map_err(|_| unavailable())
+            let storage =
+                read_native(&file, selected_offset, storage, length, true, &meter).await?;
+            crate::body::publish_native_storage(storage, header)
         }
     }
+}
+
+/// Bytes before a segment body that can hold the segment header and table:
+/// every table precedes its first body, so a read never needs bytes at or
+/// after the body's own offset.
+fn segment_prefix_length(offset: u64) -> usize {
+    let maximum = SEGMENT_HEADER_BYTES + MAXIMUM_SEGMENT_BODIES * SEGMENT_RECORD_BYTES;
+    #[cfg(test)]
+    if crate::body::work::restores_old_work() {
+        return maximum;
+    }
+    usize::try_from(offset).map_or(maximum, |offset| offset.min(maximum))
+}
+
+/// The one native positional read: it fills admitted spare capacity in place.
+async fn read_native(
+    file: &acyclic_native_runtime::NativeFile,
+    offset: u64,
+    storage: crate::body::NativeStorage,
+    length: usize,
+    require_full: bool,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<crate::body::NativeStorage, NativeObjectsError> {
+    #[cfg(test)]
+    crate::body::work::record("read", offset, length);
+    let (storage, _) = file
+        .read_spare_bounded_async(offset, storage, length, require_full, Arc::clone(meter))?
+        .await?;
+    Ok(storage)
 }
 
 pub(super) fn read_journal_body(

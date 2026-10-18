@@ -227,7 +227,8 @@ impl ModelContent {
         }
         Ok(())
     }
-    fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
+    /// Direct files and files nested in paired tool-result data, in wire order.
+    pub fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
         self.parts().iter().flat_map(|part| {
             let direct = match part {
                 ModelContentPart::File { file, policy } => Some((file, policy)),
@@ -269,6 +270,10 @@ impl ModelContent {
     pub fn contains_native_media(&self) -> bool {
         self.file_parts()
             .any(|(_, policy)| matches!(policy, FileProjectionPolicy::Native(_)))
+    }
+    pub(crate) fn contains_project_instructions(&self) -> bool {
+        self.file_parts()
+            .any(|(_, policy)| matches!(policy, FileProjectionPolicy::ProjectInstructions(_)))
     }
     /// Configuration claims for the authenticated host to verify.
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {

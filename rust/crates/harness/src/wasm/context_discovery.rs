@@ -18,6 +18,64 @@ use tsify::Tsify;
 use wasm_bindgen::{JsCast as _, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
+fn instruction_source(
+    file: JsValue,
+    source: JsValue,
+) -> std::result::Result<(FileRef, crate::model::InstructionIdentity), JsValue> {
+    let file: FileRef = from_js(file)?;
+    let source: crate::model::InstructionIdentity = from_js(source)?;
+    file.validate(&mut None).map_err(js_error)?;
+    source.validate(&mut None).map_err(js_error)?;
+    if !file.descriptor().media_type().starts_with("text/") {
+        return Err(JsValue::from_str("project instructions must be text"));
+    }
+    Ok((file, source))
+}
+
+/// Measures the shared instruction frame before an owner-mediated body read.
+#[wasm_bindgen(js_name = instructionFrameBytes)]
+pub fn instruction_frame_bytes(
+    #[wasm_bindgen(unchecked_param_type = "WasmFileRefWire")] file: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "InstructionIdentity")] source: JsValue,
+) -> std::result::Result<f64, JsValue> {
+    let (file, source) = instruction_source(file, source)?;
+    let bytes = crate::model::InstructionSource::with_identity(&file, &source)
+        .framed_bytes()
+        .map_err(js_error)?;
+    if bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+        return Err(JsValue::from_str(
+            "instruction frame exceeds portable length",
+        ));
+    }
+    Ok(bytes as f64)
+}
+
+/// Uses the native instruction renderer after bounded snapshot and authentication.
+#[wasm_bindgen(js_name = frameInstructions)]
+pub fn frame_instructions(
+    #[wasm_bindgen(unchecked_param_type = "WasmFileRefWire")] file: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "InstructionIdentity")] source: JsValue,
+    bytes: &Uint8Array,
+    maximum: u64,
+) -> std::result::Result<String, JsValue> {
+    let (file, source) = instruction_source(file, source)?;
+    let source = crate::model::InstructionSource::with_identity(&file, &source);
+    let mut remaining = maximum;
+    source.reserve(&mut remaining, None).map_err(js_error)?;
+    let (bytes, ()) = super::bytes::snapshot(bytes, |length| {
+        if length != file.descriptor().byte_length() {
+            return Err(JsValue::from_str(
+                "instruction body length differs from its source",
+            ));
+        }
+        Ok(())
+    })?;
+    file.descriptor()
+        .verify(&bytes, &mut None)
+        .map_err(js_error)?;
+    source.render(&bytes, None).map_err(js_error)
+}
+
 #[derive(Serialize, Tsify)]
 struct ContextDirectoryQuery {
     root: ContextRoot,

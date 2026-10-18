@@ -36,6 +36,7 @@ impl MailFixture {
             Arc::clone(&sdk),
             fixture.filesystem.clone(),
             &fixture.volume,
+            None,
             &fixture.issuer.verifier(&mut None)?,
             &fixture.signed,
             &fixture.scope,

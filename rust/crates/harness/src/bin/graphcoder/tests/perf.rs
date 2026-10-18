@@ -1,9 +1,8 @@
 //! Headless render-loop measurement over the executable's real composition:
-//! TaskFileViews, ClientRenderer, followed command files and CrosstermBackend.
+//! ClientViews, ClientRenderer, followed command files and CrosstermBackend.
 use acyclic_harness::{
     OperationId, client,
-    client::{CommandSession, TaskFileViews},
-    model::ModelEvent,
+    client::{ClientViews, CommandSession},
     task_volume::TaskVolume,
     tui::{
         ClientRenderer, Editor, PromptBox, PromptInput, ScreenAreas, Viewport,
@@ -19,6 +18,12 @@ use acyclic_harness::{
     wire,
 };
 use acyclic_stream::{MemoryStream, StreamPath};
+use alacritty_terminal::{
+    event::EventListener,
+    grid::Dimensions,
+    term::{Config, Term, TermMode, cell::Flags},
+    vte::ansi::{Color, Processor},
+};
 use std::{cell::RefCell, io, rc::Rc, sync::Arc};
 
 struct NoFiles;
@@ -105,7 +110,7 @@ pub(super) fn transcript(lines: usize) -> String {
 pub(super) struct Rig {
     runtime: tokio::runtime::Runtime,
     owner: wire::Authority,
-    pub views: TaskFileViews,
+    pub views: ClientViews,
     files: CommandSession<MemoryStream>,
     renderer: ClientRenderer,
     pub input: PromptInput,
@@ -117,6 +122,8 @@ pub(super) struct Rig {
     areas: ScreenAreas,
     maximum_scroll: usize,
     pub frames: u64,
+    /// Device length after each frame.
+    boundaries: Vec<usize>,
 }
 
 enum Output {
@@ -178,16 +185,8 @@ impl Rig {
             kind: wire::AggregateKind::Task as i32,
             id: "task".into(),
         };
-        let mut views = TaskFileViews::default();
-        views
-            .model_event(
-                &owner,
-                OperationId::from_bytes([1; 16]),
-                ModelEvent::Content {
-                    delta: transcript(lines),
-                },
-            )
-            .unwrap();
+        let mut views = super::file_views::empty();
+        super::file_views::append_text(&mut views, &owner.id, false, &transcript(lines));
         let output = Counter::default();
         let mut rig = Self {
             runtime,
@@ -220,6 +219,7 @@ impl Rig {
             areas: ScreenAreas::default(),
             maximum_scroll: 0,
             frames: 0,
+            boundaries: Vec::new(),
         };
         rig.frame();
         rig
@@ -260,6 +260,7 @@ impl Rig {
         self.areas = areas;
         self.maximum_scroll = maximum_scroll;
         self.frames += 1;
+        self.boundaries.push(self.output.0.borrow().0.len());
     }
 
     /// view.rs after its wait: prompt input, file effects, then prompt persistence.
@@ -323,15 +324,7 @@ impl Rig {
     }
 
     pub fn stream(&mut self, delta: &str) {
-        self.views
-            .model_event(
-                &self.owner,
-                OperationId::from_bytes([1; 16]),
-                ModelEvent::Content {
-                    delta: delta.into(),
-                },
-            )
-            .unwrap();
+        super::file_views::append_text(&mut self.views, &self.owner.id, false, delta);
     }
 
     pub fn measure(&mut self, run: impl FnOnce(&mut Self)) -> Work {
@@ -353,10 +346,79 @@ impl Rig {
         (device.0.len() as u64, device.1, device.2)
     }
 
-    /// Every byte the device received since construction.
-    pub fn device_bytes(&self) -> Vec<u8> {
-        self.output.0.borrow().0.clone()
+    /// What a terminal emulator shows after each frame since construction.
+    fn screens(&self) -> Vec<Screen> {
+        let bytes = &self.output.0.borrow().0;
+        let mut emulator = Emulator::new();
+        let mut start = 0;
+        self.boundaries
+            .iter()
+            .map(|&end| {
+                emulator.advance(&bytes[start..end]);
+                start = end;
+                emulator.screen()
+            })
+            .collect()
     }
+}
+
+/// Every cell (character, colours, flags), the cursor and its visibility.
+type Screen = (Vec<(char, Color, Color, Flags)>, (i32, usize), bool);
+
+struct Emulator {
+    term: Term<Events>,
+    parser: Processor,
+}
+
+#[derive(Clone, Copy)]
+struct Events;
+impl EventListener for Events {}
+
+#[derive(Clone, Copy)]
+struct Grid;
+impl Dimensions for Grid {
+    fn total_lines(&self) -> usize {
+        40
+    }
+    fn screen_lines(&self) -> usize {
+        40
+    }
+    fn columns(&self) -> usize {
+        120
+    }
+}
+
+impl Emulator {
+    fn new() -> Self {
+        Self {
+            term: Term::new(Config::default(), &Grid, Events),
+            parser: Processor::new(),
+        }
+    }
+
+    fn advance(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.term, bytes);
+        // A synchronized update is applied when it ends.
+        self.parser.stop_sync(&mut self.term);
+    }
+
+    fn screen(&self) -> Screen {
+        let cells = self
+            .term
+            .grid()
+            .display_iter()
+            .map(|cell| (cell.c, cell.fg, cell.bg, cell.flags))
+            .collect();
+        let cursor = self.term.grid().cursor.point;
+        let shown = self.term.mode().contains(TermMode::SHOW_CURSOR);
+        (cells, (cursor.line.0, cursor.column.0), shown)
+    }
+}
+
+/// Frames whose screen differs from the one before: the only frames that
+/// need to reach the device.
+fn changed(screens: &[Screen]) -> u64 {
+    screens.windows(2).filter(|pair| pair[0] != pair[1]).count() as u64
 }
 
 pub(super) fn wheel(up: bool) -> InputEvent {
@@ -463,17 +525,25 @@ fn baseline() {
     }
 }
 
-/// Exact property of the production output path.
-fn assert_one_write_per_frame(work: &Work) {
+/// Exact property of the production output path: one device write for each
+/// frame that changes the screen, none for a frame that restates it.
+fn assert_one_write_per_changed_frame(rig: &Rig, work: &Work) {
+    let screens = rig.screens();
+    let measured = &screens[screens.len() - 1 - work.frames as usize..];
     assert_eq!(
-        work.writes, work.frames,
-        "device writes must equal frames: {work:?}"
+        work.writes,
+        changed(measured),
+        "device writes must equal changed frames: {work:?}"
     );
 }
 
-/// Page, wheel, typing, resize and streaming frames through one rig.
+/// Page, wheel, typing, resize and streaming frames through one rig. A file
+/// change the loop observes (its own layout write) draws again, unchanged.
 fn mixed(rig: &mut Rig) {
-    rig.deliver((0..4).map(|_| key(KeyCode::PageUp)));
+    for _ in 0..4 {
+        rig.deliver([key(KeyCode::PageUp)]);
+        rig.frame();
+    }
     rig.deliver((0..4).map(|_| wheel(true)));
     rig.deliver((0..4).map(|_| key(KeyCode::PageDown)));
     rig.deliver("typed".chars().map(|c| key(KeyCode::Char(c))));
@@ -482,11 +552,12 @@ fn mixed(rig: &mut Rig) {
     for _ in 0..4 {
         rig.stream("streamed words ");
         rig.frame();
+        rig.frame();
     }
 }
 
 #[test]
-fn every_frame_is_one_device_write_independent_of_transcript_length() {
+fn every_changed_frame_is_one_device_write_independent_of_transcript_length() {
     let mut work = Vec::new();
     for lines in [150, 300] {
         // The removed per-command path is the independent baseline.
@@ -495,31 +566,52 @@ fn every_frame_is_one_device_write_independent_of_transcript_length() {
         let before = old.measure(mixed);
         let after = new.measure(mixed);
         assert_eq!(
-            new.device_bytes(),
-            old.device_bytes(),
-            "identical terminal bytes"
+            new.screens(),
+            old.screens(),
+            "identical screens every frame"
         );
         assert_eq!(after.frames, before.frames);
-        assert_eq!(after.bytes, before.bytes);
-        assert_eq!(
-            after.allocations, before.allocations,
-            "retained frame buffer"
-        );
+        assert!(after.bytes < before.bytes, "restatements are not encoded");
+        // Retained frame buffer: the same allocations, less the one String
+        // crossterm formats for each elided attribute reset.
+        let screens = new.screens();
+        let unchanged =
+            after.frames - changed(&screens[screens.len() - 1 - after.frames as usize..]);
+        assert!(unchanged > 0, "unchanged frames are measured");
+        assert_eq!(after.allocations + unchanged, before.allocations);
         assert!(
             before.writes > 10 * before.frames,
             "baseline issues per-command writes"
         );
-        assert_one_write_per_frame(&after);
+        assert_one_write_per_changed_frame(&new, &after);
         work.push(after);
     }
     assert_eq!(work[0].writes, work[1].writes);
     assert_eq!(work[0].frames, work[1].frames);
 }
 
+/// The live pass: each page key writes the layout file and the loop draws
+/// again on the change it observes. N and 2N pages cost exactly N and 2N
+/// device writes over 2N and 4N frames.
 #[test]
-#[should_panic(expected = "device writes must equal frames")]
+fn a_page_and_its_observed_layout_change_are_one_device_write() {
+    for pages in [3, 6] {
+        let mut rig = Rig::with_output(300, 100, 40, false);
+        let work = rig.measure(|rig| {
+            for _ in 0..pages {
+                rig.deliver([key(KeyCode::PageUp)]);
+                rig.frame();
+            }
+        });
+        assert_eq!((work.frames, work.writes), (2 * pages, pages));
+        assert_one_write_per_changed_frame(&rig, &work);
+    }
+}
+
+#[test]
+#[should_panic(expected = "device writes must equal changed frames")]
 fn negative_control_per_command_output_is_detected() {
     let mut rig = Rig::with_output(150, 100, 40, true);
     let work = rig.measure(mixed);
-    assert_one_write_per_frame(&work);
+    assert_one_write_per_changed_frame(&rig, &work);
 }

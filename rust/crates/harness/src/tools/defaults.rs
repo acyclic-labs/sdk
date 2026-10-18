@@ -23,7 +23,11 @@ pub(crate) fn bind_defaults(
             continue;
         }
         let capability = spec.capability();
-        if bound.is_some_and(|scope| !scope.grants().contains(&capability)) {
+        if bound.is_some_and(|scope| {
+            !scope.grants().contains(&capability)
+                || (super::children::family(spec.name)
+                    && !scope.grants().contains("tool:call:spawn"))
+        }) {
             continue;
         }
         registry.register((spec.bind()?, None), &mut None, None)?;

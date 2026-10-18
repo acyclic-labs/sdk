@@ -110,7 +110,7 @@ struct SwarmStatusInfo<'a> {
 /// The exact read-only native views, readable while the follow awaits I/O.
 #[wasm_bindgen]
 pub struct WasmClientViews {
-    views: ClientViewHandle,
+    pub(super) views: ClientViewHandle,
 }
 impl From<ClientViewHandle> for WasmClientViews {
     fn from(views: ClientViewHandle) -> Self {
@@ -196,6 +196,13 @@ impl WasmClientViews {
     pub fn models(&self) -> Result<JsValue, JsValue> {
         self.views
             .read(|views| to_js(&views.models().collect::<Vec<_>>()))
+            .map_err(error)?
+    }
+    /// Notification files from the same native fold; rendering adds no queue.
+    #[wasm_bindgen(unchecked_return_type = "NotificationQueryView[]")]
+    pub fn notifications(&self) -> Result<JsValue, JsValue> {
+        self.views
+            .read(|views| to_js(&views.notifications().collect::<Vec<_>>()))
             .map_err(error)?
     }
     /// Goals and request progress from the same followed files and cursors.

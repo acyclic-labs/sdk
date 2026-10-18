@@ -2,6 +2,7 @@ use super::*;
 
 impl StockExecution<'_> {
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
+        self.verify_summary_destination()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native_work().is_some()
             && let Some((context, expected_operation)) = self.context
@@ -32,6 +33,18 @@ impl StockExecution<'_> {
             return Err(Error::Unauthorized(
                 "stock task context differs from execution binding".into(),
             ));
+        }
+        Ok(())
+    }
+
+    /// Compaction inside a task context publishes through the task's private
+    /// summary writer. A context without one rejects the turn at entry, before
+    /// any model work, instead of failing when the first summary is due.
+    fn verify_summary_destination(&self) -> Result<()> {
+        if let (Some((context, _)), crate::context::CompactionPolicy::Threshold(_)) =
+            (self.context, self.compaction_policy())
+        {
+            context.private_summaries(self.io)?;
         }
         Ok(())
     }

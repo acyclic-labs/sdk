@@ -56,7 +56,7 @@ pub fn verify_initial_retry_yield(broken: bool) {
     let _entered = runtime.enter();
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, _healthy) = fixture::fixture(channel.clone());
+        let (mut pool, _healthy) = fixture::fixture(&channel);
         pool.links.remove("bad");
         pool.routes.remove(&1);
         pool.active.store(1, Ordering::Release);
@@ -87,7 +87,7 @@ pub fn verify_initial_retry_yield(broken: bool) {
         else {
             panic!("released retry did not complete");
         };
-        pool.dial_ready(node, epoch, result).unwrap();
+        pool.dial_ready(&node, epoch, result).unwrap();
         pool.close_idle();
         assert!(
             pool.links.is_empty(),

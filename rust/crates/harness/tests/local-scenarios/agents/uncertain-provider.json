@@ -1,0 +1,69 @@
+{
+  "driver": "agents",
+  "prompt": "A transport failure must never claim a settled child answer",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "Fail with child failure",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ]
+    ],
+    "worker": [
+      [
+        {
+          "type": "error",
+          "error": "child failure"
+        }
+      ]
+    ]
+  },
+  "expect": {
+    "indeterminate": true,
+    "requests": {
+      "parent": 2,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": false,
+        "inputs": 1
+      },
+      "agents/worker/results/1.json": null
+    }
+  },
+  "routes": {
+    "Fail with child failure": "worker"
+  }
+}

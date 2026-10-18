@@ -11,7 +11,7 @@ pub fn verify_cancel_before_open(broken: bool) {
     let _entered = runtime.enter();
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, receiver) = fixture(channel.clone());
+        let (mut pool, receiver) = fixture(&channel);
         let client = super::super::fixture::client(&pool);
         let old = client
             .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver)

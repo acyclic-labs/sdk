@@ -1,6 +1,14 @@
 use crate::{Result, executor::json::JsonCodecCharge, store::history::HistoryIo};
 use serde_json::Value;
 
+/// The portable rule every recorded tool artifact satisfies: no reserved
+/// serde marker key, and only numbers a JavaScript Number round-trips exactly.
+/// Provider streams apply it to a decoded model tool call, so a call the stream
+/// emits is never rejected later when the call is recorded.
+pub fn validate_portable_json(value: &Value) -> Result<()> {
+    validate_json_value(value, &mut None)
+}
+
 pub(crate) fn validate_json_value(
     value: &Value,
     work: &mut Option<&mut dyn HistoryIo>,

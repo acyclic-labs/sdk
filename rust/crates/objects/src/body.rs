@@ -20,7 +20,8 @@ enum BodyReadBuffer {
     Ordinary(Vec<u8>),
     #[cfg(not(target_arch = "wasm32"))]
     Native {
-        storage: acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>,
+        storage: NativeStorage,
+        header: acyclic_native_runtime::ReadAllocationReservation,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     },
 }
@@ -29,10 +30,14 @@ impl BodyReadBuffer {
         match mode {
             BodyReadMode::Ordinary => Ok(Self::Ordinary(Vec::with_capacity(length))),
             #[cfg(not(target_arch = "wasm32"))]
-            BodyReadMode::Native(meter) => Ok(Self::Native {
-                storage: prepare_native_bytes(length, meter)?,
-                meter: Arc::clone(meter),
-            }),
+            BodyReadMode::Native(meter) => {
+                let (storage, header) = native_body_storage(length, meter)?;
+                Ok(Self::Native {
+                    storage,
+                    header,
+                    meter: Arc::clone(meter),
+                })
+            }
         }
     }
     fn append(&mut self, written: usize, bytes: &[u8]) -> Result<(), BodyReadError> {
@@ -40,18 +45,16 @@ impl BodyReadBuffer {
         match self {
             Self::Ordinary(output) => output.extend_from_slice(bytes),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { storage, meter } => {
-                let end = written
-                    .checked_add(bytes.len())
-                    .ok_or(Error::from(Unavailable))?;
-                let target = storage
-                    .writable()
-                    .get_mut(written..end)
-                    .ok_or(Error::from(Unavailable))?;
+            Self::Native { storage, meter, .. } => {
+                // Append within the admitted capacity: never reallocate or initialize ahead.
+                let data = &mut storage.0;
+                if written != data.len() || bytes.len() > data.capacity() - data.len() {
+                    Err(Error::from(Unavailable))?;
+                }
                 meter
                     .admit_codec(0, bytes.len() as u64, 0)
                     .map_err(crate::v1::NativeObjectsError::from)?;
-                target.copy_from_slice(bytes);
+                data.extend_from_slice(bytes);
                 meter
                     .record_codec(0, bytes.len() as u64, 0)
                     .map_err(crate::v1::NativeObjectsError::from)?;
@@ -64,9 +67,14 @@ impl BodyReadBuffer {
         match self {
             Self::Ordinary(output) => Ok(output.into()),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { storage, .. } => storage
-                .freeze(written)
-                .map_err(|_| Error::from(Unavailable).into()),
+            Self::Native {
+                storage, header, ..
+            } => {
+                if storage.0.len() != written {
+                    Err(Error::from(Unavailable))?;
+                }
+                publish_native_storage(storage, header)
+            }
         }
     }
 }
@@ -308,23 +316,97 @@ impl StoredBody {
     }
 }
 
+/// Admitted, uninitialized read capacity and the allocation that accounts for it.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn prepare_native_bytes(
+pub(crate) type NativeStorage = (Vec<u8>, acyclic_native_runtime::ReadAllocation);
+
+/// The one constructor of native read storage: capacity is admitted and
+/// reserved but never initialized, so the kernel writes each byte once.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_storage(
     length: usize,
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> Result<
-    acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>,
-    crate::v1::NativeObjectsError,
-> {
-    use acyclic_native_runtime::ReadAllocation;
-    use acyclic_stream::PreparedOwnedBytes;
-    let mut allocation = ReadAllocation::new(meter, length)?;
+) -> Result<NativeStorage, crate::v1::NativeObjectsError> {
+    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, length)?;
     let mut data = Vec::new();
     data.try_reserve_exact(length)
         .map_err(|error| meter.allocation_failed(error))?;
     allocation.reconcile_capacity(data.capacity())?;
-    data.resize(data.capacity(), 0);
-    PreparedOwnedBytes::new(data, allocation, meter)
+    #[cfg(test)]
+    work::storage(&mut data);
+    Ok((data, allocation))
+}
+
+/// Test observation of native read work, recorded on the calling thread for the differential harness.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod work {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RESTORE_OLD_WORK: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Runs `run` with the removed work restored: the negative control.
+    pub(crate) fn restoring_old_work<T>(run: impl FnOnce() -> T) -> T {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                RESTORE_OLD_WORK.set(false);
+            }
+        }
+        RESTORE_OLD_WORK.set(true);
+        let _reset = Reset;
+        run()
+    }
+
+    pub(crate) fn restores_old_work() -> bool {
+        RESTORE_OLD_WORK.get()
+    }
+
+    pub(crate) fn record(operation: &'static str, offset: u64, length: usize) {
+        acyclic_test_support::differential::record((operation, offset, length as u64));
+    }
+
+    /// Records new storage and the bytes initialized before any read fills it.
+    pub(crate) fn storage(data: &mut Vec<u8>) {
+        let initialized = if restores_old_work() {
+            data.resize(data.capacity(), 0);
+            let initialized = data.len();
+            data.clear();
+            initialized
+        } else {
+            0
+        };
+        record("storage", initialized as u64, data.capacity());
+    }
+}
+
+/// Storage for bytes that will be published, with their ownership header reserved before I/O.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_body_storage(
+    length: usize,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<
+    (
+        NativeStorage,
+        acyclic_native_runtime::ReadAllocationReservation,
+    ),
+    crate::v1::NativeObjectsError,
+> {
+    let storage = native_storage(length, meter)?;
+    let header = acyclic_stream::OwnedBytes::reserve_vec_guard::<
+        acyclic_native_runtime::ReadAllocation,
+    >(meter)?;
+    Ok((storage, header))
+}
+
+/// Publishes the initialized prefix of native storage without copying it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn publish_native_storage(
+    storage: NativeStorage,
+    header: acyclic_native_runtime::ReadAllocationReservation,
+) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
+    acyclic_stream::OwnedBytes::from_vec_with_reserved_guard(storage, header)
         .map_err(|failure| crate::v1::native_preparation_error(failure.into_error()))
 }
 
@@ -406,7 +488,7 @@ pub(crate) mod tests {
             for body in [&resident, &composite] {
                 let selected = futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary))
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
-                prop_assert_eq!(selected.as_slice(), &bytes[start..end]);
+                prop_assert_eq!(Some(selected.as_slice()), bytes.get(start..end));
                 for (start, end) in [(1, 0), (0, bytes.len() + 1)] {
                     prop_assert!(futures::executor::block_on(body.read(start, end, BodyReadMode::Ordinary)).is_err());
                 }

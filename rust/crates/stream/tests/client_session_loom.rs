@@ -1,4 +1,4 @@
-//! Uses the production provider's crate-local query_sync loom shim.
+//! Uses the production provider's crate-local `query_sync` loom shim.
 #![cfg(all(acyclic_loom, feature = "local"))]
 
 #[test]

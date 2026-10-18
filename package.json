@@ -16,7 +16,7 @@
     "check:native-adapter": "bun run check && cargo build -p acyclic-fs-napi --locked && bun scripts/check-filesystem-napi.mjs --adapter",
     "test": "bun run check && bun run check:types && mkdir -p target && bun test --parallel=4 --reporter=junit --reporter-outfile=target/bun-test.xml typescript/packages && bun run --filter '@acyclic-labs/fs' test:composition && bun run test:contracts",
     "test:contracts:browser": "bun run --filter '@acyclic-labs/actors' build:wasm && bun run --filter '@acyclic-labs/objects' build:wasm && bun run --filter '@acyclic-labs/stream' build:wasm && tsc -b typescript/packages/actors typescript/packages/workers typescript/packages/objects typescript/packages/stream && node typescript/packages/actors/test/browser-http-conformance.mjs",
-    "licenses": "bun scripts/check-js-licenses.mjs",
+    "licenses": "bun test scripts/check-js-licenses.test.mjs && bun scripts/check-js-licenses.mjs",
     "check:docs": "node --test scripts/check-sdk-readmes.test.mjs && node scripts/check-sdk-readmes.mjs",
     "check:baselines": "node --test scripts/build-generation.test.mjs scripts/generate-proto.test.mjs scripts/check-baselines.test.mjs && node --test scripts/wasm-size-artifacts.test.mjs scripts/generate-client-types.test.mjs && bun scripts/check-stream-protocol-contract.mjs && node --test scripts/generate-actors.test.mjs && node --test scripts/npm-publication-staging.test.mjs && bun scripts/check-baselines.mjs"
   },

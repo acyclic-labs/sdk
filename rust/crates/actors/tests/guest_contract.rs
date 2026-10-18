@@ -102,16 +102,16 @@ proptest! {
         let event = match kind {
             0 => GuestEvent::Stream { subscription: identity.clone(), stream: identity.clone(),
                 sequence: number.to_string(), committed_at_micros: number.to_string(),
-                value: identity.clone(), commit_id: identity.clone() },
-            1 => GuestEvent::Invoke { payload: bytes.clone().into() },
+                value: identity.clone(), commit_id: identity },
+            1 => GuestEvent::Invoke { payload: bytes.into() },
             2 => GuestEvent::Fetch { request: GuestRequest { url: identity.clone(), method: identity.clone(),
-                headers: vec![(identity.clone(), identity.clone())], body: bytes.clone().into() } },
-            3 => GuestEvent::Timer { timer_id: identity.clone(), deadline_unix_ms: number.to_string() },
+                headers: vec![(identity.clone(), identity)], body: bytes.into() } },
+            3 => GuestEvent::Timer { timer_id: identity, deadline_unix_ms: number.to_string() },
             kind => GuestEvent::Socket { connection_id: identity.clone(), event: match kind {
-                4 => GuestSocketEvent::Open { actor_id: identity.clone(), app_channel: Some(identity.clone()), subprotocols: vec![identity.clone()], headers: vec![], resume_after: number.to_string(), reconnected: false, transport: Some(SocketTransport::Internal) },
-                5 => GuestSocketEvent::Message { offset: number.to_string(), payload: if number % 2 == 0 { SocketPayload::Text { text: identity.clone() } } else { SocketPayload::Binary { binary: bytes.clone().into() } } },
-                6 => GuestSocketEvent::Close { offset: number.to_string(), code: (number % 65536) as u16, reason: identity.clone(), initiator: SocketCloseInitiator::Runtime },
-                7 => GuestSocketEvent::Error { offset: number.to_string(), code: identity.clone(), message: identity.clone() },
+                4 => GuestSocketEvent::Open { actor_id: identity.clone(), app_channel: Some(identity.clone()), subprotocols: vec![identity], headers: vec![], resume_after: number.to_string(), reconnected: false, transport: Some(SocketTransport::Internal) },
+                5 => GuestSocketEvent::Message { offset: number.to_string(), payload: if number % 2 == 0 { SocketPayload::Text { text: identity } } else { SocketPayload::Binary { binary: bytes.into() } } },
+                6 => GuestSocketEvent::Close { offset: number.to_string(), code: u16::try_from(number % 65536)?, reason: identity, initiator: SocketCloseInitiator::Runtime },
+                7 => GuestSocketEvent::Error { offset: number.to_string(), code: identity.clone(), message: identity },
                 _ => GuestSocketEvent::Reconnecting { attempt: 1, delay_ms: number.to_string() },
             } },
         };
@@ -124,7 +124,7 @@ proptest! {
         timer in ".{0,64}", future_field in "[a-z]{1,24}", value in any::<u64>(),
     ) {
         let mut newer = serde_json::json!({"type":"timer", "timerId":timer, "deadlineUnixMs":value.to_string()});
-        newer[format!("future_{future_field}")] = serde_json::json!({"nested":[value,true]});
+        newer.as_object_mut().ok_or_else(|| TestCaseError::fail("event object"))?.insert(format!("future_{future_field}"), serde_json::json!({"nested":[value,true]}));
         prop_assert_eq!(serde_json::from_value::<GuestEvent>(newer)?, GuestEvent::Timer { timer_id: timer, deadline_unix_ms: value.to_string() });
         let socket = serde_json::json!({"type":"socket", "connectionId":"app", "future":"added", "event":{"type":"close", "offset":"2", "code":1013, "reason":"backpressure", "initiator":"runtime", "future":value}});
         prop_assert!(matches!(serde_json::from_value::<GuestEvent>(socket)?, GuestEvent::Socket { event: GuestSocketEvent::Close { .. }, .. }), "extended socket Close must decode");
@@ -171,7 +171,7 @@ fn downstream_host_constructs_context_without_serde() -> Result<(), Box<dyn std:
         assert!(RuntimeHandle::new(1, invalid.into()).is_err());
         for field in 0..5 {
             let mut fields = ["a", "o", "p", "c", "i"];
-            fields[field] = invalid;
+            *fields.get_mut(field).ok_or("caller field")? = invalid;
             assert!(
                 AdmittedCaller::new(
                     fields[0].into(),
@@ -195,7 +195,7 @@ proptest! {
     fn socket_admission_results_round_trip(attachment in prop::collection::vec(any::<u8>(), 0..2048), tag in ".{0,64}") {
         for result in [
             GuestEventResult::SocketAccept { subprotocol: Some("chat".into()), attachment: attachment.clone().into(), tags: vec![tag.clone()] },
-            GuestEventResult::SocketReject { status: 403, reason: tag.clone() },
+            GuestEventResult::SocketReject { status: 403, reason: tag },
             GuestEventResult::Reply { payload: attachment.into() },
         ] {
             prop_assert_eq!(serde_json::from_slice::<GuestEventResult>(&serde_json::to_vec(&result)?)?, result);

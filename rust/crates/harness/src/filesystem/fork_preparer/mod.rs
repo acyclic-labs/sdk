@@ -122,7 +122,8 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             .map(|custody| {
                 if original
                     .is_none_or(|original| !custody.work().shares_allocation_context(original))
-                    || this.history.is_none()
+                    || (this.parent.authority().kind == crate::core::AggregateKind::Conversation
+                        && this.history.is_none())
                 {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Invalid,
@@ -146,14 +147,32 @@ impl<A, O> FilesystemForkPreparer<A, O> {
                 "fork requires Stream history",
             ));
         }
-        ParentProjectController::new(
-            &this.host,
-            &this.parent,
-            &this.verifier,
-            &this.scope,
-            &this.project,
-            io.as_ref(),
-        )?;
+        if this.parent.authority().kind == crate::core::AggregateKind::Task {
+            crate::executor::with_history_io(io.as_ref(), |work| {
+                this.verifier
+                    .verify_audience(this.parent.authority(), work)?;
+                this.verifier.verify(&this.scope, work)?;
+                this.project.validate(work)
+            })?;
+            if this.scope.agent().is_none()
+                || this.project.provider() != &this.host.provider
+                || this.history.is_some()
+            {
+                return Err(reject(
+                    crate::wire::ErrorCode::Unauthorized,
+                    "task fork requires its authenticated agent and project without conversation history",
+                ));
+            }
+        } else {
+            ParentProjectController::new(
+                &this.host,
+                &this.parent,
+                &this.verifier,
+                &this.scope,
+                &this.project,
+                io.as_ref(),
+            )?;
+        }
         if let Some(history) = &this.history {
             history.verify(&this.verifier, &mut work)?;
             if history.parent() != this.parent.authority()

@@ -1,3 +1,1 @@
-{"records":[{"task":"task-1","sequence":1,"event":"task_settled","detail":"Ready"}],"expect":{"applied":[true],
- "presented":1,"output":"\u001b]777;notify;Task settled;task-1: Ready\u0007",
- "view":{"latest":{"task-1":{"sequence":1,"event":"task_settled"}}}}}
+{"records":[{"task":"task-1","sequence":1,"event":"task_settled","detail":"Ready"}],"expect":{"output":"\u001b]777;notify;Task settled;task-1: Ready\u0007","presented":1,"view":[{"task":"task-1","sequence":1,"event":"task_settled","detail":"Ready"}]}}

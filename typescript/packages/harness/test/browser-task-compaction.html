@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Browser stock turn threshold compaction</title>
+<pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+import { defaultCompactionPolicy, jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
+const result = document.querySelector("#result");
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+// Two tool results cross the threshold on the turn's third step, so the
+// browser runtime must publish a summary with no output volume selected.
+const LARGE = "large-tool-result";
+let fixture;
+let runtime;
+try {
+  fixture = await taskFixture(crypto.randomUUID(), "acyclic.stock_turn");
+  fixture.registry.registerStockTurn();
+  const definition = { name: "test.effect", revision: "1", description: "History for compaction",
+    input_schema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    output_schema: { type: "string" },
+    projection_schema: jsonToolProjectionSchema({ type: "object", properties: { observed: { type: "string" } },
+      required: ["observed"], additionalProperties: false }) };
+  fixture.registry.registerTool(definition, async invocation => ({ value: `${LARGE}:${invocation.arguments.value}` }),
+    async () => { throw new Error("completed tool was reconciled"); },
+    (_, canonical) => ({ kind: "json", value: { observed: canonical.value } }));
+  const requests = [];
+  const events = [
+    [{ kind: "tool_call", call_id: "big", name: "test.effect", arguments: { value: "big" } }],
+    [{ kind: "tool_call", call_id: "small", name: "test.effect", arguments: { value: "small" } }],
+    [{ kind: "content", delta: "summary of history" }],
+    [{ kind: "content", delta: "done" }],
+  ];
+  const policy = defaultCompactionPolicy();
+  policy.config.response_reserve_tokens = 64;
+  policy.config.recent_tokens = 16;
+  const model = { provider: "browser-test", name: "compacting", revision: "1", options: {} };
+  runtime = await fixture.open();
+  runtime.configureModel(model, bytes => {
+    requests.push(JSON.parse(new TextDecoder().decode(bytes)));
+    const reply = [...(events[requests.length - 1] ?? [{ kind: "content", delta: "unexpected request" }]),
+      { kind: "completed", metadata: {} }];
+    let next = 0;
+    return { async next() { return next < reply.length ? { done: false, value: reply[next++] } : { done: true }; },
+      return() { return { done: true }; } };
+  }, () => { throw new Error("completed model step was reconciled"); },
+  () => ({ context_tokens: 1024, output_tokens: 64 }),
+  (bytes, request_digest) => {
+    const message_tokens = JSON.parse(new TextDecoder().decode(bytes)).messages
+      .map(message => { const text = JSON.stringify(message);
+        return text.includes(`${LARGE}:big`) ? 800 : text.includes(LARGE) ? 150 : 10; });
+    const fixed_tokens = 10;
+    return { request_digest, fixed_tokens, message_tokens,
+      input_tokens: BigInt(fixed_tokens + message_tokens.reduce((sum, tokens) => sum + tokens, 0)) };
+  }, policy);
+  await runtime.initializeVolume();
+  const command = crypto.randomUUID();
+  const manifest = await runtime.stage(command, "manifest", new TextEncoder().encode(JSON.stringify({
+    conventions: [], discovery: { instructions: [], skills: [] }, selected_skills: [], sources: [], tools: [definition],
+  })));
+  const file = await runtime.stage(command, "model", new TextEncoder().encode(JSON.stringify({
+    input: "go", context_manifest: manifest, max_steps: 3, max_output_tokens: 32,
+  })));
+  const receive = crypto.randomUUID();
+  const after = await runtime.stage(receive, "receive", new TextEncoder().encode(JSON.stringify({ after: 0 })));
+  const admission = await runtime.admit(crypto.randomUUID(), "acyclic.stock_turn", "1", {
+    receive: { operation_id: receive, kind: "acyclic.mail.receive.v1", payload: after },
+    model: { operation_id: command, kind: "acyclic.model.v1", payload: file },
+  });
+  assert(admission.kind === "accepted", describe(admission));
+  const worker = { id: "compaction-worker", available: {}, labels: {} };
+  let outcome = null;
+  for (let tick = 0; tick < 12 && outcome === null; tick++) {
+    result.dataset.waiting = `tick ${tick}`;
+    const work = await runtime.workerTick(worker, null, 128, 8);
+    if (work.work?.kind === "unresolved") throw new Error(`work failed: ${describe(work.work)}`);
+    outcome = await runtime.outcome(admission.task_id);
+  }
+  assert(outcome?.Succeeded?.text === "done", `compacted stock turn differs: ${describe(outcome)} after ${describe(requests.map(r => r.messages?.length))}`);
+  assert(requests.length === 4, `expected two tool steps, a summary and a response: ${requests.length}`);
+  const final = JSON.stringify(requests[3]);
+  assert(!final.includes(`${LARGE}:big`), "response after compaction still carries the summarized history");
+  const summary = requests[3].messages[0].content.file;
+  assert(summary?.path.startsWith("summaries/") && summary.volume.class === "agent_private"
+    && summary.volume.owner.id === "15151515-1515-1515-1515-151515151515",
+    `response after compaction lacks the private summary: ${final}`);
+  result.dataset.status = "passed";
+  result.textContent = "browser stock turn compacted through its private summary volume";
+} catch (error) {
+  result.dataset.status = "failed";
+  result.textContent = String(error.stack ?? error);
+} finally {
+  runtime?.free();
+  fixture?.free();
+}
+</script>

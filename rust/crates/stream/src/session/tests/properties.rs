@@ -81,13 +81,14 @@ proptest! {
             prop_assert!(session.record(identity, Ok(Event::Record(record))).is_ok());
         }
         let expected: Vec<_> = history.iter().enumerate().filter(|(index, (key, _, attention))| {
-            !latest || *attention || !history[index + 1..].iter().any(|(later_key, _, later_attention)| later_key == key && !later_attention)
+            !latest || *attention || !history.iter().skip(index + 1).any(|(later_key, _, later_attention)| later_key == key && !later_attention)
         }).map(|(index, _)| index as u64 + 1).collect();
-        let actual: Vec<_> = session.channels[&1].pending.iter().filter_map(|pending| match &pending.frame.body {
+        let channel = session.channels.get(&1).unwrap();
+        let actual: Vec<_> = channel.pending.iter().filter_map(|pending| match &pending.frame.body {
             Some(Body::Data(data)) => data.after.as_ref().map(|after| after.next), _ => None,
         }).collect();
         prop_assert_eq!(actual, expected);
-        prop_assert_eq!(session.pending_bytes, session.channels[&1].pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
+        prop_assert_eq!(session.pending_bytes, channel.pending.iter().map(|pending| pending.frame.encoded_len()).sum::<usize>());
     }
 }
 

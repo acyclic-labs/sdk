@@ -35,6 +35,8 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
+        let mut remaining = limits.render_bytes;
+        reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
         #[cfg(feature = "filesystem")]
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;
@@ -273,6 +275,8 @@ impl PreparedModelRequest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        acyclic_test_support::differential::record(("prepare request", 1u64));
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned((size_of::<Self>() - size_of::<ModelRequest>()) as u64)?;
@@ -307,6 +311,20 @@ impl PreparedModelRequest {
     }
     pub(crate) fn into_messages(self) -> Vec<ModelMessage> {
         self.request.messages
+    }
+    // The context temporarily borrows ownership of the messages for read-only
+    // validation. Neither a changed request nor an incomplete prepared value
+    // can escape the closure, including on failure.
+    pub(crate) fn with_context<T>(
+        mut self,
+        mut context: crate::context::Context,
+        inspect: impl FnOnce(&crate::context::Context) -> Result<T>,
+    ) -> Result<(Self, crate::context::Context, T)> {
+        debug_assert!(context.messages.is_empty());
+        std::mem::swap(&mut self.request.messages, &mut context.messages);
+        let result = inspect(&context)?;
+        std::mem::swap(&mut self.request.messages, &mut context.messages);
+        Ok((self, context, result))
     }
     /// Exact canonical provider-neutral bytes.
     #[must_use]

@@ -1,10 +1,23 @@
 //! The enumerator cuts at every persisted journal frame: a conflicting
 //! commit's retained receipt is a cut point, an elided replay is not.
+//! Every sweep also runs under limits that compact the journal mid-run.
 use super::*;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
     OwnedBytes, StreamPath, StreamProvider,
 };
+
+/// The default limits, and limits that compact after every second frame:
+/// after the setup append and frame 1, and again after frame 3.
+fn limits() -> [LocalStreamLimits; 2] {
+    [
+        LocalStreamLimits::default(),
+        LocalStreamLimits {
+            journal_operations: 4,
+            ..LocalStreamLimits::default()
+        },
+    ]
+}
 
 fn path() -> StreamPath {
     StreamPath::new("cut-frames").unwrap()
@@ -29,8 +42,9 @@ fn commit(name: &'static str, expected: u64) -> CommitRequest {
 /// (stale receipt retained, retry receipt retained, tail)
 type Frames = (bool, bool, u64);
 
-async fn cuts() -> CrashCuts<Frames> {
-    enumerate(
+async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulationError> {
+    enumerate_with(
+        limits,
         |stream| async move {
             stream
                 .append(AppendRequest {
@@ -105,18 +119,38 @@ fn mismatches(found: &CrashCuts<Frames>) -> Vec<(Cut, Frames)> {
 
 #[tokio::test]
 async fn conflict_receipts_are_cut_points_and_replays_are_not() {
-    let found = cuts().await;
-    assert_eq!(found.writes, 3, "conflict receipt or replay elision miscounted");
-    assert_eq!(found.clean, prefix(3));
-    assert_eq!(found.cuts.len(), 7);
-    assert_eq!(mismatches(&found), []);
+    for limits in limits() {
+        let found = cuts(limits).await.unwrap();
+        assert_eq!(
+            found.writes, 3,
+            "conflict receipt or replay elision miscounted"
+        );
+        assert_eq!(found.clean, prefix(3));
+        assert_eq!(found.cuts.len(), 7);
+        assert_eq!(mismatches(&found), [], "{limits:?}");
+    }
 }
 
 #[tokio::test]
-async fn negative_control_an_ack_lost_before_its_frame_is_detected() {
-    LOSE_UNWRITTEN_ACK.with(|flag| flag.set(true));
-    let found = cuts().await;
-    LOSE_UNWRITTEN_ACK.with(|flag| flag.set(false));
-    let lost: Vec<_> = mismatches(&found).into_iter().map(|(cut, _)| cut).collect();
-    assert_eq!(lost, [Cut::LostAck(1), Cut::LostAck(2), Cut::LostAck(3)]);
+async fn negative_control_an_ack_lost_before_its_flush_is_detected() {
+    LOSE_UNFLUSHED_ACK.with(|flag| flag.set(true));
+    for limits in limits() {
+        let found = cuts(limits).await.unwrap();
+        let lost: Vec<_> = mismatches(&found).into_iter().map(|(cut, _)| cut).collect();
+        assert_eq!(
+            lost,
+            [Cut::LostAck(1), Cut::LostAck(2), Cut::LostAck(3)],
+            "{limits:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn negative_control_a_failed_truncation_fails_the_enumeration() {
+    acyclic_stream::fail_cut_truncation(true);
+    let found = cuts(LocalStreamLimits::default()).await;
+    assert!(
+        matches!(found, Err(CutSimulationError::Truncate(_))),
+        "an unfaithful crash was accepted"
+    );
 }

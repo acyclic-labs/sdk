@@ -10,6 +10,8 @@ pub struct MemoryStream {
     commit_clock: Arc<dyn UnixMillisClock>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) work: Option<Arc<Work>>,
+    #[cfg(acyclic_loom)]
+    pub(crate) retain_pending_read: bool,
 }
 
 impl Default for MemoryStream {
@@ -43,6 +45,8 @@ impl MemoryStream {
             commit_clock,
             #[cfg(not(target_arch = "wasm32"))]
             work: None,
+            #[cfg(acyclic_loom)]
+            retain_pending_read: false,
         }
     }
     pub(crate) async fn commit_inner(

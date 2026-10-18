@@ -296,6 +296,9 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
         Arc::new(MemoryStream::default()),
         host.clone(),
         &volume,
+        // Callers may arm threshold compaction, whose summaries need the
+        // private volume.
+        Some(&volume),
         &issuer.verifier(&mut None)?,
         &signed,
         &scope,

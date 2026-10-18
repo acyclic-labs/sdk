@@ -8,6 +8,19 @@ use proptest::{
 use std::task::{Context, Poll};
 
 type Action = (u8, u8, u8);
+
+/// A production failure inside the model is a failed case.
+fn fail(error: impl std::fmt::Debug) -> TestCaseError {
+    TestCaseError::fail(format!("{error:?}"))
+}
+
+fn missing(what: &'static str) -> TestCaseError {
+    TestCaseError::fail(format!("missing {what}"))
+}
+
+fn link(pool: &Pool) -> Result<&Link, TestCaseError> {
+    pool.links.get("good").ok_or_else(|| missing("good link"))
+}
 #[derive(Default)]
 struct Model {
     drops: VecDeque<u64>,
@@ -73,8 +86,8 @@ impl Model {
 }
 
 fn output(pool: &Pool, model: &mut Model) -> TestCaseResult {
-    while let Some(frame) = pool.links["good"].sender.next().now_or_never() {
-        model.wire(frame.unwrap())?;
+    while let Some(frame) = link(pool)?.sender.next().now_or_never() {
+        model.wire(frame.map_err(fail)?)?;
     }
     Ok(())
 }
@@ -87,11 +100,11 @@ fn boundary(pool: &mut Pool, model: &mut Model, dispatch: bool) -> TestCaseResul
     if dispatch {
         model.retire();
         while let Poll::Ready(id) = pool.removed.poll(&mut cx) {
-            pool.remove(id.unwrap()).unwrap();
+            pool.remove(id.map_err(fail)?).map_err(fail)?;
             output(pool, model)?;
         }
         while let Poll::Ready(release) = pool.released.poll(&mut cx) {
-            pool.released(release.unwrap()).unwrap();
+            pool.released(release.map_err(fail)?).map_err(fail)?;
             output(pool, model)?;
         }
         output(pool, model)?;
@@ -120,7 +133,9 @@ fn open(
     boundary(pool, model, wakes & 1 != 0)?;
     let progress = Arc::new(Progress::new(0));
     let (records, receiver) = mpsc::channel(2);
-    let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
+    let cursor = client
+        .cursor(id, Arc::clone(&progress), receiver)
+        .map_err(fail)?;
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
     let command = Command::Open {
@@ -141,9 +156,9 @@ fn open(
     boundary(pool, model, wakes & 4 != 0)?;
     model.open(id);
     if broken {
-        pool.apply_command(command).unwrap();
+        pool.apply_command(command).map_err(fail)?;
     } else {
-        pool.command(command).unwrap();
+        pool.command(command).map_err(fail)?;
     }
     output(pool, model)?;
     prop_assert!(
@@ -162,7 +177,7 @@ fn open(
             }),
         ),
     )
-    .unwrap();
+    .map_err(fail)?;
     output(pool, model)?;
     boundary(pool, model, wakes & 16 != 0)?;
     Ok(cursor)
@@ -172,102 +187,59 @@ fn exercise(actions: &[Action], broken: bool) -> TestCaseResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .map_err(fail)?;
     let _entered = runtime.enter();
     let endpoint =
         tonic::transport::Endpoint::from_static("http://ordering.invalid").connect_lazy();
-    let (mut pool, receiver) = fixture::fixture(endpoint);
+    let (mut pool, receiver) = fixture::fixture(&endpoint);
     let client = fixture::client(&pool);
     // An independent overview follow keeps the physical connection in use.
+    let overview = pool.routes.get(&3).ok_or_else(|| missing("overview"))?;
     let _overview = client
-        .cursor(3, Arc::clone(&pool.routes[&3].progress), receiver)
-        .unwrap();
+        .cursor(3, Arc::clone(&overview.progress), receiver)
+        .map_err(fail)?;
     let mut model = Model {
         global_credit: 2,
         ..Default::default()
     };
-    let mut slots = [None, None];
     let mut next = 5;
-    slots[0] = Some(open(&mut pool, &client, &mut model, next, 0, broken)?);
+    let mut slots = [
+        Some(open(&mut pool, &client, &mut model, next, 0, broken)?),
+        None,
+    ];
     next += 2;
     for &(kind, slot, wakes) in actions {
-        let slot = usize::from(slot % 2);
+        let [first, second] = &mut slots;
+        let entry = if slot % 2 == 0 { first } else { second };
         match kind % 8 {
             0 | 2 => {
                 if kind % 8 == 2
-                    && let Some(old) = slots[slot].take()
+                    && let Some(old) = entry.take()
                 {
                     model.drops.push_back(old.id);
                     model.buffered.remove(&old.id);
                     drop(old);
                 }
-                if slots[slot].is_none() {
-                    slots[slot] = Some(open(&mut pool, &client, &mut model, next, wakes, broken)?);
+                if entry.is_none() {
+                    *entry = Some(open(&mut pool, &client, &mut model, next, wakes, broken)?);
                     next += 2;
                 }
             }
             1 => {
-                if let Some(old) = slots[slot].take() {
+                if let Some(old) = entry.take() {
                     model.drops.push_back(old.id);
                     model.buffered.remove(&old.id);
                     drop(old);
                 }
             }
             3 | 4 => {
-                if let Some(cursor) = slots[slot].as_ref() {
-                    let id = cursor.id;
-                    if model.credits.get(&id).copied().unwrap_or(0) > 0 && model.global_credit > 0 {
-                        let sequence = *model.received.entry(id).or_default();
-                        pool.receive(
-                            "good",
-                            frame(
-                                id,
-                                1,
-                                Body::Data(wire::SessionData {
-                                    after: Some(super::super::super::cursor(sequence + 1)),
-                                    accepted: sequence + 1,
-                                    durable: sequence + 1,
-                                    item: Some(Item::Record(wire_codec::record_wire(
-                                        crate::Record {
-                                            sequence,
-                                            value: vec![sequence as u8].into(),
-                                            commit_id: crate::CommitId::from_bytes([1; 32]),
-                                            committed_at_micros: 0,
-                                        },
-                                    ))),
-                                }),
-                            ),
-                        )
-                        .unwrap();
-                        *model.received.get_mut(&id).unwrap() += 1;
-                        *model.credits.get_mut(&id).unwrap() -= 1;
-                        model.global_credit -= 1;
-                        *model.buffered.entry(id).or_default() += 1;
-                    } else {
-                        // A stalled follow must have no remaining delivery grant.
-                        prop_assert!(
-                            pool.routes[&id].credit.frames == 0
-                                || pool.links["good"].credit.frames == 0
-                        );
-                    }
+                if let Some(cursor) = entry.as_ref() {
+                    deliver(&mut pool, &mut model, cursor.id)?;
                 }
             }
             5 => {
-                if let Some(cursor) = slots[slot].as_mut()
-                    && let Ok(delivery) = cursor.receiver.try_recv()
-                {
-                    let delivery = delivery.unwrap();
-                    let expected = model.applied.entry(cursor.id).or_default();
-                    prop_assert_eq!(delivery.sequence, *expected);
-                    prop_assert!(
-                        cursor
-                            .progress
-                            .consume_record(delivery.generation, delivery.sequence, [1; 32])
-                            .unwrap()
-                    );
-                    *expected += 1;
-                    *model.buffered.get_mut(&cursor.id).unwrap() -= 1;
-                    drop(delivery);
+                if let Some(cursor) = entry.as_mut() {
+                    consume(cursor, &mut model)?;
                 }
             }
             _ => boundary(&mut pool, &mut model, true)?,
@@ -276,7 +248,7 @@ fn exercise(actions: &[Action], broken: bool) -> TestCaseResult {
         output(&pool, &mut model)?;
         for cursor in slots.iter().flatten() {
             prop_assert_eq!(
-                cursor.progress.next().unwrap(),
+                cursor.progress.next().map_err(fail)?,
                 model.applied.get(&cursor.id).copied().unwrap_or(0)
             );
         }
@@ -289,6 +261,60 @@ fn exercise(actions: &[Action], broken: bool) -> TestCaseResult {
         .filter(|id| *id != 1 && *id != 3)
         .collect();
     prop_assert_eq!(actual, model.live);
+    Ok(())
+}
+
+/// Deliver the next record to `id` when the model holds credit for it.
+fn deliver(pool: &mut Pool, model: &mut Model, id: u64) -> TestCaseResult {
+    if model.credits.get(&id).copied().unwrap_or(0) > 0 && model.global_credit > 0 {
+        let sequence = *model.received.entry(id).or_default();
+        pool.receive(
+            "good",
+            frame(
+                id,
+                1,
+                Body::Data(wire::SessionData {
+                    after: Some(super::super::super::cursor(sequence + 1)),
+                    accepted: sequence + 1,
+                    durable: sequence + 1,
+                    item: Some(Item::Record(wire_codec::record_wire(crate::Record {
+                        sequence,
+                        value: vec![sequence.to_le_bytes()[0]].into(),
+                        commit_id: crate::CommitId::from_bytes([1; 32]),
+                        committed_at_micros: 0,
+                    }))),
+                }),
+            ),
+        )
+        .map_err(fail)?;
+        *model.received.entry(id).or_default() += 1;
+        *model.credits.entry(id).or_default() -= 1;
+        model.global_credit -= 1;
+        *model.buffered.entry(id).or_default() += 1;
+    } else {
+        // A stalled follow must have no remaining delivery grant.
+        let route = pool.routes.get(&id).ok_or_else(|| missing("route"))?;
+        prop_assert!(route.credit.frames == 0 || link(pool)?.credit.frames == 0);
+    }
+    Ok(())
+}
+
+/// Apply one buffered delivery in sequence order.
+fn consume(cursor: &mut Cursor, model: &mut Model) -> TestCaseResult {
+    if let Ok(delivery) = cursor.receiver.try_recv() {
+        let delivery = delivery.map_err(fail)?;
+        let expected = model.applied.entry(cursor.id).or_default();
+        prop_assert_eq!(delivery.sequence, *expected);
+        prop_assert!(
+            cursor
+                .progress
+                .consume_record(delivery.generation, delivery.sequence, [1; 32])
+                .map_err(fail)?
+        );
+        *expected += 1;
+        *model.buffered.entry(cursor.id).or_default() -= 1;
+        drop(delivery);
+    }
     Ok(())
 }
 

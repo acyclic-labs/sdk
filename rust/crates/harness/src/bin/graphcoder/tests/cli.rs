@@ -1,7 +1,8 @@
 //! Real argv/provider/LocalHarness/client qualification over a loopback endpoint.
+mod instruction_review;
 use acyclic_harness::{
     OperationId,
-    client::prepare_local_prompt,
+    client::{jsonl, prepare_local_prompt},
     task_volume::{Change, FileKey, TaskFile},
 };
 use axum::{Json, Router, routing::post};
@@ -10,7 +11,6 @@ use std::{
     io::Write as _,
     path::Path,
     process::{Command, Stdio},
-    time::Duration,
 };
 
 const ANSWER: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fixture answer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2}}}\n\n";
@@ -37,7 +37,7 @@ async fn execute(
     let request = if jsonl {
         format!(
             "{}\n",
-            serde_json::to_string(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
+            jsonl::request(&prepare_local_prompt(operation, "hello").unwrap()).unwrap()
         )
         .into_bytes()
     } else {
@@ -46,6 +46,10 @@ async fn execute(
     input.write_all(&request).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphcoder"));
     command
+        .env("CODEX_HOME", settings)
+        .env("LOCALAPPDATA", settings)
+        .env("XDG_DATA_HOME", settings)
+        .env_remove("OPENAI_API_KEY")
         .current_dir(workspace)
         .arg("--workspace")
         .arg(workspace)
@@ -73,30 +77,19 @@ async fn execute(
     } else {
         command.args(["-p", "hello"]);
     }
+    // Readiness is the process's own exit, never a wall-clock budget: every
+    // mode exits once its turn settles (open JSONL with stdin still held), and
+    // a hang is the test runner's to terminate.
     let output = tokio::task::spawn_blocking(move || {
-        acyclic_native_runtime::initialize_native_io_services().unwrap();
-        acyclic_native_runtime::ProcessTree::spawn(&mut command)
-            .unwrap()
-            .wait_with_output(
-                Duration::from_secs(6),
-                65_536,
-                keep_open.then_some(acyclic_native_runtime::CaptureInput::Exchange {
-                    initial: &request,
-                    maximum: request.len(),
-                }),
-                || Ok(()),
-                |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-                None,
-                None,
-            )
-            .unwrap_or_else(|failure| {
-                panic!(
-                    "GraphCoder process failed: {}\nstdout: {}\nstderr: {}",
-                    failure.error,
-                    String::from_utf8_lossy(&failure.stdout),
-                    String::from_utf8_lossy(&failure.stderr)
-                )
-            })
+        let mut child = command.spawn().unwrap();
+        let held = keep_open.then(|| {
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(&request).unwrap();
+            stdin
+        });
+        let output = child.wait_with_output().unwrap();
+        drop(held);
+        output
     })
     .await
     .unwrap();
@@ -138,7 +131,8 @@ async fn scenario(mode: Mode) {
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep the current goal in GOAL.md in the agent private volume; use active, blocked or done frontmatter status."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Keep each Markdown plan in plans/<id>.md beside GOAL.md in the agent private volume; use ordinary file tools and - [ ], - [~], - [x] task lists."}]},
                             {"type":"message","role":"system","content":[{"type":"input_text","text":"Volumes: . (rw), .volumes/scratch (rw)"}]},
-                            {"type":"message","role":"system","content":[{"type":"input_text","text":"Reply using the workspace instructions. λ"}]},
+                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for .\n\n<INSTRUCTIONS>\nReply using the workspace instructions. λ\n\n</INSTRUCTIONS>"}]},
+                            {"type":"message","role":"user","content":[{"type":"input_text","text":"# CLAUDE.md instructions for .\n\n<INSTRUCTIONS>\nProject marker: claude-context λ\n</INSTRUCTIONS>"}]},
                             {"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}
                         ]));
                         assert_eq!(body["store"], false);
@@ -167,7 +161,12 @@ async fn scenario(mode: Mode) {
     if instructions {
         std::fs::write(
             workspace.join("AGENTS.md"),
-            "Reply using the workspace instructions. λ",
+            "Reply using the workspace instructions. λ\n",
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("CLAUDE.md"),
+            "Project marker: claude-context λ",
         )
         .unwrap();
     }
@@ -185,7 +184,7 @@ async fn scenario(mode: Mode) {
     assert_eq!(header[0]["TaskSession"]["task"], operation.to_string());
     let mut answers = Vec::new();
     for line in lines {
-        let change: Change = serde_json::from_str(line).unwrap();
+        let change: Change = jsonl::parse_change(line).unwrap();
         for file in change.file.into_iter().chain(change.files) {
             if matches!(
                 file.key,

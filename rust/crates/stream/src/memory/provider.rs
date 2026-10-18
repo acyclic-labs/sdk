@@ -106,7 +106,7 @@ impl StreamProvider for MemoryStream {
         let mut cursor = HistoryCursor::new(path, end, request.from);
         Ok(stream::iter(
             std::iter::from_fn(move || cursor.next_record())
-                .take((end - request.from) as usize)
+                .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
                 .map(Ok),
         )
         .boxed())
@@ -126,36 +126,7 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        validate_limit(request.limit)?;
-        let changed = self.child_changes(request.parent.as_ref()).await;
-        Ok(stream::try_unfold(
-            (self.clone(), request.parent, changed, None),
-            |(provider, parent, mut changed, mut previous)| async move {
-                loop {
-                    let next = {
-                        let state = provider.state.read().await;
-                        // Switch from the creation wakeup to this parent's own index.
-                        if let Some(index) = state.child_index(parent.as_ref()) {
-                            changed = index.changed.subscribe();
-                        }
-                        changed.borrow_and_update();
-                        state.next_child(parent.as_ref(), previous.as_ref())?
-                    };
-                    if let Some(path) = next {
-                        previous = Some(path.clone());
-                        return Ok(Some((
-                            Child { path },
-                            (provider, parent, changed, previous),
-                        )));
-                    }
-                    changed
-                        .changed()
-                        .await
-                        .map_err(|_| StreamError::Unavailable)?;
-                }
-            },
-        )
-        .boxed())
+        self.follow_children(request).await
     }
 
     async fn children_page(
@@ -276,23 +247,7 @@ impl StreamProvider for MemoryStream {
             let end = path
                 .tail
                 .min(request.from.saturating_add(u64::from(request.limit)));
-            if let Some(window) = path.prefix_window(request.from, end) {
-                meter.admit_examination(1, 0)?;
-                windows.push(window);
-                meter.record_examination(1, 0)?;
-            } else {
-                let mut history = HistoryWalk::new(path.history.as_ref(), end, request.from);
-                while history.next.is_some() && history.ceiling > request.from {
-                    meter.admit_examination(1, 0)?;
-                    if let Some((History::Batch { records, .. }, ceiling)) = history.next()
-                        && let Some(window) =
-                            history_window(Arc::clone(records), ceiling, request.from)
-                    {
-                        windows.push(window);
-                    }
-                    meter.record_examination(1, 0)?;
-                }
-            }
+            admit_windows(path, request.from, end, &*meter, &mut windows)?;
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
             // A bounded native read never refreshes a history root. Keep only
@@ -565,4 +520,31 @@ impl StreamProvider for MemoryStream {
             work.finish(provider.append_inner(request).await)
         })
     }
+}
+
+/// Admit the history windows that cover `from..end`, newest first.
+#[cfg(not(target_arch = "wasm32"))]
+fn admit_windows(
+    path: &PathState,
+    from: u64,
+    end: u64,
+    meter: &dyn NativeReadMeter,
+    windows: &mut Vec<HistoryWindow>,
+) -> std::io::Result<()> {
+    if let Some(window) = path.prefix_window(from, end) {
+        meter.admit_examination(1, 0)?;
+        windows.push(window);
+        return meter.record_examination(1, 0);
+    }
+    let mut history = HistoryWalk::new(path.history.as_ref(), end, from);
+    while history.next.is_some() && history.ceiling > from {
+        meter.admit_examination(1, 0)?;
+        if let Some((History::Batch { records, .. }, ceiling)) = history.next()
+            && let Some(window) = history_window(Arc::clone(records), ceiling, from)
+        {
+            windows.push(window);
+        }
+        meter.record_examination(1, 0)?;
+    }
+    Ok(())
 }

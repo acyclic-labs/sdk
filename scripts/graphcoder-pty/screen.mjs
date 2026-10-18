@@ -20,3 +20,14 @@ export function hasBoldAnswer(terminal) {
     return false;
   });
 }
+
+export function thinkingPhase(terminal) {
+  for (const line of rows(terminal)) {
+    if (!line) continue;
+    const x = line.translateToString(true).indexOf("Thinking…");
+    if (x < 0) continue;
+    return Array.from({ length: 9 }, (_, offset) => line.getCell(x + offset)?.isBold())
+      .findIndex(Boolean);
+  }
+  return -1;
+}

@@ -211,7 +211,10 @@ fn adjacent_unicode_edits_never_leave_invalid_fold_boundaries() {
     assert_eq!(editor.collapsed_pastes().len(), 1);
     editor.set_cursor(1, false);
     editor.insert("x", 2);
-    assert_eq!(editor.collapsed_pastes()[0].start, 2);
+    assert_eq!(
+        editor.collapsed_pastes().first().map(|paste| paste.start),
+        Some(2)
+    );
 }
 
 #[test]

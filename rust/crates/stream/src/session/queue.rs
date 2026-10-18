@@ -82,7 +82,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 .iter()
                 .rposition(|p| p.key.as_ref() == Some(key))
         });
-        let replaced = prior.map_or(0, |index| channel.pending[index].frame.encoded_len());
+        let replaced = prior
+            .and_then(|index| channel.pending.get(index))
+            .map_or(0, |pending| pending.frame.encoded_len());
         let bytes = self.pending_bytes - replaced + frame.encoded_len();
         let count = self.pending_frames + usize::from(prior.is_none());
         if bytes > self.limits.pending_bytes || count > self.limits.pending_frames {

@@ -129,7 +129,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
         .unwrap()
         .clone();
     let discovered = DiscoveredContext {
-        instructions: vec![file.clone(), file.clone()],
+        instructions: vec![file.clone().into(), file.clone().into()],
         skills: Vec::new(),
     };
     assert!(

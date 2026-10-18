@@ -5,107 +5,49 @@ use super::{
         text::{Line, Span},
     },
 };
-use crate::{
-    client::TaskFileViews,
-    model::{ModelDataPart, ToolResultContent},
-    wire,
-};
+use crate::{client::ClientViews, wire};
 use acyclic_markdown::Markdown;
 
-#[derive(Default)]
-struct StreamText {
-    markdown: Markdown,
-    fed: usize,
-    // Pending suffix repair: replace the last three displayed bytes, then append.
-    provisional: bool,
-    provisional_newline: bool,
-    provisional_row: Option<usize>,
-    #[cfg(test)]
-    work: usize,
-}
+mod archive;
+mod selection;
+mod stream_text;
+mod task;
+mod tool;
+use stream_text::StreamText;
 
-impl StreamText {
-    fn push(&mut self, text: &str, pending: usize) -> usize {
-        // Display the repairable suffix separately from the stable parser cut.
-        // Replacing these at most three bytes never replays stable Markdown.
-        let provisional = pending != 0;
-        let text = &text[..text.len().saturating_sub(pending)];
-        if text.len() < self.fed {
-            *self = Self::default();
-        }
-        let previous_row = self.provisional_row.take();
-        self.provisional = provisional;
-        self.provisional_newline = text.ends_with('\n');
-        let delta = text.get(self.fed..).unwrap_or_default();
-        self.fed = text.len();
-        #[cfg(test)]
-        {
-            self.work += delta.len();
-        }
-        let changed = self.markdown.push(delta);
-        // The provisional glyph may be on an earlier row than the completed
-        // Markdown leaf (for example an archive followed by whitespace).
-        let changed = previous_row.map_or(changed, |row| changed.min(row));
-        if provisional {
-            changed.min(self.markdown.lines().len().saturating_sub(1))
-        } else {
-            changed
-        }
-    }
-    fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
-        let mut rows: Vec<_> = self
-            .markdown
-            .lines()
-            .iter()
-            .skip(changed)
-            .map(line)
-            .collect();
-        if self.provisional {
-            if rows.is_empty() || self.provisional_newline {
-                rows.push(Line::default());
-            }
-            self.provisional_row = Some(changed + rows.len() - 1);
-            let last = rows.last_mut().expect("provisional row");
-            let style = last
-                .spans
-                .last()
-                .map_or(Style::default(), |span| span.style);
-            last.spans.push(Span::styled("\u{fffd}", style));
-        }
-        rows
-    }
-}
-
-/// Disposable incremental render cache. Authoritative state is always TaskFileViews
+/// Disposable incremental render cache. Authoritative state is always ClientViews
 /// and the followed files; this cache is never serialized or written back.
 #[derive(Default)]
 pub struct ClientRenderer {
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    file_cut: Option<(u64, wire::Authority)>,
+    #[cfg(test)]
+    folded_views: usize,
     key: String,
     help: super::help::Help,
+    search: super::TranscriptSearch,
+    search_open: bool,
     busy: bool,
     tool_details: bool,
-    seen: usize,
-    stable: usize,
-    turn: Option<crate::OperationId>,
-    file_start: Option<crate::task_volume::FileKey>,
-    reasoning_start: Option<crate::task_volume::FileKey>,
-    stream: StreamText,
-    reasoning: StreamText,
+    task: task::TaskRows,
+    archive: archive::Archive,
     reasoning_rows: Vec<Line<'static>>,
     transcript: Vec<Line<'static>>,
     wrapped: bool,
     transcript_changed: usize,
     reasoning_changed: usize,
     wrapped_transcript: super::WrappedLines,
+    wrapped_tools: super::WrappedLines,
+    tools_changed: usize,
     wrapped_reasoning: super::WrappedLines,
     wrapped_goal: super::WrappedLines,
     wrapped_plans: super::WrappedLines,
     side_wrapped: bool,
     goal_changed: usize,
     plans_changed: usize,
-    goal_source: String,
+    goal_source: Vec<crate::task_volume::HeadFile>,
     goal: Vec<Line<'static>>,
-    plan_source: String,
+    plan_source: Vec<crate::task_volume::HeadFile>,
     plans: Vec<Line<'static>>,
     header: Line<'static>,
     status: Line<'static>,
@@ -115,173 +57,164 @@ pub struct ClientRenderer {
     outcome_cut: Option<(u64, u64)>,
     outcome_notice: Option<Line<'static>>,
     composed_notices: Vec<Line<'static>>,
-    diff_cut: Option<(
-        crate::conversation::VolumeRef,
-        crate::resources::GenerationRef,
-        crate::resources::GenerationRef,
-    )>,
     diff: Vec<Line<'static>>,
 }
 
 impl ClientRenderer {
     #[cfg(test)]
     pub(crate) fn text_work(&self) -> usize {
-        self.stream.work + self.reasoning.work
+        self.task.work() + self.archive.work()
     }
+    /// Reuse the accepted file projection across input, scroll and timer frames.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub fn update_files(
+        &mut self,
+        client: &crate::client::TaskFileClient,
+        authority: &wire::Authority,
+    ) {
+        let revision = client.presentation_revision();
+        if self
+            .file_cut
+            .as_ref()
+            .is_some_and(|(cut, owner)| *cut == revision && owner == authority)
+        {
+            return;
+        }
+        self.update(client.views(), authority);
+        self.file_cut = Some((revision, authority.clone()));
+    }
+
     /// Update only the active agent. Stable transcript rows survive text deltas;
     /// the Markdown parser supplies the first changed open-block row.
-    pub fn update(&mut self, views: &TaskFileViews, authority: &wire::Authority) {
-        let key = crate::client::authority_key(authority);
+    pub fn update(&mut self, views: &ClientViews, authority: &wire::Authority) {
+        let key = authority.id.clone();
         if self.key != key {
             *self = Self {
-                key: key.clone(),
+                key,
                 tool_details: self.tool_details,
                 ..Self::default()
             };
         }
-        self.wrapped = false;
-        if let Some(transcript) = views.transcripts.get(&key) {
-            if transcript.messages.len() < self.seen {
-                self.seen = 0;
-                self.stable = 0;
-            }
-            if transcript.messages.len() != self.seen {
-                self.transcript_changed = self.transcript_changed.min(self.stable);
-                self.transcript.truncate(self.stable);
-                for message in &transcript.messages[self.seen..] {
-                    self.transcript.push(Line::styled(
-                        format!("{:?}", message.kind),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ));
-                    if let Some(text) = transcript.text.get(&message.id) {
-                        self.transcript.extend(markdown(text));
-                    } else if let Some(call) = message
-                        .tool_call_id
-                        .as_ref()
-                        .and_then(|id| views.tools.get(&key)?.get(id))
-                    {
-                        self.transcript.extend(tool_rows(
-                            &call.name,
-                            &call.output,
-                            self.tool_details,
-                        ));
-                    }
-                }
-                self.seen = transcript.messages.len();
-                self.stable = self.transcript.len();
-                self.stream = StreamText::default();
-            }
-            if self.turn != transcript.streaming_turn
-                || self.file_start != transcript.file_start
-                || self.reasoning_start != transcript.reasoning_start
-            {
-                self.turn = transcript.streaming_turn;
-                self.file_start.clone_from(&transcript.file_start);
-                self.reasoning_start.clone_from(&transcript.reasoning_start);
-                self.reasoning = StreamText::default();
-                self.stream = StreamText::default();
-                self.transcript_changed = self.transcript_changed.min(self.stable);
-                self.transcript.truncate(self.stable);
-            }
-            let changed_reasoning = self
-                .reasoning
-                .push(&transcript.reasoning, transcript.pending(true));
-            self.reasoning_changed = self.reasoning_changed.min(changed_reasoning);
-            self.reasoning_rows.truncate(changed_reasoning);
-            self.reasoning_rows
-                .extend(self.reasoning.rows(changed_reasoning));
-            let changed = self
-                .stream
-                .push(&transcript.streaming_text, transcript.pending(false));
-            self.transcript_changed = self.transcript_changed.min(self.stable + changed);
-            self.transcript.truncate(self.stable + changed);
-            self.transcript.extend(self.stream.rows(changed));
-        } else {
-            self.seen = 0;
-            self.stable = 0;
-            self.turn = None;
-            self.stream = StreamText::default();
-            self.transcript.clear();
-            self.transcript_changed = 0;
-            self.reasoning = StreamText::default();
-            self.reasoning_rows.clear();
-            self.reasoning_changed = 0;
-        }
-        if let Some(tools) = views.tools.get(&key) {
-            for tool in tools.values().filter(|tool| tool.result.is_none()) {
-                self.transcript
-                    .extend(tool_rows(&tool.name, &tool.output, self.tool_details));
-            }
-        }
-        if let Some(documents) = views.documents.get(&key) {
-            let goal = documents.goal.as_deref().unwrap_or_default();
-            if self.goal_source != goal {
-                self.goal = markdown(goal);
-                self.goal_changed = 0;
-                self.goal_source = goal.into();
-            }
-            let plans = documents
-                .plans
-                .iter()
-                .map(|(name, text)| format!("# {}\n{text}", name.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if self.plan_source != plans {
-                self.plans = markdown(&plans);
-                self.plans_changed = 0;
-                self.plan_source = plans;
-            }
-        } else {
-            self.goal_source.clear();
-            self.goal.clear();
-            self.goal_changed = 0;
-            self.plan_source.clear();
-            self.plans.clear();
-            self.plans_changed = 0;
-        }
-        let diff = views.diffs.get(&key);
-        let cut = diff.map(|view| (view.volume(), view.base(), view.generation()));
-        if self
-            .diff_cut
-            .as_ref()
-            .map(|(volume, base, generation)| (volume, base, generation))
-            != cut
+        #[cfg(test)]
         {
-            self.diff = diff.map_or_else(Vec::new, |view| super::diff_lines(view.files()));
-            self.diff_cut = cut.map(|(volume, base, generation)| {
-                (volume.clone(), base.clone(), generation.clone())
-            });
+            self.folded_views += 1;
         }
-        let task = views.tasks.get(&key);
-        self.busy = task.is_some_and(|task| task.status == crate::core::LifecycleState::Active);
+        self.wrapped = false;
+        self.side_wrapped = false;
+        let selected = selection::selected::<true>(views, authority);
+        let archive = views
+            .selections()
+            .find_map(|(_, selection)| match selection.query() {
+                crate::task_volume::Query::CommandSession { session, .. } => {
+                    Some((selection, session.clone()))
+                }
+                _ => None,
+            });
+        let old_prefix = self.archive.rows().len();
+        let archive_changed = self
+            .archive
+            .update(archive.as_ref().map(|(files, session)| {
+                (*files, crate::client::OutputOwner::Session(session.clone()))
+            }));
+        let archived = selected.as_ref().is_some_and(|(_, task)| {
+            archive.as_ref().is_some_and(|(files, session)| {
+                crate::TaskId::parse(task.as_str()).is_ok_and(|task| {
+                    files.has_command_text(
+                        &crate::client::OutputOwner::Session(session.clone()),
+                        task,
+                        self.archive.after(),
+                    )
+                })
+            })
+        });
+        let task_changed = self.task.update(
+            selected.as_ref().map(|(files, task)| files.task(task)),
+            self.tool_details,
+            archived,
+        );
+        if self.task.tools_changed() {
+            self.tools_changed = 0;
+        }
+        let prefix = self.archive.rows().len();
+        let changed = if archive_changed < old_prefix || prefix != old_prefix {
+            self.transcript.truncate(archive_changed);
+            self.transcript
+                .extend_from_slice(&self.archive.rows()[archive_changed..]);
+            self.transcript.extend_from_slice(self.task.rows());
+            archive_changed
+        } else {
+            let changed = prefix + task_changed;
+            self.transcript.truncate(changed);
+            self.transcript
+                .extend_from_slice(&self.task.rows()[task_changed..]);
+            changed
+        };
+        self.transcript_changed = self.transcript_changed.min(changed);
+        let (changed, rows) = self.task.reasoning();
+        self.reasoning_rows.truncate(changed);
+        self.reasoning_rows.extend_from_slice(&rows[changed..]);
+        self.reasoning_changed = self.reasoning_changed.min(changed);
+        self.documents(views);
+        self.busy = self.task.busy();
         self.header = Line::from(vec![
             Span::raw(if self.busy { "● " } else { "○ " }),
             Span::styled("GraphCoder", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(
-                if task.is_some_and(|task| task.status == crate::core::LifecycleState::Cancelled) {
-                    " ■ STOPPED"
-                } else {
-                    ""
-                },
-            ),
+            Span::raw(if self.task.stopped() {
+                " ■ STOPPED"
+            } else {
+                ""
+            }),
         ]);
-        let usage = views
-            .usage
-            .get(&key)
-            .map_or(String::new(), ToString::to_string);
-        self.status = Line::raw(super::display_text(&usage).into_owned());
-        self.notices = task
-            .and_then(|task| task.reason.as_deref())
-            .map(|text| vec![Line::raw(text.escape_debug().to_string())])
-            .unwrap_or_default();
+        self.status = Line::raw(super::display_text(&self.task.usage()).into_owned());
+        self.notices = self.task.notices();
         self.compose_notices();
+    }
+
+    fn documents(&mut self, views: &ClientViews) {
+        let goals = || {
+            views
+                .selections()
+                .filter_map(|(_, files)| files.files().get(&crate::task_volume::FileKey::Goal))
+        };
+        let plans = || views.selections().flat_map(|(_, files)| files.plan_files());
+        if !self.goal_source.iter().eq(goals()) {
+            self.goal_source = goals().cloned().collect();
+            let mut parser = Markdown::default();
+            for file in &self.goal_source {
+                for bytes in &file.segments {
+                    parser.push(&String::from_utf8_lossy(bytes));
+                }
+            }
+            self.goal = parser.lines().iter().map(line).collect();
+            self.goal_changed = 0;
+        }
+        if !self.plan_source.iter().eq(plans()) {
+            self.plan_source = plans().cloned().collect();
+            let mut parser = Markdown::default();
+            for (index, file) in self.plan_source.iter().enumerate() {
+                let crate::task_volume::FileKey::Plan(name) = &file.key else {
+                    unreachable!()
+                };
+                if index != 0 {
+                    parser.push("\n\n");
+                }
+                parser.push("# ");
+                parser.push(name.as_str());
+                parser.push("\n");
+                for bytes in &file.segments {
+                    parser.push(&String::from_utf8_lossy(bytes));
+                }
+            }
+            self.plans = parser.lines().iter().map(line).collect();
+            self.plans_changed = 0;
+        }
     }
 
     /// Apply followed tool visibility, rebuilding the disposable transcript only
     /// when this preference changes. The file remains the authoritative setting.
     pub fn configure<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
-        views: &TaskFileViews,
+        views: &ClientViews,
         authority: &wire::Authority,
         files: &crate::client::CommandSession<P>,
     ) -> crate::Result<()> {
@@ -296,20 +229,20 @@ impl ClientRenderer {
             })
             .transpose()?
             .unwrap_or(false);
-        if self.tool_details != details {
+        // Layout is followed by CommandSession, outside the answer selection.
+        let after = files
+            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .and_then(|layout| layout["history_after"].as_u64())
+            .unwrap_or(0);
+        if self.tool_details != details || self.archive.after() != after {
             self.tool_details = details;
-            self.seen = 0;
-            self.stable = 0;
+            self.task = task::TaskRows::default();
             self.transcript.clear();
             self.transcript_changed = 0;
-            self.stream = StreamText::default();
+            self.archive = archive::Archive::new(after);
             self.update(views, authority);
         }
-        self.busy = files.pending_execution()?
-            || views
-                .tasks
-                .get(&self.key)
-                .is_some_and(|task| task.status == crate::core::LifecycleState::Active);
+        self.busy = files.pending_execution()? || self.task.busy();
         if let Some(marker) = self.header.spans.first_mut() {
             marker.content = std::borrow::Cow::Borrowed(if self.busy { "● " } else { "○ " });
         }
@@ -331,6 +264,7 @@ impl ClientRenderer {
         let width = areas.transcript.width;
         self.wrapped_transcript
             .update(&self.transcript, self.transcript_changed, width);
+        self.wrap_tools(width);
         self.wrapped_reasoning
             .update(&self.reasoning_rows, self.reasoning_changed, width);
         self.transcript_changed = self.transcript.len();
@@ -346,7 +280,51 @@ impl ClientRenderer {
             self.plans_changed = self.plans.len();
         }
         self.wrapped = true;
+        let layout = files
+            .state(crate::client::CommandFileRoot::Session, "layout.json")?
+            .unwrap_or_default();
+        self.search_open = layout["open_view"] == "find" && layout["view_input"] == "find";
+        let rows = super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
+        self.search.project(rows, self.search_open);
+        if self.search_open {
+            self.search.update(
+                rows,
+                layout["search_query"].as_str().unwrap_or(""),
+                layout["search_index"].as_i64().unwrap_or(0),
+                input.theme.style(super::config::ThemeRole::Selection),
+            );
+            let height = usize::from(areas.transcript.height);
+            let first = if self.search.count() != 0 {
+                self.search
+                    .selected_row(rows, layout["search_index"].as_i64().unwrap_or(0))
+            } else {
+                rows.len()
+                    .saturating_sub(height)
+                    .saturating_sub(layout["history_after"].as_u64().unwrap_or(0) as usize)
+            }
+            .min(rows.len().saturating_sub(height));
+            self.search.prepare(rows, first, height);
+        }
         Ok(())
+    }
+
+    fn wrap_tools(&mut self, width: u16) {
+        self.wrapped_tools
+            .update(self.task.tools(), self.tools_changed, width);
+        self.tools_changed = self.task.tools().len();
+    }
+
+    /// Yield before a bounded, cancellable full-search-count slice.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn search_progress(&mut self) {
+        if !self.search_open || !self.search.pending() {
+            std::future::pending::<()>().await;
+        }
+        tokio::task::yield_now().await;
+        self.search.advance(
+            super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools),
+            4096,
+        );
     }
 
     fn compose_notices(&mut self) {
@@ -426,6 +404,28 @@ impl ClientRenderer {
             };
         }
         match view {
+            Some("find")
+                if layout
+                    .as_ref()
+                    .is_some_and(|value| value["view_input"] == "find") =>
+            {
+                let index = layout
+                    .as_ref()
+                    .and_then(|value| value["search_index"].as_i64())
+                    .unwrap_or(0);
+                let rows =
+                    super::TranscriptRows::new(&self.wrapped_transcript, &self.wrapped_tools);
+                screen.transcript_search = Some((rows, &self.search));
+                screen.reasoning = &[];
+                screen.search_row =
+                    (self.search.count() != 0).then(|| self.search.selected_row(rows, index));
+                screen.status = Line::raw(format!(
+                    "Find: {}/{}{} matches · Enter next · Shift+Enter previous · Escape closes",
+                    self.search.position(index),
+                    self.search.count(),
+                    if self.search.pending() { "…" } else { "" }
+                ));
+            }
             Some("feedback") => {
                 screen.feedback = layout
                     .as_ref()
@@ -448,7 +448,7 @@ impl ClientRenderer {
         Ok(screen)
     }
 
-    /// Borrow cached rows for layout; no TaskFileViews or transcript clone per frame.
+    /// Borrow cached rows for layout; no ClientViews or transcript clone per frame.
     pub fn screen(&self) -> Screen<'_> {
         // TODO(#495): bind the captured-volume snapshot/follow to the client diff fold.
         // TODO(#548): compose split/auto diffs when that renderer is exposed.
@@ -458,6 +458,11 @@ impl ClientRenderer {
                 self.wrapped_transcript.rows()
             } else {
                 &self.transcript
+            },
+            tools: if self.wrapped {
+                self.wrapped_tools.rows()
+            } else {
+                self.task.tools()
             },
             diff: &self.diff,
             goal: if self.wrapped && self.side_wrapped {
@@ -475,12 +480,6 @@ impl ClientRenderer {
             ..Screen::default()
         }
     }
-}
-
-fn markdown(text: &str) -> Vec<Line<'static>> {
-    let mut markdown = Markdown::default();
-    markdown.push(text);
-    markdown.lines().iter().map(line).collect()
 }
 
 fn line(line: &acyclic_markdown::Line) -> Line<'static> {
@@ -510,36 +509,22 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
     )
 }
 
-fn tool_rows(name: &str, output: &ToolResultContent, details: bool) -> Vec<Line<'static>> {
-    // TODO(#548): use specialized per-tool renderers when their API lands.
-    let mut rows = vec![Line::styled(
-        name.escape_debug().to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
-    if !details {
-        return rows;
-    }
-    let text = match output {
-        ToolResultContent::Json { value } => value
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| value.to_string()),
-        ToolResultContent::Parts { parts } => parts
-            .iter()
-            .map(|part| match part {
-                ModelDataPart::Text { text } => text.as_str(),
-                ModelDataPart::File { .. } => "[attachment]",
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    };
-    if text.is_empty() {
-        return rows;
-    }
-    let bounded = text.lines().take(20).collect::<Vec<_>>().join("\n");
-    rows.extend(markdown(&bounded).into_iter().take(20));
-    rows
-}
-
+#[cfg(test)]
+mod tail_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "search_tests.rs"]
+mod search_tests;
+#[cfg(test)]
+#[path = "thinking_tests.rs"]
+mod thinking_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "frame_tests.rs"]
+mod frame_tests;
+
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "thinking_frame_tests.rs"]
+mod thinking_frame_tests;

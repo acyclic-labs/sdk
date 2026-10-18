@@ -273,7 +273,7 @@ use proof::Proof;
 use publication::LastCommit;
 pub(crate) use publication::PublicationClosure;
 pub(crate) use publication::VerifiedPublication;
-use publication::closure_limits;
+pub(crate) use publication::closure_limits;
 use publication::durable_head;
 #[cfg(not(target_arch = "wasm32"))]
 use read_accounting::native_pinned_allocation;

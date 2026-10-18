@@ -45,8 +45,8 @@ use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
-mod bytes;
 mod admission;
+mod bytes;
 use admission::*;
 mod content;
 use content::*;
@@ -73,6 +73,7 @@ mod file_worker;
 mod query;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod swarm;
+mod task_views;
 mod wire;
 
 #[cfg(target_arch = "wasm32")]

@@ -4,10 +4,14 @@ use super::*;
 pub(super) mod fixture;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod model;
-#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
 mod ordering;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod route_searches;
 
 #[cfg(acyclic_stream_loom)]
 pub(super) mod discovery_model;
@@ -24,7 +28,7 @@ impl Pool {
                 id = self.removed.next() => self.remove(id?)?,
                 ready = future::poll_fn(|cx| poll_dials(&mut self.dials, cx)), if !self.dials.is_empty() => {
                     let (node,epoch,result) = ready.ok_or(StreamError::Unavailable)?;
-                    self.dial_ready(node, epoch, result)?;
+                    self.dial_ready(&node, epoch, result)?;
                 }
                 () = future::ready(()), if !self.pending.is_empty() => {
                     if let Some((id,generation)) = self.pending.pop_front()
@@ -35,9 +39,8 @@ impl Pool {
                         if self.links.get(&node).is_none_or(|link| link.epoch != epoch) { continue; }
                         match value {
                             Some(Ok(value)) => { if self.receive_frame(&node,value) { self.read(node,response); } }
-                            Some(Err(StreamError::Unavailable)) => self.reconnect(&node)?,
+                            Some(Err(StreamError::Unavailable)) | None => self.reconnect(&node)?,
                             Some(Err(error)) => self.fail_link(&node,&error),
-                            None => self.reconnect(&node)?,
                         }
                     }
                     None => return Err(StreamError::Unavailable),
@@ -69,7 +72,7 @@ impl Pool {
     }
     pub(super) fn dial_ready(
         &mut self,
-        node: String,
+        node: &str,
         epoch: u64,
         result: Result<Ready, StreamError>,
     ) -> Result<(), StreamError> {
@@ -79,7 +82,7 @@ impl Pool {
             // Neither its failure nor its success belongs to the successor dial.
             return Ok(());
         }
-        if !self.node_interested(&node) {
+        if !self.node_interested(node) {
             return Ok(());
         }
         match result {
@@ -103,7 +106,7 @@ impl Pool {
                         .map(|(id, route)| (*id, route.generation)),
                 );
             }
-            Err(error) => self.fail_node(&node, &error),
+            Err(error) => self.fail_node(node, &error),
         }
         Ok(())
     }
@@ -302,54 +305,26 @@ impl Pool {
         }
         match input.body {
             Some(Body::Opened(opened)) => {
-                if opened.resume.as_ref().is_none_or(|resume| {
-                    resume.next != route.received || resume.opaque != route.received_opaque
-                }) {
-                    return Err(StreamError::Unavailable);
+                if let Some(error) = Self::opened(route, id, &opened)? {
+                    let records = route.records.clone();
+                    self.remove(id)?;
+                    self.executor.spawn(Box::pin(async move {
+                        let _ = records.send(Err(error)).await;
+                    }));
+                    Ok(())
+                } else {
+                    self.grant(id)
                 }
-                if let Kind::Follow(follow) = &route.kind {
-                    let preceding = wire_codec::session::preceding_follow(
-                        follow,
-                        opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
-                    )?;
-                    if let Err(error) = wire_codec::session::confirm_follow(preceding, &opened) {
-                        if let Some(ready) = route.ready.take() {
-                            let _ = ready.send(Err(error.clone()));
-                        }
-                        let records = route.records.clone();
-                        self.remove(id)?;
-                        self.executor.spawn(Box::pin(async move {
-                            let _ = records.send(Err(error)).await;
-                        }));
-                        return Ok(());
-                    }
-                }
-                if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Ok(id));
-                }
-                route.observation.record("generation", route.generation);
-                route.opened = true;
-                self.grant(id)
             }
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
-                let error =
-                    StreamError::from_code(&closed.code).unwrap_or(StreamError::Unavailable);
-                if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
-                    && let Some(ready) = route.ready.take()
-                {
-                    let _ = ready.send(Err(error));
-                    self.routes.remove(&id);
-                    return Ok(());
-                }
-                // Errors are delivered after all earlier records, using one reserved slot.
-                if let Some(ready) = route.ready.take() {
-                    let _ = ready.send(Ok(id));
-                }
+                let error = Self::closed(route, id, &closed);
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-                self.executor.spawn(Box::pin(async move {
-                    let _ = route.records.send(Err(error)).await;
-                }));
+                if let Some(error) = error {
+                    self.executor.spawn(Box::pin(async move {
+                        let _ = route.records.send(Err(error)).await;
+                    }));
+                }
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
@@ -380,6 +355,51 @@ impl Pool {
             }
             _ => Err(StreamError::Unavailable),
         }
+    }
+    /// Accept an Open reply that resumes exactly where the route left off.
+    fn opened(
+        route: &mut Route,
+        id: u64,
+        opened: &wire::SessionOpened,
+    ) -> Result<Option<StreamError>, StreamError> {
+        if opened.resume.as_ref().is_none_or(|resume| {
+            resume.next != route.received || resume.opaque != route.received_opaque
+        }) {
+            return Err(StreamError::Unavailable);
+        }
+        if let Kind::Follow(follow) = &route.kind {
+            let preceding = wire_codec::session::preceding_follow(
+                follow,
+                opened.resume.as_ref().ok_or(StreamError::Unavailable)?,
+            )?;
+            if let Err(error) = wire_codec::session::confirm_follow(preceding, opened) {
+                if let Some(ready) = route.ready.take() {
+                    let _ = ready.send(Err(error.clone()));
+                }
+                return Ok(Some(error));
+            }
+        }
+        if let Some(ready) = route.ready.take() {
+            let _ = ready.send(Ok(id));
+        }
+        route.observation.record("generation", route.generation);
+        route.opened = true;
+        Ok(None)
+    }
+    /// End a route with the server's status after its earlier records.
+    fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {
+        let error = StreamError::from_session_close(&closed.code);
+        if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
+            && let Some(ready) = route.ready.take()
+        {
+            let _ = ready.send(Err(error));
+            return None;
+        }
+        // Errors are delivered after all earlier records, using one reserved slot.
+        if let Some(ready) = route.ready.take() {
+            let _ = ready.send(Ok(id));
+        }
+        Some(error)
     }
     fn control(
         &mut self,
@@ -558,10 +578,13 @@ impl Pool {
     }
 }
 
+/// A finished dial: its node, its dial epoch and the connection outcome.
+pub(super) type Dialed = (String, u64, Result<Ready, StreamError>);
+
 pub(super) fn poll_dials(
     dials: &mut BTreeMap<String, Dial>,
     cx: &mut std::task::Context<'_>,
-) -> std::task::Poll<Option<(String, u64, Result<Ready, StreamError>)>> {
+) -> std::task::Poll<Option<Dialed>> {
     for (node, dial) in dials.iter_mut() {
         if let std::task::Poll::Ready(result) = dial.as_mut().poll(cx) {
             let node = node.clone();

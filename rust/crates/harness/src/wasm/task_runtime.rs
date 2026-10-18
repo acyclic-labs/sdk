@@ -275,6 +275,9 @@ impl WasmTaskRuntime {
             stream,
             filesystem.clone(),
             &options.volume,
+            // The authorized private journal volume also holds the stock
+            // turn's compaction summaries.
+            Some(&options.volume),
             &verifier,
             &scope,
             &root,

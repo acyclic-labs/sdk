@@ -22,10 +22,10 @@ pub(super) fn observe_exit_id(
         // child's ID. WNOWAIT retains the leader until group termination,
         // preventing its PID/PGID from being reused for an unrelated group.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        // SAFETY: `info` is writable storage owned by this frame and `id`
-        // names the exclusively owned child.
         let (waited, recorded) =
             super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
+                // SAFETY: `info` is writable storage owned by this frame and
+                // `id` names the exclusively owned child.
                 if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
                     Ok(())
                 } else {
@@ -95,11 +95,8 @@ pub(super) fn read_pipe(
             // borrowed writable allocation; read initializes its prefix.
             let read =
                 unsafe { libc::read(pipe.as_raw_fd(), buffer.as_mut_ptr().cast(), buffer.len()) };
-            if read < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(read as usize)
-            }
+            // Only the -1 failure result is negative.
+            usize::try_from(read).map_err(|_| io::Error::last_os_error())
         })?;
     match read {
         Err(error)
@@ -210,10 +207,8 @@ impl SpawnResources {
         if self.actions.is_some() {
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 let actions = self.actions.as_mut().ok_or(io::ErrorKind::NotFound)?;
-                let status = unsafe { libc::posix_spawn_file_actions_destroy(actions) };
-                if status != 0 {
-                    return Err(io::Error::from_raw_os_error(status));
-                }
+                // SAFETY: a retained object is initialized and not yet destroyed.
+                spawn_status(unsafe { libc::posix_spawn_file_actions_destroy(actions) })?;
                 self.actions.take();
                 Ok(())
             })?;
@@ -221,10 +216,8 @@ impl SpawnResources {
         if self.attributes.is_some() {
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
                 let attributes = self.attributes.as_mut().ok_or(io::ErrorKind::NotFound)?;
-                let status = unsafe { libc::posix_spawnattr_destroy(attributes) };
-                if status != 0 {
-                    return Err(io::Error::from_raw_os_error(status));
-                }
+                // SAFETY: a retained object is initialized and not yet destroyed.
+                spawn_status(unsafe { libc::posix_spawnattr_destroy(attributes) })?;
                 self.attributes.take();
                 Ok(())
             })?;
@@ -270,8 +263,8 @@ unsafe extern "C" {
 }
 
 pub(super) fn inherited_environment() -> *mut *mut libc::c_char {
-    // The existing closed-spawn host contract excludes concurrent unsafe
-    // native environment mutation while these pointers are borrowed.
+    // SAFETY: the existing closed-spawn host contract excludes concurrent
+    // unsafe native environment mutation while these pointers are borrowed.
     unsafe {
         #[cfg(target_vendor = "apple")]
         return *_NSGetEnviron();
@@ -319,173 +312,197 @@ pub(super) fn spawn_closed_with_arguments(
     meter: &dyn crate::NativeReadMeter,
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
-    let result = (|| {
-        let attr_cleanup = meter.reserve_cleanup_write()?;
-        let actions_cleanup = match meter.reserve_cleanup_write() {
-            Ok(cleanup) => cleanup,
-            Err(error) => {
-                meter.cancel_cleanup_write(attr_cleanup);
-                return Err(error);
-            }
+    let attr_cleanup = meter.reserve_cleanup_write()?;
+    let actions_cleanup = match meter.reserve_cleanup_write() {
+        Ok(cleanup) => cleanup,
+        Err(error) => {
+            meter.cancel_cleanup_write(attr_cleanup);
+            return Err(error);
+        }
+    };
+    let mut objects = SpawnObjects {
+        attributes: std::mem::MaybeUninit::uninit(),
+        actions: std::mem::MaybeUninit::uninit(),
+        attr_initialized: false,
+        actions_initialized: false,
+    };
+    let spawned = objects
+        .initialize(meter)
+        .and_then(|()| objects.spawn(program, arguments, environment, meter, custody));
+    // Retire objects in reverse construction order. Both actual
+    // destroys run even after cancellation or another cleanup failure.
+    let (actions_result, actions) = retire(
+        objects.actions_initialized.then_some(&mut objects.actions),
+        libc::posix_spawn_file_actions_destroy,
+        actions_cleanup,
+        meter,
+    );
+    let (attr_result, attributes) = retire(
+        objects.attr_initialized.then_some(&mut objects.attributes),
+        libc::posix_spawnattr_destroy,
+        attr_cleanup,
+        meter,
+    );
+    let retained = SpawnResources {
+        actions,
+        attributes,
+    };
+    if retained.pending() {
+        let owner = custody.get_or_insert_with(|| super::ProcessTree {
+            child: None,
+            native_child: None,
+            guard: Guard {
+                process_group: 0,
+                active: false,
+            },
+            output_taken: false,
+            cleanup_on_drop: false,
+            spawn_resources: SpawnResources::default(),
+            prepared_spawn: None,
+        });
+        owner.spawn_resources = retained;
+    }
+    spawned.and(actions_result).and(attr_result)
+}
+
+fn spawn_status(status: libc::c_int) -> io::Result<()> {
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(status))
+    }
+}
+
+/// One closed spawn's native objects; each initialized one must be destroyed.
+struct SpawnObjects {
+    attributes: std::mem::MaybeUninit<libc::posix_spawnattr_t>,
+    actions: std::mem::MaybeUninit<libc::posix_spawn_file_actions_t>,
+    attr_initialized: bool,
+    actions_initialized: bool,
+}
+
+impl SpawnObjects {
+    fn initialize(&mut self, meter: &dyn crate::NativeReadMeter) -> io::Result<()> {
+        let flags = libc::c_short::try_from(libc::POSIX_SPAWN_SETPGROUP)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let native = |call: &mut dyn FnMut() -> libc::c_int| {
+            super::process_control_attempt(Some(meter), crate::NativeOperationKind::Write, || {
+                spawn_status(call())
+            })
         };
-        let mut attributes = std::mem::MaybeUninit::<libc::posix_spawnattr_t>::uninit();
-        let mut actions = std::mem::MaybeUninit::<libc::posix_spawn_file_actions_t>::uninit();
-        let mut attr_initialized = false;
-        let mut actions_initialized = false;
-        let spawned = (|| {
-            let native = |call: &mut dyn FnMut() -> libc::c_int| {
-                super::process_control_attempt(
-                    Some(meter),
-                    crate::NativeOperationKind::Write,
-                    || {
-                        let status = call();
-                        if status == 0 {
-                            Ok(())
-                        } else {
-                            Err(io::Error::from_raw_os_error(status))
-                        }
-                    },
-                )
+        native(&mut || {
+            // SAFETY: this owner's attribute storage, before its initialization.
+            let status = unsafe { libc::posix_spawnattr_init(self.attributes.as_mut_ptr()) };
+            self.attr_initialized |= status == 0;
+            status
+        })?;
+        native(&mut || {
+            // SAFETY: this owner's file-action storage, before its initialization.
+            let status = unsafe { libc::posix_spawn_file_actions_init(self.actions.as_mut_ptr()) };
+            self.actions_initialized |= status == 0;
+            status
+        })?;
+        // SAFETY: the attribute object initialized above.
+        native(&mut || unsafe {
+            libc::posix_spawnattr_setpgroup(self.attributes.as_mut_ptr(), 0)
+        })?;
+        // SAFETY: the attribute object initialized above.
+        native(&mut || unsafe {
+            libc::posix_spawnattr_setflags(self.attributes.as_mut_ptr(), flags)
+        })?;
+        for descriptor in [0, 1, 2] {
+            let access = if descriptor == 0 {
+                libc::O_RDONLY
+            } else {
+                libc::O_WRONLY
             };
+            // SAFETY: the file-action object initialized above and a static
+            // NUL-terminated path, which the call copies.
             native(&mut || unsafe {
-                let status = libc::posix_spawnattr_init(attributes.as_mut_ptr());
-                if status == 0 {
-                    attr_initialized = true;
-                }
-                status
-            })?;
-            native(&mut || unsafe {
-                let status = libc::posix_spawn_file_actions_init(actions.as_mut_ptr());
-                if status == 0 {
-                    actions_initialized = true;
-                }
-                status
-            })?;
-            native(&mut || unsafe { libc::posix_spawnattr_setpgroup(attributes.as_mut_ptr(), 0) })?;
-            native(&mut || unsafe {
-                libc::posix_spawnattr_setflags(
-                    attributes.as_mut_ptr(),
-                    libc::POSIX_SPAWN_SETPGROUP as libc::c_short,
+                libc::posix_spawn_file_actions_addopen(
+                    self.actions.as_mut_ptr(),
+                    descriptor,
+                    c"/dev/null".as_ptr(),
+                    access,
+                    0,
                 )
             })?;
-            for descriptor in [0, 1, 2] {
-                native(&mut || unsafe {
-                    libc::posix_spawn_file_actions_addopen(
-                        actions.as_mut_ptr(),
-                        descriptor,
-                        c"/dev/null".as_ptr(),
-                        if descriptor == 0 {
-                            libc::O_RDONLY
-                        } else {
-                            libc::O_WRONLY
-                        },
-                        0,
-                    )
-                })?;
-            }
-            let mut pid = 0;
-            loop {
-                let (result, recorded) = super::pipe_operation_attempt(
-                    Some(meter),
-                    crate::NativeOperationKind::Write,
-                    || unsafe {
-                        let environment = environment.unwrap_or_else(inherited_environment);
-                        let status = libc::posix_spawn(
+        }
+        Ok(())
+    }
+
+    fn spawn(
+        &self,
+        program: &std::ffi::CStr,
+        arguments: &[*mut libc::c_char],
+        environment: Option<*mut *mut libc::c_char>,
+        meter: &dyn crate::NativeReadMeter,
+        custody: &mut Option<super::ProcessTree>,
+    ) -> io::Result<()> {
+        let mut pid = 0;
+        loop {
+            let (result, recorded) = super::pipe_operation_attempt(
+                Some(meter),
+                crate::NativeOperationKind::Write,
+                || {
+                    let environment = environment.unwrap_or_else(inherited_environment);
+                    // SAFETY: both spawn objects are initialized; the program,
+                    // the null-terminated argument vector and the environment
+                    // stay live and unmodified through this synchronous call.
+                    let status = unsafe {
+                        libc::posix_spawn(
                             &raw mut pid,
                             program.as_ptr(),
-                            actions.as_ptr(),
-                            attributes.as_ptr(),
+                            self.actions.as_ptr(),
+                            self.attributes.as_ptr(),
                             arguments.as_ptr(),
                             environment,
-                        );
-                        if status == 0 {
-                            *custody = Some(super::ProcessTree {
-                                child: None,
-                                native_child: Some(pid),
-                                guard: Guard {
-                                    process_group: pid,
-                                    active: true,
-                                },
-                                output_taken: false,
-                                cleanup_on_drop: false,
-                                spawn_resources: SpawnResources::default(),
-                                prepared_spawn: None,
-                            });
-                        }
-                        if status == 0 {
-                            Ok(())
-                        } else {
-                            Err(io::Error::from_raw_os_error(status))
-                        }
-                    },
-                )?;
-                recorded?;
-                match result {
-                    Err(error)
-                        if error.kind() == io::ErrorKind::Interrupted && custody.is_none() => {}
-                    result => {
-                        result?;
-                        break;
+                        )
+                    };
+                    if status == 0 {
+                        *custody = Some(super::ProcessTree {
+                            child: None,
+                            native_child: Some(pid),
+                            guard: Guard {
+                                process_group: pid,
+                                active: true,
+                            },
+                            output_taken: false,
+                            cleanup_on_drop: false,
+                            spawn_resources: SpawnResources::default(),
+                            prepared_spawn: None,
+                        });
                     }
-                }
-            }
-            Ok(())
-        })();
-        // Retire objects in reverse construction order. Both actual
-        // destroys run even after cancellation or another cleanup failure.
-        let mut retained = SpawnResources::default();
-        let actions_result = if actions_initialized {
-            let recorded = meter.record_cleanup_write(actions_cleanup);
-            let status = unsafe { libc::posix_spawn_file_actions_destroy(actions.as_mut_ptr()) };
-            if status != 0 {
-                retained.actions = Some(unsafe { actions.assume_init() });
-            }
-            recorded.and_then(|()| {
-                if status == 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::from_raw_os_error(status))
-                }
-            })
-        } else {
-            meter.cancel_cleanup_write(actions_cleanup);
-            Ok(())
-        };
-        let attr_result = if attr_initialized {
-            let recorded = meter.record_cleanup_write(attr_cleanup);
-            let status = unsafe { libc::posix_spawnattr_destroy(attributes.as_mut_ptr()) };
-            if status != 0 {
-                retained.attributes = Some(unsafe { attributes.assume_init() });
-            }
-            recorded.and_then(|()| {
-                if status == 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::from_raw_os_error(status))
-                }
-            })
-        } else {
-            meter.cancel_cleanup_write(attr_cleanup);
-            Ok(())
-        };
-        if retained.pending() {
-            let owner = custody.get_or_insert_with(|| super::ProcessTree {
-                child: None,
-                native_child: None,
-                guard: Guard {
-                    process_group: 0,
-                    active: false,
+                    spawn_status(status)
                 },
-                output_taken: false,
-                cleanup_on_drop: false,
-                spawn_resources: SpawnResources::default(),
-                prepared_spawn: None,
-            });
-            owner.spawn_resources = retained;
+            )?;
+            recorded?;
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && custody.is_none() => {}
+                result => return result,
+            }
         }
-        spawned.and(actions_result).and(attr_result)
-    })();
-    result
+    }
+}
+
+/// Destroys one initialized spawn object, returning it when the destroy fails.
+fn retire<T>(
+    object: Option<&mut std::mem::MaybeUninit<T>>,
+    destroy: unsafe extern "C" fn(*mut T) -> libc::c_int,
+    cleanup: u64,
+    meter: &dyn crate::NativeReadMeter,
+) -> (io::Result<()>, Option<T>) {
+    let Some(object) = object else {
+        meter.cancel_cleanup_write(cleanup);
+        return (Ok(()), None);
+    };
+    let recorded = meter.record_cleanup_write(cleanup);
+    // SAFETY: the caller passes only an initialized, not yet destroyed object.
+    let status = unsafe { destroy(object.as_mut_ptr()) };
+    // SAFETY: a failed destroy leaves the object initialized; this read moves
+    // it to its retaining owner, and the frame's storage is not used again.
+    let retained = (status != 0).then(|| unsafe { object.assume_init_read() });
+    (recorded.and_then(|()| spawn_status(status)), retained)
 }
 
 impl Guard {
@@ -520,10 +537,9 @@ impl Guard {
                     Err(io::Error::last_os_error())
                 }
             });
-        if signal.is_ok() {
+        let Err(error) = signal else {
             return Ok(());
-        }
-        let error = signal.expect_err("failed graceful group signal");
+        };
         if self.group_gone(&error, meter)? {
             Ok(())
         } else {
@@ -538,10 +554,10 @@ impl Guard {
         if !self.active {
             return Ok(());
         }
-        // SAFETY: a negative, nonzero pid addresses exactly this owned
-        // process group; SIGKILL requires no shared memory or signal data.
         let signal =
             super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
+                // SAFETY: a negative, nonzero pid addresses exactly this owned
+                // process group; SIGKILL requires no shared memory or signal data.
                 if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
                     self.active = false;
                     Ok(())
@@ -549,10 +565,9 @@ impl Guard {
                     Err(io::Error::last_os_error())
                 }
             });
-        if signal.is_ok() {
+        let Err(error) = signal else {
             return Ok(());
-        }
-        let error = signal.expect_err("failed group signal");
+        };
         if self.group_gone(&error, meter)? {
             self.active = false;
             Ok(())
@@ -590,9 +605,9 @@ fn group_snapshot_has_no_live_members(
     let mut members = [0_i32; 2];
     let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
     let id = u32::try_from(group).map_err(io::Error::other)?;
-    // SAFETY: thread-local errno and a writable, correctly sized PID array.
     // libproc returns zero both for an empty list and for an errno failure.
     let read = super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+        // SAFETY: thread-local errno and a writable, correctly sized PID array.
         Ok(unsafe {
             *libc::__error() = 0;
             libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)

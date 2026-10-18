@@ -48,7 +48,7 @@ where
         .map_err(E::from)?;
     accounting.check().map_err(E::from)?;
     let proven_at = objects.collection_sweeps();
-    let (proof, guard) = match accounting {
+    let (proof, guard, pending) = match accounting {
         #[cfg(not(target_arch = "wasm32"))]
         KernelAccounting::NativeOriginal { work: original, .. } => {
             crate::kernel::closure::ProofContext::new(
@@ -59,7 +59,7 @@ where
                     cancellation,
                 },
             )
-            .prove(request.generation_root, cache)
+            .prove_cached(request.generation_root, cache)
             .await
             .map_err(E::from)?
         }
@@ -90,12 +90,12 @@ where
                     ))
                 })?;
             match crate::kernel::closure::ProofContext::new(objects, closure_limits, meter.clone())
-                .prove(request.generation_root, cache)
+                .prove_cached(request.generation_root, cache)
                 .await
             {
-                Ok((proof, guard)) => {
+                Ok((proof, guard, pending)) => {
                     *work = proof.work;
-                    (proof, guard)
+                    (proof, guard, pending)
                 }
                 Err(failure) => {
                     *work = meter.work();
@@ -151,10 +151,14 @@ where
     }
     prepare_roots(&output.0.root, &mut output.1, accounting)?;
     if let Some(resolved) = resolved {
+        let outcome = AppendOutcome::AlreadyCommitted(resolved);
+        if let Some(pending) = pending {
+            pending.publish(&outcome);
+        }
         return Ok((
             PublicationReceipt {
                 proof: output.0,
-                outcome: AppendOutcome::AlreadyCommitted(resolved),
+                outcome,
                 work: accounting.spent(),
             },
             output.1,
@@ -216,6 +220,10 @@ where
         _ => Some(accounting.remaining().map_err(E::from)?),
     };
     let appended = accept_step(accounting, dispatch(append, allowance).await)?;
+    // Only a durable generation's proof may stand in for its closure later.
+    if let Some(pending) = pending {
+        pending.publish(&appended);
+    }
     Ok((
         PublicationReceipt {
             proof: output.0,

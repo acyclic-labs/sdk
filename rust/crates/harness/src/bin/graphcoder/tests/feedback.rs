@@ -1,6 +1,6 @@
 use acyclic_harness::{
     OperationId,
-    client::{CommandFileRoot, CommandSession, TaskFileViews, handle_tui_input},
+    client::{CommandFileRoot, CommandSession, handle_tui_input},
     task_volume::{FileKey, Query, TaskFile, TaskVolume},
     tui::{
         ClientRenderer, InputEffect, PromptInput, Viewport,
@@ -78,20 +78,8 @@ async fn rejected_commands_show_feedback_and_next_valid_action_continues() {
         kind: acyclic_harness::wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = TaskFileViews::default();
-    views.tasks.insert(
-        format!(
-            "{}:{}",
-            acyclic_harness::wire::AggregateKind::Task.as_str_name(),
-            owner.id
-        ),
-        acyclic_harness::client::TaskView {
-            status: acyclic_harness::core::LifecycleState::Active,
-            lifecycle_operation_id: None,
-            reason: Some("owner feedback".into()),
-            parent: None,
-        },
-    );
+    let mut views = super::file_views::empty();
+    super::file_views::status(&mut views, &owner.id, "active", Some("owner feedback"));
     renderer.update(&views, &owner);
     assert!(painted(&mut renderer, &files).contains("owner feedback"));
     assert!(painted(&mut renderer, &files).contains("Unknown command: /not-a-command"));
@@ -245,14 +233,14 @@ async fn unsupported_views_are_unadvertised_and_cannot_swallow_the_next_prompt()
         .write_state(
             CommandFileRoot::Session,
             "layout.json",
-            &serde_json::json!({"open_view":"find","view_input":"find"}),
+            &serde_json::json!({"open_view":"theme","view_input":"theme"}),
         )
         .await
         .unwrap();
-    handle_tui_input(&mut files, &NoFiles, submit("/find"))
+    handle_tui_input(&mut files, &NoFiles, submit("/theme"))
         .await
         .unwrap();
-    for name in ["find", "theme", "tree", "terminal"] {
+    for name in ["theme", "tree", "terminal"] {
         assert!(
             !files
                 .catalog()

@@ -39,9 +39,9 @@ pub use client::transport;
 #[cfg(acyclic_stream_loom)]
 pub use client::{
     verify_abandoned_reconnect, verify_admission_binding, verify_cache, verify_cancel_before_open,
-    verify_discovery_admission, verify_follow_data, verify_initial_retry_yield, verify_interest_accounting,
-    verify_link_isolation, verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
-    verify_terminal_cursor_dial,
+    verify_discovery_admission, verify_follow_data, verify_initial_retry_yield,
+    verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
+    verify_registration_deadline, verify_terminal_cursor_dial,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use service::Service;
@@ -54,7 +54,8 @@ const DATA_FRAME_BYTES: usize = if CHILD_FRAME_BYTES > crate::MAX_RECORD_BYTES +
 };
 #[cfg(acyclic_stream_loom)]
 pub use client::verify_latest_progress;
-#[cfg(all(test, not(target_arch = "wasm32")))]
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
 /// Finite session admission independent of the number of stored streams.

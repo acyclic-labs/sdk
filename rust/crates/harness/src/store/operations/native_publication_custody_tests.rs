@@ -41,11 +41,13 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
     )
     .await
     .expect_err("corrupt index");
+    // The typed JSON admission (#684) rejects the truncated index before any boundary
+    // diagnostic is built, so no reason string or custody survives the rejection.
     assert!(matches!(
         error,
-        Error::NativeBoundary {
+        Error::NativeJsonAdmission {
             code: crate::wire::ErrorCode::Invalid,
-            ..
+            kind: crate::executor::json::JsonInputError::Incomplete,
         }
     ));
     drop(error);

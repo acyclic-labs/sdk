@@ -290,10 +290,12 @@ impl NativeReadMeter for Meter {
             self.admit_allocation(false).and_then(|()| self.check()),
         )
     }
-    fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> {
+    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+        trace::record("admit_codec", encoded, copied, hashed);
         self.check()
     }
-    fn record_codec(&self, _: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+        trace::record("record_codec", encoded, copied, hashed);
         self.copied.fetch_add(copied, Ordering::SeqCst);
         self.hashed.fetch_add(hashed, Ordering::SeqCst);
         if copied != 0 && self.cancel_on_copy.swap(false, Ordering::SeqCst) {

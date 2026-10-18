@@ -17,7 +17,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
     for old_first in [true, false] {
         let channel = channel.clone();
         loom::model(move || {
-            let (mut pool, _) = fixture(channel.clone());
+            let (mut pool, _) = fixture(&channel);
             pool.routes.clear();
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
@@ -77,7 +77,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                     if broken {
                         pool.fail_node("good", &StreamError::AccessDenied);
                     } else {
-                        pool.dial_ready("good".into(), 0, Err(StreamError::AccessDenied))
+                        pool.dial_ready("good", 0, Err(StreamError::AccessDenied))
                             .unwrap();
                     }
                 } else {
@@ -125,7 +125,7 @@ pub fn verify_pool_lifetime(fault: u8) {
     let _entered = runtime.enter();
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, _) = fixture(channel.clone());
+        let (mut pool, _) = fixture(&channel);
         pool.routes.clear();
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
@@ -275,7 +275,7 @@ pub fn verify_link_isolation(broken: bool) {
     // signals and link-close locks below use the crate-local Loom shim.
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, mut healthy) = fixture(channel.clone());
+        let (mut pool, mut healthy) = fixture(&channel);
         let bad = Arc::clone(&pool.links["bad"].sender);
         let events = Arc::new(signal::Signal::new());
         let bad_events = Arc::clone(&events);
@@ -507,7 +507,7 @@ pub fn verify_node_dials(fault: u8) {
     for same_node in [false, true] {
         let channel = channel.clone();
         loom::model(move || {
-            let (mut pool, healthy) = fixture(channel.clone());
+            let (mut pool, healthy) = fixture(&channel);
             pool.links.remove("bad");
             let (records, receiver) = mpsc::channel(2);
             pool.routes.get_mut(&1).unwrap().records = records;
@@ -596,7 +596,7 @@ pub fn verify_node_dials(fault: u8) {
                     1,
                     "connector work must be dropped"
                 );
-                pool.dial_ready("bad".into(), 0, Err(StreamError::AccessDenied))
+                pool.dial_ready("bad", 0, Err(StreamError::AccessDenied))
                     .unwrap();
                 assert!(
                     pool.routes.contains_key(&1),
@@ -622,7 +622,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
     let _entered = runtime.enter();
     let channel = tonic::transport::Endpoint::from_static("http://model.invalid").connect_lazy();
     loom::model(move || {
-        let (mut pool, receiver_b) = fixture(channel.clone());
+        let (mut pool, receiver_b) = fixture(&channel);
         pool.links.remove("bad");
         let (records, receiver_a) = mpsc::channel(2);
         pool.routes.get_mut(&1).unwrap().records = records;
@@ -686,7 +686,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
             pool.dials.is_empty(),
             "terminal output must not preserve a reconnect"
         );
-        pool.dial_ready("good".into(), 0, Err(StreamError::AccessDenied))
+        pool.dial_ready("good", 0, Err(StreamError::AccessDenied))
             .unwrap();
         assert!(
             pool.routes.contains_key(&1),

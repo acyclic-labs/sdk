@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::session::client) fn fixture(
-    channel: TransportChannel,
+    channel: &TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
     let (_, commands) = mpsc::channel(2);
     let released = Arc::new(signal::Signal::new());
@@ -11,14 +11,16 @@ pub(in crate::session::client) fn fixture(
         identity: Bytes::from_static(b"model"),
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
-        routes: BTreeMap::new(),
+        routes: Routes::new(),
         links: BTreeMap::new(),
         reads: FuturesUnordered::new(),
         dials: BTreeMap::new(),
         pending: VecDeque::new(),
         home_channel: native::endpoint(
             channel.clone(),
-            Some("Bearer fixture".parse().unwrap()),
+            Some(tonic::metadata::MetadataValue::from_static(
+                "Bearer fixture",
+            )),
             None,
         ),
         next_link: 3,
@@ -32,7 +34,10 @@ pub(in crate::session::client) fn fixture(
         released: Arc::clone(&released),
         release_sender: released,
     };
-    pool.admissions.bind_home("good").unwrap();
+    assert!(
+        pool.admissions.bind_home("good").is_ok(),
+        "a fresh admission table binds its home"
+    );
     for (node, epoch) in [("bad", 1), ("good", 2)] {
         pool.links.insert(
             node.into(),
@@ -45,7 +50,9 @@ pub(in crate::session::client) fn fixture(
                 },
                 channel: native::endpoint(
                     channel.clone(),
-                    Some("Bearer fixture".parse().unwrap()),
+                    Some(tonic::metadata::MetadataValue::from_static(
+                        "Bearer fixture",
+                    )),
                     None,
                 ),
                 sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
@@ -55,57 +62,62 @@ pub(in crate::session::client) fn fixture(
             },
         );
     }
-    let mut healthy = None;
-    for (id, node, kind) in [
-        (
-            1,
+    let (children, _) = mpsc::channel(2);
+    let (records, healthy) = mpsc::channel(2);
+    pool.routes.insert(
+        1,
+        route(
             "bad",
             Kind::Children(wire::ChildrenRequest {
                 parent: Some("agents".into()),
                 limit: 1,
             }),
+            children,
         ),
-        (
-            3,
+    );
+    pool.routes.insert(
+        3,
+        route(
             "good",
             Kind::Follow(wire::SessionFollow {
                 delivery: wire::SessionDelivery::All as i32,
                 path: "healthy".into(),
                 ..Default::default()
             }),
+            records,
         ),
-    ] {
-        let (records, receiver) = mpsc::channel(2);
-        if id == 3 {
-            healthy = Some(receiver);
-        }
-        pool.routes.insert(
-            id,
-            Route {
-                raw: false,
-                watermark: None,
-                node: node.into(),
-                attempt_epoch: 0,
-                kind,
-                generation: 1,
-                placement_epoch: 0,
-                received: 0,
-                received_opaque: Bytes::new(),
-                acknowledge: false,
-                acknowledged: 0,
-                opened: true,
-                credit: wire::SessionWindow {
-                    bytes: crate::MAX_COMMAND_BYTES as u64,
-                    frames: 2,
-                },
-                progress: Arc::new(Progress::new(0)),
-                records,
-                ready: None,
-                observation: crate::obs::OperationSpan::new(tracing::Span::none()),
-            },
-        );
+    );
+    (pool, healthy)
+}
+
+/// An opened route on `node` with a two-frame delivery grant.
+pub(in crate::session::client) fn route(
+    node: &str,
+    kind: Kind,
+    records: mpsc::Sender<Result<Delivery, StreamError>>,
+) -> Route {
+    Route {
+        raw: false,
+        watermark: None,
+        node: node.into(),
+        attempt_epoch: 0,
+        kind,
+        generation: 1,
+        placement_epoch: 0,
+        received: 0,
+        received_opaque: Bytes::new(),
+        acknowledge: false,
+        acknowledged: 0,
+        opened: true,
+        credit: wire::SessionWindow {
+            bytes: crate::MAX_COMMAND_BYTES as u64,
+            frames: 2,
+        },
+        progress: Arc::new(Progress::new(0)),
+        records,
+        ready: None,
+        observation: crate::obs::OperationSpan::new(tracing::Span::none()),
     }
-    (pool, healthy.unwrap())
 }
 
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {

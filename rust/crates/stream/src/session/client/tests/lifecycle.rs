@@ -80,6 +80,44 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
     Ok(())
 }
 
+/// Each channel span records how its follow ended, without leaking private paths.
+fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -> TestResult {
+    let channels = capture.spans("stream.session.channel");
+    assert_physical_sessions(&capture.spans("stream.session"));
+    let [first, second, third, ..] = channels.as_slice() else {
+        panic!("expected three channel spans, found {}", channels.len());
+    };
+    assert_eq!(
+        first.fields.get("error.kind").map(String::as_str),
+        Some("deadline_elapsed")
+    );
+    assert_eq!(
+        second.fields.get("registration").map(String::as_str),
+        Some("opened")
+    );
+    assert_eq!(
+        second.fields.get("generation").map(String::as_str),
+        Some("2")
+    );
+    assert_eq!(
+        second.fields.get("error.kind").map(String::as_str),
+        Some("access_denied")
+    );
+    assert_eq!(
+        third.fields.get("outcome").map(String::as_str),
+        Some("cancelled")
+    );
+    let evidence = capture.0.lock().map_err(|_| "capture poisoned")?;
+    assert!(evidence.events.iter().any(|(parent, fields)| {
+        parent.as_deref() == Some("stream.session.channel")
+            && fields
+                .iter()
+                .any(|(_, name, value)| name == "event" && value.contains("reconnect"))
+    }));
+    assert!(!format!("{:?}", evidence.spans).contains("private/"));
+    Ok(())
+}
+
 #[test]
 fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() -> TestResult {
     use crate::grpc::tests::retry_capture;
@@ -153,36 +191,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 }
                 changed.await;
             }
-            let channels = capture.spans("stream.session.channel");
-            assert_physical_sessions(&capture.spans("stream.session"));
-            assert_eq!(
-                channels[0].fields.get("error.kind").map(String::as_str),
-                Some("deadline_elapsed")
-            );
-            assert_eq!(
-                channels[1].fields.get("registration").map(String::as_str),
-                Some("opened")
-            );
-            assert_eq!(
-                channels[1].fields.get("generation").map(String::as_str),
-                Some("2")
-            );
-            assert_eq!(
-                channels[1].fields.get("error.kind").map(String::as_str),
-                Some("access_denied")
-            );
-            assert_eq!(
-                channels[2].fields.get("outcome").map(String::as_str),
-                Some("cancelled")
-            );
-            let evidence = capture.0.lock().map_err(|_| "capture poisoned")?;
-            assert!(evidence.events.iter().any(|(parent, fields)| {
-                parent.as_deref() == Some("stream.session.channel")
-                    && fields
-                        .iter()
-                        .any(|(_, name, value)| name == "event" && value.contains("reconnect"))
-            }));
-            assert!(!format!("{:?}", evidence.spans).contains("private/"));
+            assert_channel_traces(&capture)?;
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         }
         .with_subscriber(subscriber),

@@ -2,6 +2,129 @@ use super::*;
 use crate::{conversation::FileDescriptor, filesystem::MemoryHarnessStorage};
 use proptest::prelude::*;
 
+#[test]
+fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let scope = RuntimeScope::new(
+        Capabilities::new(["task:spawn:context-probe@1", "model:generate"]),
+        Limits::default(),
+    )?;
+    let context = runtime.block_on(capture_admitted_context(scope.clone()))?;
+    let strategy = (1usize..5, "[a-z]{1,24}");
+    proptest::test_runner::TestRunner::new(proptest::test_runner::Config::with_cases(16))
+        .run(&strategy, |(count, text)| {
+            for (threshold, in_turn) in [(false, false), (false, true), (true, false), (true, true)]
+            {
+                let provider = Arc::new(
+                    ScriptedModelProvider::new([ScriptedTurn::Text("summary".into())])
+                        .with_token_counter(fixture_token_count),
+                );
+                let operation = OperationId::new();
+                let mut executor = uncompacted_executor(
+                    Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+                    provider.clone(),
+                    ContextPipeline::default(),
+                    ToolRegistry::default(),
+                )
+                .with_max_output_tokens(64)?
+                .with_tool_authority(scope.clone(), None)?
+                .with_task_context(&context, operation)?;
+                if threshold {
+                    executor = executor
+                        .with_compaction_policy(crate::context::CompactionPolicy::default());
+                }
+                let journal = Journal::default();
+                let source = crate::context::Context {
+                    messages: (0..count)
+                        .map(|_| ModelMessage {
+                            role: ModelRole::User,
+                            content: ModelContent::Text(text.clone()),
+                        })
+                        .collect(),
+                    ..Default::default()
+                };
+                let instruction = ModelContent::Text("summarize".into());
+                let result = runtime.block_on(async {
+                    if in_turn {
+                        let input = TurnInput {
+                            operation_id: operation,
+                            input: instruction.clone(),
+                            selected_context: None,
+                            max_steps: 1,
+                        };
+                        executor
+                            .summarize_in_turn(&journal, &input, 0, source, instruction)
+                            .await
+                    } else {
+                        executor
+                            .summarize(&journal, operation, source, instruction)
+                            .await
+                    }
+                });
+                prop_assert!(matches!(result, Err(Error::Unauthorized(_))));
+                prop_assert!(provider.requests().is_empty());
+                prop_assert!(journal.0.lock().unwrap().is_empty());
+                prop_assert!(journal.1.lock().unwrap().is_empty());
+            }
+            Ok(())
+        })
+        .unwrap();
+    Ok(())
+}
+
+#[tokio::test]
+async fn writerless_summary_negative_control_dispatches_when_resolution_is_deferred() -> Result<()>
+{
+    let scope = RuntimeScope::new(
+        Capabilities::new(["task:spawn:context-probe@1", "model:generate"]),
+        Limits::default(),
+    )?;
+    let context = capture_admitted_context(scope.clone()).await?;
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Text("summary".into())])
+            .with_token_counter(fixture_token_count),
+    );
+    let operation = OperationId::new();
+    let executor = uncompacted_executor(
+        Model::new("test".into(), "summary".into(), "1".into(), Value::Null)?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    )
+    .with_max_output_tokens(64)?
+    .with_tool_authority(scope, None)?
+    .with_task_context(&context, operation)?
+    .with_compaction_policy(crate::context::CompactionPolicy::default());
+    // Recreate the old ordering: enter the internal summary session (whose
+    // compaction is Disabled), dispatch, and only then resolve the writer.
+    let mut execution = StockExecution::ordinary(&executor);
+    execution.summary = Some((ContextPipeline::default(), Some(64)));
+    let input = TurnInput {
+        operation_id: operation,
+        input: ModelContent::Text("summarize".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    let journal = Journal::default();
+    execution.ensure_started(&journal, &input).await?;
+    execution
+        .run_model_step(&journal, &input, 0, &[], ModelPurpose::Summary)?
+        .await?;
+    assert!(matches!(
+        context.private_summaries(None),
+        Err(Error::Unauthorized(_))
+    ));
+    assert_eq!(
+        provider.requests().len(),
+        1,
+        "the zero-dispatch detector missed the bypass"
+    );
+    Ok(())
+}
+
 fn message(file: FileRef) -> ModelContent {
     ModelContent::Part(ModelContentPart::File {
         file,

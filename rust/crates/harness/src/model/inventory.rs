@@ -28,6 +28,12 @@ pub(super) fn slots(capacity: usize, size: usize) -> Result<u64> {
 #[cfg(feature = "filesystem")]
 impl FileProjectionPolicy {
     fn payload_bytes(&self) -> Result<u64> {
+        if let Self::ProjectInstructions(source) = self {
+            return add(
+                size_of::<InstructionIdentity>() as u64,
+                source.payload_bytes()?,
+            );
+        }
         let Self::Native(policy) = self else {
             return Ok(0);
         };

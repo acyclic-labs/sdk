@@ -116,6 +116,6 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
         .map(|file| file.bytes.as_ref())
         .collect();
     assert_eq!(chunks, [b"before".as_slice(), b"after".as_slice()]);
-    harness.close().await?;
+    harness.disconnect_unfinished().await?;
     Ok(())
 }

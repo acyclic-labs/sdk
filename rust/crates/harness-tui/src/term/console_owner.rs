@@ -42,6 +42,28 @@ pub(crate) struct Owner<W: Write> {
 }
 
 impl<W: Write + Send + 'static> Owner<W> {
+    /// Read metadata without submitting driver work. Lock order: owner only;
+    /// an in-flight worker owns the guard, so its screen state is unknown.
+    pub(crate) fn outside_writes(&self) -> Option<u64> {
+        let mut state = self.state.try_lock().ok()?;
+        super::Present::outside_writes(state.guard.as_mut()?)
+    }
+
+    /// An unchanged empty frame is acknowledged while holding owner state;
+    /// it never submits a driver job. A borrowed guard cannot acknowledge it.
+    pub(crate) fn empty_if_current(&self, expected: Option<u64>) -> io::Result<Option<u64>> {
+        let Ok(mut state) = self.state.try_lock() else {
+            return Ok(None);
+        };
+        if state.closed {
+            return Err(io::ErrorKind::NotConnected.into());
+        }
+        let Some(guard) = state.guard.as_mut() else {
+            return Ok(None);
+        };
+        super::Present::present_if_current(guard, &mut Vec::new(), false, expected)
+    }
+
     fn wait<'a>(
         &self,
         state: MutexGuard<'a, State<W>>,
@@ -336,6 +358,54 @@ mod tests {
     use super::*;
     use crate::term::{Capabilities, ModeState};
     use loom::sync::atomic::{AtomicBool, Ordering};
+
+    fn counter_model(broken: bool) {
+        loom::model(move || {
+            let owner = Owner::new(
+                RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
+                |_| {},
+            );
+            assert_eq!(owner.outside_writes(), Some(0));
+            assert_eq!(owner.empty_if_current(Some(0)).unwrap(), Some(0));
+            assert!(owner.state.lock().unwrap().worker.is_none());
+            let writing = Arc::clone(&owner);
+            let worker = thread::spawn(move || {
+                Owner::run(
+                    &writing,
+                    Instant::now() + Duration::from_secs(10),
+                    |guard| guard.writer().write_all(b"outside"),
+                )
+                .unwrap();
+            });
+            // During the handoff the worker owns the guard, so None is valid.
+            assert!(matches!(owner.outside_writes(), None | Some(0 | 1)));
+            worker.join().unwrap();
+            assert_eq!(owner.outside_writes(), Some(1));
+            assert_eq!(owner.empty_if_current(Some(0)).unwrap(), None);
+            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), Some(1));
+            let mut state = owner.state.lock().unwrap();
+            let guard = state.guard.take().unwrap();
+            drop(state);
+            assert_eq!(owner.empty_if_current(Some(1)).unwrap(), None);
+            let observed = if broken {
+                Some(1)
+            } else {
+                owner.outside_writes()
+            };
+            assert_eq!(observed, None, "borrowed guard must be unknown");
+            owner.state.lock().unwrap().guard = Some(guard);
+        });
+    }
+
+    #[test]
+    fn counter_observation_follows_the_guard_handoff() {
+        counter_model(false);
+    }
+
+    #[test]
+    fn negative_control_counter_cannot_reuse_a_borrowed_guard() {
+        assert!(std::panic::catch_unwind(|| counter_model(true)).is_err());
+    }
 
     struct Console {
         restored: Arc<AtomicBool>,

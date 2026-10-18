@@ -69,17 +69,16 @@ impl Future for Change<'_> {
         if state.generation > self.after {
             return Poll::Ready(Ok(state.generation));
         }
-        let id = match self.id {
-            Some(id) => id,
-            None => {
-                if state.waiters.len() == crate::MAX_ITEMS {
-                    return Poll::Ready(Err(StreamError::Capacity));
-                }
-                let id = state.next_id;
-                state.next_id = id.checked_add(1).ok_or(StreamError::Capacity)?;
-                self.id = Some(id);
-                id
+        let id = if let Some(id) = self.id {
+            id
+        } else {
+            if state.waiters.len() == crate::MAX_ITEMS {
+                return Poll::Ready(Err(StreamError::Capacity));
             }
+            let id = state.next_id;
+            state.next_id = id.checked_add(1).ok_or(StreamError::Capacity)?;
+            self.id = Some(id);
+            id
         };
         let retired = state.waiters.insert(id, waker);
         drop(state);

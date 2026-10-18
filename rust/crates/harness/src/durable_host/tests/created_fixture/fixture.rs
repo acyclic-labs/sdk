@@ -124,6 +124,7 @@ impl CreationFixture {
             stream.clone(),
             filesystem.clone(),
             &payload,
+            None,
             &verifier,
             &signed,
             &root_scope,

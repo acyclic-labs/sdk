@@ -7,8 +7,8 @@ use crate::{executor::stock_boundary, wire::ErrorCode};
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct DiscoveredContext {
     /// Root-to-leaf instructions in declared root/filename order.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire[]"))]
-    pub instructions: Vec<FileRef>,
+    #[cfg_attr(feature = "wasm", tsify(type = "ProjectInstruction[]"))]
+    pub instructions: Vec<crate::model::ProjectInstruction>,
     /// Skills in declared root and lexical directory order; duplicate names reject discovery.
     pub skills: Vec<SkillMetadata>,
 }
@@ -105,9 +105,15 @@ impl DiscoveredContext {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        for file in &self.instructions {
-            file.validate(work)?;
-        }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let _sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
+        self.validate_skills(quota.work())
+    }
+
+    fn validate_skills(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
         for skill in &self.skills {
             skill.validate(work)?;
         }
@@ -153,8 +159,37 @@ impl DiscoveredContext {
             for file in &self.instructions {
                 limits.validate_file(file, work)?;
             }
-            self.validate(work)
+            Ok::<_, Error>(())
         })?;
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
+            self.validate_skills(quota.work())?;
+            sources.reservation(
+                limits
+                    .render_bytes
+                    .checked_sub(skill_bytes)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::Invalid,
+                            "skill metadata exceeds render bound",
+                        )
+                    })?,
+                io,
+            )?;
+            self.project_messages(limits, io, count, skill_bytes, &sources)
+        })
+    }
+
+    fn project_messages(
+        &self,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+        count: usize,
+        skill_bytes: u64,
+        sources: &crate::model::InstructionSources<'_>,
+    ) -> Result<Vec<ModelMessage>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io
             && let Some(work) = io.original_native_work()
@@ -166,14 +201,11 @@ impl DiscoveredContext {
             );
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(Error::from)?;
-            for file in &self.instructions {
-                messages.0.push(ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Part(ModelContentPart::File {
-                        file: crate::model::clone_file(file, Some(io))?,
-                        policy: FileProjectionPolicy::BoundedFull,
-                    }),
-                });
+            for file in sources.iter(Some(io)) {
+                let file = file?;
+                messages
+                    .0
+                    .push(crate::model::project_instruction(file, Some(io))?);
             }
             if !self.skills.is_empty() {
                 let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
@@ -187,18 +219,11 @@ impl DiscoveredContext {
             super::validate_source_messages(&messages.0, limits, Some(io))?;
             return Ok(messages.0);
         }
-        let _ = (io, skill_bytes);
-        let mut messages: Vec<_> = self
-            .instructions
-            .iter()
-            .map(|file| ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Part(ModelContentPart::File {
-                    file: file.clone(),
-                    policy: FileProjectionPolicy::BoundedFull,
-                }),
-            })
-            .collect();
+        let _ = (io, skill_bytes, count);
+        let mut messages: Vec<_> = sources
+            .iter(io)
+            .map(|file| file.and_then(|file| crate::model::project_instruction(file, io)))
+            .collect::<Result<Vec<_>>>()?;
         if !self.skills.is_empty() {
             messages.push(ModelMessage {
                 role: ModelRole::System,

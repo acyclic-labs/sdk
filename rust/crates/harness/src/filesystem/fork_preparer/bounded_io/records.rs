@@ -97,6 +97,8 @@ pub(crate) fn preparation_slot_bytes<T>() -> u64 {
         size_of::<crate::model::NativeConfigurationBinding>(),
         size_of::<crate::model::ModelDataPart>(),
         size_of::<crate::model::FileProjectionPolicy>(),
+        size_of::<crate::model::ProjectInstruction>(),
+        size_of::<crate::model::InstructionIdentity>(),
         size_of::<crate::model::NativeMediaIntent>(),
         size_of::<crate::model::NativeMediaPolicy>(),
         size_of::<crate::tool::ToolDefinition>(),

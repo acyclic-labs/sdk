@@ -49,25 +49,45 @@ fn durable_rename_moves_and_replaces_entries() -> io::Result<()> {
     Ok(())
 }
 
+/// Set only in the child process that renames inside its own working
+/// directory.
+#[cfg(unix)]
+const RELATIVE_RENAME_CHILD: &str = "ACYCLIC_NATIVE_RUNTIME_RELATIVE_RENAME_CHILD";
+
+/// Bare sibling names resolve against the working directory, which belongs to
+/// the whole process. Changing it here would move every concurrent test's
+/// relative paths and children with it, so the rename runs in a child process
+/// started in the fixture directory instead.
 #[cfg(unix)]
 #[test]
 fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let original = std::env::current_dir()?;
-    std::env::set_current_dir(temporary.path())?;
-    let result = (|| {
+    if std::env::var_os(RELATIVE_RENAME_CHILD).is_some() {
         std::fs::write("from", b"relative")?;
-        durable_rename(
+        return durable_rename(
             Path::new("from"),
             Path::new("to"),
             RenameMode::NoReplace,
             None,
-        )?;
-        assert_eq!(std::fs::read("to")?, b"relative");
-        Ok(())
-    })();
-    std::env::set_current_dir(original)?;
-    result
+        );
+    }
+    let temporary = tempfile::tempdir()?;
+    let test = concat!(
+        module_path!(),
+        "::durable_rename_accepts_relative_sibling_paths"
+    );
+    let test = test.split_once("::").map_or(test, |(_, path)| path);
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", test, "--test-threads=1"])
+        .env(RELATIVE_RENAME_CHILD, "1")
+        .current_dir(temporary.path())
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{report}");
+    assert!(report.contains("1 passed"), "{report}");
+    assert!(!temporary.path().join("from").exists());
+    assert_eq!(std::fs::read(temporary.path().join("to"))?, b"relative");
+    Ok(())
 }
 
 #[test]

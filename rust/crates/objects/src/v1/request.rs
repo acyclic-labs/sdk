@@ -668,7 +668,7 @@ mod tests {
                     seconds: 42,
                     nanos: 1,
                 }),
-                ..query.clone()
+                ..query
             },
         ] {
             assert_eq!(restore_digest(&invalid).unwrap_err().code, InvalidArgument);

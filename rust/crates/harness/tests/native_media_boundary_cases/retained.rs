@@ -115,6 +115,7 @@ where
             stream.clone(),
             host.clone(),
             &volume,
+            Some(&volume),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             &scope,

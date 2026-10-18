@@ -10,6 +10,16 @@ impl StockExecution<'_> {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<(crate::context::ContextSummary, String)> {
+        // A summary session disables recursive compaction. Resolve its writer
+        // before admission, independently of that session's compaction policy.
+        let destination = self
+            .original_context()
+            .map(|context| {
+                context
+                    .private_summaries(self.io)
+                    .map(|writer| (context, writer))
+            })
+            .transpose()?;
         if parent.is_some_and(|parent| step >= parent.max_steps) {
             return Err(stock_boundary(
                 self.io,
@@ -114,6 +124,7 @@ impl StockExecution<'_> {
             .await?;
         let text = self.collect_summary_text(events)?;
         self.publish_summary(
+            destination,
             journal,
             operation_id,
             step,
@@ -160,6 +171,10 @@ impl StockExecution<'_> {
 
     async fn publish_summary(
         &self,
+        destination: Option<(
+            &crate::runtime::TaskContext,
+            crate::runtime::PrivateSummaries<'_>,
+        )>,
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         step: u32,
@@ -167,7 +182,7 @@ impl StockExecution<'_> {
         text: String,
     ) -> Result<(crate::context::ContextSummary, String)> {
         let (source_messages, source_digest) = source;
-        let output = if let Some(context) = self.original_context() {
+        let output = if let Some((context, summaries)) = destination {
             let path = with_history_io(self.io, |work| {
                 crate::executor::preparation_format(
                     format_args!("summaries/{operation_id}/{step}.txt"),
@@ -179,7 +194,7 @@ impl StockExecution<'_> {
             let publication = summary_publication(operation_id, step, self.io)?;
             self.verify_execution_owner().await?;
             let output = context
-                .stage_private_file_once(publication, &path, text.as_bytes(), self.io)
+                .stage_private_file_once(summaries, publication, &path, text.as_bytes(), self.io)
                 .await?;
             self.verify_execution_owner().await?;
             output

@@ -26,10 +26,14 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
     let workers = NativeWorkers {
         sender,
         admission: Arc::new(Mutex::new(AdmissionState::new())),
+        threads: 1,
     };
-    let filler = run_blocking_io(|| (), None)?.pending.take().unwrap();
+    let filler = run_blocking_io(|| (), None)?
+        .pending
+        .take()
+        .ok_or(io::ErrorKind::NotFound)?;
     assert!(workers.sender.try_send(filler).is_ok());
-    workers.admission.lock().unwrap().queued_jobs = 1;
+    lock(&workers.admission).queued_jobs = 1;
 
     let effects = Arc::new(AtomicUsize::new(0));
     let executed = effects.clone();
@@ -40,7 +44,7 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         },
         None,
     )?;
-    let job = task.pending.take().unwrap();
+    let job = task.pending.take().ok_or(io::ErrorKind::NotFound)?;
     let mut completion: Pin<Box<dyn Future<Output = io::Result<()>> + '_>> = if bypass {
         // The former controlled path: executes before queue acceptance.
         Box::pin(async move {
@@ -60,16 +64,16 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         "capacity wait was bypassed"
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(workers.admission.lock().unwrap().waiter_count, 1);
+    assert_eq!(lock(&workers.admission).waiter_count, 1);
 
-    let filler = receiver.recv().unwrap();
+    let filler = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     drop(filler);
     assert!(flag.0.swap(false, Ordering::SeqCst), "capacity wake lost");
     assert!(completion.as_mut().poll(&mut cx).is_pending());
     assert_eq!(effects.load(Ordering::SeqCst), 0);
-    assert_eq!(workers.admission.lock().unwrap().waiter_count, 0);
-    assert_eq!(workers.admission.lock().unwrap().queued_jobs, 1);
+    assert_eq!(lock(&workers.admission).waiter_count, 0);
+    assert_eq!(lock(&workers.admission).queued_jobs, 1);
 
     let admission = workers.admission.clone();
     std::thread::spawn(move || {
@@ -80,7 +84,7 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         }
     })
     .join()
-    .unwrap();
+    .map_err(|_| io::Error::other("worker panicked"))?;
     assert!(flag.0.load(Ordering::SeqCst), "terminal wake lost");
     assert!(matches!(
         completion.as_mut().poll(&mut cx),
@@ -180,7 +184,7 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
             threads.load(Ordering::SeqCst),
             0,
             "private blocking pool created"
-        )
+        );
     };
     check();
     // The former untracked branch starts a real private worker. The same

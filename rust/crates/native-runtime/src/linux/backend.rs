@@ -29,12 +29,12 @@ impl Owner {
 
     pub(super) fn run(mut self, receiver: &mpsc::Receiver<OwnerJob>) {
         loop {
-            let next = if !matches!(self.backend, Backend::Retiring(_)) {
+            let next = if matches!(self.backend, Backend::Retiring(_)) {
+                receiver.recv_timeout(Duration::from_millis(100))
+            } else {
                 receiver
                     .recv()
                     .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-            } else {
-                receiver.recv_timeout(Duration::from_millis(100))
             };
             let job = match next {
                 Ok(job) => job,
@@ -114,7 +114,10 @@ impl Owner {
                 let length = (read.length - count).min(MAX_IO_BYTES);
                 let mut chunk = vec![0; length];
                 let received = file.read_at(&mut chunk, offset)?;
-                bytes.extend_from_slice(&chunk[..received]);
+                let filled = chunk
+                    .get(..received)
+                    .ok_or_else(|| io::Error::other("overlong native read"))?;
+                bytes.extend_from_slice(filled);
                 count += received;
                 if received < length {
                     break;
@@ -187,11 +190,11 @@ impl Owner {
             if count == 0 {
                 return Err(io::ErrorKind::WriteZero.into());
             }
-            if count > write.bytes.len() {
+            let Some(rest) = write.bytes.get(count..) else {
                 return Err(io::Error::other("overlong native write"));
-            }
-            if count < write.bytes.len() {
-                file.write_all_at(&write.bytes[count..], write.offset + count as u64)?;
+            };
+            if !rest.is_empty() {
+                file.write_all_at(rest, write.offset + count as u64)?;
             }
         }
         Ok(())

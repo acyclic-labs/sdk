@@ -125,7 +125,7 @@ async fn first_compaction_admission_model_retains_only_the_captured_binding() ->
             );
         }
         match Arc::try_unwrap(local) {
-            Ok(local) => local.close().await?,
+            Ok(local) => local.disconnect_unfinished().await?,
             Err(_) => panic!("compaction schedule retained the harness"),
         }
     }

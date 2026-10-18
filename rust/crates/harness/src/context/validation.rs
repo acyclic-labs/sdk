@@ -76,7 +76,11 @@ pub(crate) fn validate_projected_context(
         for file in context.metadata.values() {
             limits.validate_file(file, work)?;
         }
-        crate::executor::json::json_byte_length(context, limits.render_bytes, work).map(|_| ())
+        crate::executor::json::json_byte_length(context, limits.render_bytes, work)
+    })
+    .and_then(|bytes| {
+        let mut remaining = limits.render_bytes - bytes;
+        crate::model::reserve_instruction_bodies(&context.messages, &mut remaining, io)
     })
 }
 

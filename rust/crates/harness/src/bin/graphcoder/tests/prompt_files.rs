@@ -42,7 +42,10 @@ async fn prompt_save_follows_owner_progress_but_preserves_a_peer_draft() {
         .await
         .unwrap(),
     );
-    let id = OperationId::from_bytes([9; 16]).to_string().parse().unwrap();
+    let id = OperationId::from_bytes([9; 16])
+        .to_string()
+        .parse()
+        .unwrap();
     let mut files = CommandSession::open(volume.clone(), id, 65_536, 64)
         .await
         .unwrap();

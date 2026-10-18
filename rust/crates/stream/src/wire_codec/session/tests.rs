@@ -2,13 +2,13 @@ use super::*;
 use bytes::Bytes;
 use wire::{session_data::Item, session_frame::Body};
 
-fn round_trip(frame: wire::SessionFrame) -> Result<wire::SessionFrame, prost::DecodeError> {
+fn round_trip(frame: &wire::SessionFrame) -> Result<wire::SessionFrame, prost::DecodeError> {
     wire::SessionFrame::decode(frame.encode_to_vec().as_slice())
 }
 
 #[test]
 fn latest_values_round_trip_with_additive_credit() -> Result<(), Box<dyn std::error::Error>> {
-    let frame = round_trip(wire::SessionFrame {
+    let frame = round_trip(&wire::SessionFrame {
         channel_id: 1,
         generation: 1,
         body: Some(Body::Data(wire::SessionData {
@@ -72,7 +72,7 @@ fn control_frames_are_exempt_from_data_credit() -> Result<(), prost::DecodeError
         Body::Watermark(wire::SessionWatermark::default()),
     ] {
         for channel_id in [0, 1] {
-            let frame = round_trip(wire::SessionFrame {
+            let frame = round_trip(&wire::SessionFrame {
                 channel_id,
                 generation: 1,
                 body: Some(body.clone()),

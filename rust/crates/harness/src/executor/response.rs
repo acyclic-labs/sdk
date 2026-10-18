@@ -8,7 +8,11 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
         tail: u64,
-    ) -> Result<(ResponseProjection, Option<ContextAccounting>)> {
+    ) -> Result<(
+        ResponseProjection,
+        Option<ContextAccounting>,
+        Option<crate::model::PreparedModelRequest>,
+    )> {
         let base = self
             .canonical_base(journal, input, step, prior_messages)
             .await?;
@@ -27,22 +31,28 @@ impl StockExecution<'_> {
             None
         };
         let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        let mut projection = self.transform_projection(&context_input, base).await?;
-        let accounting = if let Some(capacity) = self.model_capacity()? {
-            let prepared = crate::model::PreparedModelRequest::prepare(
-                self.request_taking_context(&mut projection)?,
-                self.stock.limits,
-                self.io,
-            )?;
+        let (projection, accounting, prepared) = if let Some(capacity) = self.model_capacity()? {
+            let (mut projection, prepared) = self
+                .prepare_transformed_request(&context_input, base)
+                .await?;
             let count =
                 stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io).await?;
             with_history_io(self.io, |work| count.validate(&prepared, work))?;
             if self.io.is_none() {
-                projection.messages = prepared.into_messages();
+                projection.messages =
+                    crate::model::clone_messages(&prepared.request().messages, self.io)?;
             }
-            Some(ContextAccounting { capacity, count })
+            (
+                projection,
+                Some(ContextAccounting { capacity, count }),
+                Some(prepared),
+            )
         } else {
-            None
+            (
+                self.transform_projection(&context_input, base).await?,
+                None,
+                None,
+            )
         };
         let projection = ResponseProjection {
             context: projection,
@@ -97,7 +107,7 @@ impl StockExecution<'_> {
         {
             return Err(Error::Indeterminate(input.operation_id));
         }
-        Ok((projection, accounting))
+        Ok((projection, accounting, prepared))
     }
 
     pub(super) async fn prepared_response(
@@ -126,7 +136,7 @@ impl StockExecution<'_> {
                 "response projection was prepared more than once",
             ));
         }
-        let (mut projection, accounting) = match first {
+        let (mut projection, accounting, prepared) = match first {
             None => {
                 if self.stock.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
@@ -144,13 +154,18 @@ impl StockExecution<'_> {
                     )?),
                     None => None,
                 },
+                None,
             ),
         };
-        crate::context::validate_projected_context(
-            &projection.context,
-            self.stock.limits,
-            self.io,
-        )?;
+        // Fresh projections were validated before their exact request was
+        // encoded. Retained projections still cross the storage boundary.
+        if prepared.is_none() {
+            crate::context::validate_projected_context(
+                &projection.context,
+                self.stock.limits,
+                self.io,
+            )?;
+        }
         if projection.checkpoint.is_some() {
             return Err(stock_boundary(
                 self.io,
@@ -165,16 +180,20 @@ impl StockExecution<'_> {
                 "prepared response projection differs from its request",
             ));
         }
-        let request = if matches!(
-            self.compaction_policy(),
-            crate::context::CompactionPolicy::Disabled
-        ) {
-            self.request_taking_context(&mut projection.context)?
-        } else {
-            self.request_from_context(&projection.context)?
+        let prepared = match prepared {
+            Some(prepared) => prepared,
+            None => {
+                let request = if matches!(
+                    self.compaction_policy(),
+                    crate::context::CompactionPolicy::Disabled
+                ) {
+                    self.request_taking_context(&mut projection.context)?
+                } else {
+                    self.request_from_context(&projection.context)?
+                };
+                crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?
+            }
         };
-        let prepared =
-            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         self.resolve_response_accounting(
             journal,
             (input, step),

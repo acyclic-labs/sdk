@@ -80,9 +80,8 @@ proptest! {
     #[test]
     fn recalled_multiline_prompts_have_correct_line_motion_and_line_kills(
         first in "[a-z界]{1,12}", second in "[a-z界]{1,12}", third in "[a-z界]{1,12}",
-        ending in 0usize..3
+        separator in prop_oneof![Just("\r\n"), Just("\r"), Just("\n")]
     ) {
-        let separator = ["\r\n", "\r", "\n"][ending];
         let mut editor = Editor::default();
         let mut history = PromptHistory::default();
         history.push(format!("{first}{separator}{second}{separator}{third}"));

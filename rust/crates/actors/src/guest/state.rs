@@ -13,7 +13,10 @@ use std::{
     thread_local,
 };
 
+#[cfg(loom)]
 thread_local! { static IN_MUTATION: Cell<bool> = Cell::new(false); }
+#[cfg(not(loom))]
+thread_local! { static IN_MUTATION: Cell<bool> = const { Cell::new(false) }; }
 
 struct MutationScope;
 impl Drop for MutationScope {

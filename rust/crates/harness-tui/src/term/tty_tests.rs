@@ -58,7 +58,9 @@ fn write_all<D: NonblockingWrite>(
     let deadline = Instant::now() + Duration::from_secs(5);
     while !bytes.is_empty() {
         let count = each(device, bytes, deadline)?;
-        bytes = &bytes[count..];
+        bytes = bytes
+            .get(count..)
+            .ok_or_else(|| io::Error::other("wrote more bytes than offered"))?;
     }
     Ok(())
 }
@@ -201,9 +203,9 @@ fn real_trace(user: File, controller: File, spin: bool, select: bool) -> io::Res
 fn assert_waits_make_progress(trace: &[Op]) {
     assert!(trace.contains(&Op::Wait), "the PTY queue never filled");
     for pair in trace.windows(2) {
-        if pair[0] == Op::Wait {
+        if let [Op::Wait, next] = pair {
             assert!(
-                matches!(pair[1], Op::Wrote(count) if count > 0),
+                matches!(next, Op::Wrote(count) if *count > 0),
                 "a readiness wait returned without room: {pair:?}"
             );
         }

@@ -33,3 +33,10 @@ path = "fuzz_targets/turns.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tool_arguments"
+path = "fuzz_targets/tool_arguments.rs"
+test = false
+doc = false
+bench = false

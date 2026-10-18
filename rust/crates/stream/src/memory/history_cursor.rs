@@ -92,10 +92,10 @@ impl HistoryCursor {
             }
             match node {
                 History::Batch { records, .. } => {
-                    if let Some(window) = history_window(Arc::clone(records), ceiling, self.next) {
-                        if let Some(first) = added.first.replace(window) {
-                            added.windows.push_front(first);
-                        }
+                    if let Some(window) = history_window(Arc::clone(records), ceiling, self.next)
+                        && let Some(first) = added.first.replace(window)
+                    {
+                        added.windows.push_front(first);
                     }
                 }
                 History::Prefix { .. } => crossed_prefix = true,

@@ -8,3 +8,9 @@ doc-valid-idents = ["OpenAI", "ChatGPT", "MoonshotAI", ".."]
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
+# The working directory belongs to the whole process: changing it moves every
+# other thread's relative paths and the directory each later child starts in.
+# Give a child its own directory with `Command::current_dir` instead.
+disallowed-methods = [
+    { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir for a child" },
+]

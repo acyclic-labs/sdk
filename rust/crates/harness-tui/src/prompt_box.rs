@@ -35,9 +35,9 @@ impl<'a> PromptBox<'a> {
 
     /// Grow to at most half the screen, including border and status title.
     pub fn height(&self, width: u16, screen_height: u16) -> u16 {
-        let maximum = (u32::from(screen_height)
-            * self.input.editor.settings().max_input_height_percent as u32
-            / 100) as u16;
+        let percent = self.input.editor.settings().max_input_height_percent;
+        let maximum =
+            crate::widget::cells(usize::from(screen_height).saturating_mul(percent) / 100);
         PromptWidget::new(&self.input.editor)
             .height(width.saturating_sub(2), maximum.saturating_sub(2))
             .saturating_add(2)
@@ -55,6 +55,9 @@ impl StatefulWidget for PromptBox<'_> {
 
     fn render(self, area: Rect, buffer: &mut Buffer, viewport: &mut Viewport) {
         let mut labels = vec![];
+        if self.input.transcript_search() {
+            labels.push("Find · Enter next · Shift+Enter previous · Escape closes".to_owned());
+        }
         if self.input.editing_message().is_some() {
             labels.push("Editing message…".to_owned());
         }

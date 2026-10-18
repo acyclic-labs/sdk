@@ -41,8 +41,9 @@ impl RawTty {
     /// Restore while the lifecycle still holds exclusive ownership. There is
     /// no destructor restoration: retained state can outlive a newer session.
     pub fn restore(&mut self) -> io::Result<()> {
-        let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original).and_then(|()| {
-            #[cfg(target_os = "macos")]
+        let termios = tcsetattr(&self.file, OptionalActions::Now, &self.original);
+        #[cfg(target_os = "macos")]
+        let termios = termios.and_then(|()| {
             if !self
                 .original
                 .local_modes

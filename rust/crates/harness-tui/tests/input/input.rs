@@ -94,7 +94,7 @@ fn configured_chords_defer_and_replay_the_prefix_action() -> Result<(), Box<dyn 
     input.keymap = InputKeymap::parse(
         r#"{"bindings":{"g e":"external-editor","Ctrl+q Ctrl+e":"external-editor","Ctrl+q":null}}"#,
     )
-    .unwrap();
+    .map_err(|errors| format!("{errors:?}"))?;
     assert!(press(&mut input, KeyCode::Char('g'), M::NONE, 0).is_empty());
     assert_eq!(input.editor.text(), "");
     assert!(input.tick(749).is_empty());

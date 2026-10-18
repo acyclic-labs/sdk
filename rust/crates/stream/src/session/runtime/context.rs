@@ -70,8 +70,12 @@ impl<T: Future> Future for Scoped<T> {
     type Output = T::Output;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
-        this.context
-            .in_scope(|| this.source.as_pin_mut().expect("live producer").poll(cx))
+        // The source is cleared only on drop, so a polled future always holds it.
+        this.context.in_scope(|| {
+            this.source
+                .as_pin_mut()
+                .map_or(Poll::Pending, |source| source.poll(cx))
+        })
     }
 }
 impl<T: Stream> Stream for Scoped<T> {

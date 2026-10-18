@@ -3,7 +3,7 @@ use crate::tui::{
     ClientRenderer, PromptInput, Viewport,
     ratatui::{Terminal, backend::TestBackend},
 };
-fn picture(renderer: &mut ClientRenderer, views: &TaskFileViews, owner: &wire::Authority) -> String {
+fn picture(renderer: &mut ClientRenderer, views: &ClientViews, owner: &wire::Authority) -> String {
     renderer.update(views, owner);
     let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
     terminal
@@ -42,6 +42,7 @@ fn query(task: crate::TaskId, recent: u32) -> Query {
 }
 fn chunk(task: crate::TaskId, sequence: u64, bytes: &[u8]) -> FileValue {
     FileValue {
+        requester: None,
         publication: None,
         key: FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -88,7 +89,7 @@ async fn split_utf8_reaches_live_markdown_and_composed_transcript() {
             .await
             .unwrap();
         client.next_change().await.unwrap();
-        client.project_commands(&commands, &root).unwrap();
+
         let expected = if sequence == 0 { "�" } else { "€" };
         for screen in [
             picture(&mut direct, client.views(), &owner),
@@ -113,26 +114,24 @@ proptest! {
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             let volume = TaskVolume::open(Arc::new(MemoryStream::default()), StreamPath::new("window-repaint").unwrap()).await.unwrap();
-            let task = crate::TaskId::new(); let owner = authority(task); let selected = query(task, 2);
-            let frozen_task = crate::TaskId::new();
+            let task = crate::TaskId::from_bytes([11;16]); let owner = authority(task); let selected = query(task, 2);
+            let frozen_task = crate::TaskId::from_bytes([12;16]);
             let mut generation = volume.snapshot(&Query::Root, 32).await.unwrap().generation;
             generation = volume.append(generation, &chunk(frozen_task, 0, b"frozen")).await.unwrap();
             let mut client = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 2, 512).await.unwrap();
             let frozen_query = Query::Task(Component::new(frozen_task.to_string()).unwrap());
-            client.session.query_snapshot(frozen_query.clone(), volume.snapshot(&frozen_query, 32).await.unwrap(), 32, 512).unwrap();
-            let frozen_key = crate::client::task_compat::views::authority_key(&authority(frozen_task));
-            let frozen = client.views().transcripts[&frozen_key].clone();
-            let key = crate::client::task_compat::views::authority_key(&owner);
+            client.views.query_snapshot(frozen_query.clone(), volume.snapshot(&frozen_query, 32).await.unwrap(), 32, 512).unwrap();
+            let frozen_identity=client.views().selections().find(|(id,_)|**id!=client.task_selection).unwrap().0.to_owned();
+            let frozen=client.views().selection(&frozen_identity).unwrap().clone();
             let mut renderer = ClientRenderer::default();
             for (index, text) in pieces.iter().enumerate() {
                 generation = volume.append(generation, &chunk(task, index as u64, text.as_bytes())).await.unwrap();
                 client.next_change().await.unwrap();
                 let expected = pieces[index.saturating_sub(1)..=index].concat();
-                prop_assert_eq!(&client.views().transcripts[&key].streaming_text, &expected);
+                prop_assert_eq!(joined_text(&client,&owner.id,false), expected.clone());
                 let reopened = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 2, 512).await.unwrap();
-                prop_assert_eq!(&client.views().transcripts[&key], &reopened.views().transcripts[&key]);
-                prop_assert_eq!(&client.views().task_folds[&key], &reopened.views().task_folds[&key]);
-                prop_assert_eq!(&client.views().transcripts[&frozen_key], &frozen);
+                same_files(selection(&client),selection(&reopened));
+                prop_assert_eq!(client.views().selection(&frozen_identity).unwrap(), &frozen);
                 prop_assert!(picture(&mut renderer, client.views(), &owner).contains(&expected));
             }
             Ok(())
@@ -158,6 +157,8 @@ async fn removing_the_last_chunk_clears_the_projection() {
     let mut client = TaskFileClient::observe_query(&volume, &owner, selected.clone(), 1, 128)
         .await
         .unwrap();
+    let mut renderer = ClientRenderer::default();
+    assert!(picture(&mut renderer, client.views(), &owner).contains("evicted"));
     let status = FileValue::new(
         FileKey::Task {
             task: Component::new(task.to_string()).unwrap(),
@@ -170,9 +171,21 @@ async fn removing_the_last_chunk_clears_the_projection() {
     let reopened = TaskFileClient::observe_query(&volume, &owner, selected, 1, 128)
         .await
         .unwrap();
-    assert_eq!(client.views().transcripts, reopened.views().transcripts);
-    assert_eq!(client.views().tools, reopened.views().tools);
-    assert!(client.views().transcripts.is_empty());
+    same_files(selection(&client), selection(&reopened));
+    let files = selection(&client);
+    assert_eq!(files.files().len(), 1);
+    assert!(files.files().contains_key(&FileKey::Task {
+        task: Component::new(task.to_string()).unwrap(),
+        file: TaskFile::Status,
+    }));
+    assert!(
+        files
+            .task(&Component::new(task.to_string()).unwrap())
+            .text()
+            .next()
+            .is_none()
+    );
+    assert!(!picture(&mut renderer, client.views(), &owner).contains("evicted"));
 }
 
 #[tokio::test]
@@ -202,10 +215,37 @@ async fn outcome_shaped_chunk_bytes_stay_text_during_window_rebuild() {
         client.next_change().await.unwrap();
     }
     let expected = format!("{}new", std::str::from_utf8(json).unwrap());
-    let key = crate::client::task_compat::views::authority_key(&owner);
-    assert_eq!(client.views().transcripts[&key].streaming_text, expected);
+    assert_eq!(joined_text(&client, &owner.id, false), expected);
     let reopened = TaskFileClient::observe_query(&volume, &owner, selected, 2, 512)
         .await
         .unwrap();
-    assert_eq!(client.views().transcripts, reopened.views().transcripts);
+    same_files(selection(&client), selection(&reopened));
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(12))]
+    // The real snapshot/follow -> ClientViews -> Markdown path parses each
+    // stable UTF-8 byte once; rebuilding its cache is the negative control.
+    #[test]
+    fn followed_byte_partitions_parse_only_the_new_suffix(body in "[a-z日€🙂]{2,16}") {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let volume=TaskVolume::open(Arc::new(MemoryStream::default()),StreamPath::new("linear-markdown").unwrap()).await.unwrap();
+            let task=crate::TaskId::from_bytes([43;16]);let owner=authority(task);
+            let mut client=TaskFileClient::observe(&volume,&owner,128,4096).await.unwrap();
+            let mut generation=volume.head().await.unwrap();
+            let mut live=ClientRenderer::default();
+            let mut redundant=0;
+            for (index,byte) in body.bytes().enumerate() {
+                generation=volume.append(generation,&chunk(task,index as u64,&[byte])).await.unwrap();
+                client.next_change().await.unwrap();
+                live.update(client.views(),&owner);
+                let mut rebuilt=ClientRenderer::default();rebuilt.update(client.views(),&owner);
+                redundant+=rebuilt.text_work();
+                assert_eq!(live.screen().transcript,rebuilt.screen().transcript);
+            }
+            assert_eq!(live.text_work(),body.len());
+            assert!(std::panic::catch_unwind(||assert_eq!(redundant,body.len())).is_err(),
+                "replaying the prefix must fail the same exact work assertion");
+        });
+    }
 }

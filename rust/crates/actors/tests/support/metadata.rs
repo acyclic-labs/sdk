@@ -81,30 +81,28 @@ pub fn check(input: &[u8]) {
         Some(credential),
         Some(actor),
     ] = fields
-    {
-        if let Some(expiry) = field(&value, "expiresAtMs", 5)
+        && let Some(expiry) = field(&value, "expiresAtMs", 5)
             .and_then(Value::as_str)
             .filter(|raw| raw.len() <= 20)
             .and_then(|raw| raw.parse::<u64>().ok())
-        {
-            let expected = expiry > 0
-                && [account, org, principal, credential, actor]
-                    .into_iter()
-                    .all(text);
-            assert_eq!(
-                AdmittedCaller::new(
-                    account.into(),
-                    org.into(),
-                    principal.into(),
-                    credential.into(),
-                    actor.into(),
-                    expiry
-                )
-                .is_ok(),
-                expected,
-                "metadata constructor admission"
-            );
-        }
+    {
+        let expected = expiry > 0
+            && [account, org, principal, credential, actor]
+                .into_iter()
+                .all(text);
+        assert_eq!(
+            AdmittedCaller::new(
+                account.into(),
+                org.into(),
+                principal.into(),
+                credential.into(),
+                actor.into(),
+                expiry
+            )
+            .is_ok(),
+            expected,
+            "metadata constructor admission"
+        );
     }
     // One-way implication preserves legitimate duplicate-field rejection that Value loses.
     if serde_json::from_slice::<CallerCapability>(input).is_ok() {

@@ -34,36 +34,61 @@ fn fuzz_oracle_checks_every_seed() {
         include_bytes!("../../harness-fuzz/corpus/client_mentions/conflicting-metadata").as_slice(),
     ] {
         let input: CommandResolution = serde_json::from_slice(data).unwrap();
-        oracle::assert_conversion(&input, &input.clone().into_model_input());
+        oracle::check(&input);
+        mention_oracle().check(&input);
     }
 }
 
-#[test]
-#[should_panic(expected = "conversion must preserve ordered unique pinned references")]
-fn negative_control_dropped_attachment_fails_the_fuzz_oracle() {
-    let input = checked_input();
-    let mut content = input.clone().into_model_input().unwrap();
-    let ModelContent::Parts(parts) = &mut content else {
-        panic!("parts");
-    };
-    parts.remove(1);
-    oracle::assert_conversion(&input, &Ok(content));
+#[derive(Debug)]
+enum Fault {
+    DroppedAttachment,
+    RejectedValid,
+    AcceptedAction,
+    AcceptedConflict,
+    AcceptedInvalid,
 }
 
-#[test]
-#[should_panic(expected = "valid prompt conversion must succeed")]
-fn negative_control_rejected_valid_prompt_fails_the_fuzz_oracle() {
-    oracle::assert_conversion(
-        &checked_input(),
-        &Err(acyclic_harness::Error::Invalid("broken".into())),
-    );
+impl Fault {
+    fn tamper(&self, site: &str, actual: &mut acyclic_harness::Result<ModelContent>) {
+        match (self, site) {
+            (Self::DroppedAttachment, "projection") => {
+                let Ok(ModelContent::Parts(parts)) = actual else {
+                    panic!("attachment control needs parts")
+                };
+                parts.remove(1);
+            }
+            (Self::RejectedValid, "success") => {
+                *actual = Err(acyclic_harness::Error::Invalid("broken".into()))
+            }
+            (Self::AcceptedAction, "actions")
+            | (Self::AcceptedConflict, "conflict")
+            | (Self::AcceptedInvalid, "invalid") => {
+                *actual = Ok(ModelContent::Text("broken".into()))
+            }
+            _ => {}
+        }
+    }
 }
 
-#[test]
-#[should_panic(expected = "conflicting file metadata must be rejected")]
-fn negative_control_accepted_metadata_conflict_fails_the_fuzz_oracle() {
-    let mut input = checked_input();
-    let CommandResolution::Prompt { mentions, .. } = &mut input else {
+fn mention_oracle()
+-> acyclic_test_support::differential::oracle::Oracle<CommandResolution, Fault, oracle::Seen> {
+    use acyclic_test_support::differential::oracle::Oracle;
+    let mut builder = Oracle::declare(|input, fault: Option<&Fault>, see| {
+        oracle::observe(
+            input,
+            |site, actual| {
+                if let Some(fault) = fault {
+                    fault.tamper(site, actual);
+                }
+            },
+            |event| see.see(event),
+        )
+    });
+    for (name, invariant) in oracle::INVARIANTS {
+        builder = builder.invariant(name, invariant);
+    }
+    let mut conflict = checked_input();
+    let CommandResolution::Prompt { mentions, .. } = &mut conflict else {
         unreachable!()
     };
     mentions.push(FileMention {
@@ -71,7 +96,33 @@ fn negative_control_accepted_metadata_conflict_fails_the_fuzz_oracle() {
         end: 23,
         file: file(1, 1, 1, b"changed"),
     });
-    oracle::assert_conversion(&input, &Ok(ModelContent::Text("broken".into())));
+    builder
+        .control("projection", checked_input(), Fault::DroppedAttachment)
+        .control("success", checked_input(), Fault::RejectedValid)
+        .control(
+            "actions",
+            CommandResolution::Sdk {
+                command: "test".into(),
+                arguments: String::new(),
+            },
+            Fault::AcceptedAction,
+        )
+        .control("conflict", conflict, Fault::AcceptedConflict)
+        .control(
+            "invalid",
+            CommandResolution::Prompt {
+                text: String::new(),
+                source: None,
+                mentions: Vec::new(),
+            },
+            Fault::AcceptedInvalid,
+        )
+        .build()
+}
+
+#[test]
+fn every_conversion_invariant_detects_its_control_and_survives_deletion() {
+    mention_oracle().check(&checked_input());
 }
 
 fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> FileRef {
@@ -131,7 +182,7 @@ proptest::proptest! {
             file: file(id, 1, 1, &body),
         }).collect();
         let input = CommandResolution::Prompt { text: "inspect files".into(), source: None, mentions };
-        oracle::assert_conversion(&input, &input.clone().into_model_input());
+        mention_oracle().check(&input);
     }
 
     // Property: attach each pinned (volume,path,version) exactly once, in first

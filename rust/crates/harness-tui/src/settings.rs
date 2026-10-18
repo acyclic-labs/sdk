@@ -19,6 +19,8 @@ pub enum NotificationPolicy {
 pub struct UiSettings {
     /// scrollback lines.
     pub scrollback_lines: usize,
+    /// Render activity labels without animation.
+    pub reduced_motion: bool,
     /// wrap.
     pub wrap: bool,
     /// notifications.
@@ -68,6 +70,8 @@ impl Default for UiSettings {
 impl UiSettings {
     /// Visible transcript tail. The durable transcript remains in its volume.
     pub fn scrollback<'a, T>(&self, lines: &'a [T]) -> &'a [T] {
-        &lines[lines.len().saturating_sub(self.scrollback_lines)..]
+        lines
+            .get(lines.len().saturating_sub(self.scrollback_lines)..)
+            .unwrap_or_default()
     }
 }

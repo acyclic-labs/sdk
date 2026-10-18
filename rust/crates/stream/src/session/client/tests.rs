@@ -541,6 +541,17 @@ async fn largest_child_path_fits_its_channel_credit() -> TestResult {
     Ok(())
 }
 
+/// The next discovered child path, waiting at most one second.
+async fn next_child(
+    children: &mut crate::ChildStream,
+    ended: &'static str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let child = tokio::time::timeout(Duration::from_secs(1), children.next())
+        .await?
+        .ok_or(ended)??;
+    Ok(child.path.as_str().to_owned())
+}
+
 #[tokio::test]
 async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
@@ -594,20 +605,12 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     )
     .await?;
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), children.next())
-            .await?
-            .ok_or("missing resumed child")??
-            .path
-            .as_str(),
+        next_child(&mut children, "missing resumed child").await?,
         "agents/a"
     );
     append(&provider, "agents/0", 1).await?;
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), children.next())
-            .await?
-            .ok_or("discovery ended")??
-            .path
-            .as_str(),
+        next_child(&mut children, "discovery ended").await?,
         "agents/0"
     );
     new.controls
@@ -627,27 +630,14 @@ async fn children_move_and_reconnect_from_the_yielded_opaque_cursor() -> TestRes
     }
     append(&provider, "agents/b", 1).await?;
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(1), children.next())
-            .await?
-            .ok_or("reconnect ended")??
-            .path
-            .as_str(),
+        next_child(&mut children, "reconnect ended").await?,
         "agents/b"
     );
-    assert!(
-        new.counts
-            .resumes
-            .lock()
-            .map_err(|_| "resumes poisoned")?
-            .contains(&(1, 2, 1))
-    );
-    assert!(
-        new.counts
-            .resumes
-            .lock()
-            .map_err(|_| "resumes poisoned")?
-            .contains(&(1, 3, 3))
-    );
+    let resumed = {
+        let resumes = new.counts.resumes.lock().map_err(|_| "resumes poisoned")?;
+        resumes.contains(&(1, 2, 1)) && resumes.contains(&(1, 3, 3))
+    };
+    assert!(resumed);
     append(&provider, "healthy", 1).await?;
     assert_eq!(next(&mut healthy).await?.sequence, 1);
     for fixture in [&old, &new] {

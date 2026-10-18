@@ -209,7 +209,11 @@ impl MemoryStream {
             let claim = self.adopt(std::mem::size_of::<(StreamPath, PathState)>())?;
             let (changed, _) = watch::channel(0);
             paths.push((
-                StreamPath(destination.0.slice(..end)),
+                destination
+                    .as_str()
+                    .get(..end)
+                    .and_then(|ancestor| destination.ancestor(ancestor))
+                    .ok_or(StreamError::InvalidPath)?,
                 PathState {
                     children: ChildIndex::default(),
                     next_sibling: None,

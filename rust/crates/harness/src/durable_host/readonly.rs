@@ -337,7 +337,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let retained = original.logical_owned_bytes()?;
         let mut owner = self
             .journal_owner_record(task, fence, Some(original), Some(io))
-            .await?;
+            .await?
+            .0;
         owner
             .native_custody
             .as_mut()

@@ -414,7 +414,9 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
         tools,
     )
-    .with_tool_authority(scope, None)?;
+    .with_tool_authority(scope, None)?
+    // This context has no private summary writer, so it cannot enable compaction.
+    .with_compaction_policy(crate::context::CompactionPolicy::Disabled);
     let journal = Journal::default();
     let mut messages = vec![call_message(&invocation)];
     let before = messages.clone();
@@ -437,4 +439,134 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     assert!(journal.1.lock().unwrap().is_empty());
     assert_eq!(messages, before);
     Ok(())
+}
+
+mod prepared_request_reuse_properties {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseResult;
+    #[derive(Clone, Copy)]
+    enum Fault {
+        None,
+        StaleContext,
+        WrongDigest,
+        Recount,
+    }
+    async fn check(text: &[String; 3], fault: Fault) -> TestCaseResult {
+        let journal = Journal::default();
+        let (provider, accounting_calls) = counted_model(131_072, None, [], []);
+        let model = Model::new(
+            "test".into(),
+            "request-reuse".into(),
+            "1".into(),
+            Value::Null,
+        )
+        .unwrap();
+        let messages = vec![
+            ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(format!("history:{}", text[0])),
+            },
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(format!("prior:{}", text[1])),
+            },
+        ];
+        let executor = StockExecutor::new(
+            model.clone(),
+            provider.clone(),
+            ContextPipeline::new([Arc::new(crate::context::SourceStage::new(
+                "history",
+                "1",
+                Arc::new(crate::context::Context {
+                    messages: messages.clone(),
+                    ..Default::default()
+                }),
+                crate::context::ContextPlacement::Prepend,
+            )) as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::default(),
+        )
+        .with_max_output_tokens(512)
+        .unwrap();
+        let current = ModelContent::Text(format!("current:{}", text[2]));
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: current.clone(),
+            selected_context: None,
+            max_steps: 1,
+        };
+        StockExecution::ordinary(&executor)
+            .ensure_started(&journal, &input)
+            .await
+            .unwrap();
+        let hot = StockExecution::ordinary(&executor)
+            .prepared_response(&journal, &input, 0, &[])
+            .await
+            .unwrap();
+        let cold = StockExecution::ordinary(&executor.clone())
+            .prepared_response(&journal, &input, 0, &[])
+            .await
+            .unwrap();
+        let mut expected_messages = messages;
+        expected_messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: current,
+        });
+        let expected = ModelRequest {
+            model,
+            messages: expected_messages,
+            tools: Vec::new(),
+            max_output_tokens: Some(512),
+        };
+        let bytes = crate::contract::canonical_json_bytes(&expected).unwrap();
+        let observed = if matches!(fault, Fault::StaleContext) {
+            let mut stale = expected.clone();
+            stale.messages[0].content = ModelContent::Text("stale".into());
+            crate::model::PreparedModelRequest::prepare(stale, Limits::default(), None).unwrap()
+        } else {
+            hot
+        };
+        let mut digest = observed.request_digest();
+        if matches!(fault, Fault::WrongDigest) {
+            digest[0] ^= 1;
+        }
+        if matches!(fault, Fault::Recount) {
+            stock_count_tokens(provider.as_ref(), &cold, None)
+                .await
+                .unwrap();
+        }
+        prop_assert!(
+            observed.request() == &expected
+                && observed.bytes() == bytes
+                && digest == *blake3::hash(&bytes).as_bytes()
+                && cold.request() == &expected
+                && cold.bytes() == bytes
+                && cold.request_digest() == *blake3::hash(&bytes).as_bytes()
+                && accounting_calls.load(Ordering::SeqCst) == 1
+                && provider.requests().is_empty(),
+            "hot and recovered requests differ from input or repeat captured accounting"
+        );
+        Ok(())
+    }
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+        #[test]
+        fn hot_and_recovered_requests_match_independent_input(
+            text in prop::array::uniform3("[a-z0-9\\x00é🦀]{0,16}"),
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            runtime.block_on(check(&text, Fault::None))?;
+        }
+    }
+    #[tokio::test]
+    async fn prepared_request_reuse_negative_controls() {
+        let input = std::array::from_fn(|_| String::new());
+        check(&input, Fault::None).await.unwrap();
+        for fault in [Fault::StaleContext, Fault::WrongDigest, Fault::Recount] {
+            let error = check(&input, fault).await.unwrap_err();
+            assert!(error.to_string().contains(
+                "hot and recovered requests differ from input or repeat captured accounting"
+            ));
+        }
+    }
 }

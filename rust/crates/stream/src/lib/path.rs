@@ -1,6 +1,26 @@
+use crate::{MAX_ITEMS, MAX_PATH_BYTES, StreamError};
+use std::{fmt, sync::Arc};
+
 /// Permanent account-relative slash-separated ASCII path.
-#[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
-pub struct StreamPath(OwnedBytes);
+pub struct StreamPath {
+    text: PathText,
+    length: usize,
+}
+
+#[derive(Clone)]
+enum PathText {
+    Plain(Arc<str>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(Arc<NativePathText>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+// Text storage retires before its metadata and original payload allowance.
+struct NativePathText {
+    text: String,
+    _metadata: acyclic_native_runtime::ReadAllocation,
+    _payload: acyclic_native_runtime::ReadAllocation,
+}
 
 #[cfg(feature = "serde")]
 impl serde::Serialize for StreamPath {
@@ -33,10 +53,13 @@ impl StreamPath {
     pub fn new(path: impl AsRef<str>) -> Result<Self, StreamError> {
         let path = path.as_ref();
         Self::validate(path)?;
-        Ok(Self(OwnedBytes::copy_from_slice(path.as_bytes())))
+        Ok(Self {
+            text: PathText::Plain(Arc::from(path)),
+            length: path.len(),
+        })
     }
 
-    fn validate(path: &str) -> Result<(), StreamError> {
+    pub(crate) fn validate(path: &str) -> Result<(), StreamError> {
         if path.is_empty()
             || path.len() > MAX_PATH_BYTES
             || !path.is_ascii()
@@ -76,36 +99,67 @@ impl StreamPath {
             return Ok(Err(error));
         }
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, path.len())?;
-        let mut data = Vec::new();
+        let mut data = String::new();
         data.try_reserve_exact(path.len())
             .map_err(|error| meter.allocation_failed(error))?;
         allocation.reconcile_capacity(data.capacity())?;
         meter.admit_codec(0, path.len() as u64, 0)?;
-        data.extend_from_slice(path.as_bytes());
+        data.push_str(path);
         meter.record_codec(0, path.len() as u64, 0)?;
-        OwnedBytes::from_vec_with_guard(data, allocation, Arc::clone(meter))
-            .map(|data| Ok(Self(data)))
-            .map_err(|failure| match failure.into_error() {
-                PreparedOwnedBytesError::Admission(error) => error,
-                PreparedOwnedBytesError::NotFullyInitialized => unreachable!("initialized path"),
-            })
+        let metadata = acyclic_native_runtime::ReadAllocation::new(
+            meter,
+            std::mem::size_of::<NativePathText>(),
+        )?;
+        Ok(Ok(Self {
+            text: PathText::Native(Arc::new(NativePathText {
+                text: data,
+                _metadata: metadata,
+                _payload: allocation,
+            })),
+            length: path.len(),
+        }))
     }
 
     /// Canonical path text.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        let Ok(path) = std::str::from_utf8(&self.0) else {
-            unreachable!("validated ASCII path")
+        let text: &str = match &self.text {
+            PathText::Plain(text) => text,
+            #[cfg(not(target_arch = "wasm32"))]
+            PathText::Native(text) => &text.text,
         };
-        path
+        // `length` always ends on a segment boundary of `text`.
+        text.get(..self.length).unwrap_or(text)
+    }
+
+    fn prefix(&self, length: usize) -> Self {
+        assert!(length <= self.length, "path prefix exceeds its source");
+        Self {
+            text: self.text.clone(),
+            length,
+        }
+    }
+
+    /// Shares this path or a complete ancestor; rejects partial segments.
+    pub(crate) fn ancestor(&self, ancestor: &str) -> Option<Self> {
+        let path = self.as_str();
+        if ancestor.is_empty()
+            || ancestor.len() > path.len()
+            || (!std::ptr::eq(path.as_ptr(), ancestor.as_ptr()) && !path.starts_with(ancestor))
+            || path
+                .as_bytes()
+                .get(ancestor.len())
+                .is_some_and(|byte| *byte != b'/')
+        {
+            return None;
+        }
+        Some(self.prefix(ancestor.len()))
     }
 
     /// Immediate parent, if any.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
-        self.as_str()
-            .rfind('/')
-            .map(|index| Self(self.0.slice(..index)))
+        self.as_str().rfind('/').map(|index| self.prefix(index))
     }
 }
 
@@ -131,5 +185,42 @@ impl std::hash::Hash for StreamPath {
 impl std::borrow::Borrow<str> for StreamPath {
     fn borrow(&self) -> &str {
         self.as_str()
+    }
+}
+
+impl Clone for StreamPath {
+    fn clone(&self) -> Self {
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        if matches!(&self.text, PathText::Plain(_)) && crate::path_text_tests::copy_on_clone() {
+            return Self::new(self.as_str())
+                .unwrap_or_else(|_| unreachable!("validated path clone"));
+        }
+        Self {
+            text: self.text.clone(),
+            length: self.length,
+        }
+    }
+}
+
+impl PartialEq for StreamPath {
+    fn eq(&self, other: &Self) -> bool {
+        let (left, right) = (self.as_str(), other.as_str());
+        std::ptr::eq(left, right) || left == right
+    }
+}
+impl Eq for StreamPath {}
+impl PartialOrd for StreamPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for StreamPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let (left, right) = (self.as_str(), other.as_str());
+        if std::ptr::eq(left, right) {
+            std::cmp::Ordering::Equal
+        } else {
+            crate::owned_bytes::compare_bytes(left.as_bytes(), right.as_bytes())
+        }
     }
 }

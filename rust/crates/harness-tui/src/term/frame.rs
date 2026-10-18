@@ -14,11 +14,39 @@ pub trait Present {
     /// The buffer's contents are consumed. On error, a begun synchronized
     /// update has been closed or remains journaled for restoration.
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()>;
+
+    /// How many times the device was reached other than by a presented frame
+    /// (setup, restore, suspend and resume, direct writes), or `None` when
+    /// unknown. While it is unchanged since the last frame, the screen state
+    /// that frame left is still the device's.
+    fn outside_writes(&mut self) -> Option<u64>;
+
+    /// Compare the observation and present under one lifecycle boundary, even
+    /// for an empty frame. None rejects without writing or changing the buffer;
+    /// Some returns the count at that presentation. An absent precondition is
+    /// used only when encoding already restates the complete requested cursor.
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>>;
 }
 
 impl<P: Present + ?Sized> Present for &mut P {
     fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
         (**self).present(frame, cursor_hidden)
+    }
+    fn outside_writes(&mut self) -> Option<u64> {
+        (**self).outside_writes()
+    }
+    fn present_if_current(
+        &mut self,
+        frame: &mut Vec<u8>,
+        cursor_hidden: bool,
+        expected: Option<u64>,
+    ) -> io::Result<Option<u64>> {
+        (**self).present_if_current(frame, cursor_hidden, expected)
     }
 }
 
@@ -119,16 +147,16 @@ impl<D: Present> Write for FrameOutput<D> {
 }
 
 impl<D: Present> FrameOutput<D> {
-    fn commit(&mut self) -> io::Result<()> {
-        if self.frame.is_empty() {
-            return Ok(());
-        }
-        // Taken, so a device that unwinds cannot leave a half-presented frame
-        // to be presented again; returned with its capacity, so steady-state
-        // frames allocate nothing here.
+    fn commit(&mut self, expected: Option<u64>) -> io::Result<Option<u64>> {
+        // Empty frames must cross the same boundary as nonempty ones: the
+        // signal worker can invalidate a cursor while the caller is rendering.
         let mut frame = std::mem::take(&mut self.frame);
-        let presented = self.device.present(&mut frame, self.cursor_hidden);
-        frame.clear();
+        let presented = self
+            .device
+            .present_if_current(&mut frame, self.cursor_hidden, expected);
+        if !matches!(presented, Ok(None)) {
+            frame.clear();
+        }
         self.frame = frame;
         presented
     }
@@ -139,9 +167,32 @@ impl<D: Present> FrameOutput<D> {
 struct FrameBackend<D: Present> {
     output: FrameOutput<D>,
     size: Size,
+    shown: Shown,
+    /// The device's outside-write count when `shown` was last ours.
+    ours: Option<u64>,
+}
+
+/// Cursor and default attribute state after the last presented frame. A command that
+/// restates it is not encoded, so a frame identical to the screen encodes no
+/// bytes and reaches no device. `None` is unknown: the command is encoded.
+/// Valid only while the device was reached by nothing but our frames since:
+/// any outside write, failed frame or resize makes it unknown.
+#[derive(Clone, Copy, Default)]
+struct Shown {
+    visible: Option<bool>,
+    position: Option<Position>,
+    attributes: bool,
 }
 
 impl<D: Present> FrameBackend<D> {
+    fn reset_attributes(&mut self) -> io::Result<()> {
+        if !self.shown.attributes {
+            self.output.write_all(b"\x1b[0m")?;
+            self.shown.attributes = true;
+        }
+        Ok(())
+    }
+
     // Encoding is stateless; borrowing the frame keeps ownership here.
     fn crossterm(&mut self) -> CrosstermBackend<&mut FrameOutput<D>> {
         CrosstermBackend::new(&mut self.output)
@@ -151,29 +202,53 @@ impl<D: Present> FrameBackend<D> {
 impl<D: Present> Backend for FrameBackend<D> {
     type Error = io::Error;
     fn draw<'a, I: Iterator<Item = (u16, u16, &'a Cell)>>(&mut self, content: I) -> io::Result<()> {
+        // Crossterm starts each diff assuming default attributes. Restore that
+        // precondition even for an empty diff after outside output or failure.
+        self.reset_attributes()?;
+        let mut content = content.peekable();
+        if content.peek().is_none() {
+            return Ok(());
+        }
+        self.shown.position = None;
         self.crossterm().draw(content)
     }
     fn append_lines(&mut self, lines: u16) -> io::Result<()> {
+        self.reset_attributes()?;
+        self.shown.position = None;
         self.crossterm().append_lines(lines)
     }
     fn hide_cursor(&mut self) -> io::Result<()> {
         self.output.cursor_hidden = true;
+        if self.shown.visible.replace(false) == Some(false) {
+            return Ok(());
+        }
         self.crossterm().hide_cursor()
     }
     fn show_cursor(&mut self) -> io::Result<()> {
         self.output.cursor_hidden = false;
+        if self.shown.visible.replace(true) == Some(true) {
+            return Ok(());
+        }
         self.crossterm().show_cursor()
     }
     fn get_cursor_position(&mut self) -> io::Result<Position> {
         self.crossterm().get_cursor_position()
     }
     fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        let position = position.into();
+        if self.shown.position.replace(position) == Some(position) {
+            return Ok(());
+        }
         self.crossterm().set_cursor_position(position)
     }
     fn clear(&mut self) -> io::Result<()> {
+        self.reset_attributes()?;
+        self.shown.position = None;
         self.crossterm().clear()
     }
     fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        self.reset_attributes()?;
+        self.shown.position = None;
         self.crossterm().clear_region(clear_type)
     }
     fn size(&self) -> io::Result<Size> {
@@ -195,14 +270,14 @@ impl<D: Present> Backend for FrameBackend<D> {
 // device is already closed, its journal has restored the cursor.
 impl<D: Present> Drop for FrameBackend<D> {
     fn drop(&mut self) {
-        let _ = self.output.commit();
+        let _ = self.output.commit(None);
     }
 }
 
 /// The only full-screen presentation path: each draw reaches the device as
 /// one presented frame, wrapped in synchronized output (DECSET 2026) by the
-/// device when the probed terminal supports it. A frame with an unchanged
-/// buffer and cursor still commits only its cursor placement.
+/// device when the probed terminal supports it. A draw identical to the screen
+/// (unchanged buffer and cursor) reaches no device at all.
 pub struct FrameTerminal<D: Present> {
     terminal: Terminal<FrameBackend<D>>,
 }
@@ -218,6 +293,8 @@ impl<D: Present> FrameTerminal<D> {
                     cursor_hidden: false,
                 },
                 size,
+                shown: Shown::default(),
+                ours: None,
             })?,
         })
     }
@@ -225,13 +302,58 @@ impl<D: Present> FrameTerminal<D> {
     /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {
-        self.terminal.backend_mut().size = size;
+        let backend = self.terminal.backend_mut();
+        let outside = backend.output.device.outside_writes();
+        if outside.is_none() || outside != backend.ours || backend.size != size {
+            backend.shown = Shown::default();
+        }
+        backend.ours = outside;
+        backend.size = size;
         let drawn = self.terminal.draw(render).map(drop);
-        let committed = self.terminal.backend_mut().output.commit();
-        drawn.and(committed)
+        let backend = self.terminal.backend_mut();
+        let committed = match backend.output.commit(backend.ours) {
+            Ok(None) => {
+                // Nothing reached the device. Keep the diff bytes and encode
+                // the cursor without cached assumptions; any further outside
+                // change before presentation is then harmless.
+                let desired = backend.shown;
+                backend.shown = Shown::default();
+                // The retained diff was encoded before the outside access.
+                // Repair attributes BEFORE its cells, not just the cursor after.
+                backend
+                    .output
+                    .frame
+                    .splice(0..0, b"\x1b[0m".iter().copied());
+                backend.shown.attributes = true;
+                let repair = match desired.visible {
+                    Some(true) => backend.show_cursor().and_then(|()| {
+                        desired
+                            .position
+                            .map_or(Ok(()), |position| backend.set_cursor_position(position))
+                    }),
+                    Some(false) => backend.hide_cursor(),
+                    None => Ok(()),
+                };
+                repair.and_then(|()| backend.output.commit(None))
+            }
+            result => result,
+        }
+        .and_then(|count| count.ok_or_else(|| io::ErrorKind::Interrupted.into()));
+        if let Ok(count) = committed.as_ref() {
+            backend.ours = Some(*count);
+        }
+        if drawn.is_err() || committed.is_err() {
+            // The device may hold any part of the frame.
+            backend.shown = Shown::default();
+        }
+        drawn.and(committed.map(|_| ()))
     }
 }
 
 #[cfg(test)]
 #[path = "frame_tests.rs"]
 mod tests;
+
+#[cfg(all(test, acyclic_harness_tui_loom))]
+#[path = "frame_model.rs"]
+mod frame_model;

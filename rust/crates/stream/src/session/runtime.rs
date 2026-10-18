@@ -30,7 +30,7 @@ impl Executor for PlatformExecutor {
     }
     fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {
         Box::pin(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await
+            tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await;
         })
     }
 }

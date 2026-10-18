@@ -203,7 +203,31 @@ async fn defaults_leave_input_room_when_output_capacity_equals_the_context() -> 
             assert!(input > 2);
             assert!(output > 0 && input + u64::from(output) <= u64::from(capacity.context_tokens));
         }
-        harness.close().await?;
+        // The output-first control never settles its admitted turn.
+        if legacy {
+            harness.disconnect_unfinished().await?;
+        } else {
+            harness.close().await?;
+        }
     }
+    Ok(())
+}
+
+// Negative control for the checked test teardown: a settled HEAD must close,
+// so disconnecting it as unfinished is refused.
+#[tokio::test]
+async fn a_settled_turn_cannot_be_torn_down_as_unfinished() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let project = volume(directory.path()).await?;
+    let provider = scripted([ScriptedTurn::Text("done".into())]);
+    let harness = LocalHarness::open(
+        volume_config(directory.path(), project, provider)?.without_default_tools(),
+    )
+    .await?;
+    assert_eq!(harness.run("settle one prompt").await?.text, "done");
+    assert!(matches!(
+        harness.disconnect_unfinished().await,
+        Err(Error::Conflict(reason)) if reason.contains("must close")
+    ));
     Ok(())
 }
