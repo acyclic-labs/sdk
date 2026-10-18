@@ -1,11 +1,12 @@
 use super::{TestResult, goals::GoalCase, matchers};
 use acyclic_harness::{
-    IdempotencyKey, LocalHarness,
+    IdempotencyKey, LocalHarness, TaskId,
     context::CompactionPolicy,
     conversation::{FileDescriptor, FileRef, Limits, VolumeRef},
     filesystem::{WorkspaceMutation, workspace_ref},
     goal::GoalView,
     model::{Model, ModelContent, ModelRole},
+    task_volume::{Component, FileKey, FileValue, Query, TaskFile},
     test_support::{ScriptedModelProvider, local_harness_config, local_task_stream},
 };
 use acyclic_stream::{Record, StreamPath, StreamProvider};
@@ -181,6 +182,17 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     {
         return Err("goal frames lost, duplicated or reordered an admission/completion".into());
     }
+    let tasks = declared
+        .iter()
+        .map(|operation| {
+            Ok(acyclic_harness::runtime::task_id_for_admission(
+                acyclic_harness::OperationId::parse(operation)?,
+            ))
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    // Read every admitted task before recovery can repair a missing or stale
+    // projection. Completion frames alone do not prove status publication.
+    let statuses = terminal_statuses(&harness, &tasks).await?;
     let requests = provider.requests();
     if !requests.first().is_some_and(|request| {
         request.messages.iter().any(|message| {
@@ -250,14 +262,60 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     })
     .goal_continuations(None);
     let reopened = LocalHarness::open(config).await?;
+    if terminal_statuses(&reopened, &tasks).await? != statuses {
+        return Err("cold reopen changed goal task status files".into());
+    }
     if reopened.resume(task_id).await?.text != case.expect.text {
         return Err("reopened goal task changed its settled result".into());
     }
     if provider.requests().len() != count {
         return Err("reopening a goal task redispatched the model".into());
     }
+    if terminal_statuses(&reopened, &tasks).await? != statuses {
+        return Err("goal replay changed settled task status files".into());
+    }
     check_files(&reopened, reopened.scratch(), &case.expect.files).await?;
     check_files(&reopened, reopened.project(), &case.expect.project_files).await?;
+    Ok(())
+}
+
+async fn terminal_statuses(harness: &LocalHarness, tasks: &[TaskId]) -> TestResult<Vec<FileValue>> {
+    let snapshot = harness
+        .task_files()
+        .snapshot(&Query::TaskOverviews, tasks.len())
+        .await?;
+    check_terminal_statuses(tasks, &snapshot.files)?;
+    Ok(snapshot.files)
+}
+
+pub(super) fn check_terminal_statuses(tasks: &[TaskId], files: &[FileValue]) -> TestResult {
+    let mut expected = tasks
+        .iter()
+        .map(|task| {
+            Ok(FileKey::Task {
+                task: Component::new(task.to_string())?,
+                file: TaskFile::Status,
+            })
+        })
+        .collect::<TestResult<BTreeSet<_>>>()?;
+    if tasks.is_empty() || expected.len() != tasks.len() || files.len() != tasks.len() {
+        return Err("goal terminal status files lost or duplicated a task".into());
+    }
+    for file in files {
+        let status: Value = serde_json::from_slice(&file.bytes)?;
+        let FileKey::Task { task, .. } = &file.key else {
+            return Err("goal terminal status names a non-task file".into());
+        };
+        if !expected.remove(&file.key)
+            || file.channel.is_some()
+            || status["task"] != task.as_str()
+            || status["state"] != "completed"
+        {
+            return Err(
+                format!("goal terminal status differs for {:?}: {status}", file.key).into(),
+            );
+        }
+    }
     Ok(())
 }
 

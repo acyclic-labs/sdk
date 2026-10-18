@@ -22,6 +22,57 @@ fn text() -> impl Strategy<Value = String> {
 }
 
 proptest! {
+    // Every admitted identity, including every continuation, must have exactly
+    // one correctly addressed terminal file. Ordering is irrelevant. The old
+    // root-only scope is the negative control for each continuation fault.
+    #[test]
+    fn terminal_status_oracle_covers_every_admitted_task(
+        identities in proptest::collection::btree_set(any::<[u8; 16]>(), 2..8),
+        offset in any::<usize>(),
+    ) {
+        use acyclic_harness::task_volume::{Channel, Component, FileKey, FileValue, TaskFile};
+        let tasks: Vec<_> = identities.into_iter().map(TaskId::from_bytes).collect();
+        let files: Vec<_> = tasks.iter().map(|task| FileValue::new(
+            FileKey::Task {
+                task: Component::new(task.to_string()).unwrap(),
+                file: TaskFile::Status,
+            },
+            serde_json::to_vec(&json!({"task":task,"state":"completed"})).unwrap(),
+        )).collect();
+        let check = super::goal_execution::check_terminal_statuses;
+        prop_assert!(check(&tasks, &files).is_ok());
+        let mut reordered = files.clone();
+        reordered.rotate_left(offset % files.len());
+        prop_assert!(check(&tasks, &reordered).is_ok());
+        for index in 0..files.len() {
+            for fault in ["missing", "identity", "key", "state", "channel", "duplicate"] {
+                let mut broken = files.clone();
+                match fault {
+                    "missing" => { broken.remove(index); }
+                    "identity" => broken[index].bytes = serde_json::to_vec(
+                        &json!({"task":"wrong","state":"completed"})
+                    ).unwrap().into(),
+                    "key" => broken[index].key = FileKey::Task {
+                        task: Component::new("wrong").unwrap(), file: TaskFile::Status,
+                    },
+                    "state" => broken[index].bytes = serde_json::to_vec(
+                        &json!({"task":tasks[index],"state":"pending"})
+                    ).unwrap().into(),
+                    "channel" => broken[index].channel = Some(Channel::Text),
+                    "duplicate" => broken.push(files[index].clone()),
+                    _ => unreachable!(),
+                }
+                prop_assert!(check(&tasks, &broken).is_err(), "accepted {fault} at {index}");
+                if index > 0 {
+                    // Restore the old scope using the same oracle: all faults
+                    // outside the root task become invisible to it.
+                    let root: Vec<_> = broken.iter().filter(|file| file.key == files[0].key).cloned().collect();
+                    prop_assert!(check(&tasks[..1], &root).is_ok(), "control: {fault} at {index}");
+                }
+            }
+        }
+    }
+
     // The actual case codec preserves scripts, bounds, assertions and Unicode.
     #[test]
     fn goal_case_scripts_round_trip(body in text(), answer in text(), limit in any::<u32>(), streamed in any::<bool>()) {
