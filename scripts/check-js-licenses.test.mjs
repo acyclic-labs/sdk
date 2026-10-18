@@ -62,6 +62,15 @@ test("checks isolated transitive dependencies that have no root package link", (
   expect(result).toEqual({ status: 1, errors: ["transitive@1.0.0: GPL-3.0-only"] });
 });
 
+test("checks hidden-store packages with no incoming links", () => {
+  const result = checkFixture(root => {
+    packageAt(root, "node_modules/.bun/unlinked@1.0.0/node_modules/unlinked", {
+      name: "unlinked", license: "GPL-3.0-only",
+    });
+  });
+  expect(result).toEqual({ status: 1, errors: ["unlinked@1.0.0: GPL-3.0-only"] });
+});
+
 test("checks dependencies beneath a linked private workspace", () => {
   const result = checkFixture(root => {
     const workspace = packageAt(root, "packages/workspace", { name: "workspace", private: true });
