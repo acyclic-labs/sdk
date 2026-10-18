@@ -110,7 +110,7 @@ fn resume(omit_wake: bool) {
             let sub = sub.clone();
             move || {
                 if omit_wake {
-                    verification::set_fault(verification::Fault::OmitAppendWake);
+                    verification::omit_append_wake();
                 }
                 append(&stream, &sub, &records[2..], 2);
             }

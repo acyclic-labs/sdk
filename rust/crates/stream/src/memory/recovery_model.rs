@@ -24,6 +24,11 @@ pub(crate) fn set_fault(fault: Fault) {
     FAULT.with(|current| current.set(fault));
 }
 
+/// Omits this actor's append wake for adapter model negative controls.
+pub fn omit_append_wake() {
+    set_fault(Fault::OmitAppendWake);
+}
+
 pub(crate) fn fault_is(fault: Fault) -> bool {
     FAULT.with(|current| current.get() == fault)
 }
