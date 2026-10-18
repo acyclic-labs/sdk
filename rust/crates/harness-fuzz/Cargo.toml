@@ -19,7 +19,11 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(acyclic_harness_loom)", "c
 
 [features]
 default = ["runtime"]
-runtime = ["dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+runtime = ["filesystem-local", "native-execution", "dep:acyclic-harness", "dep:diffy", "dep:serde-saphyr", "dep:prost", "dep:acyclic-fs", "dep:acyclic-stream", "dep:futures", "dep:tempfile", "dep:bytes", "dep:rmcp", "dep:uuid", "dep:tokio", "dep:tokio-util", "dep:which"]
+# Harness sources included by `#[path]` gate native helpers on these features;
+# the fuzz runtime compiles them as the native harness it depends on does.
+filesystem-local = []
+native-execution = []
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
