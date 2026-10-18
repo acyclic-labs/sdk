@@ -95,14 +95,12 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
             if Some(&output.text) == case.expect.text.as_ref() => {}
         (ExpectedOutcome::Failed, Err(acyclic_harness::Error::TaskFailed { task, .. }))
             if task == task_id => {}
+        // A local turn is uncertain only through a command, so the caller sees its cause.
         (
             ExpectedOutcome::Indeterminate,
-            Err(
-                acyclic_harness::Error::Indeterminate(id)
-                | acyclic_harness::Error::CommandIndeterminate {
-                    operation_id: id, ..
-                },
-            ),
+            Err(acyclic_harness::Error::CommandIndeterminate {
+                operation_id: id, ..
+            }),
         ) if id == operation => {}
         (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
     }

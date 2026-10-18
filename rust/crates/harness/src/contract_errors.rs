@@ -548,16 +548,18 @@ impl Error {
         )
     }
 
-    /// Whether a failed command's outcome is unknown. Native-ledger errors carry their class
-    /// only as a code, so a native storage, indeterminate or cancelled failure is uncertain too.
+    /// Whether a failed command's outcome is unknown: every failure whose wire class is storage,
+    /// indeterminate or cancelled. Reading the class, not the variant, keeps the failures that
+    /// carry it only as a code (native ledgers, task-volume storage, deferred search
+    /// publication) uncertain. A failed task is the one storage-coded failure that is settled.
     pub(crate) fn leaves_outcome_uncertain(&self) -> bool {
         use crate::wire::ErrorCode;
-        self.leaves_effect_uncertain()
-            || (self.cause().is_native_failure()
-                && matches!(
-                    self.code(),
-                    ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
-                ))
+        let cause = self.cause();
+        !matches!(cause, Self::TaskFailed { .. })
+            && matches!(
+                cause.code(),
+                ErrorCode::Storage | ErrorCode::Indeterminate | ErrorCode::Cancelled
+            )
     }
 
     /// A definitive malformed tool request, distinct from native accounting failures.

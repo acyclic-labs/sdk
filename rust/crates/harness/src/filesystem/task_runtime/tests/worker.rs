@@ -186,6 +186,25 @@ async fn failed_command_settles_with_its_cause_and_only_uncertain_effects_are_in
             FailedCommand(|| wrapped(Error::Unsupported("wrapped definitive cause".into()))),
             false,
         ),
+        // Failures that carry their class only as a code: a task-volume storage failure and a
+        // deferred search publication may both have taken effect.
+        (
+            FailedCommand(|| {
+                Error::from(crate::task_volume::Error::Storage(
+                    acyclic_stream::StreamError::DeadlineElapsed,
+                ))
+            }),
+            true,
+        ),
+        (FailedCommand(|| Error::SearchPublicationDeferred), true),
+        // A failed child task is settled even though its wire class is storage.
+        (
+            FailedCommand(|| Error::TaskFailed {
+                task: TaskId::from_bytes([9; 16]),
+                message: "child failed".into(),
+            }),
+            false,
+        ),
     ] {
         let fixture = Fixture::new().await?;
         let runtime = fixture.runtime(None).await?;
