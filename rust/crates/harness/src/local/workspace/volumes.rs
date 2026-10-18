@@ -166,13 +166,17 @@ pub(in crate::local) async fn native_scope<T>(
 async fn leave_all(entered: Vec<(Arc<MountedVolume>, projection::Entered)>) -> Result<()> {
     let mut retired = Ok(());
     for (source, entry) in entered.into_iter().rev() {
-        if let Err(error) = Box::pin(source.leave(entry)).await
-            && retired.is_ok()
-        {
-            retired = Err(error);
-        }
+        keep_first(&mut retired, Box::pin(source.leave(entry)).await);
     }
     retired
+}
+
+// Every multi-volume exit attempts each volume and reports the first cause; one
+// failure never strands the volumes after it.
+fn keep_first(first: &mut Result<()>, next: Result<()>) {
+    if first.is_ok() {
+        *first = next;
+    }
 }
 
 /// Negative controls only: projects outside any execution scope, so nothing
@@ -188,14 +192,17 @@ pub(in crate::local) async fn project_unscoped(mounts: &Mounts) -> Result<()> {
     Ok(())
 }
 
-/// Retires every projection when the host disconnects; no scope is live.
+/// Retires every projection when the host disconnects. A volume a worker still
+/// owns reports a conflict, but every other volume is still published and
+/// retired rather than abandoned unpublished when the harness drops.
 pub(in crate::local) async fn retire(mounts: &Mounts) -> Result<()> {
+    let mut retired = Ok(());
     for (_, mount) in mounts.mounts() {
         if let Some(source) = &mount.view.source {
-            Box::pin(source.retire()).await?;
+            keep_first(&mut retired, Box::pin(source.retire()).await);
         }
     }
-    Ok(())
+    retired
 }
 
 fn projection_root<'a>(destination: &'a Path, relative: &str) -> Result<&'a Path> {

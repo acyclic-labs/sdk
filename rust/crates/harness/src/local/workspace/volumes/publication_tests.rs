@@ -149,3 +149,65 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     assert!(scratch.native().await.is_none());
     Ok(())
 }
+
+// Disconnect retirement attempts every volume. A volume a cancelled worker still
+// owns reports its conflict, but cannot strand a later volume's projection
+// until the harness drops and abandons it unpublished.
+#[tokio::test]
+async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let (_, mount) = mounts.named(Some("scratch"))?;
+    let scratch = mount.view.source.as_ref().unwrap();
+    // `.volumes/aaa` precedes scratch and still has one worker claim.
+    let busy = Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
+        destination: mounts.root.join(".volumes/aaa"),
+        native: StateArc::new(AsyncMutex::new(None)),
+        users: StateArc::new(crate::sync::SyncMutex::new(1)),
+    });
+    let table = super::super::mounts::owner(
+        &mounts.root,
+        &mounts.named(None)?.1.view.volume,
+        None,
+        [("aaa", busy), ("scratch", Arc::clone(scratch))].map(|(name, source)| {
+            (name.to_owned(), mount.view.volume.clone(), Some(source))
+        }),
+    )?;
+    let project = async || {
+        let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
+        drop(scratch.enter(root, SCRATCH_PATH, false).await?);
+        Ok::<_, Error>(())
+    };
+    project().await?;
+    assert!(matches!(
+        retire(&table).await,
+        Err(Error::Conflict(message)) if message.contains("native workers")
+    ));
+    assert!(
+        scratch.native().await.is_none(),
+        "a conflict stranded a later projection"
+    );
+    assert!(!scratch.destination.exists());
+    // Negative control: the former loop stopped at the first conflict. The
+    // same oracle sees the later projection remain mounted.
+    project().await?;
+    let former = async {
+        for (_, mount) in table.mounts() {
+            if let Some(source) = &mount.view.source {
+                Box::pin(source.retire()).await?;
+            }
+        }
+        Ok::<_, Error>(())
+    };
+    assert!(former.await.is_err());
+    assert!(
+        scratch.native().await.is_some(),
+        "oracle missed a stranded projection"
+    );
+    retire(mounts).await?;
+    assert!(scratch.native().await.is_none());
+    Ok(())
+}
