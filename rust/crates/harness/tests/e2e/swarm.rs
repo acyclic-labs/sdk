@@ -246,7 +246,16 @@ async fn run_raw(case: SwarmCase, fault: Fault, paced: bool) -> TestResult<serde
     let followed = started.elapsed();
     // Reopen every index from accepted file records, including unselected agents.
     for volume in &volumes {
-        let reopened = TaskVolume::open_existing(provider.clone(), volume.path().clone()).await?;
+        let reopened = super::stall::waiting("swarm index reopen", async {
+            if fault == Fault::StalledReopen {
+                // The actual driver retains this awaited open indefinitely.
+                // Async ownership must never keep native work marked active.
+                std::future::pending().await
+            } else {
+                TaskVolume::open_existing(provider.clone(), volume.path().clone()).await
+            }
+        })
+        .await?;
         let snapshot = reopened.heads(&Query::Root, None, records).await?;
         let [file] = snapshot.files.as_slice() else {
             return Err("final agent file missing".into());

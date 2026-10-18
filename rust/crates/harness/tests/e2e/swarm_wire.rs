@@ -21,7 +21,7 @@ pub(super) enum Fault {
     ScanRetainedViews,
     LogarithmicProviderWork,
     QuadraticProviderWork,
-    PermanentPending,
+    StalledReopen,
 }
 #[derive(Default, serde::Serialize)]
 pub(super) struct Counts {
@@ -192,14 +192,6 @@ impl Wire {
         });
         let responses = counts.clone();
         let map_responses: runtime::ResponseMap = Arc::new(move |source| {
-            if fault == Fault::PermanentPending {
-                // Retain the real response stream while permanently withholding
-                // delivery. This must remain async work, without a native owner.
-                return Box::pin(stream::poll_fn(move |_| {
-                    let _retained = &source;
-                    std::task::Poll::Pending
-                }));
-            }
             let counts = responses.clone();
             let mut injected = false;
             Box::pin(source.flat_map(move |item| {
