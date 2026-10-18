@@ -37,7 +37,7 @@ fn sequence(operations: &[(bool, u8, Option<u8>)]) {
         let proposed = if reload { proposed } else { None };
         let candidate = proposed.unwrap_or(retained_default);
         let expected = mask & (1 << candidate) != 0;
-        let before = serde_json::to_vec(&registry.catalog()["fixture"]).unwrap();
+        let before = serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap();
         let result = if reload {
             load(&mut registry, mask, proposed)
         } else {
@@ -53,7 +53,7 @@ fn sequence(operations: &[(bool, u8, Option<u8>)]) {
             retained_default = candidate;
         } else {
             assert_eq!(
-                serde_json::to_vec(&registry.catalog()["fixture"]).unwrap(),
+                serde_json::to_vec(registry.catalog()["fixture"].as_ref()).unwrap(),
                 before,
                 "rejected transaction is atomic"
             );
