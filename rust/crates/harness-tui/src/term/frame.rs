@@ -456,7 +456,8 @@ impl<D: Present> FrameTerminal<D> {
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
         let previous_area = self.terminal.get_frame().area();
-        let requested = self.terminal.backend().size.into();
+        let size = self.terminal.backend().size;
+        let requested = ratatui::layout::Rect::new(0, 0, size.width, size.height);
         if requested != previous_area
             && self.terminal.current_buffer_mut().area == ratatui::layout::Rect::default()
         {
