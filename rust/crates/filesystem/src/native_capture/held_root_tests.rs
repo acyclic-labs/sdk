@@ -158,6 +158,91 @@ fn concurrent_publishers_return_one_record() {
     );
 }
 
+/// Enumerate all crash cuts of the token's reachability chain. The kernel
+/// may forget any directory entry whose parent was not flushed. The same
+/// detector must reject removing either the ancestor or racing-reader flush.
+#[test]
+fn a_returned_record_has_a_durable_name_through_every_held_parent() {
+    use crate::native_host::{publish_probe, stat_probe::take_directory_syncs};
+    for omit_parents in [false, true] {
+        for omit_reader in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = hold_root(directory.path()).unwrap();
+            take_directory_syncs();
+            publish_probe::omit_parent_sync(omit_parents);
+            publish_probe::omit_reader_sync(omit_reader);
+            let first = root
+                .create_directories(std::path::Path::new("volumes"))
+                .unwrap();
+            let second = first
+                .create_directories(std::path::Path::new("incarnation"))
+                .unwrap();
+            let expected = [root.identity(), first.identity(), second.identity()];
+            // Pause the winner immediately after rename, before its flush.
+            // The reader's return is an admissible crash cut in its own right.
+            let reader = second.try_clone().unwrap();
+            publish_probe::before_directory_sync(move || {
+                assert_eq!(
+                    reader
+                        .read_or_publish(std::path::Path::new("token"), [2; 16])
+                        .unwrap(),
+                    [1; 16]
+                );
+                let synced = take_directory_syncs();
+                let durable = expected.iter().all(|parent| synced.contains(parent));
+                assert_eq!(
+                    durable,
+                    !omit_parents && !omit_reader,
+                    "parent={omit_parents}, reader={omit_reader}"
+                );
+            });
+            second
+                .read_or_publish(std::path::Path::new("token"), [1; 16])
+                .unwrap();
+            publish_probe::omit_parent_sync(false);
+            publish_probe::omit_reader_sync(false);
+        }
+    }
+}
+
+#[test]
+fn held_directory_traversal_borrows_parents_without_duplicating_handles() {
+    use crate::native_host::{publish_probe, stat_probe::take_directory_clones};
+    for depth in 1..=4 {
+        let directory = tempfile::tempdir().unwrap();
+        let root = hold_root(directory.path()).unwrap();
+        let relative: PathBuf = (0..depth).map(|_| "child").collect();
+        for duplicate in [false, true] {
+            take_directory_clones();
+            publish_probe::duplicate_parent_handles(duplicate);
+            root.create_directories(&relative).unwrap();
+            publish_probe::duplicate_parent_handles(false);
+            assert_eq!(take_directory_clones(), if duplicate { depth } else { 0 });
+        }
+    }
+}
+
+#[cfg(feature = "native-mount")]
+#[test]
+fn held_recovery_rejects_every_normalized_directory_alias_before_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), directory.path().join("alias")).unwrap();
+    let root = hold_root(directory.path()).unwrap();
+    for leaf in ["alias/", "alias/.", "alias//"] {
+        assert!(
+            matches!(
+                crate::recover_disconnected_native_mount_destination_in(
+                    &root,
+                    std::ffi::OsStr::new(leaf)
+                ),
+                Err(crate::NativeMountError::InvalidDestination)
+            ),
+            "accepted {leaf:?}"
+        );
+    }
+}
+
 /// A directory created below a held root is created in the held root, never
 /// in a replacement at the root's path; one created below the reopened path
 /// lands in the replacement.

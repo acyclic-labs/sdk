@@ -2,9 +2,14 @@
 //! to a held directory handle, so replacing the root's path never redirects
 //! one.
 use super::*;
-use std::io::{Read as _, Write as _};
+use std::io::Write as _;
 #[cfg(any(test, feature = "native-mount"))]
 use std::path::PathBuf;
+
+#[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+pub(crate) mod models;
+#[cfg(any(test, feature = "native-mount"))]
+mod record;
 
 impl HostRoot {
     /// A second handle on the same held directory.
@@ -22,20 +27,47 @@ impl HostRoot {
         relative: &Path,
         work: &mut W,
     ) -> Result<Self, W::Error> {
-        let mut directory = clone_directory(&self.directory, work)?;
+        let mut held: Option<(Dir, Option<NativeRootIdentity>)> = None;
         for component in relative.components() {
             let std::path::Component::Normal(name) = component else {
                 return Err(W::invalid_request());
             };
+            let directory = held.as_ref().map_or(&self.directory, |held| &held.0);
+            #[cfg(test)]
+            let duplicate = if publish_probe::duplicate_parents() {
+                Some(clone_directory(directory, work)?)
+            } else {
+                None
+            };
+            #[cfg(test)]
+            let directory = duplicate.as_ref().unwrap_or(directory);
+            work.started_io(ITEM)?;
             #[cfg(unix)]
-            let child = directory_path(&directory, Path::new(name), true, work)?;
+            let child = (open_unix_directory(directory, name, true, work)?, None);
             #[cfg(windows)]
             let child = with_wide_path(Path::new(name), work, |name, work| {
-                directory_path(&directory, name, true, work)
+                open_windows_directory(directory, name, true, work)
+                    .map(|(directory, identity)| (directory, Some(identity)))
             })?;
-            directory = child;
+            // Even an existing child may have just been created by another
+            // opener. Persist its name before returning a capability whose
+            // records callers may use as durable identity.
+            #[cfg(test)]
+            let sync = !publish_probe::skip_parent_sync();
+            #[cfg(not(test))]
+            let sync = true;
+            if sync {
+                sync_directory_held(directory, work)?;
+            }
+            held = Some(child);
         }
-        let identity = directory_identity(&directory, work)?;
+        let Some((directory, identity)) = held else {
+            return self.try_clone(work);
+        };
+        let identity = match identity {
+            Some(identity) => identity,
+            None => directory_identity(&directory, work)?,
+        };
         Ok(Self {
             directory,
             identity,
@@ -57,7 +89,19 @@ impl HostRoot {
         loop {
             match read_record(&self.directory, leaf, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
-                record => return record,
+                Ok(record) => {
+                    // The winner may have renamed but not synced yet. A
+                    // reader must establish durability before using the token.
+                    #[cfg(test)]
+                    let sync = !publish_probe::skip_reader_sync();
+                    #[cfg(not(test))]
+                    let sync = true;
+                    if sync {
+                        sync_directory_held(&self.directory, work)?;
+                    }
+                    return Ok(record);
+                }
+                Err(error) => return Err(error),
             }
             let temporary = PathBuf::from(format!(".{}.next", uuid::Uuid::new_v4().simple()));
             match publish_record(&self.directory, &temporary, leaf, &candidate, work) {
@@ -75,12 +119,12 @@ fn read_record<const N: usize, W: NativeHostWork<Error = DemandError>>(
     leaf: &Path,
     work: &mut W,
 ) -> Result<[u8; N], DemandError> {
-    let file = open_leaf(directory, leaf, &NativeOpenOptions::Read, work)?;
-    let mut bytes = Vec::with_capacity(N + 1);
-    file.take(N as u64 + 1).read_to_end(&mut bytes)?;
-    <[u8; N]>::try_from(bytes.as_slice()).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "published record is incomplete").into()
-    })
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let kernel = models::current();
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let _atomic_read = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
+    let mut file = open_leaf(directory, leaf, &NativeOpenOptions::Read, work)?;
+    record::read(&mut file).map_err(Into::into)
 }
 
 #[cfg(any(test, feature = "native-mount"))]
@@ -121,6 +165,8 @@ fn publish_record<W: NativeHostWork<Error = DemandError>>(
         }
         rename_no_replace(directory, temporary, leaf, work)?;
         #[cfg(test)]
+        publish_probe::after_rename();
+        #[cfg(test)]
         publish_probe::step(3)?;
         sync_directory_held(directory, work)
     })();
@@ -142,15 +188,26 @@ fn rename_no_replace<W: NativeHostWork>(
     to: &Path,
     work: &mut W,
 ) -> Result<(), W::Error> {
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let kernel = models::current();
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let mut atomic_rename = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
     let mode = acyclic_native_runtime::RenameMode::NoReplace;
     #[cfg(unix)]
-    return rename_held(directory, from, directory, to, mode, None, work);
+    let result = rename_held(directory, from, directory, to, mode, None, work);
     #[cfg(windows)]
-    with_wide_path(from, work, |from, work| {
+    let result = with_wide_path(from, work, |from, work| {
         with_wide_path(to, work, |to, work| {
             rename_held(directory, from, directory, to, mode, None, work)
         })
-    })
+    });
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    if result.is_ok()
+        && let Some(state) = atomic_rename.as_mut()
+    {
+        **state = false;
+    }
+    result
 }
 
 /// Simulated kills at each durable step of a record publication.
@@ -166,6 +223,48 @@ pub(crate) mod publish_probe {
     thread_local! {
         static KILL_AT: Cell<Option<usize>> = const { Cell::new(None) };
         static TORN: Cell<bool> = const { Cell::new(false) };
+        static SKIP_PARENT_SYNC: Cell<bool> = const { Cell::new(false) };
+        static SKIP_READER_SYNC: Cell<bool> = const { Cell::new(false) };
+        static DUPLICATE_PARENTS: Cell<bool> = const { Cell::new(false) };
+        static AFTER_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn duplicate_parent_handles(duplicate: bool) {
+        DUPLICATE_PARENTS.set(duplicate);
+    }
+
+    pub(super) fn duplicate_parents() -> bool {
+        DUPLICATE_PARENTS.get()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn omit_parent_sync(omit: bool) {
+        SKIP_PARENT_SYNC.set(omit);
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn omit_reader_sync(omit: bool) {
+        SKIP_READER_SYNC.set(omit);
+    }
+
+    pub(super) fn skip_parent_sync() -> bool {
+        SKIP_PARENT_SYNC.get()
+    }
+    pub(super) fn skip_reader_sync() -> bool {
+        SKIP_READER_SYNC.get()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn before_directory_sync(hook: impl FnOnce() + 'static) {
+        AFTER_RENAME.set(Some(Box::new(hook)));
+    }
+
+    pub(super) fn after_rename() {
+        if let Some(hook) = AFTER_RENAME.take() {
+            hook();
+        }
     }
 
     /// Kills the next publication on this thread after `step`.

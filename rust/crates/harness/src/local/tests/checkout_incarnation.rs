@@ -2,8 +2,8 @@
 //! the root's object id where the filesystem keeps it stable.
 use super::super::config::LocalProject;
 use super::super::owner::{
-    Checkout, INJECTED, Owner, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED, directory, incarnation_of,
-    state_directory_in,
+    Checkout, DEVICE_KEYED, INJECTED, Owner, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED, directory,
+    incarnation_of, state_directory_in,
 };
 use super::*;
 use acyclic_fs::NativeRootGeneration::{FileHandle, StableObjectId, Unstable};
@@ -19,6 +19,7 @@ impl Drop for Reset {
         INJECTED.set(None);
         UNTOKENED.set(false);
         UNSTABLE_KEYED.set(false);
+        DEVICE_KEYED.set(false);
         STATE_ROOT.set(None);
         super::super::workspace::follow_path(false);
     }
@@ -123,13 +124,15 @@ async fn a_checkout_recreated_on_a_reused_object_id_opens_new_state() -> Result<
     Ok(())
 }
 
-/// A filesystem that may renumber the root across remounts is keyed on its
-/// token alone and needs no identity capability, with explicit state: a
-/// renumbered root reopens its state. Negative control: keying it on the
-/// object id refuses the renumbered root its own state.
+/// Reopen explicit state after a remount: an unstable filesystem may renumber
+/// everything, while a stable one may renumber the Unix device alone. Controls
+/// restore either unstable object ids or the mount's device number to the key.
 #[tokio::test]
 async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> Result<()> {
-    async fn renumbered(keyed: bool) -> Result<Result<()>> {
+    async fn renumbered(
+        keyed: bool,
+        generation: acyclic_fs::NativeRootGeneration,
+    ) -> Result<Result<()>> {
         let workspace = tempfile::tempdir().map_err(super::super::storage)?;
         let state = tempfile::tempdir().map_err(super::super::storage)?;
         let config = || {
@@ -138,12 +141,18 @@ async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> 
         };
         let _reset = Reset;
         UNSTABLE_KEYED.set(keyed);
-        INJECTED.set(Some(([1; 16], Unstable)));
+        DEVICE_KEYED.set(keyed);
+        INJECTED.set(Some(([1; 16], generation)));
         let harness = LocalHarness::open(config()?).await?;
         super::checkout_reopen::run(&harness).await?;
         harness.close().await?;
-        // A remount gives the same root another object id.
-        INJECTED.set(Some(([2; 16], Unstable)));
+        // A remount can renumber the device, and unstable object ids as well.
+        let mut remounted = [1; 16];
+        remounted[..8].fill(2);
+        if generation == Unstable {
+            remounted.fill(2);
+        }
+        INJECTED.set(Some((remounted, generation)));
         Ok(match LocalHarness::open(config()?).await {
             Ok(harness) => {
                 super::checkout_reopen::run(&harness).await?;
@@ -152,11 +161,20 @@ async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> 
             Err(error) => Err(error),
         })
     }
-    renumbered(false).await??;
-    assert!(
-        matches!(renumbered(true).await?, Err(Error::Unauthorized(_))),
-        "an id-keyed unstable root kept its state across renumbering"
-    );
+    let generations = [Unstable, StableObjectId, FileHandle([3; 32])];
+    for generation in generations {
+        if generation != Unstable && !cfg!(unix) {
+            continue;
+        }
+        renumbered(false, generation).await??;
+        assert!(
+            matches!(
+                renumbered(true, generation).await?,
+                Err(Error::Unauthorized(_))
+            ),
+            "a device/id-keyed root kept its state across renumbering: {generation:?}"
+        );
+    }
     Ok(())
 }
 
@@ -180,7 +198,8 @@ proptest::proptest! {
                 );
             }
         }
-        if objects.0 != objects.1 {
+        let distinct = if cfg!(unix) { objects.0[8..] != objects.1[8..] } else { objects.0 != objects.1 };
+        if distinct {
             proptest::prop_assert_ne!(first, incarnation_of(objects.1, FileHandle(handle), tokens.0));
             proptest::prop_assert_ne!(
                 incarnation_of(objects.0, StableObjectId, tokens.0),
@@ -197,6 +216,20 @@ proptest::proptest! {
             incarnation_of(objects.0, StableObjectId, tokens.0),
             incarnation_of(objects.0, Unstable, tokens.0)
         );
+        #[cfg(unix)]
+        {
+            let mut remounted = objects.0;
+            remounted[..8].copy_from_slice(&objects.1[..8]);
+            for generation in [FileHandle(handle), StableObjectId] {
+                let original = incarnation_of(objects.0, generation, tokens.0);
+                proptest::prop_assert_eq!(original, incarnation_of(remounted, generation, tokens.0));
+                DEVICE_KEYED.set(true);
+                let old = incarnation_of(objects.0, generation, tokens.0);
+                let new = incarnation_of(remounted, generation, tokens.0);
+                DEVICE_KEYED.set(false);
+                if objects.0[..8] != objects.1[..8] { proptest::prop_assert_ne!(old, new); }
+            }
+        }
     }
 }
 

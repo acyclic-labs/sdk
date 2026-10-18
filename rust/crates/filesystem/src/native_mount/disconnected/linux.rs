@@ -74,12 +74,8 @@ impl Pinned {
         parent: &impl std::os::fd::AsFd,
         leaf: &std::ffi::OsStr,
     ) -> Result<Option<Self>, NativeMountError> {
-        let mut components = Path::new(leaf).components();
-        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-            || components.next().is_some()
-        {
-            return Err(NativeMountError::InvalidDestination);
-        }
+        crate::native_host::require_leaf(Path::new(leaf))
+            .map_err(|_| NativeMountError::InvalidDestination)?;
         let parent = rustix::fs::openat(
             parent,
             c".",

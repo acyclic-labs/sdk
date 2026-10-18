@@ -42,6 +42,8 @@ thread_local! {
     pub(super) static UNTOKENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a root without stable ids is keyed on its id.
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: persist a Unix device number across remounts.
+    pub(super) static DEVICE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -145,7 +147,7 @@ impl Checkout {
             Ok(Self {
                 path,
                 identity: (generation != acyclic_fs::NativeRootGeneration::Unstable)
-                    .then_some(object),
+                    .then(|| durable_object(object)),
                 incarnation: incarnation_of(object, generation, token),
                 root,
             })
@@ -186,6 +188,7 @@ pub(super) fn incarnation_of(
     generation: acyclic_fs::NativeRootGeneration,
     token: [u8; 16],
 ) -> [u8; 16] {
+    let object = durable_object(object);
     #[cfg(test)]
     let token = if UNTOKENED.get() { [0; 16] } else { token };
     let mut hash = blake3::Hasher::new();
@@ -213,6 +216,24 @@ pub(super) fn incarnation_of(
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     identity
+}
+
+/// Unix st_dev identifies the current kernel device assignment, not the
+/// persisted volume. A remount/reboot may renumber it while the same inode,
+/// generation and checkout token remain. The token supplies volume scope.
+#[cfg(any(test, feature = "native-execution"))]
+fn durable_object(object: [u8; 16]) -> [u8; 16] {
+    #[cfg(unix)]
+    let object = {
+        #[cfg(test)]
+        if DEVICE_KEYED.get() {
+            return object;
+        }
+        let mut object = object;
+        object[..8].fill(0);
+        object
+    };
+    object
 }
 
 

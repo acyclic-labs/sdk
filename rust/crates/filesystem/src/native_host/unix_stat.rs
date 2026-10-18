@@ -34,7 +34,11 @@ pub(super) fn clone_directory<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<Dir, W::Error> {
-    retry_io(work, READ, || directory.try_clone())
+    retry_io(work, READ, || {
+        #[cfg(all(test, target_os = "linux"))]
+        stat_probe::directory_clone();
+        directory.try_clone()
+    })
 }
 
 #[cfg(unix)]

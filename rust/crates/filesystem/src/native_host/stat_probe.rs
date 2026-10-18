@@ -3,6 +3,45 @@ use super::*;
 use std::cell::{Cell, RefCell};
 
 type Edit = (u64, Box<dyn FnOnce()>);
+#[cfg(target_os = "linux")]
+thread_local! {
+    static DIRECTORY_SYNCS: RefCell<Option<Vec<NativeRootIdentity>>> = const { RefCell::new(None) };
+    static DIRECTORY_CLONES: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn take_directory_clones() -> usize {
+    DIRECTORY_CLONES.replace(Some(0)).unwrap_or(0)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn directory_clone() {
+    if let Some(clones) = DIRECTORY_CLONES.get() {
+        DIRECTORY_CLONES.set(Some(clones + 1));
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn take_directory_syncs() -> Vec<NativeRootIdentity> {
+    DIRECTORY_SYNCS
+        .replace(Some(Vec::new()))
+        .unwrap_or_default()
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn directory_sync(fd: std::os::fd::RawFd) {
+    DIRECTORY_SYNCS.with_borrow_mut(|syncs| {
+        if let Some(syncs) = syncs {
+            // SAFETY: the caller holds the directory for the entire query.
+            let stat =
+                rustix::fs::fstat(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }).unwrap();
+            syncs.push(NativeRootIdentity {
+                device: device_id(stat.st_dev),
+                object: stat.st_ino,
+            });
+        }
+    });
+}
 thread_local! {
     static STATE: Cell<Option<(bool, u64, u64)>> = const { Cell::new(None) };
     static EDIT: RefCell<Option<Edit>> = const { RefCell::new(None) };

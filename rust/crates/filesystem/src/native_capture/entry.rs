@@ -41,7 +41,9 @@ impl HeldRoot {
     }
 
     /// The held directory at `relative` below this root, each missing
-    /// component created in its held parent and never through a link.
+    /// component created in its held parent and never through a link. Each
+    /// parent is synced, including parents of concurrently created children,
+    /// before returning, so records below it have a durable reachable name.
     pub fn create_directories(&self, relative: &Path) -> Result<Self, DemandError> {
         Ok(Self {
             root: self

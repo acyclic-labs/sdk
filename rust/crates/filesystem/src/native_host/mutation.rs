@@ -344,16 +344,6 @@ fn bind_unix_socket_in<W: SourceDemandReadWork>(
     Ok(())
 }
 
-pub(crate) fn require_leaf(path: &Path) -> io::Result<()> {
-    let mut components = path.components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(io::ErrorKind::InvalidInput.into());
-    }
-    Ok(())
-}
-
 pub(crate) fn rename_held<W: NativeHostWork>(
     from: &Dir,
     from_name: &NativePath,
@@ -414,6 +404,16 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<(), W::Error> {
+    #[cfg(all(test, target_os = "linux"))]
+    stat_probe::directory_sync(directory.as_raw_fd());
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let kernel = held_record_models::current();
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    let mut atomic_flush = kernel.as_ref().map(|kernel| kernel.state.lock().unwrap());
+    #[cfg(all(test, target_os = "linux", acyclic_fs_native_loom))]
+    if let Some(state) = atomic_flush.as_mut() {
+        **state = true;
+    }
     #[cfg(unix)]
     return sync_file_held(directory, work);
     #[cfg(windows)]
