@@ -85,5 +85,10 @@ windows-fuzz)
 fuzz)
     timed fuzz cargo +nightly-2026-07-01 check --locked -p acyclic-harness-fuzz --bin records
     ;;
-*) echo "usage: $0 [all|static|native|model|windows|windows-base|windows-cli|windows-fuzz|fuzz]" >&2; exit 2 ;;
+darwin)
+    # Run on the macOS host: Linux and Windows cannot prove F_FULLFSYNC on
+    # regular files and the directories used for checkout token publication.
+    timed darwin cargo test --locked -p acyclic-native-runtime --lib held_sync::tests
+    ;;
+*) echo "usage: $0 [all|static|native|model|windows|windows-base|windows-cli|windows-fuzz|fuzz|darwin]" >&2; exit 2 ;;
 esac
