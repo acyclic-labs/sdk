@@ -1,3 +1,4 @@
+//! Exhaustive schedules through the filesystem publication adapter and Session.
 #![cfg(acyclic_loom)]
 use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
 use acyclic_fs::{CancellationToken, Fs, WorkBudget};
@@ -32,17 +33,17 @@ fn control(run: impl FnOnce(), message: &str) {
 fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
     run(async {
         let fs = Fs::memory();
-        let ws = fs
-            .create_workspace(
+        let cancellation = CancellationToken::new();
+        let ws = Box::pin(fs.create_workspace(
                 "session-fs",
                 WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+                &cancellation,
+            ))
             .await
             .unwrap()
             .value;
         for text in texts {
-            ws.write_text("/entry", text).await.unwrap();
+            Box::pin(ws.write_text("/entry", text)).await.unwrap();
         }
         let sub = Subscription {
             volume_id: ws.id().volume_id(),
