@@ -8,7 +8,7 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 pub struct TaskAdmissionReadonlyWitness<P> {
     host: Arc<CoordinatorTaskHost<P>>,
     admission: TaskAdmissionRecord,
-    scratch: Option<crate::resource_preparation::ChildScratchCreationProof>,
+    _scratch: Option<crate::resource_preparation::ChildScratchCreationProof>,
     custody: NativeAllocation,
 }
 
@@ -19,13 +19,15 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     pub(crate) fn admission_operation(&self) -> OperationId {
         self.admission.operation_id
     }
+    #[cfg(feature = "native-execution")]
     pub(crate) fn prepared_stream(&self) -> &Arc<P> {
         &self.host.stream
     }
+    #[cfg(feature = "native-execution")]
     pub(crate) fn scratch_proof(
         &self,
     ) -> Option<&crate::resource_preparation::ChildScratchCreationProof> {
-        self.scratch.as_ref()
+        self._scratch.as_ref()
     }
 
     pub(crate) async fn verify_with_native_work(
@@ -211,7 +213,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let witness = TaskAdmissionReadonlyWitness {
                 host: self.clone(),
                 admission,
-                scratch,
+                _scratch: scratch,
                 custody,
             };
             witness.require_query(query, work)?;
@@ -335,7 +337,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let retained = original.logical_owned_bytes()?;
         let mut owner = self
             .journal_owner_record(task, fence, Some(original), Some(io))
-            .await?;
+            .await?
+            .0;
         owner
             .native_custody
             .as_mut()
@@ -420,7 +423,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(TaskAdmissionReadonlyWitness {
             host: self.clone(),
             admission,
-            scratch,
+            _scratch: scratch,
             custody,
         })
     }

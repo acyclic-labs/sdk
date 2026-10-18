@@ -8,14 +8,14 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         append(&memory, "agents/first", 1).await?;
         let good = Fixture::open(Arc::clone(&memory), "good").await?;
         let bad = Fixture::open(Arc::clone(&memory), "bad").await?;
-        let destination = bad.channel.clone();
+        let destination = bad._channel.clone();
         let connect: Connect = Arc::new(move |node| {
             assert_eq!(node.node_id, "bad");
             let channel = destination.clone();
             Box::pin(async move { Ok(channel) })
         });
         let client = Client::with_connector(
-            good.channel.clone(),
+            good._channel.clone(),
             Some("Bearer fixture".parse()?),
             None,
             connect,

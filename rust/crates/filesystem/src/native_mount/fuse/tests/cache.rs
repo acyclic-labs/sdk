@@ -54,13 +54,15 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
         crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
     let mut control = crate::native_mount::fuse::FuseRecoveryControl::default();
+    let mut helper = None;
     acyclic_native_runtime::ProcessTree::spawn_closed_measured(
         c"/bin/sleep",
         &[c"60"],
         creator.runtime_meter().as_ref(),
-        &mut control.helper,
+        &mut helper,
     )
     .map_err(|error| creator.runtime_error(error))?;
+    control.helper = helper.map(Into::into);
     let creator_receipt = creator.receipt();
     let denied = crate::NativeMaterializationWork::new(
         crate::WorkBudget {

@@ -6,6 +6,7 @@ pub use runner::{HeadlessClient, run_headless, run_jsonl};
 /// Settled task outcome with stable process exit codes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum HeadlessOutcome {
     /// The task completed, or is idle awaiting another prompt.
     Completed,
@@ -32,11 +33,17 @@ impl HeadlessOutcome {
         }
         match error.code() {
             wire::ErrorCode::Indeterminate => Self::Indeterminate,
-            wire::ErrorCode::InteractionCancelled => Self::Cancelled,
+            wire::ErrorCode::InteractionCancelled | wire::ErrorCode::Cancelled => Self::Cancelled,
             wire::ErrorCode::InteractionDeclined
             | wire::ErrorCode::InteractionExpired
             | wire::ErrorCode::InteractionDenied => Self::Blocked,
-            _ => Self::Failed,
+            wire::ErrorCode::Unspecified
+            | wire::ErrorCode::NotFound
+            | wire::ErrorCode::Conflict
+            | wire::ErrorCode::Unsupported
+            | wire::ErrorCode::Invalid
+            | wire::ErrorCode::Unauthorized
+            | wire::ErrorCode::Storage => Self::Failed,
         }
     }
 

@@ -70,49 +70,59 @@ async fn streaming(bound: bool) -> Result<()> {
             result = boundary => result.expect("model dispatch"),
         }
         if bound {
-            tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            loop {
-                views.project_commands(&ui, &authority)?;
-                let mut renderer = ClientRenderer::default();
-                renderer.update(views.views(), &authority);
-                let mut terminal =
-                    Terminal::new(TestBackend::new(80, 20)).map_err(super::super::storage)?;
-                terminal
-                    .draw(|frame| {
-                        renderer.screen().render(
-                            frame,
-                            &PromptInput::default(),
-                            &mut Viewport::default(),
-                            0,
-                            0,
-                        );
-                    })
-                    .map_err(super::super::storage)?;
-                let cells = &terminal.backend().buffer().content;
-                let text: String = cells.iter().map(|cell| cell.symbol()).collect();
-                if text.contains("intermediate answer") {
-                    assert!(!text.contains("**intermediate answer**"));
-                    let start = cells
-                        .windows(19)
-                        .position(|window| {
-                            window.iter().map(|cell| cell.symbol()).collect::<String>()
-                                == "intermediate answer"
+            // Snapshot acquisition can await a publication still owned by run.
+            // Drive the owner throughout presentation, as with_local_commands
+            // does, rather than only while waiting for the next file change.
+            let presentation = async {
+                loop {
+                    if let Some(task) = ui.active_task() {
+                        views.follow_task(local.task_files().as_ref(), task).await?;
+                    }
+                    let mut renderer = ClientRenderer::default();
+                    renderer.update(views.views(), &authority);
+                    let mut terminal =
+                        Terminal::new(TestBackend::new(80, 20)).map_err(super::super::storage)?;
+                    terminal
+                        .draw(|frame| {
+                            renderer.screen().render(
+                                frame,
+                                &PromptInput::default(),
+                                &mut Viewport::default(),
+                                0,
+                                0,
+                            );
                         })
-                        .unwrap();
-                    assert!(
-                        cells[start..start + 19]
-                            .iter()
-                            .all(|cell| cell.modifier.contains(Modifier::BOLD))
-                    );
-                    break;
+                        .map_err(super::super::storage)?;
+                    let cells = &terminal.backend().buffer().content;
+                    let text: String = cells.iter().map(|cell| cell.symbol()).collect();
+                    if text.contains("intermediate answer") {
+                        assert!(!text.contains("**intermediate answer**"));
+                        let start = cells
+                            .windows(19)
+                            .position(|window| {
+                                window.iter().map(|cell| cell.symbol()).collect::<String>()
+                                    == "intermediate answer"
+                            })
+                            .unwrap();
+                        assert!(
+                            cells[start..start + 19]
+                                .iter()
+                                .all(|cell| cell.modifier.contains(Modifier::BOLD))
+                        );
+                        break;
+                    }
+                    views.next_change().await?;
                 }
+                Ok::<(), Error>(())
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 tokio::select! {
                     result = &mut run => panic!("turn completed before intermediate frame: {result:?}"),
-                    result = views.next_change() => result?,
+                    result = presentation => result,
                 }
-            }
-                Ok::<(), Error>(())
-            }).await.expect("canonical chunk must reach the styled frame")?;
+            })
+            .await
+            .expect("canonical chunk must reach the styled frame")?;
             // The same request publication used by Ctrl+C, not an injected status.
             // Accepted chunks may be observed before their publisher receives
             // its acknowledgement. Keep driving the owner while publishing

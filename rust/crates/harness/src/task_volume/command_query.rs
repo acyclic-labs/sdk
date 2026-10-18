@@ -49,7 +49,7 @@ fn is_result(key: &FileKey) -> bool {
     ) && related(key, TaskFile::Request).is_some()
 }
 
-pub(super) fn owner(key: &FileKey) -> Option<Component> {
+pub(crate) fn owner(key: &FileKey) -> Option<Component> {
     match key {
         FileKey::Session { session, .. } => Some(session.clone()),
         FileKey::Task {

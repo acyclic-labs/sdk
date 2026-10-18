@@ -74,13 +74,13 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
     append(&provider, "events", 1).await?;
     let old = Fixture::open(Arc::clone(&provider), "old").await?;
     let new = Fixture::open(Arc::clone(&provider), "new").await?;
-    let destination = new.channel.clone();
+    let destination = new._channel.clone();
     let connect: Connect = Arc::new(move |_| {
         let channel = destination.clone();
         Box::pin(async move { Ok(channel) })
     });
     let client = Client::with_connector(
-        old.channel.clone(),
+        old._channel.clone(),
         Some("Bearer fixture".parse()?),
         None,
         connect,

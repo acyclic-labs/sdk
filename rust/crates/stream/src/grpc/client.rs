@@ -6,6 +6,12 @@ impl Client {
     pub fn abandon_session_attempts(&self) -> Result<(), StreamError> {
         self.sessions.abandon_pending()
     }
+    /// This client's pooled Session, sharing its channel, credentials and
+    /// connection pool. Session-native consumers, such as a swarm client,
+    /// follow through it rather than opening a second connection.
+    pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
+        self.session()
+    }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
             crate::session::Client::open(
@@ -200,7 +206,14 @@ impl StreamProvider for Client {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        Ok(self.records(request.path, request.from, Some(request.limit)))
+        // The first page opens the read, so an absent path or a start beyond the
+        // tail fails here as on every provider; later pages fail in the stream.
+        let mut records = self.records(request.path, request.from, Some(request.limit));
+        let first = records.next().await;
+        if let Some(Err(error)) = first {
+            return Err(error);
+        }
+        Ok(stream::iter(first).chain(records).boxed())
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {

@@ -1,11 +1,29 @@
 use super::*;
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
-    pub(crate) fn first_output_sequence(&self) -> Option<u64> {
-        self.outputs.keys().next().copied()
+    pub(in crate::client) async fn observe_view(
+        &self,
+        total: crate::client::command_output::follow::DisplayWindowBudget,
+    ) -> Result<(files::Query, files::Observation)> {
+        let query = files::Query::CommandSession {
+            session: component(self.session.to_string())?,
+            recent: u32::try_from((self.maximum_files / 4).max(1))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        };
+        let observed = self
+            .volume
+            .observe(query.clone(), None, self.maximum_files)
+            .await?;
+        let observed = crate::client::command_output::follow::observe(
+            observed,
+            (self.maximum_files / 4).max(1),
+            crate::client::command_output::follow::PerFileByteLimit(self.maximum_bytes),
+            total,
+        )?;
+        Ok((query, observed))
     }
 
-    pub(crate) fn view_bounds(&self) -> (usize, usize) {
+    pub(in crate::client) fn view_bounds(&self) -> (usize, usize) {
         (self.maximum_files, self.maximum_bytes as usize)
     }
 

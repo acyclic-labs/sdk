@@ -7,7 +7,9 @@ use crate::demand::{DemandError, DemandWork, SourceDemandReadWork};
 use crate::materializer::{
     NativeAllocation, NativeCleanupWrite, NativeMaterializationWork, NativeTreeMaterializationError,
 };
-use crate::performance::{WorkBudget, WorkCounters};
+#[cfg(any(test, feature = "local", feature = "native-watch"))]
+use crate::performance::WorkBudget;
+use crate::performance::WorkCounters;
 use cap_std::fs::Dir;
 #[cfg(unix)]
 use std::os::fd::AsRawFd as _;
@@ -51,7 +53,12 @@ use record::windows_name_packet;
 mod work;
 pub(crate) use work::*;
 mod cwd;
-pub(crate) use cwd::*;
+#[cfg(windows)]
+pub(crate) use cwd::canonical_directory_wide;
+#[cfg(unix)]
+use cwd::cwd_metadata_flags;
+#[cfg(all(unix, any(test, feature = "native-watch")))]
+pub(crate) use cwd::{canonical_directory_path_held, normalize_root_path};
 #[cfg(unix)]
 mod unix_path;
 #[cfg(unix)]
@@ -76,13 +83,15 @@ mod reader;
 pub(crate) use reader::*;
 mod root;
 pub(crate) use root::*;
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "native-mount")))]
 mod unix_metadata;
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "native-mount")))]
 pub(crate) use unix_metadata::*;
 mod links;
 mod unix_stat;
-pub(crate) use unix_stat::*;
+#[cfg(any(test, feature = "native-watch"))]
+pub(crate) use unix_stat::root_path_identity;
+use unix_stat::*;
 #[cfg(windows)]
 mod root_path;
 #[cfg(windows)]
@@ -93,9 +102,24 @@ pub(crate) use identity::*;
 mod windows_metadata;
 #[cfg(all(windows, any(feature = "native-mount", test)))]
 pub(crate) use windows_metadata::*;
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    test,
+    feature = "local",
+    feature = "native-watch"
+))]
 mod sparse;
 mod tree;
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    test,
+    feature = "local",
+    feature = "native-watch"
+))]
 pub(crate) use sparse::*;
+#[cfg(any(windows, test, feature = "native-watch"))]
 mod ranges;
 #[cfg(windows)]
 mod yielding;
@@ -104,6 +128,7 @@ mod yielding;
     any(feature = "native-mount", test)
 ))]
 pub use metadata::NativeMetadataError;
+#[cfg(any(windows, test, feature = "native-watch"))]
 pub(crate) use ranges::*;
 pub use reader::HostStatReader;
 pub use root::HostRoot;

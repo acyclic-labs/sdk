@@ -105,9 +105,7 @@ impl PreparationIo {
                 "measured content requires finite work allowances".into(),
             ));
         }
-        cancellation
-            .check()
-            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        cancellation.check()?;
         Ok(Self::Owned {
             budget,
             work: Box::new(SyncMutex::new((
@@ -118,9 +116,7 @@ impl PreparationIo {
         })
     }
     pub(crate) fn for_unmeasured(cancellation: &CancellationToken) -> Result<Self> {
-        cancellation
-            .check()
-            .map_err(|cause| Error::Storage(cause.to_string()))?;
+        cancellation.check()?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
             work: Box::new(SyncMutex::new((
@@ -224,7 +220,7 @@ impl PreparationIo {
                     custody: None,
                 };
             }
-            Error::Storage(cause.to_string())
+            Error::from(cause)
         })
     }
     pub(crate) fn invalid(&self, reason: &'static str) -> Error {

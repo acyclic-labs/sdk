@@ -46,6 +46,7 @@ wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 tokio.workspace = true
 tempfile = "3.27.0"

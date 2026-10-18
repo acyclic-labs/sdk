@@ -36,8 +36,7 @@ fn allocation_bound(bytes: usize, long_label: bool, broken: bool) {
     });
     assert!(
         measured.bytes_total <= 4096,
-        "popup allocation must depend on visible cells: {:?}",
-        measured
+        "popup allocation must depend on visible cells: {measured:?}"
     );
     let row: String = (1..11).map(|x| buffer[(x, 1)].symbol()).collect();
     assert_eq!(

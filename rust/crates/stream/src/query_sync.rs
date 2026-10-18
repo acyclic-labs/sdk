@@ -1,4 +1,6 @@
 //! Synchronization used by task-volume publication and observation.
+#[cfg(any(acyclic_loom, all(test, not(target_arch = "wasm32"))))]
+pub(crate) mod parity;
 
 #[cfg(acyclic_loom)]
 pub use loom::sync::Mutex as SyncMutex;

@@ -120,11 +120,23 @@ impl StockExecution<'_> {
                 (&compaction, &reference),
             )
             .await?;
-        let compacted = if checkpoint.is_some() {
+        let (compacted, request) = if checkpoint.is_some() {
             let context_input = ContextInput::copy_for_turn(input, step, &[], self.io)?;
-            self.transform_projection(&context_input, compacted).await?
+            let (mut compacted, request) = self
+                .prepare_transformed_request(&context_input, compacted)
+                .await?;
+            if self.io.is_none() {
+                compacted.messages =
+                    crate::model::clone_messages(&request.request().messages, self.io)?;
+            }
+            (compacted, request)
         } else {
-            compacted
+            let request = crate::model::PreparedModelRequest::prepare(
+                self.request_from_context(&compacted)?,
+                self.stock.limits,
+                self.io,
+            )?;
+            (compacted, request)
         };
         let compacted = ResponseProjection {
             context: compacted,
@@ -137,6 +149,7 @@ impl StockExecution<'_> {
             compacted,
             compaction,
             accounting.capacity,
+            request,
         )
         .await
     }
@@ -263,6 +276,7 @@ impl StockExecution<'_> {
         compacted: ResponseProjection,
         compaction: FileRef,
         capacity: crate::context::ModelContextCapacity,
+        request: crate::model::PreparedModelRequest,
     ) -> Result<crate::model::PreparedModelRequest> {
         let (input, step) = turn;
         let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy() else {
@@ -272,11 +286,6 @@ impl StockExecution<'_> {
                 "automatic compaction is disabled",
             ));
         };
-        let request = crate::model::PreparedModelRequest::prepare(
-            self.request_from_context(&compacted.context)?,
-            self.stock.limits,
-            self.io,
-        )?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io).await?;
         let final_count = with_history_io(self.io, |work| count.validate(&request, work))?;
         if policy.needs_compaction(capacity, final_count)? {

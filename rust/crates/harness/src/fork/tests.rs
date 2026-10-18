@@ -15,6 +15,72 @@ fn seed() -> Result<ForkSeed> {
         .map_err(|error| Error::Invalid(error.to_string()))
 }
 
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+    // Conversations retain exactly one authenticated history selection. Task
+    // forks carry no conversation history, prefix, summary or history witness.
+    #[test]
+    fn fork_kind_preserves_exact_history_and_round_trips(
+        include_history in proptest::bool::ANY,
+        through in 0u64..4,
+        witness in proptest::bool::ANY,
+    ) {
+        use proptest::prelude::*;
+        let kinds = [AggregateKind::Agent, AggregateKind::Conversation, AggregateKind::Session, AggregateKind::Turn, AggregateKind::Task];
+        for parent in 0..kinds.len() {
+        for child in 0..kinds.len() {
+        let mut seed = seed().unwrap();
+        seed.parent.kind = kinds[parent];
+        seed.child.kind = kinds[child];
+        if !include_history {
+            seed.resources.retain(|capture| !matches!(capture.revision, ResourceRevision::History(_)));
+        }
+        seed.inherited_through_sequence = through;
+        seed.history_witness = witness.then_some([1; 32]);
+        let expected = through == 0 && match (kinds[parent], kinds[child]) {
+            (AggregateKind::Conversation, AggregateKind::Conversation) => include_history,
+            (AggregateKind::Task, AggregateKind::Task) => !include_history && !witness,
+            _ => false,
+        };
+        prop_assert_eq!(seed.validate(&mut None).is_ok(), expected);
+        if expected {
+            let encoded = serde_json::to_vec(&seed).unwrap();
+            let decoded: ForkSeed = serde_json::from_slice(&encoded).unwrap();
+            prop_assert_eq!(decoded, seed.clone());
+            prop_assert!(seed.validate(&mut None).is_ok());
+        }
+        let project = seed.resources.iter().find_map(|capture| match &capture.revision {
+            ResourceRevision::Project { volume, .. } => Some(volume.clone()), _ => None,
+        }).unwrap();
+        let request = ForkRequest {
+            operation_id: seed.operation_id, parent: seed.parent, parent_revision: seed.parent_revision,
+            child: seed.child, child_agent: seed.child_agent, attached_agents: Vec::new(),
+            preparation: ForkPreparation {
+                child_project_volume: project, child_private_volume: seed.child_private_volume,
+                child_result_volume: None, summary: None, inherited_through_sequence: through,
+                maximum_inherited_messages: 4, maximum_inherited_bytes: 65536, maximum_inherited_references: 1,
+            },
+            selections: seed.resources.into_iter().map(|capture| ForkSelection { required: true, revision: capture.source }).collect(),
+            boundary: None, authorized_source: None,
+        };
+        // The request has no materialized context yet: a conversation may ask
+        // for a nonzero prefix, while a task may only ask for a fresh context.
+        let expected_request = match (kinds[parent], kinds[child]) {
+            (AggregateKind::Conversation, AggregateKind::Conversation) => include_history,
+            (AggregateKind::Task, AggregateKind::Task) => !include_history && through == 0,
+            _ => false,
+        };
+        prop_assert_eq!(request.validate(&mut None).is_ok(), expected_request);
+        if expected_request {
+            let encoded = serde_json::to_vec(&request).unwrap();
+            let decoded: ForkRequest = serde_json::from_slice(&encoded).unwrap();
+            prop_assert_eq!(decoded, request);
+        }
+        }
+        }
+    }
+}
+
 fn file(volume: &VolumeRef, path: &str, bytes: &[u8], media: &str) -> Result<FileRef> {
     FileRef::new(
         volume.clone(),

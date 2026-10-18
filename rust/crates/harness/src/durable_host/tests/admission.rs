@@ -262,3 +262,55 @@ async fn b07_batch_cancellation_prevents_missing_admissions() -> Result<()> {
     );
     Ok(())
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn creation_is_authorized_by_the_parent_independently_of_child_inheritance(
+        allowed in proptest::bool::ANY, inherited in proptest::bool::ANY,
+        batch in proptest::bool::ANY,
+    ) {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let f = fixture().await.unwrap();
+            let grants = |include| if include { Capabilities::new(["task:spawn:test.fixture@1"]) } else { Capabilities::default() };
+            let mut parent = f.admission(120, json!(0));
+            parent.grants = grants(allowed);
+            let parent_id = parent.task_id();
+            f.host.admit(parent.clone()).await.unwrap();
+            let child_grants = grants(inherited);
+            if batch {
+                let mut request = f.batch(121, Some(parent_id));
+                request.scope = RuntimeScope::new(child_grants.clone(), parent.limits).unwrap();
+                let batch_id = request.batch_id;
+                let result = f.host.admit_batch(request).await;
+                if allowed {
+                    let results = result.unwrap();
+                    assert_eq!(results.len(), 3);
+                    for result in results {
+                        let Admission::Accepted(child) = result else { panic!("child batch admission"); };
+                        assert_eq!(f.host.observe_admission(child).await.unwrap().grants, child_grants);
+                    }
+                } else {
+                    assert!(matches!(result, Err(Error::Unauthorized(_))));
+                    assert!(f.host.load_batch(batch_id).await.unwrap().is_none());
+                }
+            } else {
+                let mut child = parent;
+                child.operation_id = OperationId::new();
+                child.parent = Some(parent_id);
+                child.grants = child_grants.clone();
+                let operation = child.operation_id;
+                let result = f.host.admit(child).await;
+                if allowed {
+                    assert!(matches!(result.unwrap(), Admission::Accepted(_)));
+                    let (_, admitted) = f.host.reconcile_admission(operation).await.unwrap().unwrap();
+                    assert_eq!(admitted.grants, child_grants);
+                } else {
+                    assert!(matches!(result, Err(Error::Unauthorized(_))));
+                    assert!(f.host.reconcile_admission(operation).await.unwrap().is_none());
+                }
+            }
+        });
+    }
+}

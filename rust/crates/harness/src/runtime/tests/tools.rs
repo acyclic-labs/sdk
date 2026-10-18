@@ -32,7 +32,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         narrowed.authorize_tool(&definition, &invocation).await,
         Err(Error::Unauthorized(_))
     ));
-    let (identity, policy) = narrowed
+    let (identity, _native_policy) = narrowed
         .stock_tool_policy_binding()
         .expect("original root policy");
     assert_eq!(identity.name, "root.policy");
@@ -60,7 +60,7 @@ async fn scoped_live_policy_preserves_ancestor_and_blocks_denied_tool() -> Resul
         assert!(
             narrowed
                 .policy_approval(
-                    policy.as_ref(),
+                    _native_policy.as_ref(),
                     Some(identity),
                     &definition,
                     &invocation,

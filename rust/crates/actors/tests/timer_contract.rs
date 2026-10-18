@@ -155,7 +155,7 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
         },
         TimerRecord {
             task_id: "01010101010101010101010101010101".into(),
-            ..original.clone()
+            ..original
         },
     ] {
         assert!(invalid.encode().is_err());

@@ -3,7 +3,10 @@
 mod capabilities;
 #[cfg(any(windows, acyclic_harness_tui_loom))]
 mod console_owner;
+#[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
+mod counters;
 mod decoder;
+mod frame;
 #[cfg(any(unix, acyclic_harness_tui_loom))]
 mod lifecycle;
 mod probe;
@@ -16,7 +19,10 @@ mod signals;
 mod tty;
 
 pub use capabilities::*;
+#[cfg(all(any(unix, windows), not(acyclic_harness_tui_loom)))]
+pub use counters::{DeviceIo, device_io};
 pub use decoder::{Decoder, encode_key};
+pub use frame::{FrameTerminal, Present};
 pub use probe::{PROBE_LIMIT, PROBE_TIMEOUT, Probe, ProbeIo, ProbeReplies, detect};
 pub use restore::{RestoreGuard, ScreenMode};
 #[cfg(all(unix, not(acyclic_harness_tui_loom)))]

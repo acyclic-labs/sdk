@@ -256,20 +256,14 @@ where
         ) {
             let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
             let fence = LeaseFence::from(&lease.reservation);
-            let settled = async {
-                self.host.cancel(task).await?;
-                self.host
-                    .settle_task(
-                        task,
-                        &fence,
-                        Outcome::Cancelled,
-                        &mut observed::history(io)?
-                            .as_mut()
-                            .map(|work| work as &mut dyn crate::store::HistoryIo),
-                    )
-                    .await
-            }
-            .await;
+            // Settlement is the cold path: its own bounded allocation keeps
+            // the coordinator settlement state out of every resume future.
+            let settled = match crate::conversation::BoundedContentFuture::new(io, || {
+                self.settle_cancelled(task, &fence, io)
+            }) {
+                Ok(future) => future.await,
+                Err(error) => Err(error),
+            };
             return match settled {
                 Ok(()) => {
                     TaskWorkerAttempt::Progress(WorkerTurn::Completed { task }.with_lease(lease))
@@ -281,5 +275,24 @@ where
             Ok(progress) => TaskWorkerAttempt::Progress(progress.with_lease(lease)),
             Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
         }
+    }
+
+    async fn settle_cancelled(
+        &self,
+        task: TaskId,
+        fence: &LeaseFence,
+        io: Option<&super::super::PreparationIo>,
+    ) -> Result<()> {
+        self.host.cancel(task).await?;
+        self.host
+            .settle_task(
+                task,
+                fence,
+                Outcome::Cancelled,
+                &mut observed::history(io)?
+                    .as_mut()
+                    .map(|work| work as &mut dyn crate::store::HistoryIo),
+            )
+            .await
     }
 }

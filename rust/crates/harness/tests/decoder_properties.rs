@@ -1,50 +1,63 @@
+//! Shrinking properties for wire decoding,
+//! judged by the shared oracle: each invariant has a control injected into
+//! the production results, verified with assertion deletion.
 #![cfg(not(target_arch = "wasm32"))]
 
-#[path = "support/journal_input.rs"]
-mod journal;
 #[path = "support/wire_input.rs"]
 mod wire;
+use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
+
+#[derive(Debug)]
+enum WireFault {
+    /// The client round trip drops the acknowledged generation.
+    DroppedGeneration,
+}
+
+fn wire_oracle() -> Oracle<Vec<u8>, WireFault, wire::Seen> {
+    let (name, check) = wire::INVARIANTS[0];
+    Oracle::declare(
+        |data: &Vec<u8>, fault: Option<&WireFault>, see: &mut Observer<'_, wire::Seen>| {
+            let tamper: fn(&mut acyclic_harness::wire::ClientFrame) = match fault {
+                Some(WireFault::DroppedGeneration) => |frame| {
+                    if let Some(acyclic_harness::wire::client_frame::Frame::Acknowledge(ack)) =
+                        &mut frame.frame
+                    {
+                        ack.generation.clear();
+                    }
+                },
+                None => |_| {},
+            };
+            wire::observe(data, tamper, &mut |seen| see.see(seen))
+        },
+    )
+    .invariant(name, check)
+    .control(name, b"generation".to_vec(), WireFault::DroppedGeneration)
+    .build()
+}
 
 #[test]
 fn decoder_seed_corpus() {
+    let wire_oracle = wire_oracle();
     for data in [
         include_bytes!("../../harness-fuzz/corpus/wire_frames/acknowledge").as_slice(),
         include_bytes!("../../harness-fuzz/corpus/wire_frames/admission"),
-        include_bytes!("../../harness-fuzz/corpus/journal_decode/truncated-protobuf"),
+        include_bytes!("../../harness-fuzz/corpus/wire_frames/truncated-protobuf"),
         include_bytes!("../../harness-fuzz/corpus/wire_frames/invalid-json"),
-        include_bytes!("../../harness-fuzz/corpus/journal_decode/oversized-journal-header"),
+        include_bytes!("../../harness-fuzz/corpus/wire_frames/oversized-journal-header"),
         include_bytes!("../../harness-fuzz/corpus/wire_frames/utf8"),
-        include_bytes!("../../harness-fuzz/corpus/journal_decode/empty-request"),
+        include_bytes!("../../harness-fuzz/corpus/wire_frames/empty-request"),
     ] {
+        // The fuzz entries themselves, then the judged observations.
         wire::check(data);
-        journal::check(data);
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
-    #[test]
-    fn wire_and_journal_decode_arbitrary_bytes(data in prop::collection::vec(any::<u8>(), 0..4096)) {
-        wire::check(&data);
-        journal::check(&data);
+        wire_oracle.check(&data.to_vec());
     }
 }
 
 #[test]
-#[should_panic(expected = "client protobuf roundtrip changed the generation")]
-fn negative_control_detects_dropped_generation() {
-    wire::check_with_dropped_generation(b"generation", true);
-}
-
-#[test]
-#[should_panic(expected = "journal lost a complete committed record")]
-fn negative_control_detects_lost_committed_record() {
-    journal::check_with_faults(b"record", true, false);
-}
-
-#[test]
-#[should_panic(expected = "journal retained an incomplete trailing record")]
-fn negative_control_detects_unrepaired_tail() {
-    journal::check_with_faults(b"record", false, true);
+fn wire_decode_arbitrary_bytes() {
+    let wire_oracle = wire_oracle();
+    proptest!(ProptestConfig::with_cases(64), |(data in prop::collection::vec(any::<u8>(), 0..4096))| {
+        wire_oracle.check(&data);
+    });
 }

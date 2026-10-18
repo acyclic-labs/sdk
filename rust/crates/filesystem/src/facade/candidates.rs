@@ -171,6 +171,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn private_control_custody(&self) -> Arc<crate::kernel::ProofDataCustody> {
         Arc::clone(&self.dependencies.data_custody)
     }

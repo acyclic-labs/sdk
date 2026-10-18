@@ -92,6 +92,7 @@ pub struct JsonValueShape {
     origin: Origin,
 }
 impl JsonValueShape {
+    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) fn is_slice(self) -> bool {
         self.origin == Origin::Slice
     }
@@ -289,3 +290,8 @@ pub(crate) fn json_value_virtual_owned_bytes(shape: JsonValueShape) -> Result<u6
 mod tests;
 #[cfg(test)]
 mod value_shape_tests;
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) mod baseline;
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod differential_properties;

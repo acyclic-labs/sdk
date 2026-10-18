@@ -157,10 +157,7 @@ impl NamespacePath {
         let mut length = usize::from(self.is_root());
         for name in &self.components {
             cancellation.check()?;
-            accounting.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
+            accounting.charge_items(1)?;
             let bytes = name
                 .unicode_utf8_bytes()
                 .ok_or(NamespacePathError::NonUnicodeProjection)?;

@@ -189,7 +189,7 @@ impl ExecutionRecord {
     fn payload_bytes(&self) -> Result<u64> {
         use ExecutionEvent::*;
         let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match &self.event {
-            Started { .. } => (None, [None; 3]),
+            Started { .. } | ModelStopped { .. } => (None, [None; 3]),
             ContextPrepared {
                 projection,
                 accounting,

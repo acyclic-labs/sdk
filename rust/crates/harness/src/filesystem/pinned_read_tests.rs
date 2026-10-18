@@ -77,7 +77,7 @@ use acyclic_test_support::differential;
 // (Requested allocation bytes saved, enclosing future bytes). Native mount
 // support retains an execution pointer in the native custody layouts.
 #[cfg(feature = "native-execution")]
-const EXPECTED_BYTES: (u64, usize) = (1840, 392);
+const EXPECTED_BYTES: (u64, usize) = (1824, 392);
 #[cfg(not(feature = "native-execution"))]
 const EXPECTED_BYTES: (u64, usize) = (1768, 360);
 

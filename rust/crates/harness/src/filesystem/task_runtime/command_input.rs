@@ -1,7 +1,9 @@
 //! Machine input envelopes retain original command-result custody through consumption.
 
 use super::{CommandDispatch, TaskCommandProgress};
-use crate::{Error, OperationId, Result};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::Error;
+use crate::{OperationId, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 

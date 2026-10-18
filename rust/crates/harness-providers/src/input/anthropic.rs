@@ -1,5 +1,8 @@
 use super::{check, id, name, text};
-use crate::protocol::{sequence::user_boundary, shape};
+use crate::protocol::{
+    sequence::{results_lead, tool_result, user_boundary},
+    shape,
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
@@ -35,16 +38,18 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
         };
         check(!parts.is_empty(), "ANT-SEQ-08", errors);
         check(pending.is_empty() || role == "user", "ANT-TOOL-04", errors);
+        check(
+            results_lead(parts.iter().map(tool_result)),
+            "ANT-TOOL-05",
+            errors,
+        );
         let mut calls = BTreeSet::new();
-        let mut non_result = false;
         for part in parts {
             match part["type"].as_str() {
                 Some("text") => {
-                    non_result = true;
                     check(text(&part["text"]), "ANT-TXT-02", errors);
                 }
                 Some("tool_use") => {
-                    non_result = true;
                     check(role == "assistant", "ANT-TXT-03", errors);
                     check(id(&part["id"], usize::MAX), "ANT-TOOL-02", errors);
                     check(
@@ -58,14 +63,12 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     }
                 }
                 Some("tool_result") => {
-                    check(!non_result, "ANT-TOOL-05", errors);
                     let matched = part["tool_use_id"]
                         .as_str()
                         .is_some_and(|id| pending.remove(id));
                     check(role == "user" && matched, "ANT-TOOL-06", errors);
                 }
                 Some("thinking") => {
-                    non_result = true;
                     check(
                         role == "assistant" && shape::THINKING.accepts(part),
                         "ANT-THK-02",
@@ -74,18 +77,14 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                     check(part.get("cache_control").is_none(), "ANT-THK-07", errors);
                 }
                 Some("redacted_thinking") => {
-                    non_result = true;
                     check(
                         role == "assistant" && shape::REDACTED.accepts(part),
                         "ANT-THK-02",
                         errors,
                     );
                 }
-                Some("image" | "document" | "search_result") => {
-                    non_result = true;
-                }
+                Some("image" | "document" | "search_result") => {}
                 _ => {
-                    non_result = true;
                     check(false, "ANT-TXT-03", errors);
                 }
             }

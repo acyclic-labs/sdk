@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 acyclic-stream = { path = "../../../../stream", default-features = false }
 proptest.workspace = true
+acyclic-test-support = { path = "../../../../test-support" }
 
 [[test]]
 name = "cli"
@@ -35,9 +36,6 @@ path = "tests/cli.rs"
 
 [dev-dependencies.axum]
 workspace = true
-
-[dev-dependencies.acyclic-native-runtime]
-path = "../../../../native-runtime"
 
 [dev-dependencies.tempfile]
 version = "3.27.0"

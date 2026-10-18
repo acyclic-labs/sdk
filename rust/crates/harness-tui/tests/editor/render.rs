@@ -9,7 +9,7 @@ fn exact_width_before_newline_has_a_visible_insertion_cursor()
     let mut viewport = Viewport::default();
     let mut terminal = Terminal::new(TestBackend::new(4, 3))?;
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
     })?;
     assert_eq!(
         terminal.backend().buffer(),
@@ -18,7 +18,7 @@ fn exact_width_before_newline_has_a_visible_insertion_cursor()
     assert_eq!(viewport.cursor, Some((0, 1)));
     editor.set_cursor(5, false);
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
     })?;
     assert_eq!(viewport.cursor, Some((0, 2)));
     Ok(())
@@ -45,7 +45,7 @@ fn unicode_snapshots_width_one_through_twelve() -> Result<(), Box<dyn std::error
         let mut terminal = Terminal::new(TestBackend::new(width, 4))?;
         let mut viewport = Viewport::default();
         terminal.draw(|frame| {
-            frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+            frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
         })?;
         assert_eq!(
             terminal.backend().buffer(),
@@ -63,7 +63,7 @@ fn growth_scroll_placeholder_and_selection_snapshot() -> Result<(), Box<dyn std:
     let mut editor = Editor::new("a\nb\nc\nd");
     let mut viewport = Viewport::default();
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
     })?;
     assert_eq!(
         terminal.backend().buffer(),
@@ -73,7 +73,7 @@ fn growth_scroll_placeholder_and_selection_snapshot() -> Result<(), Box<dyn std:
     assert_eq!(viewport.scroll, 2);
     editor.set_cursor(0, false);
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
     })?;
     assert_eq!(
         terminal.backend().buffer(),
@@ -81,7 +81,7 @@ fn growth_scroll_placeholder_and_selection_snapshot() -> Result<(), Box<dyn std:
     );
     editor.select_all();
     terminal.draw(|frame| {
-        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport)
+        frame.render_stateful_widget(PromptWidget::new(&editor), frame.area(), &mut viewport);
     })?;
     assert!(
         terminal.backend().buffer()[(0, 0)]

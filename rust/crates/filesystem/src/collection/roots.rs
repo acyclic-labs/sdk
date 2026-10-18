@@ -43,6 +43,7 @@ impl CheckoutRoots {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn replicate(
         &self,
         accounting: &mut KernelAccounting<'_>,

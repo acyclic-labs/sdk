@@ -1,4 +1,4 @@
-use std::{ops::Range, rc::Rc};
+use std::{ops::Range, rc::Rc, slice::SliceIndex};
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,11 +58,17 @@ impl Buffer {
             .collect();
     }
 
+    /// The boundary at `index`; the text end is always the last boundary.
+    fn point(&self, index: usize) -> usize {
+        self.points.get(index).copied().unwrap_or(self.text.len())
+    }
+
     pub fn floor(&self, offset: usize) -> usize {
-        self.points[self
-            .points
-            .partition_point(|i| *i <= offset)
-            .saturating_sub(1)]
+        self.point(
+            self.points
+                .partition_point(|i| *i <= offset)
+                .saturating_sub(1),
+        )
     }
 
     pub fn ceil(&self, offset: usize) -> usize {
@@ -73,10 +79,11 @@ impl Buffer {
     }
 
     pub fn previous(&self, offset: usize) -> usize {
-        self.points[self
-            .points
-            .partition_point(|i| *i < offset)
-            .saturating_sub(1)]
+        self.point(
+            self.points
+                .partition_point(|i| *i < offset)
+                .saturating_sub(1),
+        )
     }
 
     pub fn next(&self, offset: usize) -> usize {
@@ -134,7 +141,7 @@ impl Buffer {
         if backwards {
             word_edge(
                 &self.text,
-                self.points[..=index].windows(2).rev().map(|r| r[0]..r[1]),
+                spans(self.points.get(..=index).unwrap_or_default()).rev(),
                 offset,
                 true,
                 visit,
@@ -142,7 +149,7 @@ impl Buffer {
         } else {
             word_edge(
                 &self.text,
-                self.points[index..].windows(2).map(|r| r[0]..r[1]),
+                spans(self.points.get(index..).unwrap_or_default()),
                 offset,
                 false,
                 visit,
@@ -159,28 +166,36 @@ impl Buffer {
             .partition_point(|i| *i <= offset)
             .saturating_sub(1)
             .min(self.points.len() - 2);
+        let blank = |index: usize| blank(&self.text, self.point(index)..self.point(index + 1));
         let mut right = left + 1;
-        let space = self.text[self.points[left]..self.points[right]]
-            .chars()
-            .all(char::is_whitespace);
-        while left > 0
-            && self.text[self.points[left - 1]..self.points[left]]
-                .chars()
-                .all(char::is_whitespace)
-                == space
-        {
+        let space = blank(left);
+        while left > 0 && blank(left - 1) == space {
             left -= 1;
         }
-        while right + 1 < self.points.len()
-            && self.text[self.points[right]..self.points[right + 1]]
-                .chars()
-                .all(char::is_whitespace)
-                == space
-        {
+        while right + 1 < self.points.len() && blank(right) == space {
             right += 1;
         }
-        self.points[left]..self.points[right]
+        self.point(left)..self.point(right)
     }
+}
+
+/// The text in `range`, or nothing when the range is off a char boundary.
+pub(crate) fn slice<R: SliceIndex<str, Output = str>>(text: &str, range: R) -> &str {
+    text.get(range).unwrap_or_default()
+}
+
+/// Each adjacent pair of boundaries as the segment between them.
+fn spans(points: &[usize]) -> impl DoubleEndedIterator<Item = Range<usize>> + '_ {
+    points
+        .iter()
+        .zip(points.iter().skip(1))
+        .map(|(start, end)| *start..*end)
+}
+
+/// Whether a segment is whitespace; a range off a char boundary is not.
+fn blank(text: &str, range: Range<usize>) -> bool {
+    text.get(range)
+        .is_some_and(|segment| segment.chars().all(char::is_whitespace))
 }
 
 fn word_edge(
@@ -194,7 +209,7 @@ fn word_edge(
     let mut word = false;
     for range in ranges {
         visit();
-        let space = text[range.clone()].chars().all(char::is_whitespace);
+        let space = blank(text, range.clone());
         if word && space {
             break;
         }
@@ -202,6 +217,10 @@ fn word_edge(
         result = if backwards { range.start } else { range.end };
     }
     result
+}
+
+pub(crate) fn normalize(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 #[cfg(test)]
@@ -224,8 +243,4 @@ mod tests {
             prop_assert!(work <= distance);
         }
     }
-}
-
-pub(crate) fn normalize(text: &str) -> String {
-    text.replace("\r\n", "\n").replace('\r', "\n")
 }

@@ -62,6 +62,33 @@ fn folder_ranges_do_not_visit_unrelated_task_history() -> Result<(), Box<dyn std
         .collect();
     assert_eq!(agents.len(), 2);
     assert!(agents.iter().all(|key| Query::Agents.matches(key)));
+    for path in [
+        "agents/a/request.md",
+        "agents/a/control",
+        "agents/a/inbox/message.md",
+        "agents/z/request.md",
+    ] {
+        index.insert(FileKey::parse(path)?, ());
+    }
+    for (query, count) in [
+        (Query::Children, 4),
+        (Query::Child(Component::new("a")?), 3),
+    ] {
+        let candidates: Vec<_> = query
+            .ranges()
+            .into_iter()
+            .flat_map(|range| index.range(range).map(|(key, ())| key))
+            .collect();
+        assert_eq!(candidates.len(), count);
+        assert!(candidates.iter().all(|key| query.matches(key)));
+        assert_eq!(
+            candidates,
+            index
+                .keys()
+                .filter(|key| query.matches(key))
+                .collect::<Vec<_>>()
+        );
+    }
     Ok(())
 }
 

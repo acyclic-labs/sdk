@@ -1,3 +1,4 @@
+#[cfg(any(windows, test, feature = "native-watch"))]
 use super::*;
 
 #[cfg(windows)]
@@ -59,6 +60,7 @@ pub(super) fn cwd_metadata_flags() -> i32 {
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn normalize_root_path<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     path: &Path,
     work: &mut W,
@@ -98,6 +100,7 @@ pub(crate) fn normalize_root_path<W: NativeHostWork<Error = DemandError, Allocat
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "native-watch"))]
 fn cwd_ancestor_name<W: NativeHostWork>(
     parent: &Dir,
     child: NativeRootIdentity,
@@ -130,6 +133,7 @@ fn cwd_ancestor_name<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
+#[cfg(any(test, feature = "native-watch"))]
 pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
     mut current: Dir,
     work: &mut W,

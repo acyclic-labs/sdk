@@ -22,6 +22,7 @@ impl HostStatReader {
     ) -> Result<Option<(HostListedEntry, W::Allocation)>, W::Error> {
         self.next_with_handle::<W, true>(work)
     }
+    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn next_metadata<W: NativeHostWork>(
         &mut self,
         work: &mut W,

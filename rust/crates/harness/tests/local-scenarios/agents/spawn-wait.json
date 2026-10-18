@@ -1,0 +1,146 @@
+{
+  "driver": "agents",
+  "prompt": "Spawn a worker and wait for its answer",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "Answer with child finished",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "inspect",
+          "name": "fs",
+          "arguments": {
+            "command": "cat .volumes/agents/worker/results/1.json"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 4,
+      "worker": 1
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Running",
+        "settled": true,
+        "inputs": 1
+      },
+      "agents/worker/results/1.json": {
+        "turn": 1,
+        "outcome": {
+          "Succeeded": {
+            "text": "child finished"
+          }
+        }
+      }
+    },
+    "model_requests": {
+      "parent": [
+        {},
+        {},
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "wait",
+                "name": "wait",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "agents": [
+                      {
+                        "result": {
+                          "file": {
+                            "path": ".volumes/agents/worker/results/1.json"
+                          },
+                          "outcome": {
+                            "Succeeded": {
+                              "text": "child finished"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "kind": "tool_result",
+                "call_id": "inspect",
+                "name": "fs",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "success": true,
+                    "stdout": {
+                      "$contains": "child finished"
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "routes": {
+    "Answer with child finished": "worker"
+  }
+}

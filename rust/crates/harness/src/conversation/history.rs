@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    /// Negative-control seam: when set, a missing checkpoint pin is accepted as a no-op.
+    pub(super) static PIN_GUARD_DISABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 impl ConversationState {
     pub(super) fn history_digest(&self) -> [u8; 32] {
         self.prefix_digests.last().copied().unwrap_or_else(|| {
@@ -139,13 +146,17 @@ impl ConversationState {
             ));
         }
         self.require_native_work(work)?;
-        let reference = selection.checkpoint.as_ref().ok_or_else(|| {
-            conversation_error(
+        let Some(reference) = selection.checkpoint.as_ref() else {
+            #[cfg(test)]
+            if PIN_GUARD_DISABLED.get() {
+                return self.copy(work, retain);
+            }
+            return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "history retirement requires a checkpoint pin",
-            )
-        })?;
+            ));
+        };
         let cut = selection.conversation_revision;
         if cut <= self.resident_after_sequence() || self.pending_user.is_some() {
             return self.copy(work, retain);

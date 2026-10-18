@@ -111,9 +111,11 @@ impl StdioMcpTransport {
             Self::bind(output, input, maximum_bytes, timeout, Some(process)).await
         })
         .await
-        .map_err(|_| Error::Process {
-            kind: "timeout",
-            message: "MCP initialization deadline elapsed".into(),
+        .map_err(|_| {
+            Error::Process(crate::ProcessError::Timeout {
+                exit_code: None,
+                message: "MCP initialization deadline elapsed".into(),
+            })
         })?
     }
 

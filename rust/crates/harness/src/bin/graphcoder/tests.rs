@@ -1,8 +1,9 @@
-//! Executable composition uses the real shared TaskFileViews and Markdown renderer.
+//! Executable composition uses the real shared ClientViews and Markdown renderer.
+#[path = "../../../tests/support/file_views.rs"]
+mod file_views;
+use acyclic_harness as harness;
 use acyclic_harness::{
     OperationId,
-    client::TaskFileViews,
-    model::ModelEvent,
     tui::{
         ClientRenderer, PromptInput, Viewport,
         ratatui::{Terminal, backend::TestBackend},
@@ -51,39 +52,35 @@ fn shared_markdown_is_visible_and_snapshot_reset_removes_old_text() {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = TaskFileViews::default();
+    let mut views = file_views::empty();
     let mut renderer = ClientRenderer::default();
-    views
-        .model_event(
-            &owner,
-            OperationId::from_bytes([1; 16]),
-            ModelEvent::Content {
-                delta: "# Heading\n**streamed answer**".into(),
-            },
-        )
-        .unwrap();
+    file_views::append_text(
+        &mut views,
+        &owner.id,
+        false,
+        "# Heading\n**streamed answer**",
+    );
     renderer.update(&views, &owner);
     let visible = picture(&renderer);
     assert!(visible.contains("Heading"));
     assert!(visible.contains("streamed answer"));
     assert!(!visible.contains("**streamed"));
-    renderer.update(&TaskFileViews::default(), &owner);
+    renderer.update(&file_views::empty(), &owner);
     assert!(!picture(&renderer).contains("streamed answer"));
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // Property: the composed cells after arbitrary Unicode delta boundaries
-    // equal the cells obtained by projecting the same complete TaskFileViews text.
+    // equal the cells obtained by projecting the same complete ClientViews text.
     #[test]
     fn composed_markdown_is_independent_of_chunking(chunks in proptest::collection::vec(".{0,12}", 0..6)) {
         let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
-        let operation = OperationId::from_bytes([1;16]);
-        let mut views = TaskFileViews::default();
+        let mut views = file_views::empty();
         let mut live = ClientRenderer::default();
         live.update(&views, &owner);
         for chunk in &chunks {
-            views.model_event(&owner, operation, ModelEvent::Content { delta: chunk.clone() }).unwrap();
+            file_views::append_text(&mut views,&owner.id,false,chunk);
             live.update(&views, &owner);
         }
         let mut replayed = ClientRenderer::default();
@@ -146,37 +143,19 @@ fn file_completions_render_in_the_composer_and_enter_only_accepts() {
 
 #[test]
 fn followed_documents_and_owner_feedback_render_and_reset() {
-    use acyclic_harness::{
-        client::{DocumentViews, TaskView},
-        core::LifecycleState,
-        task_volume::{FileKey, PlanName, Write},
-    };
+    use acyclic_harness::task_volume::{FileKey, PlanName};
     let owner = wire::Authority {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
-    let mut documents = DocumentViews::default();
-    documents
-        .apply(&Write::new(FileKey::Goal, b"# Finish rewrite".to_vec()))
-        .unwrap();
-    documents
-        .apply(&Write::new(
-            FileKey::Plan(PlanName::new("layout").unwrap()),
-            b"**Compose widgets**".to_vec(),
-        ))
-        .unwrap();
-    let mut views = TaskFileViews::default();
-    views.documents.insert(key.clone(), documents);
-    views.tasks.insert(
-        key,
-        TaskView {
-            status: LifecycleState::Active,
-            lifecycle_operation_id: None,
-            reason: Some("owner feedback".into()),
-            parent: None,
-        },
+    let mut views = file_views::empty();
+    file_views::document(&mut views, FileKey::Goal, "# Finish rewrite");
+    file_views::document(
+        &mut views,
+        FileKey::Plan(PlanName::new("layout").unwrap()),
+        "**Compose widgets**",
     );
+    file_views::status(&mut views, &owner.id, "active", Some("owner feedback"));
     let mut renderer = ClientRenderer::default();
     renderer.update(&views, &owner);
     assert!(renderer.is_busy());
@@ -190,7 +169,7 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
     ] {
         assert!(visible.contains(text), "missing {text}");
     }
-    renderer.update(&TaskFileViews::default(), &owner);
+    renderer.update(&file_views::empty(), &owner);
     let visible = picture(&renderer);
     for text in ["Finish rewrite", "Compose widgets", "owner feedback"] {
         assert!(!visible.contains(text), "stale {text}");
@@ -199,24 +178,12 @@ fn followed_documents_and_owner_feedback_render_and_reset() {
 
 #[tokio::test]
 async fn tool_output_deltas_repaint_without_a_new_committed_message() {
-    use acyclic_harness::model::ToolCall;
     let owner = wire::Authority {
         kind: wire::AggregateKind::Task as i32,
         id: "task".into(),
     };
-    let mut views = TaskFileViews::default();
-    views
-        .model_event(
-            &owner,
-            OperationId::from_bytes([1; 16]),
-            ModelEvent::ToolCall(ToolCall::new(
-                "call".into(),
-                "read".into(),
-                Default::default(),
-            )),
-        )
-        .unwrap();
-    views.tool_output(&owner, "call", "first chunk");
+    let mut views = file_views::empty();
+    file_views::tool(&mut views, &owner.id, "read", "first chunk");
     let volume = std::sync::Arc::new(
         acyclic_harness::task_volume::TaskVolume::open(
             std::sync::Arc::new(acyclic_stream::MemoryStream::default()),
@@ -247,7 +214,13 @@ async fn tool_output_deltas_repaint_without_a_new_committed_message() {
     let mut renderer = ClientRenderer::default();
     renderer.configure(&views, &owner, &files).unwrap();
     assert!(picture(&renderer).contains("first chunk"));
-    views.tool_output(&owner, "call", " second chunk");
+    file_views::put(
+        &mut views,
+        acyclic_harness::task_volume::FileKey::parse(".tasks/task/turns/0/tools/call/stdout/1")
+            .unwrap(),
+        b" second chunk".to_vec(),
+        None,
+    );
     renderer.update(&views, &owner);
     let visible = picture(&renderer);
     assert!(visible.contains("first chunk second chunk"));
@@ -322,42 +295,6 @@ fn composed_reverse_search_restores_draft_and_ime_stays_multiline() {
 
 #[path = "tests/diff.rs"]
 mod diff;
-
-proptest::proptest! {
-    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    // Property: arbitrary agent tracking/snapshot order isolates each diff cut;
-    // a snapshot for an untracked agent leaves all projections unchanged.
-    #[test]
-    fn diff_snapshot_cuts_stay_with_their_tracked_agent(actions in proptest::collection::vec((0u8..4, proptest::bool::ANY, proptest::num::u8::ANY), 0..12)) {
-        use acyclic_harness::{AgentId, client::{ClientSession, MemoryClientState, DiffView}, conversation::{VolumeRef, VolumeClass, VolumeOwner}, resources::{ProviderRef, GenerationRef}};
-        let provider = ProviderRef::new("diff".into(), "filesystem".into(), "2".into(), &mut None).unwrap();
-        let volume = VolumeRef::new(provider.clone(), "project".into(), VolumeClass::SessionShared, VolumeOwner::Agent(AgentId::from_bytes([1;16])), &mut None).unwrap();
-        let mut session = ClientSession::open(MemoryClientState::default()).unwrap();
-        let mut tracked = std::collections::BTreeSet::new();
-        let mut expected = std::collections::BTreeMap::new();
-        for (agent, track, generation) in actions {
-            let authority = wire::Authority { kind: wire::AggregateKind::Task as i32, id: agent.to_string() };
-            if track {
-                session.track(wire::ReplayCursor { authority: Some(authority.clone()), generation: "history".into(), revision: 0 }).unwrap();
-                tracked.insert(agent);
-            } else {
-                let cut = GenerationRef::new(&provider, &[generation], Some("1"), None).unwrap().0;
-                let view = DiffView::new(volume.clone(), cut).unwrap();
-                let before = session.views().clone();
-                let result = session.replace_diff(&authority, view);
-                if tracked.contains(&agent) {
-                    proptest::prop_assert!(result.is_ok());
-                    expected.insert(format!("{}:{agent}", wire::AggregateKind::Task.as_str_name()), generation);
-                } else {
-                    proptest::prop_assert!(result.is_err());
-                    proptest::prop_assert_eq!(session.views(), &before);
-                }
-            }
-            let actual: std::collections::BTreeMap<_,_> = session.views().diffs.iter().map(|(key, view)| (key.clone(), view.generation().as_resource().key()[0])).collect();
-            proptest::prop_assert_eq!(&actual, &expected);
-        }
-    }
-}
 
 #[tokio::test]
 async fn completion_popup_follows_real_task_volume_publications() {
@@ -549,16 +486,14 @@ proptest::proptest! {
     // document panel, without mutating or discarding the other query projection.
     #[test]
     fn followed_command_layout_selects_document_panels(sequence in proptest::collection::vec(proptest::bool::ANY, 1..8)) {
-        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession, DocumentViews}, task_volume::{PlanName, TaskVolume}};
+        use acyclic_harness::{client::{CommandResolution, CommandQuery, CommandSession}, task_volume::{FileKey, PlanName, TaskVolume}};
         use acyclic_stream::{MemoryStream, StreamPath};
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "task".into() };
-            let key = format!("{}:{}", wire::AggregateKind::Task.as_str_name(), owner.id);
-            let mut views = TaskFileViews::default();
-            let mut documents = DocumentViews { goal: Some("Goal contents".into()), ..DocumentViews::default() };
-            documents.plans.insert(PlanName::new("layout").unwrap(), "Plan contents".into());
-            views.documents.insert(key, documents);
+            let mut views = file_views::empty();
+            file_views::document(&mut views,FileKey::Goal,"Goal contents");
+            file_views::document(&mut views,FileKey::Plan(PlanName::new("layout").unwrap()),"Plan contents");
             let mut renderer = ClientRenderer::default();
             renderer.update(&views, &owner);
             let volume = std::sync::Arc::new(TaskVolume::open(std::sync::Arc::new(MemoryStream::default()), StreamPath::new("panels").unwrap()).await.unwrap());
@@ -622,3 +557,6 @@ mod execution_feedback;
 
 #[path = "tests/feedback_overlay.rs"]
 mod feedback_overlay;
+
+#[path = "tests/perf.rs"]
+mod perf;

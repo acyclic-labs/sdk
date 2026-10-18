@@ -37,6 +37,7 @@ impl ConsoleIo {
 }
 impl Write for ConsoleIo {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        super::counters::wrote();
         self.output.write(bytes)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -68,9 +69,37 @@ pub struct Tty {
 pub struct Output {
     owner: Arc<Owner<ConsoleIo>>,
 }
+/// Bytes per console call. Each call runs under its own write deadline
+/// (PROBE_TIMEOUT, 100 ms). Measured on the local console: one 4 MiB call
+/// times out (110 ms); 256 KiB calls take 10-17 ms at worst and lose no
+/// throughput (4 MiB in 256 KiB calls 99 ms, 1 MiB calls 98 ms, 64 KiB calls
+/// 114 ms, 4 KiB calls 289 ms). Frames up to 256 KiB are one call.
+pub(crate) const CONSOLE_CHUNK: usize = 256 * 1024;
+
+impl super::Present for Output {
+    fn present(&mut self, frame: &mut Vec<u8>, cursor_hidden: bool) -> io::Result<()> {
+        let owner = &self.owner;
+        let presented = super::frame::present_parts(frame, CONSOLE_CHUNK, |part| {
+            Owner::run(owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
+                part.apply(guard, cursor_hidden)
+            })
+        });
+        if presented.is_err() {
+            let _ = Owner::run(owner, Instant::now() + PROBE_TIMEOUT, |guard| {
+                guard.abort_frame()
+            });
+        }
+        presented
+    }
+}
+
 impl Write for Output {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(4096)].to_vec();
+        let end = super::frame::char_prefix(bytes, CONSOLE_CHUNK);
+        let bytes = bytes
+            .get(..end)
+            .ok_or(io::ErrorKind::InvalidInput)?
+            .to_vec();
         Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
             guard.writer().write(&bytes)
         })
@@ -173,7 +202,7 @@ impl Tty {
         Ok(self.decoder.take_events())
     }
     fn write_until(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<usize> {
-        let bytes = bytes[..bytes.len().min(4096)].to_vec();
+        let bytes = bytes.to_vec();
         Owner::run(&self.owner, deadline, move |guard| {
             guard.writer().write(&bytes)
         })

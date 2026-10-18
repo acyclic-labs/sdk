@@ -1,3 +1,4 @@
+//! Restore request codec, validation and retry-identity properties.
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, request, wire};
 use proptest::prelude::*;
 use prost::Message;
@@ -43,7 +44,7 @@ fn invalid_requests(query: &wire::RestoreObjectsRequest) -> Vec<wire::RestoreObj
         "xn--abc",
         "abc--x-s3",
     ] {
-        add(&|q| q.bucket.as_mut().unwrap().name = name.into());
+        add(&|q| q.bucket = Some(wire::BucketRef { name: name.into() }));
     }
     add(&|q| q.prefix = "x".repeat(1025));
     add(&|q| q.prefix.push('\0'));
@@ -61,7 +62,11 @@ fn invalid_requests(query: &wire::RestoreObjectsRequest) -> Vec<wire::RestoreObj
     }
     add(&|q| q.mutation = None);
     for key in [String::new(), "x".repeat(257), "bad\0key".into()] {
-        add(&|q| q.mutation.as_mut().unwrap().idempotency_key = key.clone());
+        add(&|q| {
+            q.mutation = Some(wire::MutationIdentity {
+                idempotency_key: key.clone(),
+            });
+        });
     }
     invalid
 }
@@ -71,7 +76,7 @@ proptest! {
     #[test]
     fn restore_round_trip_and_invalid_fields(query in requests()) {
         let bytes = query.encode_to_vec();
-        prop_assert_eq!(wire::RestoreObjectsRequest::decode(bytes.as_slice()).unwrap(), query.clone());
+        prop_assert_eq!(&wire::RestoreObjectsRequest::decode(bytes.as_slice()).unwrap(), &query);
         prop_assert!(request::validate_binary("objects/restore", &bytes, 0).is_ok());
         prop_assert_eq!(request::validate_binary("objects/restore", &bytes, 1).unwrap_err().code, wire::ErrorCode::InvalidArgument);
         for invalid in invalid_requests(&query) {

@@ -1,6 +1,6 @@
 //! One disposable fold for overview status and selected full-fidelity files.
-#[cfg(all(test, not(acyclic_harness_loom), not(target_arch = "wasm32")))]
-mod retention;
+mod status;
+pub use status::StatusView;
 
 use super::{
     ClientInterests, FileQueryView, InterestTier, QueryViewLimits, SwarmUpdate, query_error,
@@ -9,8 +9,7 @@ use crate::{
     Error, Result,
     task_volume::{Cursor, FileKey, FileValue, HeadFile, Query},
 };
-use acyclic_stream::{StreamPath, StreamWatermarks, wire};
-use bytes::Bytes;
+use acyclic_stream::{StreamPath, wire};
 use std::collections::BTreeMap;
 use std::{cell::RefCell, rc::Rc};
 
@@ -30,54 +29,6 @@ pub struct ClientViewLimits {
     pub overview_bytes: u64,
     /// Per-agent file and segment bounds.
     pub query: QueryViewLimits,
-}
-
-/// Exact latest values for one agent; the producer owns their schema.
-#[derive(Clone, Debug, PartialEq)]
-pub struct StatusView {
-    after: Option<wire::SessionCursor>,
-    watermarks: StreamWatermarks,
-    values: BTreeMap<Bytes, StatusValue>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct StatusValue {
-    after: wire::SessionCursor,
-    value: wire::SessionLatestValue,
-}
-
-impl Default for StatusView {
-    fn default() -> Self {
-        Self {
-            after: None,
-            watermarks: StreamWatermarks {
-                accepted: 0,
-                durable: 0,
-            },
-            values: BTreeMap::new(),
-        }
-    }
-}
-
-impl StatusView {
-    /// Greatest delivered status cursor; platform I/O owns replay and fencing.
-    pub fn cursor(&self) -> Option<&wire::SessionCursor> {
-        self.after.as_ref()
-    }
-    /// Accepted and confirmed durable status prefixes.
-    pub fn watermarks(&self) -> StreamWatermarks {
-        self.watermarks
-    }
-    /// Latest values in stable key order, with producer-defined payloads.
-    pub fn values(&self) -> impl Iterator<Item = &wire::SessionLatestValue> {
-        self.values.values().map(|v| &v.value)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct AgentViews {
-    status: StatusView,
-    files: BTreeMap<([u8; 32], [u8; 32]), FileQueryView>,
 }
 
 /// Renderer hints contain the actual file delta, never another event schema.
@@ -129,6 +80,10 @@ pub enum SwarmChange {
 pub struct ClientViewHandle(Rc<RefCell<ClientViews>>);
 
 impl ClientViewHandle {
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn new(views: ClientViews) -> Self {
         Self(Rc::new(RefCell::new(views)))
     }
@@ -140,6 +95,10 @@ impl ClientViewHandle {
             .map_err(|error| Error::Conflict(error.to_string()))?;
         Ok(render(&views))
     }
+    #[cfg(any(
+        all(feature = "grpc", not(target_arch = "wasm32")),
+        all(feature = "wasm", target_arch = "wasm32")
+    ))]
     pub(crate) fn apply(&self, update: SwarmUpdate) -> Result<SwarmChange> {
         self.0
             .try_borrow_mut()
@@ -154,10 +113,8 @@ pub struct ClientViews {
     pub(super) goal_sources: BTreeMap<([u8; 32], [u8; 32]), ([u8; 32], [u8; 32])>,
     layout: ClientInterests,
     query: [u8; 32],
-    agents: BTreeMap<StreamPath, AgentViews>,
+    agents: status::Agents,
     limits: ClientViewLimits,
-    overview_values: usize,
-    overview_bytes: u64,
 }
 
 impl ClientViews {
@@ -167,10 +124,8 @@ impl ClientViews {
             goal_sources: BTreeMap::new(),
             layout: ClientInterests::from_layout(root, [], [], 0)?,
             query: crate::task_volume::query_id(&Query::Root).map_err(query_error)?,
-            agents: BTreeMap::new(),
+            agents: status::Agents::default(),
             limits,
-            overview_values: 0,
-            overview_bytes: 0,
         })
     }
 
@@ -184,13 +139,12 @@ impl ClientViews {
     }
     /// Latest status for one discovered agent, including agents out of view.
     pub fn status(&self, agent: &StreamPath) -> Option<&StatusView> {
-        self.agents.get(agent).map(|a| &a.status)
+        self.agents.get(agent)
     }
     /// Selected content's exact snapshot/follow cut.
     pub fn cursor(&self, agent: &StreamPath) -> Option<&Cursor> {
         self.agents
-            .get(agent)?
-            .files
+            .files(agent)?
             .values()
             .find(|file| file.cursor().query == self.query)
             .map(FileQueryView::cursor)
@@ -198,26 +152,25 @@ impl ClientViews {
     /// Borrows one logical file without joining or copying its segments.
     pub fn file(&self, agent: &StreamPath, key: &FileKey) -> Option<&HeadFile> {
         self.agents
-            .get(agent)?
-            .files
+            .files(agent)?
             .values()
             .find_map(|files| files.head(key))
     }
     /// Visits only the requested agent's selected content.
     pub fn files<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a HeadFile> {
         self.agents
-            .get(agent)
+            .files(agent)
             .into_iter()
-            .flat_map(|a| a.files.values())
+            .flat_map(|files| files.values())
             .flat_map(FileQueryView::heads)
     }
 
     /// Cached plan rows for the requested agent, from its followed files.
     pub fn plans<'a>(&'a self, agent: &StreamPath) -> impl Iterator<Item = &'a str> {
         self.agents
-            .get(agent)
+            .files(agent)
             .into_iter()
-            .flat_map(|a| a.files.values())
+            .flat_map(|files| files.values())
             .flat_map(FileQueryView::plan_rows)
     }
     /// Goal projections at the same cuts as the followed files.
@@ -229,19 +182,37 @@ impl ClientViews {
     /// All followed file selections, including ordinary private-file queries.
     pub fn selections(&self) -> impl Iterator<Item = (&([u8; 32], [u8; 32]), &FileQueryView)> {
         self.agents
-            .get(self.layout.root())
+            .files(self.layout.root())
             .into_iter()
             .chain(
                 self.layout
                     .full_fidelity()
-                    .filter_map(|path| self.agents.get(path)),
+                    .filter_map(|path| self.agents.files(path)),
             )
-            .flat_map(|agent| agent.files.iter())
+            .flat_map(|files| files.iter())
     }
     /// Borrows the agent-owned selection at an exact volume/query identity.
     pub fn selection(&self, identity: &([u8; 32], [u8; 32])) -> Option<&FileQueryView> {
         self.selections()
             .find_map(|(key, files)| (key == identity).then_some(files))
+    }
+    /// Retires a query's files and derived projections together.
+    pub fn remove_selection(&mut self, identity: &([u8; 32], [u8; 32])) {
+        if let Some(path) = std::iter::once(self.layout.root())
+            .chain(self.layout.full_fidelity())
+            .find(|path| {
+                self.agents
+                    .files(*path)
+                    .is_some_and(|files| files.contains_key(identity))
+            })
+            .cloned()
+        {
+            if let Some(files) = self.agents.files_mut(&path) {
+                files.remove(identity);
+            }
+            self.goal_sources
+                .retain(|goal, request| goal != identity && request != identity);
+        }
     }
     pub(super) fn selection_mut(
         &mut self,
@@ -251,25 +222,23 @@ impl ClientViews {
             .chain(self.layout.full_fidelity())
             .find(|path| {
                 self.agents
-                    .get(*path)
-                    .is_some_and(|agent| agent.files.contains_key(identity))
+                    .files(*path)
+                    .is_some_and(|files| files.contains_key(identity))
             })?
             .clone();
-        self.agents.get_mut(&agent)?.files.get_mut(identity)
+        self.agents.files_mut(&agent)?.get_mut(identity)
     }
     pub(super) fn install_selection(&mut self, files: FileQueryView) {
         let cursor = files.cursor();
         self.agents
-            .entry(self.layout.root().clone())
-            .or_default()
-            .files
+            .entry_files(self.layout.root().clone())
             .insert((cursor.volume, cursor.query), files);
     }
 
     fn admit_agent(&self, agent: &StreamPath) -> Result<()> {
         if agent == self.layout.root()
             || self.layout.tier(agent).is_none()
-            || (!self.agents.contains_key(agent) && self.agents.len() >= self.limits.agents)
+            || (!self.agents.contains(agent) && self.agents.len() >= self.limits.agents)
         {
             return Err(Error::Invalid(
                 "swarm view agent outside its root or bound".into(),
@@ -286,25 +255,12 @@ impl ClientViews {
                 if &agent == self.layout.root() || self.layout.tier(&agent).is_none() {
                     return Err(Error::Invalid("retirement outside swarm".into()));
                 }
-                if let Some(retired) = self.agents.remove(&agent) {
-                    self.overview_values -= retired.status.values.len();
-                    self.overview_bytes -= retired
-                        .status
-                        .values
-                        .values()
-                        .map(|v| {
-                            (v.value.key.len() + v.value.value.len() + v.after.opaque.len()) as u64
-                        })
-                        .sum::<u64>();
-                    // Cross-query bindings belong to the root's standalone
-                    // selections; swarm agents have one Root selection, so
-                    // none can be a File(RequestHead) binding endpoint.
-                }
+                self.agents.retire(&agent);
                 Ok(SwarmChange::Retired { agent })
             }
             SwarmUpdate::Agent { agent } => {
                 self.admit_agent(&agent)?;
-                self.agents.entry(agent.clone()).or_default();
+                self.agents.discover(agent.clone());
                 Ok(SwarmChange::Agent { agent })
             }
             SwarmUpdate::Layout(layout) => {
@@ -316,8 +272,8 @@ impl ClientViews {
                     ));
                 }
                 for removed in layout.changes(&self.layout)?.unsubscribe() {
-                    if let Some(agent) = self.agents.get_mut(removed) {
-                        agent.files.clear();
+                    if let Some(files) = self.agents.files_mut(removed) {
+                        files.clear();
                     }
                 }
                 self.layout = layout;
@@ -333,15 +289,17 @@ impl ClientViews {
                 if self.layout.tier(&agent) == Some(InterestTier::Overview) {
                     return Err(Error::Invalid("unselected agent received content".into()));
                 }
-                if self.agents.get(&agent).is_some_and(|a| !a.files.is_empty()) {
+                if self
+                    .agents
+                    .files(&agent)
+                    .is_some_and(|files| !files.is_empty())
+                {
                     return Err(Error::Conflict("content snapshot already installed".into()));
                 }
                 let files = FileQueryView::from_heads(snapshot, self.limits.query)?;
                 let cursor = files.cursor().clone();
                 self.agents
-                    .entry(agent.clone())
-                    .or_default()
-                    .files
+                    .entry_files(agent.clone())
                     .insert((cursor.volume, cursor.query), files);
                 Ok(SwarmChange::Snapshot { agent, cursor })
             }
@@ -352,9 +310,9 @@ impl ClientViews {
             } => {
                 let files = self
                     .agents
-                    .get_mut(&agent)
-                    .and_then(|a| {
-                        a.files
+                    .files_mut(&agent)
+                    .and_then(|files| {
+                        files
                             .values_mut()
                             .find(|files| files.cursor().query == self.query)
                     })
@@ -372,7 +330,8 @@ impl ClientViews {
                 overview: true,
                 data,
             } => {
-                self.status_data(&agent, &data)?;
+                self.admit_agent(&agent)?;
+                self.agents.data(&agent, &data, self.limits)?;
                 Ok(SwarmChange::Data {
                     agent,
                     overview: true,
@@ -387,9 +346,9 @@ impl ClientViews {
             } => {
                 let files = self
                     .agents
-                    .get_mut(&agent)
-                    .and_then(|a| {
-                        a.files
+                    .files_mut(&agent)
+                    .and_then(|files| {
+                        files
                             .values_mut()
                             .find(|files| files.cursor().query == self.query)
                     })
@@ -409,28 +368,7 @@ impl ClientViews {
                 watermark,
             } => {
                 self.admit_agent(&agent)?;
-                let current = self
-                    .agents
-                    .get(&agent)
-                    .map(|a| a.status.watermarks)
-                    .unwrap_or(StreamWatermarks {
-                        accepted: 0,
-                        durable: 0,
-                    });
-                if watermark.durable > watermark.accepted
-                    || watermark.accepted < current.accepted
-                    || watermark.durable < current.durable
-                {
-                    return Err(Error::Invalid("status watermark regressed".into()));
-                }
-                self.agents
-                    .entry(agent.clone())
-                    .or_default()
-                    .status
-                    .watermarks = StreamWatermarks {
-                    accepted: watermark.accepted,
-                    durable: watermark.durable,
-                };
+                self.agents.watermark(&agent, &watermark)?;
                 Ok(SwarmChange::Watermark {
                     agent,
                     overview: true,
@@ -438,88 +376,6 @@ impl ClientViews {
                 })
             }
         }
-    }
-
-    fn status_data(&mut self, agent: &StreamPath, data: &wire::SessionData) -> Result<()> {
-        self.admit_agent(agent)?;
-        let mut after = data
-            .after
-            .clone()
-            .ok_or_else(|| Error::Invalid("status cursor missing".into()))?;
-        if after.next == 0 || data.durable > data.accepted || after.next > data.accepted {
-            return Err(Error::Invalid("invalid status watermarks".into()));
-        }
-        let mut value = match &data.item {
-            Some(wire::session_data::Item::LatestValue(value)) => value.clone(),
-            _ => return Err(Error::Invalid("status received a non-value frame".into())),
-        };
-        let previous = self.agents.get(agent).map(|a| &a.status);
-        let old = previous.and_then(|s| s.values.get(&value.key));
-        if old.is_some_and(|old| {
-            old.after.next > after.next
-                || (old.after.next == after.next && old.after.opaque != after.opaque)
-        }) {
-            return Err(Error::Conflict("status key cursor regressed".into()));
-        }
-        if old.is_some_and(|old| old.after == after && old.value != value) {
-            return Err(Error::Conflict(
-                "one status cut contains conflicting values".into(),
-            ));
-        }
-        let size = |value: &wire::SessionLatestValue, cursor: &wire::SessionCursor| {
-            (value.key.len() as u64)
-                .checked_add(value.value.len() as u64)
-                .and_then(|size| size.checked_add(cursor.opaque.len() as u64))
-        };
-        let retained =
-            size(&value, &after).ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
-        let bytes = self
-            .overview_bytes
-            .checked_sub(
-                old.and_then(|old| size(&old.value, &old.after))
-                    .unwrap_or(0),
-            )
-            .and_then(|bytes| bytes.checked_add(retained))
-            .ok_or_else(|| Error::Invalid("status bytes overflow".into()))?;
-        let count = self
-            .overview_values
-            .checked_add(usize::from(old.is_none()))
-            .ok_or_else(|| Error::Invalid("status count overflow".into()))?;
-        if bytes > self.limits.overview_bytes || count > self.limits.overview_values {
-            return Err(Error::Invalid("status view bound reached".into()));
-        }
-        // A protobuf Bytes slice may pin a much larger transport allocation.
-        // Compact once into one exact buffer, accounting key, body and cursor.
-        let length = usize::try_from(retained)
-            .map_err(|_| Error::Invalid("status bytes overflow".into()))?;
-        let key_end = value.key.len();
-        let value_end = key_end + value.value.len();
-        let mut compact = Vec::with_capacity(length);
-        compact.extend_from_slice(&value.key);
-        compact.extend_from_slice(&value.value);
-        compact.extend_from_slice(&after.opaque);
-        let compact = Bytes::from(compact.into_boxed_slice());
-        value.key = compact.slice(..key_end);
-        value.value = compact.slice(key_end..value_end);
-        after.opaque = compact.slice(value_end..);
-        let status = &mut self.agents.entry(agent.clone()).or_default().status;
-        if status
-            .after
-            .as_ref()
-            .is_none_or(|old| old.next <= after.next)
-        {
-            status.after = Some(after.clone());
-        }
-        status.watermarks.accepted = status.watermarks.accepted.max(data.accepted);
-        status.watermarks.durable = status.watermarks.durable.max(data.durable);
-        let key = value.key.clone();
-        // BTreeMap::insert preserves its existing key. That key may share the
-        // old compact payload, so retire it before publishing the replacement.
-        status.values.remove(&key);
-        status.values.insert(key, StatusValue { after, value });
-        self.overview_bytes = bytes;
-        self.overview_values = count;
-        Ok(())
     }
 }
 

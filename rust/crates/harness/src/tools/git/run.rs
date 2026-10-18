@@ -66,7 +66,7 @@ where
         merge_cache: AsyncMutex::new(MemoryMergeResolutionCache::default()),
         switched: Mutex::new(None),
     };
-    if let Some(branch) = crate::tools::command::agent_diff(args) {
+    if let Some(branch) = crate::tools::fs_command::agent_diff(args) {
         before_effect().await?;
         let output = executor.diff_agent(branch, tree).await?;
         before_effect().await?;

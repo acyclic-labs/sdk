@@ -345,7 +345,8 @@ fn long_punctuation_queries_need_no_prefix_buffer() {
             ),
             (0, 0, 0)
         );
-        let old = acyclic_test_support::measure(|| assert!(old_crossover::conflicts(&paths, &query)));
+        let old =
+            acyclic_test_support::measure(|| assert!(old_crossover::conflicts(&paths, &query)));
         assert_eq!(old.count_total, 1);
         assert_eq!(
             old.bytes_total,

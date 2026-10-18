@@ -125,27 +125,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        let changed = self.inner.failed.subscribe();
-        let children = self
-            .accepted(self.inner.provider.children(request))
-            .await??;
-        Ok(stream::try_unfold(
-            (self.clone(), children, changed),
-            |(provider, mut children, mut changed)| async move {
-                let unavailable = Box::pin(LocalInner::unavailable(&mut changed));
-                // No visibility guard is held while either subscription parks.
-                let child = match futures::future::select(unavailable, children.next()).await {
-                    futures::future::Either::Left((error, _)) => return Err(error),
-                    futures::future::Either::Right((child, _)) => child,
-                };
-                let Some(child) = child.transpose()? else {
-                    return Ok(None);
-                };
-                provider.accepted(async {}).await?;
-                Ok(Some((child, (provider, children, changed))))
-            },
-        )
-        .boxed())
+        self.follow_children(request).await
     }
 
     async fn children_page(

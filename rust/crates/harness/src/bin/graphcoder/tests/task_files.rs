@@ -5,6 +5,43 @@ use acyclic_harness::{
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::sync::Arc;
+async fn catch_up(client: &mut TaskFileClient, volume: &TaskVolume<MemoryStream>) {
+    let cut = volume.snapshot(&Query::Root, 256).await.unwrap().cursor;
+    while client.views().selections().any(|(_, view)| {
+        view.cursor().volume == cut.volume && view.cursor().position < cut.position
+    }) {
+        client.next_change().await.unwrap();
+    }
+}
+fn outputs(client: &TaskFileClient) -> Vec<String> {
+    let selection = client
+        .views()
+        .selections()
+        .find(|(_, view)| matches!(view.query(), Query::CommandSession { .. }))
+        .unwrap()
+        .1;
+    let Query::CommandSession { session, .. } = selection.query() else {
+        panic!("command session");
+    };
+    let owner = acyclic_harness::client::OutputOwner::Session(session.clone());
+    let after = selection
+        .files()
+        .values()
+        .find_map(|file| match &file.key {
+            FileKey::Ui { name, .. } if name.as_str() == "layout.json" => {
+                let [bytes] = file.segments.as_slice() else {
+                    return None;
+                };
+                serde_json::from_slice::<serde_json::Value>(bytes).ok()?["history_after"].as_u64()
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
+    selection
+        .outputs(&owner, after)
+        .filter_map(|(_, row)| row.text.map(|text| text.into_owned()))
+        .collect()
+}
 
 #[tokio::test]
 async fn followed_task_files_render_without_a_wire_connection() {
@@ -26,24 +63,18 @@ async fn followed_task_files_render_without_a_wire_connection() {
     let mut renderer = ClientRenderer::default();
     renderer.update(client.views(), &owner);
     assert!(!picture(&renderer).contains("File-backed answer"));
-    files
-        .append(
-            cut.generation,
-            &FileValue {
-                publication: None,
-                key: FileKey::Task {
-                    task: Component::new(task.to_string()).unwrap(),
-                    file: TaskFile::Chunk {
-                        turn: 0,
-                        sequence: 0,
-                    },
-                },
-                channel: Some(Channel::Text),
-                bytes: b"**File-backed answer**".to_vec().into(),
+    let mut file = FileValue::new(
+        FileKey::Task {
+            task: Component::new(task.to_string()).unwrap(),
+            file: TaskFile::Chunk {
+                turn: 0,
+                sequence: 0,
             },
-        )
-        .await
-        .unwrap();
+        },
+        b"**File-backed answer**".to_vec(),
+    );
+    file.channel = Some(Channel::Text);
+    files.append(cut.generation, &file).await.unwrap();
     client.next_change().await.unwrap();
     renderer.update(client.views(), &owner);
     assert!(picture(&renderer).contains("File-backed answer"));
@@ -64,6 +95,7 @@ proptest::proptest! {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "owner".into() };
             let mut commands = acyclic_harness::client::CommandSession::open(volume.clone(), acyclic_harness::OperationId::new().to_string().parse().unwrap(), 65_536, 128).await.unwrap();
             let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
+            client.follow_commands(&commands).await.unwrap();
             let mut expected = Vec::new();
             for text in texts {
                 commands.submit("prompt", &NoFiles).await.unwrap();
@@ -71,16 +103,14 @@ proptest::proptest! {
                 let value = serde_json::json!({"text":text,"selected_task":acyclic_harness::TaskId::new()});
                 commands.consume(&request, |_,_,_| async { Ok(value) }).await.unwrap();
                 expected.push(text);
-                client.project_commands(&commands, &owner).unwrap();
-                client.project_commands(&commands, &owner).unwrap();
-                let key = format!("AGGREGATE_KIND_TASK:{}", owner.id);
-                proptest::prop_assert_eq!(&client.views().transcripts[&key].streaming_text, &expected.join("\n\n"));
+                catch_up(&mut client,volume.as_ref()).await;
+                proptest::prop_assert_eq!(outputs(&client),expected.clone());
                 let mut renderer = ClientRenderer::default(); renderer.update(client.views(), &owner);
                 let visible = picture(&renderer);
                 for text in &expected { proptest::prop_assert!(visible.contains(text)); }
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
-                replay.project_commands(&commands, &owner).unwrap();
-                proptest::prop_assert_eq!(&replay.views().transcripts[&key], &client.views().transcripts[&key]);
+                replay.follow_commands(&commands).await.unwrap();
+                proptest::prop_assert_eq!(outputs(&replay),outputs(&client));
             }
             Ok(())
         })?;
@@ -104,7 +134,7 @@ proptest::proptest! {
             let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "archive".into() };
             let mut commands = CommandSession::open(volume.clone(), OperationId::new().to_string().parse().unwrap(), 65_536, 24).await.unwrap();
             let mut client = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
-            let key = "AGGREGATE_KIND_TASK:archive";
+            client.follow_commands(&commands).await.unwrap();
             for (index, text) in texts.iter().enumerate() {
                 commands.submit("prompt", &NoFiles).await.unwrap();
                 let request = commands.take_request().unwrap();
@@ -119,11 +149,11 @@ proptest::proptest! {
                     expected.push(value["ok"]["text"].as_str().unwrap().to_owned());
                 }
                 expected.reverse();
-                client.project_commands(&commands, &owner).unwrap();
-                proptest::prop_assert_eq!(&client.views().transcripts[key].streaming_text, &expected.join("\n\n"));
+                catch_up(&mut client,volume.as_ref()).await;
+                proptest::prop_assert_eq!(outputs(&client),expected.clone());
                 let mut replay = TaskFileClient::observe(volume.as_ref(), &owner, 128, 65_536).await.unwrap();
-                replay.project_commands(&commands, &owner).unwrap();
-                proptest::prop_assert_eq!(&replay.views().transcripts[key], &client.views().transcripts[key]);
+                replay.follow_commands(&commands).await.unwrap();
+                proptest::prop_assert_eq!(outputs(&replay),outputs(&client));
             }
             Ok(())
         })?;

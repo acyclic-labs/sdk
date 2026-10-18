@@ -12,6 +12,65 @@ fn operation_indeterminate_preserves_the_exact_provider_operation() -> Result<()
     Ok(())
 }
 
+#[test]
+fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate() -> Result<()> {
+    use crate::wire::ErrorCode;
+    let receipt = OperationId::from_bytes([7; 16]);
+    let machine = MachineId::parse("00000000-0000-0000-0000-000000000002")
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let causes = [
+        (
+            ProviderError::NotFound("m".into()),
+            ErrorCode::NotFound,
+            false,
+        ),
+        (
+            ProviderError::Conflict("m".into()),
+            ErrorCode::Conflict,
+            false,
+        ),
+        (
+            ProviderError::Unsupported("m".into()),
+            ErrorCode::Unsupported,
+            false,
+        ),
+        (
+            ProviderError::Invalid("m".into()),
+            ErrorCode::Invalid,
+            false,
+        ),
+        (
+            ProviderError::Rejected("m".into()),
+            ErrorCode::Invalid,
+            false,
+        ),
+        (ProviderError::Failed, ErrorCode::Storage, false),
+        (ProviderError::Cancelled, ErrorCode::Cancelled, false),
+        (ProviderError::Unavailable, ErrorCode::Storage, true),
+        (
+            ProviderError::Indeterminate(MachinesKey::new()),
+            ErrorCode::Indeterminate,
+            true,
+        ),
+        (
+            ProviderError::CommandIndeterminate(machine),
+            ErrorCode::Indeterminate,
+            true,
+        ),
+    ];
+    for (cause, code, uncertain) in causes {
+        let retained = map_error(cause.clone(), None);
+        assert!(matches!(&retained, Error::Machines(actual) if *actual == cause));
+        assert_eq!(retained.code(), code);
+        match map_error(cause.clone(), Some(receipt)) {
+            Error::Indeterminate(actual) => assert!(uncertain && actual == receipt),
+            Error::Machines(actual) => assert!(!uncertain && actual == cause),
+            other => return Err(other),
+        }
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
     let provider_ref =
@@ -150,7 +209,8 @@ async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
     };
     assert!(matches!(
         host.verify(&missing, &mut None)?.await,
-        Err(Error::NotFound(_))
+        Err(error @ Error::Machines(ProviderError::NotFound(_)))
+            if error.code() == crate::wire::ErrorCode::NotFound
     ));
     let forged = ResourceRevision::Process(CheckpointRef::new(
         machines,

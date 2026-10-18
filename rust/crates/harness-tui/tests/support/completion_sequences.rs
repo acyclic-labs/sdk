@@ -49,13 +49,18 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
         assert_eq!(probe.items().cloned().collect::<Vec<_>>(), before);
     }
     if probe.set_file("commands/themes.json", Some(data)).is_err() {
-        assert_eq!(probe.items().next().unwrap().value, "Theme");
+        assert_eq!(
+            probe.items().next().map(|item| item.value.as_str()),
+            Some("Theme")
+        );
     }
     let mut editor = semantic_prelude(data, broken)?;
     let mut menu = CompletionMenu::default();
     for (step, chunk) in data.chunks(8).enumerate() {
-        let op = chunk[0];
-        let text = String::from_utf8_lossy(&chunk[1..]);
+        let Some((&op, rest)) = chunk.split_first() else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(rest);
         match op % 14 {
             0 => editor.insert(&text, step as u64),
             1 => editor.paste(&text.repeat(150), step as u64),
@@ -66,42 +71,15 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
                 menu.refresh(&editor);
             }
             5 => menu.cycle(op > 128),
-            6 => {
-                let before = (editor.text().to_owned(), editor.cursor(), editor.anchor());
-                if menu.accept(&mut editor, step as u64) {
-                    let after = (editor.text().to_owned(), editor.cursor(), editor.anchor());
-                    let mut probe = editor.clone();
-                    assert!(probe.undo());
-                    assert_eq!(
-                        (probe.text(), probe.cursor(), probe.anchor()),
-                        (before.0.as_str(), before.1, before.2)
-                    );
-                    assert!(probe.redo());
-                    assert_eq!(
-                        (probe.text(), probe.cursor(), probe.anchor()),
-                        (after.0.as_str(), after.1, after.2)
-                    );
-                }
-            }
+            6 => accept_undoably(&mut menu, &mut editor, step as u64),
             7 => menu.dismiss(&editor),
             8 => {
-                let code = [
-                    KeyCode::Tab,
-                    KeyCode::Enter,
-                    KeyCode::Up,
-                    KeyCode::Down,
-                    KeyCode::Esc,
-                ][usize::from(chunk.get(1).copied().unwrap_or(0)) % 5];
-                let mut key = KeyEvent::new(
-                    code,
-                    KeyModifiers::from_bits_truncate(chunk.get(2).copied().unwrap_or(0)),
+                menu.key(
+                    &mut editor,
+                    key(chunk),
+                    &InputKeymap::default(),
+                    step as u64,
                 );
-                key.kind = [
-                    KeyEventKind::Press,
-                    KeyEventKind::Repeat,
-                    KeyEventKind::Release,
-                ][usize::from(chunk.get(3).copied().unwrap_or(0)) % 3];
-                menu.key(&mut editor, key, &InputKeymap::default(), step as u64);
             }
             9 => {
                 editor.undo();
@@ -136,20 +114,63 @@ fn exercise_with(data: &[u8], broken: bool) -> Result<(), std::io::Error> {
                 }
             }
         }
-        let points: Vec<_> = editor
-            .text()
-            .grapheme_indices(true)
-            .map(|(at, _)| at)
-            .chain([editor.text().len()])
-            .collect();
-        assert!(points.contains(&editor.cursor()) && points.contains(&editor.anchor()));
-        assert!(!editor.text().contains('\r'));
-        if let Some(request) = completion_request(&editor) {
-            assert!(points.contains(&request.range.start) && points.contains(&request.range.end));
-            assert!(request.range.start <= editor.cursor() && editor.cursor() <= request.range.end);
-        }
+        assert_on_graphemes(&editor);
     }
     Ok(())
+}
+
+/// Accepting a completion is one undo step that redo restores exactly.
+fn accept_undoably(menu: &mut CompletionMenu, editor: &mut Editor, step: u64) {
+    let before = (editor.text().to_owned(), editor.cursor(), editor.anchor());
+    if menu.accept(editor, step) {
+        let after = (editor.text().to_owned(), editor.cursor(), editor.anchor());
+        let mut probe = editor.clone();
+        assert!(probe.undo());
+        assert_eq!(
+            (probe.text(), probe.cursor(), probe.anchor()),
+            (before.0.as_str(), before.1, before.2)
+        );
+        assert!(probe.redo());
+        assert_eq!(
+            (probe.text(), probe.cursor(), probe.anchor()),
+            (after.0.as_str(), after.1, after.2)
+        );
+    }
+}
+
+/// A completion-menu key chosen by the chunk's code, modifier and kind bytes.
+fn key(chunk: &[u8]) -> KeyEvent {
+    let byte = |index: usize| chunk.get(index).copied().unwrap_or(0);
+    let code = match byte(1) % 5 {
+        0 => KeyCode::Tab,
+        1 => KeyCode::Enter,
+        2 => KeyCode::Up,
+        3 => KeyCode::Down,
+        _ => KeyCode::Esc,
+    };
+    let mut key = KeyEvent::new(code, KeyModifiers::from_bits_truncate(byte(2)));
+    key.kind = match byte(3) % 3 {
+        0 => KeyEventKind::Press,
+        1 => KeyEventKind::Repeat,
+        _ => KeyEventKind::Release,
+    };
+    key
+}
+
+/// The cursor, anchor and any completion range sit on grapheme boundaries.
+fn assert_on_graphemes(editor: &Editor) {
+    let points: Vec<_> = editor
+        .text()
+        .grapheme_indices(true)
+        .map(|(at, _)| at)
+        .chain([editor.text().len()])
+        .collect();
+    assert!(points.contains(&editor.cursor()) && points.contains(&editor.anchor()));
+    assert!(!editor.text().contains('\r'));
+    if let Some(request) = completion_request(editor) {
+        assert!(points.contains(&request.range.start) && points.contains(&request.range.end));
+        assert!(request.range.start <= editor.cursor() && editor.cursor() <= request.range.end);
+    }
 }
 
 /// Production JSON file parsing preserves aliases, tool flags and theme spelling.
@@ -164,9 +185,13 @@ pub fn catalog_round_trip(name: &str, alias: &str, theme: &str) -> Result<(), st
     let mut editor = Editor::new(&format!("/{}", alias.to_ascii_uppercase()));
     menu.refresh(&editor);
     assert_eq!(menu.items().filter(|item| item.value == alias).count(), 1);
-    let selected = menu.items().position(|item| item.value == alias).unwrap();
-    menu.selected = selected;
-    assert!(menu.items().nth(menu.selected).unwrap().tool);
+    let selected = menu.items().position(|item| item.value == alias);
+    menu.selected = selected.unwrap_or(usize::MAX);
+    assert!(
+        menu.items()
+            .nth(menu.selected)
+            .is_some_and(|item| item.tool)
+    );
     assert!(menu.accept(&mut editor, 0));
     assert_eq!(editor.text(), format!("/{alias} "));
     menu.set_file("commands/themes.json", Some(&serde_json::to_vec(&[theme])?))?;
@@ -194,12 +219,14 @@ fn semantic_prelude(data: &[u8], broken: bool) -> Result<Editor, std::io::Error>
         Some(&serde_json::to_vec(&definition)?),
     )?;
     commands.refresh(&Editor::new("/th"));
-    let items: Vec<_> = commands.items().collect();
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].value, "theme");
-    assert_eq!(items[0].description, description);
+    let items: Vec<_> = commands
+        .items()
+        .map(|item| (item.value.as_str(), item.description.as_str()))
+        .collect();
+    assert_eq!(items, [("theme", description.as_ref())]);
     let mut input = PromptInput::default();
-    input.keymap = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#).unwrap();
+    input.keymap = InputKeymap::parse(r#"{"bindings":{"Ctrl+j":"submit"}}"#)
+        .map_err(|errors| std::io::Error::other(format!("{errors:?}")))?;
     let history = parse_history(r#"["older\rprompt","newer\r\nhistory"]"#)?;
     input.replace_history(history);
     input.committed_text("@dr", 0);

@@ -6,12 +6,10 @@ use libfuzzer_sys::fuzz_target;
 mod diff_case;
 #[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
-#[path = "../../harness/tests/e2e/local_tool_files.rs"]
-mod local_tool_files;
+#[path = "../../harness/tests/e2e/local_tool_files_check.rs"]
+mod local_tool_files_check;
 #[path = "../../harness/tests/e2e/local_tool_files_tests.rs"]
 mod local_tool_files_tests;
-#[path = "../../harness/tests/support/quiescent.rs"]
-mod quiescent;
 
 pub type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -51,18 +49,20 @@ fuzz_target!(|input: &[u8]| {
     let operation = acyclic_harness::OperationId::from_bytes([1; 16]);
     let (mut files, calls, results) =
         local_tool_files_tests::fixture(task, operation, "output", "error").unwrap();
-    local_tool_files::check(&files, task, operation, &calls, &results).unwrap();
+    local_tool_files_check::check(&files, task, operation, &calls, &results).unwrap();
     if let Some(first) = input.first() {
         let key = files
             .keys()
             .nth(usize::from(*first) % files.len())
             .unwrap()
             .clone();
-        let original = files[&key].bytes.clone();
-        files.get_mut(&key).unwrap().bytes = input.to_vec().into();
+        let original = files[&key].segments[0].clone();
+        let file = files.get_mut(&key).unwrap();
+        file.length = input.len() as u64;
+        file.segments = vec![input.to_vec().into()];
         // Arbitrary request/result/output bytes may be invalid, but must never
         // panic or manufacture a different expected identity or terminal value.
-        if local_tool_files::check(&files, task, operation, &calls, &results).is_ok() {
+        if local_tool_files_check::check(&files, task, operation, &calls, &results).is_ok() {
             use acyclic_harness::task_volume::{FileKey, TaskFile, ToolFile};
             match key {
                 FileKey::Task {
@@ -86,6 +86,7 @@ fuzz_target!(|input: &[u8]| {
         let encoded = serde_json::to_vec(&case).expect("encode local case");
         let decoded: local_case::LocalCase =
             serde_json::from_slice(&encoded).expect("decode local case");
+        assert_eq!(case.validate(), decoded.validate());
         let references = case
             .seed
             .iter()

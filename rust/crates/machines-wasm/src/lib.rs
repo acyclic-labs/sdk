@@ -170,7 +170,10 @@ pub fn validate_maximum_response_bytes(
     #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
     let maximum = maximum_response_bytes.as_f64().ok_or_else(|| {
-        js_error("invalid-maximum", "maximumResponseBytes must be a positive safe integer")
+        js_error(
+            "invalid-maximum",
+            "maximumResponseBytes must be a positive safe integer",
+        )
     })?;
     if !public::is_safe_integer(maximum) || maximum <= 0.0 {
         return Err(js_error(

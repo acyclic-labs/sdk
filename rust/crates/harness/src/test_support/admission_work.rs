@@ -1,7 +1,7 @@
 //! Counts actual owner admission observations on the measured async task.
 tokio::task_local! { static CALLS: std::cell::Cell<u64>; }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub(crate) async fn measure<F: Future>(operation: F) -> (F::Output, u64) {
     CALLS
         .scope(std::cell::Cell::new(0), async {

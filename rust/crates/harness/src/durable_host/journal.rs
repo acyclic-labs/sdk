@@ -9,6 +9,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         TaskId::from_bytes(self.admission.operation_id.into_bytes())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_task_binding(
         &self,
         task: TaskId,
@@ -21,6 +22,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.admission
     }
 
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn deadline_epoch_ms(&self) -> Option<u64> {
         self.admission.run_limits.deadline_epoch_ms
     }
@@ -383,6 +389,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             | ExecutionEvent::ContextCompacted { .. }
             | ExecutionEvent::ToolStarted { .. } => JournalWrite::Fresh,
             ExecutionEvent::Model { .. }
+            | ExecutionEvent::ModelStopped { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
         })
@@ -500,10 +507,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             acyclic_stream::CommitOutcome::Committed(envelope) => publication
                 .verify(envelope, received.work())
                 .map(|()| true)
-                .map_err(|error| {
+                .map_err(|_native_error| {
                     #[cfg(not(target_arch = "wasm32"))]
-                    if error.is_native_failure() {
-                        return error;
+                    if _native_error.is_native_failure() {
+                        return _native_error;
                     }
                     Error::Indeterminate(publication.operation_id)
                 }),
@@ -684,6 +691,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_mut()
             .map(|io| io as &mut dyn crate::store::HistoryIo);
         self.verify(false, &mut work).await?;
+        #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         let workflow = tool.workflow_admission(context, invocation, io)?;
         let output_schema = crate::executor::with_history_io(io, |work| {

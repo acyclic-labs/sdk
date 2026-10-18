@@ -373,6 +373,10 @@ impl CommandResolution {
             }
             Self::Select { query } => {
                 let mut layout = document(snapshot, CommandFileRoot::Session, "layout.json")?;
+                if *query == CommandQuery::Find {
+                    layout.insert("search_query".into(), json!(""));
+                    layout.insert("search_index".into(), json!(0));
+                }
                 layout.insert(
                     "view_input".into(),
                     if matches!(

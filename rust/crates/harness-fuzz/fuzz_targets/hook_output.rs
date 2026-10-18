@@ -1,6 +1,6 @@
 #![no_main]
 
-use acyclic_harness::{Error, Result};
+use acyclic_harness::{Error, ProcessError, Result};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
@@ -11,11 +11,34 @@ mod spec;
 use spec::{HookEvent, HookFailure};
 #[path = "../../harness/src/hooks/output.rs"]
 mod output;
-use output::HookOutput;
+use output::{HookDiagnostic, HookOutput};
+#[path = "../../harness/src/hooks/budget.rs"]
+mod budget;
+#[path = "../../harness/src/hooks/plan.rs"]
+mod plan;
+
+// This target is also compiled by ordinary Cargo qualification without cfg(test)
+// or cfg(fuzzing). Exercise only the same unconditional ledger entry points as
+// production; do not depend on included modules' test-only convenience methods.
+fn apply(
+    output: &mut HookOutput,
+    event: HookEvent,
+    policy: HookFailure,
+    result: Result<(Option<i32>, Vec<u8>, Vec<u8>)>,
+) {
+    let mut ledger = budget::Budget::existing(65_536, output).unwrap();
+    ledger.apply(output, event, policy, result);
+    ledger.finish(output);
+}
 
 fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
         return;
+    }
+    if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
+        let encoded = serde_json::to_vec(&output).unwrap();
+        let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(output, decoded);
     }
     for event in [
         HookEvent::SessionStart,
@@ -24,7 +47,8 @@ fuzz_target!(|bytes: &[u8]| {
         HookEvent::Stop,
     ] {
         let mut reports = HookOutput::default();
-        reports.apply(
+        apply(
+            &mut reports,
             event,
             HookFailure::Report,
             Ok((Some(0), bytes.to_vec(), vec![])),
@@ -33,7 +57,8 @@ fuzz_target!(|bytes: &[u8]| {
             approval: Some("earlier approval".into()),
             ..HookOutput::default()
         };
-        merged.apply(
+        apply(
+            &mut merged,
             event,
             HookFailure::Report,
             Ok((Some(0), bytes.to_vec(), vec![])),
@@ -41,16 +66,21 @@ fuzz_target!(|bytes: &[u8]| {
         assert_eq!(merged.approval.as_deref(), Some("earlier approval"));
         assert_eq!(merged.blocked, reports.blocked);
         let mut blocks = HookOutput::default();
-        blocks.apply(
+        apply(
+            &mut blocks,
             event,
             HookFailure::Block,
             Ok((Some(0), bytes.to_vec(), vec![])),
         );
-        assert_eq!(reports.diagnostics, blocks.diagnostics);
+        assert_eq!(reports.diagnostics.len(), blocks.diagnostics.len());
+        for (report, block) in reports.diagnostics.iter().zip(&blocks.diagnostics) {
+            assert_eq!(report.cause, block.cause);
+            assert_eq!(block.blocking, event != HookEvent::Stop);
+        }
         if reports.diagnostics.is_empty() || event == HookEvent::Stop {
             assert_eq!(reports, blocks);
         } else {
-            assert!(blocks.blocked.is_some());
+            assert!(blocks.blocks());
             assert!(reports.blocked.is_none());
             assert!(reports.additional_context.is_empty());
             assert!(reports.updated_input.is_none());
@@ -59,7 +89,12 @@ fuzz_target!(|bytes: &[u8]| {
         if let Ok(value) = serde_json::from_slice::<Value>(bytes) {
             let canonical = serde_json::to_vec(&value).unwrap();
             let mut round_trip = HookOutput::default();
-            round_trip.apply(event, HookFailure::Report, Ok((Some(0), canonical, vec![])));
+            apply(
+                &mut round_trip,
+                event,
+                HookFailure::Report,
+                Ok((Some(0), canonical, vec![])),
+            );
             // Syntax diagnostics contain byte positions; compare semantics
             // only when the structured input was accepted.
             if reports.diagnostics.is_empty() {
@@ -77,6 +112,34 @@ fuzz_target!(|bytes: &[u8]| {
                 assert_eq!(reports, round_trip);
             }
         }
+    }
+    // All event-specific deltas, including replacement arguments, must obey
+    // the retained file bound and keep folding a following explicit denial.
+    for event in [
+        HookEvent::SessionStart,
+        HookEvent::PreToolUse,
+        HookEvent::PostToolUse,
+        HookEvent::Stop,
+    ] {
+        // Exercise the production ledger with arbitrary output followed by a guard.
+        // This must stay bounded and cannot abandon a deny after exhaustion.
+        let mut ledger = budget::Budget::new(4096).unwrap();
+        let mut outcome = HookOutput::default();
+        ledger.apply(
+            &mut outcome,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), bytes.to_vec(), vec![])),
+        );
+        ledger.apply(
+            &mut outcome,
+            event,
+            HookFailure::Report,
+            Ok((Some(0), br#"{"continue":false}"#.to_vec(), vec![])),
+        );
+        ledger.finish(&mut outcome);
+        assert!(outcome.blocks());
+        assert!(serde_json::to_vec(&outcome).unwrap().len() <= 4096);
     }
     if let Ok(rule) = serde_json::from_slice::<spec::HookRule>(bytes) {
         let encoded = serde_json::to_vec(&rule).unwrap();

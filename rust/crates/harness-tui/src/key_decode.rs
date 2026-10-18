@@ -3,7 +3,7 @@ use crate::{Action, Binding, InputKeymap};
 use std::fmt::Write as _;
 
 /// A decoded editing key, or committed text from a terminal character event.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodedKey {
     /// A binding from the declarative keymap.
     Action {
@@ -47,27 +47,26 @@ pub fn decode_key(mut key: KeyEvent, bindings: &InputKeymap) -> Option<DecodedKe
     if key.modifiers.contains(KeyModifiers::SHIFT) {
         let mut unshifted = key;
         unshifted.modifiers.remove(KeyModifiers::SHIFT);
-        if let Some(binding) = find_binding(bindings, unshifted) {
-            if matches!(
+        if let Some(binding) = find_binding(bindings, unshifted)
+            && matches!(
                 binding.action,
                 Action::Move(_) | Action::Delete(_) | Action::DeleteWord(_)
-            ) {
-                if key.kind == KeyEventKind::Repeat && !binding.repeat {
-                    return None;
-                }
-                return Some(DecodedKey::Action {
-                    action: binding.action,
-                    select: true,
-                });
+            )
+        {
+            if key.kind == KeyEventKind::Repeat && !binding.repeat {
+                return None;
             }
+            return Some(DecodedKey::Action {
+                action: binding.action,
+                select: true,
+            });
         }
     }
-    if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-        if let KeyCode::Char(character) = key.code {
-            if !character.is_control() {
-                return Some(DecodedKey::Text(character));
-            }
-        }
+    if key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+        && let KeyCode::Char(character) = key.code
+        && !character.is_control()
+    {
+        return Some(DecodedKey::Text(character));
     }
     None
 }
@@ -107,10 +106,9 @@ pub(crate) fn event_chord(mut key: KeyEvent) -> Option<arrayvec::ArrayString<40>
         KeyCode::Tab => "Tab",
         KeyCode::Delete => "Delete",
         KeyCode::Insert => "Insert",
-        KeyCode::F(_) => "",
         KeyCode::Char(' ') => "Space",
         KeyCode::Esc => "Esc",
-        KeyCode::Char(_) => "",
+        KeyCode::F(_) | KeyCode::Char(_) => "",
         _ => return None,
     };
     let mut chord = arrayvec::ArrayString::new();

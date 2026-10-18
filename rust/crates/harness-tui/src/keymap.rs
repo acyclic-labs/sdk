@@ -77,27 +77,27 @@ include!(concat!(env!("OUT_DIR"), "/keymap.rs"));
 pub enum AppAction {
     /// Quit application action.
     Quit,
-    /// StopAll application action.
+    /// `StopAll` application action.
     StopAll,
-    /// ResumeAll application action.
+    /// `ResumeAll` application action.
     ResumeAll,
-    /// NewAgent application action.
+    /// `NewAgent` application action.
     NewAgent,
-    /// ClosePanel application action.
+    /// `ClosePanel` application action.
     ClosePanel,
-    /// NextMessage application action.
+    /// `NextMessage` application action.
     NextMessage,
-    /// PreviousMessage application action.
+    /// `PreviousMessage` application action.
     PreviousMessage,
-    /// OpenChanges application action.
+    /// `OpenChanges` application action.
     OpenChanges,
-    /// ToggleFollowTail application action.
+    /// `ToggleFollowTail` application action.
     ToggleFollowTail,
     /// Picker application action.
     Picker,
-    /// NewSession application action.
+    /// `NewSession` application action.
     NewSession,
-    /// DeleteSession application action.
+    /// `DeleteSession` application action.
     DeleteSession,
     /// Reasoning application action.
     Reasoning,
@@ -119,11 +119,11 @@ pub enum AppAction {
     Resume,
     /// Mode application action.
     Mode,
-    /// ClearAll application action.
+    /// `ClearAll` application action.
     ClearAll,
-    /// AttentionNext application action.
+    /// `AttentionNext` application action.
     AttentionNext,
-    /// AttentionPrevious application action.
+    /// `AttentionPrevious` application action.
     AttentionPrevious,
     /// Theme application action.
     Theme,
@@ -157,23 +157,23 @@ pub enum AppAction {
     Parent,
     /// Child application action.
     Child,
-    /// SiblingNext application action.
+    /// `SiblingNext` application action.
     SiblingNext,
-    /// SiblingPrevious application action.
+    /// `SiblingPrevious` application action.
     SiblingPrevious,
-    /// NavigationBack application action.
+    /// `NavigationBack` application action.
     NavigationBack,
-    /// NavigationForward application action.
+    /// `NavigationForward` application action.
     NavigationForward,
     /// Help application action.
     Help,
-    /// FocusMessages application action.
+    /// `FocusMessages` application action.
     FocusMessages,
-    /// FocusInput application action.
+    /// `FocusInput` application action.
     FocusInput,
-    /// ToggleWrap application action.
+    /// `ToggleWrap` application action.
     ToggleWrap,
-    /// ToggleNotifications application action.
+    /// `ToggleNotifications` application action.
     ToggleNotifications,
 }
 

@@ -102,3 +102,35 @@ proptest::proptest! {
 fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
     assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
 }
+
+#[path = "../../harness-fuzz/support/notification_files.rs"]
+mod notification_files;
+proptest::proptest! {
+    #[test]
+    fn notification_schema_round_trips_and_rejects_wrong_owner(
+        event in proptest::num::u8::ANY,
+        sequence in proptest::num::u64::ANY,
+        detail in ".{0,64}",
+        foreign in proptest::bool::ANY,
+        bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
+    ) {
+        let mut record = notification_files::encoded(event, sequence, detail);
+        if foreign { record.task = "foreign".into(); }
+        notification_files::check(&record, false);
+        notification_files::exercise(&bytes);
+    }
+}
+#[test]
+fn notification_parser_control_cannot_drop_valid_records() {
+    assert!(
+        std::panic::catch_unwind(|| notification_files::check(
+            &notification_files::encoded(4, 1, "blocked".into()),
+            true,
+        ))
+        .is_err()
+    );
+    let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
+    notification_files::exercise(seed);
+}
+#[path = "client_task_files.rs"]
+mod task_files;

@@ -14,6 +14,9 @@ mod job;
 pub(crate) struct NativeWorkers {
     pub(crate) sender: mpsc::SyncSender<NativeJob>,
     pub(crate) admission: Arc<QueueMutex<AdmissionState>>,
+    /// Worker threads draining `sender`; tests use it to occupy every worker.
+    #[cfg(test)]
+    pub(crate) threads: usize,
 }
 
 // Receive lock -> channel lock. Both are released before queue admission, and
@@ -88,5 +91,10 @@ pub(crate) fn start_workers(
                 }
             })?;
     }
-    Ok(NativeWorkers { sender, admission })
+    Ok(NativeWorkers {
+        sender,
+        admission,
+        #[cfg(test)]
+        threads: worker_count,
+    })
 }

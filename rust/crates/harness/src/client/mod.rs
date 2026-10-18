@@ -20,38 +20,12 @@ mod hypothesis;
 pub use hypothesis::{Begin, Hypothesis, Provenance, View};
 mod kernel;
 pub use kernel::Client;
-mod session;
-mod session_progress;
-pub use session::{
-    ClientSession, ClientStateStore, MemoryClientState, SessionCheckpoint, SessionRecord,
-};
-mod transport;
-pub use transport::{HarnessClient, ServiceConnector, connect_or_spawn};
-mod content;
 mod document_files;
-mod documents;
 pub use document_files::document_files;
-pub use documents::DocumentViews;
 mod views;
 pub use views::{ClientViewHandle, ClientViewLimits, ClientViews, StatusView, SwarmChange};
-mod task_compat;
-pub(crate) use task_compat::views::authority_key;
-pub use task_compat::{
-    ClientViews as TaskFileViews, FileQueryView as TaskFileQueryView,
-    GoalFileView as TaskGoalFileView, GoalProgress as TaskGoalProgress,
-    GoalQueryView as TaskGoalQueryView, ModelFileView as TaskModelFileView,
-    ModelQueryView as TaskModelQueryView, TaskView, ToolCallView, TranscriptView, ViewUpdate,
-};
-#[cfg(feature = "tui")]
-pub use task_compat::{GoalPanel as TaskGoalPanel, PlanPanel as TaskPlanPanel};
-#[cfg(not(target_arch = "wasm32"))]
-mod journal;
-#[cfg(not(target_arch = "wasm32"))]
-mod journal_lock;
-pub mod jsonl;
-#[cfg(not(target_arch = "wasm32"))]
-pub use journal::FileClientState;
 mod headless;
+pub mod jsonl;
 pub use headless::{HeadlessClient, HeadlessOutcome, run_headless, run_jsonl};
 mod commands;
 pub use commands::*;
@@ -59,6 +33,8 @@ mod mentions;
 pub use mentions::*;
 mod diff;
 pub use diff::*;
+mod notification_view;
+pub use notification_view::{NotificationFileView, NotificationQueryView};
 mod notifications;
 pub use notifications::*;
 mod task_list;
@@ -66,9 +42,11 @@ pub use task_list::{TaskItem, TaskList, TaskState, parse_task_list};
 mod task_files;
 pub use task_files::TaskFileClient;
 mod command_output;
+pub use command_output::{CommandOutputView, OutputOwner};
 mod file_query;
-mod task_projection;
 pub use file_query::{FileQueryView, GoalFileView};
+mod task_files_view;
+pub use task_files_view::{TaskQueryView, TaskTextView, ToolQueryView};
 mod model_identity;
 mod model_view;
 pub use model_view::{ModelFileView, ModelQueryView};
@@ -99,16 +77,16 @@ pub use file_views::QueryViewLimits;
 mod query;
 pub use query::ClientQuery;
 mod file_submit;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use file_submit::validate_request_key;
 pub use file_submit::{FileClient, FileClientDurability, FileClientLimits};
 mod file_error;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 mod retry;
-#[cfg(any(test, target_arch = "wasm32"))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) mod waiting_calls;
 pub use file_error::FileClientError;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) use retry::submission_retry;
 mod offline;
 pub use offline::validate_offline_request;
@@ -165,7 +143,7 @@ pub struct Changes {
 }
 
 type Resolution = (BranchId, OperationOutcome, PredictionOutcome);
-#[cfg(any(target_arch = "wasm32", acyclic_harness_loom))]
+#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), acyclic_harness_loom))]
 pub(crate) mod mailbox;
 #[cfg(acyclic_harness_loom)]
 pub use mailbox::verify_mailbox;
@@ -185,7 +163,7 @@ mod native_input;
 #[cfg(all(feature = "terminal", not(target_arch = "wasm32")))]
 pub use native_input::stdin_jsonl;
 #[cfg(all(feature = "terminal", feature = "tui", not(target_arch = "wasm32")))]
-pub use native_input::{next_tui_event, terminal_events};
+pub use native_input::terminal_events;
 
 #[cfg(feature = "tui")]
 mod input_files;

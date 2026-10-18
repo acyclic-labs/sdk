@@ -1,6 +1,1 @@
-{"protocol":"osc9","maximum_tasks":4,"maximum_pending":16,"maximum_text_bytes":256,"records":[{"task":"task-1",
- "sequence":18446744073709551615,"event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":0,
- "event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":18446744073709551615,"event":"task_failed",
- "detail":"Ready"}],"expect":{"applied":[true,"invalid attention record",false],"presented":1,"view":{"pending":[],
- "latest":{"task-1":{"task":"task-1","sequence":18446744073709551615,"event":"task_failed","detail":"Ready"}}},
- "output":"\u001b]9;Task failed: task-1: Ready\u0007"}}
+{"records":[{"task":"task-1","sequence":18446744073709551615,"event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":0,"event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":18446744073709551615,"event":"task_failed","detail":"Ready"}],"remove":[],"mode":"on","protocol":"osc9","focused":false,"expect":{"output":"\u001b]9;Task failed: task-1: Ready\u0007","presented":1,"view":[{"task":"task-1","sequence":18446744073709551615,"event":"task_failed","detail":"Ready"}]}}

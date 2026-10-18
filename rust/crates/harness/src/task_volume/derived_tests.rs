@@ -330,6 +330,7 @@ fn pooled((index, size): (u8, u8)) -> FileValue {
     FileValue {
         key: FileKey::Task { task, file },
         channel,
+        requester: None,
         publication: None,
         bytes: bytes.into(),
     }
