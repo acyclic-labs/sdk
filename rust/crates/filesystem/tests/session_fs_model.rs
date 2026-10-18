@@ -528,17 +528,62 @@ fn fresh_deliveries_exhaust_history_replacement() {
     control(|| fresh_delivery_replacement(true), &["mixed histories"]);
 }
 
+// The terminal future and the Session scheduler compose only through poll and
+// Waker. terminal_opening exhausts the real terminal future against a real
+// deletion append, polling on every wake; this model exhausts the real Session
+// polling a woken terminal with zero channel and connection credit. Splitting at
+// that contract keeps both searches unbounded and well inside the deadline.
+struct Deletion {
+    observed: AtomicBool,
+    waker: loom::sync::Mutex<Option<std::task::Waker>>,
+}
+impl Deletion {
+    fn publish(&self) {
+        self.observed.store(true, Ordering::SeqCst);
+        if let Some(waker) = self.waker.lock().unwrap().take() {
+            waker.wake();
+        }
+    }
+}
+struct ObservedTerminal {
+    data: Provider<MemoryStream, fn(&Subscription) -> Result<(), StreamError>>,
+    deletion: Arc<Deletion>,
+}
+impl PublicationProvider for ObservedTerminal {
+    fn subscribe(
+        &self,
+        encoded: Bytes,
+        resume: wire::SessionCursor,
+    ) -> Result<engine::PublicationSubscription, StreamError> {
+        let mut source = self.data.subscribe(encoded, resume)?;
+        let deletion = self.deletion.clone();
+        source.terminal = Box::pin(futures::future::poll_fn(move |cx| {
+            *deletion.waker.lock().unwrap() = Some(cx.waker().clone());
+            if deletion.observed.load(Ordering::SeqCst) {
+                std::task::Poll::Ready(StreamError::NotFound)
+            } else {
+                std::task::Poll::Pending
+            }
+        }));
+        Ok(source)
+    }
+}
+
 fn zero_credit_deletion(skip_terminal: bool) {
-    let fixture = input(&["deleted"]);
+    let fixture = input(&[]);
     verification::check(move || {
         let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records[..2], 0);
+        append(&stream, &sub, &records, 0);
         let keeper = ManuallyDrop::new(stream.clone());
-        let provider = Arc::new(support::Broken {
-            inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
-            skip_deletion: skip_terminal,
-            skip_authorization: false,
+        let deletion = Arc::new(Deletion {
+            observed: AtomicBool::new(false),
+            waker: loom::sync::Mutex::new(None),
+        });
+        let allow: fn(&Subscription) -> Result<(), StreamError> = |_| Ok(());
+        let provider = Arc::new(ObservedTerminal {
+            data: Provider::new(stream.clone(), allow),
+            deletion: deletion.clone(),
         });
         let (sender, incoming) = mpsc::unbounded();
         let mut output = engine::serve_with_publications(
@@ -592,8 +637,12 @@ fn zero_credit_deletion(skip_terminal: bool) {
             Some(Body::Opened(_))
         ));
         assert!(output.next().now_or_never().is_none());
+        // Negative control: the terminal never observes deletion, so the
+        // zero-credit subscriber must stay idle and the model must deadlock.
         let writer = loom::thread::spawn(move || {
-            append(&stream, &sub, &records[2..], 2);
+            if !skip_terminal {
+                deletion.publish();
+            }
         });
         let Some(Body::Closed(close)) = run(output.next()).unwrap().unwrap().body else {
             panic!("deletion needs credit")
