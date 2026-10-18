@@ -399,6 +399,14 @@ case "$lane" in
       0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f \
       "$TOOLS_DIR/cargo-deny-0.19.0" cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny 1
     "$TOOLS_DIR/cargo-deny-0.19.0/cargo-deny" check
+    # Exactly one rustls crypto provider (ring): a second compiled-in provider
+    # makes provider-less rustls builders panic. Cargo.lock resolves every
+    # feature of every member (and the Static job keeps it --locked), so it
+    # sees optional features that cargo-deny's default graph does not.
+    if grep -Eq '^name = "aws-lc-(rs|sys)"$' Cargo.lock; then
+      echo "Cargo.lock contains aws-lc-rs/aws-lc-sys; build rustls with the ring provider only" >&2
+      exit 1
+    fi
     ;;
   web-warnings)
     # The web lane's compile-only closures, runnable without browsers.
