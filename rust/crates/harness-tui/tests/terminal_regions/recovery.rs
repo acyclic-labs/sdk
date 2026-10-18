@@ -56,7 +56,7 @@ impl<P: Present> Present for Observed<P> {
 fn probe() -> Vec<u8> {
     // A full-screen line feed must remove Z from the first row. The footer
     // also lets the native oracle acknowledge consumption of the entire probe.
-    format!("\x1b[1;1HZ\x1b[{HEIGHT};1H\nfixed footer").into_bytes()
+    format!("\x1b[1;1HZ\x1b[{HEIGHT};1H\n\x1b[2Kfixed footer").into_bytes()
 }
 
 fn recovered(panic: bool, at: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
