@@ -6,10 +6,8 @@
 //! does. After every interleaving, a reusable proof must claim exactly the
 //! closure a full walk of the store would find.
 
+use super::test_support::outcome;
 use super::*;
-use crate::foundation::{DurableCommit, Epoch, OperationId, Sequence};
-use crate::Digest;
-use bytes::Bytes;
 use loom::sync::RwLock;
 use std::collections::BTreeSet;
 
@@ -59,19 +57,6 @@ enum Broken {
     No,
     ReuseAcrossEpochs,
     CacheUnpublished,
-}
-
-fn committed() -> AppendOutcome {
-    AppendOutcome::Committed(DurableCommit {
-        epoch: Epoch::GENESIS,
-        sequence: Sequence::new(1),
-        operation_id: OperationId::from_bytes([1; 16]),
-        fingerprint: Digest::ZERO,
-        previous_digest: Digest::ZERO,
-        digest: Digest::ZERO,
-        payload: Bytes::new(),
-        settled_at_micros: None,
-    })
 }
 
 fn current(world: &World, broken: Broken) -> Option<Arc<Proved>> {
@@ -132,7 +117,7 @@ fn commit(world: &World, append: Append, broken: Broken) {
         store.history.push(G1);
         store.holds = vec![G1];
         drop(store);
-        pending.publish(&committed());
+        pending.publish(&outcome(1, false));
     }
     world.store.lock().unwrap().holds.clear();
 }
@@ -195,7 +180,7 @@ fn model(append: Append, retire: bool, broken: Broken) {
                 claimed: closure(G0),
             },
         )
-        .publish(&committed());
+        .publish(&outcome(0, false));
         let committer = {
             let world = Arc::clone(&world);
             loom::thread::spawn(move || commit(&world, append, broken))
@@ -237,14 +222,59 @@ fn failed_append_never_becomes_reusable() {
 
 #[test]
 fn negative_control_detects_reuse_across_a_collection_epoch() {
-    let failure = std::panic::catch_unwind(|| model(Append::Commits, true, Broken::ReuseAcrossEpochs))
-        .expect_err("a proof reused after a later collection began must be detected");
+    let failure =
+        std::panic::catch_unwind(|| model(Append::Commits, true, Broken::ReuseAcrossEpochs))
+            .expect_err("a proof reused after a later collection began must be detected");
     drop(failure);
 }
 
 #[test]
 fn negative_control_detects_caching_an_unpublished_generation() {
-    let failure = std::panic::catch_unwind(|| model(Append::Fails, false, Broken::CacheUnpublished))
-        .expect_err("a proof of a generation whose append failed must be detected");
+    let failure =
+        std::panic::catch_unwind(|| model(Append::Fails, false, Broken::CacheUnpublished))
+            .expect_err("a proof of a generation whose append failed must be detected");
     drop(failure);
+}
+
+fn ordered_publications<const ORDERED: bool>(retry: bool) {
+    loom::model(move || {
+        // Lock order: proof slot only. Both actors run the production install.
+        let slot = Arc::new(ProofSlot::default());
+        let ticket =
+            |sequence| Unpublished::new(slot.clone(), CollectionEpoch::read(None), sequence);
+        let old = ticket(1u64);
+        let delayed = ticket(1);
+        let new = ticket(2);
+        let publish = move |ticket: Unpublished<u64>, sequence, retry| {
+            if ORDERED {
+                ticket.publish(&outcome(sequence, retry));
+            } else {
+                ticket.install::<false>(Sequence::new(sequence));
+            }
+        };
+        let first = loom::thread::spawn(move || publish(delayed, 1, false));
+        let second = loom::thread::spawn(move || {
+            publish(new, 2, false);
+            publish(old, 1, retry);
+        });
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            *slot.current(None).unwrap(),
+            2,
+            "proof slot regressed durable sequence"
+        );
+    });
+}
+
+#[test]
+fn delayed_publication_and_retry_keep_the_newest_durable_proof() {
+    ordered_publications::<true>(false);
+    ordered_publications::<true>(true);
+}
+
+#[test]
+#[should_panic(expected = "proof slot regressed durable sequence")]
+fn negative_control_detects_unconditional_install() {
+    ordered_publications::<false>(true);
 }

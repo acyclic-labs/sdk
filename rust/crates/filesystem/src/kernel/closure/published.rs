@@ -7,13 +7,15 @@
 //! risk: [`ProofSlot::current`] reads the store's epoch itself.
 
 use crate::collection::{CollectionEpoch, Epochs};
+use crate::foundation::Sequence;
 use crate::storage::AppendOutcome;
 use crate::sync::Mutex;
 use std::sync::{Arc, PoisonError};
 
 /// One volume's last published proof and the epoch its proof began in.
 pub(crate) struct ProofSlot<T> {
-    published: Mutex<Option<(CollectionEpoch, Arc<T>)>>,
+    // Lock order: slot only; replaced proof custody retires after unlocking.
+    published: Mutex<Option<(CollectionEpoch, Sequence, Arc<T>)>>,
 }
 
 impl<T> Default for ProofSlot<T> {
@@ -32,8 +34,8 @@ impl<T> ProofSlot<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .filter(|(proven, _)| *proven == now)
-            .map(|(_, proof)| Arc::clone(proof))
+            .filter(|(proven, _, _)| *proven == now)
+            .map(|(_, _, proof)| Arc::clone(proof))
     }
 
     #[cfg(all(test, acyclic_fs_loom))]
@@ -42,7 +44,7 @@ impl<T> ProofSlot<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            .map(|(_, proof)| Arc::clone(proof))
+            .map(|(_, _, proof)| Arc::clone(proof))
     }
 }
 
@@ -66,29 +68,44 @@ impl<T> Unpublished<T> {
 
     /// Makes the proof reusable when its generation is durable; otherwise discards it.
     pub(crate) fn publish(self, outcome: &AppendOutcome) {
-        if matches!(
-            outcome,
-            AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)
-        ) {
-            self.install();
+        match outcome {
+            AppendOutcome::Committed(commit) | AppendOutcome::AlreadyCommitted(commit) => {
+                self.install::<true>(commit.sequence);
+            }
+            _ => {}
         }
     }
 
-    fn install(self) {
-        let replaced = self
+    fn install<const ORDERED: bool>(self, sequence: Sequence) {
+        let mut published = self
             .slot
             .published
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .replace((self.began, self.proof));
+            .unwrap_or_else(PoisonError::into_inner);
+        let replaced = if !ORDERED
+            || published
+                .as_ref()
+                .is_none_or(|(_, current, _)| sequence > *current)
+        {
+            published.replace((self.began, sequence, self.proof))
+        } else {
+            None
+        };
+        drop(published);
         drop(replaced);
     }
 
     #[cfg(all(test, acyclic_fs_loom))]
     pub(super) fn install_unpublished(self) {
-        self.install();
+        self.install::<true>(Sequence::new(1));
     }
 }
 
 #[cfg(all(test, acyclic_fs_loom))]
 mod loom_tests;
+
+#[cfg(all(test, not(acyclic_fs_loom)))]
+mod tests;
+
+#[cfg(test)]
+mod test_support;

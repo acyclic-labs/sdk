@@ -368,11 +368,8 @@ impl CachedProofs {
         };
         let (slot, guard) = meter.owned(|accounting| {
             let bytes = usize_to_u64(size_of::<ProofSlot<CachedProof>>() + 2 * size_of::<usize>());
-            Ok((
-                Arc::new(ProofSlot::default()),
-                accounting.claim_owned(bytes, 1)?,
-                bytes,
-            ))
+            let allocation = accounting.claim_owned(bytes, 1)?;
+            Ok((Arc::new(ProofSlot::default()), allocation, bytes))
         })?;
         let mut entries = ProofVec {
             values: std::mem::take(&mut self.entries),
@@ -550,3 +547,7 @@ pub(super) fn set_insert<K: Ord>(
         }
     }
 }
+
+#[cfg(all(test, feature = "memory", not(acyclic_fs_loom)))]
+#[path = "memory/tests.rs"]
+mod tests;
