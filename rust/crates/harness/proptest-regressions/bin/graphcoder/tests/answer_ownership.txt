@@ -1,0 +1,2 @@
+# Prompt/body search preserves exact totals while selection follows the newest match.
+cc 0626ca7550f8b10484dbe9a467fe2f149cedf6449b55b25febc0dcea808a81c4

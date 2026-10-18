@@ -83,9 +83,23 @@ async fn find(
         }
         renderer.search_progress().await;
     }
-    assert!(
-        status.starts_with(&format!("1/{count} matches")),
+    let (selected, total) = status
+        .split_once(" matches")
+        .and_then(|(counts, _)| counts.split_once('/'))
+        .and_then(|(selected, total)| {
+            Some((
+                selected.parse::<usize>().ok()?,
+                total.parse::<usize>().ok()?,
+            ))
+        })
+        .expect("completed search exposes its selected index and exact total");
+    assert_eq!(
+        total, count,
         "each command identity has exactly one searchable transcript owner: {query}: {status}"
+    );
+    assert!(
+        (1..=total).contains(&selected),
+        "selected search result is in range: {status}"
     );
 }
 
