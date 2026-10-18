@@ -54,14 +54,16 @@ impl HeldRoot {
     }
 
     /// The `N` bytes published at `leaf` in this held directory, after
-    /// publishing `candidate` there exclusively and atomically if nothing is:
-    /// a kill at any step leaves no record or the complete one, and every
-    /// concurrent publisher returns the same record.
+    /// publishing a lazily generated candidate exclusively and atomically if
+    /// nothing is: a kill at any step leaves no record or the complete one,
+    /// and every concurrent publisher returns the same record. The candidate
+    /// function is called only after a read observes no record; reading an
+    /// existing publication never depends on candidate generation.
     #[cfg(any(test, feature = "native-mount"))]
     pub fn read_or_publish<const N: usize>(
         &self,
         leaf: &Path,
-        candidate: [u8; N],
+        candidate: impl FnMut() -> Result<[u8; N], DemandError>,
     ) -> Result<[u8; N], DemandError> {
         self.root
             .read_or_publish(leaf, candidate, &mut crate::native_host::ordinary_work())

@@ -101,11 +101,11 @@ fn killed_then_published(step: usize, torn: bool) -> Result<[u8; 16], DemandErro
     let leaf = std::path::Path::new("token");
     publish_probe::tear(torn);
     publish_probe::kill_at(Some(step));
-    let killed = held.read_or_publish(leaf, [1; 16]);
+    let killed = held.read_or_publish(leaf, || Ok([1; 16]));
     publish_probe::kill_at(None);
     publish_probe::tear(false);
     assert!(killed.is_err(), "step {step} was not killed");
-    held.read_or_publish(leaf, [2; 16])
+    held.read_or_publish(leaf, || Ok([2; 16]))
 }
 
 /// A kill after every durable step of a publication leaves no record (the
@@ -141,7 +141,9 @@ fn concurrent_publishers_return_one_record() {
                 scope.spawn(move || {
                     hold_root(path)
                         .and_then(|held| {
-                            held.read_or_publish(std::path::Path::new("token"), [candidate; 16])
+                            held.read_or_publish(std::path::Path::new("token"), || {
+                                Ok([candidate; 16])
+                            })
                         })
                         .unwrap()
                 })
@@ -156,6 +158,59 @@ fn concurrent_publishers_return_one_record() {
         records.iter().all(|record| *record == records[0]),
         "{records:?}"
     );
+}
+
+/// Publishing requires one candidate; reading any existing publication must
+/// require none, even when the candidate source is unavailable.
+fn candidate_work(eager: bool, readers: usize) -> Result<(), String> {
+    use crate::native_host::publish_probe;
+    let directory = tempfile::tempdir().unwrap();
+    let root = hold_root(directory.path()).unwrap();
+    let leaf = std::path::Path::new("token");
+    let unavailable = || Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into());
+    // Candidate failures keep their cause and publish nothing.
+    assert!(matches!(
+        root.read_or_publish::<16>(leaf, unavailable),
+        Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    assert!(!directory.path().join(leaf).exists());
+    let calls = std::cell::Cell::new(0);
+    let published = root
+        .read_or_publish(leaf, || {
+            calls.set(calls.get() + 1);
+            Ok([7; 16])
+        })
+        .unwrap();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(published, [7; 16]);
+    publish_probe::generate_candidates_eagerly(eager);
+    let result = (|| {
+        for _ in 0..readers {
+            let record = root.read_or_publish::<16>(leaf, || {
+                calls.set(calls.get() + 1);
+                unavailable()
+            });
+            if !matches!(record, Ok(record) if record == published) || calls.get() != 1 {
+                return Err("an existing record requested another candidate".into());
+            }
+        }
+        Ok(())
+    })();
+    publish_probe::generate_candidates_eagerly(false);
+    result
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(16))]
+    #[test]
+    fn reading_an_existing_record_never_generates_another_candidate(readers in 1usize..9) {
+        proptest::prop_assert_eq!(candidate_work(false, readers), Ok(()));
+    }
+}
+
+#[test]
+fn negative_control_eager_candidates_add_work_and_can_prevent_reopen() {
+    assert!(candidate_work(true, 1).is_err());
 }
 
 /// Enumerate all crash cuts of the token's reachability chain. The kernel
@@ -184,7 +239,7 @@ fn a_returned_record_has_a_durable_name_through_every_held_parent() {
             publish_probe::before_directory_sync(move || {
                 assert_eq!(
                     reader
-                        .read_or_publish(std::path::Path::new("token"), [2; 16])
+                        .read_or_publish(std::path::Path::new("token"), || Ok([2; 16]))
                         .unwrap(),
                     [1; 16]
                 );
@@ -197,7 +252,7 @@ fn a_returned_record_has_a_durable_name_through_every_held_parent() {
                 );
             });
             second
-                .read_or_publish(std::path::Path::new("token"), [1; 16])
+                .read_or_publish(std::path::Path::new("token"), || Ok([1; 16]))
                 .unwrap();
             publish_probe::omit_parent_sync(false);
             publish_probe::omit_reader_sync(false);

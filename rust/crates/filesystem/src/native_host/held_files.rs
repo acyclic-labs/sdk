@@ -75,17 +75,21 @@ impl HostRoot {
     }
 
     /// The `N` bytes published at `leaf` in this directory, after publishing
-    /// `candidate` there if nothing is. A publication writes a unique
-    /// temporary leaf, syncs it, renames it into place without replacement
+    /// a lazily generated candidate there if nothing is. A publication writes
+    /// a unique temporary leaf, syncs it, renames it into place without replacement
     /// and syncs the directory: a kill at any step leaves no record or the
     /// complete one, and concurrent publishers all return the one that won.
     #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn read_or_publish<const N: usize, W: NativeHostWork<Error = DemandError>>(
         &self,
         leaf: &Path,
-        candidate: [u8; N],
+        mut candidate: impl FnMut() -> Result<[u8; N], DemandError>,
         work: &mut W,
     ) -> Result<[u8; N], DemandError> {
+        #[cfg(test)]
+        if publish_probe::eager_candidates() {
+            candidate()?;
+        }
         loop {
             match read_record(&self.directory, leaf, work) {
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {}
@@ -103,6 +107,7 @@ impl HostRoot {
                 }
                 Err(error) => return Err(error),
             }
+            let candidate = candidate()?;
             let temporary = PathBuf::from(format!(".{}.next", uuid::Uuid::new_v4().simple()));
             match publish_record(&self.directory, &temporary, leaf, &candidate, work) {
                 // Another publisher won; its record is the one.
@@ -226,8 +231,18 @@ pub(crate) mod publish_probe {
         static SKIP_PARENT_SYNC: Cell<bool> = const { Cell::new(false) };
         static SKIP_READER_SYNC: Cell<bool> = const { Cell::new(false) };
         static DUPLICATE_PARENTS: Cell<bool> = const { Cell::new(false) };
+        static EAGER_CANDIDATES: Cell<bool> = const { Cell::new(false) };
         static AFTER_RENAME: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
             const { std::cell::RefCell::new(None) };
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn generate_candidates_eagerly(eager: bool) {
+        EAGER_CANDIDATES.set(eager);
+    }
+
+    pub(super) fn eager_candidates() -> bool {
+        EAGER_CANDIDATES.get()
     }
 
     #[cfg(target_os = "linux")]

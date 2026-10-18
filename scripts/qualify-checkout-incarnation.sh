@@ -65,7 +65,7 @@ windows)
     for phase in windows-base windows-cli windows-fuzz; do bash "$0" "$phase"; done
     ;;
 windows-base)
-    timed windows cargo check --locked -p acyclic-fs -p acyclic-harness \
+    timed windows cargo check --locked -p acyclic-fs -p acyclic-harness -p acyclic-native-runtime \
         --lib --tests --features "$features" --target x86_64-pc-windows-gnu
     ;;
 windows-cli)

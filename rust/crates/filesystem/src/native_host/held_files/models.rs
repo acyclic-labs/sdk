@@ -41,7 +41,7 @@ fn check(omit_reader_sync: bool) {
                 let _entered = Enter;
                 publish_probe::omit_reader_sync(omit_reader_sync);
                 let record = root
-                    .read_or_publish(Path::new("token"), [candidate; 16])
+                    .read_or_publish(Path::new("token"), || Ok([candidate; 16]))
                     .unwrap();
                 let durable = *kernel.state.lock().unwrap();
                 (record, durable)

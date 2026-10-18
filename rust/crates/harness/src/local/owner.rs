@@ -47,6 +47,8 @@ thread_local! {
 }
 
 #[cfg(test)]
+mod publication_tests;
+#[cfg(test)]
 mod state_key_tests;
 
 /// Per-user state is keyed by the checkout's path and its incarnation: a
@@ -167,13 +169,16 @@ impl Checkout {
 /// recycled object id, has no token and publishes a new one.
 #[cfg(feature = "native-execution")]
 fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
-    let mut candidate = [0; 16];
-    getrandom::fill(&mut candidate).map_err(storage)?;
     super::workspace::volumes::held_directories(
         root,
         Path::new(super::workspace::volumes::INCARNATION_PATH),
     )?
-    .read_or_publish(Path::new("token"), candidate)
+    .read_or_publish(Path::new("token"), || {
+        let mut candidate = [0; 16];
+        getrandom::fill(&mut candidate)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(candidate)
+    })
     .map_err(storage)
 }
 
@@ -340,7 +345,23 @@ impl Owner {
         let owner =
             serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()));
         bytes.fill(0);
-        owner
+        let owner = owner?;
+        // A concurrent publisher may have renamed the complete, synced file
+        // but not flushed its name yet. Every reader establishes durability
+        // before returning credentials that downstream state will depend on.
+        #[cfg(test)]
+        let sync = !publication::SKIP_READER_SYNC.get();
+        #[cfg(not(test))]
+        let sync = true;
+        if sync {
+            acyclic_native_runtime::sync_parent(
+                path.parent()
+                    .ok_or_else(|| Error::Invalid("local owner has no parent".into()))?,
+                acyclic_native_runtime::Durability::Full,
+            )
+            .map_err(storage)?;
+        }
+        Ok(owner)
     }
 
     // Publication is a fresh temporary file, written and synced, then renamed
@@ -420,6 +441,7 @@ pub(super) mod publication {
     const KILLED: &str = "killed during owner publication";
 
     thread_local! {
+        pub(super) static SKIP_READER_SYNC: Cell<bool> = const { Cell::new(false) };
         static KILL_AT: Cell<Option<usize>> = const { Cell::new(None) };
         static TORN: Cell<bool> = const { Cell::new(false) };
     }
