@@ -90,7 +90,9 @@ fn pair(
             crate::executor::json::baseline::LEGACY.set(old);
             let mut result = None;
             let allocations = acyclic_test_support::measure(|| {
-                result = Some(runtime.block_on(async {
+                // Pinned here so the runtime never boxes it: the measured
+                // allocations must not depend on the state machine's layout.
+                let future = std::pin::pin!(async {
                     let execution = StockExecution::ordinary(&executor);
                     if old || restore_old_factory {
                         execution
@@ -99,7 +101,8 @@ fn pair(
                     } else {
                         execution.prepared_response(&journal, &input, 0, &[]).await
                     }
-                }));
+                });
+                result = Some(runtime.block_on(future));
             });
             let result = result
                 .unwrap()
@@ -206,10 +209,14 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
-    let expected = &expected[format!("preparation.{invalid}")];
+    // The table is feature-independent: the boxed source projection, whose
+    // size follows cfg-gated filesystem state, is added from its type.
+    let mut expected = expected[format!("preparation.{invalid}")].clone();
+    expected[3] =
+        (expected[3].as_u64().unwrap() + crate::context::source_projection_future_bytes()).into();
     let actual = serde_json::json!(differential::allocation_counts(new.4));
     prop_assert!(
-        old.0 == new.0 && old.1 == new.1 && old.2 == new.2 && actual == *expected,
+        old.0 == new.0 && old.1 == new.1 && old.2 == new.2 && actual == expected,
         "exact preparation allocation differs: actual={actual}, expected={expected}"
     );
     Ok(())

@@ -41,9 +41,11 @@ impl StockExecution<'_> {
     /// summary writer. A context without one rejects the turn at entry, before
     /// any model work, instead of failing when the first summary is due.
     fn verify_summary_destination(&self) -> Result<()> {
-        if let (Some((context, _)), crate::context::CompactionPolicy::Threshold(_)) =
-            (self.context, self.compaction_policy())
+        let compaction = self.compaction();
+        if let (Some((context, _)), crate::context::CompactionPolicy::Threshold(_), None) =
+            (self.context, compaction.policy, compaction.summaries)
         {
+            // Rejected turns only: report the resolver's exact reason.
             context.private_summaries(self.io)?;
         }
         Ok(())

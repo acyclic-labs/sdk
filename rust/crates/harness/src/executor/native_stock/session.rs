@@ -7,6 +7,15 @@ pub(in crate::executor) struct StockExecution<'a> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
+    /// Resolved on first use, after `context` and `io` are fixed.
+    pub(in crate::executor) compaction: std::sync::OnceLock<ResolvedCompaction<'a>>,
+}
+
+/// The turn's compaction policy, resolved once from the original IO, with the
+/// private summary authority that resolution validated.
+pub(in crate::executor) struct ResolvedCompaction<'a> {
+    pub(in crate::executor) policy: &'a crate::context::CompactionPolicy,
+    pub(in crate::executor) summaries: Option<crate::runtime::PrivateSummaries<'a>>,
 }
 
 impl<'a> StockExecution<'a> {
@@ -21,6 +30,7 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
+            compaction: std::sync::OnceLock::new(),
         }
     }
     pub(in crate::executor) fn native_work(&self) -> crate::NativeWork<'_> {
@@ -42,16 +52,48 @@ impl<'a> StockExecution<'a> {
             .map_or(&self.stock.context, |(pipeline, _)| pipeline)
     }
     pub(in crate::executor) fn compaction_policy(&self) -> &crate::context::CompactionPolicy {
-        static THRESHOLD: std::sync::LazyLock<crate::context::CompactionPolicy> =
-            std::sync::LazyLock::new(crate::context::CompactionPolicy::default);
-        match (&self.summary, &self.stock.compaction, self.context) {
-            (Some(_), _, _) => &crate::context::CompactionPolicy::Disabled,
-            (None, Some(policy), _) => policy,
+        self.compaction().policy
+    }
+    pub(in crate::executor) fn compaction(&self) -> &ResolvedCompaction<'a> {
+        self.compaction.get_or_init(|| self.resolve_compaction())
+    }
+    fn resolve_compaction(&self) -> ResolvedCompaction<'a> {
+        use crate::context::CompactionPolicy;
+        static THRESHOLD: std::sync::LazyLock<CompactionPolicy> =
+            std::sync::LazyLock::new(CompactionPolicy::default);
+        let summaries = || {
+            self.context
+                .and_then(|(context, _)| context.private_summaries(self.io).ok())
+        };
+        let stock: &'a StockExecutor = self.stock;
+        match (&self.summary, &stock.compaction, self.context) {
+            (Some(_), _, _) => ResolvedCompaction {
+                policy: &CompactionPolicy::Disabled,
+                summaries: None,
+            },
+            (None, Some(policy @ CompactionPolicy::Threshold(_)), _) => ResolvedCompaction {
+                policy,
+                summaries: summaries(),
+            },
+            (None, Some(policy), _) => ResolvedCompaction {
+                policy,
+                summaries: None,
+            },
             // The default needs somewhere private to publish summaries.
-            (None, None, Some((context, _))) if context.private_summaries(None).is_err() => {
-                &crate::context::CompactionPolicy::Disabled
-            }
-            (None, None, _) => &THRESHOLD,
+            (None, None, Some(_)) => match summaries() {
+                Some(writer) => ResolvedCompaction {
+                    policy: &THRESHOLD,
+                    summaries: Some(writer),
+                },
+                None => ResolvedCompaction {
+                    policy: &CompactionPolicy::Disabled,
+                    summaries: None,
+                },
+            },
+            (None, None, None) => ResolvedCompaction {
+                policy: &THRESHOLD,
+                summaries: None,
+            },
         }
     }
     pub(in crate::executor) fn output_tokens(&self) -> Option<u32> {

@@ -714,6 +714,8 @@ impl crate::context::ContextStage for OnceStage {
 }
 
 mod compaction;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+mod compaction_resolution;
 mod content;
 mod invocation_bounds;
 mod output_bounds;

@@ -92,6 +92,49 @@ impl SourceStage {
     }
 }
 
+/// The future [`SourceStage`] admits, named so its size is a type fact. A
+/// plain `async move` block keeps the arguments as its only upvars; an
+/// `async fn` would also store them apart from the body's locals.
+fn project_source<'a>(
+    stage: &'a SourceStage,
+    input: &'a ContextInput,
+    context: Context,
+    limits: Limits,
+    io: Option<&'a crate::executor::PreparationIo>,
+) -> impl std::future::Future<Output = Result<Context>> + 'a {
+    async move {
+        validate_projected_context(&context, limits, io)?;
+        let loaded = stage.source.load(input, limits, io)?.await?;
+        selection::apply_context_projection(
+            context,
+            loaded,
+            selection::ContextRenderMode::Prompt,
+            stage.placement,
+            limits,
+            io,
+        )
+    }
+}
+
+/// Bytes of the one allocation [`SourceStage`] boxes per projection; the
+/// future holds cfg-gated filesystem state, so its size varies by feature.
+#[cfg(test)]
+pub(crate) fn source_projection_future_bytes() -> u64 {
+    fn output<F, R>(_: F) -> u64
+    where
+        F: FnOnce(
+            &'static SourceStage,
+            &'static ContextInput,
+            Context,
+            Limits,
+            Option<&'static crate::executor::PreparationIo>,
+        ) -> R,
+    {
+        std::mem::size_of::<R>() as u64
+    }
+    output(project_source)
+}
+
 impl ContextStage for SourceStage {
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if !crate::is_valid_component_label(&self.name)
@@ -152,17 +195,8 @@ impl ContextStage for SourceStage {
         {
             self.validate(io)?;
         }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            validate_projected_context(&context, limits, io)?;
-            let loaded = self.source.load(input, limits, io)?.await?;
-            selection::apply_context_projection(
-                context,
-                loaded,
-                selection::ContextRenderMode::Prompt,
-                self.placement,
-                limits,
-                io,
-            )
+        crate::conversation::BoundedContentFuture::new(io, || {
+            project_source(self, input, context, limits, io)
         })
     }
 

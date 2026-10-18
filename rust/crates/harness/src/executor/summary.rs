@@ -14,10 +14,11 @@ impl StockExecution<'_> {
         // before admission, independently of that session's compaction policy.
         let destination = self
             .original_context()
-            .map(|context| {
-                context
+            .map(|context| match self.compaction().summaries {
+                Some(writer) => Ok((context, writer)),
+                None => context
                     .private_summaries(self.io)
-                    .map(|writer| (context, writer))
+                    .map(|writer| (context, writer)),
             })
             .transpose()?;
         if parent.is_some_and(|parent| step >= parent.max_steps) {
@@ -87,6 +88,7 @@ impl StockExecution<'_> {
                 ContextPipeline::summary_source(source, revision, self.io)?,
                 summary_output,
             )),
+            compaction: std::sync::OnceLock::new(),
         };
         let input = TurnInput {
             operation_id,
