@@ -56,7 +56,7 @@ struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
     credentials: Credentials,
-    selection: snapshot::Snapshot<selection::CredentialSelection>,
+    selection: snapshot::Snapshot<selection::Observations>,
     #[cfg(not(target_arch = "wasm32"))]
     codex_login: Option<Arc<CodexLogin>>,
 }

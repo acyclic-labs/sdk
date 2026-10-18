@@ -6,7 +6,7 @@ use std::sync::Mutex;
 #[derive(Default)]
 struct Sources {
     key: Option<Source>,
-    decode_error: bool,
+    decode_error: Option<&'static str>,
     reads: BTreeMap<(String, Source), usize>,
 }
 
@@ -17,13 +17,13 @@ fn fixture() -> (Registry, Arc<Mutex<Sources>>) {
     credentials.source = Some(Arc::new(move |provider, source| {
         let mut state = reader.lock().unwrap();
         *state.reads.entry((provider.into(), source)).or_default() += 1;
-        if provider != "openai" {
-            return Ok(None);
-        }
-        if state.decode_error && source == Source::Keychain {
+        if state.decode_error == Some(provider) && source == Source::Keychain {
             return Err(KeychainDecode {
                 provider: provider.into(),
             });
+        }
+        if provider != "openai" {
+            return Ok(None);
         }
         Ok((state.key == Some(source)).then(|| "snapshot-key".into()))
     }));
@@ -73,7 +73,12 @@ fn changed_key_sequence(broken: bool, operations: &[(Option<Source>, u8)]) {
                     "refresh validates the new selection"
                 );
                 if let Err(error) = result {
-                    assert!(error.to_string().contains("verified input token counter"));
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("the provider API key displaces the Codex login"),
+                        "{error}"
+                    );
                 }
             }
             _ => unreachable!(),
@@ -151,6 +156,9 @@ fn every_entry_point_observes_each_credential_source_once_per_snapshot() {
                     registry
                         .register("openai".into(), specification(true))
                         .unwrap();
+                    // Without a default, admission validates and observes nothing.
+                    assert!(reads(&sources).is_empty());
+                    registry.resolve("openai/gpt-5").unwrap();
                 }
                 _ => {
                     registry.resolve("openai/gpt-5").unwrap();
@@ -158,6 +166,10 @@ fn every_entry_point_observes_each_credential_source_once_per_snapshot() {
             }
             let observed = reads(&sources);
             assert!(observed.values().all(|&count| count == 1));
+            assert!(
+                observed.keys().all(|(provider, _)| provider == "openai"),
+                "unselected provider credentials observed: {observed:?}"
+            );
             for (source, expected) in [
                 (Source::Keychain, 1),
                 (
@@ -209,13 +221,16 @@ fn every_entry_point_observes_each_credential_source_once_per_snapshot() {
 fn decode_failure_names_its_provider_and_is_observed_only_at_snapshot_time() {
     for first in 0..3 {
         let (mut registry, sources) = fixture();
-        sources.lock().unwrap().decode_error = true;
+        sources.lock().unwrap().decode_error = Some("openai");
         let error = match first {
             0 => load(&mut registry, true).err().unwrap(),
-            1 => registry
-                .register("openai".into(), specification(true))
-                .err()
-                .unwrap(),
+            1 => {
+                registry
+                    .register("openai".into(), specification(true))
+                    .unwrap();
+                assert!(reads(&sources).is_empty());
+                registry.resolve("openai/gpt-5").err().unwrap()
+            }
             _ => registry.resolve("openai/gpt-5").err().unwrap(),
         };
         assert!(matches!(error, acyclic_harness::Error::Invalid(_)));
@@ -224,7 +239,7 @@ fn decode_failure_names_its_provider_and_is_observed_only_at_snapshot_time() {
             "invalid request: provider openai: cannot decode keychain credential"
         );
         let observed = reads(&sources);
-        sources.lock().unwrap().decode_error = false;
+        sources.lock().unwrap().decode_error = None;
         for _ in 0..3 {
             assert_eq!(
                 registry.resolve("openai/gpt-5").err().unwrap().to_string(),
@@ -235,6 +250,49 @@ fn decode_failure_names_its_provider_and_is_observed_only_at_snapshot_time() {
         load(&mut registry, true).unwrap();
         assert!(registry.resolve("openai/gpt-5").is_ok());
     }
+}
+
+#[test]
+fn an_unselected_provider_is_never_observed_and_keeps_its_own_decode_failure() {
+    let (mut registry, sources) = fixture();
+    sources.lock().unwrap().decode_error = Some("anthropic");
+    load(&mut registry, true).unwrap();
+    registry.resolve("openai/gpt-5").unwrap();
+    let observed = reads(&sources);
+    assert!(
+        observed.keys().all(|(provider, _)| provider == "openai"),
+        "unselected provider credentials observed: {observed:?}"
+    );
+    let error = registry
+        .resolve("anthropic/claude-sonnet-4-5")
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.to_string(),
+        "invalid request: provider anthropic: cannot decode keychain credential"
+    );
+    let observed = reads(&sources);
+    sources.lock().unwrap().decode_error = None;
+    assert_eq!(
+        registry
+            .resolve("anthropic/claude-sonnet-4-5")
+            .err()
+            .unwrap()
+            .to_string(),
+        error.to_string()
+    );
+    assert!(registry.resolve("openai/gpt-5").is_ok());
+    assert_eq!(reads(&sources), observed);
+}
+
+#[test]
+fn a_codex_login_supplied_after_observation_replaces_the_generation() {
+    let registry = Registry::new(Credentials::explicit(BTreeMap::new())).unwrap();
+    assert!(registry.resolve("openai/gpt-5").is_err());
+    let registry =
+        registry.with_codex_login(crate::CodexLogin::from_path("replacement-auth.json".into()));
+    let resolved = registry.resolve("openai/gpt-5");
+    assert!(resolved.unwrap().codex_login.is_some());
 }
 
 #[test]

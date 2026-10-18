@@ -53,15 +53,9 @@ impl Registry {
         } else {
             retained
         };
-        let observed = self.observe_credentials(
-            self.providers
-                .iter()
-                .filter(|(id, _)| changes.get(id).is_none())
-                .map(|(id, spec)| (id.as_str(), spec.as_ref()))
-                .chain(changes.entries().map(|(id, spec)| (id.as_str(), spec))),
-        );
-        let validation = (|| {
-            let credentials = observed.as_ref().map_err(|failure| failure.error())?;
+        // Admission observes only the default's provider, into a new generation.
+        let mut observed = selection::Observations::default();
+        let validation: Result<()> = (|| {
             if let Some(default) = default.as_ref().or(retained) {
                 let (provider, name) = default
                     .split_once('/')
@@ -72,22 +66,26 @@ impl Registry {
                 let entry = entry
                     .filter(|entry| entry.models.contains_key(name))
                     .ok_or_else(|| invalid("catalog default_model is absent from its models"))?;
-                let credential = credentials
-                    .get(provider)
-                    .ok_or_else(|| invalid("provider is absent from credential snapshot"))?;
-                let counted = selection::counts_input(entry, credential);
+                let counted =
+                    selection::counts_input(entry, self.observe(&mut observed, provider)?);
                 #[cfg(all(test, not(target_arch = "wasm32")))]
-                let counted = counted || tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get);
-                if !counted {
-                    return Err(invalid(
-                        "catalog default_model requires a verified input token counter",
-                    ));
-                }
+                let counted = if tests::SKIP_DEFAULT_COUNTER.with(std::cell::Cell::get) {
+                    Ok(())
+                } else {
+                    counted
+                };
+                counted?;
             }
             Ok(())
         })();
         self.selection
-            .publish(observed, validation.is_ok())
+            .publish(|current| {
+                if validation.is_ok() {
+                    *current = observed;
+                } else {
+                    current.adopt(observed);
+                }
+            })
             .map_err(|()| invalid("credential selection lock poisoned"))?;
         validation?;
         self.providers.extend(

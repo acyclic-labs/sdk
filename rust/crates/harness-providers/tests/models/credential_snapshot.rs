@@ -5,9 +5,11 @@ use crate::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+type Observed = Option<Result<(u8, u8), &'static str>>;
+
 fn model(broken: bool, failed: bool) {
     loom::model(move || {
-        let mut snapshot = snapshot::Snapshot::default();
+        let mut snapshot = snapshot::Snapshot::<Observed>::default();
         snapshot.live = broken;
         let snapshot = Arc::new(snapshot);
         let reads = Arc::new(AtomicUsize::new(0));
@@ -17,14 +19,14 @@ fn model(broken: bool, failed: bool) {
             let (snapshot, reads) = (snapshot.clone(), reads.clone());
             tasks.push(loom::thread::spawn(move || {
                 snapshot
-                    .read(
-                        || {
+                    .read(|value| {
+                        let value = value.get_or_insert_with(|| {
                             reads.fetch_add(1, Ordering::SeqCst);
                             loom::thread::yield_now();
                             expected
-                        },
-                        |value| assert_eq!(*value, expected, "torn credential selection"),
-                    )
+                        });
+                        assert_eq!(*value, expected, "torn credential selection");
+                    })
                     .unwrap();
             }));
         }
@@ -37,13 +39,18 @@ fn model(broken: bool, failed: bool) {
             "credential sources observed twice"
         );
         let mut snapshot = Arc::try_unwrap(snapshot).ok().unwrap();
-        snapshot.publish(Ok((3, 4)), false).unwrap();
+        // A rejected refresh only fills observations the generation lacks.
         snapshot
-            .read(|| unreachable!(), |value| assert_eq!(*value, expected))
+            .publish(|value| {
+                value.get_or_insert(Ok((3, 4)));
+            })
             .unwrap();
-        snapshot.publish(Ok((3, 4)), true).unwrap();
         snapshot
-            .read(|| unreachable!(), |value| assert_eq!(*value, Ok((3, 4))))
+            .read(|value| assert_eq!(*value, Some(expected)))
+            .unwrap();
+        snapshot.publish(|value| *value = Some(Ok((3, 4)))).unwrap();
+        snapshot
+            .read(|value| assert_eq!(*value, Some(Ok((3, 4)))))
             .unwrap();
     });
 }

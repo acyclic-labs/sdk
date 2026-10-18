@@ -6,14 +6,14 @@ mod catalog_update;
 mod selection;
 mod snapshot;
 use catalog_update::Changes;
-use selection::{Credential, CredentialSelection};
+use selection::Credential;
 
 /// Registry of protocol endpoints addressed by `provider/model`.
 pub struct Registry {
     providers: BTreeMap<String, Arc<ProviderSpec>>,
     default_model: Option<String>,
     credentials: Credentials,
-    selection: snapshot::Snapshot<CredentialSelection>,
+    selection: snapshot::Snapshot<selection::Observations>,
     transport: Arc<dyn HttpTransport>,
     files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
@@ -61,6 +61,7 @@ impl Registry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_codex_login(mut self, login: crate::CodexLogin) -> Self {
         self.codex_login = Some(Arc::new(login));
+        self.selection = snapshot::Snapshot::default();
         self
     }
 
