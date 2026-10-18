@@ -290,3 +290,8 @@ required-features = ["memory"]
 name = "session_fs"
 path = "tests/session_fs.rs"
 required-features = ["memory", "session"]
+
+[[test]]
+name = "session_fs_model"
+path = "tests/session_fs_model.rs"
+required-features = ["memory", "session"]

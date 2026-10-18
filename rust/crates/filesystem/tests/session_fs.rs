@@ -39,11 +39,14 @@ proptest! {
     // Every valid typed subscription/publication/cursor survives encode-decode.
     #[test]
     fn round_trip(volume in any::<[u8;16]>(), root in any::<[u8;32]>(), commit in any::<[u8;32]>(),
-        sequence in 1u64..u64::MAX, latest in any::<bool>(), parts in prop::collection::vec("[a-z]{1,12}",0..5)) {
+        sequence in 1u64..u64::MAX, start in any::<u64>(), latest in any::<bool>(), parts in prop::collection::vec("[a-z]{1,12}",0..5)) {
         let mut sub = subscription(acyclic_fs::VolumeId::from_bytes(volume), latest);
+        sub.start_next = start % sequence;
         sub.path_prefix = PortablePath::parse(&format!("/{}", parts.join("/")), acyclic_fs::VolumeLimits::default()).unwrap();
         sub.workspace_name = acyclic_fs::WorkspaceName::new(format!("ws-{}", parts.join("-")), &WorkBudget::UNBOUNDED, &CancellationToken::new()).unwrap().value;
         prop_assert_eq!(Subscription::decode(&sub.encode().unwrap()).unwrap(), sub.clone());
+        let expected = allocations::wire_subscription(&sub).encode_to_vec();
+        prop_assert_eq!(sub.encode().unwrap().as_ref(), expected.as_slice());
         let publication = Publication {
             workspace_name: sub.workspace_name.clone(),
             generation: acyclic_fs::kernel::PublishedGeneration {
@@ -56,8 +59,18 @@ proptest! {
             sequence: acyclic_fs::Sequence::new(sequence),
             commit_id: acyclic_stream::CommitId::from_bytes(commit),
         };
+        let expected = wire::SessionFsPublication {
+            version: 1, volume_id: volume.to_vec(), generation: Some(publication.generation_ref()),
+            sequence, commit_id: commit.to_vec(),
+        }.encode_to_vec();
+        prop_assert_eq!(publication.encode().unwrap().as_ref(), expected.as_slice());
         prop_assert_eq!(Publication::decode(&publication.encode().unwrap()).unwrap(), publication);
         let cursor = Cursor { subscription: sub, next: sequence+1, preceding_commit_id: acyclic_stream::CommitId::from_bytes(commit) };
+        let expected = wire::SessionFsCursor {
+            version: 1, subscription: Some(allocations::wire_subscription(&cursor.subscription)),
+            next: cursor.next, preceding_commit_id: commit.to_vec(),
+        }.encode_to_vec();
+        prop_assert_eq!(cursor.encode().unwrap().as_ref(), expected.as_slice());
         prop_assert_eq!(Cursor::decode(&cursor.encode().unwrap()).unwrap(), cursor);
     }
     // Every accepted arbitrary protobuf normalizes to a stable typed round-trip.

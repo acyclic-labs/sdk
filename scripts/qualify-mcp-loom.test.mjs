@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom } from "./qualify-mcp-loom.mjs";
+import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -42,6 +42,28 @@ test("native progress qualification instruments the real mutex and requires ever
     if (missing === null) { qualifyNativeProgressLoom(run); assert.equal(models, 13); }
     else assert.throws(() => qualifyNativeProgressLoom(run), /requires a nonzero/);
   }
+});
+
+test("fs Session qualification instruments real provider and Session locks and requires every model", () => {
+  for (const missing of [null, 1, 2, 3]) {
+    let models = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_loom/);
+        assert.match(options.env.RUSTFLAGS, /--cfg acyclic_stream_loom/);
+        assert.ok(args.includes("memory,session,acyclic-stream/local"));
+        assert.ok(args.includes("session_fs_model"));
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "session_fs_model" } }) };
+      }
+      assert.equal(args[1], "--exact");
+      assert.equal(options.timeout, 9500);
+      models++;
+      return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 2) };
+    };
+    if (missing === null) { qualifySessionFsLoom(run); assert.equal(models, 3); }
+    else assert.throws(() => qualifySessionFsLoom(run), /requires a nonzero/);
+  }
+  assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --session-fs/);
 });
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {

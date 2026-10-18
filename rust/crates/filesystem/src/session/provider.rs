@@ -4,6 +4,13 @@ use acyclic_stream::{StreamProvider, wire as session};
 use futures::{StreamExt, TryStreamExt};
 use std::sync::Arc;
 
+#[cfg(all(test, feature = "memory", not(acyclic_loom)))]
+mod tests;
+#[cfg(test)]
+thread_local! {
+    static COPY_SUBSCRIPTION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Session publication adapter for a filesystem authority provider.
 pub struct Provider<P, A> {
     stream: Arc<P>,
@@ -59,6 +66,8 @@ where
                     .map_err(|_| StreamError::InvalidArgument)?;
                 let checked = anchor.is_some();
                 let records = if let Some(anchor) = anchor {
+                    #[cfg(test)]
+                    acyclic_test_support::differential::record(("checked_follow", anchor.next));
                     provider
                         .follow_checked(path, anchor.next, anchor.preceding_commit_id)
                         .await
@@ -99,6 +108,10 @@ fn publication(
     subscription: &Subscription,
     record: acyclic_stream::Record,
 ) -> Result<Option<session::SessionData>, StreamError> {
+    #[cfg(test)]
+    if COPY_SUBSCRIPTION.get() {
+        std::hint::black_box(subscription.clone());
+    }
     let durable = crate::streams_record::StreamsDurableRecord::decode_borrowed(
         &record.value,
         acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -136,6 +149,8 @@ fn publication(
     if generation.volume_id != subscription.volume_id {
         return Err(StreamError::InvalidArgument);
     }
+    #[cfg(test)]
+    acyclic_test_support::differential::record(("publication", record.sequence));
     let next = record
         .sequence
         .checked_add(1)

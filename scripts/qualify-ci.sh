@@ -220,6 +220,7 @@ case "$lane" in
     node scripts/qualify-mcp-loom.mjs --guest
     node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" node scripts/qualify-mcp-loom.mjs --memory-accounting
+    node scripts/qualify-mcp-loom.mjs --session-fs
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;

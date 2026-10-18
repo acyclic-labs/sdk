@@ -5,7 +5,7 @@ fn fixed_subscription() -> Subscription {
     subscription(acyclic_fs::VolumeId::from_bytes([7; 16]), false)
 }
 
-fn wire_subscription(sub: &Subscription) -> wire::SessionFsSubscription {
+pub(super) fn wire_subscription(sub: &Subscription) -> wire::SessionFsSubscription {
     wire::SessionFsSubscription {
         version: 1,
         volume_id: sub.volume_id.into_bytes().to_vec(),
@@ -20,12 +20,12 @@ fn wire_subscription(sub: &Subscription) -> wire::SessionFsSubscription {
 }
 
 #[test]
-fn encoding_allocates_only_wire_fields_and_output() -> Result {
+fn encoding_allocates_only_output() -> Result {
     let sub = fixed_subscription();
     let reference = wire_subscription(&fixed_subscription()).encode_to_vec();
     let mut encoded = None;
     let counts = measure(|| encoded = Some(sub.encode().unwrap()));
-    assert_eq!(counts.count_total, 5);
+    assert_eq!(counts.count_total, 1);
     assert_eq!(encoded.take().unwrap().as_ref(), reference);
     // Restore the redundant deep protobuf clone on the actual encoder path.
     let extra = measure(|| {
@@ -34,7 +34,7 @@ fn encoding_allocates_only_wire_fields_and_output() -> Result {
         std::hint::black_box(sub.encode().unwrap());
     });
     assert_ne!(
-        extra.count_total, 5,
+        extra.count_total, 1,
         "deep-copy control escaped allocation oracle"
     );
 
@@ -62,7 +62,7 @@ fn encoding_allocates_only_wire_fields_and_output() -> Result {
     }
     .encode_to_vec();
     let counts = measure(|| encoded = Some(publication.encode().unwrap()));
-    assert_eq!(counts.count_total, 6);
+    assert_eq!(counts.count_total, 1);
     assert_eq!(encoded.take().unwrap().as_ref(), expected);
 
     let cursor = Cursor {
@@ -78,7 +78,7 @@ fn encoding_allocates_only_wire_fields_and_output() -> Result {
     }
     .encode_to_vec();
     let counts = measure(|| encoded = Some(cursor.encode().unwrap()));
-    assert_eq!(counts.count_total, 6);
+    assert_eq!(counts.count_total, 1);
     assert_eq!(encoded.unwrap().as_ref(), expected);
     let copied = measure(|| {
         let copied = cursor.subscription.clone();
@@ -92,7 +92,7 @@ fn encoding_allocates_only_wire_fields_and_output() -> Result {
         );
     });
     assert_ne!(
-        copied.count_total, 6,
+        copied.count_total, 1,
         "subscription-copy control escaped allocation oracle"
     );
     Ok(())

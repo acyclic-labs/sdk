@@ -6,6 +6,8 @@ use acyclic_stream::{CommitId, StreamError};
 use bytes::Bytes;
 use prost::Message;
 
+mod encode;
+
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
 mod provider;
 #[cfg(all(feature = "session", not(target_arch = "wasm32")))]
@@ -71,8 +73,7 @@ impl Subscription {
     /// Encodes the typed payload.
     pub fn encode(&self) -> Result<Bytes, StreamError> {
         self.validate()?;
-        let wire = self.to_wire();
-        Ok(Bytes::from(wire.encode_to_vec()))
+        Ok(encode::subscription(self))
     }
     /// Decodes a typed payload.
     pub fn decode(value: &[u8]) -> Result<Self, StreamError> {
@@ -85,16 +86,6 @@ impl Subscription {
         PortablePath::validate(self.path_prefix.as_str(), crate::VolumeLimits::default())
             .map_err(|_| StreamError::InvalidArgument)?;
         Ok(())
-    }
-    fn to_wire(&self) -> wire::SessionFsSubscription {
-        wire::SessionFsSubscription {
-            version: 1,
-            volume_id: self.volume_id.into_bytes().to_vec(),
-            path_prefix: self.path_prefix.as_str().into(),
-            delivery: self.delivery as i32,
-            start_next: self.start_next,
-            workspace: Some(workspace_ref(self.volume_id, &self.workspace_name)),
-        }
     }
     fn from_wire(value: wire::SessionFsSubscription) -> Result<Self, StreamError> {
         version(value.version)?;
@@ -132,17 +123,10 @@ impl Publication {
         if self.generation.generation_root.kind != crate::ObjectKind::GenerationRoot {
             return Err(StreamError::InvalidArgument);
         }
-        let wire = wire::SessionFsPublication {
-            version: 1,
-            volume_id: self.generation.volume_id.into_bytes().to_vec(),
-            generation: Some(self.generation_ref()),
-            sequence: self.sequence.get(),
-            commit_id: self.commit_id.as_bytes().to_vec(),
-        };
         if self.sequence.get() == 0 || self.sequence.get() == u64::MAX {
             return Err(StreamError::InvalidArgument);
         }
-        Ok(Bytes::from(wire.encode_to_vec()))
+        Ok(encode::publication(self))
     }
     /// Decodes a typed payload.
     pub fn decode(value: &[u8]) -> Result<Self, StreamError> {
@@ -184,13 +168,7 @@ impl Cursor {
         if next < 2 || next <= subscription.start_next {
             return Err(StreamError::InvalidArgument);
         }
-        let wire = wire::SessionFsCursor {
-            version: 1,
-            subscription: Some(subscription.to_wire()),
-            next,
-            preceding_commit_id: preceding_commit_id.as_bytes().to_vec(),
-        };
-        Ok(Bytes::from(wire.encode_to_vec()))
+        Ok(encode::cursor(subscription, next, preceding_commit_id))
     }
     /// Decodes a typed payload.
     pub fn decode(value: &[u8]) -> Result<Self, StreamError> {

@@ -92,6 +92,17 @@ export function qualifyMemoryAccountingLoom(run = spawnSync) {
   });
 }
 
+export function qualifySessionFsLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-fs", "session_fs_model", [
+    "--no-default-features", "--features", "memory,session,acyclic-stream/local",
+  ], run, {
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_loom --cfg acyclic_stream_loom` },
+    targetCfg: [], timeout: 9500,
+    filters: ["checked_resume_exhausts_append_registration_and_wakeup",
+      "checked_resume_exhausts_independent_history_replacement", "resumed_buffered_delivery_exhausts_revocation"],
+  });
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const build = run("cargo", [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
@@ -141,6 +152,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   else if (features.length === 1 && features[0] === "--timer") qualifyTimerLoom();
   else if (features.length === 1 && features[0] === "--guest") qualifyGuestLoom();
   else if (features.length === 1 && features[0] === "--memory-accounting") qualifyMemoryAccountingLoom();
+  else if (features.length === 1 && features[0] === "--session-fs") qualifySessionFsLoom();
   else if (features[0] === "--fs-binding") qualifyFsBindingLoom(features.slice(1));
   else qualifyMcpLoom(features.length ? features : undefined);
 }
