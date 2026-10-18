@@ -96,6 +96,7 @@ fn outcome(kind: u8) -> Outcome<FileRef> {
         2 => Outcome::Cancelled,
         _ => Outcome::Indeterminate {
             operation_id: id(1),
+            cause: crate::IndeterminateCause::Unobserved,
         },
     }
 }

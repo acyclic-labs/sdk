@@ -64,9 +64,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             Some(Outcome::Failed { message }) => Some(Outcome::Failed { message }),
             Some(Outcome::Cancelled) => Some(Outcome::Cancelled),
-            Some(Outcome::Indeterminate { operation_id }) => {
-                Some(Outcome::Indeterminate { operation_id })
-            }
+            Some(Outcome::Indeterminate {
+                operation_id,
+                cause,
+            }) => Some(Outcome::Indeterminate {
+                operation_id,
+                cause,
+            }),
             None => None,
         };
         quota.transfer();
@@ -81,8 +85,12 @@ fn project_terminal<T>(outcome: &Outcome<T>) -> Outcome<()> {
             message: message.clone(),
         },
         Outcome::Cancelled => Outcome::Cancelled,
-        Outcome::Indeterminate { operation_id } => Outcome::Indeterminate {
+        Outcome::Indeterminate {
+            operation_id,
+            cause,
+        } => Outcome::Indeterminate {
             operation_id: *operation_id,
+            cause: cause.clone(),
         },
     }
 }

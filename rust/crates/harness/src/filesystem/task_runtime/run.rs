@@ -217,12 +217,15 @@ where
                                 .await?;
                                 return Ok(WorkerTurn::Suspended { task, revision });
                             }
-                            CommandDispatch::Indeterminate => {
+                            CommandDispatch::Indeterminate(cause) => {
                                 self.task_host()
                                     .settle_task(
                                         task,
                                         fence,
-                                        Outcome::Indeterminate { operation_id },
+                                        Outcome::Indeterminate {
+                                            operation_id,
+                                            cause: crate::IndeterminateCause::Command(cause),
+                                        },
                                         &mut observed::history(io)?
                                             .as_mut()
                                             .map(|work| work as &mut dyn crate::store::HistoryIo),

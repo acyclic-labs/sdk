@@ -51,6 +51,7 @@ fn completion(op: u8, kind: u8, lease: Option<u8>) -> Result<SchedulerEvent> {
             2 => Outcome::Cancelled,
             _ => Outcome::Indeterminate {
                 operation_id: id(op),
+                cause: crate::IndeterminateCause::Unobserved,
             },
         },
         fence: lease.map(fence),

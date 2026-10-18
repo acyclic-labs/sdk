@@ -189,6 +189,7 @@ fn uncertain_execution_retains_capacity_and_rejects_stale_owners() -> Result<()>
         id(32),
         Outcome::Indeterminate {
             operation_id: id(32),
+            cause: crate::IndeterminateCause::Unobserved,
         },
         Some(held.clone()),
     )?;

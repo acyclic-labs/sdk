@@ -77,10 +77,12 @@ impl LocalHarness {
                     }
                 })
                 .await?;
-                if let Some(crate::Outcome::Indeterminate { operation_id }) =
-                    self.runtime.task_host().terminal_status(task).await?
+                if let Some(crate::Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                }) = self.runtime.task_host().terminal_status(task).await?
                 {
-                    return Err(Error::Indeterminate(operation_id));
+                    return Err(cause.into_error(operation_id));
                 }
                 Ok(())
             };

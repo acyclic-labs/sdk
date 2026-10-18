@@ -6,7 +6,10 @@ pub fn encode_error(error: &Error) -> wire::Error {
         code: error.code() as i32,
         message: error.to_string(),
         operation_id: match error {
-            Error::Indeterminate(id) => id.to_string(),
+            Error::Indeterminate(id)
+            | Error::CommandIndeterminate {
+                operation_id: id, ..
+            } => id.to_string(),
             _ => String::new(),
         },
     }

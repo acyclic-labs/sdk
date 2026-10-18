@@ -98,7 +98,7 @@ enum Plan<'a> {
     Failed(&'a str),
     ChildFailed(&'a str, &'a str),
     Cancelled,
-    Indeterminate(OperationId),
+    Indeterminate(OperationId, &'a crate::IndeterminateCause),
 }
 impl Plan<'_> {
     fn matches(self, actual: &Outcome<FileRef>) -> bool {
@@ -113,7 +113,13 @@ impl Plan<'_> {
                 .copied()
                 .eq(message.bytes()),
             (Self::Cancelled, Outcome::Cancelled) => true,
-            (Self::Indeterminate(a), Outcome::Indeterminate { operation_id }) => a == *operation_id,
+            (
+                Self::Indeterminate(a, expected),
+                Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                },
+            ) => a == *operation_id && expected == cause,
             _ => false,
         }
     }
@@ -124,7 +130,10 @@ impl Plan<'_> {
                 message: text_copy(message, work)?,
             },
             Self::Cancelled => Outcome::Cancelled,
-            Self::Indeterminate(operation_id) => Outcome::Indeterminate { operation_id },
+            Self::Indeterminate(operation_id, cause) => Outcome::Indeterminate {
+                operation_id,
+                cause: cause.try_copy(|text| text_copy(text, work))?,
+            },
             Self::ChildFailed(slot, message) => Outcome::Failed {
                 message: crate::executor::preparation_format(
                     format_args!("child {slot} failed: {message}"),
@@ -198,7 +207,7 @@ impl Scheduler {
                 | Plan::Failed(_)
                 | Plan::ChildFailed(..)
                 | Plan::Cancelled
-                | Plan::Indeterminate(_)) => {
+                | Plan::Indeterminate(..)) => {
                     let outcome = outcome.copy(quota.work())?;
                     quota.adopt(outcome.logical_owned_bytes()?)?;
                     OrchestrationDecision::Complete {
@@ -330,8 +339,8 @@ impl Scheduler {
                     return Ok(Plan::ChildFailed(slot, message));
                 }
                 Some(Outcome::Cancelled) => return Ok(Plan::Cancelled),
-                Some(Outcome::Indeterminate { .. }) => {
-                    return Ok(Plan::Indeterminate(parent));
+                Some(Outcome::Indeterminate { cause, .. }) => {
+                    return Ok(Plan::Indeterminate(parent, cause));
                 }
                 None => return Ok(Plan::Wait),
             }
@@ -365,7 +374,7 @@ impl Scheduler {
             | Plan::Failed(_)
             | Plan::ChildFailed(..)
             | Plan::Cancelled
-            | Plan::Indeterminate(_)) => {
+            | Plan::Indeterminate(..)) => {
                 if matches!(expected, Plan::ChildFailed(..)) {
                     observe(work)?;
                 }

@@ -146,7 +146,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         json!({"commands":[result.clone(),result.clone()]}),
         json!({"commands":[{"operation_id":command.operation_id,"value":"Cancelled"}]}),
         json!({"commands":[{"operation_id":command.operation_id,
-            "value":{"Indeterminate":{"operation_id":command.operation_id}}}]}),
+            "value":{"Indeterminate":{"operation_id":command.operation_id,"cause":"Unobserved"}}}]}),
     ] {
         assert!(
             host.step(

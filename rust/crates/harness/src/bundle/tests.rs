@@ -43,8 +43,11 @@ impl AgentLoop for DelegatingLoop {
                 crate::Outcome::Cancelled => {
                     return Err(Error::Conflict("child cancelled".into()));
                 }
-                crate::Outcome::Indeterminate { operation_id } => {
-                    return Err(Error::Indeterminate(operation_id));
+                crate::Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                } => {
+                    return Err(cause.into_error(operation_id));
                 }
             };
             Ok(crate::agent_loop::AgentOutput::text(text))

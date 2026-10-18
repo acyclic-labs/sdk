@@ -108,7 +108,10 @@ pub(super) fn tool_outcome(
         }
         Outcome::Failed { message: message.0 }
     } else {
-        Outcome::Indeterminate { operation_id }
+        Outcome::Indeterminate {
+            operation_id,
+            cause: crate::IndeterminateCause::Unobserved,
+        }
     };
     Ok((outcome, custody))
 }

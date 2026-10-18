@@ -167,13 +167,14 @@ pub fn operation_status(state: &OperationState) -> wire::OperationStatus {
             }),
         ),
         Some(Outcome::Cancelled) => (wire::CompletionState::Cancelled, None),
-        Some(Outcome::Indeterminate { operation_id }) => (
+        Some(Outcome::Indeterminate {
+            operation_id,
+            cause,
+        }) => (
             wire::CompletionState::Indeterminate,
-            Some(wire::Error {
-                code: wire::ErrorCode::Indeterminate as i32,
-                message: "operation completion is indeterminate".into(),
-                operation_id: operation_id.to_string(),
-            }),
+            Some(crate::wire_codec::encode_error(
+                &cause.clone().into_error(*operation_id),
+            )),
         ),
         None if state.phase == OperationPhase::Terminal => (
             wire::CompletionState::Indeterminate,

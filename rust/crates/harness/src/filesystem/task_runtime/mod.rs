@@ -139,7 +139,7 @@ enum CommandDispatch {
         command: OperationId,
         guard_execution: bool,
     },
-    Indeterminate,
+    Indeterminate(crate::CommandIndeterminacy),
 }
 
 /// Resume hint for one finite coordinator discovery sweep.

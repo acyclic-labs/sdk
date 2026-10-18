@@ -148,7 +148,7 @@ mod tests {
             invalid.turn = 0;
             prop_assert!(ChildTurnResult::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
             invalid.turn = turn;
-            invalid.outcome = Outcome::Indeterminate { operation_id: crate::OperationId::from_bytes([3;16]) };
+            invalid.outcome = Outcome::Indeterminate { operation_id: crate::OperationId::from_bytes([3;16]), cause: crate::IndeterminateCause::Unobserved };
             prop_assert!(ChildTurnResult::parse(&serde_json::to_vec(&invalid).unwrap()).is_err());
             prop_assert!(crate::task_volume::FileKey::parse(&format!("agents/worker/results/0{turn}.json")).is_err(), "leading-zero result accepted");
         }

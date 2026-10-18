@@ -98,7 +98,18 @@ async fn reopen_finishes_a_retained_model_stop_before_running_the_next_message()
         !crate::local::children::cuts::armed(),
         "stopped journal cut was not reached"
     );
-    assert!(matches!(result, Err(Error::Indeterminate(_))));
+    // The cut stops the model command; its cause reaches the caller.
+    assert!(matches!(
+        result,
+        Err(Error::CommandIndeterminate {
+            cause: crate::CommandIndeterminacy {
+                command,
+                reason: crate::CommandIndeterminacyReason::Failed { code, .. },
+            },
+            ..
+        }) if command == crate::filesystem::MODEL_TASK_COMMAND_KIND
+            && code == "ERROR_CODE_INDETERMINATE"
+    ));
     let snapshot = files
         .observe(Query::Child(reference.clone()), None, 16)
         .await

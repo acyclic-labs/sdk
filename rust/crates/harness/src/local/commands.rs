@@ -412,7 +412,8 @@ impl LocalHarness {
         match handle.result().await? {
             crate::Outcome::Succeeded(result) => Ok(result.value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),
-            _ => Err(Error::Indeterminate(operation)),
+            crate::Outcome::Indeterminate { cause, .. } => Err(cause.into_error(operation)),
+            crate::Outcome::Cancelled => Err(Error::Indeterminate(operation)),
         }
     }
     async fn stage_command(

@@ -235,7 +235,7 @@ fn verify_result(
     completed: bool,
 ) -> Result<()> {
     if !completed {
-        return if matches!(outcome, Outcome::Indeterminate { operation_id } if operation_id == operation)
+        return if matches!(outcome, Outcome::Indeterminate { operation_id, .. } if operation_id == operation)
         {
             Ok(())
         } else {

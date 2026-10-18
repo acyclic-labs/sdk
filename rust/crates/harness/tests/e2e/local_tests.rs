@@ -149,7 +149,7 @@ proptest::proptest! {
         for outcome in [ExpectedOutcome::Succeeded,ExpectedOutcome::Indeterminate] {
             let completed = match outcome {
                 ExpectedOutcome::Succeeded => json!({"Succeeded":file}),
-                ExpectedOutcome::Indeterminate => json!({"Indeterminate":{"operation_id":operation}}),
+                ExpectedOutcome::Indeterminate => json!({"Indeterminate":{"operation_id":operation,"cause":"Unobserved"}}),
             };
             let frames = vec![json!({"kind":"declared"}),json!({"kind":"admitted"}),json!({"kind":"completed","operation_id":operation,"outcome":completed,"fence":null})];
             let check = |frames:&[serde_json::Value]| super::local_execution::check_frames(&expected,frames,operation,outcome);

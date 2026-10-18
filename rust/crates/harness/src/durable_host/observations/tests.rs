@@ -11,7 +11,10 @@ proptest! {
             0 => (Outcome::Succeeded(message), Outcome::Succeeded(())),
             1 => (Outcome::Failed { message: message.clone() }, Outcome::Failed { message }),
             2 => (Outcome::Cancelled, Outcome::Cancelled),
-            _ => (Outcome::Indeterminate { operation_id: id }, Outcome::Indeterminate { operation_id: id }),
+            _ => (
+                Outcome::Indeterminate { operation_id: id, cause: crate::IndeterminateCause::Unobserved },
+                Outcome::Indeterminate { operation_id: id, cause: crate::IndeterminateCause::Unobserved },
+            ),
         };
         prop_assert_eq!(project_terminal(&input), expected);
     }

@@ -93,8 +93,15 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     match (case.expect.outcome, output) {
         (ExpectedOutcome::Succeeded, Ok(output))
             if Some(&output.text) == case.expect.text.as_ref() => {}
-        (ExpectedOutcome::Indeterminate, Err(acyclic_harness::Error::Indeterminate(id)))
-            if id == operation => {}
+        (
+            ExpectedOutcome::Indeterminate,
+            Err(
+                acyclic_harness::Error::Indeterminate(id)
+                | acyclic_harness::Error::CommandIndeterminate {
+                    operation_id: id, ..
+                },
+            ),
+        ) if id == operation => {}
         (_, actual) => return Err(format!("local turn outcome differs: {actual:?}").into()),
     }
     if provider.remaining() != 0 {
@@ -394,7 +401,7 @@ pub(super) fn check_frames(
         (
             ExpectedOutcome::Indeterminate,
             acyclic_harness::scheduler::SchedulerEvent::Completed {
-                outcome: acyclic_harness::Outcome::Indeterminate { operation_id },
+                outcome: acyclic_harness::Outcome::Indeterminate { operation_id, .. },
                 ..
             },
         ) if operation_id == identity => {}

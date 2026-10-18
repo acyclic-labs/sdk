@@ -434,7 +434,7 @@ impl Scheduler {
                         "terminal operation has another outcome",
                     ));
                 }
-                if let Outcome::Indeterminate { operation_id } = outcome
+                if let Outcome::Indeterminate { operation_id, .. } = outcome
                     && *operation_id != id
                 {
                     return Err(diagnostic(

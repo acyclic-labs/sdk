@@ -64,7 +64,8 @@ impl Outcome<FileRef> {
         match self {
             Self::Succeeded(file) => file.logical_owned_bytes(),
             Self::Failed { message } => Ok(message.capacity() as u64),
-            _ => Ok(0),
+            Self::Indeterminate { cause, .. } => Ok(cause.owned_bytes()),
+            Self::Cancelled => Ok(0),
         }
     }
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {
@@ -75,8 +76,12 @@ impl Outcome<FileRef> {
                 message: copy_text(message, quota)?,
             },
             Self::Cancelled => Self::Cancelled,
-            Self::Indeterminate { operation_id } => Self::Indeterminate {
+            Self::Indeterminate {
+                operation_id,
+                cause,
+            } => Self::Indeterminate {
                 operation_id: *operation_id,
+                cause: cause.try_copy(|text| copy_text(text, quota))?,
             },
         })
     }

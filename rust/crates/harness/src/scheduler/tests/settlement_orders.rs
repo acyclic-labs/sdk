@@ -206,6 +206,7 @@ fn cancellation_and_indeterminate_completion_retain_settlement_lease() {
                     id(1),
                     Outcome::Indeterminate {
                         operation_id: id(1),
+                        cause: crate::IndeterminateCause::Unobserved,
                     },
                     Some(fence(0)),
                 )

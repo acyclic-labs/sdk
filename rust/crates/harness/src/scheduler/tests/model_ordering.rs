@@ -116,6 +116,7 @@ fn all_model_claim_cancellation_and_uncertainty_orders_preserve_accounting() -> 
             operation_id: id(2),
             outcome: Outcome::Indeterminate {
                 operation_id: id(2),
+                cause: crate::IndeterminateCause::Unobserved,
             },
             fence: Some(fence(0)),
             execution_duration_ns: None,

@@ -105,7 +105,7 @@ proptest! {
             prop_assert!(operations.insert(model.operation_id));
             prop_assert!(mail_cursor(&active, &model).is_err());
             prop_assert!(machine.transition(&active.state, &result(&model,
-                json!({"Indeterminate":{"operation_id":model.operation_id}}))).is_err(), "uncertain turn advanced");
+                json!({"Indeterminate":{"operation_id":model.operation_id,"cause":"Unobserved"}}))).is_err(), "uncertain turn advanced");
             prop_assert!(machine.transition(&active.state, &result(&foreign, Value::Null)).is_err());
             let output = match outcome {
                 0 => json!({"Succeeded":{"text":"done","metadata":null,"steps":1,"attachments":[]}}),

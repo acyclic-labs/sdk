@@ -47,14 +47,30 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
             Self::Live(handle) => Ok(match handle.result().await {
                 Outcome::Succeeded(Ok(value)) => Outcome::Succeeded(value),
                 Outcome::Succeeded(Err(Error::Indeterminate(operation_id))) => {
-                    Outcome::Indeterminate { operation_id }
+                    Outcome::Indeterminate {
+                        operation_id,
+                        cause: crate::IndeterminateCause::Unobserved,
+                    }
                 }
+                Outcome::Succeeded(Err(Error::CommandIndeterminate {
+                    operation_id,
+                    cause,
+                })) => Outcome::Indeterminate {
+                    operation_id,
+                    cause: crate::IndeterminateCause::Command(cause),
+                },
                 Outcome::Succeeded(Err(error)) => Outcome::Failed {
                     message: error.to_string(),
                 },
                 Outcome::Failed { message } => Outcome::Failed { message },
                 Outcome::Cancelled => Outcome::Cancelled,
-                Outcome::Indeterminate { operation_id } => Outcome::Indeterminate { operation_id },
+                Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                } => Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                },
             }),
             Self::Durable {
                 task_id,
@@ -75,9 +91,13 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
                 }
                 Outcome::Failed { message } => Ok(Outcome::Failed { message }),
                 Outcome::Cancelled => Ok(Outcome::Cancelled),
-                Outcome::Indeterminate { operation_id } => {
-                    Ok(Outcome::Indeterminate { operation_id })
-                }
+                Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                } => Ok(Outcome::Indeterminate {
+                    operation_id,
+                    cause,
+                }),
             },
         }
     }

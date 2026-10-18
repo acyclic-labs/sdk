@@ -1,32 +1,79 @@
 use super::*;
 
+// A failing command's kind and source error reach the task's outcome, the
+// caller's error and the logs. Negative control: a command that reports
+// indeterminate progress itself records no failure, so the cause names it
+// without any source error text.
 #[tokio::test]
-async fn indeterminate_command_traces_the_underlying_failure() -> Result<()> {
-    struct FailedCommand;
-    impl TaskCommandHost for FailedCommand {
+async fn indeterminate_command_keeps_its_cause() -> Result<()> {
+    struct UncertainCommand {
+        fail: bool,
+        kind: std::sync::Mutex<Option<String>>,
+    }
+    impl TaskCommandHost for UncertainCommand {
         fn execute<'a>(
             &'a self,
             _: TaskContext,
             _: LeaseFence,
-            _: WorkflowCommand,
+            command: WorkflowCommand,
             _: Value,
         ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
-            Box::pin(async { Err(Error::Unsupported("original command cause".into())) })
+            *self.kind.lock().unwrap() = Some(command.kind);
+            Box::pin(async move {
+                if self.fail {
+                    Err(Error::Unsupported("original command cause".into()))
+                } else {
+                    Ok(TaskCommandProgress::Indeterminate)
+                }
+            })
         }
     }
-    let (seen, _capture) = crate::obs::capture::install();
-    let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime(None).await?;
-    let lease = fixture.admit(&runtime).await?;
-    let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    runtime.run_task(lease, &FailedCommand, 2).await?;
-    assert!(matches!(
-        runtime.task_host().outcome(task).await?,
-        Some(Outcome::Indeterminate { .. })
-    ));
-    assert!(seen.lock().unwrap().iter().any(|(_, field, value)| {
-        *field == "cause" && value.contains("original command cause")
-    }));
+    for fail in [true, false] {
+        let (seen, _capture) = crate::obs::capture::install();
+        let fixture = Fixture::new().await?;
+        let runtime = fixture.runtime(None).await?;
+        let lease = fixture.admit(&runtime).await?;
+        let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+        let command = UncertainCommand {
+            fail,
+            kind: std::sync::Mutex::new(None),
+        };
+        runtime.run_task(lease, &command, 2).await?;
+        let kind = command.kind.lock().unwrap().clone().expect("command ran");
+        let reason = if fail {
+            crate::CommandIndeterminacyReason::Failed {
+                code: "ERROR_CODE_UNSUPPORTED".into(),
+                error: "unsupported capability: original command cause".into(),
+            }
+        } else {
+            crate::CommandIndeterminacyReason::Unsettled
+        };
+        let expected = crate::CommandIndeterminacy {
+            command: kind,
+            reason,
+        };
+        let Some(Outcome::Indeterminate {
+            operation_id,
+            cause,
+        }) = runtime.task_host().outcome(task).await?
+        else {
+            panic!("command left no indeterminate outcome");
+        };
+        assert_eq!(cause, crate::IndeterminateCause::Command(expected.clone()));
+        let error = cause.into_error(operation_id);
+        assert_eq!(error.code(), crate::wire::ErrorCode::Indeterminate);
+        assert!(error.to_string().contains(&expected.to_string()));
+        assert_eq!(
+            error.to_string().contains("original command cause"),
+            fail,
+            "{error}"
+        );
+        let logged =
+            seen.lock().unwrap().iter().any(|(_, field, value)| {
+                *field == "cause" && value.contains("original command cause")
+            });
+        assert_eq!(logged, fail);
+    }
     Ok(())
 }
 

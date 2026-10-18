@@ -67,6 +67,7 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
             operation_id: id(82),
             outcome: Outcome::Indeterminate {
                 operation_id: id(83),
+                cause: crate::IndeterminateCause::Unobserved,
             },
             fence: Some(fence(4)),
             execution_duration_ns: None,

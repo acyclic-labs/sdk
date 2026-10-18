@@ -98,6 +98,7 @@ fn measured_completions_require_active_terminal_fences() -> Result<()> {
         completion(
             Outcome::Indeterminate {
                 operation_id: id(1),
+                cause: crate::IndeterminateCause::Unobserved,
             },
             Some(fence(1)),
         ),
@@ -194,6 +195,7 @@ fn session_ceilings_and_model_claims_are_shared() -> Result<()> {
         id(41),
         Outcome::Indeterminate {
             operation_id: id(41),
+            cause: crate::IndeterminateCause::Unobserved,
         },
         Some(child_fence),
     )?;

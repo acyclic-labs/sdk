@@ -78,6 +78,15 @@ pub enum Error {
     /// Durable admission may have committed and must be reconciled.
     #[error("operation outcome is indeterminate: {0}")]
     Indeterminate(OperationId),
+    /// A task command left its task's completion uncertain, keeping its cause.
+    #[error("operation outcome is indeterminate: {operation_id}: {cause}")]
+    CommandIndeterminate {
+        /// Operation whose completion must be reconciled.
+        operation_id: OperationId,
+        /// The command and its source error.
+        #[source]
+        cause: crate::contract::CommandIndeterminacy,
+    },
     /// Search publication is retryable; its completed response remains in ready.json.
     #[error("search publication deferred; resume from ready.json")]
     SearchPublicationDeferred,
@@ -418,7 +427,9 @@ impl Error {
             Self::InteractionRejected(InteractionRejection::Denied) => ErrorCode::InteractionDenied,
             Self::Storage(_) | Self::Allocation(_) | Self::TaskFailed { .. } => ErrorCode::Storage,
             Self::Process(_) => ErrorCode::Invalid,
-            Self::Indeterminate(_) | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
+            Self::Indeterminate(_)
+            | Self::CommandIndeterminate { .. }
+            | Self::SearchPublicationDeferred => ErrorCode::Indeterminate,
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -463,7 +474,10 @@ impl Error {
     pub(crate) const fn leaves_effect_uncertain(&self) -> bool {
         matches!(
             self,
-            Self::Indeterminate(_) | Self::Storage(_) | Self::Cancelled
+            Self::Indeterminate(_)
+                | Self::CommandIndeterminate { .. }
+                | Self::Storage(_)
+                | Self::Cancelled
         )
     }
 
@@ -486,6 +500,7 @@ impl Error {
                 | Self::InteractionRejected(_)
                 | Self::Storage(_)
                 | Self::Indeterminate(_)
+                | Self::CommandIndeterminate { .. }
                 | Self::SearchPublicationDeferred
                 | Self::TaskFailed { .. }
                 | Self::GoalBlocked(_)
