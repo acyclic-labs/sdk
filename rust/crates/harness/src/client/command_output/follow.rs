@@ -25,6 +25,28 @@ struct Window {
     recent: usize,
 }
 impl Window {
+    fn partner(key: &FileKey) -> Option<FileKey> {
+        use crate::task_volume::command_query::related;
+        match key {
+            FileKey::Task {
+                file: TaskFile::Request(_),
+                ..
+            }
+            | FileKey::Session {
+                file: TaskFile::Request(_),
+                ..
+            } => related(key, TaskFile::ExecutionResult),
+            _ => related(key, TaskFile::Request),
+        }
+    }
+    fn retire(&mut self, key: &FileKey, removed: &mut Vec<FileKey>) {
+        for key in std::iter::once(key.clone()).chain(Self::partner(key)) {
+            if self.files.contains_key(&key) {
+                self.remove(&key);
+                removed.push(key);
+            }
+        }
+    }
     fn remove(&mut self, key: &FileKey) {
         if let Some((bytes, sequence)) = self.files.remove(key) {
             self.bytes -= bytes;
@@ -32,6 +54,7 @@ impl Window {
         }
     }
     fn include(&mut self, file: &FileValue) -> Result<bool> {
+        let prompt = super::command_prompt(&file.key, &file.bytes).is_some();
         let sequence = match &file.key {
             FileKey::Task {
                 file: TaskFile::ExecutionResult(_),
@@ -46,6 +69,16 @@ impl Window {
                 };
                 metadata.sequence
             }
+            FileKey::Task {
+                file: TaskFile::Request(_),
+                ..
+            }
+            | FileKey::Session {
+                file: TaskFile::Request(_),
+                ..
+            } if prompt => Self::partner(&file.key)
+                .and_then(|key| self.files.get(&key))
+                .map_or(u64::MAX, |(_, sequence)| *sequence),
             // Drafts, history, catalogs and UI state have their own live queries.
             // They can neither consume answer capacity nor be evicted as answers.
             _ => return Ok(false),
@@ -60,7 +93,19 @@ impl Window {
             .ok_or(Error::LimitExceeded)?;
         self.files
             .insert(file.key.clone(), (file.bytes.len(), sequence));
-        self.order.insert((sequence, file.key.clone()));
+        if prompt {
+            if Self::partner(&file.key).is_none_or(|key| !self.files.contains_key(&key)) {
+                self.order.insert((sequence, file.key.clone()));
+            }
+        } else {
+            if let Some(request) = Self::partner(&file.key)
+                && let Some((_, pending_sequence)) = self.files.get_mut(&request)
+            {
+                self.order.remove(&(*pending_sequence, request.clone()));
+                *pending_sequence = sequence;
+            }
+            self.order.insert((sequence, file.key.clone()));
+        }
         Ok(true)
     }
     fn trim<const TRIM: bool>(&mut self, removed: &mut Vec<FileKey>) -> Result<()> {
@@ -76,17 +121,15 @@ impl Window {
                 .first()
                 .map(|(_, key)| key.clone())
                 .ok_or(Error::LimitExceeded)?;
-            self.remove(&key);
-            removed.push(key);
+            self.retire(&key, removed);
         }
         Ok(())
     }
     fn apply<const TRIM: bool>(&mut self, change: &mut Change) -> Result<()> {
-        change.removed.retain(|key| {
-            let retained = self.files.contains_key(key);
-            self.remove(key);
-            retained
-        });
+        let removed = std::mem::take(&mut change.removed);
+        for key in removed {
+            self.retire(&key, &mut change.removed);
+        }
         let mut added = BTreeSet::new();
         if let Some(file) = &change.file {
             if !self.files.contains_key(&file.key) {

@@ -6,6 +6,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use std::{borrow::Cow, collections::BTreeMap};
 
+pub(crate) fn command_prompt(key: &FileKey, bytes: &[u8]) -> Option<String> {
+    use super::{CommandRequest, CommandResolution};
+    let (FileKey::Task {
+        file: TaskFile::Request(_),
+        ..
+    }
+    | FileKey::Session {
+        file: TaskFile::Request(_),
+        ..
+    }) = key
+    else {
+        return None;
+    };
+    crate::task_volume::command_query::related(key, TaskFile::ExecutionResult)?;
+    let resolution = CommandResolution::from_request(bytes).ok()?;
+    match resolution {
+        CommandResolution::Prompt { text, .. }
+        | CommandResolution::Submit {
+            request: CommandRequest::Replace { text, .. },
+        } => Some(text),
+        _ => None,
+    }
+}
+
 #[derive(Deserialize)]
 struct Outcome<'a> {
     sequence: u64,
@@ -99,10 +123,10 @@ fn owners(key: &FileKey) -> [Option<Scope>; 2] {
     match key {
         FileKey::Task {
             task,
-            file: TaskFile::ExecutionResult(_),
+            file: TaskFile::ExecutionResult(_) | TaskFile::Request(_),
         } => [
             Some(Scope::Owner(OutputOwner::Task(task.clone()))),
-            crate::task_volume::command_query::is_result(key).then(|| {
+            crate::task_volume::command_query::related(key, TaskFile::Request).map(|_| {
                 crate::task_volume::command_query::owner(key)
                     .map(|owner| Scope::Owner(OutputOwner::Session(owner)))
                     .unwrap_or(Scope::Unscoped)
@@ -110,7 +134,7 @@ fn owners(key: &FileKey) -> [Option<Scope>; 2] {
         ],
         FileKey::Session {
             session,
-            file: TaskFile::ExecutionResult(_),
+            file: TaskFile::ExecutionResult(_) | TaskFile::Request(_),
         } => [
             Some(Scope::Owner(OutputOwner::Session(session.clone()))),
             None,
@@ -174,8 +198,35 @@ pub(super) struct Outputs {
     rows: BTreeMap<Scope, BTreeMap<u64, std::collections::BTreeSet<FileKey>>>,
     keys: BTreeMap<FileKey, Metadata>,
     text_tasks: BTreeMap<(Scope, crate::TaskId), BTreeMap<u64, usize>>,
+    requests: std::collections::BTreeSet<FileKey>,
+    pending: BTreeMap<Scope, std::collections::BTreeSet<FileKey>>,
 }
 impl Outputs {
+    pub(super) fn tracks(key: &FileKey) -> bool {
+        Self::includes(key)
+            || matches!(
+                key,
+                FileKey::Task {
+                    file: TaskFile::Request(_),
+                    ..
+                } | FileKey::Session {
+                    file: TaskFile::Request(_),
+                    ..
+                }
+            )
+    }
+    fn pending(&mut self, key: &FileKey, include: bool) {
+        for owner in owners(key).into_iter().flatten() {
+            if include {
+                self.pending.entry(owner).or_default().insert(key.clone());
+            } else if let Some(keys) = self.pending.get_mut(&owner) {
+                keys.remove(key);
+                if keys.is_empty() {
+                    self.pending.remove(&owner);
+                }
+            }
+        }
+    }
     pub(super) fn includes(key: &FileKey) -> bool {
         matches!(
             key,
@@ -189,9 +240,18 @@ impl Outputs {
         )
     }
     pub(super) fn remove(&mut self, key: &FileKey) {
+        if self.requests.remove(key) {
+            self.pending(key, false);
+            return;
+        }
         let Some(value) = self.keys.remove(key) else {
             return;
         };
+        if let Some(request) = crate::task_volume::command_query::related(key, TaskFile::Request)
+            && self.requests.contains(&request)
+        {
+            self.pending(&request, true);
+        }
         for owner in owners(key).into_iter().flatten() {
             let rows = self.rows.get_mut(&owner).expect("indexed owner");
             let values = rows.get_mut(&value.sequence).expect("indexed sequence");
@@ -220,6 +280,15 @@ impl Outputs {
     }
     pub(super) fn insert(&mut self, file: &FileValue) {
         self.remove(&file.key);
+        if command_prompt(&file.key, &file.bytes).is_some() {
+            self.requests.insert(file.key.clone());
+            if crate::task_volume::command_query::related(&file.key, TaskFile::ExecutionResult)
+                .is_some_and(|result| !self.keys.contains_key(&result))
+            {
+                self.pending(&file.key, true);
+            }
+            return;
+        }
         let Some(value) = Metadata::from_file(file) else {
             return;
         };
@@ -240,6 +309,11 @@ impl Outputs {
             }
         }
         self.keys.insert(file.key.clone(), value);
+        if let Some(request) =
+            crate::task_volume::command_query::related(&file.key, TaskFile::Request)
+        {
+            self.pending(&request, false);
+        }
     }
     fn has_text(&self, owner: &OutputOwner, task: crate::TaskId, after: u64) -> bool {
         [
@@ -321,6 +395,28 @@ impl Outputs {
 }
 
 impl super::FileQueryView {
+    /// The immutable user prompt paired with a command request or outcome.
+    pub fn command_prompt(&self, key: &FileKey) -> Option<String> {
+        let request = crate::task_volume::command_query::related(key, TaskFile::Request)?;
+        let file = self.files().get(&request)?;
+        let [bytes] = file.segments.as_slice() else {
+            return None;
+        };
+        command_prompt(&request, bytes)
+    }
+    pub(crate) fn pending_prompts<'a>(
+        &'a self,
+        owner: &OutputOwner,
+    ) -> impl Iterator<Item = &'a FileKey> + use<'a> {
+        [
+            Some(Scope::Owner(owner.clone())),
+            matches!(owner, OutputOwner::Session(_)).then_some(Scope::Unscoped),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|scope| self.outputs.pending.get(&scope))
+        .flat_map(|keys| keys.iter())
+    }
     fn output<'a>(&'a self, key: &'a FileKey) -> Option<(&'a FileKey, CommandOutputView<'a>)> {
         let file = self.files().get(key)?;
         let [bytes] = file.segments.as_slice() else {

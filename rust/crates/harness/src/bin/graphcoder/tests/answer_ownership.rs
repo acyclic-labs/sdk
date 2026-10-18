@@ -5,6 +5,7 @@ use proptest::prelude::*;
 
 struct NoFiles;
 impl acyclic_harness::conversation::ContentResidencyVerifier for NoFiles {}
+const REQUEST: &str = "Own every body row";
 
 async fn catch_up(client: &mut TaskFileClient, volume: &TaskVolume<MemoryStream>) {
     let cut = volume.head().await.unwrap();
@@ -75,10 +76,7 @@ async fn ownership(bodies: &[String], result_first: bool) {
     )
     .await
     .unwrap();
-    commands
-        .submit("Own every body row", &NoFiles)
-        .await
-        .unwrap();
+    commands.submit(REQUEST, &NoFiles).await.unwrap();
     let request = commands.take_request().unwrap();
     let mut client = TaskFileClient::observe_task(volume.as_ref(), &authority, task, 128, 65536)
         .await
@@ -86,6 +84,22 @@ async fn ownership(bodies: &[String], result_first: bool) {
     client.follow_commands(&commands).await.unwrap();
     let mut renderer = ClientRenderer::default();
     let mut answer = String::new();
+    show(
+        &mut renderer,
+        &client,
+        &authority,
+        &commands,
+        &expected_transcript(REQUEST, ""),
+    )
+    .await;
+    reopen(
+        volume.as_ref(),
+        &authority,
+        task,
+        &commands,
+        &expected_transcript(REQUEST, ""),
+    )
+    .await;
     for (section, body) in bodies.iter().enumerate() {
         let text = format!("# Section {section}\n\nBody {section}: {body}.\n\n");
         answer.push_str(&text);
@@ -105,7 +119,7 @@ async fn ownership(bodies: &[String], result_first: bool) {
             .await
             .unwrap();
         catch_up(&mut client, volume.as_ref()).await;
-        let expected = expected_rows(&answer);
+        let expected = expected_transcript(REQUEST, &answer);
         // Every live prefix is checked before a canonical result exists.
         show(&mut renderer, &client, &authority, &commands, &expected).await;
         reopen(volume.as_ref(), &authority, task, &commands, &expected).await;
@@ -117,7 +131,7 @@ async fn ownership(bodies: &[String], result_first: bool) {
         },
         br#"{"state":"completed"}"#.to_vec(),
     );
-    let expected = expected_rows(&answer);
+    let expected = expected_transcript(REQUEST, &answer);
     if !result_first {
         volume
             .append(volume.head().await.unwrap(), &status)
@@ -178,15 +192,45 @@ async fn ownership(bodies: &[String], result_first: bool) {
             "every body has exactly one searchable archive owner: {status}"
         );
     }
+    // Equal content is still two different admitted commands. A content-based
+    // deduplication pass would erase the second prompt and answer here.
+    layout["open_view"] = serde_json::Value::Null;
+    layout["view_input"] = serde_json::Value::Null;
+    commands
+        .write_state(CommandFileRoot::Session, "layout.json", &layout)
+        .await
+        .unwrap();
+    commands.submit(REQUEST, &NoFiles).await.unwrap();
+    let second_request = commands.take_request().unwrap();
+    assert_ne!(request.key, second_request.key);
+    catch_up(&mut client, volume.as_ref()).await;
+    let mut twice = expected.clone();
+    twice.extend(expected_transcript(REQUEST, ""));
+    show(&mut renderer, &client, &authority, &commands, &twice).await;
+    reopen(volume.as_ref(), &authority, root, &commands, &twice).await;
+    commands
+        .consume(&second_request, |_, _, _| async {
+            Ok(serde_json::json!({"task": TaskId::from_bytes([93;16]), "text":answer}))
+        })
+        .await
+        .unwrap();
+    catch_up(&mut client, volume.as_ref()).await;
+    twice = [expected.clone(), expected].concat();
+    show(&mut renderer, &client, &authority, &commands, &twice).await;
+    reopen(volume.as_ref(), &authority, root, &commands, &twice).await;
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
     #[test]
     fn every_body_has_one_live_final_archive_reopen_and_search_owner(
-        bodies in prop::collection::vec("[a-z日€]{1,8}", 1..6), result_first in any::<bool>(),
+        bodies in prop::collection::vec("[a-z日€]{1,8}", 1..6),
     ) {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
-            .block_on(ownership(&bodies, result_first));
+            .block_on(async {
+                for result_first in [false, true] {
+                    ownership(&bodies, result_first).await;
+                }
+            });
     }
 }

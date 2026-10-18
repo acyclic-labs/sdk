@@ -228,3 +228,115 @@ fn oversized_answer_uses_the_per_file_limit_even_with_display_capacity() {
     assert!(matches!(window.include(&answer), Err(Error::LimitExceeded)));
     assert!(window.files.is_empty());
 }
+
+fn paired_history(text: &str, count: usize, reverse: bool) {
+    let snapshot = futures::executor::block_on(async {
+        TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("paired").unwrap(),
+        )
+        .await
+        .unwrap()
+        .snapshot(&Query::Root, 16)
+        .await
+        .unwrap()
+    });
+    let mut cursor = snapshot.cursor;
+    let mut window = Window {
+        files: BTreeMap::new(),
+        order: BTreeSet::new(),
+        bytes: 0,
+        per_file: PerFileByteLimit(2048),
+        total: DisplayWindowBudget {
+            files: 6,
+            bytes: 16_384,
+        },
+        recent: 3,
+    };
+    let mut delivered = BTreeMap::new();
+    let mut admissions = Vec::new();
+    for index in 0..count {
+        let id = crate::OperationId::from_bytes((index as u128 + 1).to_be_bytes());
+        let request = FileKey::parse(&format!(".sessions/s/requests/{id}.json")).unwrap();
+        let result = FileKey::parse(&format!(".sessions/s/executions/{id}/result.json")).unwrap();
+        let prompt = FileValue::new(
+            request,
+            serde_json::to_vec(&crate::client::CommandResolution::Prompt {
+                text: text.into(),
+                source: None,
+                mentions: Vec::new(),
+            })
+            .unwrap(),
+        );
+        let answer = FileValue::new(
+            result,
+            serde_json::to_vec(&serde_json::json!({
+                "sequence": index + 1, "ok": {"text": text}
+            }))
+            .unwrap(),
+        );
+        admissions.push(BTreeMap::new());
+        let pair = if reverse {
+            [answer, prompt]
+        } else {
+            [prompt, answer]
+        };
+        for file in pair {
+            admissions
+                .last_mut()
+                .unwrap()
+                .insert(file.key.clone(), file.bytes.to_vec());
+            cursor.position += 1;
+            cursor.accepted = cursor.position;
+            cursor.durable = cursor.position;
+            let mut change = Change {
+                cursor: cursor.clone(),
+                removed: Vec::new(),
+                file: Some(file),
+                files: Vec::new(),
+            };
+            window.apply::<true>(&mut change).unwrap();
+            for key in change.removed {
+                assert!(delivered.remove(&key).is_some());
+            }
+            for file in change.file.into_iter().chain(change.files) {
+                delivered.insert(file.key, file.bytes.to_vec());
+            }
+            let expected: BTreeMap<_, _> = admissions
+                .iter()
+                .rev()
+                .take(3)
+                .flat_map(|pair| pair.iter())
+                .map(|(key, bytes)| (key.clone(), bytes.clone()))
+                .collect();
+            assert_eq!(
+                delivered, expected,
+                "retire entire prompt/result identities together"
+            );
+            assert_eq!(window.files.len(), delivered.len());
+            assert_eq!(
+                window.bytes,
+                delivered.values().map(Vec::len).sum::<usize>()
+            );
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+    #[test]
+    fn prompts_and_results_share_one_retained_identity(text in "[a-z日€]{0,32}", count in 1usize..10) {
+        for reverse in [false, true] {
+            paired_history(&text, count, reverse);
+        }
+    }
+}
+
+#[test]
+fn paired_request_retention_boundaries() {
+    for count in [8, 16] {
+        for reverse in [false, true] {
+            paired_history("same 日", count, reverse);
+        }
+    }
+}

@@ -235,6 +235,14 @@ impl StreamText {
         self.newline = false;
         changed
     }
+    pub(super) fn literal(&mut self, rows: impl IntoIterator<Item = Line<'static>>) -> usize {
+        let changed = self.boundary();
+        if !self.stable.is_empty() {
+            self.stable.push(Line::default());
+        }
+        self.stable.extend(rows);
+        changed
+    }
     pub(super) fn rows(&mut self, changed: usize) -> Vec<Line<'static>> {
         let mut rows: Vec<_> = self.stable.iter().skip(changed).cloned().collect();
         let offset = self.offset();

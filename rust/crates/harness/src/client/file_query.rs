@@ -217,7 +217,7 @@ impl FileQueryView {
                 FileKey::Plan(_) => {
                     view.rows.insert(value.key.clone(), plan_rows(&value));
                 }
-                _ if super::command_output::Outputs::includes(&value.key) => {
+                _ if super::command_output::Outputs::tracks(&value.key) => {
                     view.outputs.insert(&value);
                 }
                 _ => {
@@ -355,7 +355,7 @@ impl FileQueryView {
                 continue;
             }
             self.rejected_models.remove(&file.key);
-            if super::command_output::Outputs::includes(&file.key) && !self.matches_head(file) {
+            if super::command_output::Outputs::tracks(&file.key) && !self.matches_head(file) {
                 self.outputs.insert(file);
             }
             if file.key == FileKey::RequestHead && !self.matches_head(&file) {
@@ -531,7 +531,7 @@ fn semantic(key: &FileKey) -> bool {
     matches!(key, FileKey::Goal | FileKey::Plan(_) | FileKey::RequestHead)
         || super::model_view::turn_request(key).is_some()
         || super::notification_view::identity(key).is_some()
-        || super::command_output::Outputs::includes(key)
+        || super::command_output::Outputs::tracks(key)
 }
 
 fn rejected_model(file: &FileValue, maximum_bytes: usize) -> bool {

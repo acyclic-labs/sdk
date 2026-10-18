@@ -193,3 +193,50 @@ fn task_scoped_commands_are_indexed_by_their_logical_session() {
     index.rows.remove(&Scope::Owner(owner.clone()));
     assert_ne!(index.after(&owner, 0).count(), 1);
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn user_request_text_round_trips_for_every_command_envelope(
+        characters in prop::collection::vec(any::<char>(), 0..64),
+    ) {
+        use crate::client::{CommandRequest, CommandResolution};
+        let text: String = characters.into_iter().collect();
+        let operation = crate::OperationId::from_bytes([4;16]);
+        let session = uuid::Uuid::from_u128(7);
+        for path in [
+            format!(".sessions/{session}/requests/{operation}.json"),
+            format!(".tasks/t/requests/{operation}.json"),
+            format!(".tasks/t/requests/command-{session}.{operation}.json"),
+        ] {
+            let key = FileKey::parse(&path).unwrap();
+            let replacement = CommandRequest::Replace { message: operation, text: text.clone() };
+            for bytes in [
+                serde_json::to_vec(&CommandResolution::Prompt { text: text.clone(), source: None, mentions: Vec::new() }).unwrap(),
+                serde_json::to_vec(&CommandResolution::Submit { request: replacement.clone() }).unwrap(),
+                serde_json::to_vec(&replacement).unwrap(),
+            ] {
+                let decoded = command_prompt(&key, &bytes);
+                prop_assert_eq!(decoded.as_deref(), Some(text.as_str()));
+                let request = FileValue::new(key.clone(), bytes);
+                let result_key = crate::task_volume::command_query::related(&key, TaskFile::ExecutionResult).unwrap();
+                let result = FileValue::new(result_key.clone(), br#"{"sequence":1,"ok":{"text":"answer"}}"#.to_vec());
+                for reverse in [false, true] {
+                    let mut index = Outputs::default();
+                    if reverse { index.insert(&result); }
+                    index.insert(&request);
+                    prop_assert_eq!(index.pending.values().map(|keys| keys.len()).sum::<usize>(),
+                        if reverse { 0 } else { owners(&key).into_iter().flatten().count() });
+                    index.insert(&result);
+                    prop_assert!(index.pending.is_empty());
+                    prop_assert!(index.requests.contains(&key));
+                    index.remove(&result_key);
+                    prop_assert_eq!(index.pending.values().map(|keys| keys.len()).sum::<usize>(), owners(&key).into_iter().flatten().count());
+                    index.remove(&key);
+                    prop_assert!(index.pending.is_empty());
+                    prop_assert!(index.requests.is_empty());
+                }
+            }
+        }
+    }
+}

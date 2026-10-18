@@ -170,6 +170,54 @@ fuzz_target!(|data: &[u8]| {
             .await
             .unwrap();
             assert_eq!(folded.views(), reopened.views());
+            // Request decoding and transcript projection share the execution
+            // owner's decoder. Exercise malformed bytes and a canonical
+            // round-trip with arbitrary Unicode through the real query fold.
+            let request_key = FileKey::Task {
+                task: acyclic_harness::task_volume::Component::new(&outcome_owner.id).unwrap(),
+                file: acyclic_harness::task_volume::TaskFile::Request(
+                    acyclic_harness::task_volume::Component::new(
+                        acyclic_harness::OperationId::from_bytes([1; 16]).to_string(),
+                    )
+                    .unwrap(),
+                ),
+            };
+            for (bytes, expected) in [
+                (data.to_vec(), None),
+                (
+                    serde_json::to_vec(&acyclic_harness::client::CommandResolution::Prompt {
+                        text: text.to_string(),
+                        source: None,
+                        mentions: Vec::new(),
+                    })
+                    .unwrap(),
+                    Some(text.as_ref()),
+                ),
+            ] {
+                let request = Write::new(request_key.clone(), bytes);
+                outcomes
+                    .append(outcomes.head().await.unwrap(), &request)
+                    .await
+                    .unwrap();
+                let queried = acyclic_harness::client::TaskFileClient::observe(
+                    &outcomes,
+                    &outcome_owner,
+                    16,
+                    32_768,
+                )
+                .await
+                .unwrap();
+                let projected = queried
+                    .views()
+                    .selections()
+                    .next()
+                    .unwrap()
+                    .1
+                    .command_prompt(&request_key);
+                if let Some(expected) = expected {
+                    assert_eq!(projected.as_deref(), Some(expected));
+                }
+            }
             let volume = Arc::new(
                 TaskVolume::open(
                     Arc::new(MemoryStream::default()),
@@ -195,11 +243,9 @@ fuzz_target!(|data: &[u8]| {
                 .enumerate()
             {
                 cut = volume
-                    .append(
-                        cut,
-                        &Write {
-                            publication: None,
-                            key: FileKey::Task {
+                    .append(cut, &{
+                        let mut chunk = Write::new(
+                            FileKey::Task {
                                 task: acyclic_harness::task_volume::Component::new(&owner.id)
                                     .unwrap(),
                                 file: acyclic_harness::task_volume::TaskFile::Chunk {
@@ -207,10 +253,11 @@ fuzz_target!(|data: &[u8]| {
                                     sequence: index as u64,
                                 },
                             },
-                            channel: Some(acyclic_harness::task_volume::Channel::Text),
-                            bytes: bytes.to_vec().into(),
-                        },
-                    )
+                            bytes.to_vec(),
+                        );
+                        chunk.channel = Some(acyclic_harness::task_volume::Channel::Text);
+                        chunk
+                    })
                     .await
                     .unwrap();
                 client.next_change().await.unwrap();

@@ -16,6 +16,7 @@ use futures::FutureExt as _;
 use std::sync::Arc;
 
 const SECTIONS: usize = 12;
+const PROMPT: &str = "Write a long markdown answer";
 /// File changes the driver may consume before the turn must have settled.
 const MAXIMUM_CHANGES: usize = 512;
 /// Find progress steps before the match count must be final.
@@ -67,6 +68,11 @@ fn expected_rows(answer: &str) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+fn expected_transcript(prompt: &str, answer: &str) -> Vec<String> {
+    std::iter::once(format!("You: {prompt}"))
+        .chain(expected_rows(answer))
+        .collect()
+}
 
 fn assert_painted(
     renderer: &mut ClientRenderer,
@@ -82,7 +88,7 @@ fn assert_painted(
     for row in expected {
         assert_eq!(
             painted.lines().filter(|line| line.trim() == row).count(),
-            1,
+            expected.iter().filter(|expected| *expected == row).count(),
             "every owned transcript body row reaches the actual screen once: {row}"
         );
     }
@@ -237,7 +243,7 @@ enum Provider {
 }
 
 async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
-    let expected = expected_rows(&answer);
+    let expected = expected_transcript(PROMPT, &answer);
     let directory = tempfile::tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -266,9 +272,7 @@ async fn settled_transcript(provider: Provider, answer: String) -> Transcript {
             let mut commands = client::local_ui(&local, &operation.to_string(), &authority).await?;
             client.follow_commands(&commands).await?;
             let reader = local.client_reader()?;
-            commands
-                .submit("Write a long markdown answer", reader.as_ref())
-                .await?;
+            commands.submit(PROMPT, reader.as_ref()).await?;
             let mut renderer = ClientRenderer::default();
             let mut submitted = false;
             for changes in 0.. {
@@ -374,7 +378,7 @@ fn assert_answer_once(transcript: &Transcript) {
     assert_eq!(
         transcript,
         &Transcript {
-            rows: expected_rows(&sections()),
+            rows: expected_transcript(PROMPT, &sections()),
             find: "1/1".into(),
         },
         "a completed answer must be painted exactly once"
@@ -407,7 +411,7 @@ async fn a_missing_answer_is_detected_negative_control() {
 #[test]
 #[should_panic(expected = "a completed answer must be painted exactly once")]
 fn a_duplicated_answer_is_detected_negative_control() {
-    let once = expected_rows(&sections());
+    let once = expected_transcript(PROMPT, &sections());
     assert_answer_once(&Transcript {
         rows: [once.clone(), once].concat(),
         find: "1/2".into(),
