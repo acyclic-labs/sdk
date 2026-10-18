@@ -81,17 +81,23 @@ proptest! {
     /// line ending; controls inside a line stay visible escapes.
     #[test]
     fn multiline_prompts_paint_one_sanitized_row_per_line(
-        lines in prop::collection::vec("[a-z日\u{301}\t\u{1b}\u{202e} ]{0,6}", 1..5),
+        lines in prop::collection::vec("[a-z日\u{301}\t\r\u{1b}\u{202e} ]{0,6}", 1..5),
         crlf in any::<bool>(),
     ) {
         let expected: Vec<String> = lines
             .iter()
             .enumerate()
             .map(|(index, line)| {
+                // With LF separators, the last CR before LF belongs to CRLF.
+                let line = if !crlf && index + 1 < lines.len() {
+                    line.strip_suffix('\r').unwrap_or(line)
+                } else {
+                    line
+                };
                 format!(
                     "{}{}",
                     if index == 0 { "You: " } else { "     " },
-                    line.replace('\u{1b}', "\\u{1b}").replace('\u{202e}', "\\u{202e}")
+                    line.replace('\r', "\\r").replace('\u{1b}', "\\u{1b}").replace('\u{202e}', "\\u{202e}")
                 )
             })
             .collect();
