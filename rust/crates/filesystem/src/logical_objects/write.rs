@@ -150,13 +150,9 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             } else {
                 self.validate_write(id, body, work)?;
             }
-            work.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
             #[cfg(all(test, feature = "memory"))]
             super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
-            if let Some(previous) = index.insert(id, write)? {
+            if let Some(previous) = index.insert(id, write, work)? {
                 work.charge(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED

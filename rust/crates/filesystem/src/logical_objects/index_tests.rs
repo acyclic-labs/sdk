@@ -133,7 +133,7 @@ proptest! {
         let mut failure = None;
         let physical = measure(|| {
             for (key, value) in &entries {
-                match index.insert(identity(*key), value) {
+                match index.insert(identity(*key), value, &mut work) {
                     Ok(previous) => actual.push(previous.copied()),
                     Err(error) => { failure = Some(error); break; }
                 }

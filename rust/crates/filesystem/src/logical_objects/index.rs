@@ -1,6 +1,18 @@
 use super::*;
 use std::{alloc::Layout, collections::hash_map::RandomState, hash::BuildHasher};
 
+pub(super) fn hash_state() -> RandomState {
+    #[cfg(all(test, feature = "memory"))]
+    {
+        // Independent differential fixtures use identical hash keys, never
+        // shared table contents, so their exact probe receipts are comparable.
+        thread_local! { static HASHES: RandomState = RandomState::new(); }
+        HASHES.with(Clone::clone)
+    }
+    #[cfg(not(all(test, feature = "memory")))]
+    RandomState::new()
+}
+
 // One exact slot allocation, with no insertion-time growth or hidden metadata.
 // Keep backing storage before its original allocation custody in drop order.
 pub(super) struct Index<'a, T> {
@@ -39,7 +51,7 @@ impl<'a, T> Index<'a, T> {
         backing.resize_with(slots, || None);
         Ok(Self {
             slots: backing,
-            hashes: RandomState::new(),
+            hashes: hash_state(),
             allocation,
             bytes,
         })
@@ -49,11 +61,35 @@ impl<'a, T> Index<'a, T> {
         &mut self,
         id: ObjectId,
         value: &'a T,
+        work: &mut KernelAccounting<'_>,
     ) -> Result<Option<&'a T>, crate::FsError> {
+        self.insert_metered::<true>(id, value, work)
+    }
+
+    // Only the public-to-parent insert above can select the production path.
+    // The private false instantiation restores the one-charge-per-insert bug.
+    fn insert_metered<const METER: bool>(
+        &mut self,
+        id: ObjectId,
+        value: &'a T,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<Option<&'a T>, crate::FsError> {
+        if !METER {
+            work.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
         let mask = self.slots.len() - 1;
         let mut position = usize::try_from(self.hashes.hash_one(id) & mask as u64)
             .map_err(|_| WorkError::Overflow)?;
         for _ in 0..self.slots.len() {
+            if METER {
+                work.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+            }
             match &mut self.slots[position] {
                 Some((found, first)) if *found == id => return Ok(Some(*first)),
                 empty @ None => {
@@ -78,6 +114,10 @@ impl<'a, T> Index<'a, T> {
     }
 }
 
-#[cfg(all(test, feature = "memory"))]
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
 #[path = "index_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "memory"))]
+#[path = "index_properties.rs"]
+mod properties;

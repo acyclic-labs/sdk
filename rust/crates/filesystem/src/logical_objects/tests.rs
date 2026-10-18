@@ -36,14 +36,39 @@ where
     Ok(())
 }
 
-fn linear_batch_work(cost: WorkCounters, count: u64) -> bool {
-    cost.items_examined == count && cost.allocation_operations == 3 + 3 * count
+fn exact_batch_work(cost: WorkCounters, count: u64, probes: u64) -> bool {
+    cost.items_examined == probes && cost.allocation_operations == 3 + 3 * count
+}
+
+// Separate occupancy-only oracle, without the production index or its values.
+fn expected_probes(writes: &[ObjectWrite]) -> u64 {
+    use std::hash::BuildHasher;
+    let hashes = super::index::hash_state();
+    let capacity = (2usize..)
+        .find(|size| {
+            size.is_power_of_two() && writes.len() < *size && writes.len() <= size - size / 8
+        })
+        .unwrap();
+    let mut occupied = vec![false; capacity];
+    let mut probes = 0;
+    for write in writes {
+        let start = hashes.hash_one(write.object_id) as usize;
+        for offset in 0..capacity {
+            probes += 1;
+            let position = (start.wrapping_add(offset)) % capacity;
+            if !occupied[position] {
+                occupied[position] = true;
+                break;
+            }
+        }
+    }
+    probes
 }
 
 async fn measured_unique_batch(
     count: usize,
     quadratic: bool,
-) -> Result<WorkCounters, TestCaseError> {
+) -> Result<(WorkCounters, u64), TestCaseError> {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -65,6 +90,7 @@ async fn measured_unique_batch(
             }
         })
         .collect();
+    let probes = expected_probes(&writes);
     let cancel = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
     QUADRATIC.set(quadratic);
@@ -86,24 +112,25 @@ async fn measured_unique_batch(
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         proptest::prop_assert_eq!(&read.bytes, &write.bytes);
     }
-    Ok(cost)
+    Ok((cost, probes))
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(24))]
-    // Every distinct input performs one indexed examination and funds exactly
-    // three fixed allocations plus three request allocations per object.
+    // Every occupied and empty probe is funded, together with exactly three
+    // fixed allocations plus three request allocations per object.
     #[test]
     fn indexed_batch_has_exact_n_and_2n_work(count in 2usize..65) {
         let runtime = tokio::runtime::Builder::new_current_thread().build()
             .map_err(|error| TestCaseError::fail(error.to_string()))?;
         runtime.block_on(async {
             for n in [count, 2 * count] {
-                let cost = measured_unique_batch(n, false).await?;
-                proptest::prop_assert!(linear_batch_work(cost, n as u64), "{cost:?}");
-                let broken = measured_unique_batch(n, true).await?;
-                proptest::prop_assert!(!linear_batch_work(broken, n as u64));
-                proptest::prop_assert_eq!(broken.items_examined, (n + n * (n - 1) / 2) as u64);
+                let (cost, probes) = measured_unique_batch(n, false).await?;
+                proptest::prop_assert!(exact_batch_work(cost, n as u64, probes), "{cost:?}");
+                let (broken, broken_probes) = measured_unique_batch(n, true).await?;
+                proptest::prop_assert_eq!(probes, broken_probes);
+                proptest::prop_assert!(!exact_batch_work(broken, n as u64, probes));
+                proptest::prop_assert_eq!(broken.items_examined, probes + (n * (n - 1) / 2) as u64);
                 proptest::prop_assert_eq!(broken.object_bytes_written, cost.object_bytes_written);
             }
             Ok(())
