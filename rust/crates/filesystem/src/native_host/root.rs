@@ -17,7 +17,6 @@ impl HostRoot {
         self.identity
     }
     #[cfg(unix)]
-    #[cfg(any(test, feature = "native-mount"))]
     pub(crate) fn directory_fd(&self) -> std::os::fd::RawFd {
         self.directory.as_raw_fd()
     }
