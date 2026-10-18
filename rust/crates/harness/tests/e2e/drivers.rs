@@ -34,7 +34,7 @@ impl Driver for Composer {
 impl Driver for Notifications {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        case.run()
+        case.run().await
     }
 }
 

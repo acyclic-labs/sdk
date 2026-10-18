@@ -31,7 +31,7 @@ struct Expectations {
     view: Option<Value>,
 }
 impl Notifications {
-    pub(super) fn verify_history(&self) -> Vec<u8> {
+    pub(super) async fn verify_history(&self) -> Vec<u8> {
         notification_history::verify(
             self.records
                 .iter()
@@ -45,6 +45,7 @@ impl Notifications {
             (self.mode, self.protocol, self.focused),
             false,
         )
+        .await
     }
     pub(super) fn parse(value: Value) -> Result<Self, String> {
         let case: Self = serde_json::from_value(value).map_err(|error| error.to_string())?;
@@ -61,8 +62,8 @@ impl Notifications {
         }
         Ok(case)
     }
-    pub(super) fn run(self) -> TestResult {
-        let mut projection = Projection::new();
+    pub(super) async fn run(self) -> TestResult {
+        let mut projection = Projection::new().await;
         for record in &self.records {
             projection.apply(record, false)?;
         }

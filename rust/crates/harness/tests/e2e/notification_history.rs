@@ -37,18 +37,16 @@ pub(super) struct Projection {
     pub view: FileQueryView,
 }
 impl Projection {
-    pub fn new() -> Self {
-        let snapshot = futures::executor::block_on(async {
-            TaskVolume::open(
-                Arc::new(MemoryStream::default()),
-                StreamPath::new("files").unwrap(),
-            )
-            .await
-            .unwrap()
-            .snapshot(&Query::Root, 128)
-            .await
-            .unwrap()
-        });
+    pub async fn new() -> Self {
+        let snapshot = TaskVolume::open(
+            Arc::new(MemoryStream::default()),
+            StreamPath::new("files").unwrap(),
+        )
+        .await
+        .unwrap()
+        .snapshot(&Query::Root, 128)
+        .await
+        .unwrap();
         Self {
             view: FileQueryView::from_snapshot(Query::Root, snapshot, 128, 1_048_576).unwrap(),
         }
@@ -99,21 +97,21 @@ impl Projection {
 // Independent file-state oracle shared by the shrinking property and byte fuzzer.
 // Every operation is checked, independently of fixture expectations. The mutant
 // models the former queue retaining a removed notification after failed output.
-pub(super) fn verify(
+pub(super) async fn verify(
     operations: impl IntoIterator<Item = (AttentionNotification, bool)>,
     options: (NotificationMode, TerminalNotificationProtocol, bool),
     retain_removed: bool,
 ) -> Vec<u8> {
-    verify_limits(operations, options, retain_removed, false)
+    verify_limits(operations, options, retain_removed, false).await
 }
 
-pub(super) fn verify_limits(
+pub(super) async fn verify_limits(
     operations: impl IntoIterator<Item = (AttentionNotification, bool)>,
     options: (NotificationMode, TerminalNotificationProtocol, bool),
     retain_removed: bool,
     unwrap_limit: bool,
 ) -> Vec<u8> {
-    let mut projection = Projection::new();
+    let mut projection = Projection::new().await;
     let mut expected = BTreeMap::new();
     let mut output = Vec::new();
     for (record, remove) in operations {

@@ -24,5 +24,9 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let decoded =
         notifications::Notifications::parse(serde_json::from_slice(&encoded).unwrap()).unwrap();
     assert_eq!(case, decoded);
-    let _ = case.verify_history();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(case.verify_history());
 });

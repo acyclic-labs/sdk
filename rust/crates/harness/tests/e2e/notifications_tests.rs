@@ -4,6 +4,19 @@ use proptest::prelude::*;
 use serde_json::json;
 use std::path::Path;
 
+#[path = "../support/notification_runtime_tests.rs"]
+mod runtime;
+
+// Property generators run outside Tokio. Only this outer test boundary owns an
+// executor; the shared implementation always returns its pending work to it.
+fn on_runtime<T>(future: impl Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
 fn record() -> impl Strategy<Value = AttentionNotification> {
     (
         0_u8..4,
@@ -32,8 +45,8 @@ proptest! {
     fn file_changes_and_removals_preserve_the_shared_view(
         operations in proptest::collection::vec((record(), any::<bool>()), 0..64),
     ) {
-        crate::notification_history::verify(operations,
-            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false), false);
+        on_runtime(crate::notification_history::verify(operations,
+            (NotificationMode::On, TerminalNotificationProtocol::Osc9, false), false));
     }
 
     // The actual case codec preserves all data, defaults and typed enum values.
@@ -48,7 +61,7 @@ proptest! {
             "expect":{"presented":records.len(), "output":""}});
         if let Some(mode) = mode { value["mode"] = json!(mode); }
         let case = Notifications::parse(value).unwrap();
-        let _ = case.verify_history();
+        let _ = on_runtime(case.verify_history());
         let bytes = serde_json::to_vec(&case).unwrap();
         let decoded = Notifications::parse(serde_json::from_slice(&bytes).unwrap()).unwrap();
         prop_assert_eq!(case, decoded);
@@ -66,24 +79,24 @@ proptest! {
     }
 }
 
-#[test]
-fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
+#[tokio::test]
+async fn fuzz_history_continues_after_stale_fixture_expectations() -> TestResult {
     let case = Notifications::parse(serde_json::from_slice(include_bytes!(
         "../../../harness-fuzz/corpus/notification_scenario/early-oracle-mismatch.json"
     ))?)?;
     assert_eq!(
-        case.verify_history(),
+        case.verify_history().await,
         b"\x1b]9;Goal done: task-1: Ready\x07"
     );
     assert!(
-        case.run().is_err(),
+        case.run().await.is_err(),
         "fixture oracle must still reject the mutation"
     );
     Ok(())
 }
 
-#[test]
-fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestResult {
+#[tokio::test]
+async fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestResult {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
     let baseline = crate::scenario::load_value(
         &root,
@@ -101,7 +114,7 @@ fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestRes
     ] {
         let mut value = baseline.clone();
         value.as_object_mut().unwrap().remove("driver");
-        Notifications::parse(value.clone())?.run()?;
+        Notifications::parse(value.clone())?.run().await?;
         match mutation {
             "output" => value["expect"]["output"] = json!("wrong"),
             "presented" => value["expect"]["presented"] = json!(0),
@@ -114,7 +127,7 @@ fn notification_oracles_reject_wrong_output_counts_removal_and_view() -> TestRes
             _ => unreachable!(),
         }
         assert!(
-            Notifications::parse(value)?.run().is_err(),
+            Notifications::parse(value)?.run().await.is_err(),
             "accepted wrong {mutation}"
         );
     }
@@ -179,13 +192,13 @@ proptest! {
     // preserve the exact view and cursor, and a removal releases capacity.
     #[test]
     fn notification_limits_are_atomic_and_recoverable(count in 120_u64..134) {
-        crate::notification_history::verify(bounded_history(count, "Ready"),
-            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false);
+        on_runtime(crate::notification_history::verify(bounded_history(count, "Ready"),
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false));
     }
     #[test]
     fn notification_byte_limit_is_atomic(detail_length in 1_048_400_usize..1_048_650) {
-        crate::notification_history::verify(bounded_history(1, &"x".repeat(detail_length)),
-            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false);
+        on_runtime(crate::notification_history::verify(bounded_history(1, &"x".repeat(detail_length)),
+            (NotificationMode::Off, TerminalNotificationProtocol::Bell, false), false));
     }
 }
 
@@ -195,13 +208,13 @@ fn notification_limit_seed_and_unwrap_negative_control() -> TestResult {
         "../../../harness-fuzz/corpus/notification_scenario/129-files.json"
     ))?)?;
     assert_eq!(case.records.len(), 129);
-    assert!(case.verify_history().is_empty());
+    assert!(on_runtime(case.verify_history()).is_empty());
     for operations in [
         bounded_history(129, "Ready"),
         bounded_history(1, &"x".repeat(1_048_576)),
     ] {
         assert!(
-            std::panic::catch_unwind(|| crate::notification_history::verify_limits(
+            std::panic::catch_unwind(|| on_runtime(crate::notification_history::verify_limits(
                 operations,
                 (
                     NotificationMode::Off,
@@ -210,7 +223,7 @@ fn notification_limit_seed_and_unwrap_negative_control() -> TestResult {
                 ),
                 false,
                 true
-            ))
+            )))
             .is_err(),
             "former unwrap must fail the shared oracle"
         );
