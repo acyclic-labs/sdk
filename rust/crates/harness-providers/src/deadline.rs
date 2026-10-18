@@ -4,9 +4,14 @@
 //! - a total deadline from the send to the body's end;
 //! - an idle deadline on the body, so a silent stream fails even while the total runs.
 //!
-//! Both read the transport's own timer, which tests drive without wall time, and both fail as a
-//! typed [`ModelTransportFailure::Timeout`]. Redelivery then treats a timeout like any other
-//! retryable failure: redelivered only while no output has escaped.
+//! Both are measured on the transport's monotonic clock ([`HttpTransport::now`]) on every poll.
+//! The platform timer is only a wake-up source, never the measure: a late, early or starved
+//! timer cannot extend a deadline, because the next poll compares the clock with it. Both fail
+//! as a typed [`ModelTransportFailure::Timeout`], which redelivery treats like any retryable
+//! failure: redelivered only while no output has escaped.
+//!
+//! On the native ledger the wake-up timer is admitted before it exists, at the one place this
+//! module creates one ([`Deadlines::arm`]).
 use crate::{HttpRequest, HttpResponse, HttpTransport, TimeoutSpec};
 use acyclic_harness::{Error, ModelTransportFailure, Result};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -20,6 +25,12 @@ use std::{
     time::Duration,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+type Work = acyclic_fs::NativeMaterializationWork;
+/// The portable path has no ledger.
+#[cfg(target_arch = "wasm32")]
+type Work = ();
+
 /// A transport whose every exchange is bounded by `timeouts`.
 pub(crate) struct Bounded {
     inner: Arc<dyn HttpTransport>,
@@ -31,59 +42,42 @@ impl Bounded {
         Arc::new(Self { inner, timeouts })
     }
 
-    fn idle(&self) -> Duration {
-        Duration::from_millis(self.timeouts.idle_ms.into())
-    }
-
-    fn total(&self) -> Duration {
-        Duration::from_millis(self.timeouts.total_ms.into())
-    }
-
-    /// Runs `send` within the total deadline, then hands the rest of it to the body.
+    /// Runs `send` within the total deadline and returns its response with the deadlines the
+    /// body inherits.
     async fn exchange(
         &self,
         send: impl Future<Output = Result<HttpResponse>>,
-        native: bool,
-    ) -> Result<(HttpResponse, BoxProviderFuture<'static, ()>)> {
-        let mut total = self.inner.delay(self.total());
+        work: Option<&Work>,
+    ) -> Result<(HttpResponse, Deadlines)> {
+        let mut deadlines = Deadlines::start(self.inner.clone(), self.timeouts, work.is_some());
         let mut send = pin!(send);
         let response = futures::future::poll_fn(|context| {
-            if total.poll_unpin(context).is_ready() {
-                return Poll::Ready(Err(timeout(native, Expired::Total, self.timeouts)));
+            // The deadline is checked before the producer, so readiness never bypasses it.
+            if let Some(expired) = deadlines.expired(false) {
+                return Poll::Ready(Err(deadlines.timeout(expired)));
             }
-            send.as_mut().poll(context)
+            if let Poll::Ready(response) = send.as_mut().poll(context) {
+                return Poll::Ready(response);
+            }
+            match deadlines.poll_wake(context, false, work) {
+                Poll::Ready(Ok(expired)) => Poll::Ready(Err(deadlines.timeout(expired))),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+                Poll::Pending => Poll::Pending,
+            }
         })
         .await?;
-        Ok((response, total))
-    }
-
-    fn guard(
-        &self,
-        body: BoxProviderStream<'static, Result<Bytes>>,
-        total: BoxProviderFuture<'static, ()>,
-        native: bool,
-    ) -> Guarded {
-        Guarded {
-            body,
-            transport: self.inner.clone(),
-            timeouts: self.timeouts,
-            window: self.idle(),
-            idle: None,
-            total,
-            progress: false,
-            ended: false,
-            native,
-            #[cfg(not(target_arch = "wasm32"))]
-            _custody: None,
-        }
+        // Silence is measured from the headers.
+        deadlines.progress = deadlines.transport.now();
+        deadlines.wake = None;
+        Ok((response, deadlines))
     }
 }
 
 impl HttpTransport for Bounded {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let (mut response, total) = self.exchange(self.inner.send(request), false).await?;
-            response.body = Box::pin(self.guard(response.body, total, false));
+            let (mut response, deadlines) = self.exchange(self.inner.send(request), None).await?;
+            response.body = Box::pin(Guarded::new(response.body, deadlines));
             Ok(response)
         })
     }
@@ -92,8 +86,21 @@ impl HttpTransport for Bounded {
         self.inner.delay(duration)
     }
 
+    fn now(&self) -> Duration {
+        self.inner.now()
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
+    fn delay_with_native_work(
+        &self,
+        duration: Duration,
+        work: &Work,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        self.inner.delay_with_native_work(duration, work)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supports_native(&self, work: &Work) -> Result<bool> {
         self.inner.supports_native(work)
     }
 
@@ -101,26 +108,27 @@ impl HttpTransport for Bounded {
     fn send_with_native_work<'a>(
         &'a self,
         request: HttpRequest,
-        work: &'a acyclic_fs::NativeMaterializationWork,
+        work: &'a Work,
     ) -> Result<acyclic_harness::NativeFutureBundle<'a, HttpResponse>> {
         let send = self.inner.send_with_native_work(request, work)?;
         acyclic_harness::NativeFutureBundle::new(work, || async move {
-            let (mut response, total) = self.exchange(send, true).await?;
-            // The guard is funded on the original ledger before it exists.
+            let (mut response, deadlines) = self.exchange(send, Some(work)).await?;
+            // The guard is funded on the original ledger before it exists, and its custody
+            // funds the body's wake-up timers.
             let custody = work.claim(
                 std::mem::size_of::<Guarded>() as u64,
                 1,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
-            let mut guarded = self.guard(response.body, total, true);
-            guarded._custody = Some(custody);
+            let mut guarded = Guarded::new(response.body, deadlines);
+            guarded.custody = Some(custody);
             response.body = Box::pin(guarded);
             Ok(response)
         })
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expired {
     Idle,
     Total,
@@ -142,30 +150,144 @@ fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
     }
 }
 
-/// A response body under both deadlines. One platform timer serves each idle window rather
-/// than each chunk: a chunk only marks progress, and a window that expires after progress
-/// re-arms. A body silent for two whole windows is therefore always reported, one silent for
-/// less than one window never is.
-struct Guarded {
-    body: BoxProviderStream<'static, Result<Bytes>>,
+/// A wake-up timer: portable, or admitted on the native ledger.
+enum Wake {
+    Portable(BoxProviderFuture<'static, ()>),
+    #[cfg(not(target_arch = "wasm32"))]
+    Native(acyclic_harness::NativeFutureBundle<'static, ()>),
+}
+
+impl Wake {
+    fn poll(&mut self, context: &mut Context<'_>) -> Poll<Result<()>> {
+        match self {
+            Self::Portable(timer) => timer.poll_unpin(context).map(Ok),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native(timer) => timer.poll_unpin(context),
+        }
+    }
+}
+
+/// One exchange's deadlines on the transport's clock.
+struct Deadlines {
     transport: Arc<dyn HttpTransport>,
     timeouts: TimeoutSpec,
-    window: Duration,
-    idle: Option<BoxProviderFuture<'static, ()>>,
-    total: BoxProviderFuture<'static, ()>,
-    progress: bool,
-    ended: bool,
     native: bool,
-    /// Native-ledger custody of this guard's own allocation.
+    /// When the exchange must have ended.
+    total: Duration,
+    /// The last progress: the headers, then each chunk.
+    progress: Duration,
+    wake: Option<Wake>,
+}
+
+impl Deadlines {
+    fn start(transport: Arc<dyn HttpTransport>, timeouts: TimeoutSpec, native: bool) -> Self {
+        let now = transport.now();
+        Self {
+            total: now.saturating_add(Duration::from_millis(timeouts.total_ms.into())),
+            progress: now,
+            transport,
+            timeouts,
+            native,
+            wake: None,
+        }
+    }
+
+    fn idle_at(&self) -> Duration {
+        self.progress
+            .saturating_add(Duration::from_millis(self.timeouts.idle_ms.into()))
+    }
+
+    /// The deadline the clock has reached, if any; `idle` only once the body is being read.
+    fn expired(&self, idle: bool) -> Option<Expired> {
+        let now = self.transport.now();
+        if now >= self.total {
+            Some(Expired::Total)
+        } else if idle && now >= self.idle_at() {
+            Some(Expired::Idle)
+        } else {
+            None
+        }
+    }
+
+    fn timeout(&self, expired: Expired) -> Error {
+        timeout(self.native, expired, self.timeouts)
+    }
+
+    /// Creates the wake-up timer for `wait`: the one place a deadline timer is allocated, and
+    /// on the native ledger it is admitted first.
+    fn arm(&self, wait: Duration, work: Option<&Work>) -> Result<Wake> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            return self
+                .transport
+                .delay_with_native_work(wait, work)
+                .map(Wake::Native);
+        }
+        let _ = work;
+        Ok(Wake::Portable(self.transport.delay(wait)))
+    }
+
+    /// Waits for a deadline: wakes on the timer, then measures on the clock. A timer that fires
+    /// before the clock reaches the deadline is re-armed for the rest; one that keeps firing
+    /// early yields instead of spinning.
+    fn poll_wake(
+        &mut self,
+        context: &mut Context<'_>,
+        idle: bool,
+        work: Option<&Work>,
+    ) -> Poll<Result<Expired>> {
+        for _ in 0..2 {
+            if let Some(expired) = self.expired(idle) {
+                self.wake = None;
+                return Poll::Ready(Ok(expired));
+            }
+            if self.wake.is_none() {
+                let due = if idle {
+                    self.total.min(self.idle_at())
+                } else {
+                    self.total
+                };
+                let wait = due.saturating_sub(self.transport.now());
+                self.wake = Some(self.arm(wait, work)?);
+            }
+            match self.wake.as_mut().map(|wake| wake.poll(context)) {
+                Some(Poll::Pending) | None => return Poll::Pending,
+                Some(Poll::Ready(result)) => {
+                    self.wake = None;
+                    result?;
+                }
+            }
+        }
+        context.waker().wake_by_ref();
+        Poll::Pending
+    }
+}
+
+/// A response body under both deadlines.
+struct Guarded {
+    body: BoxProviderStream<'static, Result<Bytes>>,
+    deadlines: Deadlines,
+    ended: bool,
+    /// Native-ledger custody of this guard's own allocation, whose ledger funds its timers.
     #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
+    custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl Guarded {
-    fn expire(&mut self, expired: Expired) -> Poll<Option<Result<Bytes>>> {
+    fn new(body: BoxProviderStream<'static, Result<Bytes>>, deadlines: Deadlines) -> Self {
+        Self {
+            body,
+            deadlines,
+            ended: false,
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+        }
+    }
+
+    fn end(&mut self, item: Result<Bytes>) -> Poll<Option<Result<Bytes>>> {
         self.ended = true;
-        self.idle = None;
-        Poll::Ready(Some(Err(timeout(self.native, expired, self.timeouts))))
+        self.deadlines.wake = None;
+        Poll::Ready(Some(item))
     }
 }
 
@@ -177,29 +299,35 @@ impl Stream for Guarded {
         if this.ended {
             return Poll::Ready(None);
         }
-        // Check before the producer: a ready chunk (or EOF) may follow consumer work that
-        // crossed the deadline. Producer readiness must never starve the deadline timer.
-        if this.total.poll_unpin(context).is_ready() {
-            return this.expire(Expired::Total);
+        // The total deadline is checked before the producer: consumer work may have crossed it
+        // while a chunk (or EOF) waited, and readiness must never bypass it.
+        if let Some(Expired::Total) = this.deadlines.expired(false) {
+            let error = this.deadlines.timeout(Expired::Total);
+            return this.end(Err(error));
         }
+        // Idle means the producer had nothing: a chunk that is ready is progress.
         if let Poll::Ready(item) = this.body.poll_next_unpin(context) {
-            this.progress = true;
+            this.deadlines.progress = this.deadlines.transport.now();
             if item.is_none() {
                 this.ended = true;
-                this.idle = None;
+                this.deadlines.wake = None;
             }
             return Poll::Ready(item);
         }
-        loop {
-            let (transport, window) = (&this.transport, this.window);
-            let idle = this.idle.get_or_insert_with(|| transport.delay(window));
-            if idle.poll_unpin(context).is_pending() {
-                return Poll::Pending;
+        #[cfg(not(target_arch = "wasm32"))]
+        let work = this
+            .custody
+            .as_ref()
+            .map(acyclic_fs::NativeAllocation::work);
+        #[cfg(target_arch = "wasm32")]
+        let work = None;
+        match this.deadlines.poll_wake(context, true, work) {
+            Poll::Ready(Ok(expired)) => {
+                let error = this.deadlines.timeout(expired);
+                this.end(Err(error))
             }
-            this.idle = None;
-            if !std::mem::take(&mut this.progress) {
-                return this.expire(Expired::Idle);
-            }
+            Poll::Ready(Err(error)) => this.end(Err(error)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }

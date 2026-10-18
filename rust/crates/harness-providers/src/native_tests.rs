@@ -32,6 +32,16 @@ impl HttpTransport for Fixture {
     fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         Box::pin(std::future::pending())
     }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
+    fn delay_with_native_work(
+        &self,
+        _: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        crate::fixtures::native_delay(std::time::Duration::MAX, work)
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("native execution must use its funded HTTP callback")
     }

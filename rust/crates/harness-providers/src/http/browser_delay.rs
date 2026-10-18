@@ -57,3 +57,21 @@ pub(super) async fn delay(duration: std::time::Duration) {
         remaining -= u128::from(interval);
     }
 }
+
+/// The platform's monotonic clock, `performance.now()`, in the realm's own origin. A realm
+/// without it falls back to the wall clock, which still only grows in practice.
+pub(super) fn now() -> std::time::Duration {
+    let global = js_sys::global();
+    let millis = Reflect::get(&global, &JsValue::from_str("performance"))
+        .ok()
+        .and_then(|performance| {
+            let now = Reflect::get(&performance, &JsValue::from_str("now"))
+                .ok()?
+                .dyn_into::<Function>()
+                .ok()?;
+            now.call0(&performance).ok()?.as_f64()
+        })
+        .unwrap_or_else(js_sys::Date::now);
+    // `max` maps NaN to zero and `min` keeps the conversion finite.
+    std::time::Duration::from_secs_f64(millis.max(0.0).min(1e15) / 1000.0)
+}

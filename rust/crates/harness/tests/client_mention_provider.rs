@@ -26,6 +26,9 @@ impl HttpTransport for Script {
     fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         Box::pin(futures::future::pending())
     }
+    fn now(&self) -> std::time::Duration {
+        std::time::Duration::ZERO
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             self.0.send(request).expect("request receiver retained");

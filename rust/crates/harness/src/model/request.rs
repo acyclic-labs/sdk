@@ -189,23 +189,29 @@ impl ModelRequest {
                         "model tool result has no matching call".into(),
                     ));
                 };
-                // An error result answers any paired call, bound or not: like every supplied
-                // result it is history held to its shape (`validate_limits`), not evidence that
-                // a tool ran, so no source of history needs provenance to admit it.
-                if matches!(content, ToolResultContent::Error { .. }) {
-                    return Ok(());
+                // One admission path for every result, whatever its source: the paired call's
+                // binding and arguments are always checked, and they decide which results it
+                // admits. A bound call with valid arguments admits a projected result held to the
+                // tool's projection contract, or a typed error. A call the harness must refuse
+                // (unbound, or arguments that violate the schema) admits only a typed error. The
+                // error's own shape was checked with the message (`validate_limits`).
+                let tool = match Self::bound_tool(name, tools) {
+                    Some(tool) => crate::executor::with_history_io(io, |work| {
+                        crate::executor::check_json_schema_value(
+                            &tool.input_schema,
+                            arguments,
+                            "model tool arguments",
+                            work,
+                        )
+                    })?
+                    .map(|()| tool),
+                    None => Err(Error::Invalid("model tool call is unbound".into())),
+                };
+                match (tool, content) {
+                    (_, ToolResultContent::Error { .. }) => {}
+                    (Ok(tool), content) => Self::validate_tool_result(tool, content, io)?,
+                    (Err(refused), _) => return Err(refused),
                 }
-                let tool = Self::bound_tool(name, tools)
-                    .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                crate::executor::with_history_io(io, |work| {
-                    crate::executor::validate_json_schema_value(
-                        &tool.input_schema,
-                        arguments,
-                        "model tool arguments",
-                        work,
-                    )
-                })?;
-                Self::validate_tool_result(tool, content, io)?;
             }
             _ if role == ModelRole::Tool => {
                 return Err(Error::Invalid("tool role requires a paired result".into()));

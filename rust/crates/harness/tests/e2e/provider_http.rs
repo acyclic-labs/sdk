@@ -9,7 +9,11 @@ use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 pub(super) struct Sent {
@@ -28,6 +32,9 @@ pub(super) struct Recorded {
     width: usize,
     replies: Vec<(u16, Bytes, bool)>,
     unreachable: usize,
+    /// The virtual clock in milliseconds: every wait under the total deadline elapses at once
+    /// and advances it.
+    clock: Arc<AtomicU64>,
 }
 impl Recorded {
     pub fn new(case: &ProviderCase) -> Arc<Self> {
@@ -39,6 +46,7 @@ impl Recorded {
             }),
             width: case.chunk_bytes.get(),
             unreachable: case.unreachable.into(),
+            clock: Arc::new(AtomicU64::new(0)),
             replies: case
                 .responses
                 .iter()
@@ -126,15 +134,24 @@ impl Recorded {
     }
 }
 impl HttpTransport for Recorded {
-    // Backoffs and idle windows expire when first polled, so redelivery runs without a clock
-    // and a silent body stalls after two idle windows; the exchange's total deadline never does.
-    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
-        if wait >= std::time::Duration::from_millis(total.into()) {
-            Box::pin(futures::future::pending())
-        } else {
-            Box::pin(async {})
-        }
+    // Backoffs and idle deadlines elapse at once on the virtual clock, so a silent body times
+    // out at its idle deadline; the exchange's total deadline never does.
+    fn delay(&self, wait: Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        Box::pin(elapse(self.clock.clone(), wait))
+    }
+    fn now(&self) -> Duration {
+        Duration::from_millis(self.clock.load(Ordering::SeqCst))
+    }
+    fn delay_with_native_work(
+        &self,
+        wait: Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<NativeFutureBundle<'static, ()>> {
+        let clock = self.clock.clone();
+        NativeFutureBundle::new(work, move || async move {
+            elapse(clock, wait).await;
+            Ok(())
+        })
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
@@ -160,6 +177,15 @@ impl HttpTransport for Recorded {
             HttpResponse::with_native_body(status, self.chunks(bytes, stall), work)
         })
     }
+}
+/// Advances `clock` by `wait` once polled, or never for a wait as long as the total deadline.
+async fn elapse(clock: Arc<AtomicU64>, wait: Duration) {
+    let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
+    if wait >= Duration::from_millis(total.into()) {
+        futures::future::pending::<()>().await;
+    }
+    let millis = u64::try_from(wait.as_millis()).unwrap_or(u64::MAX);
+    clock.fetch_add(millis, Ordering::SeqCst);
 }
 pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<ResolvedModel> {
     let adapter = match case.protocol {

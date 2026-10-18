@@ -72,6 +72,16 @@ impl HttpTransport for Responses {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)
     }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
+    fn delay_with_native_work(
+        &self,
+        wait: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        crate::fixtures::native_delay(wait, work)
+    }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move { self.exchange(request) })
     }

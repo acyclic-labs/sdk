@@ -147,6 +147,10 @@ impl HttpTransport for BrowserTransport {
     fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
         Box::pin(timer::delay(duration))
     }
+
+    fn now(&self) -> std::time::Duration {
+        timer::now()
+    }
 }
 
 #[cfg(test)]

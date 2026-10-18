@@ -79,6 +79,9 @@ impl HttpTransport for CountResponse {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)
     }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
             Ok(HttpResponse {
@@ -179,6 +182,9 @@ proptest::proptest! {
         impl HttpTransport for CountBody {
             fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
                 crate::fixtures::delay(wait)
+            }
+            fn now(&self) -> std::time::Duration {
+                crate::fixtures::now()
             }
             fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
                 let attempt = self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

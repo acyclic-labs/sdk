@@ -62,8 +62,24 @@ impl HttpResponse {
 pub trait HttpTransport: ProviderPlatform {
     /// Sends exactly one request without retries.
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>>;
-    /// Waits `duration` on the platform timer before a redelivery.
+    /// Waits `duration` on the platform timer: a redelivery backoff, or a deadline's wake-up.
     fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()>;
+    /// Monotonic time on the platform clock that `delay` waits on, from a fixed origin.
+    /// Deadlines are measured on it; timers only wake their measurement.
+    fn now(&self) -> std::time::Duration;
+    /// `delay` admitted on the original invocation ledger before it exists.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn delay_with_native_work(
+        &self,
+        _: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        work.remaining()?;
+        Err(acyclic_harness::Error::NativeBoundary {
+            code: acyclic_harness::wire::ErrorCode::Unsupported,
+            reason: "HTTP transport has no native timer",
+        })
+    }
     /// Whether this transport funds its native callback frames before allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
@@ -96,6 +112,14 @@ pub(crate) fn platform() -> Result<std::sync::Arc<dyn HttpTransport>> {
     #[cfg(target_arch = "wasm32")]
     let transport = BrowserTransport::global()?;
     Ok(std::sync::Arc::new(transport))
+}
+
+/// Tokio's monotonic clock (which a paused test runtime drives) from a process-wide origin.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_now() -> std::time::Duration {
+    static ORIGIN: std::sync::OnceLock<tokio::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(tokio::time::Instant::now);
+    tokio::time::Instant::now().saturating_duration_since(origin)
 }
 
 /// Pooled native HTTP with redirects disabled.
@@ -204,6 +228,21 @@ impl HttpTransport for ReqwestTransport {
 
     fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
         Box::pin(tokio::time::sleep(duration))
+    }
+
+    fn now(&self) -> std::time::Duration {
+        native_now()
+    }
+
+    fn delay_with_native_work(
+        &self,
+        duration: std::time::Duration,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+        acyclic_harness::NativeFutureBundle::new(work, move || async move {
+            tokio::time::sleep(duration).await;
+            Ok(())
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -279,3 +279,108 @@ proptest! {
         prop_assert!(!no_payload_copy(old), "former conversion escaped detection: {old:?}");
     }
 }
+
+/// The calls a result can answer: unbound, bound with schema-violating arguments, and bound
+/// with valid arguments.
+const CALLS: [(&str, i8); 3] = [("missing", 0), ("echo", 1), ("echo", 2)];
+
+fn call_arguments(standing: i8) -> Value {
+    match standing {
+        1 => json!(7),
+        _ => json!("é"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(256))]
+
+    // One admission path for every result on every source. The oracle is the contract itself:
+    // a result must answer an issued call; an error result must have its shape (nonempty,
+    // control-free, within the render limit) and answers any issued call; a projected result
+    // needs a bound call with valid arguments and a projection-valid envelope.
+    #[test]
+    fn every_result_is_admitted_by_one_contract_on_every_source(
+        call in 0..CALLS.len(),
+        paired in any::<bool>(),
+        projected in any::<bool>(),
+        message in r"(\PC|[\n\t\x1b]){0,48}",
+        value in values(),
+    ) {
+        let limits = Limits { render_bytes: 32, ..Limits::default() };
+        let (name, standing) = CALLS[call];
+        let result = if projected {
+            ToolResultContent::Json { value: value.clone() }
+        } else {
+            error(&message)
+        };
+        let mut request = answered(name, call_arguments(standing), result.clone());
+        if !paired {
+            let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+                &mut request.messages[2].content
+            else {
+                panic!("result")
+            };
+            *call_id = "call-unissued".into();
+        }
+        let shape = |content: &ToolResultContent| content.validate_limits(limits, &mut None).is_ok();
+        let admitted = paired
+            && shape(&result)
+            && if projected {
+                let tool = &request.tools[0];
+                standing == 2
+                    && crate::executor::validate_json_schema_value(
+                        &tool.projection_schema,
+                        &serde_json::to_value(&result).unwrap(),
+                        "model tool result",
+                        &mut None,
+                    )
+                    .is_ok()
+            } else {
+                !message.is_empty()
+                    && !message.chars().any(char::is_control)
+                    && message.len() <= 32
+            };
+        prop_assert_eq!(request.clone().validate(limits, None).is_ok(), admitted);
+        prop_assert_eq!(
+            PreparedModelRequest::prepare(request.clone(), limits, None).is_ok(),
+            admitted
+        );
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        prop_assert_eq!(PreparedModelRequest::decode(&bytes, limits, None).is_ok(), admitted);
+    }
+}
+
+#[test]
+fn an_unissued_or_malformed_error_result_is_rejected() {
+    // Negative control for the contract above: the refusal text that every issued call
+    // admits is rejected when its call was never issued, and a malformed error is rejected
+    // even for the bound, valid call.
+    let refusal = "tool `echo` refused the call (unauthorized): denied";
+    for (name, standing) in CALLS {
+        let request = answered(name, call_arguments(standing), error(refusal));
+        assert!(
+            request.clone().validate(Limits::default(), None).is_ok(),
+            "{name}"
+        );
+        let mut unissued = request;
+        let ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) =
+            &mut unissued.messages[2].content
+        else {
+            panic!("result")
+        };
+        *call_id = "call-unissued".into();
+        assert!(
+            unissued.validate(Limits::default(), None).is_err(),
+            "{name}"
+        );
+    }
+    for malformed in ["", "forged\nresult", "\u{1b}[31mforged"] {
+        let request = answered("echo", json!("é"), error(malformed));
+        assert!(
+            request.clone().validate(Limits::default(), None).is_err(),
+            "{malformed:?}"
+        );
+        let bytes = crate::contract::canonical_json_bytes(&request).unwrap();
+        assert!(PreparedModelRequest::decode(&bytes, Limits::default(), None).is_err());
+    }
+}

@@ -38,6 +38,9 @@ impl HttpTransport for Server {
     fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
         crate::fixtures::delay(wait)
     }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
     fn send(
         &self,
         request: HttpRequest,

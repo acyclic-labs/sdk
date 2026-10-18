@@ -35,6 +35,9 @@ impl HttpTransport for Counted {
             Box::pin(async {})
         }
     }
+    fn now(&self) -> std::time::Duration {
+        crate::fixtures::now()
+    }
 }
 
 /// Serves `replies` in order, one per connection, and returns the port and the accept count.

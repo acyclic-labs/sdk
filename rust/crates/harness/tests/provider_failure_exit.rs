@@ -67,6 +67,9 @@ impl HttpTransport for Counted {
     fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
         self.inner.delay(wait)
     }
+    fn now(&self) -> std::time::Duration {
+        self.inner.now()
+    }
 }
 
 const COUNT_PATH: &str = "count_tokens";

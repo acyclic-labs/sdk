@@ -10,6 +10,27 @@ pub(crate) fn delay(wait: std::time::Duration) -> acyclic_stream::BoxProviderFut
     }
 }
 
+/// The frozen fixture clock: it never advances, so no deadline measured on it elapses.
+pub(crate) fn now() -> std::time::Duration {
+    std::time::Duration::ZERO
+}
+
+/// [`delay`] admitted on the native ledger, with no allocation beyond the admitted future.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_delay(
+    wait: std::time::Duration,
+    work: &acyclic_fs::NativeMaterializationWork,
+) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'static, ()>> {
+    let frozen =
+        wait >= std::time::Duration::from_millis(crate::TimeoutSpec::DEFAULT.idle_ms.into());
+    acyclic_harness::NativeFutureBundle::new(work, move || async move {
+        if frozen {
+            futures::future::pending::<()>().await;
+        }
+        Ok(())
+    })
+}
+
 pub(crate) const CHAT: &str = concat!(
     "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\",\"reasoning_content\":\"think\",\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
