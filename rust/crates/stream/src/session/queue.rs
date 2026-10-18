@@ -63,7 +63,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 (cursor(next), item, key)
             }
             Err(error) => {
-                if channel.publication.is_some()
+                if channel.revalidate.is_some()
                     && matches!(
                         error,
                         StreamError::AccessDenied
@@ -184,16 +184,12 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let Some((_, id)) = selected else {
             return Ok(None);
         };
-        if let Some(encoded) = self
+        if let Some(revalidate) = self
             .channels
             .get(&id)
-            .and_then(|channel| channel.publication.as_ref())
+            .and_then(|channel| channel.revalidate.as_ref())
         {
-            let validation = self
-                .publications
-                .as_ref()
-                .ok_or(StreamError::Unsupported)?
-                .revalidate(encoded);
+            let validation = revalidate();
             if let Err(error) = validation {
                 let generation = self
                     .channels

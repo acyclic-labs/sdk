@@ -69,11 +69,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             subscription.kind,
             Some(Kind::Children(_) | Kind::FsPublications(_))
         );
-        let publication = match &subscription.kind {
-            Some(Kind::FsPublications(encoded)) => Some(encoded.clone()),
-            _ => None,
-        };
-        let (latest, source) = match subscription.kind {
+        let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let preceding = wire_codec::session::preceding_follow(&follow, &resume)?;
                 if !resume.opaque.is_empty() {
@@ -93,7 +89,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     identity,
                     self.executor.clone(),
                 );
-                (latest, source)
+                (latest, source, None)
             }
             Some(Kind::Children(request)) => {
                 if self.limits.pending_bytes < CHILD_FRAME_BYTES {
@@ -109,6 +105,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         resume.clone(),
                         identity,
                     ),
+                    None,
                 )
             }
             Some(Kind::FsPublications(encoded)) => {
@@ -122,7 +119,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     wire::SessionDelivery::Latest => true,
                     _ => return Err(StreamError::InvalidArgument),
                 };
-                (latest, publications::source(subscription, identity))
+                (
+                    latest,
+                    publications::source(subscription.open, identity),
+                    Some(subscription.revalidate),
+                )
             }
             _ => return Err(StreamError::Unsupported),
         };
@@ -132,7 +133,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 generation: identity.generation,
                 latest,
                 opaque_cursor,
-                publication,
+                revalidate,
                 pending: VecDeque::new(),
                 indexed: None,
                 credit: wire::SessionWindow::default(),

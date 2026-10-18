@@ -18,7 +18,9 @@ mod sources;
 pub use sources::model::{verify_source_recheck, verify_source_wakes};
 mod children;
 mod publications;
-pub use publications::{PublicationProvider, PublicationStream, PublicationSubscription};
+pub use publications::{
+    PublicationProvider, PublicationRevalidation, PublicationStream, PublicationSubscription,
+};
 mod client;
 mod connection;
 mod local;
@@ -84,7 +86,7 @@ struct Channel {
     generation: u64,
     latest: bool,
     opaque_cursor: bool,
-    publication: Option<Bytes>,
+    revalidate: Option<PublicationRevalidation>,
     pending: VecDeque<Pending>,
     indexed: Option<usize>,
     credit: wire::SessionWindow,

@@ -4,18 +4,25 @@ use super::*;
 pub type PublicationStream =
     crate::BoxProviderStream<'static, Result<wire::SessionData, StreamError>>;
 
+/// Current authorization query for one validated publication scope.
+#[cfg(not(target_arch = "wasm32"))]
+pub type PublicationRevalidation = Arc<dyn Fn() -> Result<(), StreamError> + Send + Sync>;
+/// Current browser authorization query for one validated publication scope.
+#[cfg(target_arch = "wasm32")]
+pub type PublicationRevalidation = Arc<dyn Fn() -> Result<(), StreamError>>;
+
 /// Prepared filesystem publication subscription.
 pub struct PublicationSubscription {
     /// Session delivery mode.
     pub delivery: wire::SessionDelivery,
+    /// Required authorization query at the delivery boundary.
+    pub revalidate: PublicationRevalidation,
     /// Asynchronous provider open.
     pub open: crate::BoxProviderFuture<'static, Result<PublicationStream, StreamError>>,
 }
 
 /// Filesystem-owned adapter for the opaque Session payload.
 pub trait PublicationProvider: crate::ProviderPlatform + 'static {
-    /// Revalidates current authority immediately before delivery.
-    fn revalidate(&self, encoded: &Bytes) -> Result<(), StreamError>;
     /// Prepares a subscription and continuation.
     fn subscribe(
         &self,
@@ -25,12 +32,12 @@ pub trait PublicationProvider: crate::ProviderPlatform + 'static {
 }
 
 pub(super) fn source(
-    subscription: PublicationSubscription,
+    open: crate::BoxProviderFuture<'static, Result<PublicationStream, StreamError>>,
     identity: wire::SessionChannel,
 ) -> Source {
     Box::pin(
         stream::try_unfold(
-            (Some(subscription.open), None::<PublicationStream>),
+            (Some(open), None::<PublicationStream>),
             |(open, mut publications)| async move {
                 if let Some(open) = open {
                     publications = Some(open.await?);

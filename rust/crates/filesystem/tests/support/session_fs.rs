@@ -97,19 +97,15 @@ pub struct Broken {
     pub skip_authorization: bool,
 }
 impl session::PublicationProvider for Broken {
-    fn revalidate(&self, encoded: &bytes::Bytes) -> Result<(), StreamError> {
-        if self.skip_authorization {
-            Ok(())
-        } else {
-            self.inner.revalidate(encoded)
-        }
-    }
     fn subscribe(
         &self,
         encoded: bytes::Bytes,
         resume: wire::SessionCursor,
     ) -> Result<session::PublicationSubscription, StreamError> {
         let mut source = self.inner.subscribe(encoded, resume)?;
+        if self.skip_authorization {
+            source.revalidate = Arc::new(|| Ok(()));
+        }
         if self.skip_deletion {
             let open = source.open;
             source.open = Box::pin(async move {

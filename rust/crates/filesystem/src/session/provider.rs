@@ -23,15 +23,12 @@ impl<P: StreamProvider, A> PublicationProvider for Provider<P, A>
 where
     A: Fn(&Subscription) -> Result<(), StreamError> + Send + Sync + 'static,
 {
-    fn revalidate(&self, encoded: &Bytes) -> Result<(), StreamError> {
-        (self.authorize)(&Subscription::decode(encoded)?)
-    }
     fn subscribe(
         &self,
         encoded: Bytes,
         resume: session::SessionCursor,
     ) -> Result<PublicationSubscription, StreamError> {
-        let subscription = Subscription::decode(&encoded)?;
+        let subscription = Arc::new(Subscription::decode(&encoded)?);
         let authorize = self.authorize.clone();
         let anchor = if resume.opaque.is_empty() {
             if resume.next != 0 {
@@ -40,7 +37,7 @@ where
             None
         } else {
             let cursor = Cursor::decode(&resume.opaque)?;
-            if cursor.subscription != subscription || cursor.next != resume.next {
+            if cursor.subscription != *subscription || cursor.next != resume.next {
                 return Err(StreamError::InvalidArgument);
             }
             Some(cursor)
@@ -51,8 +48,11 @@ where
             _ => return Err(StreamError::InvalidArgument),
         };
         let provider = self.stream.clone();
+        let scope = subscription.clone();
+        let policy = authorize.clone();
         Ok(PublicationSubscription {
             delivery,
+            revalidate: Arc::new(move || policy(&scope)),
             open: Box::pin(async move {
                 authorize(&subscription)?;
                 let path = crate::distributed::authority_records_path(subscription.volume_id)

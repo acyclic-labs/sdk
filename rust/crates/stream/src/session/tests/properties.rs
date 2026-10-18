@@ -16,7 +16,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
             1,
             Channel {
                 opaque_cursor: false,
-                publication: None,
+                revalidate: None,
                 generation: 1,
                 latest,
                 pending: VecDeque::new(),
