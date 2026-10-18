@@ -78,7 +78,7 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
             && encoded == minimum * if canonical { 2 } else { 1 }
             && inspected
                 == if canonical && has_array(value) {
-                    minimum
+                    lexical_items(&expected)
                 } else {
                     0
                 }
@@ -96,6 +96,34 @@ fn check(value: &Value, canonical: bool, fault: Fault) -> TestCaseResult {
         allocations
     );
     Ok(())
+}
+// Independent count of the items a compact document's scan examines: each
+// string, opened container and scalar literal.
+fn lexical_items(document: &[u8]) -> u64 {
+    let (mut items, mut string, mut escape, mut atom) = (0, false, false, false);
+    for &byte in document {
+        if string {
+            (string, escape) = match (escape, byte) {
+                (true, _) => (true, false),
+                (false, b'\\') => (true, true),
+                (false, b'"') => (false, false),
+                _ => (true, false),
+            };
+            continue;
+        }
+        let starts = match byte {
+            b'"' => {
+                string = true;
+                true
+            }
+            b'[' | b'{' => true,
+            b']' | b'}' | b':' | b',' => false,
+            _ => !atom,
+        };
+        atom = !matches!(byte, b'"' | b'[' | b'{' | b']' | b'}' | b':' | b',');
+        items += u64::from(starts);
+    }
+    items
 }
 fn has_array(value: &Value) -> bool {
     match value {
@@ -131,6 +159,37 @@ fn single_pass_negative_controls() {
                     .to_string()
                     .contains("single serialization, funded storage or canonical output differs")
             );
+        }
+    }
+}
+
+// The index scan is funded with exactly the serializer's item count; funding
+// one item fewer or more is rejected rather than silently absorbed.
+#[test]
+fn index_scan_examines_exactly_its_admitted_items() {
+    let document = br#"{"a":7,"z":["a",["b\"]"],[],true]}"#;
+    let items = lexical_items(document);
+    let bounds = JsonBounds {
+        maximum_bytes: 65536,
+        maximum_items: 65536,
+        maximum_depth: 256,
+    };
+    for (funded, reason) in [
+        (items, None),
+        (items - 1, Some("scan exceeds its admission")),
+        (items + 1, Some("scan differs from its admission")),
+    ] {
+        let mut inspected = 0;
+        let result = super::super::arrays::build(document, 3, funded, bounds, None, &mut |event| {
+            if let JsonCodecCharge::Inspect { items } = event {
+                inspected += items;
+            }
+            Ok(())
+        });
+        assert_eq!(inspected, funded);
+        match reason {
+            None => assert!(result.is_ok()),
+            Some(reason) => assert!(format!("{:?}", result.unwrap_err()).contains(reason)),
         }
     }
 }

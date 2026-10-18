@@ -424,6 +424,7 @@ fn build_buffered<T: Serialize + ?Sized>(
     let table = super::arrays::build(
         &bytes,
         scope.lexical.arrays,
+        scope.lexical.items,
         scope.bounds,
         scope.code,
         &mut |event| match event {
