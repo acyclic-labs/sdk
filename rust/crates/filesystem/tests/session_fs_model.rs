@@ -149,64 +149,89 @@ fn cursor(sub: &Subscription, next: u64, anchor: CommitId) -> wire::SessionCurso
     }
 }
 
-// Compose the two atomic observation boundaries: registration versus append,
-// then the returned source's read/register/park versus append. Each model has
-// one reader operation and one writer operation, and exhausts every schedule.
-fn resume(registration: bool, omit_wake: bool) {
+struct Notice(AtomicBool);
+impl std::task::Wake for Notice {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+// One real consumer poll races the complete writer operation. If it parks,
+// the writer must wake it, and the next poll after the writer finishes must
+// complete. This bounds actor operations rather than schedules; the Loom shim
+// explores every lock/atomic interleaving inside both production operations.
+fn race<F: std::future::Future>(future: F, writer: impl FnOnce() + Send + 'static) -> F::Output {
+    let notice = Arc::new(Notice(AtomicBool::new(false)));
+    let waker = std::task::Waker::from(notice.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    let writer = loom::thread::spawn(writer);
+    let first = future.as_mut().poll(&mut context);
+    writer.join().unwrap();
+    match first {
+        std::task::Poll::Ready(value) => value,
+        std::task::Poll::Pending => {
+            assert!(
+                notice.0.load(Ordering::SeqCst),
+                "publication failed to wake subscription"
+            );
+            let std::task::Poll::Ready(value) = future.as_mut().poll(&mut context) else {
+                panic!("publication remained idle after wake");
+            };
+            value
+        }
+    }
+}
+
+fn resume(omit_wake: bool) {
     let fixture = input(&["next"]);
     verification::check(move || {
         let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
         let anchor = append(&stream, &sub, &records[..2], 0);
-        let keeper = ManuallyDrop::new(stream.clone());
-        let mut opening = Some(
-            Provider::new(stream.clone(), |_: &Subscription| Ok(()))
-                .subscribe(sub.encode().unwrap(), cursor(&sub, 2, anchor))
-                .unwrap()
-                .open,
-        );
-        let opened = if registration {
-            None
-        } else {
-            Some(run(opening.take().unwrap()).unwrap())
-        };
-        let mut writer = Some(loom::thread::spawn({
-            let stream = stream.clone();
-            let sub = sub.clone();
-            move || {
-                if omit_wake {
-                    verification::omit_append_wake();
+        let mut source = None;
+        let data = race(
+            async {
+                source = Some(
+                    Provider::new(stream.clone(), |_: &Subscription| Ok(()))
+                        .subscribe(sub.encode().unwrap(), cursor(&sub, 2, anchor))
+                        .unwrap()
+                        .open
+                        .await
+                        .unwrap(),
+                );
+                source.as_mut().unwrap().next().await.unwrap().unwrap()
+            },
+            {
+                let stream = stream.clone();
+                let sub = sub.clone();
+                move || {
+                    if omit_wake {
+                        verification::omit_append_wake();
+                    }
+                    append(&stream, &sub, &records[2..], 2);
                 }
-                append(&stream, &sub, &records[2..], 2);
-            }
-        }));
-        let mut source = opened.unwrap_or_else(|| run(opening.take().unwrap()).unwrap());
-        if registration {
-            writer.take().unwrap().join().unwrap();
-        }
-        let data = run(source.next()).unwrap().unwrap();
+            },
+        );
         assert_eq!(data.after.as_ref().unwrap().next, 3);
         let Some(wire::session_data::Item::FsPublication(bytes)) = data.item else {
             panic!("missing publication")
         };
         assert_eq!(Publication::decode(&bytes).unwrap().sequence.get(), 2);
-        if let Some(writer) = writer {
-            writer.join().unwrap();
-        }
         assert!(
-            source.next().now_or_never().is_none(),
+            source.unwrap().next().now_or_never().is_none(),
             "duplicate publication"
         );
-        drop(source);
-        drop(ManuallyDrop::into_inner(keeper));
         Ok(())
     });
 }
 #[test]
 fn checked_resume_exhausts_append_registration_and_wakeup() {
-    resume(true, false);
-    resume(false, false);
-    control(|| resume(false, true), "deadlock");
+    resume(false);
+    control(|| resume(true), "publication failed to wake subscription");
 }
 fn replacement(unchecked: bool) {
     let fixture = input(&["original"]);
