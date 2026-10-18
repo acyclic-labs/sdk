@@ -730,6 +730,8 @@ mod summary_file;
 mod tool_metadata;
 mod tools_1;
 mod tools_2;
+#[cfg(feature = "filesystem")]
+mod reconciliation_scan;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,
     input_schema: Value,

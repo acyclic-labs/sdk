@@ -1,3 +1,4 @@
+use super::records::RecordedCall;
 use super::*;
 use crate::wire::ErrorCode::{Conflict, Invalid};
 
@@ -96,15 +97,9 @@ impl StockExecution<'_> {
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
-        let started = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolStarted {
-                step: recorded,
-                call_id,
-                invocation: reference,
-            } if *recorded == step && call_id == &invocation.call_id => Some(reference),
-            _ => None,
-        });
-        if let Some(reference) = started {
+        let recorded = RecordedCall::classify(&records)
+            .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
+        if let Some(reference) = recorded.started() {
             let recorded =
                 load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io).await?;
             if recorded.0.invocation != invocation || &recorded.0.metadata != metadata {
@@ -115,74 +110,59 @@ impl StockExecution<'_> {
                 ));
             }
         }
-        let failed = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolFailed {
-                step: recorded,
-                call_id,
-                reason,
-                cause,
-            } if *recorded == step && call_id == &invocation.call_id => Some((*reason, cause)),
-            _ => None,
-        });
-        let completed = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolCompleted {
-                step: recorded,
-                call_id,
-                result,
-                projection,
-            } if *recorded == step && call_id == &invocation.call_id => Some((result, projection)),
-            _ => None,
-        });
-        if completed.is_some() && started.is_none() {
-            return Err(stock_boundary(
-                self.io,
-                Invalid,
-                "completed tool has no admitted invocation",
-            ));
-        }
-        if self.stock.reconciliation_only && started.is_none() {
-            return Err(Error::Indeterminate(operation_id));
-        }
-        let content = if let Some((reason, cause)) = failed {
-            tool_failure_content(reason, cause, self.io)?
-        } else if let Some((result, projection)) = completed {
-            self.replay_tool_output(journal, result, projection, tool)
-                .await?
-        } else {
-            match self
-                .require_tool_policy(journal, operation_id, &invocation, tool, started.is_some())
-                .await?
-            {
-                Some(PolicyStop::Progress(progress)) => return Ok(progress),
-                Some(PolicyStop::Refused(denial)) => {
-                    let content = self
-                        .settle_tool_refusal(
-                            journal,
-                            operation_id,
-                            step,
-                            &invocation,
-                            ToolCallRejection::Refused(denial),
-                        )
-                        .await?;
-                    return self.push_tool_result(&invocation, content, prior_messages);
-                }
-                None => {}
+        // One match over every record state: a settlement replays whether or not it has a
+        // start, so the turn's scan never stops at a settled call.
+        let content = match recorded {
+            RecordedCall::Failed { reason, cause, .. } => {
+                tool_failure_content(reason, cause, self.io)?
             }
-            match self
-                .execute_tool_invocation(
-                    journal,
-                    (operation_id, step),
-                    crate::tool::RecordedInvocation {
-                        invocation: &invocation,
-                        metadata,
-                    },
-                    tool,
-                    &mut context,
-                    started.is_some(),
-                )
-                .await?
-            {
-                Ok(content) | Err(content) => content,
+            RecordedCall::Completed {
+                result, projection, ..
+            } => {
+                self.replay_tool_output(journal, result, projection, tool)
+                    .await?
+            }
+            // Calls run in order, so nothing after an unstarted call has started either.
+            RecordedCall::Unstarted if self.stock.reconciliation_only => {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            pending @ (RecordedCall::Started(_) | RecordedCall::Unstarted) => {
+                let started = matches!(pending, RecordedCall::Started(_));
+                match self
+                    .require_tool_policy(journal, operation_id, &invocation, tool, started)
+                    .await?
+                {
+                    Some(PolicyStop::Progress(progress)) => return Ok(progress),
+                    Some(PolicyStop::Refused(denial)) => {
+                        let content = self
+                            .settle_tool_refusal(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation,
+                                ToolCallRejection::Refused(denial),
+                            )
+                            .await?;
+                        return self.push_tool_result(&invocation, content, prior_messages);
+                    }
+                    None => {}
+                }
+                match self
+                    .execute_tool_invocation(
+                        journal,
+                        (operation_id, step),
+                        crate::tool::RecordedInvocation {
+                            invocation: &invocation,
+                            metadata,
+                        },
+                        tool,
+                        &mut context,
+                        started,
+                    )
+                    .await?
+                {
+                    Ok(content) | Err(content) => content,
+                }
             }
         };
         self.push_tool_result(&invocation, content, prior_messages)
@@ -222,25 +202,28 @@ impl StockExecution<'_> {
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
-        for record in &records {
-            if let ExecutionEvent::ToolFailed {
+        match RecordedCall::classify(&records)
+            .map_err(|reason| stock_boundary(self.io, Invalid, reason))?
+        {
+            RecordedCall::Failed {
+                started: None,
                 reason: recorded,
                 cause,
-                ..
-            } = &record.event
-            {
-                if *recorded != reason {
-                    return Err(stock_boundary(
-                        self.io,
-                        Conflict,
-                        "tool refusal changed on replay",
-                    ));
-                }
-                return tool_failure_content(reason, cause, self.io);
+            } if recorded == reason => return tool_failure_content(reason, cause, self.io),
+            RecordedCall::Unstarted if self.stock.reconciliation_only => {
+                return Err(Error::Indeterminate(operation_id));
             }
-        }
-        if self.stock.reconciliation_only {
-            return Err(Error::Indeterminate(operation_id));
+            RecordedCall::Unstarted => {}
+            // A refusal never settles a dispatched call or replaces another settlement.
+            RecordedCall::Failed { .. }
+            | RecordedCall::Completed { .. }
+            | RecordedCall::Started(_) => {
+                return Err(stock_boundary(
+                    self.io,
+                    Conflict,
+                    "tool refusal changed on replay",
+                ));
+            }
         }
         let cause = with_history_io(self.io, |work| {
             ToolFailureCause::refusal(&invocation.name, reason, &error, work)

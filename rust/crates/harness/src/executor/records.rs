@@ -99,3 +99,75 @@ impl StockExecution<'_> {
         .and_then(|(tail, records, hold)| Ok((tail, retain_preparation((records, hold))?)))
     }
 }
+
+/// Every combination of one call's records, classified once. A settlement is final whether or
+/// not a start precedes it (refusals settle without one), so replay never needs a start to
+/// return it, and the turn's scan reaches every later call.
+pub(super) enum RecordedCall<'a> {
+    /// A settled failure, with the start when the tool was dispatched.
+    Failed {
+        started: Option<&'a FileRef>,
+        reason: ToolFailureKind,
+        cause: &'a ToolFailureCause,
+    },
+    /// A settled success; only a dispatched call can complete.
+    Completed {
+        started: &'a FileRef,
+        result: &'a FileRef,
+        projection: &'a FileRef,
+    },
+    /// Dispatched with an uncertain outcome; reconciliation settles it.
+    Started(&'a FileRef),
+    /// Nothing recorded; only an ordinary run may dispatch it.
+    Unstarted,
+}
+
+impl<'a> RecordedCall<'a> {
+    /// Classifies `records`, which [`StockExecution::tool_records`] filtered to one call.
+    pub(super) fn classify(
+        records: &'a [ExecutionRecord],
+    ) -> std::result::Result<Self, &'static str> {
+        let (mut started, mut failed, mut completed) = (None, None, None);
+        for record in records {
+            let duplicate = match &record.event {
+                ExecutionEvent::ToolStarted { invocation, .. } => {
+                    started.replace(invocation).is_some()
+                }
+                ExecutionEvent::ToolFailed { reason, cause, .. } => {
+                    failed.replace((*reason, cause)).is_some()
+                }
+                ExecutionEvent::ToolCompleted {
+                    result, projection, ..
+                } => completed.replace((result, projection)).is_some(),
+                _ => false,
+            };
+            if duplicate {
+                return Err("tool call has duplicate records");
+            }
+        }
+        match (started, failed, completed) {
+            (_, Some(_), Some(_)) => Err("tool call settled twice"),
+            (None, None, Some(_)) => Err("completed tool has no admitted invocation"),
+            (started, Some((reason, cause)), None) => Ok(Self::Failed {
+                started,
+                reason,
+                cause,
+            }),
+            (Some(started), None, Some((result, projection))) => Ok(Self::Completed {
+                started,
+                result,
+                projection,
+            }),
+            (Some(started), None, None) => Ok(Self::Started(started)),
+            (None, None, None) => Ok(Self::Unstarted),
+        }
+    }
+
+    pub(super) fn started(&self) -> Option<&'a FileRef> {
+        match self {
+            Self::Failed { started, .. } => *started,
+            Self::Completed { started, .. } | Self::Started(started) => Some(started),
+            Self::Unstarted => None,
+        }
+    }
+}
