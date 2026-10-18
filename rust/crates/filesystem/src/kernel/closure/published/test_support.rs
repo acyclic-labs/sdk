@@ -5,7 +5,7 @@ pub(super) fn outcome(sequence: u64, retry: bool) -> AppendOutcome {
     let commit = DurableCommit {
         epoch: Epoch::GENESIS,
         sequence: Sequence::new(sequence),
-        operation_id: OperationId::from_bytes([sequence as u8; 16]),
+        operation_id: OperationId::from_bytes(u128::from(sequence).to_le_bytes()),
         fingerprint: crate::Digest::ZERO,
         previous_digest: crate::Digest::ZERO,
         digest: crate::Digest::ZERO,

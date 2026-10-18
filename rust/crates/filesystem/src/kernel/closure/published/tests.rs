@@ -24,9 +24,9 @@ fn check<const ORDERED: bool>(deliveries: &[(u16, bool)]) {
             ticket.install::<false>(Sequence::new(u64::from(sequence)));
         }
         maximum = Some(maximum.map_or(sequence, |prior: u16| prior.max(sequence)));
-        let current = slot.current(None).unwrap();
+        let current = slot.current(None);
         assert_eq!(
-            Some(*current),
+            current.as_deref().copied(),
             maximum,
             "proof slot regressed durable sequence"
         );
@@ -34,7 +34,9 @@ fn check<const ORDERED: bool>(deliveries: &[(u16, bool)]) {
             && sequence <= *previous
         {
             assert!(
-                Arc::ptr_eq(&previous, &current),
+                current
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(&previous, current)),
                 "retry replaced the retained proof"
             );
         }

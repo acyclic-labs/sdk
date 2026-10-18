@@ -7,7 +7,7 @@ fn denied(meter: &ProofMeter<'_>) {
     let allocation = acyclic_test_support::measure(|| {
         result = Some(cache.slot(crate::VolumeId::from_bytes([1; 16]), meter));
     });
-    assert!(result.unwrap().is_err());
+    assert!(matches!(result, Some(Err(_))));
     assert_eq!(allocation.count_total, 0, "denied slot admission allocated");
     assert_eq!(allocation.bytes_total, 0);
     assert!(cache.entries.is_empty());
@@ -22,28 +22,38 @@ proptest! {
         let available = slot_bytes.saturating_sub(shortfall);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.peak_allocation_bytes = proof_standalone_control_bytes() + available;
-        let meter = ProofMeter::standalone(budget, &cancellation).unwrap();
+        let meter = ProofMeter::standalone(budget, &cancellation)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         denied(&meter);
     }
 }
 
 #[test]
-fn denied_first_slot_allocation_operation_never_allocates() {
+fn denied_first_slot_allocation_operation_never_allocates() -> Result<(), Box<dyn std::error::Error>>
+{
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.allocation_operations = 1; // The standalone meter consumes this one.
-    denied(&ProofMeter::standalone(budget, &cancellation).unwrap());
+    denied(&ProofMeter::standalone(budget, &cancellation)?);
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn denied_native_first_slot_never_allocates() {
+fn denied_native_first_slot_never_allocates() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.allocation_operations = 1; // The native ledger consumes this one.
-    let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
+    let original =
+        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, _)| cause)?;
+    // Read the existing ledger before probing a new volume. This also initializes
+    // the debug lock-order observer's per-thread storage outside measurement.
+    let before = original.receipt();
+    assert_eq!(before.allocation_operations, 1);
     denied(&ProofMeter::Native {
         original: &original,
         cancellation: &cancellation,
     });
+    assert_eq!(original.receipt(), before);
+    Ok(())
 }
