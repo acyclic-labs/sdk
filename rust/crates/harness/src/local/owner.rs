@@ -32,7 +32,12 @@ thread_local! {
     /// Restores the duplicate-capture defect: owner validation captures the
     /// root again instead of sharing state selection's capture.
     pub(super) static RECAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Negative control for accidentally rekeying configured volumes.
+    static REKEY_VOLUMES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
+
+#[cfg(test)]
+mod state_key_tests;
 
 /// Per-user state is keyed by the checkout's path and its directory incarnation:
 /// a checkout deleted and cloned again at the same path is a new workspace and
@@ -66,7 +71,16 @@ pub(super) fn state_directory_in(
         }
     };
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.state/v2\0");
+    // Only checkout identity changed. Configured volumes must keep selecting
+    // their existing owner, authority and journals.
+    let checkout_key = matches!(project, LocalProject::Workspace(_));
+    #[cfg(test)]
+    let checkout_key = checkout_key || REKEY_VOLUMES.get();
+    hash.update(if checkout_key {
+        b"acyclic.local.state/v2\0"
+    } else {
+        b"acyclic.local.state/v1\0"
+    });
     hash.update(kind);
     let path_bytes = canonical.as_os_str().as_encoded_bytes();
     hash.update(&(path_bytes.len() as u64).to_le_bytes());
