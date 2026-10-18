@@ -1,7 +1,7 @@
 //! Exhaustive schedules through the filesystem publication adapter and Session.
 #![cfg(acyclic_loom)]
 use acyclic_fs::session::{Cursor, Provider, Publication, Subscription};
-use acyclic_fs::{CancellationToken, Fs, WorkBudget};
+use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::session::{self as engine, PublicationProvider};
 use acyclic_stream::{verification, *};
 use bytes::Bytes;
@@ -28,44 +28,93 @@ fn control(run: impl FnOnce(), message: &str) {
     assert!(text.contains(message), "unexpected model failure: {text}");
 }
 
-// Canonical FS facts, built independently per history before actors start. Only
-// the writer's atomic Stream append/recovery races the adapter's checked follow.
+// Seed only canonical records: the full workspace mutation fixture has large
+// futures unrelated to these adapter races. Actors still use the real Stream
+// append/recovery and Provider checked-follow paths with their real Loom locks.
 fn input(texts: &[&str]) -> (Subscription, Vec<Bytes>) {
-    run(async {
-        let fs = Fs::memory();
-        let cancellation = CancellationToken::new();
-        let ws = Box::pin(fs.create_workspace(
-                "session-fs",
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ))
-            .await
-            .unwrap()
-            .value;
-        for text in texts {
-            Box::pin(ws.write_text("/entry", text)).await.unwrap();
-        }
-        let sub = Subscription {
-            volume_id: ws.id().volume_id(),
-            workspace_name: ws.name().clone(),
-            path_prefix: acyclic_fs::path::PortablePath::parse("/", Default::default()).unwrap(),
-            delivery: acyclic_fs::wire::filesystem::v2::SessionFsDelivery::All,
-            start_next: 0,
+    use acyclic_fs::kernel::{PublishedGeneration, VolumeCreated};
+    use acyclic_fs::{Digest, DurableCommit, Epoch, OperationId, Sequence, VolumeId};
+    let sub = Subscription {
+        volume_id: VolumeId::from_bytes([7; 16]),
+        workspace_name: acyclic_fs::WorkspaceName::new(
+            "session-fs",
+            &WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .unwrap()
+        .value,
+        path_prefix: acyclic_fs::path::PortablePath::parse("/", Default::default()).unwrap(),
+        delivery: acyclic_fs::wire::filesystem::v2::SessionFsDelivery::All,
+        start_next: 0,
+    };
+    let root = |text: &[u8]| acyclic_fs::ObjectId {
+        kind: acyclic_fs::ObjectKind::GenerationRoot,
+        digest: Digest::from_bytes(*blake3::hash(text).as_bytes()),
+    };
+    let created = acyclic_fs::kernel::encode_volume_created::<acyclic_fs::FsError>(
+        VolumeCreated {
+            volume_id: sub.volume_id,
+            config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+            initial_generation_root: root(b"initial"),
+        },
+        |_| Ok(()),
+        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed.into(),
+    )
+    .unwrap();
+    let mut payloads = vec![Bytes::new(), Bytes::from(created)];
+    for text in texts {
+        let publication = PublishedGeneration {
+            volume_id: sub.volume_id,
+            generation_root: root(text.as_bytes()),
         };
-        let (stream, _) = fs.authority_records(sub.volume_id).unwrap();
-        let records = stream
-            .read(ReadRequest {
-                path: path(&sub),
-                from: 0,
-                limit: (texts.len() + 2) as u32,
-            })
-            .await
-            .unwrap()
-            .map(|record| Bytes::copy_from_slice(&record.unwrap().value))
-            .collect()
-            .await;
-        (sub, records)
-    })
+        let mut payload = b"acyclic-fs-publish-generation-v1\0".to_vec();
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&publication.volume_id.into_bytes());
+        payload.push(publication.generation_root.kind.canonical_tag());
+        payload.extend_from_slice(publication.generation_root.digest.as_bytes());
+        assert_eq!(
+            acyclic_fs::kernel::decode_published_generation::<acyclic_fs::FsError>(
+                &payload,
+                MAX_RECORD_BYTES as u64,
+                |_| Ok(()),
+            )
+            .unwrap(),
+            publication
+        );
+        payloads.push(Bytes::from(payload));
+    }
+    let mut previous_digest = Digest::ZERO;
+    let records = payloads
+        .into_iter()
+        .enumerate()
+        .map(|(index, payload)| {
+            let sequence = Sequence::new(index as u64);
+            let operation_id = OperationId::from_bytes([u8::try_from(index).unwrap(); 16]);
+            let fingerprint = Digest::from_bytes(*blake3::hash(&payload).as_bytes());
+            let digest = acyclic_fs::authority_commit_digest(
+                acyclic_fs::kernel::volume_authority_id(sub.volume_id),
+                Epoch::GENESIS,
+                sequence,
+                operation_id,
+                fingerprint,
+                previous_digest,
+                &payload,
+            );
+            let commit = DurableCommit {
+                epoch: Epoch::GENESIS,
+                sequence,
+                operation_id,
+                fingerprint,
+                previous_digest,
+                digest,
+                payload,
+                settled_at_micros: None,
+            };
+            previous_digest = digest;
+            acyclic_fs::StreamsDurableRecord::encode(&commit, MAX_RECORD_BYTES as u64).unwrap()
+        })
+        .collect();
+    (sub, records)
 }
 fn path(sub: &Subscription) -> StreamPath {
     StreamPath::new(format!(
