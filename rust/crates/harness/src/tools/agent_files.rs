@@ -86,7 +86,7 @@ async fn read(
     answer(
         &*files,
         &files.inner,
-        &inspection,
+        inspection,
         query,
         limits.attachments,
         render_bytes,
@@ -100,7 +100,7 @@ async fn read(
 async fn answer<S, P>(
     source: &S,
     volume: &crate::task_volume::TaskVolume<P>,
-    inspection: &super::agent_selection::AgentInspection,
+    inspection: super::agent_selection::AgentInspection,
     query: crate::task_volume::Query,
     maximum_files: usize,
     render_bytes: usize,
@@ -121,7 +121,7 @@ where
             .snapshot
             .ok_or_else(|| Error::Conflict("child file snapshot missing".into()))?;
         let [file] = snapshot.files.as_slice() else {
-            return Ok(Err(Rejected(Error::NotFound(inspection.path.clone()))));
+            return Ok(Err(Rejected(Error::NotFound(inspection.path))));
         };
         match std::str::from_utf8(&file.bytes) {
             Ok(text) => text.to_owned(),

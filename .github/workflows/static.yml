@@ -36,6 +36,16 @@ jobs:
         run: node --test scripts/local-cloud.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
+  agent-inspections:
+    name: Agent inspection refusal proofs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run selector, corpus, refusal controls and shipping HTTP regression
+        run: bash scripts/check-agent-inspections.sh
   aarch64:
     # Integer widths in libc differ by architecture (for example nlink_t is u32 on
     # aarch64 Linux and u64 on x86_64). Type-check the native host crates on an arm

@@ -110,7 +110,8 @@ mod tests {
     // seeds replay here so the selector's boundary cases run in every test pass.
     #[test]
     fn checked_in_command_corpus_matches_the_reference() {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/command");
+        let corpus =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/command");
         let mut seeds = 0;
         for entry in std::fs::read_dir(corpus).unwrap() {
             let bytes = std::fs::read(entry.unwrap().path()).unwrap();
@@ -135,9 +136,33 @@ mod tests {
             assert_eq!(selection(command), None, "{command}");
         }
         let child = selection("ls .volumes/agents/worker").unwrap();
-        assert_eq!((child.target, child.operand()), (AgentTarget::Child, "worker"));
+        assert_eq!(
+            (child.target, child.operand()),
+            (AgentTarget::Child, "worker")
+        );
         let file = selection("cat .volumes/agents/worker/status.json").unwrap();
-        assert_eq!((file.target, file.operand()), (AgentTarget::File, "agents/worker/status.json"));
+        assert_eq!(
+            (file.target, file.operand()),
+            (AgentTarget::File, "agents/worker/status.json")
+        );
+    }
+
+    #[test]
+    fn prefix_selection_negative_control_diverges_from_the_reference() {
+        let command = "ls .volumes/agents-extra";
+        assert_eq!(
+            selection(command).map(|inspection| inspection.target),
+            reference(command)
+        );
+        let parsed = parse_fs_command(command).unwrap();
+        let old = parsed.arguments[1]
+            .starts_with(AGENTS)
+            .then_some(AgentTarget::Child);
+        assert_ne!(
+            old,
+            reference(command),
+            "plain-prefix mutant escaped the reference invariant"
+        );
     }
 
     // Selection moves the parsed operand: it allocates exactly what parsing
@@ -149,7 +174,10 @@ mod tests {
         let path = ".volumes/agents/worker/results/12.json";
         let parse = acyclic_test_support::measure(|| drop(parse_fs_command(command)));
         let select = acyclic_test_support::measure(|| drop(selection(command)));
-        assert_eq!((select.count_total, select.bytes_total), (parse.count_total, parse.bytes_total));
+        assert_eq!(
+            (select.count_total, select.bytes_total),
+            (parse.count_total, parse.bytes_total)
+        );
         let copied = acyclic_test_support::measure(|| {
             drop(selection(command).map(|inspection| inspection.path.clone()))
         });

@@ -120,11 +120,69 @@ fn body_bounded_listing_negative_control_requires_its_property_assertion() {
 // answer `Rejected`, never an executor error, and fitting ones answer the
 // text. Mapping a volume bound back to an executor error (`map_err(storage)?`)
 // fails this property on every over-bound case.
-async fn answered(command: &str, volume: &TaskVolume<MemoryStream>, files: usize, render: usize)
-    -> Result<std::result::Result<String, Rejected>> {
+async fn answered(
+    command: &str,
+    volume: &TaskVolume<MemoryStream>,
+    files: usize,
+    render: usize,
+) -> Result<std::result::Result<String, Rejected>> {
     let inspection = crate::tools::agent_selection::selection(command).unwrap();
     let query = query(&inspection).ok().unwrap();
-    answer(volume, volume, &inspection, query, files, render).await
+    answer(volume, volume, inspection, query, files, render).await
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+    #[test]
+    fn missing_file_rejection_moves_the_original_operand(child in "[a-z]{1,24}") {
+        futures::executor::block_on(async {
+            let volume = volume(1, 0).await;
+            let command = format!("cat .volumes/agents/missing-{child}/status.json");
+            let inspection = crate::tools::agent_selection::selection(&command).unwrap();
+            let pointer = inspection.path.as_ptr();
+            let query = query(&inspection).ok().unwrap();
+            let result = answer(&volume, &volume, inspection, query, 3, 8192).await.unwrap();
+            let Err(Rejected(Error::NotFound(path))) = result else {
+                return Err(TestCaseError::fail("missing file was not rejected"));
+            };
+            prop_assert_eq!(path.as_ptr(), pointer, "missing path was copied");
+            // Reintroducing the old copy violates that same ownership assertion
+            // and allocates exactly one path-sized buffer.
+            let mut copied = None;
+            let allocations = acyclic_test_support::measure(|| copied = Some(path.clone()));
+            let copied = copied.unwrap();
+            prop_assert_ne!(copied.as_ptr(), pointer);
+            prop_assert_eq!((allocations.count_total, allocations.bytes_total), (1, path.len() as u64));
+            Ok(())
+        })?;
+    }
+}
+
+#[test]
+fn refusal_scope_negative_controls_detect_escaping_validation_and_bounds() {
+    fn is_refusal(answer: &Result<std::result::Result<String, Rejected>>) -> bool {
+        matches!(answer, Ok(Err(_)))
+    }
+    // These are the old `?` conversions on actual production validation errors.
+    for command in [
+        "ls .volumes/agents/",
+        "cat .volumes/agents/worker/no-such-file",
+    ] {
+        let inspection = crate::tools::agent_selection::selection(command).unwrap();
+        let rejected = query(&inspection).err().expect("validation must fail");
+        assert!(is_refusal(&Ok(Err(rejected))));
+        let rejected = query(&inspection).err().unwrap();
+        assert!(
+            !is_refusal(&Err(rejected.0)),
+            "escaping validation passed the refusal invariant"
+        );
+    }
+    let rejected = classify(crate::task_volume::Error::LimitExceeded).unwrap();
+    assert!(is_refusal(&Ok(Err(rejected))));
+    assert!(
+        !is_refusal(&Err(storage(crate::task_volume::Error::LimitExceeded))),
+        "escaping query bound passed the refusal invariant"
+    );
 }
 
 proptest! {
