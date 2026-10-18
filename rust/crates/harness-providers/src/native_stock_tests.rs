@@ -173,13 +173,17 @@ async fn every_adapter_runs_a_stock_turn_on_the_issued_native_task() -> Result<(
                 crate::deadline::Bounded::new(transport.clone(), crate::TimeoutSpec::DEFAULT);
             provider
         };
-        run_stock_turn(
+        let outcome = run_stock_turn(
             provider,
             adapter,
             CompactionPolicy::Disabled,
             acyclic_fs::Fs::memory(),
         )
         .await?;
+        assert!(
+            matches!(outcome, acyclic_harness::Outcome::Succeeded(_)),
+            "{adapter:?}: {outcome:?}"
+        );
         assert_eq!(transport.sent.load(Ordering::SeqCst), 1, "{adapter:?}");
     }
     Ok(())
@@ -190,7 +194,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     adapter: Adapter,
     policy: CompactionPolicy,
     filesystem: acyclic_fs::Fs<acyclic_fs::MemoryAuthorityBackend, O>,
-) -> Result<()> {
+) -> Result<acyclic_harness::Outcome<serde_json::Value>> {
     let model = provider.model().clone();
     let stages = Arc::new(probe::Stages::default());
     let provider = Arc::new(probe::Probe {
@@ -369,18 +373,20 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
     if let TaskWorkerAttempt::Unresolved { error, .. } = attempt {
         return Err(error);
     }
-    assert!(
-        matches!(
-            attempt,
-            TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { .. })
-        ),
-        "{adapter:?}"
-    );
+    let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task }) = attempt else {
+        panic!("{adapter:?}: the stock turn did not reach a terminal outcome");
+    };
+    use acyclic_harness::runtime::TaskStateProvider as _;
+    let outcome = runtime
+        .task_host()
+        .outcome(task)
+        .await?
+        .expect("a completed task has an outcome");
     assert!(custody.work().shares_allocation_context(&work));
     eprintln!(
         "{adapter:?} total_items={} remaining_items={}",
         work.receipt().items_examined,
         work.remaining()?.items_examined,
     );
-    Ok(())
+    Ok(outcome)
 }

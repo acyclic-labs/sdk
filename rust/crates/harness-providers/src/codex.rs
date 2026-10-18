@@ -78,12 +78,22 @@ impl RefreshFailure {
                 (excerpt.as_str(), Kind::Transport(*failure))
             }
             Error::Invalid(message)
+            | Error::ModelDiagnostic {
+                code: Code::Invalid,
+                message,
+                ..
+            }
             | Error::NativeDiagnostic {
                 code: Code::Invalid,
                 message,
                 ..
             } => (message.as_str(), Kind::Invalid),
             Error::Unauthorized(message)
+            | Error::ModelDiagnostic {
+                code: Code::Unauthorized,
+                message,
+                ..
+            }
             | Error::NativeDiagnostic {
                 code: Code::Unauthorized,
                 message,

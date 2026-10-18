@@ -275,3 +275,121 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
     }
     Ok(())
 }
+
+/// A native provider failure is the provider's, not the ledger's: once redelivery is spent the
+/// native worker settles the task Failed instead of returning the lease unresolved.
+#[tokio::test]
+async fn native_worker_settles_provider_failures_and_keeps_accounting_failures_unresolved()
+-> Result<()> {
+    struct NativeFailure(std::sync::Mutex<Option<Error>>);
+    impl TaskCommandHost for NativeFailure {
+        fn execute<'a>(
+            &'a self,
+            _: TaskContext,
+            _: LeaseFence,
+            _: WorkflowCommand,
+            _: Value,
+        ) -> BoxFuture<'a, Result<TaskCommandProgress>> {
+            let error = self.0.lock().unwrap().take().expect("one dispatch");
+            Box::pin(async { Err(error) })
+        }
+        // The provider fails inside the funded exchange, as a real native dispatch does.
+        fn execute_with_native_work<'a>(
+            &'a self,
+            _: Arc<crate::runtime::TaskContext>,
+            _: LeaseFence,
+            _: WorkflowCommand,
+            _: Value,
+            work: &'a acyclic_fs::NativeMaterializationWork,
+        ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
+            let error = self.0.lock().unwrap().take().expect("one dispatch");
+            crate::NativeFutureBundle::new(work, || async move { Err(error) })
+        }
+    }
+    // (error, settles): provider transport and refusal settle; the accounting failure they
+    // used to be classified as must still stop the native attempt (negative control).
+    let cases: [(fn(acyclic_fs::NativeAllocation) -> Error, bool); 4] = [
+        (
+            |_| Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Timeout,
+                excerpt: String::new(),
+            },
+            true,
+        ),
+        (
+            |custody| Error::ModelDiagnostic {
+                code: crate::wire::ErrorCode::Unauthorized,
+                message: String::new(),
+                custody,
+            },
+            true,
+        ),
+        (
+            |_| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unavailable,
+                reason: "model provider exchange timed out",
+            },
+            false,
+        ),
+        (
+            |custody| Error::NativeDiagnostic {
+                code: crate::wire::ErrorCode::Unauthorized,
+                message: String::new(),
+                custody,
+            },
+            false,
+        ),
+    ];
+    for (error, settles) in cases {
+        let fixture = Fixture::new().await?;
+        fixture.machine.native.store(true, Ordering::SeqCst);
+        fixture.tool.native.store(true, Ordering::SeqCst);
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work =
+            acyclic_fs::NativeMaterializationWork::new(super::native_mail::BUDGET, &cancellation)
+                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let runtime = fixture.runtime(Some(&io)).await?;
+        let (lease, mut custody) = fixture.native_lease(&runtime, &work).await?;
+        let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
+        let diagnostic = custody.split_off(0)?;
+        let host = NativeFailure(std::sync::Mutex::new(Some(error(diagnostic))));
+        let (attempt, custody) = runtime
+            .resume_task_with_native_work(lease, custody, &host, 2, &work)
+            .await?;
+        let unresolved = matches!(attempt, TaskWorkerAttempt::Unresolved { .. });
+        drop(attempt);
+        let outcome = runtime.task_host().outcome(task).await?;
+        assert_eq!(unresolved, !settles, "{outcome:?}");
+        assert_eq!(
+            matches!(outcome, Some(Outcome::Failed { .. })),
+            settles,
+            "{outcome:?}"
+        );
+        drop(custody);
+    }
+    Ok(())
+}
+
+/// A definitive failure's message is charged to the native ledger, as an uncertain cause's is.
+#[test]
+fn failed_message_is_formatted_under_the_native_ledger() -> Result<()> {
+    let error = Error::Unsupported("x".repeat(4_096));
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        super::native_mail::BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let before = work.receipt();
+    let message = super::super::dispatch::failed_message(&error, Some(&io))?;
+    let after = work.receipt();
+    assert_eq!(message, error.to_string());
+    assert!(after.allocation_operations > before.allocation_operations);
+    assert!(after.peak_allocation_bytes >= message.len() as u64, "{after:?}");
+    // Negative control: the unaccounted formatting this replaces charges the ledger nothing.
+    let unaccounted = error.to_string();
+    assert_eq!(work.receipt(), after);
+    assert_eq!(unaccounted, message);
+    Ok(())
+}

@@ -113,13 +113,20 @@ async fn stock(broken: bool) -> Result<()> {
         policy,
         filesystem,
     )
-    .await;
+    .await?;
     if broken {
-        assert!(result.is_err());
+        // The public counter's refusal is the provider's: the task fails without generating.
+        assert!(
+            matches!(&result, acyclic_harness::Outcome::Failed { .. }),
+            "{result:?}"
+        );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 1);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 0);
     } else {
-        result?;
+        assert!(
+            matches!(&result, acyclic_harness::Outcome::Succeeded(_)),
+            "{result:?}"
+        );
         assert_eq!(backend.counts.load(Ordering::SeqCst), 0);
         assert_eq!(backend.generations.load(Ordering::SeqCst), 1);
     }

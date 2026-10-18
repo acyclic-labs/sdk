@@ -105,8 +105,8 @@ fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
     })
 }
 
-/// The one transport failure for the portable and native paths. A native failure carries only
-/// its class, as its diagnostic must be funded; the portable one keeps the bounded root cause.
+/// Transport failures are semantic provider failures on both paths. The native path uses an
+/// empty excerpt, retaining the typed cause without allocating before ledger admission.
 fn transport_failure(
     native: bool,
     failure: acyclic_harness::ModelTransportFailure,
@@ -114,19 +114,9 @@ fn transport_failure(
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if native {
-        use acyclic_harness::ModelTransportFailure::{Connect, Interrupted, Status, Timeout, Tls};
-        return Error::NativeBoundary {
-            code: if failure.retryable() {
-                acyclic_harness::wire::ErrorCode::Unavailable
-            } else {
-                acyclic_harness::wire::ErrorCode::Invalid
-            },
-            reason: match failure {
-                Connect => "model provider connection failed",
-                Timeout => "model provider exchange timed out",
-                Tls => "model provider TLS failed",
-                Interrupted | Status(_) => "model provider connection interrupted",
-            },
+        return Error::ModelUnavailable {
+            failure,
+            excerpt: String::new(),
         };
     }
     let _ = native;

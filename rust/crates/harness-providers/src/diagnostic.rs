@@ -54,7 +54,7 @@ mod tests {
             let allocated = acyclic_test_support::measure(|| {
                 assert!(matches!(
                     crate::transport_failure(true, failure, &cause),
-                    acyclic_harness::Error::NativeBoundary { .. }
+                    acyclic_harness::Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()
                 ));
             });
             assert_eq!(allocated.count_total, 0);

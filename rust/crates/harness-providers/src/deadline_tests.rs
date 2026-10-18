@@ -271,7 +271,7 @@ fn zero_deadlines_are_rejected() {
 fn native_timeout_does_not_allocate_a_discarded_diagnostic() {
     let allocated = acyclic_test_support::measure(|| {
         let error = timeout(true, Expired::Total, TimeoutSpec::DEFAULT);
-        assert!(matches!(error, Error::NativeBoundary { .. }));
+        assert!(matches!(&error, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()));
     });
     assert_eq!(allocated.count_total, 0);
     // Negative control: the previous native path built this text and discarded it.

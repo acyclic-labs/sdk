@@ -97,16 +97,28 @@ fn invalid(reason: &'static str) -> Error {
     }
 }
 
+fn error_has_no_excerpt(error: &Error) -> bool {
+    matches!(error, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty())
+}
+
 pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation) -> Result<T> {
     result.map_err(|error| {
+        let semantic = !matches!(&error, Error::Storage(_));
         let (code, message) = match error {
             Error::Invalid(message) => (ErrorCode::Invalid, message),
             Error::Unauthorized(message) => (ErrorCode::Unauthorized, message),
             Error::Storage(message) => (ErrorCode::Storage, message),
+            // A native transport failure carries no excerpt to fund: it keeps its class.
+            error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
             error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string()),
             error => return error,
         };
         match allocation.split_off(message.capacity() as u64) {
+            Ok(custody) if semantic => Error::ModelDiagnostic {
+                code,
+                message,
+                custody,
+            },
             Ok(custody) => Error::NativeDiagnostic {
                 code,
                 message,

@@ -233,7 +233,7 @@ async fn native_protocol_errors_keep_diagnostic_custody_and_reject_before_http_w
             .expect("error event")
             .expect_err("invalid protocol");
         assert!(
-            matches!(&error, Error::NativeDiagnostic { code: acyclic_harness::wire::ErrorCode::Invalid, custody, .. }
+            matches!(&error, Error::ModelDiagnostic { code: acyclic_harness::wire::ErrorCode::Invalid, custody, .. }
             if custody.work().shares_allocation_context(&work))
         );
         drop(error);

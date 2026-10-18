@@ -88,6 +88,18 @@ pub enum Error {
         /// Bounded, control-free excerpt of the response body or the transport's root cause.
         excerpt: String,
     },
+    /// A definitive provider rejection funded by the original ledger, rather than an
+    /// accounting failure. Its diagnostic survives until task settlement.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{message}")]
+    ModelDiagnostic {
+        /// The provider's original semantic classification.
+        code: crate::wire::ErrorCode,
+        /// Original diagnostic, moved without copying.
+        message: String,
+        /// Original custody, released after the diagnostic.
+        custody: acyclic_fs::NativeAllocation,
+    },
     /// A required capability is unavailable.
     #[error("unsupported capability: {0}")]
     Unsupported(String),
@@ -487,7 +499,8 @@ impl Error {
             #[cfg(feature = "machines")]
             Self::Machines(cause) => machines_error_code(cause),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::NativeBoundary { code, .. }
+            Self::ModelDiagnostic { code, .. }
+            | Self::NativeBoundary { code, .. }
             | Self::NativeJsonAdmission { code, .. }
             | Self::NativeDiagnostic { code, .. }
             | Self::NativeJson { code, .. }
@@ -570,31 +583,75 @@ impl Error {
         }
     }
 
-    /// Native failures must propagate before additional provider or deadline work.
+    /// Native failures must propagate before additional provider or deadline work. The match is
+    /// exhaustive so every new variant is classified on purpose: a semantic failure the task or
+    /// model can settle must never default to an accounting failure that strands the turn.
     pub(crate) fn is_native_failure(&self) -> bool {
-        #[cfg(feature = "machines")]
-        if matches!(self, Self::Machines(_)) {
-            return false;
-        }
-        !matches!(
-            self,
+        match self {
             Self::TaskFiles(_)
-                | Self::NotFound(_)
-                | Self::Conflict(_)
-                | Self::Unsupported(_)
-                | Self::Invalid(_)
-                | Self::ToolRejected { .. }
-                | Self::Unauthorized(_)
-                | Self::ModelUnavailable { .. }
-                | Self::Cancelled
-                | Self::InteractionRejected(_)
-                | Self::Storage(_)
-                | Self::Indeterminate(_)
-                | Self::CommandIndeterminate { .. }
-                | Self::SearchPublicationDeferred
-                | Self::TaskFailed { .. }
-                | Self::GoalBlocked(_)
-        )
+            | Self::NotFound(_)
+            | Self::Conflict(_)
+            | Self::TaskFailed { .. }
+            | Self::GoalBlocked(_)
+            | Self::ModelUnavailable { .. }
+            | Self::Unsupported(_)
+            | Self::Invalid(_)
+            | Self::ToolRejected { .. }
+            | Self::Unauthorized(_)
+            | Self::Cancelled
+            | Self::InteractionRejected(_)
+            | Self::Storage(_)
+            | Self::Indeterminate(_)
+            | Self::CommandIndeterminate { .. }
+            | Self::SearchPublicationDeferred => false,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::ModelDiagnostic { .. } => false,
+            #[cfg(feature = "machines")]
+            Self::Machines(_) => false,
+            Self::MountUnavailable { .. } | Self::Process(_) | Self::Allocation(_) => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWork { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeConstruction { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeBoundary { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeDiagnostic { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeJsonAdmission { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeJson { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeProstDecode { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSchema { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeStream { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSupervisor { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeSource { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeWorkspace { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeStageUncertain { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeDrivenJoin { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeReservation { .. } => true,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeFilesystem { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeView { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativePublication { .. } => true,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeWorkspacePublication { .. } => true,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeGit { .. } => true,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeTimeout { .. } => true,
+        }
     }
 }
 
