@@ -39,7 +39,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
             base,
             ours,
             theirs,
-            ResolutionView::Slice(&[]),
+            ResolutionView::Map(&BTreeMap::new()),
             maximum_conflicts,
             limits,
             &mut state,
