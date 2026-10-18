@@ -144,6 +144,7 @@ test("the workspace gate, docs and generation run as independent required matrix
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  assert.match(branch("gate"),/nextest --workspace --all-features --locked/);
+ assert.match(branch("gate"),/cargo check --locked -p acyclic-harness --features filesystem --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
  assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);

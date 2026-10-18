@@ -16,7 +16,6 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 thread_local! {
     pub(crate) static SUBSTITUTE_HOOK_NAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(crate) static SUBSTITUTE_APPROVAL_NAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 const CANONICAL: &str = "mcp.docs.search";
@@ -248,5 +247,9 @@ async fn negative_control_detects_hook_identity_substitution() {
 
 #[tokio::test]
 async fn negative_control_detects_approval_identity_substitution() {
-    detects_substitution(&SUBSTITUTE_APPROVAL_NAME, "canonical approval identity").await;
+    detects_substitution(
+        &crate::runtime::SUBSTITUTE_APPROVAL_NAME,
+        "canonical approval identity",
+    )
+    .await;
 }

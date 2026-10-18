@@ -204,6 +204,9 @@ case "$lane" in
       cargo check --locked -p acyclic-harness --features model-checking --lib
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       cargo check --locked -p acyclic-harness --features filesystem-local,model-checking --lib
+    # Unit tests compile without optional native features, so a test seam
+    # cannot cross a feature gate the all-features suites never close.
+    cargo check --locked -p acyclic-harness --features filesystem --lib --tests
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests --features model-checking \
         --test client-mailbox-model --test client_journal_model --test mcp-loom
