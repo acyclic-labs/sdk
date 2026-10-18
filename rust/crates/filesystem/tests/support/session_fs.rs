@@ -132,10 +132,12 @@ impl session::PublicationProvider for Broken {
 
 // The publication-race barrier belongs to the data registration only. Control
 // observation uses the same authority through an ungated production provider.
+#[cfg(not(acyclic_loom))]
 pub struct SeparateTerminal {
     pub data: Arc<dyn session::PublicationProvider>,
     pub control: Arc<dyn session::PublicationProvider>,
 }
+#[cfg(not(acyclic_loom))]
 impl session::PublicationProvider for SeparateTerminal {
     fn subscribe(
         &self,

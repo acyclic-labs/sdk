@@ -17,7 +17,7 @@ mod support;
 fn run<F: std::future::Future>(future: F) -> F::Output {
     verification::park(future)
 }
-fn control(run: impl FnOnce(), message: &str) {
+fn control(run: impl FnOnce(), messages: &[&str]) {
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
         .expect_err("broken path escaped model");
     let text = failure
@@ -25,7 +25,10 @@ fn control(run: impl FnOnce(), message: &str) {
         .map(String::as_str)
         .or_else(|| failure.downcast_ref::<&str>().copied())
         .unwrap_or("");
-    assert!(text.contains(message), "unexpected model failure: {text}");
+    assert!(
+        messages.iter().any(|message| text.contains(message)),
+        "unexpected model failure: {text}"
+    );
 }
 
 // Seed only canonical records: the full workspace mutation fixture has large
@@ -212,7 +215,7 @@ fn resume(omit_wake: bool) {
 #[test]
 fn checked_resume_exhausts_append_registration_and_wakeup() {
     resume(false);
-    control(|| resume(true), "deadlock");
+    control(|| resume(true), &["deadlock"]);
 }
 fn replacement(unchecked: bool) {
     let fixture = input(&["original"]);
@@ -260,7 +263,7 @@ fn replacement(unchecked: bool) {
 #[test]
 fn checked_resume_exhausts_independent_history_replacement() {
     replacement(false);
-    control(|| replacement(true), "history was not rejected");
+    control(|| replacement(true), &["history was not rejected"]);
 }
 
 fn frame(id: u64, body: Body) -> wire::SessionFrame {
@@ -391,7 +394,7 @@ fn revocation(skip_authorization: bool) {
 #[test]
 fn resumed_buffered_delivery_exhausts_revocation() {
     revocation(false);
-    control(|| revocation(true), "delivery skipped authorization");
+    control(|| revocation(true), &["delivery skipped authorization"]);
 }
 
 // Empty opaque cursors select the separate follow/tail/read branch. No barrier
@@ -461,8 +464,13 @@ fn fresh_open_exhausts_deletion_and_history_replacement() {
     fresh_open(false, 3, false);
     fresh_open(false, 4, false);
     fresh_open(true, 4, false);
-    control(|| fresh_open(false, 4, true), "deadlock");
-    control(|| fresh_open(true, 4, true), "deadlock");
+    control(|| fresh_open(false, 4, true), &["deadlock"]);
+    // The unchecked replacement can either park forever or lose its watch with
+    // the wrong terminal code. Both violate the exact production-path oracle.
+    control(
+        || fresh_open(true, 4, true),
+        &["deadlock", "unexpected fresh-open error: Unavailable"],
+    );
 }
 
 fn fresh_delivery_replacement(unchecked: bool) {
@@ -517,15 +525,15 @@ fn fresh_delivery_replacement(unchecked: bool) {
 #[test]
 fn fresh_deliveries_exhaust_history_replacement() {
     fresh_delivery_replacement(false);
-    control(|| fresh_delivery_replacement(true), "mixed histories");
+    control(|| fresh_delivery_replacement(true), &["mixed histories"]);
 }
 
 fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
-    let fixture = input(&["original", "deleted"]);
+    let fixture = input(&["deleted"]);
     verification::check(move || {
         let (sub, records) = fixture.clone();
         let stream = Arc::new(MemoryStream::default());
-        append(&stream, &sub, &records[..3], 0);
+        let anchor = append(&stream, &sub, &records[..2], 0);
         let keeper = ManuallyDrop::new(stream.clone());
         let provider = Arc::new(support::Broken {
             inner: Arc::new(Provider::new(stream.clone(), |_: &Subscription| Ok(()))),
@@ -564,7 +572,14 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
                             channel_id: 1,
                             generation: 1,
                         }),
-                        resume: Some(wire::SessionCursor::default()),
+                        // Fresh data-open races are covered by fresh_open; the
+                        // opening race here isolates terminal registration while
+                        // still driving the real Session and checked data follow.
+                        resume: Some(if opening {
+                            cursor(&sub, 2, anchor)
+                        } else {
+                            wire::SessionCursor::default()
+                        }),
                         kind: Some(wire::session_subscription::Kind::FsPublications(
                             sub.encode().unwrap(),
                         )),
@@ -587,7 +602,7 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
             assert!(output.next().now_or_never().is_none());
         }
         let writer = loom::thread::spawn(move || {
-            append(&stream, &sub, &records[3..], 3);
+            append(&stream, &sub, &records[2..], 2);
         });
         let mut outcome = run(output.next()).unwrap().unwrap().body;
         if matches!(outcome, Some(Body::Opened(_))) {
@@ -608,5 +623,5 @@ fn zero_credit_deletion(skip_terminal: bool, opening: bool) {
 fn terminal_watch_exhausts_zero_credit_deletion() {
     zero_credit_deletion(false, false);
     zero_credit_deletion(false, true);
-    control(|| zero_credit_deletion(true, false), "deadlock");
+    control(|| zero_credit_deletion(true, false), &["deadlock"]);
 }
