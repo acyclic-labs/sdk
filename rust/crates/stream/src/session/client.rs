@@ -28,6 +28,11 @@ use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
+#[cfg(not(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32"))))]
+type Routes = BTreeMap<u64, Route>;
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod routes;
 #[cfg(acyclic_stream_loom)]
 pub use admissions::verify_admission_binding;
 #[cfg(acyclic_stream_loom)]
@@ -42,6 +47,8 @@ pub use pool::model::{
 };
 #[cfg(acyclic_stream_loom)]
 pub use pool::retry_model::verify_initial_retry_yield;
+#[cfg(all(test, not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+use routes::Routes;
 mod progress;
 use progress::Progress;
 #[cfg(acyclic_stream_loom)]
@@ -174,7 +181,7 @@ struct Pool {
     identity: Bytes,
     connect: std::sync::Arc<transport::Connect>,
     home: String,
-    routes: BTreeMap<u64, Route>,
+    routes: Routes,
     links: BTreeMap<String, Link>,
     reads: FuturesUnordered<Read>,
     dials: BTreeMap<String, Dial>,
@@ -226,7 +233,7 @@ impl Client {
             identity: Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             connect,
             home: String::new(),
-            routes: BTreeMap::new(),
+            routes: Routes::new(),
             links: BTreeMap::new(),
             reads: FuturesUnordered::new(),
             dials: BTreeMap::new(),

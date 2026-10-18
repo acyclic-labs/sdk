@@ -9,6 +9,9 @@ pub(super) mod model;
 mod ordering;
 #[cfg(acyclic_stream_loom)]
 pub(super) mod retry_model;
+#[cfg(test)]
+#[cfg(all(not(acyclic_stream_loom), not(target_arch = "wasm32")))]
+mod route_searches;
 
 #[cfg(acyclic_stream_loom)]
 pub(super) mod discovery_model;
@@ -301,9 +304,29 @@ impl Pool {
             });
         }
         match input.body {
-            Some(Body::Opened(opened)) => self.opened(id, &opened),
+            Some(Body::Opened(opened)) => {
+                if let Some(error) = Self::opened(route, id, &opened)? {
+                    let records = route.records.clone();
+                    self.remove(id)?;
+                    self.executor.spawn(Box::pin(async move {
+                        let _ = records.send(Err(error)).await;
+                    }));
+                    Ok(())
+                } else {
+                    self.grant(id)
+                }
+            }
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
-            Some(Body::Closed(closed)) => self.closed(id, &closed),
+            Some(Body::Closed(closed)) => {
+                let error = Self::closed(route, id, &closed);
+                let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
+                if let Some(error) = error {
+                    self.executor.spawn(Box::pin(async move {
+                        let _ = route.records.send(Err(error)).await;
+                    }));
+                }
+                Ok(())
+            }
             Some(Body::Moved(moved)) => {
                 let destination = moved.node.ok_or(StreamError::Unavailable)?;
                 if destination.node_id.is_empty()
@@ -334,8 +357,11 @@ impl Pool {
         }
     }
     /// Accept an Open reply that resumes exactly where the route left off.
-    fn opened(&mut self, id: u64, opened: &wire::SessionOpened) -> Result<(), StreamError> {
-        let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
+    fn opened(
+        route: &mut Route,
+        id: u64,
+        opened: &wire::SessionOpened,
+    ) -> Result<Option<StreamError>, StreamError> {
         if opened.resume.as_ref().is_none_or(|resume| {
             resume.next != route.received || resume.opaque != route.received_opaque
         }) {
@@ -350,12 +376,7 @@ impl Pool {
                 if let Some(ready) = route.ready.take() {
                     let _ = ready.send(Err(error.clone()));
                 }
-                let records = route.records.clone();
-                self.remove(id)?;
-                self.executor.spawn(Box::pin(async move {
-                    let _ = records.send(Err(error)).await;
-                }));
-                return Ok(());
+                return Ok(Some(error));
             }
         }
         if let Some(ready) = route.ready.take() {
@@ -363,28 +384,22 @@ impl Pool {
         }
         route.observation.record("generation", route.generation);
         route.opened = true;
-        self.grant(id)
+        Ok(None)
     }
     /// End a route with the server's status after its earlier records.
-    fn closed(&mut self, id: u64, closed: &wire::SessionClosed) -> Result<(), StreamError> {
-        let route = self.routes.get_mut(&id).ok_or(StreamError::Unavailable)?;
+    fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {
         let error = StreamError::from_session_close(&closed.code);
         if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
             && let Some(ready) = route.ready.take()
         {
             let _ = ready.send(Err(error));
-            self.routes.remove(&id);
-            return Ok(());
+            return None;
         }
         // Errors are delivered after all earlier records, using one reserved slot.
         if let Some(ready) = route.ready.take() {
             let _ = ready.send(Ok(id));
         }
-        let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
-        self.executor.spawn(Box::pin(async move {
-            let _ = route.records.send(Err(error)).await;
-        }));
-        Ok(())
+        Some(error)
     }
     fn control(
         &mut self,

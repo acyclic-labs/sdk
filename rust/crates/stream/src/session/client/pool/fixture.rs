@@ -11,7 +11,7 @@ pub(in crate::session::client) fn fixture(
         identity: Bytes::from_static(b"model"),
         connect: std::sync::Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
         home: "good".into(),
-        routes: BTreeMap::new(),
+        routes: Routes::new(),
         links: BTreeMap::new(),
         reads: FuturesUnordered::new(),
         dials: BTreeMap::new(),
@@ -91,7 +91,11 @@ pub(in crate::session::client) fn fixture(
 }
 
 /// An opened route on `node` with a two-frame delivery grant.
-fn route(node: &str, kind: Kind, records: mpsc::Sender<Result<Delivery, StreamError>>) -> Route {
+pub(in crate::session::client) fn route(
+    node: &str,
+    kind: Kind,
+    records: mpsc::Sender<Result<Delivery, StreamError>>,
+) -> Route {
     Route {
         raw: false,
         watermark: None,
