@@ -677,3 +677,40 @@ async fn opening_a_checkout_captures_its_root_once() -> Result<()> {
     harness.close().await?;
     Ok(())
 }
+
+/// A kill after any durable step of the first open's owner publication leaves
+/// a checkout that reopens and accepts a prompt. The negative control publishes
+/// the record in place, and a kill mid-write bricks the checkout.
+#[tokio::test]
+async fn a_kill_at_any_step_of_owner_publication_reopens_and_accepts_a_prompt() -> Result<()> {
+    use super::super::owner::publication;
+    async fn killed_then_reopened(step: usize, torn: bool) -> Result<Result<()>> {
+        let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+        let state = tempfile::tempdir().map_err(super::super::storage)?;
+        let config = || {
+            super::checkout_config(workspace.path(), (model()?, text()))
+                .map(|config| config.state_directory(state.path()))
+        };
+        publication::tear(torn);
+        publication::kill_at(Some(step));
+        let killed = LocalHarness::open(config()?).await;
+        publication::kill_at(None);
+        publication::tear(false);
+        assert!(killed.is_err(), "step {step} was not killed");
+        Ok(match LocalHarness::open(config()?).await {
+            Ok(harness) => {
+                run(&harness).await?;
+                harness.close().await
+            }
+            Err(error) => Err(error),
+        })
+    }
+    for step in 0..publication::STEPS {
+        killed_then_reopened(step, false).await??;
+    }
+    assert!(
+        killed_then_reopened(1, true).await?.is_err(),
+        "a torn owner record did not brick the checkout"
+    );
+    Ok(())
+}

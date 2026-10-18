@@ -257,8 +257,17 @@ impl Owner {
         owner
     }
 
+    // Publication is a fresh temporary file, written and synced, then renamed
+    // into place without replacement: a kill at any step leaves either no
+    // record or a complete one, never a partial record that refuses reopen.
     fn publish(&self, directory: &Path, path: &Path) -> Result<bool> {
         let temporary = directory.join(format!(".owner-{}.next", crate::identity::fresh_uuid()));
+        #[cfg(test)]
+        let temporary = if publication::torn() {
+            path.to_path_buf()
+        } else {
+            temporary
+        };
         let mut options = fs::OpenOptions::new();
         options.create_new(true).write(true);
         #[cfg(unix)]
@@ -266,21 +275,44 @@ impl Owner {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let result = (|| {
+        let result = (|| -> std::io::Result<()> {
             let mut file = options.open(&temporary)?;
+            #[cfg(test)]
+            publication::step(0)?;
             let mut bytes = serde_json::to_vec(self).map_err(std::io::Error::other)?;
+            #[cfg(test)]
+            {
+                let half = bytes.len() / 2;
+                acyclic_native_runtime::write_file_all(&mut file, &bytes[..half])?;
+                publication::step(1)?;
+                bytes.drain(..half);
+            }
             let written = acyclic_native_runtime::write_file_all(&mut file, &bytes);
             bytes.fill(0);
             written?;
             acyclic_native_runtime::flush_file_all(&file)?;
             drop(file);
+            #[cfg(test)]
+            publication::step(2)?;
+            #[cfg(test)]
+            if publication::torn() {
+                return Ok(());
+            }
             acyclic_native_runtime::durable_rename(
                 &temporary,
                 path,
                 acyclic_native_runtime::RenameMode::NoReplace,
                 None,
-            )
+            )?;
+            #[cfg(test)]
+            publication::step(3)?;
+            Ok(())
         })();
+        #[cfg(test)]
+        if publication::killed(&result) {
+            // A killed process runs no cleanup.
+            return Err(Error::Storage("killed during owner publication".into()));
+        }
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
@@ -289,5 +321,48 @@ impl Owner {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
             Err(error) => Err(storage(error)),
         }
+    }
+}
+
+/// Simulated kills at each durable step of owner publication.
+#[cfg(test)]
+pub(super) mod publication {
+    use std::cell::Cell;
+
+    /// The steps a kill can follow: created, half written, synced, renamed.
+    pub(in crate::local) const STEPS: usize = 4;
+    const KILLED: &str = "killed during owner publication";
+
+    thread_local! {
+        static KILL_AT: Cell<Option<usize>> = const { Cell::new(None) };
+        static TORN: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Kills the next publication on this thread after `step`.
+    pub(in crate::local) fn kill_at(step: Option<usize>) {
+        KILL_AT.with(|kill| kill.set(step));
+    }
+
+    /// Negative control: publish by writing the record in place.
+    pub(in crate::local) fn tear(torn: bool) {
+        TORN.with(|flag| flag.set(torn));
+    }
+
+    pub(super) fn torn() -> bool {
+        TORN.with(Cell::get)
+    }
+
+    pub(super) fn step(step: usize) -> std::io::Result<()> {
+        if KILL_AT.with(Cell::get) == Some(step) {
+            KILL_AT.with(|kill| kill.set(None));
+            return Err(std::io::Error::other(KILLED));
+        }
+        Ok(())
+    }
+
+    pub(super) fn killed(result: &std::io::Result<()>) -> bool {
+        result
+            .as_ref()
+            .is_err_and(|error| error.to_string() == KILLED)
     }
 }
