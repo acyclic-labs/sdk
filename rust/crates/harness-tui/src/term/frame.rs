@@ -456,6 +456,16 @@ impl<D: Present> FrameTerminal<D> {
         render: impl FnOnce(&mut Frame<'_>),
     ) -> io::Result<()> {
         let previous_area = self.terminal.get_frame().area();
+        let requested = self.terminal.backend().size.into();
+        if requested != previous_area
+            && self.terminal.current_buffer_mut().area == ratatui::layout::Rect::default()
+        {
+            // Resize the owned pair, rather than allocating two temporary
+            // viewport buffers while our reusable storage sits outside Terminal.
+            std::mem::swap(self.terminal.current_buffer_mut(), &mut self.shown);
+            self.terminal.swap_buffers();
+            std::mem::swap(self.terminal.current_buffer_mut(), &mut self.staging);
+        }
         self.terminal.autoresize()?;
         let area = self.terminal.get_frame().area();
         if self.invalid && area == previous_area {
@@ -463,19 +473,19 @@ impl<D: Present> FrameTerminal<D> {
             // Terminal::clear's synchronous cursor query on the output path.
             self.terminal.backend_mut().clear()?;
         }
-        if self.terminal.current_buffer_mut().area != ratatui::layout::Rect::default() {
-            // Terminal creates two viewport buffers at construction/resize. Take
-            // one for rendering and retire the other. Its ordinary draw lifecycle
-            // thereafter sees two genuinely empty buffers, so it visits no cells.
+        let reclaimed = self.terminal.current_buffer_mut().area != ratatui::layout::Rect::default();
+        if reclaimed {
+            // Reclaim both buffers, including their capacity. The swap clears
+            // the baseline; ordinary draws then see two genuinely empty buffers.
             self.staging = std::mem::take(self.terminal.current_buffer_mut());
             self.terminal.swap_buffers();
-            *self.terminal.current_buffer_mut() = Buffer::default();
+            self.shown = std::mem::take(self.terminal.current_buffer_mut());
         }
         if self.staging.area != area {
             self.staging.resize(area);
         }
         let retained = !self.invalid && self.shown.area == area;
-        if !retained {
+        if !retained && !reclaimed {
             self.shown.resize(area);
             self.shown.reset();
         }

@@ -241,3 +241,35 @@ fn render_unwind_returns_and_clears_the_only_render_buffer() {
             .all(|cell| cell.symbol() == " ")
     );
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    // Resizes that fit the original allocation keep exactly the same two cell
+    // stores, including shrinking then growing and heap-backed cell contents.
+    #[test]
+    fn resizing_reuses_the_owned_cell_storage(
+        sizes in proptest::collection::vec((1u16..101, 1u16..41), 1..16),
+    ) {
+        let guard = RestoreGuard::new(io::sink(), &Capabilities::default());
+        let mut terminal = FrameTerminal::new(guard, Size::new(100, 40)).unwrap();
+        let cluster = format!("a{}", "\u{301}".repeat(40));
+        let mut draw = |size| {
+            terminal.draw(size, |frame| {
+                frame.buffer_mut().content[0].set_symbol(&cluster);
+            }).unwrap();
+            let mut stores = [
+                terminal.shown.content.as_ptr() as usize,
+                terminal.staging.content.as_ptr() as usize,
+            ];
+            stores.sort_unstable();
+            stores
+        };
+        let stores = draw(Size::new(100, 40));
+        for (width, height) in sizes.into_iter().chain([(100, 40)]) {
+            proptest::prop_assert_eq!(
+                draw(Size::new(width, height)), stores,
+                "resize must retain both owned cell stores"
+            );
+        }
+    }
+}
