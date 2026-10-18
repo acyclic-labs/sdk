@@ -475,17 +475,11 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     };
     let code = super::operations::original_native_decode_mode(work)
         .then_some(crate::wire::ErrorCode::Invalid);
-    let bytes =
-        crate::executor::json::canonical_json_bytes_bounded(value, bounds, code, &mut |charge| {
-            work.codec_charge(charge)
-        })?;
-    if let Err(error) = work.retain_owned((bytes.capacity() - bytes.len()) as u64) {
-        let size = bytes.len() as u64;
-        drop(bytes);
-        let _ = work.release_owned(size);
-        return Err(error);
-    }
-    Ok(bytes)
+    // The encoder returns its buffer with the whole capacity already retained;
+    // callers release exactly `capacity()`.
+    crate::executor::json::canonical_json_bytes_bounded(value, bounds, code, &mut |charge| {
+        work.codec_charge(charge)
+    })
 }
 
 mod conversation;

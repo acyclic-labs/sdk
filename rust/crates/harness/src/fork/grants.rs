@@ -111,7 +111,6 @@ pub(in crate::fork) fn decode_fork_manifest(
             _ => owned.observer()?.codec_charge(charge),
         },
     )?;
-    owned.retain((canonical.capacity() - canonical.len()) as u64)?;
     let capacity = canonical.capacity() as u64;
     let matches = canonical == bytes;
     drop(canonical);

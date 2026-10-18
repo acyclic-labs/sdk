@@ -478,7 +478,9 @@ fn scope<'a>(
         lexical: admission::Lexical::default(),
     }
 }
-/// Compact encoding admitted before its output buffer is allocated.
+/// Compact encoding admitted before its output buffer is allocated. The
+/// returned buffer's whole `capacity()` remains retained through `charge`;
+/// the caller releases exactly that, never an extra slack charge.
 pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T,
     bounds: JsonBounds,
@@ -547,7 +549,8 @@ pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     Ok(*digest.finalize().as_bytes())
 }
 
-/// Sorted-key encoding with funded buffers and Value storage.
+/// Sorted-key encoding with funded buffers and Value storage. The returned
+/// buffer's whole `capacity()` remains retained through `charge`.
 pub fn canonical_json_bytes_bounded<
     T: Serialize + ?Sized,
     F: FnMut(JsonCodecCharge) -> Result<()>,
