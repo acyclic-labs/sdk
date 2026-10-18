@@ -48,13 +48,10 @@ impl Bounded {
         let mut total = self.inner.delay(self.total());
         let mut send = pin!(send);
         let response = futures::future::poll_fn(|context| {
-            if let Poll::Ready(result) = send.as_mut().poll(context) {
-                return Poll::Ready(result);
+            if total.poll_unpin(context).is_ready() {
+                return Poll::Ready(Err(timeout(native, Expired::Total, self.timeouts)));
             }
-            match total.poll_unpin(context) {
-                Poll::Ready(()) => Poll::Ready(Err(timeout(native, Expired::Total, self.timeouts))),
-                Poll::Pending => Poll::Pending,
-            }
+            send.as_mut().poll(context)
         })
         .await?;
         Ok((response, total))
@@ -131,11 +128,18 @@ enum Expired {
 
 /// The typed timeout of an expired deadline, rendered like every other transport failure.
 fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
-    let cause = match expired {
-        Expired::Idle => format!("no response bytes for {} ms", timeouts.idle_ms),
-        Expired::Total => format!("exchange exceeded {} ms", timeouts.total_ms),
-    };
-    crate::transport_failure(native, ModelTransportFailure::Timeout, &cause)
+    match expired {
+        Expired::Idle => crate::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("no response bytes for {} ms", timeouts.idle_ms),
+        ),
+        Expired::Total => crate::transport_failure(
+            native,
+            ModelTransportFailure::Timeout,
+            format_args!("exchange exceeded {} ms", timeouts.total_ms),
+        ),
+    }
 }
 
 /// A response body under both deadlines. One platform timer serves each idle window rather
@@ -173,6 +177,11 @@ impl Stream for Guarded {
         if this.ended {
             return Poll::Ready(None);
         }
+        // Check before the producer: a ready chunk (or EOF) may follow consumer work that
+        // crossed the deadline. Producer readiness must never starve the deadline timer.
+        if this.total.poll_unpin(context).is_ready() {
+            return this.expire(Expired::Total);
+        }
         if let Poll::Ready(item) = this.body.poll_next_unpin(context) {
             this.progress = true;
             if item.is_none() {
@@ -180,9 +189,6 @@ impl Stream for Guarded {
                 this.idle = None;
             }
             return Poll::Ready(item);
-        }
-        if this.total.poll_unpin(context).is_ready() {
-            return this.expire(Expired::Total);
         }
         loop {
             let (transport, window) = (&this.transport, this.window);

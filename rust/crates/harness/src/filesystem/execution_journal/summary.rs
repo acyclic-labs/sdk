@@ -95,9 +95,14 @@ impl ExecutionSummary {
                 tool_key = Some(key);
                 // A refusal settles a call with no start; any other failure follows one.
                 let recorded = self.tools.get(&(*step, key));
-                cause.is_canonical()
-                    && (recorded == Some(&false)
-                        || (reason.precedes_dispatch() && recorded.is_none()))
+                self.tail > 0
+                    && !call_id.is_empty()
+                    && cause.is_canonical()
+                    && if reason.precedes_dispatch() {
+                        recorded.is_none()
+                    } else {
+                        recorded == Some(&false)
+                    }
             }
         };
         if let Some(io) = io {
@@ -189,7 +194,11 @@ impl ExecutionSummary {
                     (u32, crate::executor::ModelPurpose),
                     Option<ModelEventAdmission>,
                 )>(),
-                ExecutionEvent::ToolStarted { .. } => {
+                ExecutionEvent::ToolStarted { step, .. }
+                | ExecutionEvent::ToolCompleted { step, .. }
+                | ExecutionEvent::ToolFailed { step, .. }
+                    if tool_key.is_some_and(|key| !self.tools.contains_key(&(*step, key))) =>
+                {
                     std::mem::size_of::<((u32, [u8; 32]), bool)>()
                 }
                 _ => 0,

@@ -10,6 +10,8 @@ use web_sys::{
     AbortController, Headers, ReadableStreamDefaultReader, RequestCredentials, RequestInit,
     RequestRedirect, Response,
 };
+#[path = "browser_delay.rs"]
+mod timer;
 
 /// Browser HTTP with an explicitly owned fetch function.
 pub struct BrowserTransport(Function);
@@ -143,20 +145,7 @@ impl HttpTransport for BrowserTransport {
     }
 
     fn delay(&self, duration: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        Box::pin(async move {
-            let milliseconds = JsValue::from_f64(duration.as_secs_f64() * 1_000.0);
-            let promise = Promise::new(&mut |resolve, _| {
-                let global = js_sys::global();
-                let scheduled = Reflect::get(&global, &JsValue::from_str("setTimeout"))
-                    .ok()
-                    .and_then(|set| set.dyn_into::<Function>().ok())
-                    .is_some_and(|set| set.call2(&global, &resolve, &milliseconds).is_ok());
-                if !scheduled {
-                    let _ = resolve.call0(&JsValue::UNDEFINED);
-                }
-            });
-            let _ = JsFuture::from(promise).await;
-        })
+        Box::pin(timer::delay(duration))
     }
 }
 

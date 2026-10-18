@@ -24,7 +24,7 @@ use std::{
 struct Script(mpsc::Sender<HttpRequest>);
 impl HttpTransport for Script {
     fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+        Box::pin(futures::future::pending())
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {

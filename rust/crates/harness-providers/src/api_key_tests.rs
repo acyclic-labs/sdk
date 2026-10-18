@@ -69,8 +69,8 @@ impl Responses {
     }
 }
 impl HttpTransport for Responses {
-    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
     }
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move { self.exchange(request) })

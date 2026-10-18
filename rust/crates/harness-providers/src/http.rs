@@ -189,7 +189,7 @@ fn reqwest_failure(native: bool, error: &reqwest::Error) -> acyclic_harness::Err
     } else {
         ModelTransportFailure::Interrupted
     };
-    crate::transport_failure(native, failure, &root.to_string())
+    crate::transport_failure(native, failure, root)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

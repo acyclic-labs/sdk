@@ -22,6 +22,7 @@ async-stream = "0.3.6"
 bytes.workspace = true
 blake3.workspace = true
 futures.workspace = true
+httpdate = "1.0.3"
 serde.workspace = true
 serde_json.workspace = true
 url = "2.5.7"

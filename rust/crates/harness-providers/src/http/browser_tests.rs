@@ -32,10 +32,85 @@ export function httpFixture(mode) {
   };
   return state;
 }
+export function timerFixture() {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  const active = new Map(), waits = [];
+  globalThis.setTimeout = (callback, wait) => {
+    const handle = {};
+    waits.push(wait);
+    active.set(handle, callback);
+    return handle;
+  };
+  globalThis.clearTimeout = handle => active.delete(handle);
+  return {
+    active: () => active.size,
+    waits: () => waits,
+    fire: () => { const [handle, callback] = active.entries().next().value;
+      active.delete(handle); callback(); },
+    leak: () => globalThis.setTimeout(() => {}, 3600000),
+    restore: () => { globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; }
+  };
+}
 "#)]
 extern "C" {
     #[wasm_bindgen(js_name = httpFixture)]
     fn http_fixture(mode: &str) -> JsValue;
+    #[wasm_bindgen(js_name = timerFixture)]
+    fn timer_fixture() -> JsValue;
+}
+
+struct TimerFixture(JsValue);
+impl TimerFixture {
+    fn call(&self, name: &str) -> JsValue {
+        field(&self.0, name)
+            .unwrap()
+            .dyn_into::<Function>()
+            .unwrap()
+            .call0(&self.0)
+            .unwrap()
+    }
+}
+impl Drop for TimerFixture {
+    fn drop(&mut self) {
+        self.call("restore");
+    }
+}
+
+#[wasm_bindgen_test]
+async fn deadline_timers_are_cancelled_and_long_waits_never_overflow() {
+    for millis in [1, i32::MAX as u64, i32::MAX as u64 + 1, u32::MAX as u64] {
+        let fixture = TimerFixture(timer_fixture());
+        let mut delay = Box::pin(timer::delay(std::time::Duration::from_millis(millis)));
+        let mut elapsed = false;
+        while !elapsed {
+            assert!(futures::poll!(&mut delay).is_pending());
+            assert_eq!(fixture.call("active").as_f64(), Some(1.0));
+            fixture.call("fire");
+            // Flush the Promise reaction before polling the Rust waiter.
+            JsFuture::from(Promise::resolve(&JsValue::UNDEFINED))
+                .await
+                .unwrap();
+            elapsed = futures::poll!(&mut delay).is_ready();
+        }
+        let waits = js_sys::Array::from(&fixture.call("waits"));
+        let mut total = 0u64;
+        for wait in waits.iter() {
+            let wait = wait.as_f64().unwrap() as u64;
+            assert!((1..=i32::MAX as u64).contains(&wait));
+            total += wait;
+        }
+        assert_eq!(total, millis);
+        assert_eq!(fixture.call("active").as_f64(), Some(0.0));
+    }
+    let fixture = TimerFixture(timer_fixture());
+    let mut delay = Box::pin(timer::delay(std::time::Duration::from_secs(3600)));
+    assert!(futures::poll!(&mut delay).is_pending());
+    drop(delay);
+    assert_eq!(fixture.call("active").as_f64(), Some(0.0));
+    // Negative control: the former unowned setTimeout leaves its callback registered.
+    fixture.call("leak");
+    assert_eq!(fixture.call("active").as_f64(), Some(1.0));
+    fixture.call("fire");
 }
 
 fn field(object: &JsValue, name: &str) -> std::result::Result<JsValue, JsValue> {

@@ -190,7 +190,15 @@ pub(crate) async fn send_count(
     count_custody: NativeCustody,
     work: NativeWork<'_>,
 ) -> Result<(ModelTokenCount, NativeCustody)> {
-    let mut response = exchange_count(provider, exchange, work).await?;
+    count.input_tokens = exchange_count(provider, exchange, work).await?;
+    Ok((count, count_custody))
+}
+
+async fn read_count(
+    provider: &ResolvedModel,
+    mut response: crate::HttpResponse,
+    work: NativeWork<'_>,
+) -> Result<u64> {
     let spec = provider
         .config
         .token_counter
@@ -249,17 +257,16 @@ pub(crate) async fn send_count(
         Some(hold) => crate::native::diagnostic(verified, hold),
         None => verified,
     };
-    count.input_tokens = verified?;
-    Ok((count, count_custody))
+    verified
 }
 
-/// Sends a count under the same redelivery policy as generation: a retryable refusal before any
-/// response body is read is resent, and every other failure is final.
+/// A count has no caller-visible output until its whole body is validated. All retryable
+/// failures, including a cut or stalled successful body, consume this one attempt budget.
 async fn exchange_count(
     provider: &ResolvedModel,
     exchange: HttpRequest,
     work: NativeWork<'_>,
-) -> Result<crate::HttpResponse> {
+) -> Result<u64> {
     let mut redelivery =
         crate::retry::Redelivery::for_request(provider.config.retry, &exchange.body);
     // Each attempt sends a copy, so the copy in flight is funded alongside the retained request.
@@ -299,7 +306,12 @@ async fn exchange_count(
             provider.transport.send(attempt).await
         };
         let (failure, retry_after) = match sent {
-            Ok(response) if (200..300).contains(&response.status) => return Ok(response),
+            Ok(response) if (200..300).contains(&response.status) => {
+                match read_count(provider, response, work).await {
+                    Ok(count) => return Ok(count),
+                    Err(failure) => (failure, None),
+                }
+            }
             Ok(response) => {
                 let retry_after = response.retry_after;
                 #[cfg(not(target_arch = "wasm32"))]

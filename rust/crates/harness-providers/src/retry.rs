@@ -72,9 +72,27 @@ impl Redelivery {
     }
 }
 
-/// Parses a `Retry-After` header's delta-seconds form; an HTTP date falls back to backoff.
+/// Both HTTP forms of `Retry-After`, relative to the platform clock.
 pub(crate) fn retry_after(value: &str) -> Option<Duration> {
-    value.trim().parse::<u64>().ok().map(Duration::from_secs)
+    retry_after_at(value, || {
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::SystemTime::now();
+        #[cfg(target_arch = "wasm32")]
+        let now = std::time::UNIX_EPOCH + Duration::from_secs_f64(js_sys::Date::now() / 1_000.0);
+        now
+    })
+}
+
+pub(crate) fn retry_after_at(
+    value: &str,
+    now: impl FnOnce() -> std::time::SystemTime,
+) -> Option<Duration> {
+    let value = value.trim();
+    if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.parse::<u64>().ok().map(Duration::from_secs);
+    }
+    let date = httpdate::parse_http_date(value).ok()?;
+    Some(date.duration_since(now()).unwrap_or(Duration::ZERO))
 }
 
 #[cfg(test)]
@@ -161,6 +179,26 @@ mod tests {
         );
         assert_eq!(none.next(&unavailable(), None, false), None);
         assert_eq!(retry_after(" 7 "), Some(Duration::from_secs(7)));
-        assert_eq!(retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+        assert_eq!(retry_after("not a date"), None);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+        #[test]
+        fn retry_after_forms_round_trip_and_obey_the_same_budget(
+            at in 0..4_000_000_000u64, now in 0..4_000_000_000u64,
+            delta in proptest::prelude::any::<u64>(),
+        ) {
+            let clock = std::time::UNIX_EPOCH + Duration::from_secs(now);
+            let date = httpdate::fmt_http_date(std::time::UNIX_EPOCH + Duration::from_secs(at));
+            let wait = retry_after_at(&date, || clock).unwrap();
+            proptest::prop_assert_eq!(wait, Duration::from_secs(at.saturating_sub(now)));
+            proptest::prop_assert_eq!(retry_after_at(&delta.to_string(), || clock), Some(Duration::from_secs(delta)));
+            let mut retry = Redelivery::new(RetrySpec::DEFAULT, dispatch());
+            proptest::prop_assert_eq!(retry.next(&unavailable(), Some(wait), false),
+                (wait <= Duration::from_millis(RetrySpec::DEFAULT.max_delay_ms.into())).then_some(wait));
+            // Negative control: the former delta-only parser ignores every date hint.
+            proptest::prop_assert_ne!(date.parse::<u64>().ok().map(Duration::from_secs), Some(wait));
+        }
     }
 }

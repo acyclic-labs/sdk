@@ -26,6 +26,7 @@ mod codex_dispatch_tests;
 mod counting;
 mod credentials;
 mod deadline;
+mod diagnostic;
 mod dispatch;
 mod files;
 #[cfg(test)]
@@ -109,7 +110,7 @@ fn unavailable(status: u16, body: &[u8]) -> Option<Error> {
 fn transport_failure(
     native: bool,
     failure: acyclic_harness::ModelTransportFailure,
-    cause: &str,
+    cause: impl std::fmt::Display,
 ) -> Error {
     #[cfg(not(target_arch = "wasm32"))]
     if native {
@@ -131,7 +132,7 @@ fn transport_failure(
     let _ = native;
     Error::ModelUnavailable {
         failure,
-        excerpt: excerpt(cause.as_bytes()),
+        excerpt: diagnostic::excerpt(cause),
     }
 }
 

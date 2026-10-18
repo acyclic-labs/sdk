@@ -1,4 +1,15 @@
 use crate::Adapter;
+
+/// Frozen fixture clock: redelivery waits elapse immediately; default exchange deadlines
+/// never elapse. Deadline tests use their own progressing virtual clock.
+pub(crate) fn delay(wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+    if wait >= std::time::Duration::from_millis(crate::TimeoutSpec::DEFAULT.idle_ms.into()) {
+        Box::pin(futures::future::pending())
+    } else {
+        Box::pin(async {})
+    }
+}
+
 pub(crate) const CHAT: &str = concat!(
     "data: {\"id\":\"run\",\"choices\":[{\"delta\":{\"content\":\"hé\",\"reasoning_content\":\"think\",\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\"}}]}}]}\n\n",
     "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",

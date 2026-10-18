@@ -356,8 +356,8 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
 struct AliasFixture(native_tests::Fixture);
 
 impl HttpTransport for AliasFixture {
-    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {

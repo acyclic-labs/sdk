@@ -109,6 +109,36 @@ fn gap() -> impl Strategy<Value = Millis> {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
+    // Consumer work can let the total deadline pass while the producer is ready. Readiness
+    // must never bypass an expired deadline, including an immediately ready EOF or headers.
+    #[test]
+    fn expired_total_precedes_ready_producers(total in 1..10_000u32, late in 1..10_000u64, eof in any::<bool>(), headers in any::<bool>()) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time().start_paused(true).build().unwrap();
+        runtime.block_on(async {
+            let transport = Bounded::new(Arc::new(Script(History {
+                head: u64::from(total), gaps: vec![], silent: false,
+            })), TimeoutSpec { idle_ms: u32::MAX, total_ms: total });
+            let error = if headers {
+                let mut send = pin!(transport.send(request()));
+                assert!(send.as_mut().now_or_never().is_none());
+                tokio::time::advance(Duration::from_millis(u64::from(total) + late)).await;
+                send.await.err().expect("expired headers must fail")
+            } else {
+                let body: BoxProviderStream<'static, Result<Bytes>> = if eof {
+                    Box::pin(futures::stream::empty())
+                } else {
+                    Box::pin(futures::stream::repeat_with(|| Ok(Bytes::from_static(b"x"))))
+                };
+                let deadline = transport.inner.delay(transport.total());
+                let mut guarded = transport.guard(body, deadline, false);
+                tokio::time::advance(Duration::from_millis(u64::from(total) + late)).await;
+                guarded.next().await.expect("timeout item").expect_err("expired body must fail")
+            };
+            assert_eq!(cause(&error), format!("exchange exceeded {total} ms"));
+        });
+    }
+
     // Idle: the first silence of two windows ends the exchange right after the chunks before it
     // (a stall after partial output when there are any); shorter gaps never do.
     #[test]
@@ -212,4 +242,21 @@ fn zero_deadlines_are_rejected() {
         assert!(timeouts.validate().is_err());
     }
     assert!(TimeoutSpec::DEFAULT.validate().is_ok());
+}
+
+#[test]
+fn native_timeout_does_not_allocate_a_discarded_diagnostic() {
+    let allocated = acyclic_test_support::measure(|| {
+        let error = timeout(true, Expired::Total, TimeoutSpec::DEFAULT);
+        assert!(matches!(error, Error::NativeBoundary { .. }));
+    });
+    assert_eq!(allocated.count_total, 0);
+    // Negative control: the previous native path built this text and discarded it.
+    let discarded = acyclic_test_support::measure(|| {
+        std::hint::black_box(format!(
+            "exchange exceeded {} ms",
+            TimeoutSpec::DEFAULT.total_ms
+        ));
+    });
+    assert!(discarded.count_total > 0);
 }

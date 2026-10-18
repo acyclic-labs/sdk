@@ -8,8 +8,8 @@ struct Backend {
     generations: AtomicUsize,
 }
 impl HttpTransport for Backend {
-    fn delay(&self, _: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-        Box::pin(async {})
+    fn delay(&self, wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
+        crate::fixtures::delay(wait)
     }
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         panic!("stock must use original-ledger native HTTP")
