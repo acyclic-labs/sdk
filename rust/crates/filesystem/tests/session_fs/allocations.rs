@@ -26,7 +26,7 @@ fn encoding_allocates_only_wire_fields_and_output() -> Result {
     let mut encoded = None;
     let counts = measure(|| encoded = Some(sub.encode().unwrap()));
     assert_eq!(counts.count_total, 5);
-    assert_eq!(encoded.unwrap().as_ref(), reference);
+    assert_eq!(encoded.take().unwrap().as_ref(), reference);
     // Restore the redundant deep protobuf clone on the actual encoder path.
     let extra = measure(|| {
         let wire = wire_subscription(&sub);
