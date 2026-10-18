@@ -174,3 +174,71 @@ fn native_tmux_observes_recovered_margins_after_failed_abort_and_writer_unwind()
         );
     }
 }
+
+#[test]
+fn abandoning_a_failed_recovery_does_not_discharge_unwritten_margin_effects() {
+    for panic in [false, true] {
+        for abandon_render in [false, true] {
+            let device = Device::default();
+            let at = Rc::new(Cell::new(None));
+            let effects = Rc::new(RefCell::new(Vec::new()));
+            let mut guard = RestoreGuard::new(
+                Cut {
+                    device: device.clone(),
+                    at: at.clone(),
+                    failures: Rc::new(Cell::new(0)),
+                    panic,
+                },
+                &region_caps(true),
+            );
+            let size = Size::new(WIDTH, HEIGHT);
+            let mut terminal = FrameTerminal::new(
+                Observed {
+                    device: &mut guard,
+                    effects: effects.clone(),
+                },
+                size,
+            )
+            .unwrap();
+            terminal
+                .draw(size, |frame| paint(frame, &window(0, HEIGHT)))
+                .unwrap();
+            at.set(Some(device.0.borrow().len() + b"\x1b[3;6r".len()));
+            let failed = catch_unwind(AssertUnwindSafe(|| {
+                terminal.draw_scrolled(
+                    size,
+                    Some(RegionScroll {
+                        region: Rect::new(0, 2, WIDTH, 4),
+                        rows: 1,
+                    }),
+                    |frame| paint(frame, &window(1, HEIGHT)),
+                )
+            }));
+            assert!(failed.is_err() || failed.unwrap().is_err());
+            at.set(None);
+            if abandon_render {
+                assert!(
+                    catch_unwind(AssertUnwindSafe(|| {
+                        terminal.draw(size, |_| {
+                            std::panic::resume_unwind(Box::new("render panic"))
+                        })
+                    }))
+                    .is_err()
+                );
+            }
+            drop(terminal);
+            assert!(
+                !effects.borrow().last().unwrap().margins,
+                "a cursor-only teardown must not claim a lost reset"
+            );
+            let before = device.take();
+            guard.restore().unwrap();
+            let restored = [before.clone(), device.take()].concat();
+            assert!(scrolls_whole_screen(&restored));
+            assert!(
+                !scrolls_whole_screen(&before),
+                "losing the journal must fail the screen oracle"
+            );
+        }
+    }
+}
