@@ -116,21 +116,29 @@ impl ClientRenderer {
             .update(archive.as_ref().map(|(files, session)| {
                 (*files, crate::client::OutputOwner::Session(session.clone()))
             }));
-        let archived = selected.as_ref().is_some_and(|(_, task)| {
-            archive.as_ref().is_some_and(|(files, session)| {
-                crate::TaskId::parse(task.as_str()).is_ok_and(|task| {
-                    files.has_command_text(
-                        &crate::client::OutputOwner::Session(session.clone()),
-                        task,
-                        self.archive.after(),
-                    )
-                })
-            })
-        });
+        let owner = match &archive {
+            None => task::AnswerOwner::Task,
+            Some((files, session)) => {
+                let archived = selected.as_ref().is_some_and(|(_, task)| {
+                    crate::TaskId::parse(task.as_str()).is_ok_and(|task| {
+                        files.has_command_text(
+                            &crate::client::OutputOwner::Session(session.clone()),
+                            task,
+                            self.archive.after(),
+                        )
+                    })
+                });
+                if archived {
+                    task::AnswerOwner::Archived
+                } else {
+                    task::AnswerOwner::Session
+                }
+            }
+        };
         let task_changed = self.task.update(
             selected.as_ref().map(|(files, task)| files.task(task)),
             self.tool_details,
-            archived,
+            owner,
         );
         if self.task.tools_changed() {
             self.tools_changed = 0;

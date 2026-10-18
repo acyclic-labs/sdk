@@ -16,6 +16,19 @@ struct ToolRows {
     rows: Vec<Line<'static>>,
     streamed: bool,
 }
+/// The one projection that owns the selected task's command answers.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum AnswerOwner {
+    /// No session transcript is followed: a task without streamed chunks
+    /// shows its own command outputs.
+    #[default]
+    Task,
+    /// The followed session transcript owns every command output, so the task
+    /// contributes only its streamed chunks.
+    Session,
+    /// The session transcript already holds this task's answer.
+    Archived,
+}
 #[derive(Default)]
 pub(super) struct TaskRows {
     identity: Option<(Arc<Query>, Component)>,
@@ -35,7 +48,7 @@ pub(super) struct TaskRows {
     state: serde_json::Value,
     completions: Vec<HeadFile>,
     usage: serde_json::Value,
-    hidden: bool,
+    owner: AnswerOwner,
     details: bool,
 }
 fn metadata(file: &HeadFile) -> Option<serde_json::Value> {
@@ -88,7 +101,7 @@ impl TaskRows {
         &mut self,
         task: Option<TaskQueryView<'_>>,
         details: bool,
-        hidden: bool,
+        owner: AnswerOwner,
     ) -> usize {
         let Some(task) = task else {
             let changed = if self.identity.is_some() {
@@ -111,8 +124,8 @@ impl TaskRows {
             };
             changed = 0;
         }
-        if self.hidden != hidden {
-            self.hidden = hidden;
+        if self.owner != owner {
+            self.owner = owner;
             changed = 0;
         }
         let details_changed = self.details != details;
@@ -203,8 +216,9 @@ impl TaskRows {
         self.tools.retain(|key, _| retained.contains(key));
         tool_changed |= previous != self.tools.len();
         let streamed = task.text().any(|text| text.channel == Channel::Text);
-        // Command text is a fallback only when the canonical task has no chunks.
-        let fallback = if !streamed {
+        // Command text is a fallback only when the canonical task has no chunks
+        // and no followed session transcript already projects those outputs.
+        let fallback = if !streamed && owner == AnswerOwner::Task {
             // This view is backed by the same selected file index, never a second transcript.
             self.fallback.update(Some((
                 task.selection(),
@@ -216,7 +230,7 @@ impl TaskRows {
         if !streamed {
             changed = changed.min(fallback);
         }
-        let text = if streamed {
+        let text = if streamed || owner != AnswerOwner::Task {
             &self.text
         } else {
             self.fallback.rows()
@@ -232,7 +246,7 @@ impl TaskRows {
                 self.tool_rows.extend_from_slice(&tool.rows);
             }
         }
-        if hidden {
+        if owner == AnswerOwner::Archived {
             self.rows.clear();
             return 0;
         }

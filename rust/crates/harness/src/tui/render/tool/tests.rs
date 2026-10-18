@@ -2,7 +2,10 @@ use super::*;
 use crate::{
     client::ClientViews,
     task_volume::{Change, FileKey, FileValue, TaskFile, ToolFile},
-    tui::render::{line, task::TaskRows},
+    tui::render::{
+        line,
+        task::{AnswerOwner, TaskRows},
+    },
 };
 use acyclic_markdown::Markdown;
 use proptest::prelude::*;
@@ -74,7 +77,7 @@ fn completed(out: usize, err: usize, chunk: usize, success: bool, duplicate: boo
         renderer.update(
             Some(views.selections().next().unwrap().1.task(&task)),
             details,
-            false,
+            AnswerOwner::Task,
         );
     };
     project(&views, &mut live, true);
@@ -171,7 +174,7 @@ fn stream_admission_retires_a_nonstreaming_fallback_before_its_first_byte() {
         rows.update(
             Some(views.selections().next().unwrap().1.task(&task)),
             true,
-            false,
+            AnswerOwner::Task,
         );
     };
     render(&mut rows, &views);

@@ -560,3 +560,6 @@ mod feedback_overlay;
 
 #[path = "tests/perf.rs"]
 mod perf;
+
+#[path = "tests/answer_once.rs"]
+mod answer_once;
