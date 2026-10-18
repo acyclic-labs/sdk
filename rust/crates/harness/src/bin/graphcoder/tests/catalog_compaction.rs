@@ -153,6 +153,12 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
     };
     let operation = OperationId::new();
     let harness = LocalHarness::open(config()).await.unwrap();
+    let initialization = received.try_recv().unwrap();
+    assert!(!initialization.0, "opening only counts fixed tool overhead");
+    assert_eq!(initialization.1["input"], json!([
+        {"type":"message","role":"user","content":[{"type":"input_text","text":"token accounting"}]}
+    ]));
+    assert!(received.try_recv().is_err());
     let task = match harness
         .submit(operation, "perform two operations")
         .await
@@ -191,6 +197,9 @@ async fn catalog_unknown_output_compacts_complete_exchanges_over_http_and_reopen
     );
     assert!(generations[3].to_string().contains("compressed history"));
     let reopened = LocalHarness::open(config()).await.unwrap();
+    assert_eq!(received.try_recv().unwrap(), initialization,
+        "reopen repeats exactly the same fixed-overhead count");
+    assert!(received.try_recv().is_err());
     assert_eq!(reopened.resume(task).await.unwrap().text, "done");
     reopened.close().await.unwrap();
     assert!(
