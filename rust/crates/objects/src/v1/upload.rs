@@ -115,6 +115,37 @@ pub(super) fn body_bytes(chunk: OwnedBytes) -> Vec<u8> {
         .unwrap_or_else(|chunk| chunk.to_vec())
 }
 
+#[cfg(feature = "grpc")]
+pub(super) fn native_body_bytes(
+    chunk: OwnedBytes,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> Result<super::Guarded<Vec<u8>>, super::NativeObjectsError> {
+    use acyclic_native_runtime::ReadAllocation;
+    match chunk.try_into_ordinary_vec() {
+        Ok(value) => {
+            let mut output = super::Guarded {
+                value,
+                _allocation: Some(ReadAllocation::empty(meter)),
+            };
+            if let Some(allocation) = output._allocation.as_mut() {
+                allocation.reconcile_capacity(output.value.capacity())?;
+            }
+            Ok(output)
+        }
+        Err(chunk) => {
+            let mut allocation = ReadAllocation::new(meter, chunk.len())?;
+            meter.admit_codec(0, chunk.len() as u64, 0)?;
+            let value = body_bytes(chunk);
+            allocation.reconcile_capacity(value.capacity())?;
+            meter.record_codec(0, value.len() as u64, 0)?;
+            Ok(super::Guarded {
+                value,
+                _allocation: Some(allocation),
+            })
+        }
+    }
+}
+
 pub(super) async fn run<T: Send>(
     request: impl Future<Output = Result<T, Error>> + Send,
     state: &State,

@@ -67,6 +67,16 @@ pub trait NativeReadMeter: Send + Sync {
     fn record_codec(&self, _encoded: u64, _copied: u64, _hashed: u64) -> io::Result<()> {
         Err(io::ErrorKind::Unsupported.into())
     }
+    /// Withholds reply decoding work before dispatch; completion must not check cancellation.
+    fn reserve_codec(&self, _encoded: u64, _copied: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    /// Refunds unused reply decoding work, including after cancellation.
+    fn cancel_reserved_codec(&self, _encoded: u64, _copied: u64) {}
+    /// Consumes withheld decoding work and records the actual completed prefix.
+    fn record_reserved_codec(&self, _encoded: u64, _copied: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Admits and records examined items and actual owned-buffer copies.
     fn examine(&self, items: u64, bytes_copied: u64) -> io::Result<()>;
     /// Preflights examination without reporting work not yet performed.

@@ -13,7 +13,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 acyclic-actors = { path = "../rust/crates/actors" }
 serde_json = "1"
-acyclic-objects = { path = "../rust/crates/objects", default-features = false }
+acyclic-objects = { path = "../rust/crates/objects", default-features = false, features = ["grpc", "test-support"] }
 prost = "0.14.4"
 
 [[bin]]
@@ -26,6 +26,20 @@ bench = false
 [[bin]]
 name = "objects_restore"
 path = "fuzz_targets/objects_restore.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "objects_batch"
+path = "fuzz_targets/objects_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "objects_batch_reply"
+path = "fuzz_targets/objects_batch_reply.rs"
 test = false
 doc = false
 bench = false

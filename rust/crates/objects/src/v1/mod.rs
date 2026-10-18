@@ -25,6 +25,16 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ),
     ("objects/put", "PutObjectRequest", "ObjectInfo"),
     ("objects/get", "GetObjectRequest", "GetObjectResponse"),
+    (
+        "objects/put-batch",
+        "PutObjectsRequest",
+        "PutObjectsResponse",
+    ),
+    (
+        "objects/get-batch",
+        "GetObjectsRequest",
+        "GetObjectsResponse",
+    ),
     ("objects/head", "HeadObjectRequest", "HeadObjectResponse"),
     (
         "objects/delete",

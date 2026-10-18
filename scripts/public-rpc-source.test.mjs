@@ -25,6 +25,21 @@ missing("missing Actors WASM bridge", ActorsService, "CreateActor", "rust/crates
 missing("server implementation cannot substitute for Rust client", StreamService, "Read", "rust/crates/stream/src/grpc/client.rs", s => s.replace("async fn read(", "async fn removed_read("), "rustGrpc");
 missing("missing inherited Objects HTTP operation", ObjectsService, "PutObject", "typescript/packages/objects/src/v1.ts", s => s.replace("put(", "async removed_put("), "typescriptHttp");
 
+for (const [rpc, name] of [["PutObjects", "put_batch"], ["GetObjects", "get_batch"]]) {
+  missing(`missing Objects batch gRPC operation ${rpc}`, ObjectsService, rpc, "rust/crates/objects/src/v1/grpc.rs", s => s.replace(`async fn ${name}(`, "async fn removed_batch("), "rustGrpc");
+  missing(`missing Objects batch Rust HTTP binding ${rpc}`, ObjectsService, rpc, "rust/crates/objects/src/v1/http.rs", s => s.replace(`pub async fn ${rpc === "PutObjects" ? "put_objects" : "get_objects"}(`, "pub async fn removed_batch("), "rustHttp");
+  missing(`missing Objects batch TypeScript HTTP binding ${rpc}`, ObjectsService, rpc, "typescript/packages/objects/src/v1-http.ts", s => s.replace(`async ${rpc === "PutObjects" ? "putBatch" : "getBatch"}(`, "async removedBatch("), "typescriptHttp");
+  test(`${rpc} advertises canonical gRPC and HTTP bindings`, () => {
+    const method = ObjectsService.methods.find(method => method.name === rpc);
+    assert.ok(method);
+    const exposure = createSourceInspector(root)(ObjectsService, method);
+    assert.equal(exposure.rustGrpc, true);
+    assert.equal(exposure.typescriptGrpcNodeBun, true);
+    assert.equal(exposure.rustHttp, true);
+    assert.equal(exposure.typescriptHttp, true);
+  });
+}
+
 test("missing generated Actors operation removes both TypeScript capability flags", () => {
   const method = ActorsService.methods[0];
   const path = "typescript/packages/actors/src/generated/actors-service.ts";

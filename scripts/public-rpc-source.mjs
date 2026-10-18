@@ -20,7 +20,9 @@ function body(source, declaration) {
 
 const objectMethods = {
   PutObject: "put", GetObject: "get", HeadObject: "head", DeleteObject: "delete", ListObjects: "list", RestoreObjects: "restore",
+  PutObjects: "putBatch", GetObjects: "getBatch",
 };
+
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
 const rustImpl = (source, header) => source.match(new RegExp(`${header}\\s*\\{([\\s\\S]*?)^\\}`, "m"))?.[1] ?? "";
@@ -95,7 +97,8 @@ export function createSourceInspector(root, read = path => {
         : rustMethod(rustImpl(grpc, deliveryAck ? "impl Client" : "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
-    const rustHttp = module("http") && (rustMethod(objects || stream
+    const rawObjectsBatch = objects && ["PutObjects", "GetObjects"].includes(rpc.name);
+    const rustHttp = module("http") && ((rawObjectsBatch && rustMethod(http, snake(rpc.localName))) || rustMethod(objects || stream
       ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : deliveryAck ? "impl HttpStream" : "impl StreamProvider for HttpStream") : http, rustName)
       || (unified && http.includes("operations! {") && new RegExp(`\\(${rustName},\\s*\\d+,`).test(http)));
     const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
@@ -108,7 +111,7 @@ export function createSourceInspector(root, read = path => {
     const typescriptHttp = unified
       ? false
       : objects
-      ? method(`${tsBase}v1.ts`, "ObjectsV1Provider", operation) && method(`${tsBase}v1-http.ts`, "HttpObjectsV1", "invoke") && source(`${tsBase}v1-http.ts`).includes("extends ObjectsV1Provider")
+      ? (rawObjectsBatch ? method(`${tsBase}v1-http.ts`, "HttpObjectsV1", operation) : method(`${tsBase}v1.ts`, "ObjectsV1Provider", operation)) && method(`${tsBase}v1-http.ts`, "HttpObjectsV1", "invoke") && source(`${tsBase}v1-http.ts`).includes("extends ObjectsV1Provider")
       : method(`${tsBase}http.ts`, stream ? "HttpStreamProvider" : `Http${family[0].toUpperCase()}${family.slice(1)}Client`, operation) ||
         (stream && operation === "children" && method(`${tsBase}client.ts`, "StreamClient", "children") &&
           method(`${tsBase}http.ts`, "HttpStreamProvider", "childrenPage"));

@@ -7,6 +7,9 @@ use proptest::test_runner::TestCaseError;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 type Store = LogicalObjectStore<MemoryObjects>;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod grpc_batch;
+
 thread_local! {
     static QUADRATIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

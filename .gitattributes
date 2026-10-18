@@ -14,6 +14,7 @@
 *.wasm binary
 *.node binary
 rust/crates/auth/fuzz/corpus/** binary
+fuzz/corpus/objects_batch/** binary
 
 # Preserve byte-exact patch context.
 patches/*.patch -whitespace
@@ -22,3 +23,5 @@ typescript/packages/actors/src/generated/**/*.ts whitespace=-blank-at-eol
 
 # Fuzz corpus entries are byte-exact inputs, including intentional trailing spaces.
 rust/crates/harness-fuzz/corpus/** binary
+
+rust/crates/objects/fuzz/corpus/batch_reply/*.pb binary

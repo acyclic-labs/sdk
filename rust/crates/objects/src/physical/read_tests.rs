@@ -1,122 +1,13 @@
 //! Object reads against an independent copy of the previous algorithm, with exact work.
 use super::*;
-use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter};
+use acyclic_native_runtime::NativeReadMeter;
 use acyclic_test_support::differential;
 use proptest::prelude::*;
-use std::sync::Mutex;
 
 type Work = (&'static str, u64, u64);
 type Outcome = Result<Vec<u8>, Error>;
 
-/// Counts the production path's physical reads. Buffer allocations are exact
-/// in the work trace; the meter also sees runtime worker bookkeeping.
-#[derive(Default)]
-struct CountingMeter(Mutex<Counts>);
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct Counts {
-    read_operations: u64,
-    read_bytes: u64,
-}
-
-impl CountingMeter {
-    fn counts(&self) -> Counts {
-        *self.0.lock().unwrap()
-    }
-    fn update(&self, change: impl FnOnce(&mut Counts)) {
-        change(&mut self.0.lock().unwrap());
-    }
-}
-
-impl NativeReadMeter for CountingMeter {
-    fn check(&self) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn reserve_operations(&self, _: NativeOperationKind, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn cancel_reserved_operations(&self, _: NativeOperationKind, _: u64) {}
-    fn record_reserved_operation(&self, kind: NativeOperationKind) -> std::io::Result<()> {
-        if kind == NativeOperationKind::Read {
-            self.update(|counts| counts.read_operations += 1);
-        }
-        Ok(())
-    }
-    fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn reserve_bytes(&self, _: NativeOperationKind, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn cancel_reserved_bytes(&self, _: NativeOperationKind, _: u64) {}
-    fn record_reserved_bytes(
-        &self,
-        kind: NativeOperationKind,
-        _: u64,
-        actual: u64,
-    ) -> std::io::Result<()> {
-        if kind == NativeOperationKind::Read {
-            self.update(|counts| counts.read_bytes += actual);
-        }
-        Ok(())
-    }
-    fn allocate(&self, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn reserve_allocation(&self, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn cancel_reserved_allocation(&self, _: u64) {}
-    fn record_reserved_allocation(&self, bytes: u64) -> std::io::Result<()> {
-        self.allocate(bytes)
-    }
-    fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
-        std::io::Error::other(error)
-    }
-    fn allocate_refcount_header(&self) -> std::io::Result<()> {
-        self.allocate(0)
-    }
-    fn adopt(&self, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        (bytes, self.adopt(bytes))
-    }
-    fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn record_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn examine(&self, _: u64, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn record_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn release(&self, _: u64) {}
-    fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn admit_read(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn record_read(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn admit_write(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn record_write(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
-    }
-    fn admit_durability(&self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
+pub(crate) use crate::test_meter::{CountingMeter, Counts};
 
 /// The previous algorithm, written separately: open, stat, a zero-filled
 /// 41 KB prefix, its own table decoder, then a zero-filled selected range.

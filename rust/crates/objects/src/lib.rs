@@ -17,3 +17,6 @@ pub use v1::grpc::{ConnectError, GrpcObjects};
 pub use v1::http::HttpObjects;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use v1::local::{LocalObjects, LocalOpenError};
+
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub mod test_meter;

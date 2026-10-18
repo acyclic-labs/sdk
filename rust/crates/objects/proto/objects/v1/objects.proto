@@ -7,6 +7,8 @@ import "validation/v1/options.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/objects/v1;objectsv1";
+option (acyclic.validation.v1.extractors) = { name: "objects.batch-put" resources_only: true possible_actions: "objects/put" };
+option (acyclic.validation.v1.extractors) = { name: "objects.batch-get" resources_only: true possible_actions: "objects/get" };
 
 // Tenant-scoped logical bucket name. Placement and storage identities are private.
 message BucketRef {
@@ -196,12 +198,66 @@ message ListObjectsResponse {
   bool is_truncated = 4;
 }
 service ObjectsService {
+  rpc PutObjects(stream PutObjectsRequest) returns (PutObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.batch-put" }; }
+  rpc GetObjects(GetObjectsRequest) returns (stream GetObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" extractor: "objects.batch-get" }; }
   rpc RestoreObjects(RestoreObjectsRequest) returns (RestoreObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/restore" resource: "objects:/{bucket.name}/{prefix}" }; }
   rpc PutObject(stream PutObjectRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{header.bucket.name}/{header.object_key}" }; }
   rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" resource: "objects:/{bucket.name}/{object_key}" }; }
   rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" extractor: "objects.list-visible-prefix" }; }
+}
+
+// One admission for 1..1000 ordered, individually atomic publications. Every
+// selection is authorized before any publication. The header is followed by
+// each object's bounded chunks and complete=true in index order, then the
+// batch complete=true and EOF. A cancelled batch can have completed items;
+// retry using the original per-object mutation identities.
+message PutObjectsHeader {
+  repeated PutObjectHeader objects = 1;
+}
+message PutObjectsChunk {
+  uint32 index = 1;
+  oneof frame {
+    bytes body = 2;
+    bool complete = 3;
+  }
+}
+message PutObjectsRequest {
+  oneof frame {
+    PutObjectsHeader header = 1;
+    PutObjectsChunk chunk = 2;
+    bool complete = 3;
+  }
+}
+message PutObjectResult {
+  oneof result {
+    ObjectInfo object = 1;
+    ErrorDetail error = 2;
+  }
+}
+message PutObjectsResponse {
+  // Exactly one result per input, in input order.
+  repeated PutObjectResult results = 1;
+}
+message GetObjectSelection {
+  GetObjectRequest request = 1;
+  uint64 maximum_bytes = 2;
+}
+message GetObjectsRequest {
+  // One admission for 1..1000 ordered, individually bounded reads.
+  repeated GetObjectSelection objects = 1;
+}
+message GetObjectsResponse {
+  uint32 index = 1;
+  // Items appear in index order: header, bounded bodies, complete=true; or
+  // a terminal item error (which may follow its header). EOF follows all items.
+  oneof frame {
+    GetObjectHeader header = 2;
+    Body body = 3;
+    ErrorDetail error = 4;
+    bool complete = 5;
+  }
 }
 
 message CreateMultipartRequest {

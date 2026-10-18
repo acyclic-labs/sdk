@@ -15,6 +15,28 @@ macro_rules! reservation_counters {
     )*};
 }
 impl NativeReadMeter for NativeWorkReservation {
+    fn reserve_codec(&self, encoded: u64, copied: u64) -> io::Result<()> {
+        self.reserve(WorkCounters {
+            bytes_encoded: encoded,
+            bytes_copied: copied,
+            ..WorkCounters::UNCHARGED
+        })
+    }
+    fn cancel_reserved_codec(&self, encoded: u64, copied: u64) {
+        self.cancel(WorkCounters {
+            bytes_encoded: encoded,
+            bytes_copied: copied,
+            ..WorkCounters::UNCHARGED
+        });
+    }
+    fn record_reserved_codec(&self, encoded: u64, copied: u64) -> io::Result<()> {
+        let actual = WorkCounters {
+            bytes_encoded: encoded,
+            bytes_copied: copied,
+            ..WorkCounters::UNCHARGED
+        };
+        self.complete(Some(actual), actual)
+    }
     reservation_counters! {
         admit_codec, record_codec(encoded: u64, copied: u64, hashed: u64) { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed };
         admit_examination, record_examination(items: u64, copied: u64) { items_examined: items, bytes_copied: copied };

@@ -322,6 +322,34 @@
     "typescriptPackageExported": true
   },
   {
+    "rpc": "acyclic.objects.v1.ObjectsService/PutObjects",
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v1.PutObjectsRequest",
+    "response": "acyclic.objects.v1.PutObjectsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/objects/objects/put-batch",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
+    "rpc": "acyclic.objects.v1.ObjectsService/GetObjects",
+    "kind": "server_streaming",
+    "request": "acyclic.objects.v1.GetObjectsRequest",
+    "response": "acyclic.objects.v1.GetObjectsResponse",
+    "contractStatus": "target",
+    "httpOperation": "v1/objects/objects/get-batch",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptGrpcWeb": false,
+    "typescriptPackageExported": true
+  },
+  {
     "rpc": "acyclic.objects.v1.ObjectsService/RestoreObjects",
     "kind": "unary",
     "request": "acyclic.objects.v1.RestoreObjectsRequest",

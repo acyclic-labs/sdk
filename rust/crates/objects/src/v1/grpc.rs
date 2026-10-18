@@ -15,6 +15,7 @@ use tonic::{
 };
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+mod batch;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
@@ -552,6 +553,28 @@ abort_multipart(AbortMultipartRequest) -> AbortMultipartResponse, multipart.abor
         bounded(&query)?;
     }, {};
 {
+    fn put_batch_native(
+        &self,
+        requests: super::ObjectsNativeRequest<Vec<(wire::PutObjectHeader, OwnedBytes)>>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsBatch<super::ObjectsPutReceipt>>, super::NativeObjectsError> {
+        self.put_objects_native(requests, meter)
+    }
+
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        obs::traced(obs::span!(INFO, "acyclic.objects.grpc.put_batch", rpc.code = obs::Empty), self.put_objects(requests)).await
+    }
+
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        obs::traced(obs::span!(INFO, "acyclic.objects.grpc.get_batch", rpc.code = obs::Empty), self.get_objects(requests)).await
+    }
+
     async fn put(
         &self,
         query: wire::PutObjectHeader,
@@ -582,3 +605,7 @@ abort_multipart(AbortMultipartRequest) -> AbortMultipartResponse, multipart.abor
     }
 }
 }
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub use batch::fuzz_reply as fuzz_batch_reply;

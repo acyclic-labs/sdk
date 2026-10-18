@@ -21,7 +21,7 @@ pub enum NativeObjectsCause {
 pub type NativeObjectsSharedFailure = Guarded<Option<NativeObjectsError>>;
 
 impl NativeObjectsSharedFailure {
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    #[cfg(all(any(feature = "local", feature = "grpc"), not(target_arch = "wasm32")))]
     pub(crate) fn prepare(
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<std::sync::Arc<Self>, NativeObjectsError> {

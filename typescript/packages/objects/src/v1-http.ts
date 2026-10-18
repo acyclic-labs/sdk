@@ -4,6 +4,7 @@ import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type, validate_objects_v1_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
+import { ensureObjectsWasm } from "./wasm-runtime.js";
 
 export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;
@@ -36,14 +37,29 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   protected invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
     return observed(this.observer, "objects", route, sizes => this.send(route, bytes, body, maximum, sizes));
   }
-  private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes): Promise<readonly Uint8Array[]> {
+  /** Sends canonical upload frames through one authenticated HTTP request. */
+  async putBatch(frames: readonly wire.PutObjectsRequest[]): Promise<wire.PutObjectsResponse> {
+    await ensureObjectsWasm();
+    const replies = await observed(this.observer, "objects", "objects/put-batch", sizes =>
+      this.send("objects/put-batch", new Uint8Array(0), new Uint8Array(0), 0n, sizes, frames));
+    if (replies.length !== 1 || replies[0] === undefined) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+    return fromBinary(wire.PutObjectsResponseSchema, replies[0]);
+  }
+  /** Returns canonical indexed download frames, retaining individual errors. */
+  async getBatch(query: wire.GetObjectsRequest): Promise<readonly wire.GetObjectsResponse[]> {
+    await ensureObjectsWasm();
+    const replies = await this.invoke("objects/get-batch", toBinary(wire.GetObjectsRequestSchema, query), new Uint8Array(0), 0n);
+    return replies.map(reply => fromBinary(wire.GetObjectsResponseSchema, reply));
+  }
+  private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes, requestFrames?: readonly wire.PutObjectsRequest[]): Promise<readonly Uint8Array[]> {
     const requestType = objects_v1_http_type(route, false);
     const responseType = objects_v1_http_type(route, true);
     const decodeResponse = (data: Uint8Array, maximum: number) => {
       try { return decode_objects_v1_json(responseType, data, maximum); }
       catch (error) { throw new ObjectsV1Error(objectsV1Error(error).code === wire.ErrorCode.QUOTA_EXCEEDED ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE); }
     };
-    const streaming = route === "objects/put" || route === "multipart/upload-part";
+    const batchDownload = route === "objects/get-batch";
+    const streaming = route === "objects/put" || route === "multipart/upload-part" || route === "objects/put-batch";
     const payloads: Uint8Array[] = [];
     let requestSize = 0;
     const add = (value: Uint8Array) => {
@@ -52,7 +68,18 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       payloads.push(value);
       if (streaming) payloads.push(new Uint8Array([10]));
     };
-    if (streaming) {
+    if (requestFrames !== undefined) {
+      for (const frame of requestFrames) {
+        if (requestSize >= this.maximumRequest) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        const header = frame.frame.case === "header";
+        if (frame.frame.case === "chunk" && frame.frame.value.frame.case === "body" && frame.frame.value.frame.value.byteLength > 65536) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        const binaryLimit = header ? 16 * 1024 * 1024 : 65536 + 16;
+        const jsonLimit = header ? 6 * binaryLimit : 4 * Math.ceil(65536 / 3) + 128;
+        const encoded = encode_objects_v1_json(requestType, toBinary(wire.PutObjectsRequestSchema, frame), binaryLimit);
+        if (encoded.byteLength > jsonLimit) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        add(encoded);
+      }
+    } else if (streaming) {
       const put = route === "objects/put";
       const header = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "header", value: fromBinary(wire.PutObjectHeaderSchema, bytes) } }))
@@ -80,7 +107,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     try {
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${await this.credential(controller.signal)}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
       if (response.status === 304) throw new ObjectsV1Error(wire.ErrorCode.NOT_MODIFIED);
-      if (route === "objects/get" && response.status === 200) {
+      if ((route === "objects/get" || batchDownload) && response.status === 200) {
         if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
@@ -115,6 +142,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
             if (stop === 0) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
             const decoded = decodeResponse(line.subarray(0, stop), lineLimit);
             lineLength = 0;
+            if (batchDownload) { frames.push(decoded); continue; }
             const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
             if (frame.case === "error") throw objectsV1Error({ code: frame.value.code });
             if (expected === undefined) {
@@ -129,7 +157,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
             frames.push(decoded);
           }
         }
-        if (lineLength !== 0 || expected === undefined || bodySize !== expected) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+        if (lineLength !== 0 || (!batchDownload && (expected === undefined || bodySize !== expected))) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
         if (sizes) sizes.responseBytes = wireSize;
         return frames;
       }

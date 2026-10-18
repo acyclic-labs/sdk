@@ -122,6 +122,18 @@ macro_rules! demand_meter {
             fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
                 self.io(|state| state.record(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, bytes_hashed: hashed, ..crate::WorkCounters::UNCHARGED }))
             }
+            fn reserve_codec(&self, encoded: u64, copied: u64) -> std::io::Result<()> {
+                self.io(|state| state.reserve(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }))
+            }
+            fn cancel_reserved_codec(&self, encoded: u64, copied: u64) {
+                self.cancel(|state| state.refund(crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }));
+            }
+            fn record_reserved_codec(&self, encoded: u64, copied: u64) -> std::io::Result<()> {
+                self.io(|state| {
+                    let actual = crate::WorkCounters { bytes_encoded: encoded, bytes_copied: copied, ..crate::WorkCounters::UNCHARGED };
+                    state.complete(actual, actual)
+                })
+            }
         }
     };
 }

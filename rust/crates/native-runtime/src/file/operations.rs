@@ -13,7 +13,7 @@ pub enum Durability {
 
 /// Flushes file contents and metadata according to `durability`.
 ///
-/// On Apple platforms, Full requires F_FULLFSYNC. If the filesystem only
+/// On Apple platforms, Full requires `F_FULLFSYNC`. If the filesystem only
 /// supports a weaker fallback, the fallback is performed and Unsupported is
 /// returned; success never acknowledges weaker durability than requested.
 pub fn sync_file(

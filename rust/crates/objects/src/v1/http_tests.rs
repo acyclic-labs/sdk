@@ -15,6 +15,8 @@ use futures::stream;
 use prost::Message;
 use std::sync::{Arc, Mutex};
 
+mod batch;
+
 #[derive(Clone)]
 struct Fixture {
     objects: MemoryObjects,
@@ -61,6 +63,8 @@ async fn operation(
         }};
     }
     match route {
+        "objects/put-batch" => batch::put(fixture, input, output, bytes).await,
+        "objects/get-batch" => batch::get(fixture, input, output, bytes).await,
         "buckets/create" => unary!(wire::CreateBucketRequest, create_bucket),
         "buckets/head" => unary!(wire::HeadBucketRequest, head_bucket),
         "buckets/delete" => unary!(wire::DeleteBucketRequest, delete_bucket),
@@ -337,6 +341,7 @@ async fn http_exercises_every_rpc_streaming_authentication_bounds_and_semantic_e
         Some(wire::ErrorCode::AccessDenied)
     );
     super::conformance::verify(&client, "conformance-http").await?;
+    batch::exercise(&client).await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),

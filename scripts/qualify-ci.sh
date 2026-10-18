@@ -198,6 +198,7 @@ harness_tests() {
 
 case "$lane" in
   gate)
+    bash scripts/qualify-objects-batch.sh
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \

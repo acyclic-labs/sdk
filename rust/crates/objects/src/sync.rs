@@ -2,10 +2,14 @@
 //! These synchronous guards never cross an await. Release in reverse order.
 #[cfg(objects_loom)]
 pub(crate) use loom::sync::Arc;
+#[cfg(all(objects_loom, feature = "grpc", not(target_arch = "wasm32")))]
+pub(crate) use loom::sync::atomic::{AtomicBool, Ordering};
 #[cfg(objects_loom)]
 use loom::sync::{Mutex as RawMutex, MutexGuard as RawGuard};
 #[cfg(not(objects_loom))]
 pub(crate) use std::sync::Arc;
+#[cfg(all(not(objects_loom), feature = "grpc", not(target_arch = "wasm32")))]
+pub(crate) use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(objects_loom))]
 use std::sync::{Mutex as RawMutex, MutexGuard as RawGuard};
 use std::{

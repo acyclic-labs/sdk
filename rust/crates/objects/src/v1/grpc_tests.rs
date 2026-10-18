@@ -11,6 +11,7 @@ use tonic::{
 mod tls {
     include!("grpc_tls_tests.rs");
 }
+mod batch;
 
 #[derive(Clone)]
 struct Fixture(MemoryObjects);
@@ -77,6 +78,23 @@ impl wire::buckets_service_server::BucketsService for Fixture {
 }
 #[tonic::async_trait]
 impl wire::objects_service_server::ObjectsService for Fixture {
+    async fn put_objects(
+        &self,
+        request: Request<tonic::Streaming<wire::PutObjectsRequest>>,
+    ) -> Result<Response<wire::PutObjectsResponse>, Status> {
+        batch::put(&self.0, authenticated(request)?)
+            .await
+            .map(Response::new)
+    }
+    type GetObjectsStream = stream::BoxStream<'static, Result<wire::GetObjectsResponse, Status>>;
+    async fn get_objects(
+        &self,
+        request: Request<wire::GetObjectsRequest>,
+    ) -> Result<Response<Self::GetObjectsStream>, Status> {
+        batch::get(&self.0, authenticated(request)?)
+            .await
+            .map(Response::new)
+    }
     async fn restore_objects(
         &self,
         request: Request<wire::RestoreObjectsRequest>,
