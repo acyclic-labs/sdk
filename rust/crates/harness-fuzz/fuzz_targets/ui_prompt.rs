@@ -173,16 +173,7 @@ fuzz_target!(|data: &[u8]| {
             // Request decoding and transcript projection share the execution
             // owner's decoder. Exercise malformed bytes and a canonical
             // round-trip with arbitrary Unicode through the real query fold.
-            let request_key = FileKey::Task {
-                task: acyclic_harness::task_volume::Component::new(&outcome_owner.id).unwrap(),
-                file: acyclic_harness::task_volume::TaskFile::Request(
-                    acyclic_harness::task_volume::Component::new(
-                        acyclic_harness::OperationId::from_bytes([1; 16]).to_string(),
-                    )
-                    .unwrap(),
-                ),
-            };
-            for (bytes, expected) in [
+            for (index, (bytes, expected)) in [
                 (data.to_vec(), None),
                 (
                     serde_json::to_vec(&acyclic_harness::client::CommandResolution::Prompt {
@@ -193,7 +184,21 @@ fuzz_target!(|data: &[u8]| {
                     .unwrap(),
                     Some(text.as_ref()),
                 ),
-            ] {
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                // Requests are immutable: each decoding case owns its identity.
+                let request_key = FileKey::Task {
+                    task: acyclic_harness::task_volume::Component::new(&outcome_owner.id).unwrap(),
+                    file: acyclic_harness::task_volume::TaskFile::Request(
+                        acyclic_harness::task_volume::Component::new(
+                            acyclic_harness::OperationId::from_bytes([index as u8 + 1; 16])
+                                .to_string(),
+                        )
+                        .unwrap(),
+                    ),
+                };
                 let request = Write::new(request_key.clone(), bytes);
                 outcomes
                     .append(outcomes.head().await.unwrap(), &request)
