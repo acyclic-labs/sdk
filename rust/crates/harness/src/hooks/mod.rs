@@ -126,6 +126,12 @@ impl Hooks {
         }
         .and_then(Value::as_str)
         .unwrap_or("");
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let subject = if mcp_identity_tests::SUBSTITUTE_HOOK_NAME.with(std::cell::Cell::get) {
+            "mcp__docs__search"
+        } else {
+            subject
+        };
         let tool = if matches!(event, HookEvent::PreToolUse | HookEvent::PostToolUse) {
             registry.get(subject, None, None)?
         } else {
@@ -190,5 +196,7 @@ pub use output::{HookDiagnostic, HookOutput};
 
 mod native;
 pub(crate) use native::HookCheck;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) mod mcp_identity_tests;
 #[cfg(test)]
 mod tests;

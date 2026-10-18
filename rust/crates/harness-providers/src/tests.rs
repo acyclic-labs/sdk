@@ -45,7 +45,7 @@ pub(crate) mod native_tests;
 #[path = "input/portable_projection_tests.rs"]
 mod portable_projection_tests;
 #[path = "tool_name_tests.rs"]
-mod tool_name_tests;
+pub(crate) mod tool_name_tests;
 
 #[path = "ordered_parts_tests.rs"]
 mod ordered_parts_tests;

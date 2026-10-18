@@ -113,9 +113,15 @@ pub(crate) async fn count(
     #[cfg(target_arch = "wasm32")]
     let content_io = None;
     let prepared = async {
+        // Retain table custody until after its projected generation is encoded.
+        let _name_custody;
         let mut files =
             crate::files::resolve(&provider.files, request.request(), content_io.as_ref()).await?;
-        let names = crate::tool_names::Names::new(request.request());
+        let names = {
+            let (names, custody) = crate::tool_names::Names::funded(request.request(), work)?;
+            _name_custody = custody;
+            names
+        };
         let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
         let generation =
             projection::body_named(provider, request.request(), &names, &origin, &mut files)?;

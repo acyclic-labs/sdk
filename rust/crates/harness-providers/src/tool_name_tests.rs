@@ -5,7 +5,10 @@ use acyclic_harness::{
     tool::ToolDefinition,
 };
 use proptest::prelude::*;
-use std::collections::BTreeSet;
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 fn definition(name: String) -> ToolDefinition {
     ToolDefinition {
@@ -181,21 +184,100 @@ fn builtins_collisions_unicode_and_replayed_names_project_for_every_adapter() ->
 }
 
 #[test]
-fn malformed_reserved_aliases_are_protocol_errors() {
+fn undeclared_names_outside_the_provider_grammar_are_protocol_errors() {
     let (provider, _) = provider(Adapter::Responses, 200);
     let (prepared, _) = request(&provider).unwrap();
     let mut request = prepared.request().clone();
     request.tools.push(definition("acyclic.read_file".into()));
     let names = Names::new(&request);
-    for wire in [
-        "harness_tool_",
-        "harness_tool_00",
-        "harness_tool_+0",
-        "harness_tool_99",
-    ] {
+    for wire in ["acyclic.read_file", "", "0start", "讀取", "mcp.server.tool"] {
         let mut event = ModelEvent::ToolCall(ToolCall::new("call".into(), wire.into(), json!({})));
-        assert!(names.restore(&mut event).is_err());
+        assert!(names.restore(&mut event).is_err(), "{wire}");
     }
+    // A grammatical undeclared name passes through to tool admission.
+    for wire in ["harness_tool_0", "harness_tool_99", "unknown"] {
+        let mut event = ModelEvent::ToolCall(ToolCall::new("call".into(), wire.into(), json!({})));
+        names.restore(&mut event).unwrap();
+        let ModelEvent::ToolCall(call) = event else {
+            unreachable!()
+        };
+        assert_eq!(call.name, wire);
+    }
+}
+
+fn wires(tools: &[&str]) -> BTreeMap<String, String> {
+    let (provider, _) = provider(Adapter::Responses, 200);
+    let (prepared, _) = request(&provider).unwrap();
+    let mut request = prepared.request().clone();
+    request.tools = tools
+        .iter()
+        .map(|name| definition((*name).into()))
+        .collect();
+    let names = Names::new(&request);
+    tools
+        .iter()
+        .map(|name| ((*name).to_owned(), names.wire(name).unwrap().into_owned()))
+        .collect()
+}
+
+#[test]
+fn mcp_tools_keep_server_qualified_names_independent_of_position() {
+    let alone = wires(&["mcp.docs.search"]);
+    assert_eq!(alone["mcp.docs.search"], "mcp__docs__search");
+    // Default tools added ahead of the MCP tool, in any order, leave its name.
+    for tools in [
+        vec![
+            "acyclic.read_file",
+            "acyclic.write_file",
+            "bash",
+            "mcp.docs.search",
+        ],
+        vec![
+            "mcp.docs.search",
+            "acyclic.zz_new_default",
+            "acyclic.read_file",
+        ],
+        vec!["0first", "讀取", "mcp.docs.search", "mcp.docs.fetch"],
+    ] {
+        assert_eq!(wires(&tools)["mcp.docs.search"], "mcp__docs__search");
+    }
+    let sanitized = wires(&["mcp.my server.do/it", "mcp.1srv.tool"]);
+    assert_eq!(sanitized["mcp.my server.do/it"], "mcp__my_server__do_it");
+    assert_eq!(sanitized["mcp.1srv.tool"], "mcp__1srv__tool");
+}
+
+#[test]
+fn colliding_and_overlong_aliases_take_stable_digests() {
+    // A declared name equal to an alias keeps its name; the alias moves.
+    let collided = wires(&["mcp.a.b", "mcp__a__b", "mcp.a/b"]);
+    assert_eq!(collided["mcp__a__b"], "mcp__a__b");
+    assert!(collided["mcp.a.b"].starts_with("mcp__a__b_"));
+    assert_ne!(collided["mcp.a.b"], "mcp__a__b");
+    assert_ne!(collided["mcp.a.b"], collided["mcp.a/b"]);
+    assert_eq!(collided, wires(&["mcp.a/b", "mcp__a__b", "mcp.a.b"]));
+    let long = format!("mcp.server.{}", "t".repeat(80));
+    let other = format!("mcp.server.{}x", "t".repeat(80));
+    let digested = wires(&[&long, &other]);
+    assert!(digested[&long].starts_with("mcp__server__ttt"));
+    assert!(digested.values().all(|wire| valid(wire)));
+    assert_ne!(digested[&long], digested[&other]);
+    assert_eq!(wires(&[&long])[&long], digested[&long]);
+}
+
+#[test]
+#[should_panic(expected = "positional aliases moved")]
+fn negative_control_positional_aliases_move_when_a_tool_is_added() {
+    let positional = |tools: &[&str]| {
+        let mut sorted = tools.to_vec();
+        sorted.sort_unstable();
+        let index = sorted.iter().position(|name| *name == "mcp.docs.search");
+        format!("harness_tool_{}", index.unwrap())
+    };
+    assert_eq!(
+        positional(&["mcp.docs.search"]),
+        positional(&["acyclic.read_file", "mcp.docs.search"]),
+        "positional aliases moved"
+    );
 }
 
 #[test]
@@ -215,19 +297,19 @@ async fn every_adapter_restores_streamed_builtin_calls_with_native_custody() -> 
     for (adapter, fixture) in [
         (
             Adapter::Chat,
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"acyclic__read_file\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n",
         ),
         (
             Adapter::Responses,
-            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call\",\"name\":\"acyclic__read_file\",\"arguments\":\"{}\"}}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
         ),
         (
             Adapter::Anthropic,
-            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"harness_tool_0\",\"input\":{}}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_stop\"}\n\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call\",\"name\":\"acyclic__read_file\",\"input\":{}}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_stop\"}\n\n",
         ),
         (
             Adapter::Gemini,
-            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call\",\"name\":\"harness_tool_0\",\"args\":{}}}]},\"finishReason\":\"STOP\"}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":\"call\",\"name\":\"acyclic__read_file\",\"args\":{}}}]},\"finishReason\":\"STOP\"}]}\n\n",
         ),
     ] {
         let (mut provider, _) = provider(adapter, 200);
@@ -302,7 +384,7 @@ fn checked_in_tool_name_seed_exercises_the_fuzzer_oracle() {
 
 #[tokio::test]
 async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Result<()> {
-    const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"harness_tool_99\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
+    const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"acyclic__read_file\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"bad.name\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
     let (mut provider, _) = provider(Adapter::Chat, 200);
     provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(BODY)));
     let (prepared, _) = request(&provider)?;
@@ -327,16 +409,30 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
 
 #[tokio::test]
 async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<()> {
-    const BODY: &str = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"first\",\"function\":{\"name\":\"harness_tool_0\",\"arguments\":\"{}\"}},{\"index\":1,\"id\":\"second\",\"function\":{\"name\":\"harness_tool_1\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n";
     let (mut provider, _) = provider(Adapter::Chat, 200);
     Arc::make_mut(&mut provider.config).max_event_bytes = 512;
-    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(BODY)));
     let (prepared, _) = request(&provider)?;
     let mut request = prepared.request().clone();
     request.tools = ['a', 'b']
         .into_iter()
         .map(|letter| definition(format!("namespace.{}", letter.to_string().repeat(200))))
         .collect();
+    let names = Names::new(&request);
+    let call = |id: &str, index: usize| {
+        let name = names.wire(&request.tools[index].name).unwrap();
+        format!(
+            "{{\"index\":{index},\"id\":\"{id}\",\"function\":{{\"name\":\"{name}\",\"arguments\":\"{{}}\"}}}}"
+        )
+    };
+    let body = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{},{}]}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n",
+        call("first", 0),
+        call("second", 1)
+    );
+    drop(names);
+    // The fixture serves a static body for the test's lifetime.
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    provider.transport = Arc::new(AliasFixture(native_tests::Fixture::new(body)));
     let prepared = PreparedModelRequest::prepare(request, Limits::default(), None)?;
     let dispatch = ModelDispatch {
         request_digest: prepared.request_digest(),
@@ -352,4 +448,105 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     let error = native.next().await.unwrap().unwrap_err();
     assert!(error.to_string().contains("aggregate"));
     Ok(())
+}
+
+pub(crate) fn request_with(tools: &[&str]) -> ModelRequest {
+    let (provider, _) = provider(Adapter::Responses, 200);
+    let (prepared, _) = request(&provider).unwrap();
+    let mut request = prepared.request().clone();
+    request.tools = tools
+        .iter()
+        .map(|name| definition((*name).into()))
+        .collect();
+    request
+}
+
+#[test]
+fn aliases_are_exactly_sized_and_the_build_matches_its_claim() {
+    let long = format!("mcp.server.{}", "t".repeat(80));
+    let request = request_with(&[&long]);
+    let (names, built) = Names::built(&request);
+    let aliases: Vec<_> = names.aliases().collect();
+    assert_eq!(aliases, [(64, 64)], "digest alias capacity is exact");
+    // One 40-byte binding, the 64-byte digest buffer, the 64-byte alias,
+    // and one wire index entry: no growth and no uncounted temporary.
+    #[cfg(target_pointer_width = "64")]
+    assert_eq!(
+        built,
+        crate::tool_names::Built {
+            allocations: 4,
+            bytes: 40 + 64 + 64 + 8,
+            probes: 0,
+            hashed: 116,
+            wire_sorts: 1,
+            wire_comparisons: 0,
+        }
+    );
+    assert!(built.within(&Names::claim(1).unwrap()));
+    // A readable alias needs neither the digest buffer nor any slack.
+    let request = request_with(&["mcp.docs.search", "read"]);
+    let (names, built) = Names::built(&request);
+    assert_eq!(names.aliases().collect::<Vec<_>>(), [(17, 17)]);
+    assert_eq!(built.allocations, 3);
+    assert!(built.within(&Names::claim(2).unwrap()));
+    for size in 0..64 {
+        let names: Vec<String> = (0..size)
+            .map(|index| format!("mcp.s{index}.{}", "x".repeat(index * 3)))
+            .collect();
+        let request = request_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let (table, built) = Names::built(&request);
+        assert!(table.aliases().all(|(length, capacity)| length == capacity));
+        assert!(built.within(&Names::claim(size as u64).unwrap()));
+    }
+}
+
+#[test]
+fn negative_control_a_grown_alias_retains_slack_beyond_its_claim() {
+    // The former builder reserved the readable prefix, then appended the digest.
+    let mut grown = String::with_capacity(47);
+    grown.push_str(&"t".repeat(47));
+    grown.push_str(&"0".repeat(17));
+    assert!(grown.capacity() > grown.len(), "growth left no slack");
+    assert!(
+        grown.capacity() > 64,
+        "the per-alias claim would hold slack"
+    );
+}
+
+/// The reviewer's input: an alias, its declared readable name, and the
+/// alias's first `taken` salted digests, all declared as canonical names.
+pub(crate) fn adversarial(taken: u32) -> Vec<String> {
+    let mut tools = vec!["mcp.a.b".to_owned(), "mcp__a__b".to_owned()];
+    tools.extend((1..=taken).map(|salt| Names::candidate("mcp.a.b", salt)));
+    tools
+}
+
+#[test]
+fn occupied_candidates_cost_one_probe_each() {
+    let tools = adversarial(1024);
+    let request = request_with(&tools.iter().map(String::as_str).collect::<Vec<_>>());
+    let (names, built) = Names::built(&request);
+    assert_eq!(
+        built.probes, 1025,
+        "one probe per occupied candidate plus the free one"
+    );
+    assert!(built.within(&Names::claim(tools.len() as u64).unwrap()));
+    assert_eq!(
+        names.wire("mcp.a.b").unwrap(),
+        Names::candidate("mcp.a.b", 1025)
+    );
+    Names::assert_round_trip(&request);
+}
+
+#[test]
+fn lookups_borrow_the_cached_alias() {
+    let request = request_with(&["mcp.docs.search"]);
+    let names = Names::new(&request);
+    let first = names.wire("mcp.docs.search").unwrap();
+    let second = names.wire("mcp.docs.search").unwrap();
+    assert!(matches!(first, Cow::Borrowed(_)) && matches!(second, Cow::Borrowed(_)));
+    assert_eq!(first.as_ptr(), second.as_ptr(), "lookups share one alias");
+    // Negative control: an owned copy has its own storage.
+    let copied = first.clone().into_owned();
+    assert_ne!(copied.as_ptr(), second.as_ptr());
 }
