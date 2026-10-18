@@ -19,9 +19,6 @@ pub struct ProviderCase {
     pub seed: BTreeMap<String, String>,
     pub responses: Vec<Vec<String>>,
     pub chunk_bytes: NonZeroUsize,
-    /// Registered tools beyond the defaults, named like installed MCP tools.
-    #[serde(default)]
-    pub tools: Vec<String>,
     pub expect: Expectations,
 }
 

@@ -213,16 +213,6 @@ pub(crate) fn tool_approval_binding(
     crate::executor::with_history_io(io.as_ref(), |observed| {
         ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), observed)
     })?;
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    let substituted = crate::hooks::mcp_identity_tests::SUBSTITUTE_APPROVAL_NAME
-        .with(std::cell::Cell::get)
-        .then(|| {
-            let mut substituted = invocation.clone();
-            substituted.name = "mcp__docs__search".into();
-            substituted
-        });
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    let invocation = substituted.as_ref().unwrap_or(invocation);
     let digest =
         crate::executor::preparation_digest(&(task, policy, definition, invocation), io.as_ref())?;
     let prefix = b"harness:tool-approval:v2";

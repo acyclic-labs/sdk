@@ -197,8 +197,7 @@ pub(crate) fn generate<'a>(
     let cancelled = work.cancellation_wait()?;
     NativeFutureBundle::new(work, || async move {
         let exchange = async move {
-            let (names, name_custody) =
-                crate::tool_names::Names::funded(request.request(), Some(work))?;
+            let (names, name_custody) = crate::tool_names::Names::native(request.request(), work)?;
             let mut auth_custody = work.claim(0, 0, WorkCounters::UNCHARGED)?;
             let mut auth = dispatch::authenticate(provider, Some(&mut auth_custody)).await?;
             let body = encode(

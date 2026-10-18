@@ -1,4 +1,4 @@
-use super::{observe, pair, record};
+use super::{observe, pair, pair_of, record};
 use proptest::prelude::*;
 use std::{
     cell::Cell,
@@ -93,6 +93,29 @@ fn captures_keep_only_their_event_type() {
     assert_eq!(
         pair::<_, _, (&str, u64)>(|| (), run),
         [((), vec![("foreign", 2)]), ((), vec![("foreign", 2)])]
+    );
+}
+
+// Observation points of one event type are kept apart by name.
+#[test]
+fn named_captures_keep_only_their_kinds() {
+    let run = |(), _: bool| {
+        record(("read", 1u64));
+        record(("decode", 2u64));
+        record(1u8);
+        record(("verify", 3u64));
+        record(("read", 4u64));
+    };
+    assert_eq!(
+        pair_of(&["read", "verify"], || (), run),
+        [
+            ((), vec![("read", 1), ("verify", 3), ("read", 4)]),
+            ((), vec![("read", 1), ("verify", 3), ("read", 4)]),
+        ]
+    );
+    assert_eq!(
+        pair_of(&["absent"], || (), run),
+        [((), vec![]), ((), vec![])]
     );
 }
 

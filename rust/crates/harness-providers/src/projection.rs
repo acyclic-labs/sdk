@@ -123,7 +123,7 @@ pub(crate) fn body_with_files(
 pub(crate) fn body_named<'a>(
     provider: &ResolvedModel,
     request: &'a ModelRequest,
-    names: &'a crate::tool_names::Names<'_>,
+    names: &crate::tool_names::Names,
     target: &acyclic_harness::model::ReasoningOrigin,
     files: &mut FileText,
 ) -> Result<Body<'a>> {
@@ -267,7 +267,7 @@ pub(crate) fn body_named<'a>(
 fn project_message<'a>(
     adapter: Adapter,
     message: &'a ModelMessage,
-    names: &'a crate::tool_names::Names<'_>,
+    names: &crate::tool_names::Names,
     call_ids: &crate::call_ids::CallIds,
     target: &acyclic_harness::model::ReasoningOrigin,
     gemini: &mut gemini::Replay<'a>,

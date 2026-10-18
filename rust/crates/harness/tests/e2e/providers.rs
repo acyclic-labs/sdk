@@ -55,11 +55,7 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
                     role: ModelRole::User,
                     content: ModelContent::Text(case.prompt.clone()),
                 }],
-                tools: case
-                    .tools
-                    .iter()
-                    .map(|name| echo_tool(name).definition)
-                    .collect(),
+                tools: vec![],
                 max_output_tokens: Some(64),
             },
             Limits::default(),
@@ -137,84 +133,21 @@ async fn parsed(case: &ProviderCase, transport: Arc<Recorded>) -> TestResult {
     Ok(())
 }
 
-/// Sorts ahead of every case tool, so a positional alias would move.
-const ADDED_DEFAULT_TOOL: &str = "acyclic.aaa_added_default";
-
-/// A registered tool returning its arguments, named like an installed MCP tool.
-fn echo_tool(name: &str) -> acyclic_harness::tool::Tool {
-    use acyclic_harness::tool::{
-        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolResult,
-    };
-    struct Echo;
-    impl ToolExecutor for Echo {
-        fn execute<'a>(
-            &'a self,
-            invocation: ToolInvocation,
-            _: Option<acyclic_harness::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<ToolResult>> {
-            Box::pin(async move {
-                Ok(ToolResult {
-                    value: invocation.arguments,
-                })
-            })
-        }
-        fn reconcile<'a>(
-            &'a self,
-            _: ToolInvocation,
-            _: Option<acyclic_harness::runtime::ToolContext>,
-        ) -> acyclic_stream::BoxProviderFuture<'a, acyclic_harness::Result<Option<ToolResult>>>
-        {
-            Box::pin(async { Ok(None) })
-        }
-    }
-    let schema = serde_json::json!({"type":"object"});
-    Tool {
-        hook_names: &[],
-        definition: ToolDefinition {
-            name: name.into(),
-            revision: "1".into(),
-            description: "Echo".into(),
-            input_schema: schema.clone(),
-            output_schema: schema.clone(),
-            projection_schema: acyclic_harness::tool::json_projection_schema(schema),
-        },
-        executor: Arc::new(Echo),
-        projection: Arc::new(JsonToolProjection),
-    }
-}
-
 pub(super) async fn run(case: ProviderCase) -> TestResult {
     case.validate()?;
     let transport = Recorded::new(&case);
     parsed(&case, transport.clone()).await?;
-    // A case with registered tools runs again with a default tool added ahead
-    // of them: every request expectation, including wire tool names, holds.
-    let added = [None, Some(ADDED_DEFAULT_TOOL)];
-    for added in &added[..if case.tools.is_empty() { 1 } else { 2 }] {
-        transport.restart()?;
-        task(&case, &transport, *added).await?;
-    }
-    Ok(())
-}
-
-async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str>) -> TestResult {
+    transport.restart()?;
     let temporary = local_workspace::temporary()?;
     let directory = temporary.path().join("filesystem");
     std::fs::create_dir(&directory)?;
     let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
-    let provider = Arc::new(resolve(case, transport.clone())?);
+    let provider = Arc::new(resolve(&case, transport.clone())?);
     let config = local_harness_config(&directory, (provider.model().clone(), provider))?
         .state_directory(temporary.path().join("state"))
         .volume(volume.clone())
         .compaction(CompactionPolicy::Disabled)
-        .goal_continuations(None)
-        .tools(
-            case.tools
-                .iter()
-                .map(String::as_str)
-                .chain(added)
-                .map(echo_tool),
-        );
+        .goal_continuations(None);
     let harness = LocalHarness::open(config).await?;
     let (operation, task_id, status) =
         super::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;

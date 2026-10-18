@@ -59,6 +59,29 @@ pub fn pair<S, R, T: 'static>(
     [true, false].map(|old| observe(&mut initialize, |state| run(state, old)))
 }
 
+/// A named operation event. Observation points that share this type are told
+/// apart by name.
+pub type Operation = (&'static str, u64);
+
+/// `pair` over named operations, keeping only the named `kinds` in order: a
+/// capture subscribes to the operations it asserts, so another observation
+/// point on the same code path cannot enter its trace.
+pub fn pair_of<S, R>(
+    kinds: &[&str],
+    initialize: impl FnMut() -> S,
+    run: impl FnMut(S, bool) -> R,
+) -> [(R, Vec<Operation>); 2] {
+    pair::<S, R, Operation>(initialize, run).map(|(result, trace)| {
+        (
+            result,
+            trace
+                .into_iter()
+                .filter(|(kind, _)| kinds.contains(kind))
+                .collect(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests;
 
