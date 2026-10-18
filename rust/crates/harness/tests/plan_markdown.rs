@@ -5,17 +5,25 @@ use proptest::prelude::*;
 
 #[test]
 fn checked_in_fuzz_corpus() {
-    let directory =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fuzz/corpus/plan_markdown");
-    for (name, count) in [
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../harness-fuzz/corpus/plan_markdown");
+    let expected = [
+        ("escaped", None),
+        ("fenced", Some(1)),
+        ("indented", None),
         ("lifecycle", Some(3)),
         ("malformed", None),
-        ("fenced", Some(1)),
-        ("unicode", Some(3)),
-        ("indented", None),
         ("mixed", Some(5)),
-        ("escaped", None),
-    ] {
+        ("unicode", Some(3)),
+    ];
+    // Every checked-in seed has an expectation, and nothing expected is missing.
+    let mut seeds = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    seeds.sort();
+    assert_eq!(seeds, expected.map(|(name, _)| name));
+    for (name, count) in expected {
         let text = std::fs::read_to_string(directory.join(name)).unwrap();
         assert_eq!(
             parse_task_list(&text).map(|list| list.items().count()),
