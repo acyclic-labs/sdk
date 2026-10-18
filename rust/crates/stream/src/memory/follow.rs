@@ -59,35 +59,64 @@ impl MemoryStream {
         anchor: Option<CommitId>,
     ) -> Result<RecordStream, StreamError> {
         let (receiver, cursor) = self.prepare_follow(&path, from, anchor).await?;
-        let provider = self.clone();
-        Ok(stream::unfold(
-            (provider, path, receiver, cursor, anchor, false),
-            |(provider, path, mut receiver, mut cursor, mut anchor, done)| async move {
-                if done {
-                    return None;
-                }
-                let result = loop {
-                    match provider
-                        .next_checked_record(&path, &mut cursor, &mut anchor)
-                        .await
-                    {
-                        Ok(Some(record)) => break Ok(record),
-                        Err(error) => break Err(error),
-                        Ok(None) => {
-                            if receiver.changed().await.is_err() {
-                                break Err(if anchor.is_some() {
-                                    StreamError::PrefixNotRetained
-                                } else {
-                                    StreamError::Unavailable
-                                });
-                            }
+        let state = Box::new(MemoryFollow {
+            provider: self.clone(),
+            path,
+            changed: receiver,
+            cursor,
+            anchor,
+            done: false,
+        });
+        Ok(stream::unfold(state, |mut state| async move {
+            if state.done {
+                return None;
+            }
+            let result = loop {
+                #[cfg(acyclic_loom)]
+                let retain_pending = state.provider.retain_pending_read;
+                let (next, record) = crate::snapshot::read(
+                    state,
+                    #[cfg(acyclic_loom)]
+                    retain_pending,
+                )
+                .await;
+                state = next;
+                match record {
+                    Ok(Some(record)) => break Ok(record),
+                    Err(error) => break Err(error),
+                    Ok(None) => {
+                        if state.changed.changed().await.is_err() {
+                            break Err(if state.anchor.is_some() {
+                                StreamError::PrefixNotRetained
+                            } else {
+                                StreamError::Unavailable
+                            });
                         }
                     }
-                };
-                let done = result.is_err();
-                Some((result, (provider, path, receiver, cursor, anchor, done)))
-            },
-        )
+                }
+            };
+            state.done = result.is_err();
+            Some((result, state))
+        })
         .boxed())
+    }
+}
+
+struct MemoryFollow {
+    provider: MemoryStream,
+    path: StreamPath,
+    changed: watch::Receiver<u64>,
+    cursor: HistoryCursor,
+    anchor: Option<CommitId>,
+    done: bool,
+}
+impl crate::snapshot::Snapshot for Box<MemoryFollow> {
+    type Output = Result<Option<Record>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
+        let state = &mut **self;
+        state
+            .provider
+            .next_checked_record(&state.path, &mut state.cursor, &mut state.anchor)
+            .await
     }
 }

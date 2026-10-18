@@ -23,7 +23,6 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Persist an editor projection across unrelated owner publications. The
     /// observed target contents are still a precondition; peer edits fail closed.
     /// Non-input resolution and execution claims retain their strict query CAS.
-    #[cfg(feature = "tui")]
     pub(crate) async fn write_unchanged_state(
         &mut self,
         root: CommandFileRoot,

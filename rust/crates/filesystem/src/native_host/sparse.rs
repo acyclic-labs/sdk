@@ -159,7 +159,7 @@ pub fn punch_hole(
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, any(test, feature = "native-mount")))]
 pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     source: &File,
     target: &File,
@@ -310,7 +310,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, any(test, feature = "native-mount")))]
 pub(super) fn clonable_windows_length(length: u64) -> bool {
     length >= 4 * 1024 && i64::try_from(length).is_ok()
 }

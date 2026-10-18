@@ -8,6 +8,22 @@ struct FollowState {
     done: bool,
     span: obs::OperationSpan,
 }
+impl crate::snapshot::Snapshot for Box<FollowState> {
+    #[cfg(feature = "test-support")]
+    const OBSERVE: bool = true;
+    type Output = Result<Option<crate::Record>, StreamError>;
+    async fn read(&mut self) -> Self::Output {
+        let state = &mut **self;
+        state
+            .provider
+            .accepted_snapshot(state.provider.inner.provider.next_checked_record(
+                &state.path,
+                &mut state.cursor,
+                &mut state.anchor,
+            ))
+            .await?
+    }
+}
 impl FollowState {
     async fn wait(&mut self) -> Result<(), StreamError> {
         let publication = self.changed.changed();

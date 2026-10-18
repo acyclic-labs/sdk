@@ -43,6 +43,10 @@ pub(crate) struct PreparedFilesystemChild {
 
 mod fixture;
 mod fork;
+#[cfg(all(not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod task_files;
+#[cfg(all(not(acyclic_harness_loom), not(target_arch = "wasm32")))]
+mod task_fork;
 
 pub(crate) fn test_registries(
     machine: Arc<dyn ResumableMachine>,

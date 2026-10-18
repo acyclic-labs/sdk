@@ -1,7 +1,37 @@
 use super::*;
+use crate::conversation::{ContentPublisher, FileRef, Limits};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeStruct};
 
 impl Hooks {
+    /// Publishes normalized configuration once, returning its exact pinned input.
+    pub async fn publish(
+        &self,
+        publisher: &dyn ContentPublisher,
+        limits: Limits,
+    ) -> Result<FileRef> {
+        const PREFIX: &str = "inputs/config/hooks/";
+        if PREFIX.len() + 64 + ".json".len() > limits.path_bytes {
+            return Err(Error::Invalid(
+                "hook configuration path exceeds path bound".into(),
+            ));
+        }
+        let bytes = self.encode(limits.file_bytes)?;
+        let digest = blake3::hash(&bytes);
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&digest.as_bytes()[..16]);
+        Ok(publisher
+            .stage_once(
+                crate::OperationId::from_bytes(operation),
+                &format!("{PREFIX}{digest}.json"),
+                &bytes,
+                Self::MEDIA_TYPE,
+                "hooks.json",
+                None,
+            )?
+            .await?
+            .0)
+    }
+
     /// Encodes normalized rules under a positive finite configuration-file bound.
     pub fn encode(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {

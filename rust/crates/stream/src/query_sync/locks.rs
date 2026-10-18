@@ -15,16 +15,64 @@ struct Gate(LoomMutex<Access>);
 struct Access {
     readers: usize,
     writer: bool,
-    waiters: Vec<Waker>,
+    next: usize,
+    granted: Vec<(usize, bool)>,
+    waiters: std::collections::VecDeque<Waiter>,
+    stall_granted_readers: bool,
+}
+
+struct Waiter {
+    id: usize,
+    write: bool,
+    waker: Waker,
+}
+
+impl Access {
+    fn available(&self, write: bool) -> bool {
+        self.waiters.is_empty()
+            && !self.writer
+            && if write {
+                self.readers == 0
+            } else {
+                !self.stall_granted_readers || self.granted.is_empty()
+            }
+    }
+    // Reserve ownership before waking, including for a waiter never polled
+    // again. FIFO writers block later readers, exactly as Tokio's semaphore.
+    fn grant(&mut self) -> Vec<Waker> {
+        let mut wakes = Vec::new();
+        while let Some(waiter) = self.waiters.front() {
+            if self.writer || (waiter.write && self.readers != 0) {
+                break;
+            }
+            let waiter = self.waiters.pop_front().unwrap();
+            if waiter.write {
+                self.writer = true;
+            } else {
+                self.readers += 1;
+            }
+            self.granted.push((waiter.id, waiter.write));
+            wakes.push(waiter.waker);
+        }
+        wakes
+    }
+
+    fn release(&mut self, write: bool) {
+        if write {
+            self.writer = false;
+        } else {
+            self.readers -= 1;
+        }
+    }
 }
 
 impl Gate {
-    fn take(&self, write: bool, waker: Option<&Waker>) -> Option<Permit<'_>> {
+    fn take(&self, write: bool) -> Option<Permit<'_>> {
         let mut access = self
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !access.writer && (!write || access.readers == 0) {
+        if access.available(write) {
             if write {
                 access.writer = true;
             } else {
@@ -32,21 +80,80 @@ impl Gate {
             }
             Some(Permit { gate: self, write })
         } else {
-            if let Some(waker) = waker
-                && !access.waiters.iter().any(|old| old.will_wake(waker))
-            {
-                access.waiters.push(waker.clone());
-            }
             None
         }
     }
 
     async fn acquire(&self, write: bool) -> Permit<'_> {
-        poll_fn(|cx| match self.take(write, Some(cx.waker())) {
-            Some(permit) => Poll::Ready(permit),
-            None => Poll::Pending,
+        let mut registration = Registration {
+            gate: self,
+            id: None,
+        };
+        poll_fn(|cx| {
+            let mut access = self.0.lock().unwrap();
+            if let Some(id) = registration.id {
+                if let Some(position) = access.granted.iter().position(|entry| entry.0 == id) {
+                    access.granted.remove(position);
+                    registration.id = None;
+                    return Poll::Ready(Permit { gate: self, write });
+                }
+                let waiter = access
+                    .waiters
+                    .iter_mut()
+                    .find(|waiter| waiter.id == id)
+                    .unwrap();
+                waiter.waker = cx.waker().clone();
+            } else if access.available(write) {
+                if write {
+                    access.writer = true;
+                } else {
+                    access.readers += 1;
+                }
+                return Poll::Ready(Permit { gate: self, write });
+            } else {
+                let id = access.next;
+                access.next += 1;
+                registration.id = Some(id);
+                access.waiters.push_back(Waiter {
+                    id,
+                    write,
+                    waker: cx.waker().clone(),
+                });
+            }
+            Poll::Pending
         })
         .await
+    }
+}
+
+struct Registration<'a> {
+    gate: &'a Gate,
+    id: Option<usize>,
+}
+
+impl Drop for Registration<'_> {
+    fn drop(&mut self) {
+        let Some(id) = self.id else {
+            return;
+        };
+        let wakes = {
+            let mut access = self.gate.0.lock().unwrap();
+            if let Some(position) = access.waiters.iter().position(|waiter| waiter.id == id) {
+                access.waiters.remove(position);
+            } else {
+                let position = access
+                    .granted
+                    .iter()
+                    .position(|entry| entry.0 == id)
+                    .unwrap();
+                let (_, write) = access.granted.remove(position);
+                access.release(write);
+            }
+            access.grant()
+        };
+        for waker in wakes {
+            waker.wake();
+        }
     }
 }
 
@@ -63,12 +170,8 @@ impl Drop for Permit<'_> {
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.write {
-                access.writer = false;
-            } else {
-                access.readers -= 1;
-            }
-            std::mem::take(&mut access.waiters)
+            access.release(self.write);
+            access.grant()
         };
         for waiter in waiters {
             waiter.wake();
@@ -133,6 +236,15 @@ pub struct RwLock<T> {
 }
 
 impl<T> RwLock<T> {
+    pub(crate) fn stalled_reader_control(value: T) -> Self {
+        Self {
+            data: tokio::sync::RwLock::new(value),
+            gate: Gate(LoomMutex::new(Access {
+                stall_granted_readers: true,
+                ..Access::default()
+            })),
+        }
+    }
     /// Constructs an unlocked value.
     pub fn new(value: T) -> Self {
         Self {
@@ -170,7 +282,7 @@ impl<T> RwLock<T> {
     ) -> Result<Guard<'_, tokio::sync::RwLockWriteGuard<'_, T>>, std::sync::TryLockError<()>> {
         let permit = self
             .gate
-            .take(true, None)
+            .take(true)
             .ok_or(std::sync::TryLockError::WouldBlock)?;
         let data = self
             .data

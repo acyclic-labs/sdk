@@ -66,7 +66,7 @@ fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
     impl ProbeIo for FailSend<'_> {
         fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
             if let Some(at) = self.at.take() {
-                self.tty.send(&bytes[..at], deadline)?;
+                self.tty.send(bytes.get(..at).unwrap_or(bytes), deadline)?;
                 Err(io::ErrorKind::BrokenPipe.into())
             } else {
                 self.tty.send(bytes, deadline)
@@ -103,7 +103,7 @@ fn real_pty_query_failure_boundaries_restore_a_visible_prompt()
             loop {
                 match controller.read(&mut buffer) {
                     Ok(0) => break,
-                    Ok(count) => bytes.extend_from_slice(&buffer[..count]),
+                    Ok(count) => bytes.extend_from_slice(buffer.get(..count).unwrap_or_default()),
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                     Err(error) => return Err(error.into()),
                 }

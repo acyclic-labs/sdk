@@ -1,4 +1,5 @@
 #![no_main]
+use acyclic_harness as harness;
 use acyclic_harness::{
     client::{CommandFileRoot, CommandSession, PromptFiles, restore_tui_prompt, tui_scroll},
     task_volume::{FileKey, Query, TaskVolume, Write},
@@ -9,11 +10,35 @@ use acyclic_harness::{
 };
 use acyclic_stream::{MemoryStream, StreamPath};
 use libfuzzer_sys::fuzz_target;
+#[path = "../../harness/tests/support/file_views.rs"]
+mod file_views;
 use std::sync::Arc;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > 4096 {
         return;
+    }
+    // The canonical immutable command envelope supplies the same parsed row to
+    // native and WASM. Valid generated envelopes must never disappear silently.
+    let sequence = u64::from_le_bytes(std::array::from_fn(|index| {
+        data.get(index).copied().unwrap_or(0)
+    }))
+    .max(1);
+    let text = String::from_utf8_lossy(data);
+    let mut outcome = Write::new(
+        FileKey::parse(".tasks/t/executions/r/result.json").unwrap(),
+        serde_json::to_vec(&serde_json::json!({"sequence":sequence,"ok":{"text":text}})).unwrap(),
+    );
+    let projected = acyclic_harness::client::CommandOutputView::from_file(&outcome).unwrap();
+    assert_eq!(projected.sequence, sequence);
+    assert_eq!(projected.text.as_deref(), Some(text.as_ref()));
+    outcome.bytes = data.to_vec().into();
+    if let Some(projected) = acyclic_harness::client::CommandOutputView::from_file(&outcome) {
+        let raw: serde_json::Value = serde_json::from_slice(data).unwrap();
+        assert_eq!(Some(projected.sequence), raw["sequence"].as_u64());
+        if let Some(text) = projected.text {
+            assert_eq!(raw["ok"]["text"].as_str(), Some(text.as_ref()));
+        }
     }
     // Every batch is all-or-nothing even when a later command file is malformed.
     let mut menu = acyclic_harness::tui::CompletionMenu::default();
@@ -40,7 +65,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(request) =
         acyclic_harness::client::parse_local_request(&String::from_utf8_lossy(data), operation)
     {
-        let canonical = serde_json::to_string(&request).unwrap();
+        let canonical = acyclic_harness::client::jsonl::request(&request).unwrap();
         assert_eq!(
             acyclic_harness::client::parse_local_request(&canonical, operation).unwrap(),
             request
@@ -89,9 +114,9 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(wrapped.rows(), split_wrapped.rows());
     let mut fields = data.splitn(5, |byte| *byte == 0);
     let draft = fields.next().unwrap_or_default();
-    let Some(history) = fields.next() else {
-        return;
-    };
+    // Standalone JSON seeds must reach the result parser too; separators are
+    // optional inputs for the independent prompt-file checks below.
+    let history = fields.next().unwrap_or(b"[]");
     let keymap = fields.next();
     let notifications = fields.next();
     let layout = fields.next();
@@ -195,42 +220,84 @@ fuzz_target!(|data: &[u8]| {
                 acyclic_harness::client::TaskFileClient::observe(volume.as_ref(), &owner, 16, 8192)
                     .await
                     .unwrap();
-            assert_eq!(client.views().transcripts, replay.views().transcripts);
+            let live = client.views().selections().next().unwrap().1;
+            let reopened = replay.views().selections().next().unwrap().1;
+            assert_eq!(live.files(), reopened.files());
+            assert_eq!(live.cursor(), reopened.cursor());
             let mut rebuilt = ClientRenderer::default();
             rebuilt.update(replay.views(), &owner);
             assert_eq!(renderer.screen().transcript, rebuilt.screen().transcript);
-            assert_eq!(
-                client.views().transcripts[&format!("AGGREGATE_KIND_TASK:{}", owner.id)]
-                    .streaming_text,
-                text
-            );
+            let task = acyclic_harness::task_volume::Component::new(&owner.id).unwrap();
+            let actual: Vec<u8> = live
+                .task(&task)
+                .text()
+                .flat_map(|text| {
+                    text.file
+                        .segments
+                        .iter()
+                        .flat_map(|bytes| bytes.iter().copied())
+                })
+                .collect();
+            assert_eq!(actual, data);
+            assert_eq!(String::from_utf8_lossy(&actual), text);
+            let mut documents = file_views::empty();
             let plan = FileKey::Plan(acyclic_harness::task_volume::PlanName::new("old").unwrap());
-            let mut documents = acyclic_harness::client::DocumentViews::default();
-            documents
-                .apply(&Write::new(FileKey::Goal, b"original".to_vec()))
-                .unwrap();
-            documents
-                .apply(&Write::new(plan.clone(), b"previous".to_vec()))
-                .unwrap();
-            let before = documents.clone();
-            let publication = acyclic_harness::task_volume::Change {
-                file: None,
-                files: vec![Write::new(FileKey::Goal, data.to_vec())],
-                removed: vec![plan],
-                cursor: volume.snapshot(&Query::Root, 64).await.unwrap().cursor,
-            };
-            let result = documents.apply_change(&publication);
-            match std::str::from_utf8(data) {
-                Ok(text) => {
-                    assert!(result.is_ok());
-                    assert_eq!(documents.goal.as_deref(), Some(text));
-                    assert!(documents.plans.is_empty());
-                }
-                Err(_) => {
-                    assert!(result.is_err());
-                    assert_eq!(documents, before);
+            file_views::document(&mut documents, FileKey::Goal, "original");
+            file_views::document(&mut documents, plan.clone(), "previous");
+            file_views::put(&mut documents, FileKey::Goal, data.to_vec(), None);
+            file_views::remove(&mut documents, plan.clone());
+            let selection = documents.selections().next().unwrap().1;
+            assert_eq!(selection.files()[&FileKey::Goal].segments[0].as_ref(), data);
+            assert!(!selection.files().contains_key(&plan));
+            // Result metadata is untrusted; it may describe status but must
+            // never copy the result's output into the transcript a second time.
+            file_views::tool(&mut documents, &owner.id, "bash", "");
+            // Exercise the nonstreaming parser too; streaming output itself is
+            // covered by the shared chunk/replay property and live renderer.
+            file_views::remove(
+                &mut documents,
+                FileKey::parse(&format!(".tasks/{}/turns/0/tools/call/stdout/0", owner.id))
+                    .unwrap(),
+            );
+            let result_key = FileKey::parse(&format!(
+                ".tasks/{}/turns/0/tools/call/result.json",
+                owner.id
+            ))
+            .unwrap();
+            file_views::put(&mut documents, result_key.clone(), data.to_vec(), None);
+            renderer.update(&documents, &owner);
+            assert!(renderer.screen().transcript.is_empty());
+            assert_eq!(renderer.screen().tools.len(), 1);
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                // Raw duplicate fields may be rejected by the typed parser even
+                // though Value keeps the last one. Check its canonical form
+                // separately; the arbitrary original was already rendered above.
+                file_views::put(
+                    &mut documents,
+                    result_key.clone(),
+                    serde_json::to_vec(&value).unwrap(),
+                    None,
+                );
+                renderer.update(&documents, &owner);
+                let title = renderer.screen().tools[0].to_string();
+                let valid = value.is_object()
+                    && (value["success"].is_null() || value["success"].is_boolean())
+                    && (value["exit_code"].is_null()
+                        || value["exit_code"]
+                            .as_i64()
+                            .is_some_and(|code| i32::try_from(code).is_ok()));
+                if valid
+                    && (value["success"] == false
+                        || value["exit_code"].as_i64().is_some_and(|code| code != 0))
+                {
+                    assert!(title.contains("failed"));
+                } else if valid && value["success"] == true {
+                    assert!(title.contains("completed"));
                 }
             }
+            // Details below must exercise the original untrusted bytes, not
+            // only the canonical form used by the independent status oracle.
+            file_views::put(&mut documents, result_key, data.to_vec(), None);
             let session = acyclic_harness::OperationId::from_bytes([9; 16]).to_string();
             let mut writes = vec![
                 (format!(".ui/session-{session}/draft.json"), draft),
@@ -260,6 +327,24 @@ fuzz_target!(|data: &[u8]| {
             else {
                 return;
             };
+            files
+                .write_state(
+                    CommandFileRoot::Config,
+                    "settings.json",
+                    &serde_json::json!({"tool_details":true}),
+                )
+                .await
+                .unwrap();
+            renderer.update(&documents, &owner);
+            renderer.configure(&documents, &owner, &files).unwrap();
+            assert!(renderer.screen().tools.len() <= 21);
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                if value.as_object().is_some_and(|fields| {
+                    fields.contains_key("stdout") || fields.contains_key("stderr")
+                }) {
+                    assert_eq!(renderer.screen().tools.len(), 1);
+                }
+            }
             if let Some(bytes) = layout {
                 let expected = serde_json::from_slice::<serde_json::Value>(bytes)
                     .ok()
@@ -374,11 +459,7 @@ fuzz_target!(|data: &[u8]| {
             };
             assert_eq!(
                 renderer
-                    .configure(
-                        &acyclic_harness::client::TaskFileViews::default(),
-                        &owner,
-                        &files
-                    )
+                    .configure(&file_views::empty(), &owner, &files)
                     .is_ok(),
                 selected != 2
             );

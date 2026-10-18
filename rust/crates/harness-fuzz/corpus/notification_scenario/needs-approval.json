@@ -1,0 +1,1 @@
+{"records":[{"task":"t","sequence":9007199254740993,"event":"needs_approval","detail":"approval requested"}],"protocol":"osc9","expect":{"presented":1,"output":"\u001b]9;Approval needed: t: approval requested\u0007","view":[{"task":"t","sequence":9007199254740993,"event":"needs_approval","detail":"approval requested"}]}}

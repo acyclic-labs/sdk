@@ -183,7 +183,8 @@ fn completed_kernel_work_borrows_the_original_budget_without_allocating() {
             );
         };
         assert_eq!(
-            std::panic::catch_unwind(bound).is_ok(), !by_value,
+            std::panic::catch_unwind(bound).is_ok(),
+            !by_value,
             "original by-value verification escaped the borrowing invariant"
         );
         assert_eq!(allocations.count_total, 0);

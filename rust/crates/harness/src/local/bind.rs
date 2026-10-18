@@ -39,9 +39,7 @@ impl LocalHarness {
             )?;
         }
         #[cfg(feature = "hooks")]
-        let hooks = settings::load(&config.project, config.settings)
-            .await?
-            .hooks;
+        let settings = settings::configuration(&config.project, config.settings)?;
         let (model, provider) = config.model;
         model.validate()?;
         let compaction = compaction::select(
@@ -63,6 +61,9 @@ impl LocalHarness {
             )
             .await?,
         );
+        let erased_files = Arc::new(task_files.reopen_erased().await?);
+        let mut runtime = runtime.with_task_files(erased_files.clone())?;
+        runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
         let workspace = if let Some(checkout) = checkout {
             let directory = owner::directory(&owner::state_directory(&config.project)?)?;
@@ -123,12 +124,13 @@ impl LocalHarness {
             scratch: volume.clone(),
             journal: volume.clone(),
             verifier: verifier.clone(),
+            issuer: None,
             signed: signed.clone(),
             model,
             provider,
             context_manifest: config.context_manifest,
             #[cfg(feature = "hooks")]
-            hooks,
+            settings,
             #[cfg(test)]
             context_read_observer: None,
             limits: config.limits,

@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 use ts_rs::TS;
 
+type EventHandler<State, Bindings> = for<'a> fn(
+    &'a GuestState<State>,
+    GuestEvent,
+    &'a GuestContext<Bindings>,
+) -> GuestFuture<'a, Option<GuestEventResult>>;
+
 /// Artifact-defined codec identity. Versions identify byte formats, not code builds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +77,8 @@ pub struct CheckpointCodec<State> {
     pub decode: fn(&Checkpoint) -> Result<State, GuestError>,
 }
 
+type RetryKey = Box<dyn Fn(&str) -> Result<String, GuestError> + Send + Sync>;
+
 /// One context for every lifecycle hook and event. Hosts inject scoped handles.
 #[derive(TS)]
 #[ts(bound = "Bindings: TS", rename_all = "camelCase")]
@@ -89,7 +97,7 @@ pub struct GuestContext<Bindings> {
     pub actor: ActorRuntime,
     /// Effect retry keys derived from the admitted delivery identity.
     #[ts(type = "(effect: string) => string")]
-    pub retry_key: Box<dyn Fn(&str) -> Result<String, GuestError> + Send + Sync>,
+    pub retry_key: RetryKey,
 }
 
 impl<Bindings> GuestContext<Bindings> {
@@ -171,11 +179,7 @@ pub struct ActorDefinition<State, Bindings> {
     #[ts(
         type = "(state: GuestState<State>, event: GuestEvent, context: GuestContext<Bindings>) => GuestEventResult | null | Promise<GuestEventResult | null>"
     )]
-    pub event: for<'a> fn(
-        &'a GuestState<State>,
-        GuestEvent,
-        &'a GuestContext<Bindings>,
-    ) -> GuestFuture<'a, Option<GuestEventResult>>,
+    pub event: EventHandler<State, Bindings>,
     /// Capture only after all admitted handlers and exclusive sections quiesce.
     #[ts(
         type = "(state: GuestState<State>, context: GuestContext<Bindings>) => Checkpoint | Promise<Checkpoint>"

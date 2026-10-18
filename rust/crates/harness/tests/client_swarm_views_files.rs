@@ -280,3 +280,88 @@ fn negative_control_omitting_a_canonical_file_is_detected() {
             .is_err()
     );
 }
+
+async fn notifications(rows: &[(u8, u8, String)], omit: bool) {
+    use acyclic_harness::client::NotificationFileView;
+    let mut fixture = Fixture::new().await;
+    let mut expected = std::collections::BTreeMap::new();
+    for (index, (owner, event, detail)) in rows.iter().enumerate() {
+        let task = format!("t{owner}");
+        let id = format!("n{index}");
+        let mut record =
+            super::notification_files::encoded(*event, index as u64 + 1, detail.clone());
+        record.task = task.clone();
+        let invalid = event & 0x80 != 0;
+        let payload = if invalid {
+            b"{invalid".to_vec()
+        } else {
+            serde_json::to_vec(&record).unwrap()
+        };
+        fixture
+            .append(Write::new(
+                key(&format!(".tasks/{task}/notifications/{id}.json")),
+                payload,
+            ))
+            .await;
+        expected.insert(
+            (task, id),
+            if invalid {
+                NotificationFileView::Invalid
+            } else {
+                NotificationFileView::Present {
+                    notification: record,
+                }
+            },
+        );
+        for view in [&fixture.views, &fixture.reopened().await] {
+            let actual = view
+                .notifications()
+                .filter(|_| !omit)
+                .map(|row| {
+                    assert_eq!(row.cursor, view.cursor(&path("swarm/a")).unwrap());
+                    (
+                        (row.task.as_str().to_owned(), row.id.as_str().to_owned()),
+                        row.notification.clone(),
+                    )
+                })
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(actual, expected);
+        }
+    }
+    fixture
+        .views
+        .apply(SwarmUpdate::Layout(
+            ClientInterests::from_layout(path("swarm"), [], [], 1).unwrap(),
+        ))
+        .unwrap();
+    assert_eq!(
+        fixture.views.notifications().count(),
+        0,
+        "unselected content retained notifications"
+    );
+}
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    #[test]
+    fn notification_files_are_identical_on_live_follow_and_reopen(
+        rows in proptest::collection::vec((0u8..3, proptest::num::u8::ANY, ".{0,24}"), 0..12),
+    ) { futures::executor::block_on(notifications(&rows, false)); }
+}
+#[test]
+fn notification_file_fold_control_cannot_drop_settle_goal_or_approval() {
+    assert!(
+        std::panic::catch_unwind(|| futures::executor::block_on(notifications(
+            &[(0, 0, "settled".into()), (1, 4, "goal blocked".into())],
+            true,
+        )))
+        .is_err()
+    );
+    futures::executor::block_on(notifications(
+        &[
+            (0, 0, "settled".into()),
+            (1, 4, "goal blocked".into()),
+            (2, 5, "approval requested".into()),
+        ],
+        false,
+    ));
+}

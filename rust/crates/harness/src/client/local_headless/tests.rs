@@ -11,14 +11,14 @@ proptest! {
     ) {
         let operation = OperationId::from_bytes(identity);
         let request = prepare_local_prompt(operation, &text).unwrap();
-        let line = serde_json::to_string(&request).unwrap();
+        let line = crate::client::jsonl::request(&request).unwrap();
         prop_assert_eq!(parse_local_request(&line, operation).unwrap(), request.clone());
         let mut foreign = identity; foreign[0] ^= 1;
         prop_assert!(matches!(parse_local_request(&line, OperationId::from_bytes(foreign)), Err(Error::Unauthorized(_))));
         for make in [TaskFile::ExecutionClaim, TaskFile::ExecutionResult] {
             let mut forbidden = request.clone();
             forbidden.key = key(operation, make).unwrap();
-            prop_assert!(matches!(parse_local_request(&serde_json::to_string(&forbidden).unwrap(), operation), Err(Error::Unauthorized(_))));
+            prop_assert!(matches!(parse_local_request(&crate::client::jsonl::request(&forbidden).unwrap(), operation), Err(Error::Unauthorized(_))));
         }
     }
 
@@ -113,7 +113,7 @@ proptest! {
             let mut rejected = false;
             let mut delivered = 0;
             for sequence in 0..count {
-                let file = FileValue { publication: None,
+                let file = FileValue { requester: None, publication: None,
                     key: FileKey::Task { task: Component::new(crate::runtime::task_id_for_admission(operation).to_string()).unwrap(),
                         file: TaskFile::Chunk { turn: if turns { (sequence / 64) as u64 } else { 0 }, sequence: sequence as u64 } },
                     channel: Some(crate::task_volume::Channel::Text), bytes: vec![b'x'].into() };

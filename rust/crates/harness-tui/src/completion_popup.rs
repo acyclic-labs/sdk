@@ -1,4 +1,4 @@
-use crate::{CompletionMenu, Editor};
+use crate::{CompletionMenu, Editor, buffer::slice, widget::cells};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -43,14 +43,15 @@ impl<'a> CompletionPopup<'a> {
     pub fn area(&self, prompt: Rect, screen: Rect) -> Rect {
         let width = screen
             .width
-            .min(self.editor.settings().completion_max_width as u16)
+            .min(cells(self.editor.settings().completion_max_width))
             .min(screen.right().saturating_sub(screen.x));
-        let wanted = self
-            .menu
-            .items()
-            .len()
-            .saturating_add(2)
-            .min(self.editor.settings().completion_max_height) as u16;
+        let wanted = cells(
+            self.menu
+                .items()
+                .len()
+                .saturating_add(2)
+                .min(self.editor.settings().completion_max_height),
+        );
         let top = prompt.y.clamp(screen.y, screen.bottom());
         let bottom = prompt.bottom().clamp(screen.y, screen.bottom());
         let above = top - screen.y;
@@ -78,9 +79,9 @@ impl Widget for CompletionPopup<'_> {
             area.x,
             area.y,
             area.width
-                .min(self.editor.settings().completion_max_width as u16),
+                .min(cells(self.editor.settings().completion_max_width)),
             area.height
-                .min(self.editor.settings().completion_max_height as u16),
+                .min(cells(self.editor.settings().completion_max_height)),
         );
         if area.width < 3 || area.height < 3 || !self.menu.active(self.editor) {
             return;
@@ -119,7 +120,7 @@ impl Widget for CompletionPopup<'_> {
                     part,
                     &mut x,
                     inner.right(),
-                    inner.y + (index - first) as u16,
+                    inner.y + cells(index - first),
                     style,
                     buffer,
                 );
@@ -146,7 +147,7 @@ pub(crate) fn render_part(
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    let prefix = &text[..end];
+    let prefix = slice(text, ..end);
     for (at, grapheme) in prefix.grapheme_indices(true) {
         if *x >= right {
             break;
@@ -179,7 +180,7 @@ fn render_symbol(symbol: &str, x: &mut u16, right: u16, y: u16, style: Style, bu
         return;
     }
     buffer.set_stringn(*x, y, symbol, width, style);
-    *x += width as u16;
+    *x += cells(width);
 }
 
 #[cfg(test)]

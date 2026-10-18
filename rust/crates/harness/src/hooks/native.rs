@@ -12,6 +12,8 @@ use std::{
     time::Duration,
 };
 
+pub(crate) type HookCheck = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
+
 impl Hooks {
     /// Runs matching hooks concurrently, merging decisions in configuration order.
     /// `workspace` is the project root; `cwd` is the individual tool's directory.
@@ -20,9 +22,30 @@ impl Hooks {
         event: HookEvent,
         workspace: &Path,
         cwd: &Path,
-        mut input: Value,
+        input: Value,
         registry: &ToolRegistry,
     ) -> Result<HookOutput> {
+        self.run_checked(
+            event,
+            (workspace, cwd),
+            input,
+            registry,
+            65_536,
+            Arc::new(|| Ok(())),
+        )
+        .await
+    }
+
+    pub(crate) async fn run_checked(
+        &self,
+        event: HookEvent,
+        paths: (&Path, &Path),
+        mut input: Value,
+        registry: &ToolRegistry,
+        maximum_bytes: u64,
+        check: HookCheck,
+    ) -> Result<HookOutput> {
+        let (workspace, cwd) = paths;
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
@@ -38,8 +61,13 @@ impl Hooks {
             serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         bytes.push(b'\n');
         let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
-        self.run_commands(event, &input, registry, |hook| {
-            run_hook(Arc::clone(hook), Arc::clone(&request))
+        self.run_commands(event, &input, registry, maximum_bytes, |hook, quota| {
+            run_hook(
+                Arc::clone(hook),
+                Arc::clone(&request),
+                Arc::clone(&check),
+                quota,
+            )
         })
         .await
     }
@@ -48,13 +76,24 @@ impl Hooks {
 pub(super) async fn run_hook(
     hook: Arc<HookSpec>,
     request: Arc<(PathBuf, PathBuf, Vec<u8>)>,
+    owner_check: HookCheck,
+    maximum_bytes: usize,
 ) -> Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let cancellation = HookCancellation::new();
     let cancelled = Arc::clone(&cancellation.0);
     run_blocking_io(
         move || {
-            let check = || check_cancelled(&cancelled);
+            if maximum_bytes == 0 {
+                return Err(Error::Process(crate::ProcessError::OutputLimit {
+                    exit_code: None,
+                    message: "hook capture budget exhausted".into(),
+                }));
+            }
+            let check = || {
+                check_cancelled(&cancelled)?;
+                owner_check()
+            };
             check().map_err(Error::process_io)?;
             let mut command = hook_command(&hook, &request.0)?;
             command
@@ -68,14 +107,19 @@ pub(super) async fn run_hook(
             let output = tree
                 .wait_with_output(
                     Duration::from_millis(hook.timeout_ms),
-                    65_536,
+                    maximum_bytes,
                     Some(CaptureInput::Literal(&request.2)),
                     check,
                     |_| Ok(ProcessInput::default()),
                     None,
                     None,
                 )
-                .map_err(|failure| Error::process_io(failure.error))?;
+                .map_err(|failure| {
+                    Error::process_exit(
+                        failure.error,
+                        failure.status.and_then(|status| status.code()),
+                    )
+                })?;
             Ok((output.status.code(), output.stdout, output.stderr))
         },
         None,

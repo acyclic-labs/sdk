@@ -96,7 +96,7 @@ fn field_schema(kind: Kind) -> serde_json::Value {
             json!({"anyOf":[{"type":"string","pattern":"^-?[0-9]+$"},{"type":"integer"}]})
         }
         Kind::Enum(enumeration) => {
-            json!({"enum": enumeration.values().map(|v| v.name().to_string()).collect::<Vec<_>>()})
+            json!({"enum": enumeration.values().map(|v| v.name().to_owned()).collect::<Vec<_>>()})
         }
         _ => json!({"type":"integer"}),
     }
@@ -108,7 +108,7 @@ fn schema(message: &MessageDescriptor) -> serde_json::Value {
         .map(|field| {
             let schema = field_schema(field.kind());
             (
-                field.json_name().to_string(),
+                field.json_name().to_owned(),
                 if field.is_list() {
                     json!({"type":"array", "items":schema})
                 } else {
@@ -123,22 +123,22 @@ fn schema(message: &MessageDescriptor) -> serde_json::Value {
 /// Generate the imported contract's Protobuf JSON representation.
 pub fn typescript<T: ContractType>() -> Result<String, String> {
     fn emit(
-        message: MessageDescriptor,
+        message: &MessageDescriptor,
         seen: &mut std::collections::HashSet<String>,
         out: &mut String,
     ) {
-        if !seen.insert(message.full_name().to_string()) {
+        if !seen.insert(message.full_name().to_owned()) {
             return;
         }
         for field in message.fields() {
             if let Kind::Message(child) = field.kind() {
-                emit(child, seen, out);
+                emit(&child, seen, out);
             }
         }
         out.push_str(&format!("export type {} = {{\n", message.name()));
         for field in message.fields() {
             let ty = match field.kind() {
-                Kind::Message(child) => child.name().to_string(),
+                Kind::Message(child) => child.name().to_owned(),
                 Kind::String | Kind::Bytes => "string".into(),
                 Kind::Bool => "boolean".into(),
                 Kind::Uint64 | Kind::Int64 | Kind::Sint64 | Kind::Fixed64 | Kind::Sfixed64 => {
@@ -161,7 +161,7 @@ pub fn typescript<T: ContractType>() -> Result<String, String> {
     }
     let mut output = String::new();
     emit(
-        descriptor::<T>()?,
+        &descriptor::<T>()?,
         &mut std::collections::HashSet::new(),
         &mut output,
     );

@@ -1,0 +1,136 @@
+{
+  "driver": "agents",
+  "prompt": "discard the archived worker's lazy fork",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "original work",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "control",
+          "name": "archive",
+          "arguments": {
+            "agent": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "discard",
+          "name": "fs",
+          "arguments": {
+            "command": "discard agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "write",
+          "name": "write",
+          "arguments": {
+            "path": "child.txt",
+            "text": "worker result",
+            "media_type": "text/plain",
+            "display_name": "child.txt"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 6,
+      "worker": 2
+    },
+    "task_files": {
+      "agents/worker/status.json": {
+        "state": "Archived",
+        "settled": true,
+        "inputs": 1
+      }
+    },
+    "files": {
+      "child.txt": null
+    }
+  },
+  "routes": {
+    "original work": "worker"
+  }
+}

@@ -1,4 +1,6 @@
 //! Independent current-thread runs with an ordered, caller-defined operation trace.
+pub mod oracle;
+
 use std::{any::Any, cell::RefCell};
 thread_local! {
     static TRACE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
@@ -59,3 +61,15 @@ pub fn pair<S, R, T: 'static>(
 
 #[cfg(test)]
 mod tests;
+
+/// All physical allocation fields, without a lossy sum or tolerance.
+pub fn allocation_counts(info: crate::AllocationInfo) -> [i128; 6] {
+    [
+        i128::from(info.count_total),
+        i128::from(info.count_current),
+        i128::from(info.count_max),
+        i128::from(info.bytes_total),
+        i128::from(info.bytes_current),
+        i128::from(info.bytes_max),
+    ]
+}

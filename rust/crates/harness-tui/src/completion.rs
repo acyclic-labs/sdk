@@ -1,3 +1,4 @@
+use crate::buffer::slice;
 use crate::key_event::KeyEvent;
 use crate::{Action, DecodedKey, Editor, InputKeymap, Motion, decode_key};
 use caseless::Caseless;
@@ -61,6 +62,42 @@ pub fn completion_request(editor: &Editor) -> Option<CompletionRequest> {
     request_from(editor, 0, &mut 0, None)
 }
 
+/// A command name, or a theme argument, at the start of a `/` prompt.
+fn command_request(
+    text: &str,
+    cursor: usize,
+    work: &mut usize,
+    themes: Option<&BTreeMap<String, usize>>,
+) -> Option<CompletionRequest> {
+    let end = scan_until(text, char::is_whitespace, work).unwrap_or(text.len());
+    if cursor <= end {
+        return Some(CompletionRequest {
+            kind: CompletionKind::Command,
+            range: 0..end,
+            query: slice(text, 1..cursor).to_owned(),
+            cursor,
+        });
+    }
+    let name = slice(text, 1..end);
+    let theme = themes.map_or_else(
+        || name.eq_ignore_ascii_case("theme"),
+        |names| names.contains_key(&name.to_ascii_lowercase()),
+    );
+    if !theme {
+        return None;
+    }
+    let rest = slice(text, end..);
+    let start = end + rest.len() - rest.trim_start_matches([' ', '\t']).len();
+    let line_end =
+        end + scan_until(rest, |c| matches!(c, '\n' | '\r'), work).unwrap_or(text.len() - end);
+    (cursor >= start && cursor <= line_end).then(|| CompletionRequest {
+        kind: CompletionKind::Theme,
+        range: start..line_end,
+        query: slice(text, start..cursor).to_owned(),
+        cursor,
+    })
+}
+
 fn request_from(
     editor: &Editor,
     from: usize,
@@ -79,45 +116,23 @@ fn request_from(
     {
         return None;
     }
-    let mut found = None;
-    if from == 0 && text.starts_with('/') && cursor >= 1 {
-        let end = scan_until(text, char::is_whitespace, work).unwrap_or(text.len());
-        if cursor <= end {
-            found = Some(CompletionRequest {
-                kind: CompletionKind::Command,
-                range: 0..end,
-                query: text[1..cursor].to_owned(),
-                cursor,
-            });
-        } else if themes.map_or_else(
-            || text[1..end].eq_ignore_ascii_case("theme"),
-            |names| names.contains_key(&text[1..end].to_ascii_lowercase()),
-        ) {
-            let start = end + text[end..].len() - text[end..].trim_start_matches([' ', '\t']).len();
-            let line_end = end
-                + scan_until(&text[end..], |c| matches!(c, '\n' | '\r'), work)
-                    .unwrap_or(text.len() - end);
-            if cursor >= start && cursor <= line_end {
-                found = Some(CompletionRequest {
-                    kind: CompletionKind::Theme,
-                    range: start..line_end,
-                    query: text[start..cursor].to_owned(),
-                    cursor,
-                });
-            }
-        }
-    }
+    let mut found = if from == 0 && text.starts_with('/') && cursor >= 1 {
+        command_request(text, cursor, work, themes)
+    } else {
+        None
+    };
     if found.is_none() {
-        for (relative, character) in text[from..]
+        for (relative, character) in slice(text, from..)
             .char_indices()
             .take_while(|(at, _)| from + *at <= cursor)
         {
             *work += character.len_utf8();
             let start = from + relative;
-            if character != '@' || start > 0 && !text[..start].ends_with(char::is_whitespace) {
+            if character != '@' || start > 0 && !slice(text, ..start).ends_with(char::is_whitespace)
+            {
                 continue;
             }
-            let tail = &text[start + 1..];
+            let tail = slice(text, start + 1..);
             let (query_start, query_end, end) = if let Some(quoted) = tail.strip_prefix('"') {
                 let end =
                     scan_until(quoted, |c| matches!(c, '"' | '\n'), work).unwrap_or(quoted.len());
@@ -125,7 +140,7 @@ fn request_from(
                 (
                     start + 2,
                     close,
-                    close + usize::from(text[close..].starts_with('"')),
+                    close + usize::from(slice(text, close..).starts_with('"')),
                 )
             } else {
                 let end =
@@ -135,10 +150,10 @@ fn request_from(
             if tail.starts_with('"')
                 && end > query_end
                 && end < text.len()
-                && !text[end..].starts_with(char::is_whitespace)
+                && !slice(text, end..).starts_with(char::is_whitespace)
             {
                 let token_end = end
-                    + scan_until(&text[end..], char::is_whitespace, work)
+                    + scan_until(slice(text, end..), char::is_whitespace, work)
                         .unwrap_or(text.len() - end);
                 if start <= cursor && cursor <= token_end {
                     return None;
@@ -149,7 +164,7 @@ fn request_from(
                 found = Some(CompletionRequest {
                     kind: CompletionKind::Mention,
                     range: start..end,
-                    query: text[query_start..cursor.min(query_end)].to_owned(),
+                    query: slice(text, query_start..cursor.min(query_end)).to_owned(),
                     cursor,
                 });
                 break;
@@ -263,25 +278,23 @@ impl CompletionMenu {
         }
         // Appending plain text cannot create a completion trigger. Inspect the
         // inserted delta rather than rescanning an arbitrarily long plain draft.
-        if self.request.is_none() && self.dismissed.is_none() {
-            if let Some((base, range, inserted)) = editor.completion_change() {
-                if let Some(old) = &self.version {
-                    if Rc::ptr_eq(base, &old.0)
-                        && range.is_empty()
-                        && range.start.checked_add(*inserted) == Some(editor.text().len())
-                        && old.1 == range.start
-                        && old.1 == old.2
-                        && editor.cursor() == editor.text().len()
-                        && editor.selection().is_empty()
-                    {
-                        let text = &editor.text()[range.start..];
-                        self.work.prompt_bytes += text.len();
-                        if !text.contains('@') && !(range.start == 0 && text.starts_with('/')) {
-                            self.version = Some(version);
-                            return;
-                        }
-                    }
-                }
+        if self.request.is_none()
+            && self.dismissed.is_none()
+            && let Some((base, range, inserted)) = editor.completion_change()
+            && let Some(old) = &self.version
+            && Rc::ptr_eq(base, &old.0)
+            && range.is_empty()
+            && range.start.checked_add(*inserted) == Some(editor.text().len())
+            && old.1 == range.start
+            && old.1 == old.2
+            && editor.cursor() == editor.text().len()
+            && editor.selection().is_empty()
+        {
+            let text = slice(editor.text(), range.start..);
+            self.work.prompt_bytes += text.len();
+            if !text.contains('@') && !(range.start == 0 && text.starts_with('/')) {
+                self.version = Some(version);
+                return;
             }
         }
         let from = self
@@ -467,7 +480,7 @@ impl CompletionMenu {
             let separator = if folded {
                 None
             } else {
-                editor.text()[range.end..]
+                slice(editor.text(), range.end..)
                     .graphemes(true)
                     .next()
                     .filter(|s| s.starts_with(|c: char| c.is_whitespace() && c != '\n'))

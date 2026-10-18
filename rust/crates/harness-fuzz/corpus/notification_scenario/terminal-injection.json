@@ -1,5 +1,1 @@
-{"protocol":"osc777","maximum_tasks":4,"maximum_pending":16,"maximum_text_bytes":256,
- "records":[{"task":"name;injected\u001b]777","sequence":1,"event":"task_failed","detail":"text\u0007\n;end"}],
- "expect":{"applied":[true],"presented":1,"view":{"pending":[],
- "latest":{"name;injected\u001b]777":{"task":"name;injected\u001b]777","sequence":1,"event":"task_failed",
- "detail":"text\u0007\n;end"}}},"output":"\u001b]777;notify;Task failed;name injected ]777: text    end\u0007"}}
+{"records":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"name;injected\u001b]777: text\u0007\n\u009c;end"}],"remove":[],"mode":"on","protocol":"osc777","focused":false,"expect":{"output":"\u001b]777;notify;Task failed;task-1: name injected ]777: text    end\u0007","presented":1,"view":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"name;injected\u001b]777: text\u0007\n\u009c;end"}]}}

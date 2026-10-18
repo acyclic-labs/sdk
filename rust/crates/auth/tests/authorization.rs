@@ -12,7 +12,7 @@ proptest! {
     fn authorization_strings_round_trip(value in ".{1,40}") {
         let input=format!("auth(action = {value:?}, action = \"fs/read\", extractor = \"fs.paths\")");
         let mut declaration=String::new();
-        syn::meta::parser(|meta| { declaration=authorization::fields(meta)?; Ok(()) }).parse_str(&input).unwrap();
+        syn::meta::parser(|meta| { declaration=authorization::fields(&meta)?; Ok(()) }).parse_str(&input).unwrap();
         let root=tempfile::tempdir().unwrap();
         let proto=format!("syntax = \"proto3\"; package test; import \"validation/v1/options.proto\"; message Empty {{}} service Test {{ rpc Call(Empty) returns (Empty) {{ option (acyclic.validation.v1.auth) = {{ {declaration} }}; }} }}");
         fs::write(root.path().join("test.proto"),proto).unwrap();
@@ -35,7 +35,7 @@ proptest! {
     #[test]
     fn arbitrary_authorization_input_never_panics(text in ".{0,1024}") {
         let mut result=None;
-        let parsed=syn::meta::parser(|meta| {result=Some(authorization::fields(meta)?);Ok(())}).parse_str(&text);
+        let parsed=syn::meta::parser(|meta| {result=Some(authorization::fields(&meta)?);Ok(())}).parse_str(&text);
         if parsed.is_ok() { if let Some(declaration)=result { prop_assert!(!declaration.is_empty()); } }
     }
 }

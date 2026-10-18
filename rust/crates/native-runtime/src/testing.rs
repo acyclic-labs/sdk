@@ -1,7 +1,7 @@
 //! Explicit, scoped barriers at real owned-task and native-job boundaries.
 use std::{
     future::Future,
-    sync::Arc,
+    sync::{Arc, PoisonError},
     task::{Poll, Waker},
 };
 use tokio::sync::{mpsc, oneshot};
@@ -9,7 +9,8 @@ use tokio::sync::{mpsc, oneshot};
 use crate::sync::Mutex;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod model;
-#[cfg(all(test, not(acyclic_native_runtime_loom)))]
+#[cfg(test)]
+#[cfg(not(acyclic_native_runtime_loom))]
 mod queue;
 #[cfg(all(test, acyclic_native_runtime_loom))]
 mod queue_model;
@@ -22,13 +23,13 @@ pub struct Boundary {
     pub name: &'static str,
     /// Owning operation, including its stream's tracing span.
     pub detail: Arc<str>,
-    release: Option<oneshot::Sender<()>>,
+    release: oneshot::Sender<()>,
 }
 
 impl Boundary {
     /// Allows the original owned operation to continue.
-    pub fn release(mut self) {
-        self.release.take().unwrap().send(()).ok();
+    pub fn release(self) {
+        self.release.send(()).ok();
     }
 }
 
@@ -45,6 +46,17 @@ struct Inner {
     events: mpsc::UnboundedSender<Boundary>,
     // Sole lock. Never held across an await, user callback, send, or wake.
     state: Mutex<State>,
+}
+
+impl Inner {
+    fn state(&self) -> impl std::ops::DerefMut<Target = State> + '_ {
+        lock(&self.state)
+    }
+}
+
+// A panicking test thread leaves the trace readable for the driver's report.
+fn lock<T>(mutex: &Mutex<T>) -> impl std::ops::DerefMut<Target = T> + '_ {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// One test execution; no process-global controller or background driver.
@@ -64,11 +76,9 @@ pub(crate) struct Active(pub(crate) Context);
 impl Drop for Active {
     fn drop(&mut self) {
         let idle = {
-            let mut state = self.0.schedule.0.state.lock().unwrap();
-            state.active = state
-                .active
-                .checked_sub(1)
-                .expect("unregistered completion");
+            let mut state = self.0.schedule.0.state();
+            // Only `Context::accept` constructs an `Active`, after counting it.
+            state.active -= 1;
             (state.active == 0).then(|| state.idle.take()).flatten()
         };
         if let Some(idle) = idle {
@@ -106,7 +116,7 @@ impl Schedule {
 
     /// Marks cancellation before the caller's future is dropped.
     pub fn cancel(&self) {
-        let mut state = self.0.state.lock().unwrap();
+        let mut state = self.0.state();
         state.cancelled = true;
         state.trace.push("CANCEL".into());
     }
@@ -114,7 +124,7 @@ impl Schedule {
     /// Waits for accepted operations to reach their physical terminal.
     pub async fn drained(&self) {
         std::future::poll_fn(|cx| {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.0.state();
             if state.active == 0 {
                 Poll::Ready(())
             } else {
@@ -122,17 +132,17 @@ impl Schedule {
                 Poll::Pending
             }
         })
-        .await
+        .await;
     }
 
     /// Counts the actual ready read calls, without inventing suspension points.
     pub fn ready_reads(&self) -> usize {
-        self.0.state.lock().unwrap().ready_reads
+        self.0.state().ready_reads
     }
 
     /// Original submissions and their completion trace, including cancellation.
     pub fn trace(&self) -> Vec<String> {
-        self.0.state.lock().unwrap().trace.clone()
+        self.0.state().trace.clone()
     }
 }
 
@@ -143,7 +153,7 @@ impl Context {
 
     pub(crate) fn accept(&self, kind: &'static str) -> Active {
         {
-            let mut state = self.schedule.0.state.lock().unwrap();
+            let mut state = self.schedule.0.state();
             assert!(
                 !state.cancelled || self.owned,
                 "new dispatch after cancellation: {kind}"
@@ -159,25 +169,27 @@ impl Context {
         Active(Self {
             schedule: self.schedule.clone(),
             owned: true,
-            detail: Arc::new(Mutex::new(self.detail.lock().unwrap().clone())),
+            detail: Arc::new(Mutex::new(lock(&self.detail).clone())),
         })
     }
 
     async fn pause(&self, name: &'static str) {
         let (release, waiting) = oneshot::channel();
-        let detail = self.detail.lock().unwrap().clone();
+        let detail = lock(&self.detail).clone();
+        // A dropped driver drops the boundary, and its release with it.
         self.schedule
             .0
             .events
             .send(Boundary {
                 name,
                 detail,
-                release: Some(release),
+                release,
             })
-            .unwrap();
-        waiting
-            .await
-            .expect("driver dropped an accepted operation's barrier");
+            .ok();
+        assert!(
+            waiting.await.is_ok(),
+            "driver dropped an accepted operation's barrier"
+        );
     }
 }
 
@@ -192,7 +204,7 @@ pub async fn boundary(name: &'static str) {
 pub fn describe(detail: impl FnOnce() -> String) {
     if let Some(context) = Context::current() {
         let detail = detail();
-        *context.detail.lock().unwrap() = detail.into();
+        *lock(&context.detail) = detail.into();
     }
 }
 
@@ -222,57 +234,55 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let (worker, shared) = if let Some(context) = Context::current() {
+    let owner = if let Some(context) = Context::current() {
         let active = context.accept("blocking");
         let owned = active.0.clone();
-        (
-            Some(tokio::spawn(CURRENT.scope(
-                Some(owned.clone()),
-                async move {
-                    let _active = active;
-                    owned.pause("blocking:submitted").await;
-                    let result = CURRENT.sync_scope(None, || {
-                        let _inline = crate::InlineBlocking::enter();
-                        work()
-                    });
-                    owned.pause("blocking:completed").await;
-                    result
-                },
-            ))),
-            None,
-        )
+        BlockingOwner::Worker(tokio::spawn(CURRENT.scope(
+            Some(owned.clone()),
+            async move {
+                let _active = active;
+                owned.pause("blocking:submitted").await;
+                let result = CURRENT.sync_scope(None, || {
+                    let _inline = crate::InlineBlocking::enter();
+                    work()
+                });
+                owned.pause("blocking:completed").await;
+                result
+            },
+        )))
     } else if crate::inline_blocking_allowed() {
         // These closures may use Tokio blocking locks, so they need a real
         // worker outside the driver's runtime. Reuse the native service instead
         // of creating a private Tokio blocking pool for every replay driver.
-        (
-            None,
-            Some(tokio::spawn(async move {
-                let mut completion = crate::run_blocking_io(work, None)?;
-                let job = completion.pending.take().expect("prepared host operation");
+        BlockingOwner::Shared(tokio::spawn(async move {
+            let mut completion = crate::run_blocking_io(work, None)?;
+            if let Some(job) = completion.pending.take() {
                 queued(job, crate::workers(&crate::BLOCKING_WORKERS, false)?).await?;
-                completion.await
-            })),
-        )
+            }
+            completion.await
+        }))
     } else {
-        (Some(tokio::task::spawn_blocking(work)), None)
+        BlockingOwner::Worker(tokio::task::spawn_blocking(work))
     };
     async move {
-        match shared {
-            Some(shared) => shared.await.map_err(std::io::Error::other)?,
-            None => worker
-                .expect("original blocking owner")
-                .await
-                .map_err(std::io::Error::other),
+        match owner {
+            BlockingOwner::Shared(shared) => shared.await.map_err(std::io::Error::other)?,
+            BlockingOwner::Worker(worker) => worker.await.map_err(std::io::Error::other),
         }
     }
 }
 
+/// The one task that owns a blocking closure's result.
+enum BlockingOwner<T> {
+    Worker(tokio::task::JoinHandle<T>),
+    Shared(tokio::task::JoinHandle<std::io::Result<T>>),
+}
+
 pub(crate) fn submit(
+    context: &Context,
     job: crate::NativeJob,
     pool: &'static std::sync::LazyLock<std::io::Result<crate::NativeWorkers>>,
 ) -> oneshot::Receiver<std::io::Result<()>> {
-    let context = Context::current().expect("explicit test scope");
     let active = context.accept("native");
     let owned = active.0.clone();
     let completion = match &job {
@@ -325,7 +335,7 @@ pub async fn observe_read<F: Future>(read: F) -> F::Output {
     let first = std::future::poll_fn(|cx| std::task::Poll::Ready(read.as_mut().poll(cx))).await;
     match first {
         std::task::Poll::Ready(output) => {
-            context.schedule.0.state.lock().unwrap().ready_reads += 1;
+            context.schedule.0.state().ready_reads += 1;
             output
         }
         std::task::Poll::Pending => {

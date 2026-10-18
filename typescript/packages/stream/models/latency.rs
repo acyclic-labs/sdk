@@ -33,7 +33,7 @@ proptest! {
         static DRIVER: OnceLock<Mutex<driver::Driver>> = OnceLock::new();
         let shared = DRIVER.get_or_init(|| Mutex::new(driver::Driver::configured(
             &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."), "decode", "")));
-        let state = shared.lock().unwrap().call(json!({ "action":"latency", "path":name,
+        let state = shared.lock().unwrap().run().call(json!({ "action":"latency", "path":name,
             "work": { "warm":warm, "samples":samples, "reverse":reverse, "shared":false } }));
         verify(&state, warm, samples);
     }

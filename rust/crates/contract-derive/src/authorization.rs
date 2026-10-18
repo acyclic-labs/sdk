@@ -1,5 +1,5 @@
 //! Shared authorization-option parser, exercised directly by properties/fuzzing.
-pub fn fields(meta: syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
+pub fn fields(meta: &syn::meta::ParseNestedMeta<'_>) -> syn::Result<String> {
     let mut fields = Vec::<(String, String)>::new();
     meta.parse_nested_meta(|field| {
         let key = field

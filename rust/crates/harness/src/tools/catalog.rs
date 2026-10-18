@@ -82,7 +82,10 @@ impl ToolSpec {
 
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
-    [&BASH, &FS, &READ, &WRITE, &EDIT].into_iter()
+    [
+        &BASH, &FS, &READ, &WRITE, &EDIT, &SPAWN, &SEND, &WAIT, &ARCHIVE,
+    ]
+    .into_iter()
 }
 
 static BASH: ToolSpec = ToolSpec {
@@ -163,3 +166,78 @@ fn object() -> Result<Value> {
 fn command_projection(_: ProjectionMode) -> Result<Value> {
     Ok(crate::tool::json_projection_schema(object()?))
 }
+
+static SPAWN: ToolSpec = ToolSpec {
+    name: "spawn",
+    revision: "1",
+    description: "Create a child in a lazy fork and return its reference",
+    hook_names: &[],
+    binding: ToolBinding::Workspace,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["task"],"additionalProperties":false,
+        "properties":{"task":{"type":"string"},"name":{"type":["string","null"]},
+        "grants":{"type":["array","null"],"items":{"type":"string"},
+        "description":"Capability subset; keep model:generate and mail:read"}}}),
+        )
+    },
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static SEND: ToolSpec = ToolSpec {
+    name: "send",
+    revision: "1",
+    description: "Queue a message to a child",
+    hook_names: &[],
+    binding: ToolBinding::Workspace,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agent","message"],"additionalProperties":false,
+        "properties":{"agent":{"type":"string"},"message":{"type":"string"}}}),
+        )
+    },
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static WAIT: ToolSpec = ToolSpec {
+    name: "wait",
+    revision: "1",
+    description: "Wait for all children (mode:any for the first) and return bounded answer or failure references",
+    hook_names: &[],
+    binding: ToolBinding::Workspace,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agents"],"additionalProperties":false,
+        "properties":{"agents":{"type":"array","items":{"type":"string"}},
+        "mode":{"enum":["any","all",null]}}}),
+        )
+    },
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};
+
+static ARCHIVE: ToolSpec = ToolSpec {
+    name: "archive",
+    revision: "1",
+    description: "Cancel and drain a child and its descendants, then archive its readable history",
+    hook_names: &[],
+    binding: ToolBinding::Workspace,
+    input: || {
+        Ok(
+            json!({"type":"object","required":["agent"],"additionalProperties":false,
+        "properties":{"agent":{"type":"string"}}}),
+        )
+    },
+    output: object,
+    projection_schema: command_projection,
+    executor: |name| Arc::new(super::children::Executor(name)),
+    projection: |_| Arc::new(JsonToolProjection),
+};

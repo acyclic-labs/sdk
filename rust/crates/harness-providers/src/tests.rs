@@ -167,6 +167,10 @@ async fn malformed_chat_batches_emit_no_tool_calls_or_completion() {
         json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"{"}}]),
         json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"[]"}}]),
         json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"{\"value\":9007199254740993}"}}]),
+        // The recording rule: negative zero and private serde marker keys.
+        json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"{\"value\":-0.0}"}}]),
+        json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"{\"$serde_json::private::RawValue\":\"null\"}"}}]),
+        json!([{"index":0,"id":"call","function":{"name":"echo","arguments":"{\"n\":[{\"$serde_json::private::Number\":\"1\"}]}"}}]),
         json!([{"index":0,"id":"same","function":{"name":"echo","arguments":"{}"}},
             {"index":1,"id":"same","function":{"name":"echo","arguments":"{}"}}]),
         json!([{"index":0,"id":"valid","function":{"name":"echo","arguments":"{}"}},
@@ -184,6 +188,30 @@ async fn malformed_chat_batches_emit_no_tool_calls_or_completion() {
         }
         assert!(failed);
     }
+}
+
+#[tokio::test]
+async fn portable_chat_arguments_are_emitted_unchanged() {
+    // Healthy control for the rejected fixtures above: the boundary values of
+    // the same rule, and marker-like keys that are not serde's, are admitted.
+    let arguments = json!({"max":9007199254740991_u64, "min":-9007199254740991_i64, "half":-0.5, "zero":0.0, "$serde_json::private":1});
+    let calls = json!([{"index":0,"id":"call","function":{"name":"echo","arguments":arguments.to_string()}}]);
+    let input = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices":[{"delta":{"tool_calls":calls}}]})
+    );
+    let events: Vec<_> = stream::events(Adapter::Chat, chunks(&input, 3), 4096, parser_dispatch())
+        .try_collect()
+        .await
+        .unwrap();
+    let call = events
+        .iter()
+        .find_map(|event| match event {
+            ModelEvent::ToolCall(call) => Some(call),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(call.arguments, arguments);
 }
 
 struct Script {

@@ -40,15 +40,6 @@ impl LocalHarness {
         settings: &Value,
     ) -> Result<Value> {
         match resolution {
-            CommandResolution::Tool {
-                tool: CommandTool::Spawn,
-                input,
-            } => {
-                let prompt = input["task"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("delegate requires text".into()))?;
-                self.queue_prompt(operation, target, prompt, settings).await
-            }
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
@@ -367,9 +358,9 @@ impl LocalHarness {
     ) -> Result<Value> {
         let name = match tool {
             CommandTool::Bash => "bash",
+            CommandTool::Spawn => "spawn",
             CommandTool::WebSearch => "web_search",
             CommandTool::UrlFetch => "web_search",
-            _ => return Err(Error::Invalid("delegate is a prompt admission".into())),
         };
         let definition = self
             .tools()
@@ -412,7 +403,12 @@ impl LocalHarness {
         .await?;
         let task = accepted(admission, operation)?;
         let handle = self.runtime.harness().attach(task, &definition).await?;
-        Box::pin(self.advance(task, &self.commands()?)).await?;
+        let commands = self.commands()?;
+        #[cfg(feature = "native-execution")]
+        self.advance_with_children(task, &commands, self.task_files.clone(), None)
+            .await?;
+        #[cfg(not(feature = "native-execution"))]
+        Box::pin(self.advance(task, &commands)).await?;
         match handle.result().await? {
             crate::Outcome::Succeeded(result) => Ok(result.value),
             crate::Outcome::Failed { message } => Err(Error::TaskFailed { task, message }),

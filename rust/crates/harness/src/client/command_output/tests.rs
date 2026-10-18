@@ -1,154 +1,195 @@
 use super::*;
 use proptest::prelude::*;
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(24))]
-    // Archive prefixes are copied once, independent of live chunk count.
-    // Resetting the projection every frame is the broken negative control.
-    #[test]
-    fn live_updates_copy_only_the_new_suffix(prefix in "[a-z]{32,256}", count in 8usize..32) {
-        let task = crate::TaskId::new();
-        let key = format!("AGGREGATE_KIND_TASK:{task}");
-        let mut views = super::super::TaskFileViews::default();
-        let mut projection = Projection { owner: "owner".into(), after: 1,
-            revision: 1, segments: vec![std::sync::Arc::from(prefix.as_str())], ..Default::default() };
-        let mut actual = 0;
-        let mut broken = 0;
-        for index in 0..count {
-            views.transcripts.entry(key.clone()).or_default().streaming_text.push_str("abcdefgh");
-            actual += projection.apply(&mut views, Some(task));
-            let mut reset = Projection { owner: "broken".into(), after: 1,
-                revision: 1, segments: vec![std::sync::Arc::from(prefix.as_str())], ..Default::default() };
-            broken += reset.apply(&mut views, Some(task));
-            prop_assert_eq!(actual, prefix.len() + (index + 1) * 8);
-        }
-        prop_assert!(broken > actual * 2, "negative control must expose archive and live prefix copying");
-        prop_assert_eq!(&views.transcripts["owner"].streaming_text, &format!("{prefix}\n\n{}", "abcdefgh".repeat(count)));
-    }
-}
+use serde_json::json;
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
-fn check_partition(text: &str, cuts: &[bool], prefix: &str) {
-    use crate::{
-        client::{TaskFileViews, task_projection},
-        task_volume::{Channel, Component, FileKey, TaskFile},
-        tui::ClientRenderer,
-        wire,
-    };
-    let task = crate::TaskId::from_bytes([42; 16]);
-    let owner = wire::Authority {
-        kind: wire::AggregateKind::Task as i32,
-        id: "composed".into(),
-    };
-    let mut views = TaskFileViews::default();
-    let mut projection = Projection {
-        owner: "AGGREGATE_KIND_TASK:composed".into(),
-        after: u64::from(!prefix.is_empty()),
-        revision: 1,
-        segments: if prefix.is_empty() {
-            Vec::new()
-        } else {
-            vec![std::sync::Arc::from(prefix)]
-        },
-        ..Default::default()
-    };
-    let mut renderer = ClientRenderer::default();
-    let mut fold_work = 0;
-    let mut compose_work = 0;
-    let mut chunks = 0;
-    let mut start = 0;
-    for end in 1..=text.len() {
-        if end != text.len() && !cuts.get(end - 1).copied().unwrap_or(false) {
-            continue;
-        }
-        let file = FileValue {
-            publication: None,
-            key: FileKey::Task {
-                task: Component::new(task.to_string()).unwrap(),
-                file: TaskFile::Chunk {
-                    turn: 0,
-                    sequence: chunks,
-                },
-            },
-            channel: Some(Channel::Text),
-            bytes: text.as_bytes()[start..end].to_vec().into(),
-        };
-        fold_work += task_projection::append(&mut views, &file);
-        compose_work += projection.apply(&mut views, Some(task));
-        renderer.update(&views, &owner);
-        let composed = &views.transcripts["AGGREGATE_KIND_TASK:composed"];
-        let head = if prefix.is_empty() {
-            String::new()
-        } else {
-            format!("{prefix}\n\n")
-        };
-        assert_eq!(
-            composed.streaming_text,
-            format!("{head}{}", String::from_utf8_lossy(&text.as_bytes()[..end]))
-        );
-        start = end;
-        chunks += 1;
-    }
-    let mut unsplit = TaskFileViews::default();
-    let transcript = unsplit
-        .transcripts
-        .entry("AGGREGATE_KIND_TASK:composed".into())
-        .or_default();
-    transcript.streaming_text = if prefix.is_empty() {
-        text.into()
+fn file(id: u8, sequence: u64, owner: u8, text: &str) -> FileValue {
+    let session = uuid::Uuid::from_u128(u128::from(owner % 3) + 1);
+    let path = if owner < 3 {
+        format!(".sessions/{session}/executions/{id}/result.json")
     } else {
-        format!("{prefix}\n\n{text}")
+        let operation = uuid::Uuid::from_u128(u128::from(id) + 1);
+        if owner < 6 {
+            format!(".tasks/t{owner}/executions/command-{session}.{operation}/result.json")
+        } else {
+            format!(".tasks/t{owner}/executions/{operation}/result.json")
+        }
     };
-    transcript.streaming_turn = views.transcripts["AGGREGATE_KIND_TASK:composed"].streaming_turn;
-    let mut expected = ClientRenderer::default();
-    expected.update(&unsplit, &owner);
-    assert_eq!(renderer.screen().transcript, expected.screen().transcript);
-    assert!(fold_work <= text.len() + 3 * chunks as usize);
-    assert!(compose_work <= prefix.len() + text.len() + 6 * chunks as usize);
-    assert_eq!(
-        renderer.text_work(),
-        prefix.len() + usize::from(!prefix.is_empty()) * 2 + text.len(),
-        "stable Markdown bytes must be fed exactly once"
-    );
+    FileValue::new(
+        FileKey::parse(&path).unwrap(),
+        serde_json::to_vec(&json!({"sequence":sequence,"ok":{"text":text}})).unwrap(),
+    )
 }
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
-#[test]
-fn every_partition_repairs_same_length_utf8_in_composition_and_rendering() {
-    // The old length-only cursor cannot distinguish these equal-size strings.
-    let provisional = String::from_utf8_lossy(&[0xe6]).into_owned();
-    let repaired = "日";
-    let broken = format!("{provisional}{}", &repaired[provisional.len()..]);
-    assert_ne!(
-        broken, repaired,
-        "length-only negative control must miss the repair"
-    );
-    let text = "日a€";
-    for mask in 0..(1usize << (text.len() - 1)) {
-        let cuts: Vec<_> = (0..text.len() - 1)
-            .map(|bit| mask & (1 << bit) != 0)
-            .collect();
-        check_partition(text, &cuts, "");
-        check_partition(text, &cuts, "retained archive");
+fn check(operations: &[(u8, u64, u8, String, bool)], retain_removed: bool) {
+    let mut actual = Outputs::default();
+    let mut expected = BTreeMap::new();
+    for (id, sequence, owner_id, text, remove) in operations {
+        let file = file(*id, *sequence, *owner_id, text);
+        if *remove {
+            expected.remove(&file.key);
+            if !retain_removed {
+                actual.remove(&file.key);
+            }
+        } else {
+            actual.insert(&file);
+            expected.insert(file.key.clone(), file);
+        }
+        for owner_id in 0..3 {
+            let owner = OutputOwner::Session(
+                Component::new(uuid::Uuid::from_u128(owner_id + 1).to_string()).unwrap(),
+            );
+            let mut oracle: Vec<_> = expected
+                .values()
+                .filter_map(|file| {
+                    let expected_owner = uuid::Uuid::from_u128(owner_id + 1).to_string();
+                    // Independent identity extraction for the physical/session
+                    // namespaces; do not use the candidate's owner index/parser.
+                    let session = match &file.key {
+                        FileKey::Session { session, .. } => Some(session.as_str()),
+                        FileKey::Task {
+                            file: TaskFile::ExecutionResult(id),
+                            ..
+                        } => id
+                            .as_str()
+                            .strip_prefix("command-")
+                            .map(|id| id.split_once('.').unwrap().0),
+                        _ => panic!("execution result"),
+                    };
+                    if session.is_some_and(|session| session != expected_owner) {
+                        return None;
+                    }
+                    // Independent decode and validation, never using the candidate parser.
+                    let envelope: serde_json::Value = serde_json::from_slice(&file.bytes).unwrap();
+                    let sequence = envelope["sequence"].as_u64().unwrap();
+                    (sequence != 0).then(|| {
+                        (
+                            sequence,
+                            file.key.clone(),
+                            envelope["ok"]["text"].as_str().unwrap().to_owned(),
+                        )
+                    })
+                })
+                .collect();
+            oracle.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+            let rows: Vec<_> = actual
+                .after(&owner, 0)
+                .map(|(key, row)| {
+                    (
+                        row.sequence,
+                        key.clone(),
+                        CommandOutputView::from_file(&expected[key])
+                            .unwrap()
+                            .text
+                            .unwrap()
+                            .into_owned(),
+                    )
+                })
+                .collect();
+            assert_eq!(rows, oracle);
+            for (index, (sequence, key, _)) in oracle.iter().enumerate() {
+                let remaining: Vec<_> = actual
+                    .from(&owner, Some((*sequence, key)))
+                    .map(|(key, row)| {
+                        (
+                            row.sequence,
+                            key.clone(),
+                            CommandOutputView::from_file(&expected[key])
+                                .unwrap()
+                                .text
+                                .unwrap()
+                                .into_owned(),
+                        )
+                    })
+                    .collect();
+                assert_eq!(remaining, oracle[index + 1..]);
+            }
+        }
     }
 }
-
-#[cfg(all(feature = "tui", feature = "terminal"))]
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
-    // Any UTF-8 byte partition preserves composed text, Markdown styling and
-    // linear work, including repairs shorter than the provisional replacement.
+    // Replacement, removal, owner isolation and tied ordering match independent
+    // immutable-file state; exact resume never drops another tied outcome.
     #[test]
-    fn utf8_byte_partitions_preserve_rendered_text_and_linear_work(
-        text in "[a-z日é€🙂\\n*# ]{1,40}", cuts in prop::collection::vec(any::<bool>(), 0..200)
-    ) { check_partition(&text, &cuts, ""); check_partition(&text, &cuts, "retained archive"); }
+    fn outcome_indexes_match_files(operations in prop::collection::vec(
+        (0u8..8, 0u64..6, 0u8..9, ".{0,24}", any::<bool>()),0..32)) {
+        check(&operations,false);
+    }
+    #[test]
+    fn outcome_envelope_preserves_exact_unicode(sequence in 1u64..=u64::MAX,text in ".{0,64}") {
+        let file=file(1,sequence,0,&text);
+        let row=CommandOutputView::from_file(&file).unwrap();
+        prop_assert_eq!(row.sequence,sequence);
+        prop_assert_eq!(row.text.as_deref(),Some(text.as_str()));
+        prop_assert_eq!(row.completion,HeadlessOutcome::Completed);
+    }
+}
+#[test]
+fn retired_outcome_negative_control() {
+    let operations = vec![
+        (1, 1, 0, "answer".into(), false),
+        (1, 1, 0, "answer".into(), true),
+    ];
+    check(&operations, false);
+    assert!(std::panic::catch_unwind(|| check(&operations, true)).is_err());
+}
+#[test]
+fn malformed_outcomes_never_become_ui_success() {
+    for value in [
+        json!({"sequence":0,"ok":{}}),
+        json!({"sequence":1}),
+        json!({"sequence":1,"ok":{},"error":"failed"}),
+        json!({"sequence":1,"ok":{},"completion":"Failed"}),
+        json!({"sequence":1,"error":5}),
+    ] {
+        let mut file = file(1, 1, 0, "");
+        file.bytes = serde_json::to_vec(&value).unwrap().into();
+        assert!(CommandOutputView::from_file(&file).is_none());
+        assert!(
+            serde_json::from_slice::<Outcome<'_>>(&file.bytes)
+                .map_or(true, |outcome| settled(&outcome).is_err())
+        );
+    }
 }
 
-#[cfg(all(feature = "tui", feature = "terminal"))]
 #[test]
-fn archive_row_loses_provisional_glyph_when_utf8_completes() {
-    let seed = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../harness-fuzz/corpus/ui_prompt/utf8-archive-row-repair"
-    ));
-    check_partition(seed, &[false, true, false], "retained archive");
+fn plain_command_text_borrows_its_canonical_file_payload() {
+    let file = file(1, 1, 0, &"answer".repeat(1024));
+    let row = CommandOutputView::from_file(&file).unwrap();
+    let Some(std::borrow::Cow::Borrowed(text)) = row.text else {
+        panic!("plain text must remain borrowed");
+    };
+    let start = file.bytes.as_ptr() as usize;
+    assert!((start..start + file.bytes.len()).contains(&(text.as_ptr() as usize)));
+    let mut index = Outputs::default();
+    index.insert(&file);
+    assert_eq!(index.keys.len(), 1);
+    // Metadata has no text buffer; all payload ownership remains in FileViews.
+    let (_, metadata) = index
+        .after(
+            &OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap()),
+            0,
+        )
+        .next()
+        .unwrap();
+    assert!(metadata.has_text);
+}
+
+#[test]
+fn task_scoped_commands_are_indexed_by_their_logical_session() {
+    let operations = vec![
+        (1, 1, 0, "first".into(), false),
+        (2, 2, 3, "second".into(), false),
+        (1, 3, 4, "other session".into(), false),
+        (2, 2, 3, "second".into(), true),
+    ];
+    check(&operations, false);
+    let file = file(2, 2, 3, "second");
+    let mut index = Outputs::default();
+    index.insert(&file);
+    let owner = OutputOwner::Session(Component::new(uuid::Uuid::from_u128(1).to_string()).unwrap());
+    assert_eq!(index.after(&owner, 0).count(), 1);
+    // A physical-task-only index is the previous implementation.
+    index.rows.remove(&Scope::Owner(owner.clone()));
+    assert_ne!(index.after(&owner, 0).count(), 1);
 }

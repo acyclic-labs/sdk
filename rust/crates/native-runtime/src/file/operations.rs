@@ -12,6 +12,10 @@ pub enum Durability {
 }
 
 /// Flushes file contents and metadata according to `durability`.
+///
+/// On Apple platforms, Full requires F_FULLFSYNC. If the filesystem only
+/// supports a weaker fallback, the fallback is performed and Unsupported is
+/// returned; success never acknowledges weaker durability than requested.
 pub fn sync_file(
     file: &File,
     durability: Durability,
@@ -22,13 +26,18 @@ pub fn sync_file(
         if durability == Durability::Barrier {
             return barrier_sync(file);
         }
+        #[cfg(target_vendor = "apple")]
+        return apple::sync_once(file, durability, || {
+            meter.check()?;
+            meter.admit_durability()
+        })
+        .and_then(|()| meter.check());
+        #[cfg(not(target_vendor = "apple"))]
         loop {
             meter.check()?;
             meter.admit_durability()?;
             #[cfg(target_os = "linux")]
             let result = linux::sync_once(file);
-            #[cfg(target_vendor = "apple")]
-            let result = apple::sync_once(file, durability);
             #[cfg(windows)]
             let result = windows::sync_once(file);
             #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
@@ -53,6 +62,9 @@ pub fn sync_file(
 }
 
 pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    return apple::sync_once(file, durability, || Ok(()));
+    #[cfg(not(target_vendor = "apple"))]
     match durability {
         Durability::Full => file.sync_all(),
         Durability::Barrier => barrier_sync(file),
@@ -68,9 +80,14 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
         error.kind = obs::Empty
     );
     operation.in_scope(|| {
-        operation.finish(with_file_admission(file, || match durability {
-            Durability::Full => file.sync_data(),
-            Durability::Barrier => barrier_sync(file),
+        operation.finish(with_file_admission(file, || {
+            #[cfg(target_vendor = "apple")]
+            return apple::sync_once(file, durability, || Ok(()));
+            #[cfg(not(target_vendor = "apple"))]
+            match durability {
+                Durability::Full => file.sync_data(),
+                Durability::Barrier => barrier_sync(file),
+            }
         }))
     })
 }
@@ -270,11 +287,11 @@ pub(crate) fn write_bounded_in_place(
             let mut transfer =
                 NativeByteReservation::new(meter, NativeOperationKind::Write, length)?;
             meter.admit_write(0)?;
-            // SAFETY: the validated range and borrowed payload remain live through pwrite.
             #[allow(
                 unsafe_code,
                 reason = "writes the validated borrowed range on a held descriptor"
             )]
+            // SAFETY: the validated range and borrowed payload remain live through pwrite.
             let count = unsafe {
                 libc::pwrite(
                     file.as_raw_fd(),
@@ -358,18 +375,6 @@ pub(crate) fn read_at_impl(
 pub(crate) fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::FileExt as _;
     file.write_all_at(bytes, offset)
-}
-
-#[cfg(target_vendor = "apple")]
-#[allow(unsafe_code, reason = "F_BARRIERFSYNC is reachable only through fcntl")]
-pub(crate) fn barrier_sync(file: &File) -> io::Result<()> {
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: `F_BARRIERFSYNC` acts only on the live descriptor.
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
 }
 
 #[cfg(not(target_vendor = "apple"))]

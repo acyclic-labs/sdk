@@ -6,6 +6,22 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(crate) fn with_task_files(
+        mut self,
+        files: Arc<crate::task_volume::TaskFiles<dyn StreamProvider>>,
+    ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self._native_configuration_custody.is_some() {
+            return Err(Error::Unsupported(
+                "task files require ordinary runtime construction".into(),
+            ));
+        }
+        Arc::get_mut(&mut self.harness)
+            .ok_or_else(|| Error::Conflict("bind task files before sharing the runtime".into()))?
+            .task_files = Some(files);
+        Ok(self)
+    }
+
     /// Bind canonical streaming projections to the authorized private task files.
     pub fn bind_task_files(&mut self, files: Option<Arc<crate::task_volume::TaskFiles<P>>>) {
         self.task_files = files;

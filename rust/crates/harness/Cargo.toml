@@ -15,6 +15,11 @@ documentation = "https://docs.rs/acyclic-harness"
 build = "build.rs"
 
 [[test]]
+name = "client-mention-attachments"
+path = "tests/client_mention_attachments.rs"
+required-features = ["test-support"]
+
+[[test]]
 name = "tui-config"
 path = "tests/tui_config.rs"
 required-features = ["tui"]
@@ -27,6 +32,11 @@ required-features = ["tui"]
 [[test]]
 name = "main"
 path = "tests/main.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "decoder-properties"
+path = "tests/decoder_properties.rs"
 required-features = ["test-support"]
 
 [[test]]
@@ -100,21 +110,12 @@ name = "filesystem_access"
 path = "tests/filesystem_access.rs"
 
 [[test]]
-name = "client_journal_model"
-path = "tests/client_journal_model.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "client_session"
-path = "tests/client_session.rs"
-
-[[test]]
-name = "decoder_properties"
-path = "tests/decoder_properties.rs"
-
-[[test]]
 name = "client_history"
 path = "tests/client_history.rs"
+
+[[test]]
+name = "jsonl-wire"
+path = "tests/jsonl_wire.rs"
 
 [[test]]
 name = "mcp-durable"
@@ -186,7 +187,7 @@ required-features = ["filesystem"]
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui"]
 test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support"]
-model-checking = ["dep:loom", "dep:same-file", "dep:tempfile"]
+model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
@@ -281,6 +282,7 @@ acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = 
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["grpc"] }
 acyclic-harness-providers = { path = "../harness-providers", version = "=0.2.0" }
 rcgen = "0.14.10"
 tonic.workspace = true
@@ -306,6 +308,11 @@ wasm-bindgen-test = "=0.3.67"
 workspace = true
 
 [[test]]
+name = "local-cloud-objects"
+path = "tests/local_cloud_objects/main.rs"
+required-features = ["objects", "test-support", "grpc"]
+
+[[test]]
 name = "client-diff"
 path = "tests/client_diff.rs"
 required-features = ["filesystem"]
@@ -323,3 +330,8 @@ required-features = ["model-checking"]
 name = "query-model"
 path = "tests/query_model.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "local-cloud-actors"
+path = "tests/local_cloud_actors/main.rs"
+required-features = ["test-support", "grpc"]

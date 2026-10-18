@@ -133,7 +133,10 @@ fn oversized_paste_rejection_preserves_following_numbered_keys()
             return Ok(true);
         }
         let end = (offset + 1024).min(bytes.len());
-        match process.master.write(&bytes[offset..end]) {
+        match process
+            .master
+            .write(bytes.get(offset..end).unwrap_or_default())
+        {
             Ok(count) => offset += count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => return Err(error),

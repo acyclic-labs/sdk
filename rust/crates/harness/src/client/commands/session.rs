@@ -36,6 +36,8 @@ pub struct CommandSession<P: ?Sized> {
     generation: files::Generation,
     files: BTreeMap<files::FileKey, files::FileValue>,
     pending: VecDeque<files::FileValue>,
+    pending_session: usize,
+    pending_tasks: BTreeMap<String, usize>,
     outputs: BTreeMap<u64, files::FileKey>,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
@@ -124,6 +126,8 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             generation: snapshot.generation,
             files: BTreeMap::new(),
             pending: VecDeque::new(),
+            pending_session: 0,
+            pending_tasks: BTreeMap::new(),
             outputs: BTreeMap::new(),
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
@@ -563,6 +567,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
         {
             self.pending.push_back(file.clone());
         }
+        self.fold_pending_execution(&file.key);
         self.files.insert(file.key.clone(), file);
         self.trim_archive();
         Ok(())

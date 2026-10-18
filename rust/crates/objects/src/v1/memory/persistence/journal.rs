@@ -60,45 +60,8 @@ impl Journal {
                 if tail.operations >= self.limits.maximum_journal_operations {
                     return Err(Error::from(QuotaExceeded).into());
                 }
-                let mut inline_data = Vec::new();
-                for (name, bucket) in &next.buckets.clone() {
-                    let keys = changed_keys(before.buckets.get(name), bucket, &mut publication)?;
-                    if keys.is_empty() {
-                        continue;
-                    }
-                    let bucket = next.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
-                    for key in keys {
-                        let object = bucket
-                            .objects
-                            .get_mut(&key)
-                            .ok_or(Error::from(Unavailable))?;
-                        if object.body.len() as u64 > self.limits.maximum_object_bytes {
-                            return Err(Error::from(QuotaExceeded).into());
-                        }
-                        object.body =
-                            self.prepare_inline(&object.body, &mut inline_data, &mut publication)?;
-                    }
-                }
-                for (id, _) in &next.uploads.clone() {
-                    let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
-                    for (number, _) in &upload.parts.clone() {
-                        let (_, body) = upload
-                            .parts
-                            .get_mut(number)
-                            .ok_or(Error::from(Unavailable))?;
-                        *body = self.prepare_inline(body, &mut inline_data, &mut publication)?;
-                    }
-                }
-                if let Some(value) = pending
-                    .as_deref_mut()
-                    .and_then(|change| change.value.as_mut())
-                {
-                    if value.body.len() as u64 > self.limits.maximum_object_bytes {
-                        return Err(Error::from(QuotaExceeded).into());
-                    }
-                    value.body =
-                        self.prepare_inline(&value.body, &mut inline_data, &mut publication)?;
-                }
+                let inline_data =
+                    self.inline_changes(before, next, pending.as_deref_mut(), &mut publication)?;
                 let mut delta = difference(before, next, tail.operations + 1, &mut publication)?;
                 if let Some(change) = pending.as_deref() {
                     let value = change.value.as_ref();
@@ -125,13 +88,7 @@ impl Journal {
                     publication.push(&mut delta.receipts, change)?;
                 }
                 delta.inline_data = inline_data;
-                inline::place(
-                    &mut delta,
-                    next,
-                    pending.as_deref_mut(),
-                    tail.bytes,
-                    &mut publication,
-                )?;
+                inline::place(&mut delta, next, pending, tail.bytes, &mut publication)?;
                 let record = publication.encode(&delta)?;
                 let end = tail
                     .bytes
@@ -140,16 +97,7 @@ impl Journal {
                 if record.len() > RECORD_LIMIT || end > self.limits.maximum_journal_bytes {
                     return Err(Error::from(QuotaExceeded).into());
                 }
-                let mut frame = Vec::new();
-                publication.reserve(&mut frame, 36 + record.len())?;
-                let length = u32::try_from(record.len()).map_err(|_| Error::from(QuotaExceeded))?;
-                let digest =
-                    publication.codec(0, 0, record.len(), || *blake3::hash(&record).as_bytes())?;
-                publication.codec(0, 36 + record.len(), 0, || {
-                    frame.extend_from_slice(&length.to_le_bytes());
-                    frame.extend_from_slice(&digest);
-                    frame.extend_from_slice(&record);
-                })?;
+                let frame = encode_frame(&record, &mut publication)?;
                 obs::record!("bytes" = frame.len());
                 let start = tail.bytes;
                 if let Err(error) = self.write(&mut tail.file, start, &frame, &mut publication) {
@@ -164,6 +112,52 @@ impl Journal {
                 Ok(())
             },
         )
+    }
+    /// Inline the changed bodies of `next` and the pending object.
+    ///
+    /// Returns the inline data those bodies now reference.
+    fn inline_changes(
+        &self,
+        before: &State,
+        next: &mut State,
+        pending: Option<&mut PendingObject>,
+        publication: &mut Publication,
+    ) -> Result<Vec<u8>, NativeObjectsError> {
+        let mut inline_data = Vec::new();
+        for (name, bucket) in &next.buckets.clone() {
+            let keys = changed_keys(before.buckets.get(name), bucket, publication)?;
+            if keys.is_empty() {
+                continue;
+            }
+            let bucket = next.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
+            for key in keys {
+                let object = bucket
+                    .objects
+                    .get_mut(&key)
+                    .ok_or(Error::from(Unavailable))?;
+                if object.body.len() as u64 > self.limits.maximum_object_bytes {
+                    return Err(Error::from(QuotaExceeded).into());
+                }
+                object.body = self.prepare_inline(&object.body, &mut inline_data, publication)?;
+            }
+        }
+        for (id, _) in &next.uploads.clone() {
+            let upload = next.uploads.get_mut(id).ok_or(Error::from(Unavailable))?;
+            for (number, _) in &upload.parts.clone() {
+                let (_, body) = upload
+                    .parts
+                    .get_mut(number)
+                    .ok_or(Error::from(Unavailable))?;
+                *body = self.prepare_inline(body, &mut inline_data, publication)?;
+            }
+        }
+        if let Some(value) = pending.and_then(|change| change.value.as_mut()) {
+            if value.body.len() as u64 > self.limits.maximum_object_bytes {
+                return Err(Error::from(QuotaExceeded).into());
+            }
+            value.body = self.prepare_inline(&value.body, &mut inline_data, publication)?;
+        }
+        Ok(inline_data)
     }
     pub(super) fn external(
         &self,
@@ -252,4 +246,21 @@ impl Journal {
             },
         )
     }
+}
+
+/// Frame one journal record: little-endian length, BLAKE3 digest, record.
+fn encode_frame(
+    record: &[u8],
+    publication: &mut Publication,
+) -> Result<Vec<u8>, NativeObjectsError> {
+    let mut frame = Vec::new();
+    publication.reserve(&mut frame, 36 + record.len())?;
+    let length = u32::try_from(record.len()).map_err(|_| Error::from(QuotaExceeded))?;
+    let digest = publication.codec(0, 0, record.len(), || *blake3::hash(record).as_bytes())?;
+    publication.codec(0, 36 + record.len(), 0, || {
+        frame.extend_from_slice(&length.to_le_bytes());
+        frame.extend_from_slice(&digest);
+        frame.extend_from_slice(record);
+    })?;
+    Ok(frame)
 }

@@ -345,7 +345,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-watch"))]
     pub(crate) async fn apply_authored_bulk_transaction_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<AuthoredMutation>>,

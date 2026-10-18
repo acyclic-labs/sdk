@@ -30,10 +30,10 @@ try {
   function outcomes(frames, operation) {
     assert.equal(frames[0][0].TaskSession.session, operation);
     assert.equal(frames[0][0].TaskSession.task, operation);
-    const files = [...frames[0][1].files.map(file => ({ ...file, bytes: file.segments.flat() })),
+    const files = [...frames[0][1].files,
       ...frames.slice(1).flatMap(change => [change.file, ...change.files].filter(Boolean))];
     return files.filter(file => file.key.Session?.file.ExecutionResult === operation)
-      .map(file => JSON.parse(Buffer.from(file.bytes).toString("utf8")));
+      .map(file => JSON.parse(file.bytes.text));
   }
   assert.equal(outcomes(frames, operation).at(-1).completion, "completed");
   assert.equal(outcomes(frames, operation).at(-1).ok.text, "graphcoder **test answer**");
@@ -43,7 +43,7 @@ try {
   assert.equal(host.calls(), 1, "reopen must not dispatch the model again");
   const second = "00000000-0000-0000-0000-000000000002";
   const request = { key: { Session: { session: second, file: { Request: second } } }, channel: null,
-    bytes: [...Buffer.from(JSON.stringify({ kind: "prompt", text: "say hello", source: null, mentions: [] }))] };
+    bytes: { text: JSON.stringify({ kind: "prompt", text: "say hello", source: null, mentions: [] }) } };
   const jsonl = await run([...host.args, "--input-format", "jsonl", "--operation", second], `${JSON.stringify(request)}\n`);
   assert.equal(jsonl.code, 0, jsonl.stderr);
   assert.equal(outcomes(jsonl.stdout.trim().split("\n").map(JSON.parse), second).at(-1).completion, "completed");

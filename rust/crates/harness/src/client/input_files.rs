@@ -17,6 +17,28 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
     effect: InputEffect,
 ) -> Result<()> {
     match effect {
+        InputEffect::FindStep { previous } => {
+            let mut layout = files
+                .state(CommandFileRoot::Session, "layout.json")?
+                .unwrap_or_else(|| serde_json::json!({}));
+            if layout["open_view"] != "find" || layout["view_input"] != "find" {
+                return Err(Error::Invalid("transcript search is closed".into()));
+            }
+            let index = layout
+                .get("search_index")
+                .map(|value| {
+                    value
+                        .as_i64()
+                        .ok_or_else(|| Error::Invalid("search index must be an integer".into()))
+                })
+                .transpose()?
+                .unwrap_or(0);
+            layout["search_index"] =
+                serde_json::json!(index.saturating_add(if previous { -1 } else { 1 }));
+            files
+                .write_unchanged_state(CommandFileRoot::Session, "layout.json", &layout)
+                .await?;
+        }
         InputEffect::Submit {
             text, edit: None, ..
         } => {
@@ -26,6 +48,7 @@ pub async fn apply_tui_input<P: StreamProvider + ?Sized>(
             use crate::tui::AppAction;
             let query = match action {
                 AppAction::Help => CommandQuery::Shortcuts,
+                AppAction::Find => CommandQuery::Find,
                 AppAction::Reasoning => CommandQuery::Reasoning,
                 AppAction::Details => CommandQuery::Details,
                 _ => {

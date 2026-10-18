@@ -1,5 +1,0 @@
-{"records":[{"task":"task-1","sequence":1,"event":"task_failed","detail":"Ready"},{"task":"task-1","sequence":1,
- "event":"task_blocked","detail":"Ready"},{"task":"task-1","sequence":2,"event":"goal_done","detail":"Ready"}],
- "expect":{"applied":[true,"offset was reused",true],"presented":2,
- "output":"\u001b]9;Task failed: task-1: Ready\u0007\u001b]9;Goal done: task-1: Ready\u0007",
- "view":{"latest":{"task-1":{"task":"task-1","sequence":2,"event":"goal_done","detail":"Ready"}}}}}

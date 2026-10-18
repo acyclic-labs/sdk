@@ -155,4 +155,6 @@ pub(crate) use write::{
 };
 use write::{native_write_error, publication_probe, sync_parent};
 #[cfg(test)]
+mod read_tests;
+#[cfg(test)]
 pub(crate) mod tests;
