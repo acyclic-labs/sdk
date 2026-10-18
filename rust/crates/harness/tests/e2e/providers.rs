@@ -172,7 +172,7 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    super::local_execution::check_frames(
+    super::drivers::check_frames(
         &case.expect.frames,
         &wire,
         operation,
@@ -185,7 +185,7 @@ pub(super) async fn run(case: ProviderCase) -> TestResult {
         .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire.remove(terminal);
-    if super::local_execution::check_frames(
+    if super::drivers::check_frames(
         &case.expect.frames,
         &wire,
         operation,

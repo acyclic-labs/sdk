@@ -5,6 +5,7 @@ use serde_json::Value;
 // Raw local execution is visible only inside this guarded dispatcher.
 #[path = "local_execution.rs"]
 mod local_execution;
+pub(super) use local_execution::{check_frames, check_results, model_results};
 
 trait Driver {
     type Case;

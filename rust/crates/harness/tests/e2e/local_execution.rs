@@ -366,7 +366,7 @@ fn rendered_files(view: &DiffView) -> TestResult<std::collections::BTreeMap<Stri
         .collect()
 }
 
-pub(super) fn check_frames(
+pub(crate) fn check_frames(
     expected: &[Value],
     frames: &[Value],
     operation: OperationId,
@@ -407,7 +407,7 @@ pub(super) fn check_frames(
     Ok(())
 }
 
-pub(super) fn model_results(
+pub(crate) fn model_results(
     request: &ModelRequest,
 ) -> TestResult<std::collections::BTreeMap<String, Value>> {
     let mut results = std::collections::BTreeMap::new();
@@ -427,7 +427,7 @@ pub(super) fn model_results(
     Ok(results)
 }
 
-pub(super) fn check_results(
+pub(crate) fn check_results(
     expected: &std::collections::BTreeMap<String, Value>,
     actual: &std::collections::BTreeMap<String, Value>,
 ) -> TestResult {
