@@ -1,5 +1,5 @@
 {"seed":{"AGENTS.md":"outside","repo/AGENTS.md":"inside","repo/src/CLAUDE.md":"leaf"},"discovery":{"instructions":[{
   "directory":"repo","active_directory":"src"}]},"expect":{"request_files":[["inside","leaf"]],"requests":[{"messages"
-  :[{"role":"system","content":{"kind":"file","file":{"path":"repo/AGENTS.md"},"policy":"bounded_full"}},{"role":
-  "system","content":{"kind":"file","file":{"path":"repo/src/CLAUDE.md"},"policy":"bounded_full"}},{"role":"user",
+  :[{"role":"user","content":{"kind":"file","file":{"path":"repo/AGENTS.md"},"policy":{"project_instructions":{"path":"repo/AGENTS.md"}}}},{"role":
+  "user","content":{"kind":"file","file":{"path":"repo/src/CLAUDE.md"},"policy":{"project_instructions":{"path":"repo/src/CLAUDE.md"}}}},{"role":"user",
   "content":"Inspect files"}]}]}}

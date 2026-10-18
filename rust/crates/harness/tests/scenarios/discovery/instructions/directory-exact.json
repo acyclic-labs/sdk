@@ -1,4 +1,4 @@
 {"seed":{"AGENTS.md":"root","src/CLAUDE.md":"child"},"discovery":{"instructions":[{"active_directory":"src"}],"limits"
-  :{"directories":2}},"expect":{"request_files":[["root","child"]],"requests":[{"messages":[{"role":"system","content"
-  :{"kind":"file","file":{"path":"AGENTS.md"},"policy":"bounded_full"}},{"role":"system","content":{"kind":"file",
-  "file":{"path":"src/CLAUDE.md"},"policy":"bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}
+  :{"directories":2}},"expect":{"request_files":[["root","child"]],"requests":[{"messages":[{"role":"user","content"
+  :{"kind":"file","file":{"path":"AGENTS.md"},"policy":{"project_instructions":{"path":"AGENTS.md"}}}},{"role":"user","content":{"kind":"file",
+  "file":{"path":"src/CLAUDE.md"},"policy":{"project_instructions":{"path":"src/CLAUDE.md"}}}},{"role":"user","content":"Inspect files"}]}]}}

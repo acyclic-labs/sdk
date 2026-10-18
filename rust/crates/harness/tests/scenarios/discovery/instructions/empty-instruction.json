@@ -1,2 +1,2 @@
-{"seed":{"AGENTS.md":""},"expect":{"request_files":[[""]],"requests":[{"messages":[{"role":"system","content":{"kind":
-  "file","file":{"path":"AGENTS.md"},"policy":"bounded_full"}},{"role":"user","content":"Inspect files"}]}]}}
+{"seed":{"AGENTS.md":""},"expect":{"request_files":[[""]],"requests":[{"messages":[{"role":"user","content":{"kind":
+  "file","file":{"path":"AGENTS.md"},"policy":{"project_instructions":{"path":"AGENTS.md"}}}},{"role":"user","content":"Inspect files"}]}]}}

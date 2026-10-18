@@ -29,8 +29,10 @@ async fn instruction_oracles_reject_wrong_order_roots_bytes_and_missing_discover
                     .ok_or("missing case object")?
                     .remove("discovery");
             }
+            // Instructions are scoped user-role frames (#849): forbidding that
+            // frame must reject the discovered request.
             "forbidden" => {
-                case["expect"]["not_requests"] = json!([{"messages":[{"role":"system"}]}])
+                case["expect"]["not_requests"] = json!([{"messages":[{"role":"user","content":{"policy":{"project_instructions":{}}}}]}])
             }
             _ => return Err("unknown mutation".into()),
         }

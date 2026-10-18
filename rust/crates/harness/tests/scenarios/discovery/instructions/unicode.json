@@ -1,3 +1,3 @@
 {"seed":{"AGENTS.md":"Règles 日本語 ✨"},"expect":{"request_files":[["Règles 日本語 ✨"]],"requests":[{"messages":[{"role":
-  "system","content":{"kind":"file","file":{"path":"AGENTS.md"},"policy":"bounded_full"}},{"role":"user","content":
+  "user","content":{"kind":"file","file":{"path":"AGENTS.md"},"policy":{"project_instructions":{"path":"AGENTS.md"}}}},{"role":"user","content":
   "Inspect files"}]}]}}
