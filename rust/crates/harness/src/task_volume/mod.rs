@@ -238,12 +238,14 @@ struct Header {
     schema: u32,
 }
 
+#[cfg_attr(acyclic_harness_loom, derive(Clone))]
 struct StoredFile {
     file: FileValue,
     position: u64,
 }
 
 #[derive(Default)]
+#[cfg_attr(acyclic_harness_loom, derive(Clone))]
 struct Index {
     volume: [u8; 32],
     epoch: Uuid,

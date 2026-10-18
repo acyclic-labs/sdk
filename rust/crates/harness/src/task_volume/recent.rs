@@ -46,6 +46,7 @@ fn file_kind(file: &FileValue) -> Option<u8> {
 }
 /// Recent display order per task, derived from index replacements alone.
 #[derive(Default)]
+#[cfg_attr(acyclic_harness_loom, derive(Clone))]
 pub(super) struct Views {
     order: BTreeMap<(Component, u8, u64), FileKey>,
     overviews: BTreeMap<Component, FileKey>,

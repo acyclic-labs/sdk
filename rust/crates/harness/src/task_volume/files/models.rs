@@ -47,33 +47,11 @@ fn reopen(files: &TaskFiles<MemoryStream>) -> Arc<TaskFiles<MemoryStream>> {
     // Both views begin at the same real publication cut. Copy only this serial
     // setup; competing refreshes, validation, locks and commits remain the
     // production paths. Open/replay itself is covered by the handoff models.
-    let source = loom::future::block_on(Box::pin(files.inner.index.lock()));
-    let mut values = super::super::FileIndex::default();
-    for (key, value) in source.files.range(..) {
-        values.insert(
-            key.clone(),
-            super::super::StoredFile {
-                file: value.file.clone(),
-                position: value.position,
-            },
-        );
-    }
+    let index = loom::future::block_on(Box::pin(files.inner.index.lock())).clone();
     let inner = TaskVolume {
         provider: files.inner.provider.clone(),
         path: files.inner.path.clone(),
-        index: crate::sync::Mutex::new(super::super::Index {
-            volume: source.volume,
-            epoch: source.epoch,
-            next: source.next,
-            commit: source.commit,
-            files: values,
-            executions: source.executions.clone(),
-            pending_commands: source.pending_commands.clone(),
-            view_order: source.view_order.clone(),
-            view_revisions: source.view_revisions.clone(),
-            overviews: source.overviews.clone(),
-            child_inputs: source.child_inputs.clone(),
-        }),
+        index: crate::sync::Mutex::new(index),
     };
     Arc::new(TaskFiles {
         inner,

@@ -102,6 +102,7 @@ pub(crate) fn matches(session: &Component, key: &FileKey) -> bool {
 type Executions = Vec<((Option<Component>, u64), FileKey)>;
 /// Completed executions in publication order and the unfinished inbox, per owner.
 #[derive(Default)]
+#[cfg_attr(acyclic_harness_loom, derive(Clone))]
 pub(super) struct Commands {
     executions: BTreeMap<(Option<Component>, u64), FileKey>,
     pending: BTreeMap<Option<Component>, BTreeSet<FileKey>>,
