@@ -473,7 +473,9 @@ impl<D: Present> FrameTerminal<D> {
         // Reset before autoresize/clear/repaint and journal the reset itself.
         let reset_margins = self.invalid && self.scroll_regions;
         if reset_margins {
-            self.terminal.backend_mut().output.reset_margins();
+            let backend = self.terminal.backend_mut();
+            backend.reset_attributes()?;
+            backend.output.reset_margins();
         }
         let previous_area = self.terminal.get_frame().area();
         let size = self.terminal.backend().size;

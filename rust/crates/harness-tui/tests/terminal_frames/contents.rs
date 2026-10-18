@@ -51,7 +51,7 @@ fn check_contents<const KEEP_CELLS: bool>(during_render: bool, alternate: bool, 
         recovered.remove(at);
     }
     let mut expected_frame = b"\x1b[?2026h\x1b[0m".to_vec();
-    if during_render && supported {
+    if supported {
         expected_frame.extend_from_slice(b"\x1b[r");
     }
     expected_frame.extend_from_slice(b"\x1b[2J");
