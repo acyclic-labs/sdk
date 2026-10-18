@@ -48,7 +48,6 @@ required-features = ["local-runner"]
 
 [[bin]]
 name = "bench-fs"
-test = false
 path = "src/bin/bench_fs.rs"
 required-features = ["local-runner"]
 

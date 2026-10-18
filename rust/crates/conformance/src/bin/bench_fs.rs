@@ -8,6 +8,12 @@ use acyclic_fs::{
     LocalStreamDurability, WorkBudget, capture_baseline, capture_root_identity,
 };
 use bytes::Bytes;
+use futures::future::LocalBoxFuture;
+use std::future::Future;
+
+fn boxed<'a, F: Future + 'a>(future: F) -> LocalBoxFuture<'a, F::Output> {
+    Box::pin(future)
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if file_bytes == 0 || file_bytes > 1024 * 1024 * 1024 {
             return Err("file-bytes must be between 1 and 1073741824".into());
         }
-        return benchmark_capture(writes, file_bytes).await;
+        return boxed(benchmark_capture(writes, file_bytes)).await;
     }
     let root = tempfile::tempdir()?;
     let options = || {
@@ -49,8 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         options
     };
-    let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.create_workspace(
+    let fs = boxed(Fs::local(options())).await?;
+    let workspace = boxed(fs.create_workspace(
         "benchmark",
         acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
@@ -60,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|failure| failure.error)?;
     let started = Instant::now();
     if batch {
-        let mut transaction = Box::pin(async {
+        let mut transaction = boxed(async {
             workspace
                 .begin_transaction(
                     IdempotencyKey::new(),
@@ -73,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
         for index in 0..writes {
-            Box::pin(transaction.write(
+            boxed(transaction.write(
                 &format!("/entry-{index:04}"),
                 Bytes::from(format!("value-{index}")),
                 acyclic_fs::WorkBudget::UNBOUNDED,
@@ -81,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .await?;
         }
-        Box::pin(async {
+        boxed(async {
             transaction
                 .commit(
                     None,
@@ -104,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     } else {
         for index in 0..writes {
-            Box::pin(workspace.write(
+            boxed(workspace.write(
                 &format!("/entry-{index:04}"),
                 Bytes::from(format!("value-{index}")),
             ))
@@ -114,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = started.elapsed();
     let read_started = Instant::now();
     for index in 0..writes {
-        let value = Box::pin(async {
+        let value = boxed(async {
             workspace
                 .read(
                     &format!("/entry-{index:04}"),
@@ -136,8 +142,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(workspace);
     drop(fs);
     // Reopen so reads start from durable storage instead of warm caches.
-    let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.open_workspace(
+    let fs = boxed(Fs::local(options())).await?;
+    let workspace = boxed(fs.open_workspace(
         "benchmark",
         acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
@@ -147,7 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|failure| failure.error)?;
     let cold_started = Instant::now();
     for index in 0..writes {
-        let value = Box::pin(async {
+        let value = boxed(async {
             workspace
                 .read(
                     &format!("/entry-{index:04}"),
@@ -190,8 +196,8 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
         std::fs::write(source.path().join(format!("entry-{index:04}")), &body)?;
     }
     let storage = tempfile::tempdir()?;
-    let fs = Box::pin(Fs::local(LocalOptions::new(storage.path()))).await?;
-    let workspace = Box::pin(fs.create_workspace(
+    let fs = boxed(Fs::local(LocalOptions::new(storage.path()))).await?;
+    let workspace = boxed(fs.create_workspace(
         "capture-benchmark",
         acyclic_fs::WorkBudget::UNBOUNDED,
         &acyclic_fs::CancellationToken::new(),
@@ -199,7 +205,7 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)?;
-    let mut checkout = Box::pin(async {
+    let mut checkout = boxed(async {
         workspace
             .checkout(
                 GenerationSelector::Head,
@@ -219,13 +225,13 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
         maximum_extent_spans: 1024,
     };
     let started = Instant::now();
-    let receipt = capture_baseline(
+    let receipt = boxed(capture_baseline(
         &mut checkout,
         &options,
         &acyclic_fs::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    )
+    ))
     .await?;
     let elapsed = started.elapsed();
     let work = receipt.work;
@@ -260,4 +266,25 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
         })
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::boxed;
+    use futures::future::LocalBoxFuture;
+    use std::future::Future;
+
+    #[test]
+    fn boxed_body_layout_is_erased_with_concrete_box_negative_control() {
+        fn erased<F: Future<Output = u8>>(future: &F) -> bool {
+            std::any::type_name::<F>() == std::any::type_name::<LocalBoxFuture<'_, u8>>()
+                && std::mem::size_of_val(future) == 2 * std::mem::size_of::<usize>()
+        }
+        let concrete = Box::pin(async { 7_u8 });
+        assert!(!erased(&concrete), "a concrete box leaks the body type");
+        let body = [7_u8; 256];
+        let future = boxed(async move { std::hint::black_box(body)[0] });
+        assert!(erased(&future));
+        assert_eq!(futures::executor::block_on(future), 7);
+    }
 }
