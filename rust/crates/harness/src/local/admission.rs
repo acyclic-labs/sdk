@@ -6,9 +6,6 @@ use crate::{
     resources::GenerationRef,
 };
 
-#[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn;
-#[cfg(not(feature = "test-support"))]
 use tokio::spawn;
 
 use crate::goal::request_head as record;

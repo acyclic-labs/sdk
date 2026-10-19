@@ -604,8 +604,8 @@ async fn resume_killed_model_call(unsettled: bool) -> Result<()> {
     let reopened =
         LocalHarness::open(volume_config(directory.path(), project, provider.clone())?).await?;
     assert_eq!(outcome(&reopened, task).await, None);
-    // Nothing was observed, so the call had no effect and generates again
-    // under its claimed attempt.
+    // Reissue only the retained request under the owned task's original
+    // dispatch identity and current fence; no tool call was dispatched.
     crate::executor::unsettled_resume::set(unsettled);
     let resumed = reopened.resume(task).await;
     crate::executor::unsettled_resume::set(false);

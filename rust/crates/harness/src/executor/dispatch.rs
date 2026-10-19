@@ -115,8 +115,12 @@ impl StockExecution<'_> {
                 && !self.stock.reconciliation_only
                 && !super::unsettled_resume::enabled()
             {
-                // Nothing of the interrupted call was observed, so it had no
-                // effect: the same claimed attempt generates again.
+                // Only an owned task can authorize reissuing the retained
+                // request under its existing dispatch and current fence.
+                // An unowned callback has no such recovery authority.
+                if self.stock.task.is_none() {
+                    return Err(Error::Indeterminate(input.operation_id));
+                }
                 self.claim_task_model(dispatch).await?;
             } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
                 // An incomplete response has not dispatched any of its tool calls.

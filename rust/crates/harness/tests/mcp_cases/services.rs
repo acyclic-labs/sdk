@@ -665,11 +665,13 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
         record.event,
         acyclic_harness::executor::ExecutionEvent::ModelStarted { .. }
     )));
-    assert!(matches!(
-        callbacks.admit(tool, &callback).await,
-        Err(Error::Indeterminate(_))
-    ));
+    let retry = callbacks.admit(tool, &callback).await;
+    assert!(matches!(retry, Err(Error::Indeterminate(_))), "{retry:?}");
     assert_eq!(model.dispatches().len(), 1);
+    assert_eq!(
+        disk.replay(callback.validate()?.0, 0, 64, None)?.await?,
+        records
+    );
     assert_sampling_text(&model)?;
     assert_eq!(model.reconciliations().len(), 1);
     assert!(model.recoveries().is_empty());

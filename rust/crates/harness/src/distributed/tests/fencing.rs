@@ -64,7 +64,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
             disturbance
         );
         disturbance?;
-        assert!(matches!(attempt, Err(Error::Conflict(_))));
+        assert!(matches!(attempt, Err(Error::Conflict(_))), "{attempt:?}");
         assert!(first.scheduler().operation(child_id).is_none());
         let retry = first
             .declare_operation(
@@ -210,7 +210,6 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             disturbance
         );
         disturbance?;
-        assert!(matches!(attempt, Err(Error::Conflict(_))));
         let retry = first
             .resume_workflow(
                 &owner,
@@ -225,9 +224,13 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             )
             .await;
         if cancel {
+            assert!(matches!(attempt, Err(Error::Conflict(_))), "{attempt:?}");
             assert!(retry.is_err());
         } else {
-            assert!(retry?);
+            // An unrelated tail change is retried internally. The selected
+            // wait is revalidated before the single accepted publication.
+            assert!(attempt?);
+            assert!(!retry?);
             assert!(
                 !first
                     .resume_workflow(

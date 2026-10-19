@@ -553,6 +553,47 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn an_unowned_empty_model_attempt_is_not_reissued() -> Result<()> {
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![ScriptedEvent::Pending {}])])
+            .with_token_counter(fixture_token_count)
+            .with_reconciliations([ScriptedReconciliation {
+                orphan: false,
+                observed: vec![],
+                continuation: None,
+            }]),
+    );
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "pending".into(), "1".into(), Value::Null)?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let journal = Journal::default();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("start".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    {
+        let pending = executor.model_step(&journal, &input, 0, &[]);
+        futures::pin_mut!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        assert_eq!(provider.dispatches().len(), 1);
+    }
+    let records = journal.0.lock().unwrap().clone();
+    assert!(matches!(
+        executor.model_step(&journal, &input, 0, &[]).await,
+        Err(Error::Indeterminate(operation)) if operation == input.operation_id
+    ));
+    assert_eq!(provider.dispatches().len(), 1);
+    assert_eq!(*journal.0.lock().unwrap(), records);
+    assert_eq!(provider.reconciliations(), provider.dispatches());
+    Ok(())
+}
+
 /// A stream cut and process loss leave the same retained incomplete prefix.
 async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
     let prefix = vec![ModelEvent::Content {
