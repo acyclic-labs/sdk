@@ -42,6 +42,13 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             )
             .map_err(AuthorityStoreError::DurableCodec)??;
             work.append_record(&mut request.mutations, records, [genesis, encoded])?;
+            self.locate_operation_in(
+                authority,
+                &record,
+                &mut request.conditions,
+                &mut request.mutations,
+                work,
+            )?;
             generation_from_payload(authority, record.sequence, record.payload, work)?
         } else {
             work.append_record(&mut request.mutations, records, [genesis])?;
@@ -156,8 +163,8 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
     ) -> Result<bool, AuthorityError<G::Error>> {
         work.check()?;
         let mut request = CommitRequest {
-            conditions: work.vec(7)?,
-            mutations: work.vec(7)?,
+            conditions: work.vec(8)?,
+            mutations: work.vec(8)?,
             idempotency_key: work.key(
                 b"operation\0",
                 &[&authority.into_bytes(), &commit.operation_id.into_bytes()],
@@ -301,14 +308,41 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             }
             _ => None,
         };
+        let lease_path = lease
+            .map(|(workspace, lease, expires)| {
+                work.lease_path(
+                    crate::WorkspaceId::from_bytes(workspace),
+                    crate::OperationLeaseId::from_bytes(lease),
+                    expires,
+                )
+            })
+            .transpose()?;
+        if let Some(path) = &lease_path {
+            let active = match self.tail(path.clone(), work).await {
+                Ok(1) => true,
+                Ok(_) => false,
+                Err(error) if authority_missing(&error) => false,
+                Err(error) => return Err(error.into()),
+            };
+            if !active {
+                let outcome = self.recover_fork_records(&fork, work).await?;
+                if outcome == WorkspaceForkOutcome::Committed {
+                    seal(work, guard).await?;
+                }
+                return Ok(outcome);
+            }
+        }
         let mut request = CommitRequest {
-            conditions: work.vec(15)?,
-            mutations: work.vec(14)?,
+            conditions: work.vec(17)?,
+            mutations: work.vec(16)?,
             idempotency_key: work.key(
-                b"operation\0",
+                b"workspace-fork-attempt\0",
                 &[
                     &fork.destination.into_bytes(),
                     &fork.creation.operation_id.into_bytes(),
+                    lease_path
+                        .as_ref()
+                        .map_or(&[][..], |path| path.as_str().as_bytes()),
                 ],
             )?,
         };
@@ -328,15 +362,10 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             lineage,
             work,
         )?;
-        if let Some((workspace, lease, expires)) = lease {
-            request.conditions.push(CommitCondition::Tail {
-                path: work.lease_path(
-                    crate::WorkspaceId::from_bytes(workspace),
-                    crate::OperationLeaseId::from_bytes(lease),
-                    expires,
-                )?,
-                expected: 1,
-            });
+        if let Some(path) = lease_path {
+            request
+                .conditions
+                .push(CommitCondition::Tail { path, expected: 1 });
         }
         let outcome = self
             .commit(
@@ -358,48 +387,60 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             | Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(
                 acyclic_stream::StreamError::IdempotencyMismatch,
             ))) => {
-                if lease.is_some() {
-                    // A retry may observe its own complete transaction after the
-                    // lease closed. Never create either authority on this path.
-                    let mut matches = true;
-                    for (authority, proposed) in [
-                        (fork.retention, &fork.retained),
-                        (fork.destination, &fork.creation),
-                    ] {
-                        let found = self
-                            .read_records(
-                                authority,
-                                Sequence::GENESIS,
-                                ReplayLimit {
-                                    records: 1,
-                                    payload_bytes: 4 * 1024,
-                                },
-                                work,
-                            )
-                            .await;
-                        matches &= match found {
-                            Ok((records, _allocation)) => records.first().is_some_and(|record| {
-                                record.operation_id == proposed.operation_id
-                                    && record.fingerprint == proposed.fingerprint
-                            }),
-                            Err(error) if authority_missing(&error) => false,
-                            Err(error) => return Err(error.into()),
-                        };
-                    }
-                    return Ok(if matches {
-                        WorkspaceForkOutcome::Committed
-                    } else {
-                        WorkspaceForkOutcome::CreationRejected
-                    });
+                let outcome = self.recover_fork_records(&fork, work).await?;
+                if outcome == WorkspaceForkOutcome::Committed {
+                    seal(work, guard).await?;
                 }
-                let mut child = work.operation()?;
-                let result =
-                    crate::async_storage::workspace_fork(self, fork, permit, &mut child, guard)
-                        .await;
-                work.absorb(&child)?;
-                result
+                Ok(outcome)
             }
             Err(error) => Err(error),
+        }
+    }
+
+    async fn recover_fork_records(
+        &self,
+        fork: &WorkspaceForkCommit,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<WorkspaceForkOutcome, AuthorityStoreError> {
+        let mut retained = None;
+        let mut created = None;
+        for (authority, proposed, found) in [
+            (fork.retention, &fork.retained, &mut retained),
+            (fork.destination, &fork.creation, &mut created),
+        ] {
+            *found = match self
+                .located_operation(authority, proposed.operation_id, work)
+                .await
+            {
+                Ok(value) => value,
+                Err(error) if authority_missing(&error) => None,
+                Err(error) => return Err(error.into()),
+            };
+        }
+        let retention_occupied = if retained.is_none() {
+            match self.tail_of(fork.retention, "/records", work).await {
+                Ok(tail) => tail > 1,
+                Err(error) if authority_missing(&error) => false,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            false
+        };
+        match (retained, created) {
+            (Some((retained, retained_commit)), Some((created, created_commit)))
+                if retained.sequence == Sequence::new(1)
+                    && created.sequence == Sequence::new(1)
+                    && retained.fingerprint == fork.retained.fingerprint
+                    && created.fingerprint == fork.creation.fingerprint
+                    && retained_commit == created_commit =>
+            {
+                Ok(WorkspaceForkOutcome::Committed)
+            }
+            (Some((retained, _)), _) if retained.fingerprint != fork.retained.fingerprint => {
+                Ok(WorkspaceForkOutcome::RetentionConflict)
+            }
+            _ if retention_occupied => Ok(WorkspaceForkOutcome::RetentionConflict),
+            _ => Ok(WorkspaceForkOutcome::CreationRejected),
         }
     }
 }

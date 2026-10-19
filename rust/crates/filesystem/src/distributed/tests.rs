@@ -6,6 +6,8 @@ use acyclic_stream::{
     StreamProvider,
 };
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+#[cfg(not(target_arch = "wasm32"))]
+mod operation_tests;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::work_budget(1 << 28, 1 << 28);
 
@@ -563,6 +565,10 @@ struct ReleaseSpy {
     cancel_inspect: Option<CancellationToken>,
     lose_ack: bool,
     corrupt_observation: u8,
+    before_commit: Option<crate::GuardedAppend>,
+    before_gate_release: Option<PublicationReservation>,
+    before_lease_close: Option<StreamPath>,
+    race_once: AtomicBool,
 }
 
 impl ReleaseSpy {
@@ -574,6 +580,10 @@ impl ReleaseSpy {
             cancel_inspect: None,
             lose_ack: false,
             corrupt_observation: 0,
+            before_commit: None,
+            before_gate_release: None,
+            before_lease_close: None,
+            race_once: AtomicBool::new(true),
         }
     }
 }
@@ -638,6 +648,40 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.writes.store(true, SeqCst);
+        if let Some(path) = &self.before_lease_close {
+            if self.race_once.swap(false, SeqCst) {
+                self.inner
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
+                        if_tail: Some(1),
+                        idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())
+                            .map_err(|_| StreamError::InvalidArgument)?,
+                    })
+                    .await?;
+            }
+        }
+        if let Some(winner) = &self.before_commit {
+            if self.race_once.swap(false, SeqCst) {
+                let token = CancellationToken::new();
+                let mut work = AuthorityWork::new(BUDGET, &token);
+                let outcome = StreamAuthorityStore::new(self.inner.clone())
+                    .compare_and_append(winner.clone(), &mut work, None::<&mut ()>)
+                    .await
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
+            }
+        }
+        if let Some(reservation) = self.before_gate_release {
+            if self.race_once.swap(false, SeqCst) {
+                let token = CancellationToken::new();
+                let mut work = AuthorityWork::new(BUDGET, &token);
+                StreamAuthorityStore::new(self.inner.clone())
+                    .release_publication(reservation, &mut work)
+                    .await
+                    .map_err(|_| StreamError::InvalidArgument)?;
+            }
+        }
         let result = self.inner.commit(request).await?;
         if self.lose_ack {
             Err(StreamError::Unavailable)
@@ -663,4 +707,106 @@ impl StreamProvider for ReleaseSpy {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await
     }
+}
+
+#[tokio::test]
+async fn rejected_append_attempt_does_not_poison_operation_retry_or_lost_ack() -> TestResult {
+    let stream = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(stream.clone());
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    let id = AuthorityId::from_bytes([41; 16]);
+    store
+        .create_authority(id, Epoch::GENESIS, &mut work, None::<&mut ()>)
+        .await?;
+    let expected = store.head(id, &mut work).await?;
+    let request = crate::GuardedAppend {
+        authority_id: id,
+        epoch: expected.epoch,
+        expected,
+        commit: proposed(42),
+        permit: PublicationPermit::Unrestricted,
+    };
+    let mut winner = request.clone();
+    winner.commit = proposed(43);
+    let mut spy = ReleaseSpy::new(stream.clone());
+    spy.before_commit = Some(winner);
+    let racing = StreamAuthorityStore::new(Arc::new(spy));
+    let FsAppendOutcome::Conflict { actual } = racing
+        .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
+        .await?
+    else {
+        return Err("first append must lose the injected head race".into());
+    };
+    let mut retry = request;
+    retry.expected = actual;
+    let FsAppendOutcome::Committed(committed) = racing
+        .compare_and_append(retry.clone(), &mut work, None::<&mut ()>)
+        .await?
+    else {
+        return Err("rejected attempt poisoned the same operation retry".into());
+    };
+    assert_eq!(committed.operation_id, retry.commit.operation_id);
+    assert!(
+        matches!(store.compare_and_append(retry.clone(), &mut work, None::<&mut ()>).await?,
+        FsAppendOutcome::AlreadyCommitted(existing) if existing == committed)
+    );
+    let mut wrong = retry;
+    wrong.commit.fingerprint = Digest::from_bytes([44; 32]);
+    assert!(matches!(
+        store
+            .compare_and_append(wrong, &mut work, None::<&mut ()>)
+            .await?,
+        FsAppendOutcome::IdempotencyConflict { .. }
+    ));
+
+    let lost = crate::GuardedAppend {
+        expected: store.head(id, &mut work).await?,
+        commit: proposed(45),
+        authority_id: id,
+        epoch: expected.epoch,
+        permit: PublicationPermit::Unrestricted,
+    };
+    let mut spy = ReleaseSpy::new(stream);
+    spy.lose_ack = true;
+    let lossy = StreamAuthorityStore::new(Arc::new(spy));
+    assert!(
+        lossy
+            .compare_and_append(lost.clone(), &mut work, None::<&mut ()>)
+            .await
+            .is_err()
+    );
+    assert!(
+        matches!(lossy.compare_and_append(lost.clone(), &mut work, None::<&mut ()>).await?,
+        FsAppendOutcome::AlreadyCommitted(existing) if existing.operation_id == lost.commit.operation_id)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_gate_attempt_retries_without_changing_authority_head() -> TestResult {
+    let (stream, reservation) = reserved().await?;
+    let mut spy = ReleaseSpy::new(stream);
+    spy.before_gate_release = Some(reservation);
+    let store = StreamAuthorityStore::new(Arc::new(spy));
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    let request = append(reservation, permit(reservation));
+    assert!(
+        matches!(store.compare_and_append(request.clone(), &mut work, None::<&mut ()>).await?,
+        FsAppendOutcome::Fenced { actual_epoch } if actual_epoch == reservation.expected.epoch)
+    );
+    assert_eq!(
+        store.head(reservation.authority_id, &mut work).await?,
+        reservation.expected
+    );
+    let mut retry = request;
+    retry.permit = PublicationPermit::Unrestricted;
+    assert!(matches!(
+        store
+            .compare_and_append(retry, &mut work, None::<&mut ()>)
+            .await?,
+        FsAppendOutcome::Committed(_)
+    ));
+    Ok(())
 }

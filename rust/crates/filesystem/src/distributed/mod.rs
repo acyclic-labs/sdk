@@ -28,6 +28,7 @@ const GENESIS_DOMAIN: &[u8] = b"acyclic-fs-stream-genesis-v1\0";
 const EPOCH_DOMAIN: &[u8] = b"acyclic-fs-stream-epoch-v1\0";
 const LINEAGE_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-v1\0";
 const LINEAGE_TAIL_DOMAIN: &[u8] = b"acyclic-fs-stream-lineage-tail-v1\0";
+const OPERATION_LOCATOR_DOMAIN: &[u8] = b"acyclic-fs-stream-operation-locator-v1\0";
 const AUTHORITY_MARKER: &[u8] = b"acyclic-fs-authority-v1\0";
 const AUTHORITY_RETIRED: &[u8] = b"acyclic-fs-authority-retired-v1\0";
 const PUBLICATION_GATE_FREE: &[u8] = b"acyclic-fs-publication-gate-v1\0free";
@@ -77,6 +78,7 @@ compile_error!("head-payload models require RUSTFLAGS='--cfg acyclic_fs_loom --c
 #[cfg(all(test, acyclic_fs_loom, acyclic_loom))]
 mod head_payload_loom_tests;
 mod lineage;
+mod operations;
 mod replay;
 use append::seal;
 mod records;

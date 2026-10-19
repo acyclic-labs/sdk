@@ -102,7 +102,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         let records = work.path(authority_id, "/records", None)?;
         let epochs = work.path(authority_id, "/epochs", None)?;
         let retirement = work.path(authority_id, "/retirement", None)?;
-        let mut conditions = work.vec(7)?;
+        let mut conditions = work.vec(8)?;
         conditions.extend([
             CommitCondition::Absent { path: retirement },
             CommitCondition::Tail {
@@ -130,6 +130,20 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 crate::OperationLeaseId::from_bytes(lease_id),
                 expires_at_millis,
             )?;
+            match self.tail(path.clone(), work).await {
+                Ok(1) => {}
+                Ok(_) => {
+                    return Ok(FsAppendOutcome::Fenced {
+                        actual_epoch: epoch,
+                    });
+                }
+                Err(error) if authority_missing(&error) => {
+                    return Ok(FsAppendOutcome::Fenced {
+                        actual_epoch: epoch,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            }
             conditions.push(CommitCondition::Tail {
                 path: path.clone(),
                 expected: 1,
@@ -138,8 +152,15 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         } else {
             (None, None)
         };
-        let mut mutations = work.vec(3)?;
+        let mut mutations = work.vec(4)?;
         work.append_record(&mut mutations, records.clone(), [encoded])?;
+        self.locate_operation_in(
+            authority_id,
+            &durable,
+            &mut conditions,
+            &mut mutations,
+            work,
+        )?;
         if let Some(generation) =
             generation_from_payload(authority_id, sequence, durable.payload, work)?
         {
@@ -211,10 +232,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             }
         }
         let idempotency_key = work.key(
-            b"operation\0",
+            b"operation-attempt\0",
             &[
                 &authority_id.into_bytes(),
                 &commit.operation_id.into_bytes(),
+                durable.digest.as_bytes(),
+                &snapshot.epoch_tail.to_le_bytes(),
+                &gate_tail.to_le_bytes(),
+                lease_path
+                    .as_ref()
+                    .map_or(&[][..], |path| path.as_str().as_bytes()),
             ],
         )?;
         let result = self
@@ -323,8 +350,12 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                         )
                     })?;
                 seal(work, guard).await?;
-                Ok(FsAppendOutcome::IdempotencyConflict {
-                    committed_fingerprint: existing.fingerprint,
+                Ok(if existing.fingerprint == commit.fingerprint {
+                    FsAppendOutcome::AlreadyCommitted(existing)
+                } else {
+                    FsAppendOutcome::IdempotencyConflict {
+                        committed_fingerprint: existing.fingerprint,
+                    }
                 })
             }
             Err(AuthorityError::Authority(AuthorityStoreError::NativeStream(

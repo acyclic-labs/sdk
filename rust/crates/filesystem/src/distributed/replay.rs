@@ -173,78 +173,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         operation: OperationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
-        work.check()?;
-        self.authority_require_live(authority, work).await?;
-        let key = work.key(
-            b"operation\0",
-            &[&authority.into_bytes(), &operation.into_bytes()],
-        )?;
-        let observed = self.authority_inspect(key, work).await;
-        if !work.is_native() {
-            work.check()?;
-        }
-        let observation = observed?;
-        if work.is_native() {
-            work.check()?;
-        }
-        let Some(observation) = &observation.0 else {
-            return Ok(None);
-        };
-        let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
-            return Err(authority_corrupt(
-                "operation identity retained another Stream mutation family",
-                work,
-            ));
-        };
-        let CommitOutcome::Committed(envelope) = outcome else {
-            return Ok(None);
-        };
-        let path = work.path(authority, "/records", None)?;
-        let mut output = None;
-        for mutation in &envelope.mutations {
-            let acyclic_stream::CommittedMutation::Append(append) = mutation else {
-                continue;
-            };
-            if append.path != path {
-                continue;
-            }
-            let record = match append.records.as_slice() {
-                [record] => record,
-                [genesis, record] => {
-                    work.decode_epoch(&genesis.value, GENESIS_DOMAIN)?;
-                    record
-                }
-                _ => {
-                    return Err(authority_corrupt(
-                        "operation appended an invalid authority record count",
-                        work,
-                    ));
-                }
-            };
-            let reading = WorkCounters {
-                authority_records_read: 1,
-                authority_bytes_read: record.value.len() as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            work.admit(reading)?;
-            work.charge(reading)?;
-            let durable = authority_decode_borrowed(authority, &record.value, work)?;
-            if durable.operation_id != operation || output.is_some() {
-                return Err(authority_corrupt(
-                    "operation envelope does not bind its authority operation",
-                    work,
-                ));
-            }
-            let payload = work.bytes(durable.payload)?;
-            output = Some(durable_commit(durable, record.committed_at_micros, payload));
-        }
-        if output.is_none() {
-            return Err(authority_corrupt(
-                "operation envelope omits its authority record",
-                work,
-            ));
-        }
-        work.check()?;
-        Ok(output)
+        Ok(self
+            .located_operation(authority, operation, work)
+            .await?
+            .map(|(commit, _)| commit))
     }
 }
