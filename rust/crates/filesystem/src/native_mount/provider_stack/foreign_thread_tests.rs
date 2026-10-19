@@ -83,9 +83,16 @@ fn windows_owned_callback_threads_retire_once_and_preserve_other_tls() -> window
                 initialize();
             }
             run(|| {
-                if initialize_inside {
-                    initialize();
-                }
+                run(|| {
+                    if initialize_inside {
+                        initialize();
+                    }
+                    assert_eq!(observed.load(Ordering::SeqCst), 0);
+                })
+                .expect("nested callback preserves its caller fiber");
+                let panic =
+                    std::panic::catch_unwind(|| run(|| panic!("nested callback panic control")));
+                assert!(panic.is_err());
                 assert_eq!(observed.load(Ordering::SeqCst), 0);
             })
             .expect("first callback");
