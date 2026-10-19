@@ -119,37 +119,14 @@ pub(super) async fn read_pinned(
     .await
 }
 
-// Independent reference for the representation selected by an unmetered read.
-// Keep the original metered/native state machine above as the baseline.
-fn unmetered_future<'a>(
-    host: &'a Host,
-    reference: &'a FileRef,
-    maximum_bytes: u64,
-) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
-+ acyclic_stream::ProviderTask
-+ 'a {
-    async move {
-        if reference.volume().provider() != &host.provider
-            || reference.descriptor().byte_length() > maximum_bytes
-        {
-            return Err(Error::Invalid(
-                "content provider or size limit mismatch".into(),
-            ));
-        }
-        let generation = host.file_generation(reference, None)?;
-        let workspace =
-            fork_preparer_io::content_workspace(&host.provider, reference.volume(), None)?;
-        let path = format!("/{}", reference.path());
-        let bytes = host
-            .read(&workspace, Some(&generation), &path, maximum_bytes, None)
-            .await?;
-        reference.descriptor().verify(&bytes, &mut None)?;
-        Ok(bytes)
-    }
-}
-
+// The concrete shipping factory is independently instantiated outside its
+// allocation. Restoring the original factory or adding a box must still fail
+// the exact allocation guard in the caller.
 pub(super) fn saved_frame_bytes(host: &Host, reference: &FileRef, maximum_bytes: u64) -> u64 {
     let original = ORIGINAL_FRAME_BYTES.get();
     assert!(original > 0, "original factory layout was not captured");
-    (original - std::mem::size_of_val(&unmetered_future(host, reference, maximum_bytes))) as u64
+    let candidate = host.read_pinned_unmetered(reference, maximum_bytes, pinned_read::bytes_only);
+    original
+        .checked_sub(std::mem::size_of_val(&candidate))
+        .expect("the byte-only factory is smaller than the original shared factory") as u64
 }

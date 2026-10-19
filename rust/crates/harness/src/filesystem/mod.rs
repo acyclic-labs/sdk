@@ -479,54 +479,84 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(reference)
     }
 
-    async fn read_pinned_io(
-        &self,
-        reference: &FileRef,
+    fn read_pinned_io<'a>(
+        &'a self,
+        reference: &'a FileRef,
         maximum_bytes: u64,
-        io: Option<&fork_preparer_io::PreparationIo>,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        Ok(self
-            .read_pinned_receipt_io(reference, maximum_bytes, io)
-            .await?
-            .into_bytes())
+        io: Option<&'a fork_preparer_io::PreparationIo>,
+    ) -> impl std::future::Future<Output = Result<acyclic_stream::OwnedBytes>>
+    + acyclic_stream::ProviderTask
+    + 'a {
+        self.read_pinned_result_io(reference, maximum_bytes, io, pinned_read::bytes_only)
     }
 
-    async fn read_pinned_receipt_io(
+    fn read_pinned_receipt_io<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        io: Option<&'a fork_preparer_io::PreparationIo>,
+    ) -> impl std::future::Future<Output = Result<PinnedRead<A, O>>> + acyclic_stream::ProviderTask + 'a
+    {
+        self.read_pinned_result_io(reference, maximum_bytes, io, PinnedRead::from_read)
+    }
+
+    fn read_pinned_unmetered<'a, T, F>(
+        &'a self,
+        reference: &'a FileRef,
+        maximum_bytes: u64,
+        project: F,
+    ) -> impl std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a
+    where
+        F: FnOnce(acyclic_stream::OwnedBytes, Option<Generation<A, O>>) -> T
+            + acyclic_stream::ProviderTask
+            + 'a,
+    {
+        async move {
+            if reference.volume().provider() != &self.provider
+                || reference.descriptor().byte_length() > maximum_bytes
+            {
+                return Err(Error::Invalid(
+                    "content provider or size limit mismatch".into(),
+                ));
+            }
+            let generation = self.file_generation(reference, None)?;
+            let workspace =
+                fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
+            let path = format!("/{}", reference.path());
+            // Keep the authenticated immutable handle from the read. A
+            // retaining caller can pin it without opening the workspace
+            // and authenticating this same generation a second time.
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            acyclic_test_support::differential::record(("read", maximum_bytes));
+            let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            let opened = self.open(&workspace, Some(&owned)).await?;
+            let pinned = self.generation(&opened, &generation, Some(&owned)).await?;
+            let bytes = owned.sdk(
+                pinned
+                    .read(&path, maximum_bytes, &owned, owned.cancellation())
+                    .await,
+            )?;
+            owned.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
+            reference.descriptor().verify(&bytes, &mut None)?;
+            Ok(project(bytes, Some(pinned)))
+        }
+    }
+
+    async fn read_pinned_result_io<T, F>(
         &self,
         reference: &FileRef,
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
-    ) -> Result<PinnedRead<A, O>> {
+        project: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(acyclic_stream::OwnedBytes, Option<Generation<A, O>>) -> T
+            + acyclic_stream::ProviderTask,
+    {
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
-            crate::conversation::BoundedContentFuture::new(None, || async move {
-                if reference.volume().provider() != &self.provider
-                    || reference.descriptor().byte_length() > maximum_bytes
-                {
-                    return Err(Error::Invalid(
-                        "content provider or size limit mismatch".into(),
-                    ));
-                }
-                let generation = self.file_generation(reference, None)?;
-                let workspace =
-                    fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
-                let path = format!("/{}", reference.path());
-                // Keep the authenticated immutable handle from the read. A
-                // retaining caller can pin it without opening the workspace
-                // and authenticating this same generation a second time.
-                #[cfg(all(test, not(target_arch = "wasm32")))]
-                acyclic_test_support::differential::record(("read", maximum_bytes));
-                let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                let opened = self.open(&workspace, Some(&owned)).await?;
-                let pinned = self.generation(&opened, &generation, Some(&owned)).await?;
-                let bytes = owned.sdk(
-                    pinned
-                        .read(&path, maximum_bytes, &owned, owned.cancellation())
-                        .await,
-                )?;
-                owned.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                reference.descriptor().verify(&bytes, &mut None)?;
-                Ok(PinnedRead::pending(bytes, pinned))
+            crate::conversation::BoundedContentFuture::new(None, || {
+                self.read_pinned_unmetered(reference, maximum_bytes, project)
             })
         } else {
             crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -574,7 +604,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     })?;
                     drop(path);
                     drop(path_custody);
-                    return Ok(PinnedRead::retained(bytes));
+                    return Ok(project(bytes, None));
                 }
                 if reference.volume().provider() != &self.provider
                     || reference.descriptor().byte_length() > maximum_bytes
@@ -631,7 +661,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
                 drop(generation);
                 drop(generation_hold);
-                Ok(PinnedRead::retained(bytes))
+                Ok(project(bytes, None))
             })
         })?
         .await

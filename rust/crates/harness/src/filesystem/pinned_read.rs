@@ -8,7 +8,23 @@ pub(super) struct PinnedRead<A, O> {
     pending: Option<Generation<A, O>>,
 }
 
+pub(super) fn bytes_only<A, O>(
+    bytes: acyclic_stream::OwnedBytes,
+    _generation: Option<Generation<A, O>>,
+) -> acyclic_stream::OwnedBytes {
+    bytes
+}
+
 impl<A, O> PinnedRead<A, O> {
+    pub(super) fn from_read(
+        bytes: acyclic_stream::OwnedBytes,
+        generation: Option<Generation<A, O>>,
+    ) -> Self {
+        match generation {
+            Some(generation) => Self::pending(bytes, generation),
+            None => Self::retained(bytes),
+        }
+    }
     pub(super) fn pending(bytes: acyclic_stream::OwnedBytes, generation: Generation<A, O>) -> Self {
         Self {
             bytes,
@@ -20,9 +36,6 @@ impl<A, O> PinnedRead<A, O> {
             bytes,
             pending: None,
         }
-    }
-    pub(super) fn into_bytes(self) -> acyclic_stream::OwnedBytes {
-        self.bytes
     }
 }
 
