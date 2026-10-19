@@ -240,7 +240,9 @@ async fn durable_operation_lookup_is_constant_work_for_long_histories() -> TestR
             FsAppendOutcome::Committed(_)
         ));
     }
-    for operation in [1, 32, 64] {
+    // Check an append identity before creation's identity so the old stable-key
+    // lookup fails on missing semantic replay before any accounting comparison.
+    for operation in [32, 64, 1] {
         let mut lookup = AuthorityWork::new(BUDGET, &token);
         let found = store
             .find_operation(id, proposed(operation).operation_id, &mut lookup)
