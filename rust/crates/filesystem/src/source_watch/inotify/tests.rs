@@ -175,6 +175,57 @@ fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dy
     Ok(())
 }
 
+#[cfg(feature = "native-mount")]
+#[test]
+fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir(root.path().join("before"))?;
+    let host =
+        crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
+    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
+    assert!(watch.admit_with_work(Path::new("before"), &mut birth)?);
+    // Block the background consumer before producing events. The public fence
+    // must perform this drain with the unrelated invocation's work context.
+    watch
+        .shared
+        .reading
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .blocked = true;
+    let owner_before = original.lock().receipt();
+    std::fs::rename(root.path().join("before"), root.path().join("after"))?;
+    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
+    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut caller)?);
+    assert!(original.lock().receipt().allocation_operations > owner_before.allocation_operations);
+    assert!(incoming.lock().receipt().source_bytes_read > 0);
+    assert!(incoming.lock().receipt().bytes_copied > 0);
+    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert!(
+        watch
+            .shared
+            .reading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .cleanup
+            .is_empty()
+    );
+    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 #[test]
 fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
 -> Result<(), Box<dyn std::error::Error>> {
