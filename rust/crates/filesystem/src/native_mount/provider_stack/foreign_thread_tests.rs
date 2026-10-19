@@ -109,3 +109,32 @@ fn windows_owned_callback_threads_retire_once_and_preserve_other_tls() -> window
     }
     Ok(())
 }
+
+#[test]
+fn windows_owned_refused_callback_never_bootstraps_runtime() -> windows::core::Result<()> {
+    foreign_thread(|| {
+        let payload = crate::NativeMaterializationWork::accounting_state_bytes();
+        let work = crate::NativeMaterializationWork::new(
+            crate::WorkBudget {
+                allocation_operations: 1,
+                peak_allocation_bytes: payload,
+                ..crate::WorkBudget::UNBOUNDED
+            },
+            &crate::CancellationToken::new(),
+        )
+        .expect("original accounting state is admitted");
+        let before = work.receipt();
+        let bootstrapped = std::cell::Cell::new(false);
+        let result = super::run_with_runtime_bootstrap(
+            Some(&work),
+            || {
+                bootstrapped.set(true);
+                std::thread::current()
+            },
+            || panic!("refused callback ran"),
+        );
+        assert!(matches!(result, Err(super::ProviderFailure::Work(_))));
+        assert!(!bootstrapped.get(), "refused provider bootstrapped runtime");
+        assert_eq!(work.receipt(), before);
+    })
+}

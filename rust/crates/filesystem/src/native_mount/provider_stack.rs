@@ -23,7 +23,11 @@
 //! The SDK entry point verifies its retained authentic source guard using the
 //! existing callback runtime before entering this engine; allocation accounting
 //! here is not authorization and cannot replace that verification.
-//! OS stack reservation/commit and pure fiber scheduling are not estimated.
+//! Rust's platform thread identity and TLS destructor registration are opaque
+//! runtime-owned state, retained until thread exit. They are initialized only
+//! after exchange admission, before conversion, and are not claimed as
+//! byte-metered provider allocations. OS stack reservation/commit and pure
+//! fiber scheduling are not estimated.
 
 #![allow(
     unsafe_code,
@@ -313,11 +317,21 @@ pub(super) fn run_with_meter<T>(
     meter: Option<&crate::NativeMaterializationWork>,
     callback: impl FnOnce() -> T,
 ) -> Result<T, ProviderFailure> {
-    // Register Rust's real thread-exit cleanup on the ordinary calling thread,
-    // including when the first destructible TLS is initialized by a callback.
-    // The runtime owns this identity; no native provider resource lives in TLS.
-    let _thread = std::thread::current();
+    run_with_runtime_bootstrap(meter, std::thread::current, callback)
+}
+
+fn run_with_runtime_bootstrap<T>(
+    meter: Option<&crate::NativeMaterializationWork>,
+    bootstrap: impl FnOnce() -> std::thread::Thread,
+    callback: impl FnOnce() -> T,
+) -> Result<T, ProviderFailure> {
     let mut fiber_scope = provider_fiber(meter)?;
+    // Refused provider admission must not initialize platform runtime state.
+    // Register real thread-exit cleanup before converting this thread, including
+    // TLS first initialized by the callback. Rust owns the identity and opaque
+    // System-allocator TLS state until thread exit; these are not exchange bytes
+    // or a NativeAllocation and are not reported as byte-metered provider work.
+    let _thread = bootstrap();
     let fiber = fiber_scope.fiber;
     let exchange = fiber_scope.exchange;
     let result: Result<_, ProviderFailure> = (|| {
