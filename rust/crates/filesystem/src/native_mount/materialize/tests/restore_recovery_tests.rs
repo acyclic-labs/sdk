@@ -3,6 +3,211 @@ use super::*;
 pub(super) const FINITE_MATERIALIZATION_BUDGET: WorkBudget =
     crate::performance::work_budget(100_000, 64 * 1024 * 1024);
 
+struct ObservedMaterializeStore {
+    inner: crate::MemoryObjectStore,
+    completed_reads: Arc<AtomicU64>,
+}
+
+impl AsyncObjectStore for ObservedMaterializeStore {
+    fn supports_decoded_cache(&self) -> bool {
+        false
+    }
+
+    async fn put(
+        &self,
+        id: crate::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        self.inner.put(id, bytes, work).await
+    }
+
+    async fn read_many(
+        &self,
+        requests: &[crate::storage::ObjectReadRequest],
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        let result = self.inner.read_many(requests, work).await?;
+        self.completed_reads.fetch_add(1, Ordering::AcqRel);
+        Ok(result)
+    }
+
+    async fn contains(
+        &self,
+        id: crate::ObjectId,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        let result = self.inner.contains(id, work).await?;
+        self.completed_reads.fetch_add(1, Ordering::AcqRel);
+        Ok(result)
+    }
+
+    async fn read(
+        &self,
+        id: crate::ObjectId,
+        maximum: u64,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        let result = self.inner.read(id, maximum, work).await?;
+        // This observes a completed provider call independently of its receipt.
+        self.completed_reads.fetch_add(1, Ordering::AcqRel);
+        Ok(result)
+    }
+}
+
+struct ObservedReadReceipt {
+    work: WorkCounters,
+    source_reads: u64,
+}
+
+fn materialization_reads_match_actual_source(
+    reported: &ObservedReadReceipt,
+    baseline: &ObservedReadReceipt,
+) -> bool {
+    // Both traversals finish exactly the same first file and host operations.
+    // Only actual source reads, including cache/staged hits doing no backend
+    // work, may change the aggregate native-plus-source read receipt.
+    u128::from(reported.work.backend_read_operations) + u128::from(baseline.source_reads)
+        == u128::from(baseline.work.backend_read_operations) + u128::from(reported.source_reads)
+}
+
+async fn observe_multipath_failure<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    first: &NamespacePath,
+    missing: &NamespacePath,
+    completed_reads: &AtomicU64,
+    cancellation: &CancellationToken,
+) -> Result<(ObservedReadReceipt, ObservedReadReceipt), Box<dyn std::error::Error>> {
+    let baseline = tempfile::tempdir()?;
+    completed_reads.store(0, Ordering::Release);
+    let completed = materialize_checkout_paths(
+        checkout,
+        std::slice::from_ref(first),
+        &MaterializeOptions::native(baseline.path()),
+        FINITE_MATERIALIZATION_BUDGET,
+        cancellation,
+    )
+    .await?;
+    let completed = ObservedReadReceipt {
+        work: completed.work,
+        source_reads: completed_reads.swap(0, Ordering::AcqRel),
+    };
+    let output = tempfile::tempdir()?;
+    let failed = materialize_checkout_paths(
+        checkout,
+        &[first.clone(), missing.clone()],
+        &MaterializeOptions::native(output.path()),
+        FINITE_MATERIALIZATION_BUDGET,
+        cancellation,
+    )
+    .await
+    .err()
+    .ok_or("missing second path was accepted")?;
+    let failed_source_reads = completed_reads.swap(0, Ordering::AcqRel);
+    assert!(matches!(failed.error, MaterializeError::MissingPath));
+    assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
+    let failed = ObservedReadReceipt {
+        work: *failed.work,
+        source_reads: failed_source_reads,
+    };
+    eprintln!(
+        "materialize actual source reads baseline={} missing={}; reported total reads baseline={} missing={}",
+        completed.source_reads,
+        failed.source_reads,
+        completed.work.backend_read_operations,
+        failed.work.backend_read_operations,
+    );
+    assert!(materialization_reads_match_actual_source(&failed, &completed));
+    assert_eq!(completed.work.output_bytes, 5);
+    assert_eq!(failed.work.output_bytes, completed.work.output_bytes);
+    failed.work.verify(FINITE_MATERIALIZATION_BUDGET)?;
+    Ok((completed, failed))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn runtime_write_preserves_the_actual_os_error_and_unchanged_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("read-only-handle");
+    std::fs::write(&path, b"before")?;
+    let mut ordinary = File::open(&path)?;
+    let expected = std::io::Write::write(&mut ordinary, b"after")
+        .err()
+        .ok_or("ordinary read-only handle accepted a write")?;
+    let expected_code = expected.raw_os_error().ok_or("control did not reach the OS")?;
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?;
+    let mut receipt = GenerationReceipt::from_work(&original)?;
+    let native = acyclic_native_runtime::NativeFile::from_file(
+        File::open(&path)?,
+        Some(acyclic_native_runtime::NativeFileMeter::Owned(original.runtime_meter())),
+    )
+    .map_err(|(error, file)| {
+        drop(file);
+        original.runtime_error(error)
+    })?;
+    let mut before_effect =
+        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>;
+    let failure = write_generation_bytes(
+        &native,
+        0,
+        acyclic_stream::OwnedBytes::from_static(b"after"),
+        0,
+        &mut receipt,
+        &mut before_effect,
+    )
+    .await
+    .err()
+    .ok_or("native read-only handle accepted a write")?;
+    let MaterializeError::Io(actual) = failure else {
+        return Err(format!("actual OS error was replaced: {failure:?}").into());
+    };
+    assert_eq!(actual.raw_os_error(), Some(expected_code));
+    assert_eq!(actual.kind(), expected.kind());
+    assert_eq!(std::fs::read(&path)?, b"before");
+    assert_eq!(original.receipt().output_bytes, 0);
+    original.receipt().verify(FINITE_MATERIALIZATION_BUDGET)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn metadata_offload_keeps_original_cancellation_without_starting_host_io()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    std::fs::write(directory.path().join("file"), b"unchanged")?;
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?;
+    let mut receipt = GenerationReceipt::from_work(&original)?;
+    let root = HostRoot::open(directory.path(), &mut original.clone())?;
+    let root = receipt.owned_arc(root, 0)?;
+    let name = LogicalName::new(
+        NameEncoding::Utf8,
+        b"file".to_vec(),
+        crate::VolumeLimits::default().maximum_component_bytes,
+    )?;
+    let path = materialize_host_path(None, std::slice::from_ref(&name), &mut receipt)?;
+    let before = original.receipt();
+    cancellation.cancel();
+    let failure =
+        apply_host_metadata_offloaded(&root, &path, FileMetadata::default(), &mut receipt)
+            .await
+            .err()
+            .ok_or("metadata offload ignored original cancellation")?;
+    assert!(matches!(failure, MaterializeError::Cancelled(_)), "{failure:?}");
+    let after = original.receipt();
+    assert_eq!(after.backend_read_operations, before.backend_read_operations);
+    assert_eq!(after.backend_write_operations, before.backend_write_operations);
+    assert_eq!(after.output_bytes, before.output_bytes);
+    assert_eq!(std::fs::read(directory.path().join("file"))?, b"unchanged");
+    after.verify(FINITE_MATERIALIZATION_BUDGET)?;
+    Ok(())
+}
+
 #[test]
 fn replaced_root_is_rejected_before_destination_enumeration()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -47,15 +252,27 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
     let cancellation = CancellationToken::new();
     let limits = VolumeLimits::default();
-    let volume = super::super::tests::memory_volume(
-        crate::VolumeId::new(),
-        VolumeConfig {
-            limits,
-            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    let completed_reads = Arc::new(AtomicU64::new(0));
+    let fs = crate::Fs::new(
+        crate::MemoryAuthorityStore::default(),
+        ObservedMaterializeStore {
+            inner: crate::MemoryObjectStore::default(),
+            completed_reads: completed_reads.clone(),
         },
-        &cancellation,
-    )
-    .await?;
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let volume = fs
+        .create_volume_with_id(
+            crate::VolumeId::new(),
+            VolumeConfig {
+                limits,
+                ..VolumeConfig::portable(Lifecycle::Ephemeral)
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
     let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
     let first = NamespacePath::new(
         vec![LogicalName::new(
@@ -98,6 +315,28 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert_eq!(*zero.work, WorkCounters::UNCHARGED);
     assert!(std::fs::read_dir(zero_output.path())?.next().is_none());
 
+    let no_read_output = tempfile::tempdir()?;
+    completed_reads.store(0, Ordering::Release);
+    let no_read = materialize_checkout_paths(
+        &mut checkout,
+        &[first.clone(), missing.clone()],
+        &MaterializeOptions::native(no_read_output.path()),
+        WorkBudget {
+            backend_read_operations: 0,
+            ..FINITE_MATERIALIZATION_BUDGET
+        },
+        &cancellation,
+    )
+    .await
+    .err()
+    .ok_or("zero native-read allowance was accepted")?;
+    assert!(matches!(no_read.error, MaterializeError::Work(_)));
+    assert_eq!(no_read.work.backend_read_operations, 0);
+    assert_eq!(no_read.work.backend_write_operations, 0);
+    assert_eq!(no_read.work.output_bytes, 0);
+    assert!(std::fs::read_dir(no_read_output.path())?.next().is_none());
+    assert_eq!(completed_reads.load(Ordering::Acquire), 0);
+
     let cancelled_output = tempfile::tempdir()?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -134,29 +373,125 @@ async fn multipath_failure_retains_completed_host_and_lookup_work()
     assert!(no_write.work.allocation_operations > 0);
     assert!(std::fs::read_dir(no_write_output.path())?.next().is_none());
 
-    let baseline = tempfile::tempdir()?;
-    let completed = materialize_checkout_paths(
+    let no_sync_output = tempfile::tempdir()?;
+    let no_sync = materialize_checkout_paths(
         &mut checkout,
         std::slice::from_ref(&first),
-        &MaterializeOptions::native(baseline.path()),
-        FINITE_MATERIALIZATION_BUDGET,
-        &cancellation,
-    )
-    .await?;
-    let output = tempfile::tempdir()?;
-    let failed = materialize_checkout_paths(
-        &mut checkout,
-        &[first.clone(), missing.clone()],
-        &MaterializeOptions::native(output.path()),
-        FINITE_MATERIALIZATION_BUDGET,
+        &MaterializeOptions::native(no_sync_output.path()),
+        WorkBudget {
+            durability_operations: 0,
+            ..FINITE_MATERIALIZATION_BUDGET
+        },
         &cancellation,
     )
     .await
     .err()
-    .ok_or("missing second path was accepted")?;
-    assert!(matches!(failed.error, MaterializeError::MissingPath));
-    assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
-    assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
+    .ok_or("native file sync exceeded its original durability allowance")?;
+    assert!(
+        matches!(
+            no_sync.error,
+            MaterializeError::Work(WorkError::BudgetExceeded {
+                counter: "durability_operations",
+                maximum: 0,
+                ..
+            })
+        ),
+        "{:?}",
+        no_sync.error
+    );
+    assert_eq!(std::fs::read(no_sync_output.path().join("a-present"))?, b"first");
+    assert_eq!(no_sync.work.output_bytes, 5);
+    assert_eq!(no_sync.work.durability_operations, 0);
+
+    // First retain the original unpublished-candidate scenario: staged/cache
+    // hits must not be charged as backend reads that never happened.
+    observe_multipath_failure(
+        &mut checkout,
+        &first,
+        &missing,
+        &completed_reads,
+        &cancellation,
+    )
+    .await?;
+
+    // Publish and reopen, so this second scenario exercises actual backing-store
+    // reads rather than assuming an unpublished mutation needs provider I/O.
+    checkout
+        .commit(
+            crate::OperationId::new(),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, OperationFailure<crate::FsError>>(OperationReceipt {
+                    value: (),
+                    work: WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?;
+    drop(checkout);
+    let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
+    let (backed_baseline, backed_failure) = observe_multipath_failure(
+        &mut checkout,
+        &first,
+        &missing,
+        &completed_reads,
+        &cancellation,
+    )
+    .await?;
+    assert!(backed_failure.source_reads > backed_baseline.source_reads);
+
+    // Negative control: omit the source work that the independent provider
+    // observer actually saw. The identical accounting oracle must reject it.
+    let mut omitted = backed_failure;
+    omitted.work.backend_read_operations -= omitted.source_reads;
+    assert!(!materialization_reads_match_actual_source(
+        &omitted,
+        &backed_baseline,
+    ));
+
+    // Cancellation after a real host write must not erase the write or charge
+    // the missing path's unstarted lookup/output.
+    let late_cancellation = CancellationToken::new();
+    let late_work =
+        crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &late_cancellation)
+            .map_err(|failure| MaterializeError::from(failure.0))?;
+    let late_output = tempfile::tempdir()?;
+    let late_file = late_output.path().join("a-present");
+    let mut cancelled_after_write = false;
+    let mut cancel_after_write = |phase| {
+        if phase == NativeMaterializationActionPhase::Completed
+            && std::fs::read(&late_file).is_ok_and(|bytes| bytes == b"first")
+        {
+            cancelled_after_write = true;
+            late_cancellation.cancel();
+        }
+        std::future::ready(Ok::<(), MaterializeError>(()))
+    };
+    let late_error = materialize_source(
+        GenerationSource::Standalone(&mut checkout),
+        &[first.clone(), missing.clone()],
+        &MaterializeOptions::native(late_output.path()),
+        MaterializeMode::DurableOutput,
+        GenerationReceipt::from_work(&late_work)?,
+        Some(&mut cancel_after_write),
+    )
+    .await
+    .err()
+    .ok_or("post-write cancellation was ignored")?;
+    assert!(cancelled_after_write, "completed physical write was never observed");
+    assert!(matches!(late_error, MaterializeError::Cancelled(_)), "{late_error:?}");
+    assert_eq!(std::fs::read(late_output.path().join("a-present"))?, b"first");
+    assert!(!late_output.path().join("z-missing").exists());
+    let late_spent = late_work.receipt();
+    assert_eq!(late_spent.output_bytes, 5);
+    assert!(late_spent.backend_read_operations > 0);
+    assert!(late_spent.backend_write_operations > 0);
+    late_spent.verify(FINITE_MATERIALIZATION_BUDGET)?;
     let original = GenerationReceipt::from_work(
         &crate::NativeMaterializationWork::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)
             .map_err(|failure| MaterializeError::from(failure.0))?,

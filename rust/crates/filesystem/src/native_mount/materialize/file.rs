@@ -22,8 +22,8 @@ where
     let meter = receipt.custody.work().runtime_meter();
     let write = file
         .write_async(offset, bytes, meter, custody)
-        .map_err(MaterializeError::from)?;
-    write.await.map_err(MaterializeError::from)?;
+        .map_err(|error| receipt.runtime_error(error))?;
+    write.await.map_err(|error| receipt.runtime_error(error))?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
 }
@@ -42,8 +42,8 @@ where
     let meter = receipt.custody.work().runtime_meter();
     let sync = file
         .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
-        .map_err(MaterializeError::from)?;
-    sync.await.map_err(MaterializeError::from)?;
+        .map_err(|error| receipt.runtime_error(error))?;
+    sync.await.map_err(|error| receipt.runtime_error(error))?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
@@ -150,8 +150,8 @@ where
                                 },
                                 Some(meter),
                             )
-                            .map_err(MaterializeError::from)?;
-                        control.await.map_err(MaterializeError::from)?;
+                            .map_err(|error| receipt.runtime_error(error))?;
+                        control.await.map_err(|error| receipt.runtime_error(error))?;
                         generation_action(
                             before_effect,
                             NativeMaterializationActionPhase::Completed,

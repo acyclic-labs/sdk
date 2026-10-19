@@ -296,9 +296,8 @@ pub(super) fn create_file(
     native
         .map_err(|(error, file)| {
             drop(file);
-            error
+            receipt.runtime_error(error)
         })
-        .map_err(MaterializeError::from)
 }
 
 pub(super) fn account_written(

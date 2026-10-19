@@ -664,11 +664,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             )
         })
         .await
-        .map_err(|error| {
-            MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
-                error,
-            ))
-        })??;
+        .map_err(MaterializeError::from)??;
         let (stage_path, stage_allocation) = prepared.stage_path;
         let materialize_options = MaterializeOptions {
             destination: stage_path,

@@ -38,6 +38,12 @@ impl GenerationReceipt {
         })
     }
 
+    pub(super) fn runtime_error(&self, error: std::io::Error) -> MaterializeError {
+        // Native runtime admission reports an I/O marker while retaining its
+        // typed cause on this original ledger.
+        self.custody.work().runtime_error(error).into()
+    }
+
     pub(super) fn adopt(&mut self, bytes: usize) -> Result<(), MaterializeError> {
         let retained = self
             .custody

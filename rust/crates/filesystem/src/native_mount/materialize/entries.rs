@@ -200,8 +200,8 @@ where
                             },
                             Some(meter),
                         )
-                        .map_err(MaterializeError::from)?;
-                    control.await.map_err(MaterializeError::from)?;
+                        .map_err(|error| receipt.runtime_error(error))?;
+                    control.await.map_err(|error| receipt.runtime_error(error))?;
                     generation_action(before_effect, NativeMaterializationActionPhase::Completed)
                         .await?;
                 }
@@ -209,8 +209,8 @@ where
                 let meter = receipt.custody.work().runtime_meter();
                 let resize = file
                     .set_len_async(logical_bytes, Some(meter))
-                    .map_err(MaterializeError::from)?;
-                resize.await.map_err(MaterializeError::from)?;
+                    .map_err(|error| receipt.runtime_error(error))?;
+                resize.await.map_err(|error| receipt.runtime_error(error))?;
                 generation_action(before_effect, NativeMaterializationActionPhase::Completed)
                     .await?;
                 authenticated_metadata = Some(
@@ -256,9 +256,8 @@ where
                 )
                 .map_err(|(error, file)| {
                     drop(file);
-                    error
-                })
-                .map_err(MaterializeError::from)?;
+                    receipt.runtime_error(error)
+                })?;
                 sync_generation_file(&file, receipt, before_effect).await?;
                 drop(file);
             }

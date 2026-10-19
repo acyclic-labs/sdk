@@ -31,13 +31,13 @@ async fn overlapped_sparse_control_finishes_before_native_writes()
             |file, meter| mark_sparse(file, meter.expect("metered control")),
             Some(meter),
         )
-        .map_err(MaterializeError::from)?;
-    control.await.map_err(MaterializeError::from)?;
+        .map_err(|error| receipt.runtime_error(error))?;
+    control.await.map_err(|error| receipt.runtime_error(error))?;
     let meter = receipt.custody.work().runtime_meter();
     let resize = native
         .set_len_async(1024 * 1024, Some(meter))
-        .map_err(MaterializeError::from)?;
-    resize.await.map_err(MaterializeError::from)?;
+        .map_err(|error| receipt.runtime_error(error))?;
+    resize.await.map_err(|error| receipt.runtime_error(error))?;
     let mut ordinary_control = None::<
         &mut fn(
             NativeMaterializationActionPhase,

@@ -4,15 +4,17 @@ pub(super) async fn host_io<T: Send + 'static, E: Send + 'static>(
     lock: Option<File>,
     mut work: crate::NativeMaterializationWork,
     operation: impl FnOnce(&mut crate::NativeMaterializationWork) -> Result<T, E> + Send + 'static,
-) -> Result<Result<T, E>, std::io::Error> {
+) -> Result<Result<T, E>, crate::NativeTreeMaterializationError> {
     let observer = work.runtime_meter();
+    let original = work.clone();
     let operation = move || {
         // A cancelled waiter must not release the fence while host I/O continues.
         let _restore_lock = lock;
         operation(&mut work)
     };
-    let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))?;
-    task.await
+    let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))
+        .map_err(|error| original.runtime_error(error))?;
+    task.await.map_err(|error| original.runtime_error(error))
 }
 
 pub(super) struct PreparedRestore {
@@ -103,11 +105,7 @@ pub(super) async fn finish_restore(
         }
     })
     .await
-    .map_err(|error| {
-        MaterializeError::from(crate::NativeTreeMaterializationError::from_runtime_error(
-            error,
-        ))
-    })?
+    .map_err(MaterializeError::from)?
 }
 
 pub(super) fn prepare_restore(
