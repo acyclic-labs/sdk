@@ -145,7 +145,7 @@ proptest! {
         prop_assert!(error.to_string().contains("pinned read allocation count"),
             "extra factory box bypassed the exact count guard");
         let padded = differential::observe::<_, _, (&'static str, u64)>(initialize,
-            |fixture| crate::conversation::BoundedContentFuture::with_padded_frame(true,
+            |fixture| crate::conversation::BoundedContentFuture::<acyclic_stream::OwnedBytes>::with_padded_frame(true,
                 || observe(fixture, false, false)));
         prop_assert_eq!(&before.0.0, &padded.0.0);
         prop_assert_eq!(&before.1, &padded.1);
