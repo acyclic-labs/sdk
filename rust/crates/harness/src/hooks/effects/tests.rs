@@ -14,6 +14,7 @@ proptest! {
         text in ".{0,96}",
         operation in any::<[u8;16]>(),
         interrupted in any::<bool>(),
+        event in prop::sample::select(HookEvent::ALL.to_vec()),
     ) {
         futures::executor::block_on(async {
             let volume = TaskVolume::open(
@@ -22,7 +23,7 @@ proptest! {
             let task = TaskId::from_bytes([1;16]);
             let operation = OperationId::from_bytes(operation);
             let first = run_once::<_,_,_,_,_,true>(
-                &volume, (task, operation, "session-start"), 4096, true, authorization,
+                &volume, (task, operation, event.name()), 4096, true, authorization,
                 || async {
                     if interrupted { return Err(Error::Indeterminate(operation)); }
                     Ok(HookOutput { additional_context: vec![text.clone()], ..Default::default() })
@@ -31,16 +32,16 @@ proptest! {
             if interrupted {
                 prop_assert!(matches!(first, Err(Error::Indeterminate(id)) if id == operation));
             } else {
-                prop_assert_eq!(first?.additional_context, vec![text.clone()]);
+                prop_assert_eq!(first?.expect("started hook outcome").additional_context, vec![text.clone()]);
             }
             let replay = run_once::<_,_,_,_,_,true>(
-                &volume, (task, operation, "session-start"), 4096, false, authorization,
+                &volume, (task, operation, event.name()), 4096, false, authorization,
                 || async { panic!("recovery resent a hook") },
             ).await;
             if interrupted {
                 prop_assert!(matches!(replay, Err(Error::Indeterminate(id)) if id == operation));
             } else {
-                prop_assert_eq!(replay?.additional_context, vec![text]);
+                prop_assert_eq!(replay?.expect("retained hook outcome").additional_context, vec![text]);
             }
             Ok(())
         })?;
@@ -69,7 +70,7 @@ fn reconciliation_of_an_unstarted_phase_publishes_nothing() -> Result<()> {
             || async { panic!("reconciliation launched a hook") },
         )
         .await?;
-        assert_eq!(output, HookOutput::default());
+        assert!(output.is_none());
         assert_eq!(volume.head().await?, head);
         Ok(())
     })
@@ -86,13 +87,13 @@ proptest! {
             let operation = OperationId::from_bytes([2;16]);
             let output = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, true, authorization,
                 || async { Ok(HookOutput { blocked: blocking.then(|| "denied".into()),
-                    additional_context: vec!["x".repeat(length)], ..Default::default() }) }).await?;
+                    additional_context: vec!["x".repeat(length)], ..Default::default() }) }).await?.expect("started overflow outcome");
             prop_assert!(matches!(output.diagnostics[0].cause, crate::ProcessError::OutputLimit { .. }), "expected output limit cause");
             prop_assert_eq!(output.blocks(), blocking);
             prop_assert!(serde_json::to_vec(&output)?.len() <= 512);
             let replay = run_once::<_,_,_,_,_,true>(&volume, (task, operation, "SessionStart"), 512, false, authorization,
                 || async { panic!("overflow caused a hook resend") }).await?;
-            prop_assert_eq!(replay, output);
+            prop_assert_eq!(replay, Some(output));
             Ok(())
         })?;
     }

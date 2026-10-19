@@ -58,6 +58,8 @@ mod tool_failure;
 pub(crate) use tool_execution::tool_failure_content;
 pub(crate) use tool_failure::{CauseText, ToolFailureText};
 pub use tool_failure::{TOOL_FAILURE_MESSAGE_BYTES, ToolErrorClass, ToolFailureCause};
+#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+mod tool_hooks;
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(test, feature = "filesystem"))]
@@ -462,6 +464,8 @@ pub struct StockExecutor {
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
+    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+    hooks: Option<Arc<crate::hooks::BoundHooks>>,
     limits: Limits,
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,

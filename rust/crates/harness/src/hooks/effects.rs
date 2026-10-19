@@ -14,7 +14,7 @@ pub(crate) async fn run_once<P, A, AF, F, FF, const CLAIM: bool>(
     allow_start: bool,
     mut authorize: A,
     execute: F,
-) -> Result<HookOutput>
+) -> Result<Option<HookOutput>>
 where
     P: StreamProvider + ?Sized,
     A: FnMut() -> AF,
@@ -71,7 +71,8 @@ where
                 None,
                 None,
                 &mut |_| Ok(()),
-            );
+            )
+            .map(Some);
         }
         if !CLAIM {
             break cut.generation;
@@ -80,7 +81,7 @@ where
             return Err(Error::Indeterminate(operation));
         }
         if !allow_start {
-            return Ok(HookOutput::default());
+            return Ok(None);
         }
         let (conditions, deadline) = authorize().await?;
         // Creation is exclusive even for identical bytes. An idempotent append
@@ -119,7 +120,7 @@ where
         authorize,
     )
     .await?;
-    Ok(output)
+    Ok(Some(output))
 }
 
 #[cfg(all(test, acyclic_harness_loom))]

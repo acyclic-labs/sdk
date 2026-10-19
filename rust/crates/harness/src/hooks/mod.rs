@@ -13,7 +13,16 @@ pub(crate) mod effects;
 mod plan;
 mod snapshot;
 mod spec;
+pub(crate) use spec::HookSite;
 pub use spec::{HookEvent, HookFailure, HookRule, HookRun, HookSpec};
+mod input;
+pub use input::HookInput;
+
+#[cfg(feature = "filesystem")]
+pub(crate) struct BoundHooks {
+    pub(crate) rules: Hooks,
+    pub(crate) manifest: [u8; 32],
+}
 
 struct Binding {
     event: HookEvent,
@@ -54,6 +63,17 @@ impl Hooks {
         self.bindings.is_empty()
     }
 
+    /// Whether any command fires at a site the stock execution loop owns.
+    pub(crate) fn has_execution_hooks(&self) -> bool {
+        self.bindings.iter().any(|binding| {
+            let execution = match binding.event.site() {
+                HookSite::Prompt => false,
+                HookSite::BeforeTool | HookSite::AfterTool | HookSite::TurnEnd => true,
+            };
+            execution && !binding.commands.is_empty()
+        })
+    }
+
     /// Adds a Claude settings file or a Codex hooks.json document atomically.
     pub fn add_json(&mut self, document: &[u8]) -> Result<()> {
         let document = serde_json::from_slice(document)
@@ -73,33 +93,35 @@ impl Hooks {
         let mut bindings = Vec::new();
         for group in rules {
             let event = group.on;
-            let matcher =
-                if group.matcher.is_empty() || group.matcher == "*" || event == HookEvent::Stop {
-                    None
-                } else if group.matcher.chars().any(|character| {
-                    matches!(
-                        character,
-                        '.' | '^'
-                            | '$'
-                            | '*'
-                            | '+'
-                            | '?'
-                            | '('
-                            | ')'
-                            | '['
-                            | ']'
-                            | '{'
-                            | '}'
-                            | '|'
-                            | '\\'
-                    )
-                }) {
-                    Some(Matcher::Pattern(Regex::new(&group.matcher).map_err(
-                        |error| Error::Invalid(format!("hook matcher: {error}")),
-                    )?))
-                } else {
-                    Some(Matcher::Exact(group.matcher))
-                };
+            let matcher = if group.matcher.is_empty()
+                || group.matcher == "*"
+                || matches!(event, HookEvent::UserPromptSubmit | HookEvent::Stop)
+            {
+                None
+            } else if group.matcher.chars().any(|character| {
+                matches!(
+                    character,
+                    '.' | '^'
+                        | '$'
+                        | '*'
+                        | '+'
+                        | '?'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '|'
+                        | '\\'
+                )
+            }) {
+                Some(Matcher::Pattern(Regex::new(&group.matcher).map_err(
+                    |error| Error::Invalid(format!("hook matcher: {error}")),
+                )?))
+            } else {
+                Some(Matcher::Exact(group.matcher))
+            };
             for hook in &group.hooks {
                 hook.validate()?;
             }
@@ -113,19 +135,13 @@ impl Hooks {
         Ok(())
     }
 
-    pub(crate) fn commands<'a>(
+    pub(crate) fn commands<'a, 'input>(
         &'a self,
         event: HookEvent,
-        input: &'a Value,
+        input: impl Into<HookInput<'input>>,
         registry: &'a ToolRegistry,
     ) -> Result<impl Iterator<Item = &'a Arc<HookSpec>> + Clone> {
-        let subject = match event {
-            HookEvent::SessionStart => input.get("source"),
-            HookEvent::PreToolUse | HookEvent::PostToolUse => input.get("tool_name"),
-            HookEvent::Stop => None,
-        }
-        .and_then(Value::as_str)
-        .unwrap_or("");
+        let subject = input.into().subject(event);
         #[cfg(all(test, not(target_arch = "wasm32")))]
         let subject = if mcp_identity_tests::SUBSTITUTE_HOOK_NAME.with(std::cell::Cell::get) {
             "mcp__docs__search"
@@ -153,10 +169,10 @@ impl Hooks {
             .flat_map(|binding| &binding.commands))
     }
 
-    async fn run_commands<F, Fut>(
+    async fn run_commands<'a, F, Fut>(
         &self,
         event: HookEvent,
-        input: &Value,
+        input: impl Into<HookInput<'a>>,
         registry: &ToolRegistry,
         maximum_bytes: u64,
         mut execute: F,
@@ -165,6 +181,7 @@ impl Hooks {
         F: FnMut(&Arc<HookSpec>, usize) -> Fut,
         Fut: Future<Output = Result<(Option<i32>, Vec<u8>, Vec<u8>)>>,
     {
+        let input = input.into();
         let commands = self.commands(event, input, registry)?;
         let count = commands.clone().count();
         let quota = capture_quota(maximum_bytes, count);
@@ -189,6 +206,14 @@ fn capture_quota(maximum: u64, count: usize) -> usize {
     usize::try_from(maximum / (count.max(1) as u64))
         .unwrap_or(usize::MAX)
         .min(65_536)
+}
+
+pub(crate) fn report(event: HookEvent, output: &HookOutput) {
+    for failure in &output.diagnostics {
+        tracing::warn!(hook_event = event.name(), cause = ?failure.cause,
+            exit_code = failure.cause.exit_code(), blocking = failure.blocking,
+            error = %failure.cause.message(), "configured hook failed");
+    }
 }
 
 mod output;

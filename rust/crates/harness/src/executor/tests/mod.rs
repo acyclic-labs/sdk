@@ -719,6 +719,8 @@ mod compaction_resolution;
 mod content;
 mod invocation_bounds;
 mod output_bounds;
+#[cfg(feature = "filesystem")]
+mod reconciliation_scan;
 mod recovery;
 mod replay;
 #[cfg(not(target_arch = "wasm32"))]
@@ -726,12 +728,12 @@ mod request_ownership;
 #[cfg(feature = "filesystem")]
 mod summary_authorization;
 mod summary_file;
+#[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+mod tool_hooks;
 #[cfg(not(target_arch = "wasm32"))]
 mod tool_metadata;
 mod tools_1;
 mod tools_2;
-#[cfg(feature = "filesystem")]
-mod reconciliation_scan;
 fn echo_tools(
     executor: Arc<dyn crate::tool::ToolExecutor>,
     input_schema: Value,

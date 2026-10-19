@@ -445,7 +445,7 @@ async fn stop_hooks(
             crate::hooks::HookEvent::Stop,
             &fixture.workspace,
             &fixture.workspace,
-            json!({}),
+            &json!({}),
             &crate::tool::ToolRegistry::default(),
         )
         .await
@@ -538,7 +538,7 @@ async fn canonical_aliases_preserve_the_first_hook_bearing_source_order() -> Res
             crate::hooks::HookEvent::PreToolUse,
             &fixture.workspace,
             &fixture.workspace,
-            json!({"tool_name":"custom"}),
+            &json!({"tool_name":"custom"}),
             &crate::tool::ToolRegistry::default(),
         )
         .await?;

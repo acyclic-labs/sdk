@@ -153,6 +153,8 @@ proptest::proptest! {
             proptest::prop_assert!(check(&frames[..2]).is_err());
             let mut cancelled = frames.clone();cancelled[2]["outcome"]=json!("Cancelled");
             proptest::prop_assert!(check(&cancelled).is_err());
+            let mut failed = frames.clone();failed[2]["outcome"]=json!({"Failed":{"message":"expected failure"}});
+            proptest::prop_assert_eq!(check(&failed).is_ok(), outcome == ExpectedOutcome::Failed);
             let mut foreign = id;foreign[0]^=1;
             proptest::prop_assert!(super::drivers::check_frames(&expected,&frames,acyclic_harness::OperationId::from_bytes(foreign),outcome).is_err());
             let other = if outcome == ExpectedOutcome::Succeeded {ExpectedOutcome::Indeterminate} else {ExpectedOutcome::Succeeded};

@@ -82,6 +82,7 @@ impl Hooks {
         for (name, groups) in document.hooks {
             let on = match name.as_str() {
                 "SessionStart" => HookEvent::SessionStart,
+                "UserPromptSubmit" => HookEvent::UserPromptSubmit,
                 "PreToolUse" => HookEvent::PreToolUse,
                 "PostToolUse" => HookEvent::PostToolUse,
                 "Stop" => HookEvent::Stop,

@@ -17,18 +17,18 @@ pub(crate) type HookCheck = Arc<dyn Fn() -> std::io::Result<()> + Send + Sync>;
 impl Hooks {
     /// Runs matching hooks concurrently, merging decisions in configuration order.
     /// `workspace` is the project root; `cwd` is the individual tool's directory.
-    pub async fn run(
+    pub async fn run<'a>(
         &self,
         event: HookEvent,
         workspace: &Path,
         cwd: &Path,
-        input: Value,
+        input: impl Into<HookInput<'a>>,
         registry: &ToolRegistry,
     ) -> Result<HookOutput> {
         self.run_checked(
             event,
             (workspace, cwd),
-            input,
+            input.into(),
             registry,
             65_536,
             Arc::new(|| Ok(())),
@@ -40,7 +40,7 @@ impl Hooks {
         &self,
         event: HookEvent,
         paths: (&Path, &Path),
-        mut input: Value,
+        input: HookInput<'_>,
         registry: &ToolRegistry,
         maximum_bytes: u64,
         check: HookCheck,
@@ -49,19 +49,9 @@ impl Hooks {
         if self.bindings.is_empty() {
             return Ok(HookOutput::default());
         }
-        let fields = input
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("hook input must be an object".into()))?;
-        fields.insert("hook_event_name".into(), Value::String(event.name().into()));
-        fields.insert(
-            "cwd".into(),
-            Value::String(cwd.to_string_lossy().into_owned()),
-        );
-        let mut bytes =
-            serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
-        bytes.push(b'\n');
+        let bytes = input.encode(event, cwd)?;
         let request = Arc::new((workspace.to_path_buf(), cwd.to_path_buf(), bytes));
-        self.run_commands(event, &input, registry, maximum_bytes, |hook, quota| {
+        self.run_commands(event, input, registry, maximum_bytes, |hook, quota| {
             run_hook(
                 Arc::clone(hook),
                 Arc::clone(&request),

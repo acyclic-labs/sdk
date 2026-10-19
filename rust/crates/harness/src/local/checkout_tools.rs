@@ -132,11 +132,11 @@ impl ToolExecutor for CheckoutTools {
         &'a self,
         configuration: (&'a crate::hooks::Hooks, [u8; 32]),
         event: crate::hooks::HookEvent,
-        input: serde_json::Value,
+        input: crate::hooks::HookInput<'a>,
         registry: &'a ToolRegistry,
         context: ToolContext,
         reconcile_only: bool,
-    ) -> BoxProviderFuture<'a, Result<crate::hooks::HookOutput>> {
+    ) -> BoxProviderFuture<'a, Result<Option<crate::hooks::HookOutput>>> {
         Box::pin(self.configured_hooks(
             configuration,
             event,

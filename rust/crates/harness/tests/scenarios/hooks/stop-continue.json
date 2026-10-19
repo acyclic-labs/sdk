@@ -1,0 +1,82 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "Stop": [
+     {
+      "hooks": [
+       {
+        "type": "command",
+        "command": "input=$(cat); case \"$input\" in *'\"stop_hook_active\":true'*) exit 0;; esac; printf '%s' '{\"decision\":\"block\",\"reason\":\"HOOK-STOP-FINCH\"}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "turns": [
+  [
+   {
+    "type": "event",
+    "kind": "tool_call",
+    "call_id": "call",
+    "name": "bash",
+    "arguments": {
+     "command": "printf changed > plans/a.md; printf visible"
+    }
+   },
+   {
+    "type": "event",
+    "kind": "completed",
+    "metadata": null
+   }
+  ],
+  "done",
+  "finished"
+ ],
+ "expect": {
+  "text": "finished",
+  "requests": [
+   {
+    "messages": [
+     {
+      "$contains": "Use the stock bash tool."
+     }
+    ]
+   },
+   {
+    "messages": [
+     {
+      "$contains": "visible"
+     }
+    ]
+   },
+   {
+    "messages": [
+     {
+      "$contains": "done"
+     },
+     {
+      "$contains": "HOOK-STOP-FINCH"
+     }
+    ]
+   }
+  ],
+  "results": {
+   "call": {
+    "name": "bash",
+    "content": {
+     "kind": "json",
+     "value": {
+      "success": true,
+      "exit_code": 0,
+      "stdout": "visible",
+      "stderr": "",
+      "stop": null
+     }
+    }
+   }
+  }
+ }
+}

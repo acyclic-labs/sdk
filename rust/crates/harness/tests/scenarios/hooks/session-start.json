@@ -1,0 +1,52 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "SessionStart": [
+     {
+      "matcher": "",
+      "hooks": [
+       {
+        "type": "command",
+        "command": "cat >/dev/null; printf '%s' 'HOOK-SESSION-LYNX'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "expect": {
+  "results": {
+   "call": {
+    "name": "bash",
+    "content": {
+     "kind": "json",
+     "value": {
+      "success": true,
+      "exit_code": 0,
+      "stdout": "visible",
+      "stderr": "",
+      "stop": null
+     }
+    }
+   }
+  },
+  "requests": [
+   {
+    "messages": [
+     {
+      "$contains": "HOOK-SESSION-LYNX"
+     }
+    ]
+   },
+   {
+    "messages": [
+     {
+      "$contains": "HOOK-SESSION-LYNX"
+     }
+    ]
+   }
+  ]
+ }
+}

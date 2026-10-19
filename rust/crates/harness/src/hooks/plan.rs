@@ -124,7 +124,10 @@ impl<'a> Plan<'a> {
     ) -> std::result::Result<Self, &'static str> {
         let mut plan = Self::empty();
         if code == Some(2) {
-            if matches!(event, HookEvent::PreToolUse | HookEvent::Stop) {
+            if matches!(
+                event,
+                HookEvent::PreToolUse | HookEvent::UserPromptSubmit | HookEvent::Stop
+            ) {
                 if output.blocked.is_none() {
                     plan.blocked = Some(Text::Stderr(stderr));
                 }
@@ -159,14 +162,13 @@ impl<'a> Plan<'a> {
         ) {
             Ok(fields) => fields,
             Err(_)
-                if !text.starts_with('{')
-                    && (!text.starts_with('[') || event == HookEvent::SessionStart) =>
+                if !text.starts_with('{') && (!text.starts_with('[') || event.plain_context()) =>
             {
                 // A valid non-object JSON value remains invalid structured output.
                 if serde_json::from_str::<&RawValue>(text).is_ok() {
                     return Err("hook structured output must be an object");
                 }
-                if event == HookEvent::SessionStart {
+                if event.plain_context() {
                     plan.context[0] = Some(Text::Plain(text));
                 }
                 return Ok(plan);
@@ -224,8 +226,10 @@ impl<'a> Plan<'a> {
                         .map(Text::Json)
                         .unwrap_or(Text::Plain("Stopped by hook")),
                 );
-            } else if matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
-                && (decision == Some(1) || permission == Some(2))
+            } else if matches!(
+                event,
+                HookEvent::PreToolUse | HookEvent::UserPromptSubmit | HookEvent::Stop
+            ) && (decision == Some(1) || permission == Some(2))
             {
                 plan.blocked = Some(
                     specific[2]

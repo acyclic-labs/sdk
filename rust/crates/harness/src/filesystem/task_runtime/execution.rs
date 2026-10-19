@@ -185,6 +185,12 @@ where
         self
     }
 
+    #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
+    pub(crate) fn with_hooks(mut self, hooks: Option<Arc<crate::hooks::BoundHooks>>) -> Self {
+        self.executor = self.executor.with_hooks(hooks);
+        self
+    }
+
     /// Executes or reconciles using the bound journal and existing stock loop.
     pub async fn execute(&self, input: TurnInput) -> Result<TurnOutput> {
         self.execute_progress(input).await?.into_output()

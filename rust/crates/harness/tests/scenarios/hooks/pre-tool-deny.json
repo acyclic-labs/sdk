@@ -1,0 +1,52 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "PreToolUse": [
+     {
+      "matcher": "Bash",
+      "hooks": [
+       {
+        "type": "command",
+        "command": "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"HOOK-DENY-OTTER\"}}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "expect": {
+  "wire": [],
+  "files": {
+   "plans/a.md": "before\n"
+  },
+  "results": {
+   "call": {
+    "name": "bash",
+    "content": {
+     "kind": "error",
+     "message": {
+      "$contains": "HOOK-DENY-OTTER"
+     }
+    }
+   }
+  },
+  "requests": [
+   {
+    "messages": [
+     {
+      "$contains": "Use the stock bash tool."
+     }
+    ]
+   },
+   {
+    "messages": [
+     {
+      "$contains": "HOOK-DENY-OTTER"
+     }
+    ]
+   }
+  ]
+ }
+}

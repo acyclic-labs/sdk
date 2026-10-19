@@ -102,12 +102,12 @@ mod tests {
         // failure policy for every event/subject, and re-encode byte-identically.
         #[test]
         fn normalized_snapshot_preserves_selection(
-            rules in prop::collection::vec((0usize..4, prop::sample::select(vec!["", "*", "Bash", "Edit|Write", "^Read$", "[invalid"]), ".{0,24}", 0u64..1000, any::<bool>()), 0..8),
+            rules in prop::collection::vec((0usize..HookEvent::ALL.len(), prop::sample::select(vec!["", "*", "Bash", "Edit|Write", "^Read$", "[invalid"]), ".{0,24}", 0u64..1000, any::<bool>()), 0..8),
             maximum in prop_oneof![0u64..2048, Just(u64::MAX)],
             subject in prop_oneof!["[a-zA-Z]{0,12}", Just("Bash".into()), Just("Edit".into()), Just("Write".into()), Just("Read".into())],
         ) {
             let rules: Vec<_> = rules.into_iter().map(|(event, matcher, command, timeout_ms, block)| HookRule {
-                on: [HookEvent::SessionStart, HookEvent::PreToolUse, HookEvent::PostToolUse, HookEvent::Stop][event],
+                on: HookEvent::ALL[event],
                 matcher: matcher.into(),
                 hooks: vec![HookSpec { run: HookRun::Executable { executable: command, argv: vec!["one argument".into()] }, timeout_ms, failure: if block { HookFailure::Block } else { HookFailure::Report } }],
             }).collect();
@@ -129,7 +129,7 @@ mod tests {
             prop_assert_eq!(original.is_empty(), decoded.is_empty());
             let registry = ToolRegistry::default();
             let input = serde_json::json!({"source":subject,"tool_name":subject});
-            for event in [HookEvent::SessionStart, HookEvent::PreToolUse, HookEvent::PostToolUse, HookEvent::Stop] {
+            for event in HookEvent::ALL {
                 let selected = |hooks: &Hooks| -> Result<Vec<HookSpec>> { Ok(hooks.commands(event, &input, &registry)?.map(|hook| hook.as_ref().clone()).collect()) };
                 prop_assert_eq!(selected(&original)?, selected(&decoded)?);
             }

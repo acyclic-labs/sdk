@@ -1,0 +1,44 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "PreToolUse": [
+     {
+      "matcher": "Bash",
+      "hooks": [
+       {
+        "type": "command",
+        "command": "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"printf hooked > plans/a.md; printf replaced\"}}}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "expect": {
+  "files": {
+   "plans/a.md": "hooked"
+  },
+  "arguments": {
+   "call": {
+    "command": "printf hooked > plans/a.md; printf replaced"
+   }
+  },
+  "results": {
+   "call": {
+    "name": "bash",
+    "content": {
+     "kind": "json",
+     "value": {
+      "success": true,
+      "exit_code": 0,
+      "stdout": "replaced",
+      "stderr": "",
+      "stop": null
+     }
+    }
+   }
+  }
+ }
+}

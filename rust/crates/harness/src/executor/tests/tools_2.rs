@@ -46,7 +46,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
                 0,
                 invocation,
                 0,
-                &mut messages
+                &mut messages,
+                &mut Vec::new(),
             )
             .await,
         Err(Error::Invalid(_))
@@ -312,7 +313,15 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
         let journal = Journal::default();
         let mut messages = vec![call_message(&invocation)];
         let result = StockExecution::ordinary(&executor)
-            .settle_tool_call(&journal, operation, 0, invocation.clone(), 0, &mut messages)
+            .settle_tool_call(
+                &journal,
+                operation,
+                0,
+                invocation.clone(),
+                0,
+                &mut messages,
+                &mut Vec::new(),
+            )
             .await;
         if broken {
             // Negative control: the former boundary classification aborts before a record.
@@ -322,7 +331,15 @@ async fn semantic_tool_preflight_replays_a_failure_but_native_infrastructure_sta
             assert!(matches!(result?, ExecutionProgress::Ready(())));
             let mut replayed = vec![call_message(&invocation)];
             StockExecution::ordinary(&executor)
-                .settle_tool_call(&journal, operation, 0, invocation, 0, &mut replayed)
+                .settle_tool_call(
+                    &journal,
+                    operation,
+                    0,
+                    invocation,
+                    0,
+                    &mut replayed,
+                    &mut Vec::new(),
+                )
                 .await?;
             assert_eq!(messages, replayed);
             let records = journal.0.lock().unwrap();

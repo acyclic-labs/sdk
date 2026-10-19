@@ -1,0 +1,54 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "UserPromptSubmit": [
+     {
+      "hooks": [
+       {
+        "type": "command",
+        "command": "cat >/dev/null; printf '%s' '{\"decision\":\"block\",\"reason\":\"HOOK-BLOCK-KITE\"}'"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "turns": [],
+ "expect": {
+  "text": null,
+  "outcome": "failed",
+  "error": "HOOK-BLOCK-KITE",
+  "wire": [],
+  "files": {
+   "plans/a.md": "before\n"
+  },
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Failed": {}
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "failed",
+    "attention": true,
+    "parent": null
+   }
+  ]
+ }
+}

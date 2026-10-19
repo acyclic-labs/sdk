@@ -533,7 +533,23 @@ fn registry_rejects_unsafe_urls_and_preserves_model_slashes() -> Result<()> {
 #[tokio::test]
 async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol() -> Result<()> {
     use acyclic_harness::model::{ModelContentPart, ToolResultContent};
-    for (adapter, _) in fixtures() {
+    for (adapter, content, expected) in fixtures().into_iter().flat_map(|(adapter, _)| {
+        [
+            (
+                ToolResultContent::Json {
+                    value: json!({"value":1}),
+                },
+                "{\"value\":1}",
+            ),
+            (
+                ToolResultContent::Error {
+                    message: "denied é 🦀".into(),
+                },
+                "denied é 🦀",
+            ),
+        ]
+        .map(move |(content, expected)| (adapter, content, expected))
+    }) {
         let (provider, script) = provider(adapter, 200);
         let tool = acyclic_harness::tool::ToolDefinition {
             name: "echo".into(),
@@ -567,9 +583,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                     content: ModelContent::Part(ModelContentPart::ToolResult {
                         call_id: "call".into(),
                         name: "echo".into(),
-                        content: ToolResultContent::Json {
-                            value: json!({"value":1}),
-                        },
+                        content,
                     }),
                 },
             ],
@@ -608,18 +622,21 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                     "{\"value\":1}"
                 );
                 assert_eq!(body["messages"][2]["tool_call_id"], "call");
+                assert_eq!(body["messages"][2]["content"], expected);
                 assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
             }
             Adapter::Anthropic => {
                 assert_eq!(body["messages"][1]["content"][0]["id"], "call");
                 assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
                 assert_eq!(body["messages"][2]["role"], "user");
+                assert_eq!(body["messages"][2]["content"][0]["content"], expected);
                 assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
             }
             Adapter::Responses => {
                 assert_eq!(body["input"][1]["call_id"], "call");
                 assert_eq!(body["input"][2]["type"], "function_call_output");
                 assert_eq!(body["input"][2]["call_id"], "call");
+                assert_eq!(body["input"][2]["output"], expected);
                 assert_eq!(body["tools"][0]["parameters"]["type"], "object");
             }
             Adapter::Gemini => {
@@ -630,6 +647,10 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 assert_eq!(
                     body["contents"][2]["parts"][0]["functionResponse"]["id"],
                     "call"
+                );
+                assert_eq!(
+                    body["contents"][2]["parts"][0]["functionResponse"]["response"]["output"],
+                    expected
                 );
                 assert_eq!(
                     body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],

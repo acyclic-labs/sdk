@@ -1,6 +1,7 @@
 #![no_main]
 
 use acyclic_harness::{Error, ProcessError, Result};
+use acyclic_harness::{TaskId, tool};
 use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
@@ -30,22 +31,75 @@ fn apply(
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
+#[path = "../../harness/src/hooks/input.rs"]
+mod input;
+use input::HookInput;
 
 fuzz_target!(|bytes: &[u8]| {
     if bytes.len() > 4096 {
         return;
+    }
+    if let Ok(fields) = serde_json::from_slice::<Value>(bytes) {
+        let invocation = tool::ToolInvocation {
+            operation_id: acyclic_harness::OperationId::from_bytes([1; 16]),
+            call_id: "fuzz-call".into(),
+            name: "fuzz-tool".into(),
+            arguments: fields.clone(),
+        };
+        let response = tool::ToolResult {
+            value: fields.clone(),
+        };
+        for post in [false, true] {
+            let event = if post {
+                HookEvent::PostToolUse
+            } else {
+                HookEvent::PreToolUse
+            };
+            let input = HookInput::Tool {
+                invocation: &invocation,
+                response: post.then_some(&response),
+                session_id: None,
+            };
+            let encoded = input
+                .encode(event, std::path::Path::new("workspace"))
+                .unwrap();
+            let decoded: Value = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(&decoded["tool_input"], &fields);
+            assert_eq!(decoded.get("tool_response"), post.then_some(&fields));
+            assert_eq!(decoded["hook_event_name"], event.name());
+            assert_eq!(decoded["cwd"], "workspace");
+        }
+        let encoded = HookInput::Fields(&fields)
+            .encode(HookEvent::PreToolUse, std::path::Path::new("workspace"));
+        if fields.is_object() {
+            let decoded: Value = serde_json::from_slice(&encoded.unwrap()).unwrap();
+            assert_eq!(decoded["cwd"], "workspace");
+            assert_eq!(decoded["hook_event_name"], "PreToolUse");
+            for (key, value) in fields.as_object().unwrap() {
+                if !matches!(key.as_str(), "cwd" | "hook_event_name") {
+                    assert_eq!(&decoded[key], value);
+                }
+            }
+        } else {
+            assert!(encoded.is_err());
+        }
     }
     if let Ok(output) = serde_json::from_slice::<HookOutput>(bytes) {
         let encoded = serde_json::to_vec(&output).unwrap();
         let decoded: HookOutput = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(output, decoded);
     }
-    for event in [
-        HookEvent::SessionStart,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-    ] {
+    for event in HookEvent::ALL {
+        // Each event is fired by exactly one site, and a single-event site names it.
+        assert_eq!(
+            HookEvent::at(event.site())
+                .filter(|fired| *fired == event)
+                .count(),
+            1
+        );
+        if let Ok(fired) = HookEvent::only(event.site()) {
+            assert_eq!(fired, event);
+        }
         let mut reports = HookOutput::default();
         apply(
             &mut reports,
@@ -115,12 +169,7 @@ fuzz_target!(|bytes: &[u8]| {
     }
     // All event-specific deltas, including replacement arguments, must obey
     // the retained file bound and keep folding a following explicit denial.
-    for event in [
-        HookEvent::SessionStart,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-    ] {
+    for event in HookEvent::ALL {
         // Exercise the production ledger with arbitrary output followed by a guard.
         // This must stay bounded and cannot abandon a deny after exhaustion.
         let mut ledger = budget::Budget::new(4096).unwrap();

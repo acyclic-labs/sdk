@@ -1,3 +1,4 @@
+use super::records::RecordedCall;
 use super::*;
 
 impl StockExecution<'_> {
@@ -36,6 +37,7 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let mut results = Vec::new();
+        let mut hook_context = Vec::new();
         for event in retained.events {
             let (invocation, metadata) = match event {
                 ModelEvent::ReasoningBlock { block } => {
@@ -58,19 +60,94 @@ impl StockExecution<'_> {
                 ),
                 _ => continue,
             };
-            let projection = completed_tool_projection(
-                journal,
-                &records,
-                step,
-                crate::tool::RecordedInvocation {
-                    invocation: &invocation,
-                    metadata: &metadata,
-                },
-                &request.tools,
-                self.stock.limits,
-                self.io,
-            )
-            .await?;
+            let (_, call_records) = self
+                .tool_records(journal, input.operation_id, step, &invocation.call_id)
+                .await?;
+            let call = RecordedCall::classify(&call_records).map_err(|reason| {
+                stock_boundary(self.io, crate::wire::ErrorCode::Invalid, reason)
+            })?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut invocation = invocation;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let guard = self
+                .tool_hook_output(
+                    input.operation_id,
+                    crate::hooks::HookSite::BeforeTool,
+                    &invocation,
+                    None,
+                    true,
+                )
+                .await?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let mut guard = match guard {
+                Some(output) => output,
+                None if matches!(call, RecordedCall::Failed { started: None, .. }) => {
+                    crate::hooks::HookOutput::default()
+                }
+                None => return Err(Error::Indeterminate(input.operation_id)),
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let denied = guard.blocks();
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let original_arguments = if denied {
+                None
+            } else {
+                guard
+                    .updated_input
+                    .take()
+                    .map(|arguments| std::mem::replace(&mut invocation.arguments, arguments))
+            };
+            if let Some(reference) = call.started() {
+                let recorded =
+                    load_json::<crate::tool::RecordedInvocation>(journal, reference, self.io)
+                        .await?;
+                if recorded.0.invocation != invocation || recorded.0.metadata != metadata {
+                    return Err(stock_boundary(
+                        self.io,
+                        crate::wire::ErrorCode::Conflict,
+                        "tool call identity is bound to another invocation",
+                    ));
+                }
+            }
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let completed = matches!(call, RecordedCall::Completed { .. });
+            let projection = match call {
+                RecordedCall::Failed { reason, cause, .. } => {
+                    tool_failure_content(reason, cause, self.io)?
+                }
+                _ => {
+                    completed_tool_projection(
+                        journal,
+                        &records,
+                        step,
+                        crate::tool::RecordedInvocation {
+                            invocation: &invocation,
+                            metadata: &metadata,
+                        },
+                        &request.tools,
+                        self.stock.limits,
+                        self.io,
+                    )
+                    .await?
+                }
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let feedback = if !completed {
+                crate::hooks::HookOutput::default()
+            } else {
+                self.tool_hook(
+                    input.operation_id,
+                    crate::hooks::HookSite::AfterTool,
+                    &invocation,
+                    None,
+                    true,
+                )
+                .await?
+            };
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(original) = original_arguments {
+                invocation.arguments = original;
+            }
             stock_vec_push(
                 &mut request.messages,
                 ModelMessage {
@@ -98,6 +175,14 @@ impl StockExecution<'_> {
                 },
                 self.io,
             )?;
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            {
+                // The refusal consumed the explicit guard decision into its
+                // tool result. Replay must consume it at the same point.
+                let _ = guard.take_block_reason();
+                self.append_hook_context(&mut hook_context, guard)?;
+                self.append_hook_context(&mut hook_context, feedback)?;
+            }
             if through_call.is_some_and(|id| invocation.call_id == id) {
                 break;
             }
@@ -105,6 +190,7 @@ impl StockExecution<'_> {
         for result in results {
             stock_vec_push(&mut request.messages, result, self.io)?;
         }
+        super::turn::append_step_context(&mut request.messages, &mut hook_context, self.io)?;
         let prepared =
             crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io)?;
         self.verify_model_request_content(journal, &prepared)

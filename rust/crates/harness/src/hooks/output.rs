@@ -35,6 +35,15 @@ impl HookOutput {
         self.blocked.is_some() || self.diagnostics.iter().any(|failure| failure.blocking)
     }
 
+    pub(crate) fn take_block_reason(&mut self) -> Option<String> {
+        self.blocked.take().or_else(|| {
+            self.diagnostics
+                .iter()
+                .find(|failure| failure.blocking)
+                .map(|failure| failure.cause.message().clone())
+        })
+    }
+
     /// Propagates the same retained cause, including output validation failures.
     pub fn into_result(mut self) -> Result<Self> {
         if let Some(index) = self.diagnostics.iter().position(|failure| failure.blocking) {

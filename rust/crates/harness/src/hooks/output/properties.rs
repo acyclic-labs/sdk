@@ -4,12 +4,7 @@ use proptest::prelude::*;
 use serde_json::json;
 
 fn event(index: usize) -> HookEvent {
-    [
-        HookEvent::SessionStart,
-        HookEvent::PreToolUse,
-        HookEvent::PostToolUse,
-        HookEvent::Stop,
-    ][index]
+    HookEvent::ALL[index]
 }
 
 fn json_value() -> impl Strategy<Value = Value> {
@@ -29,6 +24,28 @@ fn json_value() -> impl Strategy<Value = Value> {
 }
 
 proptest! {
+    // Every explicit or failure-policy block supplies exactly one moved reason.
+    // Ignoring typed failures is the deliberately broken projection.
+    #[test]
+    fn tool_block_reason_preserves_typed_failure_policy(
+        reason in ".{0,96}", explicit in any::<bool>(), blocking in any::<bool>(),
+    ) {
+        let mut output = HookOutput {
+            blocked: explicit.then(|| reason.clone()),
+            diagnostics: vec![HookDiagnostic { cause: crate::ProcessError::Timeout {
+                exit_code:Some(3), message:reason.clone() }, blocking }],
+            ..Default::default()
+        };
+        let expected = output.blocks();
+        let broken = output.blocked.is_some();
+        let moved = output.take_block_reason();
+        prop_assert_eq!(moved.is_some(), expected);
+        if expected { prop_assert_eq!(moved.as_deref(), Some(reason.as_str())); }
+        prop_assert_eq!(&output.diagnostics[0].cause,
+            &crate::ProcessError::Timeout { exit_code: Some(3), message: reason.clone() });
+        if blocking && !explicit { prop_assert_ne!(broken, expected); }
+    }
+
     // Property: retaining a decision as an outcome file preserves every field,
     // including nested replacement arguments, escaped text and empty contexts.
     #[test]
@@ -100,7 +117,7 @@ proptest! {
     // including strings requiring escaping and nested replacement tool arguments.
     #[test]
     fn structured_output_round_trip_preserves_decisions(
-        index in 0usize..4,
+        index in 0usize..HookEvent::ALL.len(),
         continue_run in any::<bool>(),
         deny in any::<bool>(),
         permission in 0usize..3,
@@ -132,8 +149,9 @@ proptest! {
         pretty_output.observe(event, Some(0), &pretty, b"").unwrap();
         prop_assert_eq!(&compact_output, &pretty_output);
         prop_assert!(compact_output.diagnostics.is_empty());
-        if !continue_run || matches!(event, HookEvent::PreToolUse | HookEvent::Stop)
-            && (deny || permission == 2)
+        if !continue_run
+            || matches!(event, HookEvent::PreToolUse | HookEvent::UserPromptSubmit | HookEvent::Stop)
+                && (deny || permission == 2)
         {
             prop_assert_eq!(compact_output.blocked.as_deref(), Some(reason.as_str()));
         } else {
@@ -157,7 +175,7 @@ proptest! {
     // context or argument mutation; apply then implements the failure policy.
     #[test]
     fn invalid_fields_are_atomic_and_obey_failure_policy(
-        index in 0usize..4,
+        index in 0usize..HookEvent::ALL.len(),
         field in 0usize..11,
         invalid in prop_oneof![Just(Value::Null), any::<bool>().prop_map(Value::Bool), any::<i64>().prop_map(|n| json!(n))],
         reason in ".{0,48}",
@@ -196,7 +214,7 @@ proptest! {
     // first denial. This is the runner's deterministic config-order merge rule.
     #[test]
     fn first_denial_is_monotonic(
-        index in 0usize..4,
+        index in 0usize..HookEvent::ALL.len(),
         bytes in prop::collection::vec(any::<u8>(), 0..512),
         code in prop::option::of(-3i32..5),
         block_failure in any::<bool>(),

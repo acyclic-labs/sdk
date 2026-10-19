@@ -1,0 +1,41 @@
+{
+ "home": {
+  ".claude/settings.json": {
+   "hooks": {
+    "Stop": [
+     {
+      "hooks": [
+       {
+        "type": "command",
+        "onFailure": "block",
+        "command": "cat >/dev/null; printf HOOK-STOP-FAILED >&2; exit 1"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ },
+ "expect": {
+  "not_requests": [
+   {
+    "$contains": "HOOK-STOP-FAILED"
+   }
+  ],
+  "results": {
+   "call": {
+    "name": "bash",
+    "content": {
+     "kind": "json",
+     "value": {
+      "success": true,
+      "exit_code": 0,
+      "stdout": "visible",
+      "stderr": "",
+      "stop": null
+     }
+    }
+   }
+  }
+ }
+}

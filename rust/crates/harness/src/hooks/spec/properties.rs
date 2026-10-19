@@ -6,7 +6,7 @@ proptest! {
     // its admission outcome, including invalid commands and deadline bounds.
     #[test]
     fn normalized_rules_round_trip_without_changing_validation(
-        event in 0usize..4,
+        event in 0usize..HookEvent::ALL.len(),
         executable in ".{0,48}",
         argv in prop::collection::vec(".{0,24}", 0..5),
         shell in prop::option::of(prop_oneof![Just("sh".to_owned()), Just("unknown".to_owned())]),
@@ -26,7 +26,7 @@ proptest! {
         };
         let valid = hook.validate().is_ok();
         let rule = HookRule {
-            on: [HookEvent::SessionStart, HookEvent::PreToolUse, HookEvent::PostToolUse, HookEvent::Stop][event],
+            on: HookEvent::ALL[event],
             matcher,
             hooks: vec![hook],
         };
@@ -36,4 +36,47 @@ proptest! {
         prop_assert_eq!(decoded.hooks[0].validate().is_ok(), valid);
         prop_assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
     }
+}
+
+// Every declared event is fired by exactly one site, and a single-event site
+// names it; the two-event prompt site cannot be mistaken for one.
+#[test]
+fn each_event_is_fired_by_exactly_one_site() {
+    for event in HookEvent::ALL {
+        let site = event.site();
+        assert_eq!(
+            HookEvent::at(site).filter(|fired| *fired == event).count(),
+            1
+        );
+    }
+    for (site, event) in [
+        (HookSite::BeforeTool, HookEvent::PreToolUse),
+        (HookSite::AfterTool, HookEvent::PostToolUse),
+        (HookSite::TurnEnd, HookEvent::Stop),
+    ] {
+        assert!(matches!(HookEvent::only(site), Ok(fired) if fired == event));
+    }
+    assert!(HookEvent::only(HookSite::Prompt).is_err());
+    assert_eq!(
+        HookEvent::at(HookSite::Prompt).collect::<Vec<_>>(),
+        [HookEvent::SessionStart, HookEvent::UserPromptSubmit]
+    );
+}
+
+// The stock loop binds hooks exactly when an event fires at one of its sites,
+// so a Stop-only configuration still reaches the turn-end site.
+#[test]
+fn execution_hooks_cover_every_site_the_stock_loop_owns() {
+    for event in HookEvent::ALL {
+        let mut hooks = crate::hooks::Hooks::default();
+        let document = serde_json::json!({"hooks":{event.name():[{"hooks":[
+            {"type":"command","command":"true"}
+        ]}]}});
+        hooks
+            .add_json(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
+        let expected = event.site() != HookSite::Prompt;
+        assert_eq!(hooks.has_execution_hooks(), expected, "{}", event.name());
+    }
+    assert!(!crate::hooks::Hooks::default().has_execution_hooks());
 }

@@ -1,0 +1,73 @@
+{
+ "driver": "local",
+ "prompt": "Use the stock bash tool.",
+ "seed": {
+  "plans/a.md": "before\n"
+ },
+ "turns": [
+  [
+   {
+    "type": "event",
+    "kind": "tool_call",
+    "call_id": "call",
+    "name": "bash",
+    "arguments": {
+     "command": "printf changed > plans/a.md; printf visible"
+    }
+   },
+   {
+    "type": "event",
+    "kind": "completed",
+    "metadata": null
+   }
+  ],
+  "done"
+ ],
+ "expect": {
+  "text": "done",
+  "diffs": null,
+  "frames": [
+   {
+    "kind": "declared"
+   },
+   {
+    "kind": "admitted"
+   },
+   {
+    "kind": "completed",
+    "outcome": {
+     "Succeeded": {}
+    }
+   }
+  ],
+  "statuses": [
+   {
+    "state": "pending",
+    "attention": false,
+    "parent": null
+   },
+   {
+    "state": "completed",
+    "attention": true,
+    "parent": null
+   }
+  ],
+  "wire": [
+   {
+    "file": null,
+    "files": [
+     {
+      "key": {
+       "Plan": "a"
+      },
+      "channel": null
+     }
+    ],
+    "removed": []
+   }
+  ],
+  "files": {
+   "plans/a.md": "changed"
+  }
+ }
+}

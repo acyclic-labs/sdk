@@ -102,6 +102,9 @@ impl StockExecution<'_> {
             limits: Limits,
             tool_scope: (&'a crate::Capabilities, Limits),
             policy: Option<&'a ComponentIdentity>,
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            #[serde(skip_serializing_if = "Option::is_none")]
+            tool_hooks: Option<(&'static str, &'a [u8; 32])>,
             inherited_prefix: Option<&'a FileRef>,
             compaction: &'a crate::context::CompactionPolicy,
             model_capacity: Option<crate::context::ModelContextCapacity>,
@@ -135,6 +138,16 @@ impl StockExecution<'_> {
                     self.stock.tool_scope.limits(),
                 ),
                 policy: self.stock.policy_identity.as_ref(),
+                #[cfg(all(
+                    feature = "hooks",
+                    feature = "filesystem",
+                    not(target_arch = "wasm32")
+                ))]
+                tool_hooks: self
+                    .stock
+                    .hooks
+                    .as_ref()
+                    .map(|hooks| ("1", &hooks.manifest)),
                 inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
                 compaction: self.compaction_policy()?,
                 model_capacity: self.model_capacity()?,

@@ -1,9 +1,17 @@
 use super::*;
 use crate::{
     context::{Context, ContextPlacement, SourceStage},
-    hooks::{HookEvent, Hooks},
+    hooks::{BoundHooks, HookEvent, HookSite, Hooks},
     model::{ModelMessage, ModelRole},
 };
+
+/// Prompt-site hooks either prepare the model command or fail it.
+pub(super) enum PromptHooks {
+    /// The pipeline with any added context, and the hooks bound for tool sites.
+    Ready(ContextPipeline, Option<Arc<BoundHooks>>),
+    /// A deterministic, retained block; the command fails with this message.
+    Blocked(String),
+}
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
@@ -11,19 +19,20 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    pub(super) async fn session_start(
+    pub(super) async fn prompt_hooks(
         &self,
         pipeline: ContextPipeline,
         tools: &crate::tool::ToolRegistry,
         context: Arc<TaskContext>,
         (fence, operation, reconcile_only, digest): (&LeaseFence, OperationId, bool, [u8; 32]),
+        prompt: &ModelContent,
         io: Option<&super::super::PreparationIo>,
-    ) -> Result<ContextPipeline> {
+    ) -> Result<PromptHooks> {
         if !pipeline
             .configuration_sources()
             .any(|file| file.descriptor().media_type() == Hooks::MEDIA_TYPE)
         {
-            return Ok(pipeline);
+            return Ok(PromptHooks::Ready(pipeline, None));
         }
         if io.is_some() {
             return Err(crate::executor::stock_boundary(
@@ -45,12 +54,75 @@ where
                 None => hooks = Some(next),
             }
         }
-        let hooks = hooks.unwrap_or_default();
-        let event = HookEvent::SessionStart;
-        let input = serde_json::json!({"source":"startup",
-            "session_id": context.durable_task_id().map(|task| task.to_string())});
-        if hooks.commands(event, &input, tools)?.next().is_none() {
-            return Ok(pipeline);
+        let bound = Arc::new(BoundHooks {
+            rules: hooks.unwrap_or_default(),
+            manifest: digest,
+        });
+        let session_id = context.durable_task_id().map(|task| task.to_string());
+        let mut messages = Vec::new();
+        for event in HookEvent::at(HookSite::Prompt) {
+            let input = match event {
+                HookEvent::SessionStart => {
+                    serde_json::json!({"source":"startup", "session_id": session_id})
+                }
+                HookEvent::UserPromptSubmit => {
+                    serde_json::json!({"prompt": prompt_text(prompt), "session_id": session_id})
+                }
+                HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop => {
+                    return Err(Error::Invalid("prompt hook site fires a tool event".into()));
+                }
+            };
+            let output = match self
+                .prompt_hook(
+                    &bound,
+                    event,
+                    &input,
+                    tools,
+                    &context,
+                    (fence, operation, reconcile_only),
+                )
+                .await?
+            {
+                Ok(output) => output,
+                Err(reason) => return Ok(PromptHooks::Blocked(reason)),
+            };
+            messages.extend(output.into_iter().map(|text| ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(text),
+            }));
+        }
+        if messages.is_empty() {
+            return Ok(PromptHooks::Ready(pipeline, Some(bound)));
+        }
+        let source = Context {
+            messages,
+            ..Default::default()
+        };
+        Ok(PromptHooks::Ready(
+            pipeline.with(Arc::new(SourceStage::new(
+                "hooks.prompt",
+                "1",
+                Arc::new(source),
+                ContextPlacement::Prepend,
+            ))),
+            Some(bound),
+        ))
+    }
+
+    /// Runs one prompt-scoped event once per model command, retaining its outcome.
+    /// Returns the context it adds, or the reason an explicit or failure-policy
+    /// block fails the command before any provider request.
+    async fn prompt_hook(
+        &self,
+        bound: &BoundHooks,
+        event: HookEvent,
+        input: &serde_json::Value,
+        tools: &crate::tool::ToolRegistry,
+        context: &Arc<TaskContext>,
+        (fence, operation, reconcile_only): (&LeaseFence, OperationId, bool),
+    ) -> Result<std::result::Result<Vec<String>, String>> {
+        if bound.rules.commands(event, input, tools)?.next().is_none() {
+            return Ok(Ok(Vec::new()));
         }
         let executor =
             context.harness.workspace_tools.as_ref().ok_or_else(|| {
@@ -60,45 +132,56 @@ where
             .durable_task_id()
             .ok_or_else(|| Error::Unauthorized("hook dispatch has no task".into()))?;
         let owned = Arc::new(self.runtime.task_context(task, fence.clone()).await?);
-        let issued = ToolContext::new(owned, operation, "session-start", None)?;
+        let issued = ToolContext::new(owned, operation, prompt_hook_call(event), None)?;
         let output = executor
             .run_hooks(
-                (&hooks, digest),
+                (&bound.rules, bound.manifest),
                 event,
-                input,
+                input.into(),
                 tools,
                 issued,
                 reconcile_only,
             )
-            .await?;
-        for failure in &output.diagnostics {
-            tracing::warn!(hook_event = event.name(), cause = ?failure.cause,
-                exit_code = failure.cause.exit_code(), blocking = failure.blocking,
-                error = %failure.cause.message(), "configured hook failed");
+            .await?
+            .ok_or_else(|| Error::Invalid("started model has no prompt hook outcome".into()))?;
+        crate::hooks::report(event, &output);
+        let mut output = output;
+        if let Some(reason) = output.take_block_reason() {
+            return Ok(Err(format!(
+                "{} hook blocked the prompt: {reason}",
+                event.name()
+            )));
         }
-        let output = output.into_result()?;
-        if let Some(reason) = output.blocked {
-            return Err(Error::Unauthorized(reason));
-        }
-        if output.additional_context.is_empty() {
-            return Ok(pipeline);
-        }
-        let source = Context {
-            messages: output
-                .additional_context
-                .into_iter()
-                .map(|text| ModelMessage {
-                    role: ModelRole::System,
-                    content: ModelContent::Text(text),
-                })
-                .collect(),
-            ..Default::default()
-        };
-        Ok(pipeline.with(Arc::new(SourceStage::new(
-            "hooks.session-start",
-            "1",
-            Arc::new(source),
-            ContextPlacement::Prepend,
-        ))))
+        Ok(Ok(output.additional_context))
+    }
+}
+
+/// Distinct retained claim identities for each prompt-scoped event of one command.
+pub(super) fn prompt_hook_call(event: HookEvent) -> &'static str {
+    match event {
+        HookEvent::SessionStart => "session-start",
+        HookEvent::UserPromptSubmit => "user-prompt-submit",
+        HookEvent::PreToolUse => "pre-tool-use",
+        HookEvent::PostToolUse => "post-tool-use",
+        HookEvent::Stop => "stop",
+    }
+}
+
+/// The submitted text a UserPromptSubmit hook inspects; attachments are not inlined.
+fn prompt_text(prompt: &ModelContent) -> String {
+    match prompt {
+        ModelContent::Text(text) => text.clone(),
+        content => content
+            .parts()
+            .iter()
+            .filter_map(|part| match part {
+                crate::model::ModelContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            ),
     }
 }

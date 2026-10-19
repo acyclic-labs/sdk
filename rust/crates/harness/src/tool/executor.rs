@@ -8,14 +8,14 @@ pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
         &'a self,
         _configuration: (&'a crate::hooks::Hooks, [u8; 32]),
         _event: crate::hooks::HookEvent,
-        _input: Value,
+        _input: crate::hooks::HookInput<'a>,
         _registry: &'a ToolRegistry,
         _context: crate::runtime::ToolContext,
         reconcile_only: bool,
-    ) -> BoxFuture<'a, Result<crate::hooks::HookOutput>> {
+    ) -> BoxFuture<'a, Result<Option<crate::hooks::HookOutput>>> {
         Box::pin(async move {
             if reconcile_only {
-                return Ok(crate::hooks::HookOutput::default());
+                return Ok(None);
             }
             Err(Error::Unsupported(
                 "workspace hook execution is not bound".into(),

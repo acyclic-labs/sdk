@@ -6,11 +6,11 @@ impl CheckoutTools {
         &self,
         configuration: (&Hooks, [u8; 32]),
         event: HookEvent,
-        input: serde_json::Value,
+        input: crate::hooks::HookInput<'_>,
         registry: &ToolRegistry,
         context: ToolContext,
         reconcile_only: bool,
-    ) -> Result<HookOutput> {
+    ) -> Result<Option<HookOutput>> {
         let (hooks, digest) = configuration;
         let scope = context.effective_scope();
         if !scope.grants().contains(&self.read_grant) || !scope.grants().contains(&self.write_grant)
@@ -85,10 +85,14 @@ impl CheckoutTools {
         &self,
         hooks: &Hooks,
         event: HookEvent,
-        input: serde_json::Value,
+        input: crate::hooks::HookInput<'_>,
         registry: &ToolRegistry,
         context: &ToolContext,
     ) -> Result<HookOutput> {
+        // Prompt events share a command operation. Capture receipts must also
+        // include the event, just like the retained hook outcome does, or a
+        // second event's workspace edits reuse the first event's receipt.
+        let operation = hook_capture_operation(context.operation_id(), event);
         serialized(&self.state, async |mut state| {
             let owner = context
                 .task()
@@ -117,7 +121,7 @@ impl CheckoutTools {
                 self.capture(
                     (&workspace, view),
                     watcher,
-                    context.operation_id(),
+                    operation,
                     0,
                     PublicationPermit::Unrestricted,
                     Some((
@@ -171,7 +175,7 @@ impl CheckoutTools {
             self.capture(
                 (&workspace, view),
                 watcher,
-                context.operation_id(),
+                operation,
                 1,
                 PublicationPermit::Unrestricted,
                 Some((
@@ -185,6 +189,15 @@ impl CheckoutTools {
         })
         .await
     }
+}
+
+fn hook_capture_operation(operation: OperationId, event: HookEvent) -> OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.hook-capture/v1");
+    hash.update(&operation.into_bytes());
+    hash.update(event.name().as_bytes());
+    let mut identity = [0; 16];
+    identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(identity)
 }
 
 // The native runner and model share this whole ownership boundary. Only the

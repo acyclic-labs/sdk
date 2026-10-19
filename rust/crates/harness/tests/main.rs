@@ -13,6 +13,7 @@ mod fork_preparer;
 mod history_selection;
 mod local_conversation_fork;
 mod model_tool_call;
+mod native_hook_http;
 mod native_media_boundary;
 mod portable_file_replay;
 mod portable_text_tools;

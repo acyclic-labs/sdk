@@ -17,8 +17,13 @@ impl StockExecution<'_> {
         }
         self.ensure_started(journal, input).await?;
         let mut prior_messages = Vec::new();
+        let mut hook_context = Vec::new();
         let mut text = String::new();
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut stop_active = false;
         for step in 0..input.max_steps {
+            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+            let answer_start = text.len();
             let model_events = self
                 .run_model_step(
                     journal,
@@ -36,6 +41,20 @@ impl StockExecution<'_> {
                 &mut prior_messages,
             )?;
             if calls.is_empty() {
+                // A Stop block prevents settlement and consumes the step budget.
+                #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(reason) =
+                    Box::pin(self.stop_hook(input.operation_id, step, stop_active)).await?
+                {
+                    // Every denial continues. At the final step, falling out
+                    // of the loop reports the same budget exhaustion as tools.
+                    // The superseded answer moves into history; the turn's
+                    // output is the answer given after the hook's reason.
+                    let answer = text.split_off(answer_start);
+                    self.continue_after_stop(&mut prior_messages, &answer, reason)?;
+                    stop_active = true;
+                    continue;
+                }
                 return Ok(ExecutionProgress::Ready(TurnOutput {
                     text,
                     attachments: Vec::new(),
@@ -52,6 +71,7 @@ impl StockExecution<'_> {
                         invocation,
                         invocation_index,
                         &mut prior_messages,
+                        &mut hook_context,
                     )
                     .await?
                 {
@@ -64,6 +84,7 @@ impl StockExecution<'_> {
                     }
                 }
             }
+            append_step_context(&mut prior_messages, &mut hook_context, self.io)?;
         }
         Err(stock_boundary(
             self.io,
@@ -144,4 +165,17 @@ impl StockExecution<'_> {
         })?;
         stock_vec_push(messages, message, self.io)
     }
+}
+
+/// Results go straight into history; hook context is deferred until every
+/// result is present. No sorting scratch allocation or reordering is needed.
+pub(super) fn append_step_context(
+    messages: &mut Vec<ModelMessage>,
+    context: &mut Vec<ModelMessage>,
+    io: Option<&PreparationIo>,
+) -> Result<()> {
+    for message in context.drain(..) {
+        stock_vec_push(messages, message, io)?;
+    }
+    Ok(())
 }
