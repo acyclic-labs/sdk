@@ -12,7 +12,7 @@ async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
         ScriptedModelProvider::new([ScriptedTurn::Text("done".into())]).with_context_capacity(
             crate::context::ModelContextCapacity {
                 context_tokens: 32_768,
-                output_tokens: 4096,
+                output_tokens: Some(4096),
             },
         ),
     );
