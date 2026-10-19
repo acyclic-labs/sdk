@@ -42,6 +42,95 @@ fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
         .map_err(crate::native_host::ordinary_error)
 }
 
+#[cfg(feature = "native-mount")]
+#[test]
+fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::create_dir_all(root.path().join("a/b/c"))?;
+    let host =
+        crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+    let original = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
+    let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
+    let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
+    let paused = watch.paused();
+    let owner_before = original.lock().receipt();
+    let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+
+    let stop = CancellationToken::new();
+    let mut cancelled = crate::NativeMaterializationWork::new(ORIGINAL_BUDGET, &stop)?;
+    stop.cancel();
+    assert!(matches!(
+        watch.admit_with_work(Path::new("a/b/c"), &mut cancelled),
+        Err(DemandError::Cancelled)
+    ));
+    assert_eq!(original.lock().receipt(), owner_before);
+    let mut denied = DemandWork::new(
+        WorkBudget {
+            backend_read_operations: 0,
+            ..ORIGINAL_BUDGET
+        },
+        &CancellationToken::new(),
+    );
+    assert!(
+        watch
+            .admit_with_work(Path::new("a/b/c"), &mut denied)
+            .is_err()
+    );
+    assert_eq!(original.lock().receipt(), owner_before);
+
+    // Neither incoming ledger contains the watch owner's custody gauge.
+    let incoming = Arc::new(crate::demand::NativeDemandReadMeter::new(DemandWork::new(
+        ORIGINAL_BUDGET,
+        &CancellationToken::new(),
+    )));
+    let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
+    {
+        let mut state = original.lock();
+        state.budget.peak_allocation_bytes = state.live_allocation_bytes();
+    }
+    assert!(
+        watch
+            .admit_with_work(Path::new("a/b/c"), &mut caller)
+            .is_err()
+    );
+    assert_eq!(
+        watch.shared.retained_variable_bytes.load(Ordering::Acquire),
+        retained_before
+    );
+    original.lock().budget = ORIGINAL_BUDGET;
+    assert!(watch.admit_with_work(Path::new("a/b/c"), &mut caller)?);
+    let owner_after = original.lock().receipt();
+    let caller_after = incoming.lock().receipt();
+    assert!(owner_after.allocation_operations > owner_before.allocation_operations);
+    assert_eq!(
+        owner_after.backend_read_operations,
+        owner_before.backend_read_operations
+    );
+    assert_eq!(owner_after.bytes_copied, owner_before.bytes_copied);
+    assert!(caller_after.backend_read_operations > 0);
+    assert!(caller_after.bytes_copied > 0);
+    assert_eq!(incoming.lock().live_allocation_bytes(), 0);
+    assert!(watch.shared.retained_variable_bytes.load(Ordering::Acquire) > retained_before);
+    watch.unadmit_with_work(Path::new("a"), &mut caller)?;
+
+    let mut ordinary = DemandWork::new(ORIGINAL_BUDGET, &CancellationToken::new());
+    assert!(watch.admit_with_work(Path::new("a/b/c"), &mut ordinary)?);
+    assert!(ordinary.receipt().backend_read_operations > 0);
+    assert!(ordinary.receipt().bytes_copied > 0);
+    assert_eq!(ordinary.live_allocation_bytes(), 0);
+    watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
+    drop(paused);
+    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+    assert!(watch.shared.physically_cleared());
+    Ok(())
+}
+
 #[test]
 fn stop_closes_descriptors_without_closing_reused_numbers() -> Result<(), Box<dyn std::error::Error>>
 {

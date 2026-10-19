@@ -276,9 +276,12 @@ impl Shared {
                     if cleanup_needed {
                         self.reserve_record_cleanup(work)?;
                     }
-                    if let Err(error) =
-                        work.claim_allocation(bytes as u64, u64::from((bytes as u64) != 0), delta)
-                    {
+                    let claimed = if cleanup_needed {
+                        self.ownership.claim_retained(bytes as u64, delta, work)
+                    } else {
+                        work.claim_allocation(bytes as u64, u64::from(bytes != 0), delta)
+                    };
+                    if let Err(error) = claimed {
                         if cleanup_needed {
                             self.cancel_record_cleanup(work);
                         }
@@ -308,7 +311,7 @@ impl Shared {
                             (reading.cleanup.len() as u64) * std::mem::size_of::<PathBuf>() as u64,
                         );
                         let prepared = (|| {
-                            work.claim_allocation(next_bytes, u64::from((next_bytes) != 0), delta)?;
+                            self.ownership.claim_retained(next_bytes, delta, work)?;
                             let mut replacement = Vec::with_capacity(next_capacity);
                             replacement.append(&mut reading.cleanup);
                             reading.cleanup = replacement;
@@ -316,7 +319,6 @@ impl Shared {
                                 * std::mem::size_of::<PathBuf>() as u64;
                             self.retained_variable_bytes
                                 .fetch_add(retained_bytes - old_bytes, Ordering::AcqRel);
-                            self.ownership.retain(next_bytes, work)?;
                             self.ownership.retire(old_bytes)?;
                             if !self.ownership.has_native_custody() {
                                 work.release(next_bytes)?;
@@ -326,7 +328,7 @@ impl Shared {
                         if let Err(error) = prepared {
                             drop(path);
                             self.cancel_record_cleanup(work);
-                            work.release(bytes as u64)?;
+                            self.ownership.discard_retained(bytes as u64, work)?;
                             return Err(error);
                         }
                     }
@@ -359,7 +361,12 @@ impl Shared {
                             if cleanup_needed {
                                 self.cancel_record_cleanup(work);
                             }
-                            if let Err(error) = work.release(bytes as u64) {
+                            let released = if cleanup_needed {
+                                self.ownership.discard_retained(bytes as u64, work)
+                            } else {
+                                work.release(bytes as u64)
+                            };
+                            if let Err(error) = released {
                                 self.delivery.failed_with_work(error, work);
                             }
                             std::panic::resume_unwind(panic);
@@ -370,7 +377,11 @@ impl Shared {
                         if cleanup_needed {
                             self.cancel_record_cleanup(work);
                         }
-                        work.release(bytes as u64)?;
+                        if cleanup_needed {
+                            self.ownership.discard_retained(bytes as u64, work)?;
+                        } else {
+                            work.release(bytes as u64)?;
+                        }
                         return delivered.map(|()| false);
                     }
                     reading.alias_cursor += 1;
@@ -380,7 +391,6 @@ impl Shared {
                         reading.cleanup.push(path);
                         self.retained_variable_bytes
                             .fetch_add(retained_bytes, Ordering::AcqRel);
-                        self.ownership.retain(bytes as u64, work)?;
                         if !self.ownership.has_native_custody() {
                             work.release(bytes as u64)?;
                         }

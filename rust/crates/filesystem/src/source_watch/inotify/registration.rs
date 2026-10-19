@@ -29,13 +29,12 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
             .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
             .ok_or(WorkError::Overflow)?;
         let copied = copied(old_bytes);
-        work.claim_allocation(bytes, u64::from((bytes) != 0), copied)?;
+        ownership.claim_retained(bytes, copied, work)?;
         let mut grown = Vec::with_capacity(count);
         grown.append(watches);
         *watches = grown;
         let grown_bytes = watches.capacity() as u64 * std::mem::size_of::<(PathBuf, i32)>() as u64;
         retained.fetch_add(grown_bytes - old_bytes, Ordering::AcqRel);
-        ownership.retain(bytes, work)?;
         ownership.retire(old_bytes)?;
         if !ownership.has_native_custody() {
             work.release(bytes)?;
@@ -43,7 +42,7 @@ pub(super) fn prepare_insert_with_work<W: SourceDemandReadWork>(
     }
     let bytes = path.as_os_str().len() as u64;
     let copied = copied(bytes);
-    work.claim_allocation(bytes, u64::from((bytes) != 0), copied)?;
+    ownership.claim_retained(bytes, copied, work)?;
     Ok(path.to_path_buf())
 }
 pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
@@ -394,7 +393,6 @@ impl Shared {
 
                             self.retained_variable_bytes
                                 .fetch_add(capacity, Ordering::AcqRel);
-                            self.ownership.retain(path_bytes, work)?;
                             if !self.ownership.has_native_custody() {
                                 work.release(path_bytes)?;
                             }
@@ -403,7 +401,7 @@ impl Shared {
                         Err(error) => {
                             drop(owned);
                             self.cancel_record_cleanup(work);
-                            work.release(path_bytes)?;
+                            self.ownership.discard_retained(path_bytes, work)?;
                             match error {
                                 DemandError::Io(error)
                                     if matches!(

@@ -1,6 +1,8 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
+#[cfg(all(feature = "native-watch", target_os = "linux"))]
+use crate::native_host::NativeHostWork;
 use crate::sync::atomic::{self as custody_atomics, AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
@@ -65,6 +67,50 @@ impl SourcePayloadOwnership {
                 }
                 Ok(())
             }
+        }
+    }
+    /// Fund new watch storage on its owner, while charging copying to this call.
+    /// A reused source can deliver a watch to a different invocation ledger.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn claim_retained<W: SourceDemandReadWork>(
+        &self,
+        bytes: u64,
+        delta: WorkCounters,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
+        match self {
+            Self::Borrowed => work.claim_allocation(bytes, u64::from(bytes != 0), delta),
+            Self::Allocation { .. } => Err(DemandError::InvalidRequest),
+            Self::Registered(custody, _) => {
+                work.admit(delta)?;
+                let mut original = custody
+                    .original
+                    .clone()
+                    .ok_or(DemandError::InvalidRequest)?;
+                original.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
+                if let Err(error) = self.retain(bytes, &mut original) {
+                    original.release(bytes)?;
+                    return Err(error);
+                }
+                if let Err(error) = work.record(delta) {
+                    self.retire(bytes)?;
+                    return Err(error);
+                }
+                Ok(())
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn discard_retained<W: SourceDemandReadWork>(
+        &self,
+        bytes: u64,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        if self.has_native_custody() {
+            self.retire(bytes)
+        } else {
+            work.release(bytes)
         }
     }
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), DemandError> {
