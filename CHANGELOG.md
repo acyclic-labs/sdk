@@ -8,6 +8,7 @@ release commit.
 
 - Generate ignored Actors guest and timer authoring contracts with the locked Rust producer before Rust workspace qualification, preserving read-only drift checks without requiring JavaScript tooling.
 - Replace offline qualification command snapshots with actual lane execution against controlled native boundaries, downstream-effect exclusion, required model-result coverage, and WebAssembly capability admission checks.
+- Qualify established Stream interest recovery across multiple unavailable handshake groups, retaining its cursor without duplicate delivery. Permission denial remains terminal; cancellation, close and drop release pending recovery. These controls do not change retry policy or guarantee recovery without a live interest and eventual transport availability.
 - Preserve portable Harness execution alongside native adapters: use canonical physical-copy and observation engines, retain original typed error causes, and release failed codec output custody after dropping its payload.
 - Preserve stock tool registry selections when duplicate registration is rejected; multiple explicit immutable revisions require selection and retain their pinned definitions.
 - Add native stock executor and model-provider companions on the existing durable execution loop, retaining original task authority, configured scope attenuation, direct funded SDK request copies and typed native failure custody. The first-party deterministic model provider supplies actual native generation, reconciliation and token-accounting bodies.
