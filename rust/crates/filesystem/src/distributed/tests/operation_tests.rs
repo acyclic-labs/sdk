@@ -711,3 +711,39 @@ async fn refused_or_cancelled_forks_publish_neither_records_nor_locators() -> Te
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn operation_index_shares_its_parent_across_authorities_at_capacity() -> TestResult {
+    for native in [false, true] {
+        let stream = Arc::new(MemoryStream::new(acyclic_stream::MemoryLimits {
+            // Two common authority prefixes, four paths per authority, and
+            // one common operation-index prefix plus one locator per authority.
+            paths: 2 + 8 * 4 + 1 + 8,
+            ..acyclic_stream::MemoryLimits::default()
+        }));
+        let store = StreamAuthorityStore::new(stream);
+        let token = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(BUDGET, &token)
+        };
+        for number in 0..8 {
+            let id = AuthorityId::from_bytes([number; 16]);
+            let commit = proposed(number);
+            assert!(
+                store
+                    .create_first_record(id, commit.clone(), &mut work, None::<&mut ()>)
+                    .await?
+            );
+            let located = store
+                .located_operation(id, commit.operation_id, &mut work)
+                .await?
+                .ok_or("capacity-admitted authority lost its operation")?;
+            assert_eq!(located.0.operation_id, commit.operation_id);
+        }
+    }
+    Ok(())
+}

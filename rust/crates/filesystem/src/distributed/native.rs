@@ -209,7 +209,15 @@ impl<'a> AuthorityWork<'a> {
         authority: AuthorityId,
         operation: OperationId,
     ) -> Result<StreamPath, AuthorityStoreError> {
-        self.identity_path(authority, "/operations/", Some(&operation.into_bytes()))
+        // Fixed-width authority and operation identities share one index parent.
+        // Per-authority index directories otherwise consume one extra provider
+        // path for every authority, even when it has only its initial operation.
+        self.prefixed_identity_path(
+            b"fs/operations/",
+            authority,
+            "",
+            Some(&operation.into_bytes()),
+        )
     }
 
     fn identity_path(
@@ -218,23 +226,32 @@ impl<'a> AuthorityWork<'a> {
         suffix: &str,
         identity: Option<&[u8]>,
     ) -> Result<StreamPath, AuthorityStoreError> {
-        const PREFIX: &[u8] = b"fs/authorities/";
-        let length = PREFIX
+        self.prefixed_identity_path(b"fs/authorities/", authority, suffix, identity)
+    }
+
+    fn prefixed_identity_path(
+        &mut self,
+        prefix: &[u8],
+        authority: AuthorityId,
+        suffix: &str,
+        identity: Option<&[u8]>,
+    ) -> Result<StreamPath, AuthorityStoreError> {
+        let length = prefix
             .len()
             .checked_add(32)
             .and_then(|n| n.checked_add(suffix.len()))
             .and_then(|n| n.checked_add(identity.map_or(0, |bytes| bytes.len() * 2)))
             .filter(|n| *n <= acyclic_stream::MAX_PATH_BYTES)
             .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
-        let writes = codec_work(length as u64, (PREFIX.len() + suffix.len()) as u64, 0);
+        let writes = codec_work(length as u64, (prefix.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
         // Every SDK authority suffix fits here. Keep the full Stream bound
         // available in a separate frame for longer provider-internal suffixes.
         if length <= 128 {
-            self.path_buffer::<128>(authority, suffix, identity, length, writes)
+            self.path_buffer::<128>(prefix, authority, suffix, identity, length, writes)
         } else {
             self.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
-                authority, suffix, identity, length, writes,
+                prefix, authority, suffix, identity, length, writes,
             )
         }
     }
@@ -242,21 +259,21 @@ impl<'a> AuthorityWork<'a> {
     #[inline(never)]
     fn path_buffer<const N: usize>(
         &mut self,
+        prefix: &[u8],
         authority: AuthorityId,
         suffix: &str,
         identity: Option<&[u8]>,
         length: usize,
         writes: WorkCounters,
     ) -> Result<StreamPath, AuthorityStoreError> {
-        const PREFIX: &[u8] = b"fs/authorities/";
         let mut text = [0_u8; N];
-        text.get_mut(..PREFIX.len())
+        text.get_mut(..prefix.len())
             .ok_or(crate::WorkError::Overflow)?
-            .copy_from_slice(PREFIX);
-        let cursor = PREFIX.len() + 32;
+            .copy_from_slice(prefix);
+        let cursor = prefix.len() + 32;
         hex::encode_to_slice(
             authority.into_bytes(),
-            text.get_mut(PREFIX.len()..cursor)
+            text.get_mut(prefix.len()..cursor)
                 .ok_or(crate::WorkError::Overflow)?,
         )
         .map_err(|_| crate::WorkError::Overflow)?;
