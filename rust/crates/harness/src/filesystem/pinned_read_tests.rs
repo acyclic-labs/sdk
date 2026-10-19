@@ -84,7 +84,10 @@ fn exact_unmetered_allocation(
         original.count_total,
         "pinned read allocation count"
     );
-    prop_assert_eq!(original.bytes_total - candidate.bytes_total, saved);
+    prop_assert_eq!(
+        original.bytes_total.checked_sub(candidate.bytes_total),
+        Some(saved)
+    );
     Ok(())
 }
 
