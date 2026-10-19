@@ -254,7 +254,9 @@ async fn unrecoverable_scenario_oracles_reject_uncertain_outcomes_and_extra_disp
         "recovery/later-recovery.json",
     ] {
         let path = root.join(relative);
-        run(Scenario::load(&root, &path)?).await?;
+        run(Scenario::load(&root, &path)?)
+            .await
+            .map_err(|error| format!("{relative}: {error}"))?;
         for mutation in ["uncertain", "prefix", "dispatch", "reconciliation"] {
             let mut case = Scenario::load(&root, &path)?;
             match mutation {
