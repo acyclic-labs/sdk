@@ -387,10 +387,14 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         journal.commit(2, first.idempotency_key.clone(), first.clone()),
         other.commit(2, second.idempotency_key.clone(), second.clone()),
     );
-    assert!(first_result.is_ok() ^ second_result.is_ok());
+    assert!(
+        first_result.is_ok() ^ second_result.is_ok(),
+        "first={first_result:?}; second={second_result:?}"
+    );
     assert!(
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))
-            ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_)))
+            ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_))),
+        "first={first_result:?}; second={second_result:?}"
     );
     let tail = journal.replay(0, 64, None)?.await?.0;
     assert_eq!(tail.len(), 3);
