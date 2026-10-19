@@ -59,6 +59,16 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             return Err(authority_corrupt("operation locator selects genesis", work));
         }
         let path = work.path(authority, "/records", None)?;
+        let tail = match self.tail(path.clone(), work).await {
+            Err(error) if authority_missing(&error) => 0,
+            result => result?,
+        };
+        if sequence >= tail {
+            return Err(authority_corrupt(
+                "operation locator selects a missing record",
+                work,
+            ));
+        }
         let record = match self.record(path, sequence, work).await {
             Err(error) if authority_missing(&error) => {
                 return Err(authority_corrupt(

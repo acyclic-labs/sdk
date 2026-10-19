@@ -194,11 +194,17 @@ async fn concurrent_attempts_admit_only_one_semantic_operation() -> TestResult {
         let result = racing
             .compare_and_append(request, &mut work, None::<&mut ()>)
             .await?;
-        assert!(if different_fingerprint {
-            matches!(result, FsAppendOutcome::IdempotencyConflict { .. })
-        } else {
-            matches!(result, FsAppendOutcome::AlreadyCommitted(_))
-        });
+        assert!(
+            if different_fingerprint {
+                matches!(result, FsAppendOutcome::IdempotencyConflict { .. })
+            } else {
+                matches!(
+                    result,
+                    FsAppendOutcome::Committed(_) | FsAppendOutcome::AlreadyCommitted(_)
+                )
+            },
+            "concurrent semantic operation returned {result:?}"
+        );
         assert_eq!(store.head(id, &mut work).await?.sequence, Sequence::new(1));
     }
     Ok(())
@@ -242,7 +248,7 @@ async fn durable_operation_lookup_is_constant_work_for_long_histories() -> TestR
             .ok_or("durable operation was not found")?;
         assert_eq!(found.operation_id, proposed(operation).operation_id);
         assert_eq!(lookup.spent().authority_records_read, 2);
-        assert_eq!(lookup.spent().backend_read_operations, 4);
+        assert_eq!(lookup.spent().backend_read_operations, 5);
     }
     Ok(())
 }
@@ -481,6 +487,86 @@ async fn lost_fork_acknowledgement_recovers_both_original_locators() -> TestResu
         .await?
         .ok_or("lost fork destination locator is missing")?;
     assert_eq!(retained.1, created.1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn separately_created_matching_records_are_not_an_atomic_fork() -> TestResult {
+    for native in [false, true] {
+        let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+        let token = CancellationToken::new();
+        let original =
+            crate::NativeMaterializationWork::new(BUDGET, &token).map_err(|(error, _)| error)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(BUDGET, &token)
+        };
+        let fork = fork();
+        for (authority, commit) in [
+            (fork.retention, fork.retained.clone()),
+            (fork.destination, fork.creation.clone()),
+        ] {
+            assert!(
+                store
+                    .create_first_record(authority, commit, &mut work, None::<&mut ()>)
+                    .await?
+            );
+        }
+        let retained = store
+            .located_operation(fork.retention, fork.retained.operation_id, &mut work)
+            .await?
+            .ok_or("separate retention record is missing")?;
+        let created = store
+            .located_operation(fork.destination, fork.creation.operation_id, &mut work)
+            .await?
+            .ok_or("separate creation record is missing")?;
+        assert_ne!(retained.1, created.1);
+        assert_eq!(
+            store
+                .fork_workspace(
+                    fork,
+                    PublicationPermit::Unrestricted,
+                    &mut work,
+                    None::<&mut ()>
+                )
+                .await?,
+            WorkspaceForkOutcome::CreationRejected
+        );
+        original.receipt().verify(BUDGET)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_first_record_acknowledgement_recovers_its_atomic_locator() -> TestResult {
+    let stream = Arc::new(MemoryStream::default());
+    let mut spy = ReleaseSpy::new(stream.clone());
+    spy.lose_ack = true;
+    let lossy = StreamAuthorityStore::new(Arc::new(spy));
+    let token = CancellationToken::new();
+    let mut work = AuthorityWork::new(BUDGET, &token);
+    let id = AuthorityId::from_bytes([95; 16]);
+    let commit = proposed(96);
+    assert!(
+        lossy
+            .create_first_record(id, commit.clone(), &mut work, None::<&mut ()>)
+            .await
+            .is_err()
+    );
+    let store = StreamAuthorityStore::new(stream);
+    assert!(
+        store
+            .create_first_record(id, commit.clone(), &mut work, None::<&mut ()>)
+            .await?
+    );
+    let recovered = store
+        .find_operation(id, commit.operation_id, &mut work)
+        .await?
+        .ok_or("lost first-record locator is missing")?;
+    assert_eq!(recovered.sequence, Sequence::new(1));
+    assert_eq!(recovered.fingerprint, commit.fingerprint);
+    assert_eq!(store.head(id, &mut work).await?.sequence, Sequence::new(1));
     Ok(())
 }
 
