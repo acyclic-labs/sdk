@@ -554,6 +554,63 @@ async fn hook_and_bash_turns_leave_a_clean_checkout() -> Result<()> {
     Ok(())
 }
 
+// Native cleanup owns its projection, not arbitrary checkout or runtime files.
+#[tokio::test]
+async fn native_cleanup_preserves_preexisting_checkout_artifacts() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let home = root.path().join("home");
+    let workspace = root.path().join("preserved");
+    std::fs::create_dir_all(workspace.join(".volumes")).map_err(super::super::storage)?;
+    std::fs::create_dir(workspace.join("__pycache__")).map_err(super::super::storage)?;
+    std::fs::create_dir_all(home.join(".claude")).map_err(super::super::storage)?;
+    let authored = workspace.join(".volumes/user-owned");
+    let bytecode = workspace.join("__pycache__/user-owned.pyc");
+    std::fs::write(&authored, b"authored bytes").map_err(super::super::storage)?;
+    std::fs::write(&bytecode, b"preexisting runtime bytes").map_err(super::super::storage)?;
+    let status = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&workspace)
+        .status()
+        .map_err(super::super::storage)?;
+    assert!(status.success());
+    let script = root.path().join("hook.sh");
+    std::fs::write(&script, "cat >/dev/null\nprintf hook-ran\n").map_err(super::super::storage)?;
+    std::fs::write(
+        home.join(".claude/settings.json"),
+        settings(&script, "unused").to_string(),
+    )
+    .map_err(super::super::storage)?;
+    let provider = scripted([
+        super::checked_commands::call(0, "bash", "test -d .volumes/scratch && printf mounted"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = open_checkout(root.path(), "preserved", &home, &provider).await?;
+    assert_eq!(harness.run("go").await?.text, "done");
+    assert!(request_has(&provider, 0, "hook-ran")?);
+    assert!(request_has(&provider, 1, "mounted")?);
+    harness.disconnect().await?;
+    assert_eq!(
+        std::fs::read(&authored).map_err(super::super::storage)?,
+        b"authored bytes"
+    );
+    assert_eq!(
+        std::fs::read(&bytecode).map_err(super::super::storage)?,
+        b"preexisting runtime bytes"
+    );
+    assert_eq!(volume_residue(&workspace)?, vec!["user-owned".to_owned()]);
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(&workspace)
+        .output()
+        .map_err(super::super::storage)?;
+    assert!(status.status.success());
+    let status = String::from_utf8(status.stdout).map_err(super::super::storage)?;
+    assert!(status.contains("?? .volumes/user-owned"), "{status}");
+    assert!(status.contains("?? __pycache__/user-owned.pyc"), "{status}");
+    assert!(!workspace.join(".gitignore").exists());
+    Ok(())
+}
+
 // Negative control: a projection that escapes the execution scope is exactly
 // the residue the clean-checkout detector above must see.
 #[cfg(feature = "native-execution")]
