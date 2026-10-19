@@ -142,6 +142,26 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let seed = report.into_seed(custody.work())?;
+        self.publish_fork_seed(
+            seed,
+            scope,
+            #[cfg(feature = "filesystem")]
+            owner,
+            &mut custody,
+        )
+        .await
+    }
+
+    // Both public report routes validate and consume the report exactly once.
+    // Borrow its quota through publication so every early return drops the
+    // owned seed before the caller releases its allocation claims.
+    async fn publish_fork_seed(
+        &mut self,
+        seed: ForkSeed,
+        scope: Scope,
+        #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
+        custody: &mut crate::wire_codec::CodecQuota<'_, '_>,
+    ) -> Result<ApplyResult> {
         let vector_slots = seed.resources.capacity() as u64
             * std::mem::size_of::<crate::fork::CapturedResource>() as u64
             + seed.omissions.capacity() as u64
@@ -195,7 +215,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         parent_scope: Scope,
         child_scope: Scope,
     ) -> Result<ForkSeed> {
-        report.validate(&mut None)?;
         if report.request.child != *self.reducer.authority()
             || report.request.parent != *parent.reducer.authority()
         {
@@ -203,7 +222,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "fork report does not match parent and child aggregates".into(),
             ));
         }
-        let seed = report.clone().into_seed(&mut None)?;
+        let seed = report.into_seed(&mut None)?;
         if child_scope.agent() != Some(seed.child_agent)
             || (self.reducer.revision() != 0 && parent.reducer.fork(&seed.child) != Some(&seed))
         {
@@ -211,13 +230,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "child binding is not fresh or previously published by this parent".into(),
             ));
         }
+        let mut publication_work = None;
+        let mut custody = crate::wire_codec::CodecQuota::new(&mut publication_work, 0)?;
         parent
-            .publish_fork_report(
-                report,
+            .publish_fork_seed(
+                seed.clone(),
                 parent_scope,
                 #[cfg(feature = "filesystem")]
                 None,
-                &mut None,
+                &mut custody,
             )
             .await?;
         self.bind_published_child(
