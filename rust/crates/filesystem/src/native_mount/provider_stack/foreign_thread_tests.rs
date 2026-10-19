@@ -83,19 +83,45 @@ fn windows_owned_callback_threads_retire_once_and_preserve_other_tls() -> window
                 initialize();
             }
             run(|| {
+                let outer_fiber = super::ACTIVE_CALLBACK_FIBER.get();
+                assert!(!outer_fiber.is_null());
                 run(|| {
+                    assert_ne!(super::ACTIVE_CALLBACK_FIBER.get(), outer_fiber);
                     if initialize_inside {
                         initialize();
                     }
                     assert_eq!(observed.load(Ordering::SeqCst), 0);
                 })
                 .expect("nested callback preserves its caller fiber");
+                assert_eq!(super::ACTIVE_CALLBACK_FIBER.get(), outer_fiber);
                 let panic =
                     std::panic::catch_unwind(|| run(|| panic!("nested callback panic control")));
                 assert!(panic.is_err());
+                assert_eq!(super::ACTIVE_CALLBACK_FIBER.get(), outer_fiber);
+                let payload = crate::NativeMaterializationWork::accounting_state_bytes();
+                let exchange = std::mem::size_of::<super::Exchange>() as u64;
+                let work = crate::NativeMaterializationWork::new(
+                    crate::WorkBudget {
+                        backend_write_operations: 2,
+                        allocation_operations: 2,
+                        peak_allocation_bytes: payload + exchange,
+                        ..crate::WorkBudget::UNBOUNDED
+                    },
+                    &crate::CancellationToken::new(),
+                )
+                .expect("nested invocation retains its own finite ledger");
+                assert_eq!(
+                    super::run_with_meter(Some(&work), || 42).expect("nested finite callback"),
+                    42
+                );
+                assert_eq!(work.receipt().backend_write_operations, 2);
+                assert_eq!(work.receipt().allocation_operations, 2);
+                assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
+                assert_eq!(super::ACTIVE_CALLBACK_FIBER.get(), outer_fiber);
                 assert_eq!(observed.load(Ordering::SeqCst), 0);
             })
             .expect("first callback");
+            assert!(super::ACTIVE_CALLBACK_FIBER.get().is_null());
             assert_eq!(
                 observed.load(Ordering::SeqCst),
                 0,
@@ -105,6 +131,7 @@ fn windows_owned_callback_threads_retire_once_and_preserve_other_tls() -> window
                 .expect("next callback retains thread state");
             let panic = std::panic::catch_unwind(|| run(|| panic!("callback panic control")));
             assert!(panic.is_err());
+            assert!(super::ACTIVE_CALLBACK_FIBER.get().is_null());
             run(|| ()).expect("callback after panic");
             assert_eq!(observed.load(Ordering::SeqCst), 0);
         })?;
