@@ -559,6 +559,7 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
             output_schema: json!({"type":"object"}),
             projection_schema: json!({"type":"object"}),
         };
+        let is_error = matches!(content, ToolResultContent::Error { .. });
         let request = ModelRequest {
             model: provider.model.clone(),
             max_output_tokens: Some(64),
@@ -630,6 +631,10 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                 assert_eq!(body["messages"][2]["content"][0]["tool_use_id"], "call");
                 assert_eq!(body["messages"][2]["role"], "user");
                 assert_eq!(body["messages"][2]["content"][0]["content"], expected);
+                assert_eq!(
+                    body["messages"][2]["content"][0]["is_error"],
+                    if is_error { json!(true) } else { Value::Null }
+                );
                 assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
             }
             Adapter::Responses => {
@@ -649,8 +654,12 @@ async fn tool_history_round_trips_call_identity_and_arguments_in_every_protocol(
                     "call"
                 );
                 assert_eq!(
-                    body["contents"][2]["parts"][0]["functionResponse"]["response"]["output"],
-                    expected
+                    body["contents"][2]["parts"][0]["functionResponse"]["response"],
+                    if is_error {
+                        json!({"error": expected})
+                    } else {
+                        json!({"output": expected})
+                    }
                 );
                 assert_eq!(
                     body["tools"][0]["functionDeclarations"][0]["parametersJsonSchema"]["type"],
