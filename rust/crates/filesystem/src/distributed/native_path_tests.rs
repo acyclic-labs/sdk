@@ -65,7 +65,7 @@ proptest::proptest! {
         let cancellation = CancellationToken::new();
         let mut old = AuthorityWork::new(budget, &cancellation);
         let old_result = old.admit(writes).and_then(|()| old.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
-            authority, &suffix, digest.as_ref().map(|bytes| bytes.as_slice()), length, writes));
+            b"fs/authorities/", authority, &suffix, digest.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
         let actual = work.path(authority, &suffix, generation);
         match (actual, old_result) {
