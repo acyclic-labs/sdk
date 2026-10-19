@@ -18,9 +18,8 @@
 //! A native callback carries its full original invocation and resource allowance
 //! into this engine. Its Rust exchange has a strong allocation guard admitted
 //! before construction; native resource creation and mandatory teardown are
-//! counted at their actual calls. Existing cached fibers are borrowed. A fiber
-//! first created by this invocation is retired after switch-back, so no TLS
-//! allocation or meter alias escapes the physical callback.
+//! counted at their actual calls. Every invocation retires its fiber after
+//! switch-back, so no cached TLS destructor or meter alias outlives the callback.
 //! The SDK entry point verifies its retained authentic source guard using the
 //! existing callback runtime before entering this engine; allocation accounting
 //! here is not authorization and cannot replace that verification.
@@ -31,7 +30,6 @@
     reason = "switches the callback thread onto a provider-reserved fiber stack"
 )]
 
-use std::cell::RefCell;
 use std::ffi::c_void;
 use std::panic::AssertUnwindSafe;
 use windows::Win32::Foundation::E_UNEXPECTED;
@@ -116,11 +114,13 @@ impl ProviderFiber {
         if self.fiber.is_null() {
             return Ok(());
         }
+        let fiber = std::mem::replace(&mut self.fiber, std::ptr::null_mut());
+        let exchange = std::mem::replace(&mut self.exchange, std::ptr::null());
         let delete = self.owned.take();
         let operation = || unsafe {
             // SAFETY: every switch returned; this fiber is no longer running.
-            DeleteFiber(self.fiber);
-            drop(Box::from_raw(self.exchange.cast_mut()));
+            DeleteFiber(fiber);
+            drop(Box::from_raw(exchange.cast_mut()));
         };
         let recorded = if let Some(owned) = delete {
             let (_, recorded) = owned.delete.attempt(operation);
@@ -130,8 +130,6 @@ impl ProviderFiber {
             operation();
             Ok(())
         };
-        self.fiber = std::ptr::null_mut();
-        self.exchange = std::ptr::null();
         recorded
     }
 }
@@ -139,14 +137,9 @@ impl ProviderFiber {
 impl Drop for ProviderFiber {
     fn drop(&mut self) {
         // Measured retirement calls finish explicitly so its typed failure is
-        // observed; ordinary cached fibers have no invocation claim.
+        // observed; ordinary callbacks have no stop invocation claim.
         let _ = self.finish();
     }
-}
-
-thread_local! {
-    /// Created on a thread's first callback and reused for every later one.
-    static PROVIDER_FIBER: RefCell<Option<ProviderFiber>> = const { RefCell::new(None) };
 }
 
 /// The provider fiber's body: run each job it is handed, then return to the
@@ -167,107 +160,77 @@ unsafe extern "system" fn serve(exchange: *mut c_void) {
     }
 }
 
-/// This same thread's fiber. Only a new stop-owned exchange carries a claim.
+/// One callback owns its fiber through switch-back and physical retirement.
+/// Never retain a fiber in Rust TLS: deleting it from a foreign thread's TLS
+/// destructor can reenter the same Windows cleanup and destroy that TLS twice.
 fn provider_fiber(
     meter: Option<&crate::NativeMaterializationWork>,
-) -> Result<(*mut c_void, *const Exchange, bool), ProviderFailure> {
-    PROVIDER_FIBER.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some(fiber) = slot.as_ref() {
-            return Ok((fiber.fiber, fiber.exchange, false));
-        }
-        let bytes = std::mem::size_of::<Exchange>() as u64;
-        let owned = if let Some(meter) = meter {
-            let delete = meter
-                .reserve_cleanup_write()
-                .map_err(|error| materialization_failure(&error))?;
-            meter
-                .admit(crate::WorkCounters {
-                    backend_write_operations: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                })
-                .map_err(|error| materialization_failure(&error))?;
-            let allocation = meter
-                .claim(
-                    bytes,
-                    u64::from((bytes) != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )
-                .map_err(|error| materialization_failure(&error))?;
-            Some(OwnedExchange { allocation, delete })
+) -> Result<ProviderFiber, ProviderFailure> {
+    let bytes = std::mem::size_of::<Exchange>() as u64;
+    let owned = if let Some(meter) = meter {
+        let delete = meter
+            .reserve_cleanup_write()
+            .map_err(|error| materialization_failure(&error))?;
+        meter
+            .admit(crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })
+            .map_err(|error| materialization_failure(&error))?;
+        let allocation = meter
+            .claim(
+                bytes,
+                u64::from((bytes) != 0),
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(|error| materialization_failure(&error))?;
+        Some(OwnedExchange { allocation, delete })
+    } else {
+        None
+    };
+    // Admission precedes this callback's actual exchange allocation.
+    let exchange = Box::into_raw(Box::<Exchange>::default()).cast_const();
+    let created = native_write(meter, || {
+        // SAFETY: the existing start routine and exchange lifetime contract
+        // are unchanged; the new fiber does not run until switched to.
+        let fiber = unsafe {
+            CreateFiberEx(
+                0,
+                PROVIDER_STACK_BYTES,
+                FIBER_FLAG_FLOAT_SWITCH,
+                Some(serve),
+                Some(exchange.cast::<c_void>()),
+            )
+        };
+        if fiber.is_null() {
+            Err(windows::core::Error::from_thread())
         } else {
-            None
-        };
-        // Admission precedes the real Rust allocation, never a predicted
-        // allocation for a callback that reuses its ordinary cached fiber.
-        let exchange = Box::into_raw(Box::<Exchange>::default()).cast_const();
-        let created = native_write(meter, || {
-            // SAFETY: the existing start routine and exchange lifetime contract
-            // are unchanged; the new fiber does not run until switched to.
-            let fiber = unsafe {
-                CreateFiberEx(
-                    0,
-                    PROVIDER_STACK_BYTES,
-                    FIBER_FLAG_FLOAT_SWITCH,
-                    Some(serve),
-                    Some(exchange.cast::<c_void>()),
-                )
-            };
-            if fiber.is_null() {
-                Err(windows::core::Error::from_thread())
-            } else {
-                Ok(fiber)
-            }
-        });
-        let (fiber, recorded) = match created {
-            Ok((Ok(fiber), recorded)) => (fiber, recorded),
-            failed => {
-                // SAFETY: no fiber was created, so no one shares this box.
-                unsafe { drop(Box::from_raw(exchange.cast_mut())) };
-                drop(owned);
-                return Err(match failed {
-                    Err(error) | Ok((Err(_), Err(error))) => error,
-                    Ok((Err(error), Ok(()))) => ProviderFailure::Native(error.code()),
-                    Ok((Ok(_), _)) => unreachable!("successful create was handled"),
-                });
-            }
-        };
-        let mut created = ProviderFiber {
-            fiber,
-            exchange,
-            owned,
-        };
-        if let Err(error) = recorded {
-            created.finish()?;
-            return Err(error);
+            Ok(fiber)
         }
-        let scoped = created.owned.is_some();
-        *slot = Some(created);
-        Ok((fiber, exchange, scoped))
-    })
-}
-
-struct ScopedFiber(bool);
-
-impl ScopedFiber {
-    fn finish(&mut self) -> Result<(), ProviderFailure> {
-        if !std::mem::replace(&mut self.0, false) {
-            return Ok(());
+    });
+    let (fiber, recorded) = match created {
+        Ok((Ok(fiber), recorded)) => (fiber, recorded),
+        failed => {
+            // SAFETY: no fiber was created, so no one shares this box.
+            unsafe { drop(Box::from_raw(exchange.cast_mut())) };
+            drop(owned);
+            return Err(match failed {
+                Err(error) | Ok((Err(_), Err(error))) => error,
+                Ok((Err(error), Ok(()))) => ProviderFailure::Native(error.code()),
+                Ok((Ok(_), _)) => unreachable!("successful create was handled"),
+            });
         }
-        PROVIDER_FIBER.with(|slot| {
-            let mut fiber = slot
-                .borrow_mut()
-                .take()
-                .ok_or(ProviderFailure::Native(E_UNEXPECTED))?;
-            fiber.finish()
-        })
+    };
+    let mut created = ProviderFiber {
+        fiber,
+        exchange,
+        owned,
+    };
+    if let Err(error) = recorded {
+        created.finish()?;
+        return Err(error);
     }
-}
-
-impl Drop for ScopedFiber {
-    fn drop(&mut self) {
-        let _ = self.finish();
-    }
+    Ok(created)
 }
 
 struct ThreadConversion {
@@ -343,16 +306,20 @@ impl Drop for ThreadConversion {
     }
 }
 
-/// Runs on the existing provider-fiber engine, borrowing ordinary cached
-/// controls or retiring newly admitted stop-owned controls after switch-back.
+/// Runs one callback and retires its exact controls after switch-back.
 /// The SDK caller must complete source authorization before this call: the
-/// first uncached operation below allocates the actual exchange box.
+/// first operation below allocates the actual exchange box.
 pub(super) fn run_with_meter<T>(
     meter: Option<&crate::NativeMaterializationWork>,
     callback: impl FnOnce() -> T,
 ) -> Result<T, ProviderFailure> {
-    let (fiber, exchange, scoped) = provider_fiber(meter)?;
-    let mut fiber_scope = ScopedFiber(scoped);
+    // Register Rust's real thread-exit cleanup on the ordinary calling thread,
+    // including when the first destructible TLS is initialized by a callback.
+    // The runtime owns this identity; no native provider resource lives in TLS.
+    let _thread = std::thread::current();
+    let mut fiber_scope = provider_fiber(meter)?;
+    let fiber = fiber_scope.fiber;
+    let exchange = fiber_scope.exchange;
     let result: Result<_, ProviderFailure> = (|| {
         let mut conversion = ThreadConversion::start(meter)?;
         let mut callback = Some(callback);
@@ -370,7 +337,13 @@ pub(super) fn run_with_meter<T>(
         exchange.job.set((&raw mut job).cast::<c_void>());
         // SAFETY: the live provider fiber runs the borrowed job until switching back.
         unsafe { SwitchToFiber(fiber) };
-        conversion.finish()?;
+        // Rust's Windows TLS cleanup distinguishes fiber retirement from thread
+        // exit by IsThreadAFiber. Keep the caller converted through DeleteFiber:
+        // deleting after conversion would destroy unrelated thread TLS early.
+        let retired = fiber_scope.finish();
+        let converted = conversion.finish();
+        retired?;
+        converted?;
         Ok(outcome)
     })();
     fiber_scope.finish()?;
@@ -390,6 +363,9 @@ pub(super) fn run<T>(callback: impl FnOnce() -> T) -> windows::core::Result<T> {
         _ => unreachable!("ordinary callbacks have no finite control admission"),
     })
 }
+
+#[cfg(test)]
+mod foreign_thread_tests;
 
 #[cfg(test)]
 mod tests {
@@ -454,7 +430,7 @@ mod tests {
             let first = run(|| 1).expect("first run");
             // SAFETY: as above.
             let after = unsafe { IsThreadAFiber() }.as_bool();
-            let second = run(|| 2).expect("second run reuses the fiber");
+            let second = run(|| 2).expect("second run owns its own fiber");
             (before, after, first + second)
         });
         assert!(!before);
@@ -510,7 +486,6 @@ mod tests {
                 budget,
                 "unused mandatory cleanup admission was cancelled"
             );
-            super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
 
@@ -542,7 +517,6 @@ mod tests {
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: the actual conversion cleanup has returned this thread.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
-            super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
 
@@ -579,7 +553,6 @@ mod tests {
             assert_eq!((&work.state).lock().budget, budget);
             // SAFETY: conversion was never entered.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
-            super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
 
@@ -610,43 +583,31 @@ mod tests {
             );
             // SAFETY: conversion cleanup still ran.
             assert!(!unsafe { IsThreadAFiber() }.as_bool());
-            super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
 
     #[test]
-    fn measured_callback_borrows_an_ordinary_cached_fiber_without_claiming_it() {
+    fn ordinary_callbacks_cannot_lend_unmetered_fibers_to_finite_work() {
         on_small_thread(|| {
-            run(|| 1).expect("preexisting ordinary fiber");
+            run(|| 1).expect("ordinary callback retires its fiber");
             let payload = crate::NativeMaterializationWork::accounting_state_bytes();
             let budget = crate::WorkBudget {
-                backend_write_operations: 2,
                 allocation_operations: 1,
                 peak_allocation_bytes: payload,
                 ..crate::WorkBudget::UNBOUNDED
             };
             let work =
                 crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
-                    .expect("the original accounting state is admitted");
-            super::run_with_meter(Some(&work), || 2).expect("existing fiber is borrowed");
+                    .expect("accounting state is admitted");
+            let before = work.receipt();
+            super::run_with_meter(Some(&work), || panic!("unadmitted callback ran"))
+                .expect_err("each exchange needs its own admitted custody");
             assert_eq!(
-                work.receipt().backend_write_operations,
-                2,
-                "actual thread conversion and cleanup only"
+                work.receipt(),
+                before,
+                "denied exchange performed native work"
             );
-            assert_eq!(work.receipt().allocation_operations, 1);
-            assert_eq!(work.receipt().peak_allocation_bytes, payload);
-            assert_eq!((&work.state).lock().live_allocation_bytes(), payload);
-            super::PROVIDER_FIBER.with(|slot| {
-                assert!(
-                    slot.borrow()
-                        .as_ref()
-                        .expect("original cached fiber")
-                        .owned
-                        .is_none()
-                );
-            });
-            run(|| 3).expect("ordinary cached fiber remains usable without a retained stop meter");
+            run(|| 3).expect("a subsequent ordinary callback remains usable");
         });
     }
 }
@@ -685,7 +646,6 @@ mod resource_scope_tests {
                 before,
                 "denied exchange enters neither allocator nor SDK"
             );
-            super::PROVIDER_FIBER.with(|slot| assert!(slot.borrow().is_none()));
         });
     }
 }
