@@ -244,6 +244,50 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
     Ok(())
 }
 
+#[tokio::test]
+async fn unrecoverable_scenario_oracles_reject_uncertain_outcomes_and_extra_dispatches()
+-> TestResult {
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
+    for relative in [
+        "recovery/unrecoverable.json",
+        "summary/unrecoverable.json",
+        "recovery/later-recovery.json",
+    ] {
+        let path = root.join(relative);
+        run(Scenario::load(&root, &path)?).await?;
+        for mutation in ["uncertain", "prefix", "dispatch", "reconciliation"] {
+            let mut case = Scenario::load(&root, &path)?;
+            match mutation {
+                "uncertain" => {
+                    if let Some(error) = &mut case.expect.error {
+                        *error = "operation outcome is indeterminate".into();
+                    } else {
+                        *case
+                            .resume
+                            .get_mut(1)
+                            .ok_or("missing interrupted recovery")? =
+                            "operation outcome is indeterminate".into();
+                    }
+                }
+                "prefix" => {
+                    case.expect
+                        .model_events
+                        .as_mut()
+                        .ok_or("missing retained prefix")?[0]["delta"] =
+                        serde_json::json!("wrong-prefix");
+                }
+                "dispatch" => case.expect.request_count = Some(2),
+                "reconciliation" => case.expect.reconciliation_count = Some(0),
+                _ => unreachable!(),
+            }
+            assert!(
+                run(case).await.is_err(),
+                "accepted {mutation} for {relative}"
+            );
+        }
+    }
+    Ok(())
+}
 #[test]
 fn scenarios() -> TestResult {
     if acyclic_harness::test_support::environment("E2E_TRACE").is_some() {

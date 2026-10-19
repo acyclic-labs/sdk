@@ -1,3 +1,4 @@
 {"max_output_tokens":10,"turns":[[{"type":"event","kind":"content","delta":"partial-"},{"type":"error",
-  "error":"offline"}]],"expect":{"error":"operation outcome is indeterminate","reconciliation_count":1},
+  "error":"offline"}]],"expect":{"error":"model provider unavailable (connection interrupted)","reconciliation_count":1,"request_count":1,
+    "model_events":[{"kind":"content","delta":"partial-"}]},
   "recoveries":[{"observed":[{"kind":"content","delta":"partial-"}],"continuation":null}],"resume":["offline"]}
