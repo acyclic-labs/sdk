@@ -732,7 +732,9 @@ async fn operation_index_shares_its_parent_across_authorities_at_capacity() -> T
         };
         for number in 0..8 {
             let id = AuthorityId::from_bytes([number; 16]);
-            let commit = proposed(number);
+            // Operation identities are scoped to their authority, including in
+            // the shared index: all eight authorities deliberately reuse one.
+            let commit = proposed(0);
             assert!(
                 store
                     .create_first_record(id, commit.clone(), &mut work, None::<&mut ()>)
