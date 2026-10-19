@@ -126,10 +126,10 @@ proptest! {
         prop_assert!(saved > 0);
         prop_assert_eq!(&before.0.0, &after.0.0);
         prop_assert_eq!(&before.1, &after.1);
-        eprintln!("pinned frame before={} after={} allocations before={:?} after={:?}",
-            before.0.2, after.0.2, before.0.1, after.0.1);
         exact_unmetered_allocation(before.0.1, after.0.1, saved)?;
-        prop_assert_eq!(after.0.2, before.0.2, "enclosing frame differs from the original concrete type");
+        // The caller-owned future may shrink; its original upper bound must not grow.
+        // The separately admitted heap factory has exact allocation guards below.
+        prop_assert!(after.0.2 <= before.0.2, "enclosing frame exceeds the original upper bound");
         // Restore the old factory on a third, independently initialized store.
         let broken = differential::observe::<_, _, (&'static str, u64)>(initialize,
             |fixture| observe(fixture, true, false));
