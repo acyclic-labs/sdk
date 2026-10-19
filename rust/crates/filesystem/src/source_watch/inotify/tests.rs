@@ -252,6 +252,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         watch.admit_with_work(Path::new("a/b"), &mut work),
         Err(DemandError::Work(WorkError::BudgetExceeded { .. }))
     ));
+    assert_eq!(work.live_allocation_bytes(), 0);
 
     assert!(
         watch
@@ -281,6 +282,7 @@ fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
         &cancellation,
     );
     assert!(watch.admit_with_work(Path::new("a/b"), &mut work)?);
+    assert_eq!(work.live_allocation_bytes(), 0);
 
     Ok(())
 }
