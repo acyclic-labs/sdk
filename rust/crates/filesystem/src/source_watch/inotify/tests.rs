@@ -609,8 +609,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         // Startup's temporary failure custody has retired. Reconcile its gauge
         // through the same budget projection used by the next native call.
         state.remaining()?;
-        state.live_allocation_bytes()
-            - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
+        state.live_allocation_bytes() - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
     };
     std::fs::write(root.path().join("reported"), b"changed")?;
     receive.recv_timeout(std::time::Duration::from_secs(5))?;

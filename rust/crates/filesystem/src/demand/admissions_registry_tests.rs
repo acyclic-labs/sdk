@@ -17,7 +17,10 @@ fn remaining_reclaims_retired_gauges_before_projecting_the_next_call() -> TestRe
     original.charge(WorkCounters::UNCHARGED)?;
     let after_another_admission = original.state(|state| state.remaining())?;
     assert_eq!(projected, after_another_admission);
-    assert_eq!(original.state.lock().roots.native_mount_admissions.0.len(), 1);
+    assert_eq!(
+        original.state.lock().roots.native_mount_admissions.0.len(),
+        1
+    );
     drop(survivor);
     Ok(())
 }
