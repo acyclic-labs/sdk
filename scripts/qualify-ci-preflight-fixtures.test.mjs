@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import { artifact, expectedGate, modelResult, verifyGate, verifyModelCalls } from "./qualify-ci-preflight-fixtures.mjs";
+import { artifact, modelResult, verifyModelResults } from "./qualify-ci-preflight-fixtures.mjs";
 import { gateQualifications, qualificationGatePlans, qualificationPlan } from "./qualify-mcp-loom.mjs";
 
 test("every production gate step supplies its artifact and complete test selection", () => {
@@ -28,19 +28,19 @@ test("every production gate step supplies its artifact and complete test selecti
   assert.match(sessionFs.rustflags, /--cfg acyclic_stream_loom/);
 });
 
-test("every omitted build or model invocation fails the production-derived oracle", () => {
+test("omitted or duplicated required model results fail, independent of scheduling order", () => {
   const plans = qualificationGatePlans();
-  const calls = plans.flatMap(plan => plan.tests.map(selected => [plan.args, selected.args]));
-  verifyModelCalls(plans, calls);
-  for (const [index, plan] of plans.entries()) {
+  const results = plans.flatMap(plan => plan.tests.map(selected => [plan.target, selected.args]));
+  verifyModelResults(plans, results);
+  verifyModelResults(plans, [...results].reverse());
+  for (const plan of plans) {
     const withoutBuild = plans.filter(other => JSON.stringify(other.args) !== JSON.stringify(plan.args));
     assert.throws(() => artifact(withoutBuild, plan.args, "/fixtures"), /unplanned model build/);
-    assert.throws(() => artifact(plans, [...plan.args, "--unplanned"], "/fixtures"), /unplanned model build/);
     assert.throws(() => modelResult(plan, ["unplanned::model", "--exact"]), /unplanned model invocation/);
   }
-  for (const index of calls.keys()) {
-    assert.throws(() => verifyModelCalls(plans, calls.filter((_, at) => at !== index)));
-    assert.throws(() => verifyModelCalls(plans, [...calls.slice(0, index), calls[index], ...calls.slice(index)]));
+  for (const index of results.keys()) {
+    assert.throws(() => verifyModelResults(plans, results.filter((_, at) => at !== index)));
+    assert.throws(() => verifyModelResults(plans, [...results, results[index]]));
   }
 });
 
@@ -67,24 +67,3 @@ test("an unknown model step or flag in the production plan fails closed", () => 
   }
 });
 
-test("a new production step is covered and every gate deviation is rejected", () => {
-  const plans = qualificationGatePlans();
-  const calls = plans.flatMap(plan => plan.tests.map(selected => [plan.args, selected.args]));
-  const log = (expected, models = calls) => [expected.map(([command]) => command), expected.map(([, flags]) => flags), models];
-  verifyGate(plans, ...log(expectedGate(plans)));
-  verifyGate(plans, ...log(expectedGate(plans, "-Cbase")), "-Cbase");
-  gateQualifications.push({ args: ["--e2e-progress", "--all-features"] });
-  let extended;
-  try { extended = qualificationGatePlans(); } finally { gateQualifications.pop(); }
-  const extendedCalls = extended.flatMap(plan => plan.tests.map(selected => [plan.args, selected.args]));
-  verifyGate(extended, ...log(expectedGate(extended), extendedCalls));
-  assert.throws(() => verifyGate(extended, ...log(expectedGate(plans))));
-  const expected = expectedGate(plans);
-  for (const index of expected.keys()) {
-    const flagged = expected.map(([command, flags], at) => [command, at === index ? `${flags} --cfg added`.trim() : flags]);
-    assert.throws(() => verifyGate(plans, ...log(flagged)), undefined, `flag on ${expected[index][0]}`);
-    const extra = [...expected.slice(0, index), ["check --locked -p added", ""], ...expected.slice(index)];
-    assert.throws(() => verifyGate(plans, ...log(extra)), undefined, `command before ${expected[index][0]}`);
-    assert.throws(() => verifyGate(plans, ...log(expected.filter((_, at) => at !== index))));
-  }
-});

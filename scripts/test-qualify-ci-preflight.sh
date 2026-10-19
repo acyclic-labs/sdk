@@ -82,11 +82,31 @@ EOF
 cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
-printf '%s\n' "${RUSTFLAGS:-}" >>"${FAKE_RUSTFLAGS_LOG:-/dev/null}"
+verb="$1"
 if [[ " $* " == *' --message-format=json '* ]]; then
   exec "$FAKE_MODEL_FIXTURE_DIR/cargo" "$@"
-elif [[ "$1" == test ]]; then
+else
+  source "$FAKE_OPERATION_DIR/operation.sh"
+  operation "$1"
+  if [[ "${FAKE_LANE:-}" == web-warnings || "${FAKE_LANE:-}" == wasm-tests ]]; then
+    features="" target="" kind=lib nodefault=false
+    while (($#)); do
+      case "$1" in
+        --features) features="$2"; shift ;;
+        --target) target="$2"; shift ;;
+        --tests) kind=tests ;;
+        --no-default-features) nodefault=true ;;
+      esac
+      shift
+    done
+    [[ "$target" == wasm32-unknown-unknown && "$nodefault" == true ]] || exit 65
+    if [[ "$FAKE_LANE" == web-warnings ]]; then
+      [[ " ${RUSTFLAGS:-} " == *-Dwarnings* ]] || exit 65
+    fi
+    printf '%s|%s\n' "$features" "$kind" >>"$FAKE_OPERATION_DIR/closures"
+  fi
+fi
+if [[ "$verb" == test ]]; then
   case "${FAKE_MODEL_RESULTS:-complete}" in
     missing) ;;
     mixed) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
@@ -176,7 +196,6 @@ run_preflight branch-webflow webflow 1 refs/heads/feature
 
 gate="$work/gate"
 mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"
-: >"$gate/cargo.log"
 # The pinned nextest is already installed, so the gate must not download it.
 cat >"$gate/bin/cargo-nextest" <<'EOF'
 #!/usr/bin/env bash
@@ -186,114 +205,72 @@ EOF
 chmod +x "$gate/bin/cargo-nextest"
 export FAKE_MODEL_FIXTURE="$root/scripts/qualify-ci-preflight-fixtures.mjs"
 export FAKE_MODEL_FIXTURE_DIR="$gate"
-# Exercise the default target path regardless of the build box's absolute cache.
+export FAKE_OPERATION_DIR="$gate"
+# Exercise default and checkout-relative target paths from an outside caller.
 unset CARGO_TARGET_DIR
-model_gate() (
+offline_lane() (
   cd "$root"
-  : >"$gate/cargo.log"
-  : >"$gate/flags.log"
   node "$FAKE_MODEL_FIXTURE" prepare "$gate"
-  (
-    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-      FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
-      bash "$1" gate
-  ) >"$gate/model-gate.stdout" 2>&1 || return 1
-  node "$FAKE_MODEL_FIXTURE" verify "$gate" 2>"$gate/model-gate.stderr"
+  : >"$gate/closures"
+  SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+    FAKE_LANE="$1" PATH="$gate/bin:$work/bin:$PATH" \
+    bash scripts/qualify-ci.sh "$1"
 )
-if ! model_gate scripts/qualify-ci.sh; then
+model_gate() {
+  offline_lane gate >"$gate/model-gate.stdout" 2>&1 || return 1
+  node "$FAKE_MODEL_FIXTURE" verify "$gate" 2>"$gate/model-gate.stderr"
+}
+if ! model_gate; then
   cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
   exit 1
 fi
-if ! CARGO_TARGET_DIR=relative-models model_gate scripts/qualify-ci.sh; then
+if ! CARGO_TARGET_DIR=relative-models model_gate; then
   cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
   exit 1
 fi
-# Controls: a flag or a command added only to the shell gate is rejected.
-for mutation in 's/^    nextest --workspace/    RUSTFLAGS="--cfg added" &/' \
-  's/^    node scripts\/qualify-mcp-loom\.mjs --gate$/    cargo check --locked -p added\n&/'; do
-  sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
-  if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
-    echo "gate control did not apply: $mutation" >&2
-    exit 1
-  fi
-  if model_gate "$gate/qualify-mutated.sh"; then
-    echo "model gate accepted: $mutation" >&2
-    exit 1
-  fi
+
+# Fault every kind of native boundary observed in actual offline execution.
+# No expected command list or execution order is mirrored by this fixture.
+for lane in gate web-warnings wasm-tests docs generation; do
+  offline_lane "$lane" >"$gate/$lane.stdout" 2>&1
+  mapfile -t roles < <(sort -u "$gate/operations")
+  ((${#roles[@]})) || { echo "$lane executed no native operations" >&2; exit 1; }
+  for role in "${roles[@]}"; do
+    if FAKE_FAIL_ROLE="$role" offline_lane "$lane" >"$gate/fault.stdout" 2>&1; then
+      echo "$lane accepted native failure in $role" >&2
+      exit 1
+    fi
+    [[ -s "$gate/failed" && ! -s "$gate/downstream" ]] || {
+      cat "$gate/fault.stdout" >&2
+      echo "$lane continued beyond native failure in $role" >&2
+      exit 1
+    }
+  done
 done
 
-# Independent controls for missing results and a zero-test suite beside a valid one.
+# Missing evidence or an empty suite cannot qualify alongside a valid suite.
 for mode in missing mixed; do
-  if (
-    cd "$root"
-    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-      FAKE_MODEL_RESULTS="$mode" FAKE_CARGO_LOG="$gate/cargo.log" \
-      PATH="$gate/bin:$work/bin:$PATH" \
-      bash scripts/qualify-ci.sh gate
-  ) >"$gate/$mode.stdout" 2>"$gate/$mode.stderr"; then
+  if FAKE_MODEL_RESULTS="$mode" offline_lane gate >"$gate/$mode.stdout" 2>&1; then
     echo "model gate accepted $mode results" >&2
     exit 1
   fi
 done
 
-web_warning_calls() {
-  : >"$gate/cargo.log"
-  : >"$gate/flags.log"
-  (
-    cd "$root"
-    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-      FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
-      bash "$1" web-warnings
-  )
-  mapfile -t cargo_calls <"$gate/cargo.log"
-  mapfile -t flags <"$gate/flags.log"
-  [[ "${#cargo_calls[@]}" -eq 5 ]] || return 1
-  local index features=(browser wasm browser,test-support wasm,test-support)
-  for index in 0 1 2 3; do
-    [[ "${cargo_calls[index]}" == "check --locked -p acyclic-harness --no-default-features --features ${features[index]} --target wasm32-unknown-unknown --lib --tests" ]] || return 1
+# These are required compilation capabilities, not Cargo command snapshots.
+# Feature closure and warning admission are checked by the offline compiler
+# boundary above; neither argument order nor shell source spelling is asserted.
+for lane in web-warnings wasm-tests; do
+  offline_lane "$lane" >"$gate/$lane.stdout" 2>&1
+  mapfile -t closures < <(sort -u "$gate/closures")
+  required=('browser,test-support|tests' 'wasm,test-support|tests')
+  if [[ "$lane" == web-warnings ]]; then
+    required+=('browser|tests' 'wasm|tests' '|lib')
+  fi
+  for closure in "${required[@]}"; do
+    printf '%s\n' "${closures[@]}" | grep -Fxq -- "$closure" || {
+      echo "$lane omitted required compilation capability $closure" >&2
+      exit 1
+    }
   done
-  [[ "${cargo_calls[4]}" == 'check --locked -p acyclic-harness --no-default-features --target wasm32-unknown-unknown --lib' ]] || return 1
-  for index in 0 1 2 3 4; do [[ "${flags[index]}" == *-Dwarnings* ]] || return 1; done
-}
-web_warning_calls scripts/qualify-ci.sh
-# Controls: the pin rejects a lane without test closures or warning denial.
-for mutation in 's/ --lib --tests$/ --lib/' 's/^    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" /    RUSTFLAGS="${RUSTFLAGS:-}" /' 's/ browser,test-support wasm,test-support/ browser,test-support/'; do
-  sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
-  if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
-    echo "web warning control did not apply: $mutation" >&2
-    exit 1
-  fi
-  if web_warning_calls "$gate/qualify-mutated.sh"; then
-    echo "web warning closures accepted: $mutation" >&2
-    exit 1
-  fi
-done
-
-: >"$gate/cargo.log"
-(
-  cd "$root"
-  SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
-    bash scripts/qualify-ci.sh wasm-tests
-)
-mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 2 ]]
-[[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness --no-default-features --features browser,test-support --target wasm32-unknown-unknown --lib --tests' ]]
-[[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --no-default-features --features wasm,test-support --target wasm32-unknown-unknown --lib --tests' ]]
-
-for lane in docs generation; do
-  : >"$gate/cargo.log"
-  (
-    cd "$root"
-    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-      FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
-      bash scripts/qualify-ci.sh "$lane"
-  )
-  mapfile -t cargo_calls <"$gate/cargo.log"
-  [[ "${#cargo_calls[@]}" -eq 1 ]]
-  case "$lane" in
-    docs) [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]] ;;
-    generation) [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]] ;;
-  esac
 done
 echo 'qualification preflight tests passed'

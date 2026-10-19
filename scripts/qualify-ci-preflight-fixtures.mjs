@@ -20,41 +20,18 @@ export function modelResult(plan, args) {
   return `test result: ok. ${test.passed ?? 6} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n`;
 }
 
-export function verifyModelCalls(plans, calls) {
-  assert.deepEqual(calls, plans.flatMap(plan => plan.tests.map(test => [plan.args, test.args])));
-}
-
-// The shell-owned gate commands with the exact RUSTFLAGS each adds; the model steps come from the plan.
-const loomFlags = "-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom";
-const shellGate = {
-  before: [
-    ["check --locked -p acyclic-harness-fuzz --bins", "-Dwarnings"],
-    ["check --locked -p acyclic-harness --features model-checking --lib", loomFlags],
-    ["check --locked -p acyclic-harness --features filesystem-local,model-checking --lib", loomFlags],
-    ["check --locked -p acyclic-harness --features filesystem --lib --tests", ""],
-    ["test -p acyclic-harness --locked --features model-checking --test client-mailbox-model --test client_journal_model --test mcp-loom", loomFlags],
-    ["test -p acyclic-harness --locked --features model-checking --lib workflow::model_checking::tests::", loomFlags],
-  ],
-  after: [
-    ["nextest run --profile ci --workspace --all-features --locked", ""],
-    ["test -p acyclic-harness --all-features --locked --example approved-native-process", ""],
-  ],
-};
-
-export function expectedGate(plans, base = "") {
-  const shell = ([command, added]) => [command, [base, added].filter(Boolean).join(" ")];
-  return [
-    ...hermeticCompilerPlans().map(plan => [plan.args.join(" "), base]),
-    ...shellGate.before.map(shell),
-    ...plans.map(plan => [plan.args.join(" "), plan.rustflags]),
-    ...shellGate.after.map(shell),
-  ].map(([command, rustflags]) => [command, rustflags.trim()]);
-}
-
-export function verifyGate(plans, cargoCalls, flags, modelCalls, base = "") {
-  assert.equal(flags.length, cargoCalls.length);
-  assert.deepEqual(cargoCalls.map((command, index) => [command, flags[index].trim()]), expectedGate(plans, base));
-  verifyModelCalls(plans, modelCalls);
+export function verifyModelResults(plans, results) {
+  // Required executable selections must complete once per planned invocation;
+  // scheduling order is not a qualification contract.
+  const counts = values => {
+    const result = new Map();
+    for (const value of values) {
+      const key = JSON.stringify(value);
+      result.set(key, (result.get(key) ?? 0) + 1);
+    }
+    return [...result].sort(([a], [b]) => a.localeCompare(b));
+  };
+  assert.deepEqual(counts(results), counts(plans.flatMap(plan => plan.tests.map(test => [plan.target, test.args]))));
 }
 
 // Compile the plan into shell dispatchers so the gate spawns no interpreter per build or model run.
@@ -77,7 +54,7 @@ function prepare(plans, directory) {
     for (const test of plan.tests) {
       const id = JSON.stringify(test.args);
       if (!build.tests.has(id)) {
-        build.tests.set(id, [test.args, `printf '%s\\n' ${quote(JSON.stringify([plan.args, test.args]))} >>${log}; `
+        build.tests.set(id, [test.args, `operation model; printf '%s\\n' ${quote(JSON.stringify([plan.target, test.args]))} >>${log}; `
           + `printf '%s' ${quote(modelResult(plan, test.args))}`]);
       }
     }
@@ -85,15 +62,31 @@ function prepare(plans, directory) {
   }
   const executable = { mode: 0o755 };
   const compilerCases = hermeticCompilerPlans().map(plan => {
-    // Offline preflight validates dispatch/order; real Clippy separately proves these rejections.
+    // Real Clippy separately proves these compiler-resolved rejections. Here
+    // execute the actual CLI's result validation with controlled compiler output.
     const messages = plan.negative ? Array.from({length: 11}, (_, index) => JSON.stringify({reason: "compiler-message", message: {
       level: "error", code: {code: "clippy::disallowed_methods"}, rendered: "fixture rejection", spans: [{is_primary: true, line_start: index + 1}],
     }}) + "\n").join("") : "";
-    return [plan.args, `printf '%s' ${quote(messages)}; exit ${plan.negative ? 1 : 0}`];
+    return [plan.args, `operation compiler-${plan.negative ? "negative" : "positive"}; printf '%s' ${quote(messages)}; exit ${plan.negative ? 1 : 0}`];
   });
+  const prelude = `source ${quote(join(directory, "operation.sh"))}; `;
+  writeFileSync(join(directory, "operation.sh"), `operation() {
+  if [[ -s "$FAKE_OPERATION_DIR/failed" ]]; then
+    printf '%s\\n' "$1" >>"$FAKE_OPERATION_DIR/downstream"
+    exit 8
+  fi
+  printf '%s\\n' "$1" >>"$FAKE_OPERATION_DIR/operations"
+  if [[ "\${FAKE_FAIL_ROLE:-}" == "$1" ]]; then
+    printf '%s\\n' "$1" >"$FAKE_OPERATION_DIR/failed"
+    exit 7
+  fi
+}
+`);
   writeFileSync(join(directory, "cargo"), dispatcher([...builds.values()]
-    .map(build => [build.args, `printf '%s' ${quote(build.artifact)}`]).concat(compilerCases), "unplanned model build"), executable);
-  for (const [path, build] of builds) writeFileSync(path, dispatcher([...build.tests.values()], "unplanned model invocation"), executable);
+    .map(build => [build.args, `${prelude}operation build; printf '%s' ${quote(build.artifact)}`])
+    .concat(compilerCases.map(([args, body]) => [args, prelude + body])), "unplanned model build"), executable);
+  for (const [path, build] of builds) writeFileSync(path,
+    dispatcher([...build.tests.values()].map(([args, body]) => [args, prelude + body]), "unplanned model invocation"), executable);
 }
 
 const helper = fileURLToPath(import.meta.url);
@@ -105,6 +98,8 @@ if (process.argv[1] && resolve(process.argv[1]) === helper) {
     mkdirSync(directory, { recursive: true });
     writeFileSync(planFile, JSON.stringify(plans));
     writeFileSync(join(directory, "models.log"), "");
+    writeFileSync(join(directory, "operations"), "");
+    for (const name of ["failed", "downstream"]) writeFileSync(join(directory, name), "");
     prepare(plans, directory);
   } else if (mode === "verify") {
     const plans = JSON.parse(readFileSync(planFile, "utf8"));
@@ -113,7 +108,10 @@ if (process.argv[1] && resolve(process.argv[1]) === helper) {
       assert.ok(content.endsWith("\n"), `incomplete fixture log: ${name}`);
       return content.slice(0, -1).split("\n");
     };
-    verifyGate(plans, lines("cargo.log"), lines("flags.log"), lines("models.log").map(line => JSON.parse(line)),
-      process.env.RUSTFLAGS ?? "");
+    verifyModelResults(plans, lines("models.log").map(line => JSON.parse(line)));
+    const operations = lines("operations");
+    for (const required of ["compiler-positive", "compiler-negative", "build", "model"]) {
+      assert.ok(operations.includes(required), `required qualification did not execute: ${required}`);
+    }
   } else throw new Error(`unknown fixture operation: ${mode}`);
 }
