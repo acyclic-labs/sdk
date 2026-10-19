@@ -113,6 +113,14 @@ struct Exchange {
     job: std::cell::Cell<*mut c_void>,
 }
 
+thread_local! {
+    // A borrowed pointer only while its SDK callback is executing. This Cell
+    // has no destructor, owns no native resource and never outlives switch-back.
+    static ACTIVE_CALLBACK_FIBER: std::cell::Cell<*mut c_void> = const {
+        std::cell::Cell::new(std::ptr::null_mut())
+    };
+}
+
 impl ProviderFiber {
     fn finish(&mut self) -> Result<(), ProviderFailure> {
         if self.fiber.is_null() {
@@ -245,6 +253,17 @@ struct ThreadConversion {
 
 impl ThreadConversion {
     fn start(meter: Option<&crate::NativeMaterializationWork>) -> Result<Self, ProviderFailure> {
+        let caller = ACTIVE_CALLBACK_FIBER.get();
+        if !caller.is_null() {
+            // The enclosing invocation retains this live fiber and owns the
+            // thread conversion. Nested callbacks must neither convert again
+            // nor retire their caller's conversion.
+            return Ok(Self {
+                cleanup: None,
+                caller,
+                active: false,
+            });
+        }
         let cleanup = meter
             .map(|meter| {
                 meter
@@ -340,7 +359,9 @@ fn run_with_runtime_bootstrap<T>(
         let mut outcome = None;
         let mut job = || {
             if let Some(callback) = callback.take() {
+                let caller = ACTIVE_CALLBACK_FIBER.replace(fiber);
                 outcome = Some(std::panic::catch_unwind(AssertUnwindSafe(callback)));
+                ACTIVE_CALLBACK_FIBER.set(caller);
             }
         };
         let mut job: &mut dyn FnMut() = &mut job;
