@@ -43,16 +43,15 @@ fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)
     let (mut index, mut valid, mut carriage_return) = (0, true, false);
     let mut last = None;
     while remaining != 0 {
-        let count = usize::try_from(remaining.min(buffer.len() as u64)).unwrap();
-        let count = file.read(&mut buffer[..count])?;
+        let count = (&mut *file).take(remaining).read(&mut buffer)?;
         if count == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "Git exclusions changed during read",
             ));
         }
-        remaining -= count as u64;
-        for byte in &buffer[..count] {
+        remaining -= u64::try_from(count).map_err(std::io::Error::other)?;
+        for byte in buffer.iter().take(count) {
             last = Some(*byte);
             if *byte == b'\n' {
                 if valid && index == pattern.len() {
@@ -60,7 +59,7 @@ fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)
                 }
                 (index, valid, carriage_return) = (0, true, false);
             } else if valid {
-                if !carriage_return && index < pattern.len() && *byte == pattern[index] {
+                if !carriage_return && pattern.get(index) == Some(byte) {
                     index += 1;
                 } else if !carriage_return && index == pattern.len() && *byte == b'\r' {
                     carriage_return = true;
@@ -128,15 +127,15 @@ fn pointer_line(text: &str) -> Result<&str> {
 
 fn metadata(root: &HeldRoot) -> Result<Option<HeldRoot>> {
     match root.open_directory(Path::new(".git")) {
-        Ok(directory) => return Ok(Some(directory)),
-        Err(error) if missing(&error) => return Ok(None),
+        Ok(directory) => Ok(Some(directory)),
+        Err(error) if missing(&error) => Ok(None),
         Err(directory_error) => {
             // A linked worktree stores a regular .git pointer instead.
             let text = read(root, ".git").map_err(|_| storage(directory_error))?;
             let pointer = pointer_line(&text)?
                 .strip_prefix("gitdir: ")
                 .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
-            return pointed_directory(root, pointer).map(Some);
+            pointed_directory(root, pointer).map(Some)
         }
     }
 }
