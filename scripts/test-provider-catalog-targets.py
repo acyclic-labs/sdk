@@ -16,7 +16,7 @@ assert source.count(guard) == 4
 def dependencies(target):
     """Use Cargo's real, target-specific dependencies for the included modules."""
     command = ["cargo", f"+{toolchain}", "check", "--locked", "-p",
-               "acyclic-harness-providers", "--lib", "--features", "browser",
+               "acyclic-harness-providers", "--lib", "--tests", "--features", "browser",
                "--message-format=json"]
     if target:
         command += ["--target", target]
@@ -33,10 +33,10 @@ def dependencies(target):
                 for filename in message["filenames"]:
                     path = pathlib.Path(filename)
                     directories.add(path.parent)
-                    if path.suffix == ".rmeta":
+                    if path.suffix == ".rmeta" and not message["profile"]["test"]:
                         libraries[message["target"]["name"]] = path
         assert process.wait() == 0, "catalog qualification dependencies failed to build"
-    names = ["acyclic_harness", "serde", "serde_json"]
+    names = ["acyclic_harness", "acyclic_harness_providers", "serde", "serde_json"]
     if not target:
         names.append("keyring")
     arguments = []
@@ -49,6 +49,11 @@ def dependencies(target):
     return arguments
 
 
+# Public ModelSpec consumers include harness integration fixtures. Compile every
+# native test entry point, not only the provider library that defines the API.
+subprocess.run(["cargo", f"+{toolchain}", "check", "--locked", "-p",
+                "acyclic-harness", "--all-features", "--tests"],
+               cwd=repository, check=True)
 # Build time is separate from the bounded compiler proof, as with test suites.
 native_dependencies = dependencies(None)
 wasm_dependencies = dependencies("wasm32-unknown-unknown")
@@ -136,9 +141,9 @@ pub fn exercise() -> Result<()> {
 }
 ''')
 
-    def compile(label, wasm, error=None):
+    def compile(label, wasm, error=None, contract=None):
         command = ["rustc", f"+{toolchain}", "--edition=2024", "--crate-type=lib",
-                   "--emit=metadata", "-Dwarnings", str(fixture), "--out-dir", str(root)]
+                   "--emit=metadata", "-Dwarnings", str(contract or fixture), "--out-dir", str(root)]
         if wasm:
             command += ["--target", "wasm32-unknown-unknown"]
         command += wasm_dependencies if wasm else native_dependencies
@@ -162,4 +167,26 @@ pub fn exercise() -> Result<()> {
     credentials_module.write_text(credentials.replace("fn codex_login(", "fn removed_login("))
     compile("production credential API drift negative", False,
             "no method named `codex_login`")
+    # Exercise the real public types, including constructors outside this crate.
+    model_contract = root / "model_contract.rs"
+    model_source = """
+pub fn model() -> acyclic_harness_providers::ModelSpec {
+    acyclic_harness_providers::ModelSpec {
+        max_context_tokens: None,
+        capacity: acyclic_harness::context::ModelContextCapacity {
+            context_tokens: 4096, output_tokens: Some(1024),
+        },
+        features: acyclic_harness_providers::ModelFeatures::default(),
+    }
+}
+"""
+    model_contract.write_text(model_source)
+    compile("public ModelSpec native fixture", False, contract=model_contract)
+    compile("public ModelSpec WASM fixture", True, contract=model_contract)
+    model_contract.write_text(model_source.replace("Some(1024)", "1024"))
+    compile("unverified output-limit fixture negative", False,
+            "mismatched types", contract=model_contract)
+    model_contract.write_text(model_source.replace("max_context_tokens: None,", ""))
+    compile("missing catalog maximum fixture negative", False,
+            "missing field `max_context_tokens`", contract=model_contract)
     assert time.monotonic() < deadline, "catalog target proof exceeded eight seconds"

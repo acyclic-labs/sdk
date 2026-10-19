@@ -172,9 +172,10 @@ async fn headless(base_url: String) -> Result<Run> {
             models: BTreeMap::from([(
                 "model".into(),
                 ModelSpec {
+                    max_context_tokens: None,
                     capacity: ModelContextCapacity {
                         context_tokens: 32_768,
-                        output_tokens: 1024,
+                        output_tokens: Some(1024),
                     },
                     features: ModelFeatures {
                         tools: true,
