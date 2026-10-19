@@ -17,7 +17,6 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
         ScriptedModelProvider::new([
             ScriptedTurn::Events(vec![ScriptedEvent::Pending {}]),
             ScriptedTurn::Text("independent".into()),
-            ScriptedTurn::Text("recovered".into()),
         ])
         .with_token_counter(fixture_token_count)
         .with_reconciliations([ScriptedReconciliation {
@@ -75,8 +74,15 @@ async fn a_live_model_retry_is_rejected_before_replay_or_dispatch() -> Result<()
         "independent"
     );
     drop(first);
-    assert_eq!(executor.execute(input, &journal).await?.text, "recovered");
-    assert_eq!(provider.requests().len(), 3);
+    let before_retry = journal.0.lock().unwrap().clone();
+    // Dropping the live guard permits reconciliation, but this direct executor
+    // has no retained task fence authorizing another model dispatch.
+    assert!(matches!(
+        executor.execute(input.clone(), &journal).await,
+        Err(Error::Indeterminate(operation)) if operation == input.operation_id
+    ));
+    assert_eq!(*journal.0.lock().unwrap(), before_retry);
+    assert_eq!(provider.requests().len(), 2);
     Ok(())
 }
 
