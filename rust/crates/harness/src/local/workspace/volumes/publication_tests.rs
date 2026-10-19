@@ -226,12 +226,27 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         [".volumes/scratch", ".volumes/zzz"]
     );
     let ran = std::sync::atomic::AtomicBool::new(false);
-    native_scope(&table, async |claims| {
+    let second_entry = blocked.native().await;
+    let mut scope = Box::pin(native_scope(&table, async |claims| {
         ran.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(((), claims))
-    })
-    .await
-    .expect_err("a regular file cannot become the second projection");
+    }));
+    tokio::select! {
+        result = &mut scope => panic!("scope returned before the first physical entry: {result:?}"),
+        () = async {
+            loop {
+                if scratch.native().await.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        } => {}
+    }
+    assert!(futures::poll!(&mut scope).is_pending());
+    drop(second_entry);
+    scope
+        .await
+        .expect_err("a regular file cannot become the second projection");
     assert!(!ran.into_inner());
     assert!(
         scratch.native().await.is_none(),
