@@ -15,14 +15,14 @@
 //! stays on its thread, so thread-local state, parking, and blocking behave as
 //! they would in place, and no other thread is woken to serve it.
 //!
-//! A native callback carries its full original invocation and resource allowance
-//! into this engine. Its Rust exchange has a strong allocation guard admitted
+//! Finite invocations carry their original invocation and resource allowance
+//! into this engine. Their Rust exchange has a strong allocation guard admitted
 //! before construction; native resource creation and mandatory teardown are
 //! counted at their actual calls. Every invocation retires its fiber after
 //! switch-back, so no cached TLS destructor or meter alias outlives the callback.
-//! The SDK entry point verifies its retained authentic source guard using the
-//! existing callback runtime before entering this engine; allocation accounting
-//! here is not authorization and cannot replace that verification.
+//! Ordinary callbacks retain their independent source admissions. Source
+//! operations verify their authentic guard through the existing callback runtime;
+//! engine allocation accounting is not authorization and cannot replace it.
 //! Rust's platform thread identity and TLS destructor registration are opaque
 //! runtime-owned state, retained until thread exit. They are initialized only
 //! after exchange admission, before conversion, and are not claimed as
@@ -311,8 +311,8 @@ impl Drop for ThreadConversion {
 }
 
 /// Runs one callback and retires its exact controls after switch-back.
-/// The SDK caller must complete source authorization before this call: the
-/// first operation below allocates the actual exchange box.
+/// Source authorization is independent of engine allocation admission. The
+/// exchange is admitted before runtime bootstrap or native fiber conversion.
 pub(super) fn run_with_meter<T>(
     meter: Option<&crate::NativeMaterializationWork>,
     callback: impl FnOnce() -> T,
