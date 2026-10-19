@@ -12,6 +12,9 @@
 
 ## Unreleased
 
+- Identity credentials release their exclusive lock when the owning store is
+  dropped, even while a forked child still holds an inherited descriptor before
+  exec. A live store continues to exclude competing credential owners.
 - The npm package's command is now `acyclic-plugin`, so it no longer replaces
   the `acyclic` command from `@acyclic-labs/cli`. Agent guidance and messages
   name `acyclic-plugin`; hooks still recognize `acyclic` from earlier guidance.

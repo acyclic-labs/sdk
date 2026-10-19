@@ -117,6 +117,13 @@ struct Store {
     _lock: File,
 }
 
+impl Drop for Store {
+    fn drop(&mut self) {
+        // A forked child can retain the open file description until exec.
+        let _ = fs2::FileExt::unlock(&self._lock);
+    }
+}
+
 impl Store {
     fn open(path: &Path) -> Result<Self, Error> {
         let path = std::path::absolute(path)?;
