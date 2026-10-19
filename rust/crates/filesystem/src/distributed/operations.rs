@@ -75,6 +75,7 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
             || locator.0.sequence != 0
             || durable.digest.as_bytes() != &location[8..]
             || record.0.commit_id != locator.0.commit_id
+            || record.0.committed_at_micros != locator.0.committed_at_micros
         {
             return Err(authority_corrupt(
                 "operation locator does not bind its authority record",

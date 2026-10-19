@@ -231,6 +231,9 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
                 Err(error) => return Err(error.into()),
             }
         }
+        // Stream retains rejected CAS requests too. Its retry key identifies
+        // this exact publication attempt; the atomic locator owns semantic
+        // operation identity across changing heads, gates and lease grants.
         let idempotency_key = work.key(
             b"operation-attempt\0",
             &[

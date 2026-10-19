@@ -280,7 +280,7 @@ async fn open_lease(
             path: path.clone(),
             if_tail: Some(0),
             records: vec![acyclic_stream::OwnedBytes::from_static(b"open")],
-            idempotency_key: stream_key(b"open-lease", path.as_str().as_bytes())?,
+            idempotency_key: Some(stream_key(b"open-lease", path.as_str().as_bytes())?),
         })
         .await?;
     Ok(path)
@@ -426,7 +426,7 @@ async fn fork_lease_rejection_and_closed_lease_replay_preserve_atomic_publicatio
                 path: path.clone(),
                 if_tail: Some(1),
                 records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
-                idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())?,
+                idempotency_key: Some(stream_key(b"close-lease", path.as_str().as_bytes())?),
             })
             .await?;
         assert_eq!(
@@ -525,7 +525,7 @@ async fn operation_locators_reject_corruption_and_separately_published_records()
                     path: work.path(id, "/records", None)?,
                     if_tail: Some(2),
                     records: vec![encoded],
-                    idempotency_key: stream_key(b"separate-record", &[invalid])?,
+                    idempotency_key: Some(stream_key(b"separate-record", &[invalid])?),
                 })
                 .await?;
             sequence = 2;

@@ -586,6 +586,46 @@ impl ReleaseSpy {
             race_once: AtomicBool::new(true),
         }
     }
+    async fn interleave(&self) -> Result<(), StreamError> {
+        self.writes.store(true, SeqCst);
+        if let Some(path) = &self.before_lease_close {
+            if self.race_once.swap(false, SeqCst) {
+                self.inner
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
+                        if_tail: Some(1),
+                        idempotency_key: Some(
+                            stream_key(b"close-lease", path.as_str().as_bytes())
+                                .map_err(|_| StreamError::InvalidArgument)?,
+                        ),
+                    })
+                    .await?;
+            }
+        }
+        if let Some(winner) = &self.before_commit {
+            if self.race_once.swap(false, SeqCst) {
+                let token = CancellationToken::new();
+                let mut work = AuthorityWork::new(BUDGET, &token);
+                let outcome = StreamAuthorityStore::new(self.inner.clone())
+                    .compare_and_append(winner.clone(), &mut work, None::<&mut ()>)
+                    .await
+                    .map_err(|_| StreamError::InvalidArgument)?;
+                assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
+            }
+        }
+        if let Some(reservation) = self.before_gate_release {
+            if self.race_once.swap(false, SeqCst) {
+                let token = CancellationToken::new();
+                let mut work = AuthorityWork::new(BUDGET, &token);
+                StreamAuthorityStore::new(self.inner.clone())
+                    .release_publication(reservation, &mut work)
+                    .await
+                    .map_err(|_| StreamError::InvalidArgument)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -647,42 +687,21 @@ impl StreamProvider for ReleaseSpy {
         Ok(records)
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.writes.store(true, SeqCst);
-        if let Some(path) = &self.before_lease_close {
-            if self.race_once.swap(false, SeqCst) {
-                self.inner
-                    .append(AppendRequest {
-                        path: path.clone(),
-                        records: vec![acyclic_stream::OwnedBytes::from_static(b"closed")],
-                        if_tail: Some(1),
-                        idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())
-                            .map_err(|_| StreamError::InvalidArgument)?,
-                    })
-                    .await?;
-            }
-        }
-        if let Some(winner) = &self.before_commit {
-            if self.race_once.swap(false, SeqCst) {
-                let token = CancellationToken::new();
-                let mut work = AuthorityWork::new(BUDGET, &token);
-                let outcome = StreamAuthorityStore::new(self.inner.clone())
-                    .compare_and_append(winner.clone(), &mut work, None::<&mut ()>)
-                    .await
-                    .map_err(|_| StreamError::InvalidArgument)?;
-                assert!(matches!(outcome, FsAppendOutcome::Committed(_)));
-            }
-        }
-        if let Some(reservation) = self.before_gate_release {
-            if self.race_once.swap(false, SeqCst) {
-                let token = CancellationToken::new();
-                let mut work = AuthorityWork::new(BUDGET, &token);
-                StreamAuthorityStore::new(self.inner.clone())
-                    .release_publication(reservation, &mut work)
-                    .await
-                    .map_err(|_| StreamError::InvalidArgument)?;
-            }
-        }
+        self.interleave().await?;
         let result = self.inner.commit(request).await?;
+        if self.lose_ack {
+            Err(StreamError::Unavailable)
+        } else {
+            Ok(result)
+        }
+    }
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.interleave().await?;
+        let result = self.inner.commit_before(request, deadline).await?;
         if self.lose_ack {
             Err(StreamError::Unavailable)
         } else {
