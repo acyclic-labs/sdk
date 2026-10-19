@@ -134,7 +134,7 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert_eq!(ordinary.live_allocation_bytes(), 0);
     watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
     drop(paused);
-    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+    watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
     Ok(())
 }
@@ -229,7 +229,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
             .cleanup
             .is_empty()
     );
-    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+    watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
     Ok(())
 }
@@ -607,8 +607,8 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     let retained_control = {
         let mut state = original.lock();
         // Startup's temporary failure custody has retired. Reconcile its gauge
-        // before comparing this baseline with the terminal receipt below.
-        state.receipt();
+        // through the same budget projection used by the next native call.
+        state.remaining()?;
         state.live_allocation_bytes()
             - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
     };
@@ -710,9 +710,15 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-    let paused = watch.paused();
+    // The foreground fence owns this callback. Keep the background reader
+    // parked until the test explicitly admits terminal cleanup below.
+    watch
+        .shared
+        .reading
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .blocked = true;
     std::fs::write(root.path().join("reported"), b"changed")?;
-    drop(paused);
     let _ = watch.fence_events_with_work(std::time::Duration::MAX, &mut work);
     {
         let reading = watch

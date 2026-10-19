@@ -5,6 +5,24 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 #[test]
+fn remaining_reclaims_retired_gauges_before_projecting_the_next_call() -> TestResult {
+    let cancellation = CancellationToken::new();
+    let mut original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let retired = NativeMountAllocationCustody::new(&mut original)?;
+    let survivor = NativeMountAllocationCustody::new(&mut original)?;
+    original.charge(WorkCounters::UNCHARGED)?;
+    drop(retired);
+
+    let projected = original.state(|state| state.remaining())?;
+    original.charge(WorkCounters::UNCHARGED)?;
+    let after_another_admission = original.state(|state| state.remaining())?;
+    assert_eq!(projected, after_another_admission);
+    assert_eq!(original.state.lock().roots.native_mount_admissions.0.len(), 1);
+    drop(survivor);
+    Ok(())
+}
+
+#[test]
 fn pending_admission_keeps_retirement_dirty_with_a_live_survivor() -> TestResult {
     let cancellation = CancellationToken::new();
     let mut original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
