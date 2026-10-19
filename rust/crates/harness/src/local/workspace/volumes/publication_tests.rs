@@ -140,10 +140,8 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     Ok(())
 }
 
-// A scope whose later volume cannot be entered runs no command; the volumes it
-// already projected leave through the same exit instead of staying mounted.
 #[tokio::test]
-async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
+async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
@@ -191,6 +189,60 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     );
     retire(mounts).await?;
     assert!(scratch.native().await.is_none());
+    Ok(())
+}
+
+// Both bindings are valid. Only physical entry of the second projection fails,
+// after the first has entered, so this exercises partial-entry retirement.
+#[tokio::test]
+async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().expect("fixture workspace").mounts;
+    let (_, mount) = mounts.named(Some("scratch"))?;
+    let scratch = mount.view.source.as_ref().expect("bound scratch source");
+    let blocked = Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Volume(scratch.workspace.workspace().clone()),
+        destination: mounts.root.join(".volumes/zzz"),
+        native: StateArc::new(AsyncMutex::new(None)),
+        users: StateArc::new(crate::sync::SyncMutex::new(0)),
+        execution: StateArc::new(AsyncMutex::new(())),
+    });
+    std::fs::write(&blocked.destination, b"authored blocker").map_err(storage)?;
+    let table = super::super::mounts::owner(
+        &mounts.root,
+        &mounts.named(None)?.1.view.volume,
+        None,
+        [("scratch", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))].map(
+            |(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source)),
+        ),
+    )?;
+    assert_eq!(
+        ordered_mounts(&table)?
+            .into_iter()
+            .map(|(relative, _)| relative)
+            .collect::<Vec<_>>(),
+        [".volumes/scratch", ".volumes/zzz"]
+    );
+    let ran = std::sync::atomic::AtomicBool::new(false);
+    native_scope(&table, async |claims| {
+        ran.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(((), claims))
+    })
+    .await
+    .expect_err("a regular file cannot become the second projection");
+    assert!(!ran.into_inner());
+    assert!(
+        scratch.native().await.is_none(),
+        "failed later entry stranded the earlier projection"
+    );
+    assert!(!scratch.destination.exists());
+    assert!(blocked.native().await.is_none());
+    assert_eq!(
+        std::fs::read(&blocked.destination).map_err(storage)?,
+        b"authored blocker"
+    );
     Ok(())
 }
 
