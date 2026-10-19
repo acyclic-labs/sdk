@@ -144,6 +144,16 @@ proptest! {
         let error = exact_unmetered_allocation(before.0.1, boxed.0.1, saved).unwrap_err();
         prop_assert!(error.to_string().contains("pinned read allocation count"),
             "extra factory box bypassed the exact count guard");
+        let padded = differential::observe::<_, _, (&'static str, u64)>(initialize,
+            |fixture| crate::conversation::BoundedContentFuture::with_padded_frame(true,
+                || observe(fixture, false, false)));
+        prop_assert_eq!(&before.0.0, &padded.0.0);
+        prop_assert_eq!(&before.1, &padded.1);
+        prop_assert_eq!(after.0.1.count_total, padded.0.1.count_total,
+            "inline padding unexpectedly added an allocation");
+        prop_assert!(padded.0.1.bytes_total > after.0.1.bytes_total);
+        prop_assert!(exact_unmetered_allocation(before.0.1, padded.0.1, saved).is_err(),
+            "retained inline factory padding passed the exact byte guard");
         for allowance in [budget, 64 * 1024 * 1024] {
             for native in [false, true] {
                 let [before, after] = differential::pair::<_, _, (&'static str, u64)>(initialize, |(host, file), old|
