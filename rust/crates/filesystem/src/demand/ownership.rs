@@ -90,7 +90,7 @@ impl SourcePayloadOwnership {
                     .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                         current.checked_add(bytes)
                     })
-                    .map_err(|_| WorkError::Overflow)?;
+                    .map_err(|_| crate::WorkError::Overflow)?;
                 // These bytes are born directly in retained watch storage, not
                 // in the transient capture that originally created the watch.
                 let claimed = original.state(|owner| {
