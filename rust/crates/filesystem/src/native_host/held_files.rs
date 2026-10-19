@@ -12,6 +12,51 @@ pub(crate) mod models;
 mod record;
 
 impl HostRoot {
+    pub(crate) fn open_directory<W: NativeHostWork>(
+        &self,
+        relative: &Path,
+        work: &mut W,
+    ) -> Result<Self, W::Error> {
+        #[cfg(unix)]
+        let directory = directory_path(&self.directory, relative, false, work)?;
+        #[cfg(windows)]
+        let directory = with_wide_path(relative, work, |relative, work| {
+            directory_path(&self.directory, relative, false, work)
+        })?;
+        let identity = directory_identity(&directory, work)?;
+        Ok(Self {
+            directory,
+            identity,
+        })
+    }
+
+    #[cfg(any(test, feature = "native-mount"))]
+    pub(crate) fn open_record_file<W: NativeHostWork>(
+        &self,
+        leaf: &Path,
+        create: bool,
+        work: &mut W,
+    ) -> Result<std::fs::File, W::Error> {
+        let options = if create {
+            NativeOpenOptions::ReadWriteCreate
+        } else {
+            NativeOpenOptions::Read
+        };
+        open_leaf(&self.directory, leaf, &options, work)
+    }
+
+    pub(crate) fn sync_directory<W: NativeHostWork>(&self, work: &mut W) -> Result<(), W::Error> {
+        sync_directory_held(&self.directory, work)
+    }
+
+    pub(crate) fn sync_record_file<W: NativeHostWork>(
+        &self,
+        file: &std::fs::File,
+        work: &mut W,
+    ) -> Result<(), W::Error> {
+        sync_file_held(file, work)
+    }
+
     /// A second handle on the same held directory.
     pub(crate) fn try_clone<W: NativeHostWork>(&self, work: &mut W) -> Result<Self, W::Error> {
         Ok(Self {

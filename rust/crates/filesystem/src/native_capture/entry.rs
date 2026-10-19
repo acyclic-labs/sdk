@@ -16,6 +16,37 @@ pub struct HeldRoot {
 }
 
 impl HeldRoot {
+    /// Opens an existing descendant directory without following links or
+    /// reopening this root by its original name.
+    pub fn open_directory(&self, relative: &Path) -> Result<Self, DemandError> {
+        Ok(Self {
+            root: self
+                .root
+                .open_directory(relative, &mut crate::native_host::ordinary_work())?,
+            path: self.path.join(relative),
+        })
+    }
+
+    /// Opens a regular leaf relative to this held directory. A writable
+    /// open creates an absent leaf and never follows a link.
+    #[cfg(any(test, feature = "native-mount"))]
+    pub fn open_file(&self, leaf: &Path, writable: bool) -> Result<std::fs::File, DemandError> {
+        self.root
+            .open_record_file(leaf, writable, &mut crate::native_host::ordinary_work())
+    }
+
+    /// Persists a file using the platform's native full-sync primitive.
+    pub fn sync_file(&self, file: &std::fs::File) -> Result<(), DemandError> {
+        self.root
+            .sync_record_file(file, &mut crate::native_host::ordinary_work())
+    }
+
+    /// Persists names created in this held directory.
+    pub fn sync_directory(&self) -> Result<(), DemandError> {
+        self.root
+            .sync_directory(&mut crate::native_host::ordinary_work())
+    }
+
     /// The held root's device and object id, read when it was opened.
     #[must_use]
     pub const fn identity(&self) -> NativeRootIdentity {
