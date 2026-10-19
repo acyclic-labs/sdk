@@ -1,4 +1,5 @@
 use super::*;
+use parking_lot::Mutex as SyncMutex;
 use std::sync::atomic::AtomicUsize;
 use tonic::{Response, Streaming};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
@@ -14,8 +15,20 @@ struct Outage {
     recovered: AtomicBool,
     terminal: AtomicBool,
     outputs: AtomicUsize,
+    isolated: AtomicBool,
+    replacement_release: tokio::sync::Notify,
+    replacement_ready: AtomicBool,
+    handshakes: SyncMutex<std::collections::BTreeMap<usize, HandshakeState>>,
+    subscriptions: SyncMutex<std::collections::BTreeMap<usize, Vec<wire::SessionSubscription>>>,
 }
 impl Outage {
+    fn accept_replacement(&self) {
+        self.replacement_ready.store(true, Ordering::SeqCst);
+        self.replacement_release.notify_waiters();
+    }
+    fn handshake(&self, call: usize) -> Option<HandshakeState> {
+        self.handshakes.lock().get(&call).copied()
+    }
     fn recover(&self) {
         self.recovered.store(true, Ordering::SeqCst);
         self.release.notify_waiters();
@@ -30,6 +43,38 @@ impl Outage {
         }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HandshakeState {
+    Pending,
+    Answered,
+    Dropped,
+}
+struct PendingHandshake {
+    outage: Arc<Outage>,
+    call: usize,
+    answered: bool,
+}
+impl PendingHandshake {
+    fn new(outage: &Arc<Outage>, call: usize) -> Self {
+        outage.handshakes.lock().insert(call, HandshakeState::Pending);
+        outage.changed.notify_one();
+        Self { outage: Arc::clone(outage), call, answered: false }
+    }
+    fn answered(&mut self) {
+        self.answered = true;
+        self.outage.handshakes.lock().insert(self.call, HandshakeState::Answered);
+        self.outage.changed.notify_one();
+    }
+}
+impl Drop for PendingHandshake {
+    fn drop(&mut self) {
+        if !self.answered {
+            self.outage.handshakes.lock().insert(self.call, HandshakeState::Dropped);
+            self.outage.changed.notify_one();
+        }
+    }
+}
 struct OutputOwner(Arc<Outage>);
 impl Drop for OutputOwner {
     fn drop(&mut self) {
@@ -38,7 +83,8 @@ impl Drop for OutputOwner {
     }
 }
 struct DisconnectingHost {
-    service: acyclic_stream::session::Service<acyclic_stream::MemoryStream>,
+    provider: Arc<acyclic_stream::MemoryStream>,
+    successor: Arc<acyclic_stream::MemoryStream>,
     outage: Arc<Outage>,
 }
 #[tonic::async_trait]
@@ -51,6 +97,10 @@ impl StreamSessionService for DisconnectingHost {
     ) -> std::result::Result<Response<Self::SessionStream>, Status> {
         let call = self.outage.calls.fetch_add(1, Ordering::SeqCst);
         self.outage.changed.notify_one();
+        let successor = self.outage.isolated.load(Ordering::SeqCst) && call > 5;
+        let mut pending = None;
+        let mut incoming = request.into_inner();
+        let mut buffered = Vec::new();
         if call > 0 {
             // Cross a whole handshake attempt group before the deterministic
             // recovery gate. Unavailable is not a terminal established-interest error.
@@ -60,15 +110,54 @@ impl StreamSessionService for DisconnectingHost {
             if self.outage.terminal.load(Ordering::SeqCst) {
                 return Err(Status::permission_denied("fixture authorization revoked"));
             }
+            pending = Some(PendingHandshake::new(&self.outage, call));
             loop {
-                let released = self.outage.release.notified();
-                if self.outage.recovered.load(Ordering::SeqCst) {
+                let released = if successor {
+                    self.outage.replacement_release.notified()
+                } else {
+                    self.outage.release.notified()
+                };
+                let ready = if successor {
+                    &self.outage.replacement_ready
+                } else {
+                    &self.outage.recovered
+                };
+                if ready.load(Ordering::SeqCst) {
                     break;
                 }
-                released.await;
+                // Closing the client's Outbound can arrive as request EOS,
+                // not destruction of tonic's pre-header service future. The
+                // held peer must observe that lifetime while withholding its
+                // response. Preserve every received frame for canonical serve.
+                tokio::select! {
+                    () = released => {}
+                    frame = incoming.next() => match frame {
+                        Some(Ok(frame)) => buffered.push(Ok(frame)),
+                        Some(Err(error)) => return Err(error),
+                        None => return Err(Status::cancelled("request withdrawn before Welcome")),
+                    }
+                }
             }
         }
-        let output = self.service.session(request).await?.into_inner();
+        let outage = Arc::clone(&self.outage);
+        let input = futures::stream::iter(buffered).chain(incoming).map(move |frame| {
+            if let Ok(wire::SessionFrame {
+                body: Some(wire::session_frame::Body::Interest(interest)), ..
+            }) = &frame {
+                outage.subscriptions.lock().entry(call).or_default()
+                    .extend(interest.upsert.iter().cloned());
+                outage.changed.notify_one();
+            }
+            frame.map_err(|_| StreamError::Unavailable)
+        }).boxed();
+        let output = acyclic_stream::session::serve(
+            Arc::clone(if successor { &self.successor } else { &self.provider }),
+            "native".into(), Default::default(), input,
+        ).map_err(|error| Status::invalid_argument(error.code()))?
+            .map(|frame| frame.map_err(|error| Status::failed_precondition(error.code())));
+        if let Some(pending) = &mut pending {
+            pending.answered();
+        }
         self.outage.outputs.fetch_add(1, Ordering::SeqCst);
         let owner = OutputOwner(Arc::clone(&self.outage));
         let outage = Arc::clone(&self.outage);
@@ -88,6 +177,7 @@ struct Fixture {
     provider: Arc<acyclic_stream::MemoryStream>,
     client: Arc<grpc::Client>,
     outage: Arc<Outage>,
+    successor: Arc<acyclic_stream::MemoryStream>,
     _server: ServerOwner,
 }
 struct ServerOwner(tokio::task::JoinHandle<std::result::Result<(), tonic::transport::Error>>);
@@ -103,12 +193,12 @@ impl Fixture {
         let certificate = identity.cert.pem();
         let key = identity.signing_key.serialize_pem();
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let successor = Arc::new(acyclic_stream::MemoryStream::default());
         let outage = Arc::new(Outage::default());
         outage.terminal.store(terminal, Ordering::SeqCst);
         let host = DisconnectingHost {
-            service: acyclic_stream::session::Service::new(
-                Arc::clone(&provider), "native".into(), Default::default(),
-            ),
+            provider: Arc::clone(&provider),
+            successor: Arc::clone(&successor),
             outage: Arc::clone(&outage),
         };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -128,7 +218,7 @@ impl Fixture {
         let client = Arc::new(grpc::Client::connect_eager_with_ca_certificate(
             &endpoint, "fixture", &certificate,
         ).await?);
-        Ok(Self { provider, client, outage, _server: server })
+        Ok(Self { provider, client, outage, successor, _server: server })
     }
     async fn append(&self, path: &str, value: u8) -> TestResult {
         self.provider.append(AppendRequest {
@@ -145,8 +235,11 @@ impl Fixture {
         }.encode_to_vec()), cancellation).await.map_err(|error| error.message.into())
     }
     async fn follow(&self, cancellation: Option<&NativeStreamCancellation>) -> TestResult<NativeStreamFollow> {
+        self.follow_path("events", cancellation).await
+    }
+    async fn follow_path(&self, path: &str, cancellation: Option<&NativeStreamCancellation>) -> TestResult<NativeStreamFollow> {
         operations::open_follow(&self.client, Buffer::from(wire::FollowRequest {
-            path: "events".into(), from: 0,
+            path: path.into(), from: 0,
         }.encode_to_vec()), cancellation).await.map_err(|error| error.message.into())
     }
     async fn outage(&self) {
@@ -154,7 +247,33 @@ impl Fixture {
         self.outage.until(|| self.outage.calls.load(Ordering::SeqCst) >= 6).await;
     }
     async fn retired(&self) {
-        self.outage.until(|| self.outage.outputs.load(Ordering::SeqCst) == 0).await;
+        self.outage.until(|| {
+            self.outage.outputs.load(Ordering::SeqCst) == 0
+                && self.outage.handshakes.lock().values()
+                    .all(|state| *state != HandshakeState::Pending)
+        }).await;
+    }
+    async fn replacement_after_retirement(
+        &self, old: usize, evidence: &SyncMutex<CancellationEvidence>,
+    ) -> TestResult<(NativeStreamFollow, usize)> {
+        // Poll Open while the old gate is closed; observe a distinct RPC before
+        // allowing any response from either gated physical handshake.
+        let opening = self.follow_path("replacement", None);
+        futures::pin_mut!(opening);
+        tokio::select! {
+            () = self.outage.until(|| self.outage.handshakes.lock()
+                .iter().any(|(call, state)| *call != old && *state == HandshakeState::Pending)) => {}
+            _ = &mut opening => panic!("replacement opened without its own pending handshake"),
+        }
+        let successor = *self.outage.handshakes.lock().iter()
+            .find(|(call, state)| **call != old && **state == HandshakeState::Pending)
+            .ok_or("replacement handshake disappeared")?.0;
+        evidence.lock().gate = "old RPC withdrawal";
+        self.outage.until(|| self.outage.handshake(old) == Some(HandshakeState::Dropped)).await;
+        assert!(!self.outage.recovered.load(Ordering::SeqCst));
+        self.outage.accept_replacement();
+        evidence.lock().gate = "successor registration";
+        Ok((opening.await?, successor))
     }
     async fn stop(mut self) {
         self._server.0.abort();
@@ -263,54 +382,187 @@ async fn terminal_reconnect_rejection_is_typed_once_for_both_native_entrypoints(
     }).await.unwrap().unwrap();
 }
 
+// Deliberate counterfactual: preserve the real provider cursor when the adapter
+// retires its wrapper. No counters or transport outcomes are forged.
+struct RetainCursorOnDrop {
+    frames: Option<FollowFrames>,
+    retained: Arc<SyncMutex<Option<FollowFrames>>>,
+}
+impl futures::Stream for RetainCursorOnDrop {
+    type Item = std::result::Result<Vec<u8>, StreamError>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.get_mut().frames.as_mut().unwrap().as_mut().poll_next(cx)
+    }
+}
+impl Drop for RetainCursorOnDrop {
+    fn drop(&mut self) {
+        *self.retained.lock() = self.frames.take();
+    }
+}
+
+#[derive(Default)]
+struct CancellationEvidence {
+    children: bool,
+    action: u8,
+    gate: &'static str,
+    outage: Option<Arc<Outage>>,
+    started: Option<std::time::Instant>,
+    completed: Option<Duration>,
+}
+impl CancellationEvidence {
+    fn describe(&self) -> String {
+        let handshakes = self.outage.as_ref()
+            .map(|outage| outage.handshakes.lock().clone());
+        let action = match self.action { 0 => "cancel", 1 => "close", _ => "drop" };
+        let elapsed = self.completed.or_else(|| self.started.map(|started| started.elapsed()));
+        format!(
+            "children={}, action={action}, gate={}, elapsed={elapsed:?}, observed handshakes={handshakes:?}",
+            self.children, self.gate,
+        )
+    }
+}
+
+async fn cancellation_case(
+    children: bool, action: u8, retain: bool, evidence: &SyncMutex<CancellationEvidence>,
+) -> TestResult {
+    *evidence.lock() = CancellationEvidence {
+        children, action, gate: "fixture connection", outage: None,
+        started: Some(std::time::Instant::now()), completed: None,
+    };
+    let fixture = Fixture::open(false).await?;
+    evidence.lock().outage = Some(Arc::clone(&fixture.outage));
+    evidence.lock().gate = "initial native registration";
+    fixture.outage.isolated.store(true, Ordering::SeqCst);
+    fixture.append("events", 10).await?;
+    fixture.successor.append(AppendRequest {
+        path: StreamPath::new("replacement")?,
+        records: vec![vec![91].into(), vec![92].into()],
+        if_tail: None,
+        idempotency_key: None,
+    }).await?;
+    let cancellation = NativeStreamCancellation::new();
+    let cursor = if children {
+        fixture.children(Some(&cancellation)).await?
+    } else {
+        fixture.follow(Some(&cancellation)).await?
+    };
+    if !children { record(&cursor, 0, 10).await?; }
+    let original_channel = fixture.outage.subscriptions.lock().values()
+        .flatten().find_map(|subscription| subscription.channel.as_ref().map(|channel| channel.channel_id))
+        .ok_or("original interest never reached the provider")?;
+    let retained = Arc::new(SyncMutex::new(None));
+    if retain {
+        let frames = cursor.state.records.lock().await.take().unwrap();
+        *cursor.state.records.lock().await = Some(RetainCursorOnDrop {
+            frames: Some(frames),
+            retained: Arc::clone(&retained),
+        }.boxed());
+    }
+    evidence.lock().gate = "unavailable handshake group";
+    fixture.outage().await;
+    // Identify an actually pending server RPC, not an expected call count.
+    let old = *fixture.outage.handshakes.lock().iter()
+        .find(|(_, state)| **state == HandshakeState::Pending)
+        .ok_or("old recovery never entered its handshake gate")?.0;
+    evidence.lock().gate = "native cursor retirement";
+    if action == 2 {
+        let owner = Arc::downgrade(&cursor.state.records);
+        drop(cursor);
+        assert!(owner.upgrade().is_none(), "drop retained the native cursor");
+    } else {
+        let pending = cursor.next_result();
+        futures::pin_mut!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        if action == 0 {
+            cancellation.cancel();
+            let next = pending.await?;
+            assert!(next.value.is_none());
+            assert_eq!(next.error.ok_or("cancellation became EOF")?.code, "cancelled");
+        } else {
+            let (next, ()) = tokio::join!(pending, cursor.close());
+            let next = next?;
+            assert!(next.value.is_none() && next.error.is_none());
+        }
+        end(&cursor).await?;
+        assert!(cursor.state.records.lock().await.is_none());
+    }
+    evidence.lock().gate = "successor RPC arrival";
+    let (replacement, successor) = fixture.replacement_after_retirement(old, evidence).await?;
+    evidence.lock().gate = "replacement payload";
+    record(&replacement, 0, 91).await?;
+    record(&replacement, 1, 92).await?;
+    // The fresh payload alone is insufficient: a leaked original cursor could
+    // share this session. Audit real inbound subscription identities as well.
+    let subscriptions = fixture.outage.subscriptions.lock();
+    let successor_interests = subscriptions.get(&successor).ok_or("replacement has no interests")?;
+    assert!(
+        successor_interests.iter().all(|subscription| {
+            subscription.channel.as_ref().is_some_and(|channel| channel.channel_id != original_channel)
+                && matches!(
+                    &subscription.kind,
+                    Some(wire::session_subscription::Kind::Follow(follow)) if follow.path == "replacement"
+                )
+        }),
+        "retired native interest crossed into the replacement session",
+    );
+    drop(subscriptions);
+    assert_eq!(fixture.outage.handshake(old), Some(HandshakeState::Dropped));
+    // Only now release the obsolete gate. It cannot carry replacement data.
+    fixture.outage.recover();
+    replacement.close().await;
+    drop(retained);
+    evidence.lock().gate = "all peer resources retired";
+    fixture.retired().await;
+    evidence.lock().gate = "fixture server joined";
+    fixture.stop().await;
+    let mut evidence = evidence.lock();
+    evidence.completed = evidence.started.map(|started| started.elapsed());
+    evidence.gate = "completed";
+    Ok(())
+}
+
 #[tokio::test]
 async fn cancellation_close_and_drop_release_native_interests_during_recovery() {
-    tokio::time::timeout(Duration::from_secs(3), async {
-        for children in [false, true] {
-            for action in 0..3 {
-                let fixture = Fixture::open(false).await?;
-                fixture.append("events", 10).await?;
-                let cancellation = NativeStreamCancellation::new();
-                let cursor = if children {
-                    fixture.children(Some(&cancellation)).await?
-                } else {
-                    fixture.follow(Some(&cancellation)).await?
-                };
-                if !children { record(&cursor, 0, 10).await?; }
-                fixture.outage().await;
-                if action == 2 {
-                    let owner = Arc::downgrade(&cursor.state.records);
-                    drop(cursor);
-                    assert!(owner.upgrade().is_none(), "drop retained the native cursor");
-                } else {
-                    let pending = cursor.next_result();
-                    futures::pin_mut!(pending);
-                    assert!(futures::poll!(&mut pending).is_pending());
-                    if action == 0 {
-                        cancellation.cancel();
-                        let next = pending.await?;
-                        assert!(next.value.is_none());
-                        assert_eq!(next.error.ok_or("cancellation became EOF")?.code, "cancelled");
-                    } else {
-                        let (next, ()) = tokio::join!(pending, cursor.close());
-                        let next = next?;
-                        assert!(next.value.is_none() && next.error.is_none());
-                    }
-                    end(&cursor).await?;
-                    assert!(cursor.state.records.lock().await.is_none());
-                }
-                // A live replacement must not inherit the abandoned dial. Its
-                // released gate also lets a deliberately retained old dial race.
-                fixture.outage.recover();
-                let replacement = fixture.follow(None).await?;
-                record(&replacement, 0, 10).await?;
-                replacement.close().await;
-                fixture.retired().await;
-                fixture.stop().await;
-            }
+    // Independent endpoints and owners must not consume one another's clock.
+    // Keep the same whole matrix and deadline, just as in the counterfactual.
+    let cases: Vec<_> = [false, true].into_iter().flat_map(|children| {
+        (0..3).map(move |action| (children, action, SyncMutex::new(CancellationEvidence::default())))
+    }).collect();
+    let result = tokio::time::timeout(Duration::from_secs(3), futures::future::join_all(
+        cases.iter().map(|(children, action, evidence)| {
+            cancellation_case(*children, *action, false, evidence)
+        }),
+    )).await;
+    match result {
+        Ok(results) => {
+            for result in results { result.unwrap(); }
         }
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    }).await.unwrap().unwrap();
+        Err(error) => {
+            let snapshots: Vec<_> = cases.iter().map(|(_, _, evidence)| evidence.lock().describe()).collect();
+            panic!("native retirement deadline: {error}; {}", snapshots.join("; "));
+        }
+    }
+}
+
+#[tokio::test]
+async fn retained_provider_cursor_fails_the_same_cancellation_close_and_drop_oracle() {
+    use futures::FutureExt as _;
+    let results = tokio::time::timeout(Duration::from_secs(3), futures::future::join_all(
+        [false, true].into_iter().flat_map(|children| (0..3).map(move |action| async move {
+            let evidence = SyncMutex::new(CancellationEvidence::default());
+            std::panic::AssertUnwindSafe(cancellation_case(children, action, true, &evidence))
+                .catch_unwind().await
+        })),
+    )).await.expect("counterfactual must fail semantically, not by timeout");
+    for result in results {
+        let error = result.expect_err("retained original cursor escaped the lifecycle oracle");
+        let message = error.downcast_ref::<String>().map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied()).unwrap_or("");
+        assert!(message.contains("retired native interest crossed into the replacement session"), "{message}");
+    }
 }
 
 proptest::proptest! {

@@ -824,6 +824,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "parking_lot",
  "proptest",
  "prost",
  "rcgen",
