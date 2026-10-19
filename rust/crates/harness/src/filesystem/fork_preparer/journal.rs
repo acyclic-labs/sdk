@@ -79,11 +79,9 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
 ) -> Result<()> {
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-    let observed = (host).resolve(journal, io).await?;
     let result = (host)
-        .apply_generation(
+        .create_records(
             journal,
-            Some(&observed.generation),
             &[WorkspaceMutation::PutFile {
                 path: stock_string_copy(path, io)?,
                 bytes,

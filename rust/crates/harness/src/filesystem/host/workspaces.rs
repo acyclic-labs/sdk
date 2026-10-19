@@ -1,5 +1,24 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+enum FilePublication<'a> {
+    Replace(Option<&'a GenerationRef>),
+    CreateOnly,
+}
+
+fn creation_error(error: WorkspaceError, io: Option<&PreparationIo>) -> Error {
+    match error {
+        WorkspaceError::Filesystem(acyclic_fs::FsError::Mutation(
+            acyclic_fs::kernel::GenerationMutationError::AlreadyExists,
+        )) => stock_boundary(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "immutable workspace record already exists",
+        ),
+        error => error.into(),
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads one bounded file from the current head or an exact generation.
     pub async fn read(
@@ -179,6 +198,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 mutations,
                 idempotency_key,
                 true,
+                FilePublication::Replace(None),
             )
         })?
         .await?;
@@ -192,6 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         mutations: &[WorkspaceMutation],
         idempotency_key: &IdempotencyKey,
         invalidate_metadata: bool,
+        publication: FilePublication<'_>,
     ) -> Result<Generation<A, O>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
@@ -216,6 +237,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let batched = if !invalidate_metadata
+            && matches!(publication, FilePublication::Replace(_))
             && mutations
                 .iter()
                 .all(|mutation| !matches!(mutation, WorkspaceMutation::Remove { .. }))
@@ -258,12 +280,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             .map_err(map_error)?;
                     }
                     WorkspaceMutation::PutFile { path, bytes } => {
-                        transaction
-                            .write(path, bytes.clone(), budget, &cancellation)
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .map_err(map_error)?;
+                        match publication {
+                            FilePublication::Replace(_) => transaction
+                                .write(path, bytes.clone(), budget, &cancellation)
+                                .await
+                                .map_err(|failure| map_error(failure.error))?,
+                            FilePublication::CreateOnly => transaction
+                                .create_file(
+                                    path,
+                                    bytes.clone(),
+                                    acyclic_fs::kernel::FileMetadata::default(),
+                                    budget,
+                                    &cancellation,
+                                )
+                                .await
+                                .map_err(|failure| creation_error(failure.error, None))?,
+                        };
                     }
                     WorkspaceMutation::Remove { path } => {
                         transaction
@@ -448,10 +480,58 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: Option<&'a PreparationIo>,
         preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        self.publish_generation(
+            reference,
+            mutations,
+            key,
+            io,
+            preparation,
+            FilePublication::Replace(expected),
+        )
+    }
+
+    pub(in crate::filesystem) fn create_records<'a>(
+        &'a self,
+        reference: &'a WorkspaceRef,
+        mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey,
+        io: Option<&'a PreparationIo>,
+        preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        self.publish_generation(
+            reference,
+            mutations,
+            key,
+            io,
+            preparation,
+            FilePublication::CreateOnly,
+        )
+    }
+
+    fn publish_generation<'a>(
+        &'a self,
+        reference: &'a WorkspaceRef,
+        mutations: &'a [WorkspaceMutation],
+        key: IdempotencyKey,
+        io: Option<&'a PreparationIo>,
+        preparation: Option<&'a Arc<crate::resource_preparation::TaskResourcePreparation>>,
+        publication: FilePublication<'a>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Generation<A, O>>> {
+        let expected = match publication {
+            FilePublication::Replace(expected) => expected,
+            FilePublication::CreateOnly => None,
+        };
         let Some(io) = io else {
             return crate::conversation::BoundedContentFuture::new(None, || async move {
-                self.apply_generation_unmeasured(reference, expected, mutations, &key, false)
-                    .await
+                self.apply_generation_unmeasured(
+                    reference,
+                    expected,
+                    mutations,
+                    &key,
+                    false,
+                    publication,
+                )
+                .await
             });
         };
         crate::conversation::BoundedContentFuture::new(Some(io), || async move {
@@ -475,16 +555,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 native_before(work).await?;
             }
             let workspace = self.open(reference, Some(io)).await?;
-            let pinned = match expected {
-                Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
-                None => io.sdk(workspace.head(io, io.cancellation()).await)?,
-            };
             let operation = fork_preparer_io::operation_key(&key, Some(io))?;
-            let mut transaction = io.sdk(
-                workspace
-                    .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
-                    .await,
-            )?;
+            let mut transaction = if matches!(publication, FilePublication::CreateOnly) {
+                io.sdk(
+                    workspace
+                        .begin_transaction(operation, io, io.cancellation())
+                        .await,
+                )?
+            } else {
+                let pinned = match expected {
+                    Some(reference) => self.generation(&workspace, reference, Some(io)).await?,
+                    None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+                };
+                io.sdk(
+                    workspace
+                        .begin_pinned_transaction(&pinned, operation, io, io.cancellation())
+                        .await,
+                )?
+            };
             crate::conversation::BoundedContentFuture::new(Some(io), || async {
                 for mutation in mutations {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -497,11 +585,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                                 .create_dir_all(path, io, io.cancellation())
                                 .await,
                         )?,
-                        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
-                            transaction
-                                .write(path, bytes.clone(), io, io.cancellation())
-                                .await,
-                        )?,
+                        WorkspaceMutation::PutFile { path, bytes } => match publication {
+                            FilePublication::Replace(_) => io.sdk(
+                                transaction
+                                    .write(path, bytes.clone(), io, io.cancellation())
+                                    .await,
+                            )?,
+                            FilePublication::CreateOnly => {
+                                let (created, recorded) = transaction
+                                    .create_file(
+                                        path,
+                                        bytes.clone(),
+                                        acyclic_fs::kernel::FileMetadata::default(),
+                                        io,
+                                        io.cancellation(),
+                                    )
+                                    .await;
+                                recorded?;
+                                io.sdk((
+                                    created.map_err(|error| creation_error(error, Some(io))),
+                                    Ok(()),
+                                ))?;
+                            }
+                        },
                         WorkspaceMutation::Remove { .. } => {
                             return Err(stock_boundary(
                                 Some(io),
