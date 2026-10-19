@@ -213,17 +213,7 @@ case "$lane" in
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests --features model-checking \
         --lib workflow::model_checking::tests::
-    node scripts/qualify-mcp-loom.mjs --all-features
-    node scripts/qualify-mcp-loom.mjs --coordinator-origins --all-features
-    node scripts/qualify-mcp-loom.mjs --summary-checkpoints --all-features
-    node scripts/qualify-mcp-loom.mjs --hook-lifecycle --all-features
-    node scripts/qualify-mcp-loom.mjs --e2e-progress
-    node scripts/qualify-mcp-loom.mjs --native-progress
-    node scripts/qualify-mcp-loom.mjs --timer
-    node scripts/qualify-mcp-loom.mjs --guest
-    node scripts/qualify-mcp-loom.mjs --fs-binding --all-features
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" node scripts/qualify-mcp-loom.mjs --memory-accounting
-    node scripts/qualify-mcp-loom.mjs --session-fs
+    node scripts/qualify-mcp-loom.mjs --gate
     nextest --workspace --all-features --locked
     cargo test -p acyclic-harness --all-features --locked --example approved-native-process
     ;;
@@ -389,7 +379,7 @@ case "$lane" in
     node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/native-cache-evidence.test.mjs scripts/cache-save-decision.test.mjs scripts/cache-limits.test.mjs scripts/cargo-timings-summary.test.mjs scripts/bench-client-requests.test.mjs
     node --test scripts/test-typescript-qualification.mjs
-    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs
+    node --test scripts/test-plan-qualification.mjs scripts/test-plan-qualification-gate.mjs scripts/test-plan-qualification-windows-rust.mjs scripts/build-wasm-groups.test.mjs scripts/test-qualify-linux-package-overlap.mjs scripts/qualify-mcp-loom.test.mjs scripts/qualify-ci-preflight-fixtures.test.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs
     node scripts/test-verify-release-binary.mjs
     source scripts/ensure-bun.sh

@@ -5,6 +5,9 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 work="$(mktemp -d "${TMPDIR:-/tmp}/acyclic-qualify-ci-test.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin"
+# Keep the caller outside the checkout: fixture planning and execution must share
+# their own repository scope, including relative CARGO_TARGET_DIR resolution.
+cd "$work"
 
 # Exercise the actual verifier with a digest-only sha256sum interface,
 # including rejected archive bytes and failed reads.
@@ -82,18 +85,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_CARGO_LOG"
 printf '%s\n' "${RUSTFLAGS:-}" >>"${FAKE_RUSTFLAGS_LOG:-/dev/null}"
 if [[ " $* " == *' --message-format=json '* ]]; then
-  model=mcp-loom
-  package=""
-  previous=""
-  for argument in "$@"; do
-    case "$previous" in
-      --test) model="$argument" ;;
-      -p|--package) package="${argument//-/_}" ;;
-    esac
-    previous="$argument"
-  done
-  [[ " $* " != *' --lib '* ]] || model="$package"
-  printf '{"reason":"compiler-artifact","target":{"name":"%s"},"profile":{"test":true},"executable":"%s"}\n' "$model" "$FAKE_MCP_LOOM_BINARY"
+  exec "$FAKE_MODEL_FIXTURE_DIR/cargo" "$@"
 elif [[ "$1" == test ]]; then
   case "${FAKE_MODEL_RESULTS:-complete}" in
     missing) ;;
@@ -189,56 +181,45 @@ mkdir -p "$gate/temp" "$gate/artifacts" "$gate/tools/cargo/bin" "$gate/bin"
 cat >"$gate/bin/cargo-nextest" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s
-' 'cargo-nextest 0.9.146 (fake)'
+printf '%s\n' 'cargo-nextest 0.9.146 (fake)'
 EOF
 chmod +x "$gate/bin/cargo-nextest"
-cat >"$gate/bin/mcp_loom" <<'EOF'
-#!/usr/bin/env bash
-case "${1:-}" in
-  distributed::*) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  local::compact::checkpoints::model::) printf 'test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  registration_reporting_and_cancel_or_panic_cleanup_are_atomic|forgotten_cleanup_is_detected_on_the_real_registration|polling_wake_and_reporting_never_lose_runnability|an_unobserved_wake_fails_the_same_runnability_oracle|testing::model::*|testing::queue_model::*|hooks::*|local::checkout_tools::hooks::*|checked_resume_exhausts_*|resumed_buffered_delivery_exhausts_revocation|fresh_open_exhausts_deletion_and_history_replacement|fresh_deliveries_exhaust_history_replacement|terminal_watch_exhausts_zero_credit_deletion|terminal_opening_exhausts_deletion_registration) printf 'test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;\n' ;;
-  *) printf 'test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n' ;;
-esac
-EOF
-chmod +x "$gate/bin/mcp_loom"
-(
+export FAKE_MODEL_FIXTURE="$root/scripts/qualify-ci-preflight-fixtures.mjs"
+export FAKE_MODEL_FIXTURE_DIR="$gate"
+# Exercise the default target path regardless of the build box's absolute cache.
+unset CARGO_TARGET_DIR
+model_gate() (
   cd "$root"
-  SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
-    FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" FAKE_MCP_LOOM_BINARY="$gate/bin/mcp_loom" PATH="$gate/bin:$work/bin:$PATH" \
-    bash scripts/qualify-ci.sh gate
+  : >"$gate/cargo.log"
+  : >"$gate/flags.log"
+  node "$FAKE_MODEL_FIXTURE" prepare "$gate"
+  (
+    SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+      FAKE_CARGO_LOG="$gate/cargo.log" FAKE_RUSTFLAGS_LOG="$gate/flags.log" PATH="$gate/bin:$work/bin:$PATH" \
+      bash "$1" gate
+  ) >"$gate/model-gate.stdout" 2>&1 || return 1
+  node "$FAKE_MODEL_FIXTURE" verify "$gate" 2>"$gate/model-gate.stderr"
 )
-mapfile -t cargo_calls <"$gate/cargo.log"
-[[ "${#cargo_calls[@]}" -eq 19 ]]
-[[ "${cargo_calls[0]}" == 'check --locked -p acyclic-harness-fuzz --bins' ]]
-[[ "${cargo_calls[1]}" == 'check --locked -p acyclic-harness --features model-checking --lib' ]]
-[[ "${cargo_calls[2]}" == 'check --locked -p acyclic-harness --features filesystem-local,model-checking --lib' ]]
-[[ "${cargo_calls[3]}" == 'check --locked -p acyclic-harness --features filesystem --lib --tests' ]]
-[[ "${cargo_calls[4]}" == 'test -p acyclic-harness --locked --features model-checking --test client-mailbox-model --test client_journal_model --test mcp-loom' ]]
-[[ "${cargo_calls[5]}" == 'test -p acyclic-harness --locked --features model-checking --lib workflow::model_checking::tests::' ]]
-[[ "${cargo_calls[6]}" == 'rustc --locked --message-format=json -p acyclic-harness --test mcp-loom --all-features --features model-checking' ]]
-for index in 7 8 9; do
-  [[ "${cargo_calls[index]}" == 'test --locked --message-format=json -p acyclic-harness --lib --no-run --all-features --features model-checking' ]]
-done
-[[ "${cargo_calls[10]}" == 'rustc --locked --message-format=json -p acyclic-harness --test e2e-progress-model --features filesystem-local,native-execution,test-support,grpc -- --cfg acyclic_e2e_progress_loom' ]]
-[[ "${cargo_calls[11]}" == 'test --locked --message-format=json -p acyclic-native-runtime --lib --no-run --features test-support' ]]
-timer_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"))')"
-[[ "${cargo_calls[12]}" == "rustc --locked --message-format=json -p acyclic-actors --test timer_loom --features acyclic-stream/local --target-dir $timer_target" ]]
-[[ "${cargo_calls[13]}" == 'rustc --locked --message-format=json -p acyclic-actors --test guest_loom -- --cfg loom' ]]
-[[ "${cargo_calls[14]}" == 'rustc --locked --message-format=json -p acyclic-fs --test native_binding_model --all-features -- --cfg acyclic_fs_loom' ]]
-memory_target="$(cd "$root" && node -e 'console.log(require("node:path").resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"))')"
-[[ "${cargo_calls[15]}" == "rustc --locked --message-format=json -p acyclic-harness --test memory-accounting-model --features filesystem,acyclic-fs/model-checking --target-dir $memory_target -- --cfg acyclic_harness_loom" ]]
-[[ "${cargo_calls[16]}" == 'rustc --locked --message-format=json -p acyclic-fs --test session_fs_model --no-default-features --features memory,session,acyclic-stream/local' ]]
-[[ "${cargo_calls[17]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
-[[ "${cargo_calls[18]}" == 'test -p acyclic-harness --all-features --locked --example approved-native-process' ]]
-mapfile -t flags <"$gate/flags.log"
-[[ "${flags[11]}" == *'--cfg acyclic_native_runtime_loom'* ]]
-for index in 0 1 2 4 5 15; do [[ "${flags[index]}" == *-Dwarnings* ]]; done
-[[ "${flags[16]}" == *'--cfg acyclic_loom'* && "${flags[16]}" == *'--cfg acyclic_stream_loom'* ]]
-for index in 1 2 4 5; do
-  [[ "${flags[index]}" == *'--cfg acyclic_harness_loom'* ]]
-  [[ "${flags[index]}" == *'--cfg acyclic_loom'* ]]
+if ! model_gate scripts/qualify-ci.sh; then
+  cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
+  exit 1
+fi
+if ! CARGO_TARGET_DIR=relative-models model_gate scripts/qualify-ci.sh; then
+  cat "$gate/model-gate.stdout" "$gate/model-gate.stderr" >&2
+  exit 1
+fi
+# Controls: a flag or a command added only to the shell gate is rejected.
+for mutation in 's/^    nextest --workspace/    RUSTFLAGS="--cfg added" &/' \
+  's/^    node scripts\/qualify-mcp-loom\.mjs --gate$/    cargo check --locked -p added\n&/'; do
+  sed "$mutation" "$root/scripts/qualify-ci.sh" >"$gate/qualify-mutated.sh"
+  if cmp -s "$root/scripts/qualify-ci.sh" "$gate/qualify-mutated.sh"; then
+    echo "gate control did not apply: $mutation" >&2
+    exit 1
+  fi
+  if model_gate "$gate/qualify-mutated.sh"; then
+    echo "model gate accepted: $mutation" >&2
+    exit 1
+  fi
 done
 
 # Independent controls for missing results and a zero-test suite beside a valid one.
@@ -247,7 +228,7 @@ for mode in missing mixed; do
     cd "$root"
     SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
       FAKE_MODEL_RESULTS="$mode" FAKE_CARGO_LOG="$gate/cargo.log" \
-      FAKE_MCP_LOOM_BINARY="$gate/bin/mcp_loom" PATH="$gate/bin:$work/bin:$PATH" \
+      PATH="$gate/bin:$work/bin:$PATH" \
       bash scripts/qualify-ci.sh gate
   ) >"$gate/$mode.stdout" 2>"$gate/$mode.stderr"; then
     echo "model gate accepted $mode results" >&2

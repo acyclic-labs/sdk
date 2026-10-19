@@ -2,10 +2,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+function assertGateStep(args) {
+  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
+  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --gate/);
+  assert.ok(gateQualifications.some(step => JSON.stringify(step.args) === JSON.stringify(args)), `missing gate step: ${args}`);
+}
 
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
   const names = ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
@@ -63,7 +69,7 @@ test("fs Session qualification instruments real provider and Session locks and r
     if (missing === null) { qualifySessionFsLoom(run); assert.equal(models, 7); }
     else assert.throws(() => qualifySessionFsLoom(run), /requires a nonzero/);
   }
-  assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --session-fs/);
+  assertGateStep(["--session-fs"]);
 });
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
@@ -84,8 +90,7 @@ test("hook qualification builds real synchronization once and rejects either mis
     if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 2); }
     else assert.throws(() => qualifyHookLifecycleLoom(undefined, run), /requires a nonzero/);
   }
-  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --hook-lifecycle/);
+  assertGateStep(["--hook-lifecycle", "--all-features"]);
 });
 
 test("qualification opts into the crate cfg only for the model build and executes its binary", () => {
@@ -100,10 +105,9 @@ test("qualification opts into the crate cfg only for the model build and execute
     ["model-binary", []],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
-  const gate = qualification.match(/  gate\)\n([\s\S]*?);;/)?.[1];
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --all-features/);
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --timer/);
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --guest/);
+  assertGateStep(["--all-features"]);
+  assertGateStep(["--timer"]);
+  assertGateStep(["--guest"]);
   const policy = qualification.match(/  policy\)\n([\s\S]*?);;/)?.[1];
   assert.match(policy, /node --test[^\n]*scripts\/qualify-mcp-loom\.test\.mjs/);
 });
@@ -163,9 +167,8 @@ test("filesystem qualification models the production mutex only in its dedicated
     ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--", "--cfg", "acyclic_fs_loom"]],
     ["model-binary", []],
   ]);
-  const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --fs-binding --all-features/);
-  assert.match(gate, /node scripts\/qualify-mcp-loom\.mjs --memory-accounting/);
+  assertGateStep(["--fs-binding", "--all-features"]);
+  assertGateStep(["--memory-accounting"]);
 });
 
 test("memory accounting instruments dependency cancellation and the real ledger mutex", () => {
@@ -220,5 +223,5 @@ test("summary checkpoint qualification instruments real locks and requires both 
     else assert.throws(() => qualifySummaryCheckpointsLoom(undefined, run), /requires a nonzero/);
     assert.deepEqual(calls[1], ["model-binary", ["local::compact::checkpoints::model::"]]);
   }
-  assert.match(readFileSync("scripts/qualify-ci.sh", "utf8"), /node scripts\/qualify-mcp-loom\.mjs --summary-checkpoints --all-features/);
+  assertGateStep(["--summary-checkpoints", "--all-features"]);
 });
