@@ -2179,6 +2179,19 @@ impl NativeWatch {
                     continue;
                 }
                 let path = entry.path();
+                // The capture policy may exclude a nested SDK projection,
+                // while authored siblings under its parent still need watches.
+                // Do not traverse or register that excluded physical subtree.
+                if self
+                    .shared
+                    .lock()
+                    .map_err(|_| NativeWatchError::StatePoisoned)?
+                    .excluded
+                    .iter()
+                    .any(|excluded| path.starts_with(excluded))
+                {
+                    continue;
+                }
                 let relative = path
                     .strip_prefix(&self.root)
                     .map_err(|_| NativeWatchError::UnrepresentablePath)?;

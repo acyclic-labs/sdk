@@ -11,7 +11,8 @@ use std::time::Duration;
 
 mod arrivals;
 
-const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system", ".volumes"];
+// Exclude owned projections individually below, never their authored siblings.
+const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system"];
 const MAXIMUM_PATHS: u32 = 262_144;
 const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 

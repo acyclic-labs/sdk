@@ -44,6 +44,13 @@ pub(super) fn register(
         }
         let namespace =
             host_path_to_namespace(&relative, config.profile, config.limits).map_err(storage)?;
+        if policy
+            .excluded_prefixes()
+            .iter()
+            .any(|excluded| namespace.is_within(excluded))
+        {
+            continue;
+        }
         // Register before reading children. Changes during this scan remain in
         // the native queue for the next capture; current contents are captured now.
         watcher.watch_directory(&namespace).map_err(storage)?;
