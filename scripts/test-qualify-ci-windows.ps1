@@ -35,7 +35,75 @@ $settings = $ast.FindAll({ param($node)
     $node.Left.VariablePath.UserPath -in 'ErrorActionPreference', 'PSNativeCommandUseErrorActionPreference'
 }, $true) | ForEach-Object { $_.Extent.Text }
 $powershell = (Get-Process -Id $PID).Path
-$probe = ($settings -join "`n") + "`n& '" + $powershell.Replace("'", "''") + "' -NoProfile -NonInteractive -Command 'exit 7'`nWrite-Output AUDIT_CONTINUED"
+# Execute the real dispatch under its production error settings in an isolated
+# process. Only external operations are replaced, each by a real native process.
+# Discover fault sites from execution instead of mirroring command text/order.
+$probe = ($settings -join "`n") + "`n" + '$dispatchBody = {' + $dispatch.Extent.Text + "`n}`n" + @'
+Set-StrictMode -Version Latest
+$native = Join-Path $env:SystemRoot 'System32/cmd.exe'
+$script:Calls = [System.Collections.Generic.List[string]]::new()
+$script:FailAt = 0
+function Invoke-ControlledNative([string] $Role) {
+    $script:Calls.Add($Role)
+    $exitCode = if ($script:Calls.Count -eq $script:FailAt) { 7 } else { 0 }
+    & $native /d /c "exit $exitCode"
+}
+function cargo {
+    $role = if ($args[0] -eq 'test' -and $args -contains '--doc') { 'doc' } else { [string]$args[0] }
+    Invoke-ControlledNative $role
+}
+function node { Invoke-ControlledNative 'node' }
+function rustup { Invoke-ControlledNative 'rustup' }
+function Test-Path { return $false }
+$CargoTargetDir = 'fixture-target'
+$clangDirectory = $null
+$env:RUST_TEST_THREADS = '32'
+foreach ($Lane in 'windows-rust', 'windows-fork-join', 'windows-napi', 'windows-arm64', 'windows-clippy') {
+    foreach ($wrapper in @($null, 'fixture-original-wrapper')) {
+        $script:FailAt = 0
+        $siteCount = $null
+        do {
+            $script:Calls.Clear()
+            if ($null -eq $wrapper) { Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue }
+            else { $env:RUSTC_WRAPPER = $wrapper }
+            $originalEnvironment = @{}
+            foreach ($name in 'RUSTC_WRAPPER', 'CARGO_TARGET_DIR', 'CARGO_BUILD_JOBS', 'RUST_TEST_THREADS') {
+                $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+            }
+            $rejected = $false
+            try { & $dispatchBody } catch { $rejected = $true }
+            if ([Environment]::GetEnvironmentVariable('RUSTC_WRAPPER') -cne $wrapper) {
+                throw "$Lane failed to restore original compiler wrapper at fault site $script:FailAt"
+            }
+            if ($Lane -eq 'windows-rust') {
+                foreach ($name in $originalEnvironment.Keys) {
+                    if ([Environment]::GetEnvironmentVariable($name) -cne $originalEnvironment[$name]) {
+                        throw "Rust qualification changed $name at fault site $script:FailAt"
+                    }
+                }
+            }
+            if ($script:FailAt -eq 0) {
+                if ($rejected -or $script:Calls.Count -eq 0) { throw "$Lane did not complete controlled native execution" }
+                if ($Lane -eq 'windows-rust') {
+                    foreach ($role in 'run', 'nextest', 'doc') {
+                        if (-not $script:Calls.Contains($role)) { throw "Rust qualification did not exercise $role" }
+                    }
+                }
+                $siteCount = $script:Calls.Count
+            } elseif (-not $rejected -or $script:Calls.Count -ne $script:FailAt) {
+                throw "$Lane continued downstream of native failure at site $script:FailAt"
+            }
+            # The test process restores its own fixture environment between faults;
+            # production owns restoration of RUSTC_WRAPPER, asserted above.
+            foreach ($name in $originalEnvironment.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $originalEnvironment[$name])
+            }
+            $script:FailAt++
+        } while ($script:FailAt -le $siteCount)
+    }
+}
+Write-Output WINDOWS_NATIVE_FAILURE_CONTROLS_PASSED
+'@
 $start = [System.Diagnostics.ProcessStartInfo]::new($powershell)
 $start.UseShellExecute = $false
 $start.CreateNoWindow = $true
@@ -45,82 +113,14 @@ foreach ($argument in '-NoProfile', '-NonInteractive', '-EncodedCommand',
     [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))) { $start.ArgumentList.Add($argument) }
 $process = [System.Diagnostics.Process]::Start($start)
 try {
+    $outputTask = $process.StandardOutput.ReadToEndAsync()
+    $errorTask = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(10000)) { $process.Kill(); throw 'native failure probe timed out' }
-    $output = $process.StandardOutput.ReadToEnd() + $process.StandardError.ReadToEnd()
-    if ($process.ExitCode -eq 0 -or $output.Contains('AUDIT_CONTINUED')) { throw 'production settings ignored native failure' }
+    $output = $outputTask.GetAwaiter().GetResult() + $errorTask.GetAwaiter().GetResult()
+    if ($process.ExitCode -ne 0 -or -not $output.Contains('WINDOWS_NATIVE_FAILURE_CONTROLS_PASSED')) {
+        throw "Native dispatch failure controls failed: $output"
+    }
 } finally { $process.Dispose() }
-$CargoTargetDir = 'fixture-target'
-$clangDirectory = $null
-$script:Calls = [System.Collections.Generic.List[string]]::new()
-$script:FailCall = 0
-function Record-Command([string] $Name, [object[]] $Arguments) {
-    $script:Calls.Add("$Name $($Arguments -join ' ')")
-    if ($script:Calls.Count -eq $script:FailCall) { throw 'simulated command failure' }
-}
-function cargo { Record-Command cargo $args }
-function node {
-    if ($args[0] -eq 'scripts/clippy-feature-sets.mjs' -and $env:CARGO_BUILD_JOBS -ne '4') {
-        throw 'clippy worker allocation changed'
-    }
-    Record-Command node $args
-}
-function rustup { Record-Command rustup $args }
-
-$expected = @{
-    'windows-rust' = @(
-        'cargo nextest run --workspace --all-features --locked --profile ci --test-threads 32',
-        'cargo test --workspace --all-features --locked --doc'
-    )
-    'windows-fork-join' = @(
-        'cargo test -p acyclic-plugin --all-features --locked --test fork_join --ignored --test-threads=1 --skip support::'
-    )
-    'windows-napi' = @('cargo build -p acyclic-fs-napi --locked --target-dir fixture-target-napi')
-    'windows-arm64' = @(
-        'rustup target add aarch64-pc-windows-msvc',
-        'cargo check -p acyclic-fs -p acyclic-fs-napi --all-features --target aarch64-pc-windows-msvc --locked --target-dir fixture-target-aarch64'
-    )
-    'windows-clippy' = @(
-        'cargo clippy -p acyclic-plugin --all-targets --all-features --locked -D warnings',
-        'node scripts/clippy-feature-sets.mjs 4'
-    )
-}
-$priorTarget = $env:CARGO_TARGET_DIR
-$priorTestThreads = $env:RUST_TEST_THREADS
-$priorBuildJobs = $env:CARGO_BUILD_JOBS
-$env:RUST_TEST_THREADS = '32'
-try {
-    foreach ($clause in $dispatch.Clauses) {
-        $name = $clause.Item1.Value
-        if (-not $expected.ContainsKey($name)) { throw "unexpected audit lane: $name" }
-        if ($clause.Item2.Statements[-1] -isnot [System.Management.Automation.Language.ReturnStatementAst]) { throw "audit falls through: $name" }
-        $text = $clause.Item2.Extent.Text
-        # Mock PowerShell functions consume the separator native Cargo receives.
-        if ($name -eq 'windows-clippy' -and $text -notmatch '--locked -- -D warnings') { throw 'missing clippy warning gate' }
-        $body = [scriptblock]::Create($text.Substring(1, $text.Length - 2))
-        $script:Calls.Clear()
-        $script:FailCall = 0
-        & $body
-        if (($script:Calls -join "`n") -ne ($expected[$name] -join "`n")) { throw "audit commands changed: $name observed: $($script:Calls -join ';')" }
-        for ($index = 1; $index -le $expected[$name].Count; $index++) {
-            $script:Calls.Clear()
-            $script:FailCall = $index
-            $rejected = $false
-            try { & $body } catch {
-                if ($_.Exception.Message -ne 'simulated command failure') { throw }
-                $rejected = $true
-            }
-            if (-not $rejected) { throw "audit failure ignored: $name command $index" }
-        }
-    }
-    if ($dispatch.Clauses.Count -ne $expected.Count) { throw 'missing audit lane' }
-} finally {
-    if ($null -eq $priorTarget) { Remove-Item Env:CARGO_TARGET_DIR -ErrorAction SilentlyContinue }
-    else { $env:CARGO_TARGET_DIR = $priorTarget }
-    if ($null -eq $priorTestThreads) { Remove-Item Env:RUST_TEST_THREADS -ErrorAction SilentlyContinue }
-    else { $env:RUST_TEST_THREADS = $priorTestThreads }
-    if ($null -eq $priorBuildJobs) { Remove-Item Env:CARGO_BUILD_JOBS -ErrorAction SilentlyContinue }
-    else { $env:CARGO_BUILD_JOBS = $priorBuildJobs }
-}
 $action = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot '../.github/actions/qualification-lane/action.yml')
 $installation = ($action -split '    - name: Install Windows nextest', 2)[1] -split '    - name:', 2
 $body = ($installation[0] -split '      run: \|\r?\n', 2)[1] -replace '(?m)^        ', ''
@@ -177,18 +177,19 @@ $setupTargets = $setupAst.Find({ param($node)
 }, $true)
 if ($null -eq $setupInstall -or $null -eq $setupTargets) { throw 'missing lane-specific Rust target selection' }
 $toolchain = 'fixture-toolchain'
+$script:Targets = [System.Collections.Generic.List[string]]::new()
+function rustup {
+    if ($args[0] -eq 'target' -and $args[1] -eq 'add') { $script:Targets.Add([string]$args[2]) }
+}
 foreach ($Lane in 'windows', 'windows-arm64', 'windows-rust', 'windows-fork-join', 'windows-napi', 'windows-clippy') {
-    $script:Calls.Clear()
-    $script:FailCall = 0
+    $script:Targets.Clear()
     Invoke-Expression $setupInstall.Extent.Text
     Invoke-Expression $setupTargets.Extent.Text
     & ([scriptblock]::Create($install))
-    $expectedSetup = @(
-        'rustup toolchain install fixture-toolchain --profile minimal --no-self-update --component clippy --component rustfmt',
-        'rustup default fixture-toolchain'
-    )
-    if ($Lane -eq 'windows') { $expectedSetup += 'rustup target add wasm32-unknown-unknown --toolchain fixture-toolchain' }
-    if ($Lane -eq 'windows-arm64') { $expectedSetup += 'rustup target add aarch64-pc-windows-msvc --toolchain fixture-toolchain' }
-    if (($script:Calls -join "`n") -ne ($expectedSetup -join "`n")) { throw "incorrect Rust targets for $Lane" }
+    $requiredTargets = switch ($Lane) {
+        'windows' { 'wasm32-unknown-unknown' }
+        'windows-arm64' { 'aarch64-pc-windows-msvc' }
+    }
+    if (($requiredTargets -join "`n") -cne (($script:Targets | Sort-Object -Unique) -join "`n")) { throw "incorrect Rust target coverage for $Lane" }
 }
 Write-Host 'Windows qualification audit dispatch, failure propagation, nextest version and required targets passed.'

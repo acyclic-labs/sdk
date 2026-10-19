@@ -62,6 +62,10 @@ switch ($Lane) {
         $rustcWrapper = $env:RUSTC_WRAPPER
         Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
         try {
+            # Rust drift tests read ignored authoring outputs, not checked-in inputs.
+            # The Rust producer needs no JavaScript tooling or package installation.
+            cargo run --locked -p acyclic-actors --example actors-http-routes -- `
+                typescript/packages/actors/src/generated/actors-service.ts
             try {
                 cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
             } finally {

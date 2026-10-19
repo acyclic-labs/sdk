@@ -69,6 +69,10 @@ nextest() {
       "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$target.tar.gz" \
       "$checksum" "$TOOLS_DIR/cargo/bin" cargo-nextest
   fi
+  # Rust drift tests consume ignored TypeScript authoring outputs. Generate them
+  # with the existing Rust producer; these lanes do not require Bun or protoc JS.
+  cargo run --locked -p acyclic-actors --example actors-http-routes -- \
+    typescript/packages/actors/src/generated/actors-service.ts
   cargo nextest run --profile ci "$@" || status=$?
   mv -f -- "$target_dir/nextest/ci/junit.xml" "$observability/rust.xml" 2>/dev/null || true
   return "$status"

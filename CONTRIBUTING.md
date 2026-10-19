@@ -16,6 +16,21 @@ bun run test    # type-check, then TypeScript and filesystem package tests
 cargo test --workspace --all-features --locked
 ```
 
+Rust-only workspace tests also need the ignored Actors authoring contracts.
+Generate them with the existing locked Rust producer before running Cargo tests;
+no Bun installation is needed for this prerequisite:
+
+```sh
+cargo run --locked -p acyclic-actors --example actors-http-routes -- typescript/packages/actors/src/generated/actors-service.ts
+cargo test --locked -p acyclic-actors --test guest_contract generated_authoring_contract_has_no_drift -- --exact
+cargo test --locked -p acyclic-actors --test timer_contract generated_timer_authoring_has_no_drift -- --exact
+```
+
+The producer uses the output path's parent for `guest.ts`, `timers.ts` and
+service metadata. Full TypeScript generation subsequently projects the metadata
+into `actors-service.ts`. Rust qualification generates these files before its
+workspace tests; drift checks only compare and never rewrite their inputs.
+
 The `dev` and `test` profiles build at `opt-level = 1`, which keeps backtraces
 usable while the heavy fork tests run several times faster. `--release` stays a
 fast incremental build for development; the shipped `acyclic` executable comes
