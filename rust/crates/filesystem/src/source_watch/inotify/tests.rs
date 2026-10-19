@@ -58,6 +58,11 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
     let owner_before = original.lock().receipt();
     let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
@@ -95,11 +100,13 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
         let mut state = original.lock();
         state.budget.peak_allocation_bytes = state.live_allocation_bytes();
     }
-    assert!(
-        watch
-            .admit_with_work(Path::new("a/b/c"), &mut caller)
-            .is_err()
-    );
+    assert!(matches!(
+        watch.admit_with_work(Path::new("a/b/c"), &mut caller),
+        Err(DemandError::Work(WorkError::BudgetExceeded {
+            counter: "peak_allocation_bytes",
+            ..
+        }))
+    ));
     assert_eq!(
         watch.shared.retained_variable_bytes.load(Ordering::Acquire),
         retained_before

@@ -1,8 +1,6 @@
 #[cfg(feature = "native-watch")]
 use super::*;
 use crate::NativeMaterializationWork;
-#[cfg(all(feature = "native-watch", target_os = "linux"))]
-use crate::native_host::NativeHostWork;
 use crate::sync::atomic::{self as custody_atomics, AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 #[path = "ownership_accounting.rs"]
@@ -82,15 +80,33 @@ impl SourcePayloadOwnership {
         match self {
             Self::Borrowed => work.claim_allocation(bytes, u64::from(bytes != 0), delta),
             Self::Allocation { .. } => Err(DemandError::InvalidRequest),
-            Self::Registered(custody, _) => {
+            Self::Registered(custody, retained) => {
                 work.admit(delta)?;
-                let mut original = custody
+                let original = custody
                     .original
-                    .clone()
+                    .as_ref()
                     .ok_or(DemandError::InvalidRequest)?;
-                original.claim_allocation(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?;
-                if let Err(error) = self.retain(bytes, &mut original) {
-                    original.release(bytes)?;
+                retained
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                        current.checked_add(bytes)
+                    })
+                    .map_err(|_| WorkError::Overflow)?;
+                // These bytes are born directly in retained watch storage, not
+                // in the transient capture that originally created the watch.
+                let claimed = original.state(|owner| {
+                    owner.claim_allocation(
+                        bytes,
+                        u64::from(bytes != 0),
+                        WorkCounters::UNCHARGED,
+                    )?;
+                    if let Err(error) = custody.retain_allocation(bytes, owner, None) {
+                        owner.release(bytes)?;
+                        return Err(error.into());
+                    }
+                    Ok::<(), DemandError>(())
+                });
+                if let Err(error) = claimed {
+                    retained.fetch_sub(bytes, Ordering::AcqRel);
                     return Err(error);
                 }
                 if let Err(error) = work.record(delta) {
@@ -289,6 +305,20 @@ impl NativeMountAllocationCustody {
     }
     #[cfg(feature = "native-watch")]
     pub(crate) fn retain(&self, bytes: u64, work: &mut DemandWork) -> Result<(), crate::WorkError> {
+        let capture = self
+            .original
+            .as_ref()
+            .and_then(|work| work.capture_origin.as_ref())
+            .and_then(std::sync::Weak::upgrade);
+        self.retain_allocation(bytes, work, capture.as_deref())
+    }
+    #[cfg(feature = "native-watch")]
+    fn retain_allocation(
+        &self,
+        bytes: u64,
+        work: &mut DemandWork,
+        capture: Option<&super::CaptureTransientCustody>,
+    ) -> Result<(), crate::WorkError> {
         let entry = work
             .roots
             .native_mount_admissions
@@ -303,12 +333,7 @@ impl NativeMountAllocationCustody {
         self.retained_bytes()
             .checked_add(bytes)
             .ok_or(crate::WorkError::Overflow)?;
-        if let Some(capture) = self
-            .original
-            .as_ref()
-            .and_then(|work| work.capture_origin.as_ref())
-            .and_then(std::sync::Weak::upgrade)
-        {
+        if let Some(capture) = capture {
             capture.transfer_retained_bytes(bytes)?;
         }
         self.bytes
@@ -364,6 +389,36 @@ impl Drop for NativeMountAllocationCustody {
 mod properties {
     use super::*;
     use proptest::prelude::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn persistent_watch_growth_does_not_reenter_its_initial_capture() {
+        let original = NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
+        .unwrap();
+        let capture = super::super::CaptureTransientCustody::new_native(&original).unwrap();
+        let mut birth = original.with_capture_custody(&capture).unwrap();
+        let owner = SourcePayloadOwnership::new(&mut birth).unwrap();
+        let mut caller = NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &crate::CancellationToken::new(),
+        )
+        .unwrap();
+        // Settlement has already taken the initial capture's temporary bytes.
+        let _ = capture.take_retained_bytes();
+        owner
+            .claim_retained(7, WorkCounters::UNCHARGED, &mut caller)
+            .unwrap();
+        assert_eq!(capture.take_retained_bytes(), 0);
+        owner.discard_retained(7, &mut caller).unwrap();
+        drop(capture);
+        owner
+            .claim_retained(11, WorkCounters::UNCHARGED, &mut caller)
+            .unwrap();
+        owner.discard_retained(11, &mut caller).unwrap();
+    }
 
     proptest! {
         // Property: both native ownership representations retain their original
