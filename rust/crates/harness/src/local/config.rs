@@ -1,5 +1,24 @@
 use super::*;
 
+/// Resolves ambient or injected roots before checkout capture can write metadata.
+pub(super) enum StateLocation {
+    Directory(PathBuf),
+    ProjectRoot(PathBuf),
+}
+
+impl StateLocation {
+    pub(super) fn resolve(
+        self,
+        project: &LocalProject,
+        checkout: Option<&owner::Checkout>,
+    ) -> Result<PathBuf> {
+        match self {
+            Self::Directory(directory) => Ok(directory),
+            Self::ProjectRoot(root) => owner::state_directory_in(&root, project, checkout),
+        }
+    }
+}
+
 /// Storage selected for the agent's project view.
 pub(super) enum LocalProject {
     /// A normal checkout, opened lazily without importing its files.
@@ -117,6 +136,12 @@ impl LocalHarnessConfig {
     /// Embedded bindings without a checkout never allocate an unused state root.
     pub(super) fn prepare_state(mut self) -> Result<Self> {
         if self.hermetic && self.state_directory.is_none() {
+            // The default-selector tests inject a private fixture root. They
+            // still cannot reach the process user's ambient state directory.
+            #[cfg(test)]
+            if owner::STATE_ROOT.with_borrow(Option::is_some) {
+                return Ok(self);
+            }
             #[cfg(test)]
             TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
             let state = tempfile::tempdir().map_err(storage)?;
@@ -127,15 +152,33 @@ impl LocalHarnessConfig {
     }
     /// The one resolution of this composition's durable state directory: the injected directory, else the
     /// project's default under the per-user root.
+    #[cfg(any(test, feature = "native-execution"))]
     pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
+        let location = self.state_location()?;
+        if let StateLocation::Directory(directory) = location {
+            return Ok(directory);
+        }
+        let checkout = match &self.project {
+            LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
+            LocalProject::Volume { .. } => None,
+        };
+        location.resolve(&self.project, checkout.as_ref())
+    }
+    pub(super) fn state_location(&self) -> Result<StateLocation> {
         match &self.state_directory {
-            Some(directory) => crate::native_environment::state(Some(directory)).ok_or_else(|| {
-                Error::Unsupported("injected state directory is unavailable".into())
-            }),
+            Some(directory) => crate::native_environment::state(Some(directory))
+                .map(StateLocation::Directory)
+                .ok_or_else(|| {
+                    Error::Unsupported("injected state directory is unavailable".into())
+                }),
+            #[cfg(test)]
+            None if owner::STATE_ROOT.with_borrow(Option::is_some) => {
+                Ok(StateLocation::ProjectRoot(owner::user_state_root()?))
+            }
             None if self.hermetic => Err(Error::Unsupported(
                 "hermetic compositions must prepare or inject state".into(),
             )),
-            None => owner::state_directory_in(&owner::user_state_root()?, &self.project),
+            None => owner::user_state_root().map(StateLocation::ProjectRoot),
         }
     }
     /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.

@@ -107,12 +107,37 @@ async fn a_checkout_recreated_on_a_reused_object_id_opens_new_state() -> Result<
     let _reset = Reset;
     STATE_ROOT.set(Some(users.path().to_path_buf()));
     INJECTED.set(Some((REUSED, StableObjectId)));
+    let mut identities = Vec::new();
     for _ in 0..2 {
         std::fs::create_dir(&workspace).map_err(super::super::storage)?;
         let harness =
             LocalHarness::open(super::checkout_config(&workspace, (model()?, text()))?).await?;
+        let agent = harness.signed.agent();
         super::checkout_reopen::run(&harness).await?;
         harness.close().await?;
+        let owner = attached(&workspace, &users.path().join("acyclic/harness"))?;
+        assert_eq!(Some(owner.agent), agent);
+        let identity = (owner.agent, owner.task);
+        assert!(
+            !identities.contains(&identity),
+            "a replacement root reused its predecessor's owner"
+        );
+        let harness =
+            LocalHarness::open(super::checkout_config(&workspace, (model()?, text()))?).await?;
+        assert_eq!(
+            harness.signed.agent(),
+            Some(identity.0),
+            "reopening changed the agent"
+        );
+        super::checkout_reopen::run(&harness).await?;
+        harness.close().await?;
+        let reopened = attached(&workspace, &users.path().join("acyclic/harness"))?;
+        assert_eq!(
+            (reopened.agent, reopened.task),
+            identity,
+            "reopening changed durable owner state"
+        );
+        identities.push(identity);
         std::fs::remove_dir_all(&workspace).map_err(super::super::storage)?;
     }
     let states = std::fs::read_dir(users.path().join("acyclic/harness"))

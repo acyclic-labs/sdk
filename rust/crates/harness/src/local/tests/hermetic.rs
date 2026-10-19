@@ -15,6 +15,10 @@ fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
         matches!(unrooted.resolved_state_directory(), Err(Error::Unsupported(message))
             if message == super::super::owner::UNIT_TESTS_INJECT_STATE)
     );
+    assert!(
+        !checkout.path().join(".volumes").exists(),
+        "refused ambient selection published checkout metadata"
+    );
     // Positive control: the injected directory is the one resolution, and the test helper always injects one.
     let injected = tempfile::tempdir().map_err(super::super::storage)?;
     let rooted = LocalHarnessConfig::new(checkout.path(), (model()?, text()))
@@ -73,6 +77,7 @@ fn unit_tests_cannot_resolve_the_user_home_or_codex_home() -> Result<()> {
 }
 
 #[test]
+#[cfg(feature = "native-execution")]
 fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::storage)?;
     let projects = tempfile::tempdir().map_err(super::super::storage)?;
@@ -81,9 +86,11 @@ fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
         std::fs::create_dir(path).map_err(super::super::storage)?;
     }
     let at = |path: &PathBuf| {
+        let checkout = super::super::owner::Checkout::capture(path)?;
         super::super::owner::state_directory_in(
             root.path(),
             &super::super::LocalProject::Workspace(path.clone()),
+            Some(&checkout),
         )
     };
     let state = at(&first)?;
@@ -94,7 +101,8 @@ fn default_state_is_one_directory_per_project_under_the_root() -> Result<()> {
     assert!(matches!(
         super::super::owner::state_directory_in(
             &first.join("nested"),
-            &super::super::LocalProject::Workspace(first.clone())
+            &super::super::LocalProject::Workspace(first.clone()),
+            Some(&super::super::owner::Checkout::capture(&first)?),
         ),
         Err(Error::Invalid(_))
     ));
@@ -366,6 +374,10 @@ async fn open_rejects_control_state_inside_the_checkout() -> Result<()> {
         if message.contains("separate from the checkout"))
     );
     assert!(!state.exists(), "refused root created a directory");
+    assert!(
+        !checkout.path().join(".volumes").exists(),
+        "refused control root published checkout metadata"
+    );
     Ok(())
 }
 

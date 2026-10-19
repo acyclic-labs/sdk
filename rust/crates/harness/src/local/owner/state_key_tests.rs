@@ -27,7 +27,7 @@ proptest! {
         legacy.update(&(bytes.len() as u64).to_le_bytes());
         legacy.update(bytes);
         legacy.update(volume.storage_name(&mut None).unwrap().as_bytes());
-        let expected = directory.path().join("acyclic/harness").join(legacy.finalize().to_hex().as_str());
+        let expected = directory.path().join(legacy.finalize().to_hex().as_str());
         let project = LocalProject::Volume { directory: path, volume };
         let state = state_directory_in(directory.path(), &project, None).unwrap();
         prop_assert_eq!(&state, &expected);
