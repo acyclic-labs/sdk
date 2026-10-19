@@ -14,7 +14,8 @@ fn logical_growth_reclaims_retired_gauges_before_admission() -> TestResult {
     original.charge(WorkCounters::UNCHARGED)?;
     drop(retired);
 
-    let after_pruning = original.live_allocation_bytes() - super::ownership::GAUGE_ALLOCATION_BYTES;
+    let after_pruning =
+        original.live_allocation_bytes() - crate::demand::ownership::GAUGE_ALLOCATION_BYTES;
     allocation.resize(BUDGET.peak_allocation_bytes - after_pruning)?;
     assert_eq!(
         original.live_allocation_bytes(),
