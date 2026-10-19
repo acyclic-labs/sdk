@@ -97,8 +97,21 @@ windows-fuzz)
         --target x86_64-pc-windows-gnu
     ;;
 fuzz)
-    timed fuzz env CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}-nightly-incarnation-fuzz" \
-        cargo +nightly-2026-07-01 check --locked -p acyclic-harness-fuzz --bin records
+    fuzz_target="${CARGO_TARGET_DIR:-$PWD/target}-nightly-incarnation-fuzz"
+    timed fuzz-build env CARGO_TARGET_DIR="$fuzz_target" \
+        cargo +nightly-2026-07-01 fuzz build --dev --target x86_64-unknown-linux-gnu \
+        --fuzz-dir rust/crates/harness-fuzz records
+    python3 - "$fuzz_target/x86_64-unknown-linux-gnu/debug/records" <<'PYFUZZ'
+import re,subprocess,sys,time
+start=time.monotonic()
+result=subprocess.run([sys.argv[1],"rust/crates/harness-fuzz/corpus/records",
+                       "-runs=64","-max_len=4096","-timeout=2","-seed=1"],
+                      timeout=9.5,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+print(f"record corpus: {time.monotonic()-start:.3f}s\n{result.stdout}",flush=True)
+assert result.returncode==0,result.returncode
+runs=re.search(r"Done ([1-9][0-9]*) runs in",result.stdout)
+assert runs and int(runs[1])>=64,result.stdout
+PYFUZZ
     ;;
 darwin)
     # Run on the macOS host: Linux and Windows cannot prove F_FULLFSYNC on
