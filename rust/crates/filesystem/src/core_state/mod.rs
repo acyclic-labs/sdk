@@ -78,16 +78,38 @@ struct Owner {
 
 /// One held `owner.lock`, released when dropped.
 #[derive(Debug)]
-struct OwnerLock(File, Option<crate::materializer::NativeCleanupWrite>);
+struct OwnerLock(File, OwnerLockRelease);
+
+#[derive(Debug)]
+enum OwnerLockRelease {
+    Ordinary,
+    Native(crate::materializer::NativeCleanupWrite),
+    Released,
+}
 
 impl OwnerLock {
+    fn new(file: File, cleanup: Option<crate::materializer::NativeCleanupWrite>) -> Self {
+        Self(
+            file,
+            match cleanup {
+                Some(cleanup) => OwnerLockRelease::Native(cleanup),
+                None => OwnerLockRelease::Ordinary,
+            },
+        )
+    }
+
     fn unlock(&mut self) -> Result<(), LocalCoreStateStoreError> {
-        if let Some(cleanup) = self.1.take() {
-            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&self.0));
-            recorded?;
-            unlocked?;
-        } else {
-            FileExt::unlock(&self.0)?;
+        // One release attempt per acquisition, even when recording its native
+        // work fails. File close alone does not release an inherited Linux
+        // open-file-description lock while a forked child waits to exec.
+        match std::mem::replace(&mut self.1, OwnerLockRelease::Released) {
+            OwnerLockRelease::Ordinary => FileExt::unlock(&self.0)?,
+            OwnerLockRelease::Native(cleanup) => {
+                let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&self.0));
+                recorded?;
+                unlocked?;
+            }
+            OwnerLockRelease::Released => {}
         }
         Ok(())
     }
@@ -105,7 +127,7 @@ impl OwnerLock {
             LockMode::Exclusive => lock.try_lock_exclusive(),
         };
         match locked {
-            Ok(()) => Ok(Self(lock, None)),
+            Ok(()) => Ok(Self::new(lock, None)),
             Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => Err(
                 LocalCoreStateStoreError::OwnershipConflict(root.to_path_buf()),
             ),
@@ -116,9 +138,7 @@ impl OwnerLock {
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
-        if let Some(cleanup) = self.1.take() {
-            let _ = cleanup.attempt(|| FileExt::unlock(&self.0));
-        }
+        let _ = self.unlock();
     }
 }
 
@@ -246,7 +266,7 @@ impl LocalCoreStateStore {
                 let owner_lock = acquired
                     .as_ref()
                     .is_ok()
-                    .then(|| OwnerLock(lock, Some(cleanup)));
+                    .then(|| OwnerLock::new(lock, Some(cleanup)));
                 work.spent(read)?;
                 match acquired {
                     Ok(()) => Admission::Shared {

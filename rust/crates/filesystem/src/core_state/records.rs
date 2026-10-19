@@ -304,7 +304,7 @@ fn acquire_lock_with_retry(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok(OwnerLock(lock, cleanup))
+    Ok(OwnerLock::new(lock, cleanup))
 }
 
 pub(super) fn read_recoverable<T: DeserializeOwned>(
