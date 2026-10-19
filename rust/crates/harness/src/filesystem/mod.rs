@@ -485,6 +485,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
         io: Option<&fork_preparer_io::PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        Ok(self
+            .read_pinned_receipt_io(reference, maximum_bytes, io)
+            .await?
+            .into_bytes())
+    }
+
+    async fn read_pinned_receipt_io(
+        &self,
+        reference: &FileRef,
+        maximum_bytes: u64,
+        io: Option<&fork_preparer_io::PreparationIo>,
+    ) -> Result<PinnedRead<A, O>> {
         // Keep the Result temporary across await for the original admitted caller frame.
         (if io.is_none() {
             crate::conversation::BoundedContentFuture::new(None, || async move {
@@ -499,11 +511,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let workspace =
                     fork_preparer_io::content_workspace(&self.provider, reference.volume(), None)?;
                 let path = format!("/{}", reference.path());
-                let bytes = self
-                    .read(&workspace, Some(&generation), &path, maximum_bytes, None)
-                    .await?;
+                // Keep the authenticated immutable handle from the read. A
+                // retaining caller can pin it without opening the workspace
+                // and authenticating this same generation a second time.
+                #[cfg(all(test, not(target_arch = "wasm32")))]
+                acyclic_test_support::differential::record(("read", maximum_bytes));
+                let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                let opened = self.open(&workspace, Some(&owned)).await?;
+                let pinned = self.generation(&opened, &generation, Some(&owned)).await?;
+                let bytes = owned.sdk(
+                    pinned
+                        .read(&path, maximum_bytes, &owned, owned.cancellation())
+                        .await,
+                )?;
+                owned.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
                 reference.descriptor().verify(&bytes, &mut None)?;
-                Ok(bytes)
+                Ok(PinnedRead::pending(bytes, pinned))
             })
         } else {
             crate::conversation::BoundedContentFuture::new(io, || async move {
@@ -535,7 +558,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     let path_custody = rendered.1;
                     let path = rendered.0;
                     let opened = (self).open(&workspace, Some(io)).await?;
-                    let pinned = (self).generation(&opened, &generation, Some(io)).await?;
+                    let pinned = self.generation(&opened, &generation, Some(io)).await?;
                     #[cfg(all(test, not(target_arch = "wasm32")))]
                     acyclic_test_support::differential::record(("read", maximum_bytes));
                     let bytes = pinned
@@ -551,7 +574,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     })?;
                     drop(path);
                     drop(path_custody);
-                    return Ok(bytes);
+                    return Ok(PinnedRead::retained(bytes));
                 }
                 if reference.volume().provider() != &self.provider
                     || reference.descriptor().byte_length() > maximum_bytes
@@ -579,7 +602,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let bytes = match io {
                     Some(io) => {
                         let opened = (self).open(&workspace, Some(io)).await?;
-                        let pinned = (self).generation(&opened, &generation, Some(io)).await?;
+                        let pinned = self.generation(&opened, &generation, Some(io)).await?;
                         #[cfg(all(test, not(target_arch = "wasm32")))]
                         acyclic_test_support::differential::record(("read", maximum_bytes));
                         let bytes = io.receive(
@@ -608,27 +631,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 })?;
                 drop(generation);
                 drop(generation_hold);
-                Ok(bytes)
+                Ok(PinnedRead::retained(bytes))
             })
         })?
         .await
     }
-
-    async fn retain_file_generation(&self, file: &FileRef) -> Result<()> {
-        file.validate(&mut None)?;
-        if file.volume().provider() != &self.provider {
-            return Err(Error::Unauthorized(
-                "file belongs to another Filesystem provider".into(),
-            ));
-        }
-        let workspace = workspace_ref(
-            self.provider.clone(),
-            &file.volume().storage_name(&mut None)?,
-        )?;
-        self.retain_generation(&workspace, &self.file_generation(file, None)?)
-            .await
-    }
 }
+
+mod pinned_read;
+use pinned_read::PinnedRead;
 
 #[cfg(test)]
 mod tests;

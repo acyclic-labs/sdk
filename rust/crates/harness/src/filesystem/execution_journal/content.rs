@@ -183,14 +183,11 @@ where
         if io.is_none() {
             reference.validate(&mut None)?;
         }
-        let bytes = self
-            .host
-            .read_pinned_io(reference, self.maximum_payload_bytes, io)
-            .await?;
-        if io.is_none() {
-            self.host.retain_file_generation(reference).await?;
-        }
-        Ok(bytes)
+        self.host
+            .read_pinned_receipt_io(reference, self.maximum_payload_bytes, io)
+            .await?
+            .retain()
+            .await
     }
 
     pub(super) async fn verify_event_refs_with_io(
