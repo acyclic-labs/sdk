@@ -98,12 +98,12 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
     {
         let mut state = original.lock();
-        state.budget.peak_allocation_bytes = state.live_allocation_bytes();
+        state.budget.allocation_operations = state.receipt().allocation_operations;
     }
     assert!(matches!(
         watch.admit_with_work(Path::new("a/b/c"), &mut caller),
         Err(DemandError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
+            counter: "allocation_operations",
             ..
         }))
     ));
@@ -604,8 +604,14 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
-    let retained_control = original.lock().live_allocation_bytes()
-        - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    let retained_control = {
+        let mut state = original.lock();
+        // Startup's temporary failure custody has retired. Reconcile its gauge
+        // before comparing this baseline with the terminal receipt below.
+        state.receipt();
+        state.live_allocation_bytes()
+            - watch.shared.retained_variable_bytes.load(Ordering::Acquire)
+    };
     std::fs::write(root.path().join("reported"), b"changed")?;
     receive.recv_timeout(std::time::Duration::from_secs(5))?;
     cancellation.cancel();
