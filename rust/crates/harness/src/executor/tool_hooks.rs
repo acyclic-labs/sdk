@@ -146,7 +146,7 @@ impl StockExecution<'_> {
         operation: OperationId,
         step: u32,
         active: bool,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<HookOutput>> {
         let Some(hooks) = &self.stock.hooks else {
             return Ok(None);
         };
@@ -196,7 +196,10 @@ impl StockExecution<'_> {
         {
             Some(mut output) => {
                 crate::hooks::report(event, &output);
-                Ok(output.take_block_reason())
+                Ok(output.take_block_reason().map(|reason| {
+                    output.blocked = Some(reason);
+                    output
+                }))
             }
             None if self.stock.reconciliation_only => Err(Error::Indeterminate(operation)),
             None => Err(Error::Invalid(
@@ -210,22 +213,19 @@ impl StockExecution<'_> {
         &self,
         messages: &mut Vec<ModelMessage>,
         answer: &str,
-        reason: String,
+        output: HookOutput,
     ) -> Result<()> {
         let answer = (!answer.is_empty()).then(|| ModelMessage {
             role: ModelRole::Assistant,
             content: ModelContent::Text(answer.to_owned()),
         });
-        let reason = ModelMessage {
-            role: ModelRole::System,
-            content: ModelContent::Text(reason),
-        };
-        for message in answer.into_iter().chain([reason]) {
+        if let Some(message) = answer {
             message
                 .content
                 .validate_limits(self.stock.limits, &mut None)?;
             stock_vec_push(messages, message, self.io)?;
         }
+        self.append_hook_context(messages, output)?;
         Ok(())
     }
 }

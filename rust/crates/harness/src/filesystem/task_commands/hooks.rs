@@ -59,7 +59,7 @@ where
             manifest: digest,
         });
         let session_id = context.durable_task_id().map(|task| task.to_string());
-        let mut messages = Vec::new();
+        let mut stages = Vec::new();
         for event in HookEvent::at(HookSite::Prompt) {
             let input = match event {
                 HookEvent::SessionStart => {
@@ -86,27 +86,39 @@ where
                 Ok(output) => output,
                 Err(reason) => return Ok(PromptHooks::Blocked(reason)),
             };
-            messages.extend(output.into_iter().map(|text| ModelMessage {
-                role: ModelRole::System,
-                content: ModelContent::Text(text),
-            }));
+            let messages: Vec<_> = output
+                .into_iter()
+                .map(|text| ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(text),
+                })
+                .collect();
+            if !messages.is_empty() {
+                let name = match event {
+                    HookEvent::SessionStart => "hooks.session-start",
+                    HookEvent::UserPromptSubmit => "hooks.user-prompt-submit",
+                    _ => unreachable!("validated prompt event"),
+                };
+                stages.push(Arc::new(SourceStage::new(
+                    name,
+                    "1",
+                    Arc::new(Context {
+                        messages,
+                        ..Default::default()
+                    }),
+                    ContextPlacement::Prepend,
+                )));
+            }
         }
-        if messages.is_empty() {
+        if stages.is_empty() {
             return Ok(PromptHooks::Ready(pipeline, Some(bound)));
         }
-        let source = Context {
-            messages,
-            ..Default::default()
-        };
-        Ok(PromptHooks::Ready(
-            pipeline.with(Arc::new(SourceStage::new(
-                "hooks.prompt",
-                "1",
-                Arc::new(source),
-                ContextPlacement::Prepend,
-            ))),
-            Some(bound),
-        ))
+        // Prepending stages in reverse retains prompt-event message order.
+        let mut pipeline = pipeline;
+        for stage in stages.into_iter().rev() {
+            pipeline = pipeline.with(stage);
+        }
+        Ok(PromptHooks::Ready(pipeline, Some(bound)))
     }
 
     /// Runs one prompt-scoped event once per model command, retaining its outcome.

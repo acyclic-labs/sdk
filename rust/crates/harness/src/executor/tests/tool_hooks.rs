@@ -117,6 +117,7 @@ impl ToolExecutor for HookBackend {
                         Ok(HookOutput {
                             blocked: (attempt < self.stop_blocks.load(Ordering::SeqCst))
                                 .then(|| self.reason.clone()),
+                            additional_context: vec!["stop-specific instruction".into()],
                             ..Default::default()
                         })
                     } else {
@@ -470,9 +471,10 @@ async fn stop_denials_never_settle_success_at_any_step_budget() -> Result<()> {
                 let (mut executor, _, _, hooks) =
                     fixture(cut, "continue working".into(), 42, false, false).await?;
                 hooks.stop_blocks.store(blocks as usize, Ordering::SeqCst);
-                executor.provider = Arc::new(ScriptedModelProvider::new(
+                let provider = Arc::new(ScriptedModelProvider::new(
                     (0..budget).map(|step| ScriptedTurn::Text(format!("answer {step}"))),
                 ));
+                executor.provider = provider.clone();
                 let mut rules = crate::hooks::Hooks::default();
                 rules.add_json(br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"configured","args":[]}]}]}}"#)?;
                 executor = executor.with_hooks(Some(Arc::new(BoundHooks {
@@ -507,6 +509,14 @@ async fn stop_denials_never_settle_success_at_any_step_budget() -> Result<()> {
                         hooks.stop.load(Ordering::SeqCst),
                         (blocks + 1).min(budget) as usize
                     );
+                    let requests = provider.requests();
+                    assert_eq!(requests.len(), (blocks + 1).min(budget) as usize);
+                    for request in requests.iter().skip(1) {
+                        assert!(request.messages.iter().any(|message| message.content
+                            == ModelContent::Text("continue working".into())));
+                        assert!(request.messages.iter().any(|message| message.content
+                            == ModelContent::Text("stop-specific instruction".into())));
+                    }
                 }
             }
         }
