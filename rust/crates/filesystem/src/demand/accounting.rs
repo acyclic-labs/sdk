@@ -258,6 +258,7 @@ impl DemandWork {
         if self.roots.poisoned {
             return Err(DemandError::OriginalWorkPoisoned);
         }
+        self.reconcile_cancellation_registry()?;
         self.admission(WorkCounters::UNCHARGED, bytes, |state| {
             state
                 .allocations
