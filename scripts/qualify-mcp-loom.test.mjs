@@ -2,10 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { qualificationMain } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("gate rejects every trailing argument before starting a build", () => {
+  for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--timer"], ["--gate"], ["x"]]) {
+    let builds = 0;
+    const run = () => { builds++; throw new Error("unexpected build"); };
+    assert.throws(() => qualificationMain(["--gate", ...trailing], run), /unknown qualification argument/);
+    assert.equal(builds, 0);
+  }
+});
 
 function assertGateStep(args) {
   const gate = readFileSync("scripts/qualify-ci.sh", "utf8").match(/  gate\)\n([\s\S]*?);;/)?.[1];

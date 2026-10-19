@@ -215,8 +215,13 @@ function dispatch([name, ...rest], run) {
   return qualifyMcpLoom(featureSelection(name === undefined ? [] : [name, ...rest]), run);
 }
 
+export function qualificationMain(args, run = spawnSync) {
+  if (args[0] === "--gate") {
+    if (args.length !== 1) throw new Error(`unknown qualification argument: ${args[1]}`);
+    qualifyGate(run);
+  } else dispatch(args, run);
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  if (process.argv[2] === "--gate") {
-    qualifyGate(spawnSync);
-  } else dispatch(process.argv.slice(2), spawnSync);
+  qualificationMain(process.argv.slice(2));
 }
