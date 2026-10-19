@@ -24,7 +24,27 @@ async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
     .await
 }
 
-async fn published_while_another_command_waits(skip_publication: bool) -> Result<bool> {
+async fn published(scratch: &MountedVolume, path: &str) -> Result<Vec<u8>> {
+    let cancellation = CancellationToken::new();
+    let head = scratch
+        .workspace
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    Ok(head
+        .read(path, 64, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .as_ref()
+        .to_vec())
+}
+
+#[tokio::test]
+async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledged_head()
+-> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
@@ -36,63 +56,87 @@ async fn published_while_another_command_waits(skip_publication: bool) -> Result
         .source
         .as_ref()
         .unwrap();
-    let (admitted, admission) = tokio::sync::oneshot::channel();
-    let (release, released) = tokio::sync::oneshot::channel();
-    let b = native_scope(mounts, async |claims| {
-        admitted.send(()).unwrap();
-        released.await.map_err(storage)?;
+    native_scope(mounts, async |claims| {
+        std::fs::write(scratch.destination.join("data"), b"acknowledged").map_err(storage)?;
         Ok(((), claims))
-    });
-    let a = async {
-        admission.await.map_err(storage)?;
-        native_scope(mounts, async |claims| {
-            std::fs::write(scratch.destination.join("data"), b"published A").map_err(storage)?;
-            let claims = if skip_publication {
-                // Restore the former last-user-only publication. B still
-                // owns the projection, so A's acknowledgement skips its write.
-                drop(claims);
-                Claims(Vec::new())
-            } else {
-                claims
-            };
-            Ok(((), claims))
+    })
+    .await?;
+    assert_eq!(published(scratch, "/data").await?, b"acknowledged");
+
+    let (started, began) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let cleaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cleaned = Arc::clone(&cleaned);
+    let destination = scratch.destination.clone();
+    let mut cancelled = Box::pin(native_scope(mounts, async |claims| {
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(destination.join("data"), b"unverified").unwrap();
+            started.send(()).unwrap();
+            released.recv().unwrap();
+            worker_cleaned.store(true, std::sync::atomic::Ordering::Release);
+            claims
         })
-        .await?;
-        assert!(
-            scratch.native().await.is_some(),
-            "B lost its live projection"
+        .await
+        .map_err(storage)?;
+        // No verification and no successful return: losing the capture waiter
+        // leaves claims in the worker until its physical cleanup completes.
+        Err::<((), Claims), _>(Error::Conflict("unverified worker".into()))
+    }));
+    tokio::select! {
+        started = began => started.map_err(storage)?,
+        result = &mut cancelled => panic!("worker did not remain active: {result:?}"),
+    }
+    drop(cancelled);
+    let mut preflight = Box::pin(sync(mounts));
+    assert!(
+        futures::poll!(&mut preflight).is_pending(),
+        "preflight published an active worker"
+    );
+    drop(preflight);
+    let mut next = Box::pin(native_scope(mounts, async |claims| {
+        assert!(cleaned.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            std::fs::read(scratch.destination.join("data")).map_err(storage)?,
+            b"acknowledged"
         );
-        let cancellation = CancellationToken::new();
-        // Independently reopen the volume head, not the projected filesystem
-        // or the publishing mount's cached checkout.
-        let head = scratch
-            .workspace
-            .workspace()
-            .head(WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        let read = head
-            .read("/data", 32, WorkBudget::UNBOUNDED, &cancellation)
-            .await;
-        let published = read.is_ok_and(|read| read.value.as_ref() == b"published A");
-        release.send(()).unwrap();
-        Ok::<_, Error>(published)
-    };
-    let (published, b) = tokio::join!(a, b);
-    b?;
+        assert_eq!(published(scratch, "/data").await?, b"acknowledged");
+        std::fs::write(scratch.destination.join("data"), b"next verified").map_err(storage)?;
+        Ok(((), claims))
+    }));
+    assert!(
+        futures::poll!(&mut next).is_pending(),
+        "next command entered before physical cleanup"
+    );
+    release.send(()).map_err(storage)?;
+    next.await?;
+    assert_eq!(published(scratch, "/data").await?, b"next verified");
     assert!(scratch.native().await.is_none());
     assert!(!scratch.destination.exists());
-    published
+    Ok(())
 }
 
 #[tokio::test]
-async fn acknowledged_command_is_reopenable_while_another_command_owns_projection() -> Result<()> {
-    assert!(published_while_another_command_waits(false).await?);
-    assert!(
-        !published_while_another_command_waits(true).await?,
-        "omitted publication escaped the independent head oracle"
-    );
+async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let scratch = mounts
+        .named(Some("scratch"))?
+        .1
+        .view
+        .source
+        .as_ref()
+        .unwrap();
+    // Negative control: bypass command serialization exactly as the former
+    // shared projection did. One verified exit also publishes the other writer.
+    let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
+    let first = scratch.enter(root, SCRATCH_PATH, false).await?;
+    let unverified = scratch.enter(root, SCRATCH_PATH, false).await?;
+    std::fs::write(scratch.destination.join("data"), b"unverified").map_err(storage)?;
+    scratch.leave(first).await?;
+    assert_eq!(published(scratch, "/data").await?, b"unverified");
+    scratch.abandon(unverified).await?;
     Ok(())
 }
 
@@ -106,8 +150,8 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
     let mounts = &harness.workspace().unwrap().mounts;
     let (_, mount) = mounts.named(Some("scratch"))?;
     let scratch = mount.view.source.as_ref().unwrap();
-    // `.volumes/scratch` enters first; `.volumes/zzz` names a binding its
-    // source does not own, so its entry fails after scratch is projected.
+    // An invalid alias must fail even when its source also has a valid name.
+    // Validation precedes identity-based deduplication and lock acquisition.
     let table = super::super::mounts::owner(
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
@@ -167,14 +211,14 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
         destination: mounts.root.join(".volumes/aaa"),
         native: StateArc::new(AsyncMutex::new(None)),
         users: StateArc::new(crate::sync::SyncMutex::new(1)),
+        execution: StateArc::new(AsyncMutex::new(())),
     });
     let table = super::super::mounts::owner(
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [("aaa", busy), ("scratch", Arc::clone(scratch))].map(|(name, source)| {
-            (name.to_owned(), mount.view.volume.clone(), Some(source))
-        }),
+        [("aaa", busy), ("scratch", Arc::clone(scratch))]
+            .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     let project = async || {
         let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
@@ -209,5 +253,72 @@ async fn retirement_continues_past_a_volume_a_worker_still_owns() -> Result<()> 
     );
     retire(mounts).await?;
     assert!(scratch.native().await.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn projection_lock_order_ignores_alias_order_and_duplicate_bindings() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let other = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let mounts = &harness.workspace().unwrap().mounts;
+    let (_, mount) = mounts.named(Some("scratch"))?;
+    let first = mount.view.source.as_ref().unwrap();
+    let second = Arc::new(MountedVolume {
+        workspace: crate::tools::git::OwnedView::Volume(first.workspace.workspace().clone()),
+        destination: other.path().join(SCRATCH_PATH),
+        native: StateArc::new(AsyncMutex::new(None)),
+        users: StateArc::new(crate::sync::SyncMutex::new(0)),
+        execution: StateArc::new(AsyncMutex::new(())),
+    });
+    let table = |primary: &Arc<MountedVolume>, named: &Arc<MountedVolume>| {
+        super::super::mounts::owner(
+            &mounts.root,
+            &mount.view.volume,
+            Some(Arc::clone(primary)),
+            [(
+                "scratch".into(),
+                mount.view.volume.clone(),
+                Some(Arc::clone(named)),
+            )],
+        )
+    };
+    let forward = table(first, &second)?;
+    let swapped = table(&second, first)?;
+    let duplicate = table(first, first)?;
+    let identities = |table: &Mounts| -> Result<Vec<PathBuf>> {
+        Ok(ordered_mounts(table)?
+            .into_iter()
+            .map(|(_, mount)| mount.view.source.as_ref().unwrap().destination.clone())
+            .collect())
+    };
+    assert_eq!(identities(&forward)?, identities(&swapped)?);
+    assert_eq!(identities(&duplicate)?.len(), 1);
+    let former = |table: &Mounts| {
+        table
+            .mounts()
+            .filter_map(|(_, mount)| {
+                mount
+                    .view
+                    .source
+                    .as_ref()
+                    .map(|source| source.destination.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_ne!(
+        former(&forward),
+        former(&swapped),
+        "alias-order control did not invert the locks"
+    );
+    assert_eq!(
+        former(&duplicate).len(),
+        2,
+        "duplicate control did not select its own lock twice"
+    );
+    std::fs::create_dir(&first.destination).map_err(storage)?;
+    native_scope(&duplicate, async |claims| Ok(((), claims))).await?;
+    assert!(first.native().await.is_none());
     Ok(())
 }

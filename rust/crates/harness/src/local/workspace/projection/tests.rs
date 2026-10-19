@@ -402,3 +402,41 @@ fn every_completing_worker_retains_its_projection_until_publication() {
         "completion lost its unpublished projection",
     );
 }
+
+fn execution_cleanup(broken: bool) {
+    let execution = StateArc::new(AsyncMutex::new(()));
+    let selected = complete(lock_owned(execution.clone()));
+    let retired = StateArc::new(Mutex::new(false));
+    let physical_cleanup = StateArc::new(Mutex::new(false));
+    let worker = {
+        let (execution, retired, physical_cleanup) =
+            (execution.clone(), retired.clone(), physical_cleanup.clone());
+        thread::spawn(move || {
+            let _selected = complete(lock_owned(execution));
+            assert!(
+                *physical_cleanup.lock().unwrap(),
+                "next entrant outran physical cleanup"
+            );
+            assert!(
+                *retired.lock().unwrap(),
+                "next entrant outran unpublished retirement"
+            );
+        })
+    };
+    let selected = if broken {
+        drop(selected);
+        None
+    } else {
+        Some(selected)
+    };
+    thread::yield_now();
+    *physical_cleanup.lock().unwrap() = true;
+    *retired.lock().unwrap() = true;
+    drop(selected);
+    joined(worker);
+}
+
+#[test]
+fn execution_guard_covers_physical_cleanup_and_unpublished_retirement() {
+    checked(execution_cleanup, "next entrant outran");
+}

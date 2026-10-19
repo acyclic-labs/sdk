@@ -99,14 +99,20 @@ pub(super) async fn attach(
             destination,
             native: StateArc::new(AsyncMutex::new(None)),
             users: StateArc::new(crate::sync::SyncMutex::new(0)),
+            execution: StateArc::new(AsyncMutex::new(())),
         }));
     }
     Ok(())
 }
 
 pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
-    for (_, mount) in mounts.mounts() {
+    for (_, mount) in ordered_mounts(mounts)? {
         if let Some(source) = &mount.view.source {
+            // This call precedes the command scope. Share its execution guard
+            // so preflight cannot publish another worker's unverified effects.
+            let _execution =
+                crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
+            source.prepare_command().await?;
             let native = source.native().await;
             if let Some(native) = native.as_ref() {
                 native.sync().await?;
@@ -117,29 +123,98 @@ pub(in crate::local) async fn sync(mounts: &Mounts) -> Result<()> {
     Ok(())
 }
 
+type BoundMount = crate::workspace::Mount<Option<Arc<MountedVolume>>>;
+
+fn ordered_mounts(mounts: &Mounts) -> Result<Vec<(&str, &BoundMount)>> {
+    let mut ordered = std::collections::BTreeMap::new();
+    for (relative, mount) in mounts.mounts() {
+        if let Some(source) = &mount.view.source {
+            // The binding is validated even when another name already selects
+            // this projection. Lock order belongs to the volume and physical
+            // projection, never to aliases in a particular task's mount table.
+            projection_root(&source.destination, relative)?;
+            let key = (
+                source.workspace.workspace().id(),
+                source.destination.clone(),
+            );
+            ordered.entry(key).or_insert((relative, mount));
+        }
+    }
+    Ok(ordered.into_values().collect())
+}
+
 /// The single native execution scope shared by bash and hooks. Entry projects
 /// every bound volume, so a command sees persisted volume data. A successful
 /// exit publishes and detaches each projection and removes its SDK-owned
 /// residue, so the checkout holds no mount between executions. The body owns
 /// every check that must precede publication.
-pub(in crate::local) struct Claims(Vec<(Arc<MountedVolume>, projection::Entered)>);
+struct Claim {
+    source: Arc<MountedVolume>,
+    entered: projection::Entered,
+    // Released only after publication or abandonment finishes, including when
+    // the caller disappears while the physical process still owns this claim.
+    _execution: crate::sync::owned::OwnedMutexGuard<()>,
+}
+
+pub(in crate::local) struct Claims {
+    entries: Vec<Claim>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Drop for Claims {
+    fn drop(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        if entries.is_empty() {
+            return;
+        }
+        // The worker drops custody only after process-tree cleanup. Its owned
+        // task now retains the execution guards through unpublished retirement;
+        // dropping the awaiting caller cannot cancel this cleanup task.
+        self.runtime.spawn(async move {
+            for claim in entries.into_iter().rev() {
+                if let Err(error) = claim.source.abandon(claim.entered).await {
+                    tracing::error!(?error, "cancelled native scope retirement failed");
+                }
+            }
+        });
+    }
+}
 
 pub(in crate::local) async fn native_scope<T>(
     mounts: &Mounts,
     body: impl AsyncFnOnce(Claims) -> Result<(T, Claims)>,
 ) -> Result<T> {
-    let mut entered = Vec::new();
+    let mut claims = Claims {
+        entries: Vec::new(),
+        runtime: tokio::runtime::Handle::current(),
+    };
     let mut projected = Ok(());
-    for (relative, mount) in mounts.mounts() {
+    for (relative, mount) in ordered_mounts(mounts)? {
         if let Some(source) = &mount.view.source {
+            // Stable projection identity orders acquisition. Hold every selected volume's
+            // execution guard across worker cleanup, verification and retirement.
             // A Linux task view aliases the original binding; mount at that
             // binding's root, never below another owner-only FUSE mount.
-            let entry = match projection_root(&source.destination, relative) {
-                Ok(root) => Box::pin(source.enter(root, relative, mount.mode.read_only())).await,
-                Err(error) => Err(error),
+            let root = match projection_root(&source.destination, relative) {
+                Ok(root) => root,
+                Err(error) => {
+                    projected = Err(error);
+                    break;
+                }
             };
+            let execution =
+                crate::sync::owned::lock_owned(StateArc::clone(&source.execution)).await;
+            let entry = async {
+                source.prepare_command().await?;
+                Box::pin(source.enter(root, relative, mount.mode.read_only())).await
+            }
+            .await;
             match entry {
-                Ok(entry) => entered.push((Arc::clone(source), entry)),
+                Ok(entry) => claims.entries.push(Claim {
+                    source: Arc::clone(source),
+                    entered: entry,
+                    _execution: execution,
+                }),
                 Err(error) => {
                     projected = Err(error);
                     break;
@@ -151,24 +226,34 @@ pub(in crate::local) async fn native_scope<T>(
         // No command ran, so the volumes already entered leave through the
         // same exit. A failed leave keeps its projection, and the next exit
         // or retirement retries it and reports that cause again.
-        let _ = leave_all(entered).await;
+        let _ = leave_all(std::mem::take(&mut claims.entries)).await;
         return Err(error);
     }
     // Boxed, as are projection entry and exit: these deep futures stay out of
     // every caller's layout. The body returns claims only after physical
     // cleanup and verification. Cancellation leaves them in the worker,
     // rather than this caller future.
-    let (value, Claims(entered)) = Box::pin(body(Claims(entered))).await?;
+    let (value, mut claims) = Box::pin(body(claims)).await?;
+    let entered = std::mem::take(&mut claims.entries);
     leave_all(entered).await?;
     Ok(value)
 }
 
-async fn leave_all(entered: Vec<(Arc<MountedVolume>, projection::Entered)>) -> Result<()> {
-    let mut retired = Ok(());
-    for (source, entry) in entered.into_iter().rev() {
-        keep_first(&mut retired, Box::pin(source.leave(entry)).await);
-    }
-    retired
+async fn leave_all(entered: Vec<Claim>) -> Result<()> {
+    // Publication is an accepted operation. Losing its caller after verification
+    // must not release the execution guard before physical retirement finishes.
+    tokio::spawn(async move {
+        let mut retired = Ok(());
+        for claim in entered.into_iter().rev() {
+            keep_first(
+                &mut retired,
+                Box::pin(claim.source.leave(claim.entered)).await,
+            );
+        }
+        retired
+    })
+    .await
+    .map_err(|error| Error::Storage(format!("native scope retirement interrupted: {error}")))?
 }
 
 // Every multi-volume exit attempts each volume and reports the first cause; one

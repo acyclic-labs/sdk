@@ -3,21 +3,22 @@ use super::*;
 use crate::sync::SyncMutex;
 use crate::sync::owned::{OwnedMutexGuard, lock_owned};
 
-pub(in crate::local) struct Native(
-    pub(super) acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
-);
+pub(in crate::local) struct Native {
+    mount: acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>,
+    discard: bool,
+}
 
 impl std::ops::Deref for Native {
     type Target = acyclic_fs::Mount<LocalAuthorityBackend, LocalObjectBackend>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.mount
     }
 }
 
 impl Drop for Native {
     fn drop(&mut self) {
         // Keep callbacks and the destination fence inside the last owner.
-        if let Err(error) = self.0.abandon() {
+        if let Err(error) = self.mount.abandon() {
             tracing::error!(?error, "workspace mount retirement failed");
         }
     }
@@ -107,7 +108,10 @@ impl MountedVolume {
                 .workspace()
                 .mount(&self.destination, options)
                 .await
-                .map(Native)
+                .map(|mount| Native {
+                    mount,
+                    discard: false,
+                })
                 .map_err(Error::from)
         })
         .await
@@ -116,6 +120,40 @@ impl MountedVolume {
     pub(super) async fn leave(&self, entered: Entered) -> Result<()> {
         leave(&self.native, &self.users, entered, async |slot, retire| {
             self.publish_locked(slot, retire).await
+        })
+        .await
+    }
+
+    pub(super) async fn prepare_command(&self) -> Result<()> {
+        let mut slot = self.native().await;
+        if let Some(native) = slot.as_ref() {
+            if native.discard {
+                native.abandon_command()?;
+            } else if native.is_retiring() {
+                native.complete_command(true).await?;
+            } else {
+                return Ok(());
+            }
+            *slot = None;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn abandon(&self, entered: Entered) -> Result<()> {
+        leave(&self.native, &self.users, entered, async |slot, retire| {
+            if !retire {
+                return Err(Error::Conflict(
+                    "unverified native scope shares a projection".into(),
+                ));
+            }
+            if let Some(native) = slot.as_mut() {
+                // Retain this decision if physical retirement fails. A later
+                // entry must retry abandonment before exposing this projection.
+                native.discard = true;
+                native.abandon_command()?;
+            }
+            *slot = None;
+            Ok(())
         })
         .await
     }
@@ -139,7 +177,11 @@ impl MountedVolume {
     // projection created. A failed detach keeps the owner for a later retry.
     async fn publish_locked(&self, slot: &mut Option<Native>, retire: bool) -> Result<()> {
         if let Some(native) = slot.as_ref() {
-            native.complete_command(retire).await?;
+            if native.discard {
+                native.abandon_command()?;
+            } else {
+                native.complete_command(retire).await?;
+            }
         }
         if retire {
             *slot = None;

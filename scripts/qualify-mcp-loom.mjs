@@ -74,6 +74,7 @@ export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-l
       "local::workspace::projection::tests::the_last_execution_scope_alone_retires_the_projection",
       "local::workspace::projection::tests::every_completed_command_publishes_before_its_acknowledgement",
       "local::workspace::projection::tests::every_completing_worker_retains_its_projection_until_publication",
+      "local::workspace::projection::tests::execution_guard_covers_physical_cleanup_and_unpublished_retirement",
     ], timeout: 9500,
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });

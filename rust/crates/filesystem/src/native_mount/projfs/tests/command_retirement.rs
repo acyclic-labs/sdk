@@ -158,3 +158,64 @@ async fn failed_projection_cleanup_refunds_no_work_and_retries_on_original_budge
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn command_retirement_retries_the_physical_owner_before_live_controls()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let filesystem = Fs::memory();
+    let workspace = filesystem
+        .create_workspace("retry-command-owner", WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
+    workspace.write_text("/result.txt", "published").await?;
+    let parent = tempfile::tempdir()?;
+    let destination = parent.path().join("projection");
+    std::fs::create_dir(&destination)?;
+    let mount = workspace
+        .mount(
+            &destination,
+            crate::MountOptions::read_write()
+                .publication(crate::MountPublication::Manual)
+                .native_context(&work, None, None),
+        )
+        .await?;
+    let authentic_root = {
+        let mut owner = mount.session.lock().unwrap();
+        let session = owner.as_mut().unwrap();
+        session.prepare_projection_cleanup()?;
+        let cleanup = session
+            .driver
+            .as_mut()
+            .unwrap()
+            .projection_cleanup
+            .as_mut()
+            .unwrap();
+        std::mem::replace(&mut cleanup.1, tempfile::tempfile()?)
+    };
+    // Actual Windows root-tag deletion fails only after the runtime and all
+    // cleanup ownership move into the physical worker.
+    assert!(mount.complete_command(true).await.is_err());
+    assert!(mount.is_retiring());
+    {
+        let mut session = mount.session.lock().unwrap();
+        let driver = session.as_mut().unwrap().driver.as_mut().unwrap();
+        assert!(driver.runtime.is_none());
+        let controller = driver.controller.as_ref().unwrap();
+        let mut lifecycle = super::super::lock_recover(&controller.lifecycle);
+        let physical = lifecycle.owner.as_mut().unwrap();
+        physical.projection_cleanup.as_mut().unwrap().1 = authentic_root;
+    }
+    // Negative control: the former retry begins with a live callback flush,
+    // although the runtime now belongs to the physical retirement worker.
+    assert!(mount.sync().await.is_err());
+    mount.complete_command(true).await?;
+    assert!(mount.session.lock().unwrap().is_none());
+    assert!(!destination.exists());
+    mount.complete_command(true).await?;
+    Ok(())
+}

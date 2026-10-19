@@ -50,6 +50,7 @@ async fn publish_command(
         session: Mutex::new(None),
         destination: destination.path().to_owned(),
         _destination_custody: work.path(destination.path(), None)?.1,
+        retiring: std::sync::atomic::AtomicBool::new(false),
     };
     let path = {
         #[cfg(unix)]

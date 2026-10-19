@@ -21,6 +21,8 @@ pub(super) struct MountedVolume {
     pub(super) native: StateArc<AsyncMutex<Option<projection::Native>>>,
     /// Native execution scopes currently using `native`.
     pub(super) users: StateArc<crate::sync::SyncMutex<usize>>,
+    /// One writable projection cannot isolate effects from concurrent commands.
+    pub(super) execution: StateArc<AsyncMutex<()>>,
 }
 pub(super) type Mounts = crate::workspace::MountTable<Option<Arc<MountedVolume>>>;
 

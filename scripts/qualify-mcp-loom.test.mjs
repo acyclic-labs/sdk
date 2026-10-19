@@ -109,7 +109,7 @@ test("fs Session qualification instruments real provider and Session locks and r
 });
 
 test("hook qualification builds real synchronization once and rejects either missing model", () => {
-  for (const missing of [null, ...Array.from({ length: 12 }, (_, i) => i + 1)]) {
+  for (const missing of [null, ...Array.from({ length: 13 }, (_, i) => i + 1)]) {
     let models = 0;
     const run = (command, args, options) => {
       if (command === "cargo") {
@@ -124,7 +124,7 @@ test("hook qualification builds real synchronization once and rejects either mis
       models++;
       return { status: 0, stderr: "", stdout: summary(models === missing ? 0 : 1, 0, 100) };
     };
-    if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 12); }
+    if (missing === null) { qualifyHookLifecycleLoom(undefined, run); assert.equal(models, 13); }
     else assert.throws(() => qualifyHookLifecycleLoom(undefined, run), /requires a nonzero/);
   }
   assertGateStep(["--hook-lifecycle", "--all-features"]);
