@@ -3,6 +3,8 @@ use super::*;
 contract! {
 /// Nonblocking authority-store contract.
 pub trait AsyncAuthorityStore: ProviderPlatform {
+    /// Live ownership of this backend owner, preserved by forwarding adapters.
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims;
     /// Whether creation can retain a published-generation prefix.
     fn supports_generation_lineage_prefix(&self) -> bool {
         false

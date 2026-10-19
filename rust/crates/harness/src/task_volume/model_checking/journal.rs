@@ -3,6 +3,7 @@ use acyclic_stream::*;
 use loom::sync::Mutex;
 
 pub(crate) struct Journal {
+    operation_claims: acyclic_stream::OperationClaims,
     path: StreamPath,
     // Leaf lock: provider operations invoke no caller or volume code while held.
     records: Mutex<Vec<Record>>,
@@ -12,6 +13,7 @@ impl Journal {
     pub(crate) fn new(path: StreamPath, records: Vec<Record>) -> Self {
         Self {
             path,
+            operation_claims: Default::default(),
             records: Mutex::new(records),
         }
     }
@@ -19,6 +21,10 @@ impl Journal {
 
 #[async_trait::async_trait]
 impl StreamProvider for Journal {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         assert_eq!(path, self.path);
         Ok(self.records.lock().unwrap().len() as u64)

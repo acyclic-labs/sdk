@@ -104,24 +104,30 @@ pub(super) enum Exit<T> {
     Completed(T),
 }
 
+/// Drives `future`, cancelling at the `cut`-th boundary that `counted`
+/// selects. Returns the exit, every boundary hit, and the counted ones.
 pub(super) async fn drive<F: Future>(
     future: F,
     cut: Option<usize>,
+    counted: fn(&str) -> bool,
     schedule: &Schedule,
     events: &mut UnboundedReceiver<Boundary>,
-) -> (Exit<F::Output>, usize) {
+) -> (Exit<F::Output>, usize, usize) {
     let mut future = Box::pin(schedule.io.scope(tokio::task::unconstrained(future)));
     let mut hit = 0;
+    let mut ordinal = 0;
     loop {
         tokio::select! {
             output = &mut future => {
                 drop(future);
                 drain(schedule, events).await;
-                return (Exit::Completed(output), hit);
+                return (Exit::Completed(output), hit, ordinal);
             },
             event = events.recv() => {
                 let event = event.expect("provider lost its push driver");
                 hit += 1;
+                let counts = counted(event.name);
+                ordinal += usize::from(counts);
                 {
                     let mut state = schedule.state.lock().unwrap();
                     if event.name == "task:submitted"
@@ -134,7 +140,7 @@ pub(super) async fn drive<F: Future>(
                     state.points.push(event.name);
                     state.publication = event.detail.clone();
                 }
-                if cut == Some(hit) {
+                if counts && cut == Some(ordinal) {
                     {
                         let mut state = schedule.state.lock().unwrap();
                         state.cancelled = true;
@@ -146,7 +152,7 @@ pub(super) async fn drive<F: Future>(
                     drop(future);
                     event.release();
                     drain(schedule, events).await;
-                    return (Exit::Cancelled, hit);
+                    return (Exit::Cancelled, hit, ordinal);
                 }
                 event.release();
             }

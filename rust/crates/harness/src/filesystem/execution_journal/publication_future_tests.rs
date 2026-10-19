@@ -18,8 +18,12 @@ impl acyclic_stream::UnixMillisClock for Clock {
 }
 
 async fn fixture() -> Result<Journal> {
+    fixture_with_filesystem(acyclic_fs::Fs::memory()).await
+}
+
+async fn fixture_with_filesystem(filesystem: acyclic_fs::MemoryFs) -> Result<Journal> {
     let provider = ProviderRef::new("future".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider,
@@ -64,6 +68,41 @@ async fn fixture() -> Result<Journal> {
     )
 }
 
+#[tokio::test]
+async fn separately_composed_journals_exclude_the_same_live_operation() -> Result<()> {
+    let provider = acyclic_stream::MemoryStream::default();
+    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = Arc::new(objects);
+    let first_fs = acyclic_fs::Fs::from_memory_providers(
+        Arc::new(provider.clone()),
+        objects.clone(),
+        bucket.clone(),
+    );
+    let second_fs = acyclic_fs::Fs::from_memory_providers(Arc::new(provider), objects, bucket);
+    let first = fixture_with_filesystem(first_fs).await?;
+    let second = FilesystemExecutionJournal::new(
+        first.stream.clone(),
+        FilesystemHost::new(second_fs, first.volume.provider(), None)?,
+        &first.schemas,
+        crate::filesystem::FilesystemJournalBinding {
+            volume: &first.volume,
+            verifier: &first.verifier,
+            scope: &first.scope,
+            maximum_bytes: first.maximum_payload_bytes,
+            io: None,
+        },
+    )?;
+    let operation = OperationId::new();
+    let owner = first.claim_execution(operation, None)?;
+    assert!(matches!(
+        second.claim_execution(operation, None),
+        Err(Error::Conflict(_))
+    ));
+    drop(owner);
+    drop(second.claim_execution(operation, None)?);
+    Ok(())
+}
+
 mod legacy;
 use serde_json::Value;
 
@@ -91,6 +130,8 @@ struct Choice<'a>(&'a Journal, bool);
 macro_rules! factories {
     ($(fn $name:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {
         impl ExecutionJournal for Choice<'_> {
+    fn claim_execution<'a>(&'a self, operation: OperationId, io: Option<&'a PreparationIo>) -> Result<crate::executor::ExecutionClaim<'a>> { self.0.claim_execution(operation, io) }
+
             $(fn $name<'a>(&'a self, $($arg: $ty,)* io: Option<&'a PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, $out>> {
                 if self.1 { legacy::$name(self.0, $($arg,)* io) }

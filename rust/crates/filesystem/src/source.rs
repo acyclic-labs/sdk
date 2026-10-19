@@ -1570,6 +1570,10 @@ mod tests {
     }
 
     impl AsyncAuthorityStore for GatedAuthorityStore {
+        fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+            self.inner.operation_claims()
+        }
+
         async fn create_authority<G: crate::AuthorityGuard>(
             &self,
             authority: crate::AuthorityId,

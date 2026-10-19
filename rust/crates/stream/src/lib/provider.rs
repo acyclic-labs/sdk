@@ -37,6 +37,10 @@ impl<T: ?Sized> ProviderPlatform for T {}
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 /// Canonical provider contract. Placement and transport remain invisible.
 pub trait StreamProvider: ProviderPlatform + 'static {
+    /// Process-local live ownership shared by clones and forwarding adapters.
+    /// Distinct provider sessions are distinct owners; backend leases remain
+    /// responsible for exclusion across independently opened sessions.
+    fn operation_claims(&self) -> &crate::OperationClaims;
     /// Reads the retained terminal result for one caller-owned retry identity.
     async fn inspect_idempotency(
         &self,

@@ -6,6 +6,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
     ) -> Result<ExecutionProgress<TurnOutput>> {
+        let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         self.verify_execution_owner().await?;
         self.validate_turn_input(journal, input).await?;
@@ -81,6 +82,9 @@ impl StockExecution<'_> {
                     }
                     ExecutionProgress::Rejected(reason) => {
                         return Ok(ExecutionProgress::Rejected(reason));
+                    }
+                    ExecutionProgress::Failed(reason) => {
+                        return Ok(ExecutionProgress::Failed(reason));
                     }
                 }
             }

@@ -40,6 +40,13 @@ macro_rules! delegate {
         };
     }
 impl AsyncAuthorityStore for Stores {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        match self {
+            Self::Memory(fs) => fs.operation_claims(),
+            Self::Local(fs) => fs.operation_claims(),
+        }
+    }
+
     async fn create_authority<G: crate::AuthorityGuard>(
         &self,
         authority: crate::AuthorityId,

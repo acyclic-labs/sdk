@@ -189,6 +189,7 @@ fn authority_commit_read_work(encoded: u64, payload: u64) -> WorkCounters {
 /// Transactional browser-local authority persistence.
 #[derive(Clone)]
 pub struct IndexedDbAuthorityStore {
+    operation_claims: std::rc::Rc<acyclic_stream::OperationClaims>,
     database: Database,
     maximum_payload_bytes: u64,
 }
@@ -204,6 +205,7 @@ impl IndexedDbAuthorityStore {
         Ok(Self {
             database: open_database(name).await?,
             maximum_payload_bytes,
+            operation_claims: std::rc::Rc::new(acyclic_stream::OperationClaims::default()),
         })
     }
     fn payload(&self, blob: &Blob) -> Result<u64, AuthorityStoreError> {

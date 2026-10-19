@@ -197,6 +197,14 @@ struct TerminalCasLoser {
 }
 
 impl ExecutionJournal for TerminalCasLoser {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::executor::ExecutionClaim<'a>> {
+        self.inner.claim_execution(operation, io)
+    }
+
     fn replay<'a>(
         &'a self,
         operation: OperationId,
@@ -307,6 +315,14 @@ struct CompletedDescriptorSpy {
 }
 
 impl ExecutionJournal for CompletedDescriptorSpy {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::executor::ExecutionClaim<'a>> {
+        self.inner.claim_execution(operation, io)
+    }
+
     fn replay<'a>(
         &'a self,
         operation: OperationId,

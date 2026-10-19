@@ -15,6 +15,10 @@ struct DamagedReplay<'a> {
 }
 
 impl AsyncAuthorityStore for DamagedReplay<'_> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn head(
         &self,
         id: AuthorityId,

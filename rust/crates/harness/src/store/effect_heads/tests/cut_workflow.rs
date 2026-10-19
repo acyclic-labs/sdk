@@ -72,6 +72,10 @@ fn normalized_request(mut request: CommitRequest) -> CommitRequest {
 
 #[async_trait::async_trait]
 impl StreamProvider for Observed {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.0.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,

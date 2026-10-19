@@ -88,6 +88,7 @@ enum CreatePlan {
 
 /// Deterministic single-process authority store.
 pub struct MemoryAuthorityStore {
+    operation_claims: acyclic_stream::OperationClaims,
     maximum_payload_bytes: u64,
     authorities: Mutex<HashMap<AuthorityId, AuthorityState>>,
 }
@@ -104,6 +105,7 @@ impl MemoryAuthorityStore {
         Ok(Self {
             maximum_payload_bytes,
             authorities: Mutex::new(HashMap::new()),
+            operation_claims: acyclic_stream::OperationClaims::default(),
         })
     }
 
@@ -167,6 +169,7 @@ impl Default for MemoryAuthorityStore {
     fn default() -> Self {
         Self {
             maximum_payload_bytes: 16 * 1024 * 1024,
+            operation_claims: acyclic_stream::OperationClaims::default(),
             authorities: Mutex::new(HashMap::new()),
         }
     }

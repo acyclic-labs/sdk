@@ -107,6 +107,8 @@ macro_rules! delegate {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
         impl StreamProvider for UnkeyedRetry {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims { self.0.operation_claims() }
+
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
                 self.0.$name($arg).await
             })*

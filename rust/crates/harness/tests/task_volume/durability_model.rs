@@ -26,6 +26,7 @@ struct Provider(
     Mutex<Histories>,
     Option<Arc<Pause>>,
     Option<Arc<ReadPauses>>,
+    acyclic_stream::OperationClaims,
 );
 
 impl Histories {
@@ -40,6 +41,10 @@ impl Histories {
 
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.3
+    }
+
     async fn inspect_idempotency(
         &self,
         _: IdempotencyKey,
@@ -176,7 +181,12 @@ fn check<const CHECK_ANCHOR: bool>() {
     // bound the state rather than preemptions, permutations or runtime.
     loom::model(|| {
         let (histories, value, path) = block_on(histories());
-        let provider = Arc::new(Provider(Mutex::new(histories), None, None));
+        let provider = Arc::new(Provider(
+            Mutex::new(histories),
+            None,
+            None,
+            Default::default(),
+        ));
         let volume = block_on(TaskVolume::open_existing(provider.clone(), path)).unwrap();
         let recovery = thread::spawn(move || provider.0.lock().unwrap().replaced = true);
         let result = block_on(volume.file_durability::<CHECK_ANCHOR, false>(&value));
@@ -243,7 +253,12 @@ fn suspended_io<const HOLD_INDEX: bool>(pause_at: usize) {
     loom::model(move || {
         let (histories, value, path) = block_on(histories());
         let pause = Arc::new(Pause::default());
-        let provider = Arc::new(Provider(Mutex::new(histories), Some(pause.clone()), None));
+        let provider = Arc::new(Provider(
+            Mutex::new(histories),
+            Some(pause.clone()),
+            None,
+            Default::default(),
+        ));
         let volume = Arc::new(block_on(TaskVolume::open_existing(provider, path)).unwrap());
         pause.0.lock().unwrap().remaining = pause_at;
         let reader = volume.clone();
@@ -317,7 +332,12 @@ fn concurrent_refresh<const RESUME: bool>(snapshot: bool, short_first: bool) {
             short_first,
             ..Default::default()
         });
-        let provider = Arc::new(Provider(Mutex::new(histories), None, Some(pauses.clone())));
+        let provider = Arc::new(Provider(
+            Mutex::new(histories),
+            None,
+            Some(pauses.clone()),
+            Default::default(),
+        ));
         let volume = Arc::new(block_on(TaskVolume::open_existing(provider.clone(), path)).unwrap());
         // Both writes completed before either reader begins. Its accepted tail
         // is immutable for this scenario, while the shared index starts empty.

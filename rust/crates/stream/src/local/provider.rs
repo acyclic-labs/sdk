@@ -1,5 +1,9 @@
 #[async_trait]
 impl StreamProvider for LocalStream {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        self.inner.provider.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

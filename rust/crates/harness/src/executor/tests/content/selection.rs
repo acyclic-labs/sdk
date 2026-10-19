@@ -11,6 +11,14 @@ struct Checks {
 }
 
 impl ExecutionJournal for Checks {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::executor::ExecutionClaim<'a>> {
+        self.files.claim_execution(operation, io)
+    }
+
     fn replay<'a>(
         &'a self,
         _: OperationId,

@@ -27,6 +27,13 @@ macro_rules! forward {
 }
 
 impl AsyncAuthorityStore for BrowserAuthority {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        match self {
+            Self::IndexedDb(store) => store.operation_claims(),
+            Self::Memory(store) => store.operation_claims(),
+        }
+    }
+
     async fn create_authority<G: acyclic_fs::AuthorityGuard>(
         &self,
         authority: acyclic_fs::AuthorityId,

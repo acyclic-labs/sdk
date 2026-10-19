@@ -97,13 +97,8 @@ impl LocalHarness {
                 .await?
                 .1
                 .is_some();
-                let settled = matches!(
-                    self.runtime.task_host().outcome(parent).await?,
-                    Some(
-                        crate::Outcome::Succeeded(_)
-                            | crate::Outcome::Failed { .. }
-                            | crate::Outcome::Cancelled
-                    )
+                let settled = super::orphans::settled(
+                    self.runtime.task_host().outcome(parent).await?.as_ref(),
                 );
                 // An ordinary child of a live, unselected parent routes without
                 // its own admission: inheritance preparation checks that, and
@@ -239,19 +234,40 @@ impl LocalHarness {
         }
     }
     /// Stages and admits a resumable stock turn under a stable operation identity.
+    ///
+    /// Admission alone does not drive the head. Until a driver holds it (by
+    /// `resume`, or a driver claim held across this call), a later prompt
+    /// settles it as it settles a killed process's head: recorded effects are
+    /// reconciled and nothing is dispatched again.
     pub fn submit<'a>(
         &'a self,
         operation: OperationId,
         prompt: &'a str,
     ) -> BoxProviderFuture<'a, Result<Admission<RuntimeTask<TurnOutput>>>> {
-        Box::pin(async move {
-            if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
-                return Err(Error::Invalid(
-                    "local prompt is empty or exceeds the file limit".into(),
-                ));
-            }
-            self.submit_turn(operation, prompt).await
-        })
+        Box::pin(async move { Ok(self.submit_claimed(operation, prompt).await?.0) })
+    }
+
+    /// Holds the head admitted under `operation` for a caller that admits and
+    /// then drives it: claimed under the admission gate, and released by the
+    /// drop that ends or cancels the caller.
+    pub(crate) async fn driver_claim(&self, operation: OperationId) -> impl Send + '_ {
+        super::admission::serialized(&self.admission, async || self.drivers.drive(operation)).await
+    }
+
+    async fn submit_claimed(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<(
+        Admission<RuntimeTask<TurnOutput>>,
+        Option<super::orphans::Driving<'_>>,
+    )> {
+        if prompt.is_empty() || prompt.len() as u64 > self.limits.file_bytes {
+            return Err(Error::Invalid(
+                "local prompt is empty or exceeds the file limit".into(),
+            ));
+        }
+        self.submit_turn(operation, prompt).await
     }
 
     pub(super) async fn stage_turn(
@@ -506,9 +522,17 @@ impl LocalHarness {
 
     /// Runs a prompt through durable admission, the fenced worker and stock executor.
     pub async fn run(&self, prompt: &str) -> Result<TurnOutput> {
-        let operation = OperationId::new();
-        match self.submit(operation, prompt).await? {
-            Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => self.resume(task_id).await,
+        self.run_as(OperationId::new(), prompt).await
+    }
+
+    pub(super) async fn run_as(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
+        // The admission's claim is carried into driving, so cancelling this
+        // future at any await leaves the head to the next prompt.
+        let (admission, claim) = Box::pin(self.submit_claimed(operation, prompt)).await?;
+        match admission {
+            Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => {
+                Box::pin(self.resume_claimed(task_id, claim)).await
+            }
             Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Invalid(
                 "local stock turn was not durably admitted".into(),
             )),
@@ -597,22 +621,60 @@ impl LocalHarness {
     /// Resumes a pinned stock task, recovering its original reservation after reopen.
     pub fn resume(&self, task: TaskId) -> BoxProviderFuture<'_, Result<TurnOutput>> {
         Box::pin(async move {
-            let root = self.loop_root(task).await?;
-            let mut current = task;
-            loop {
-                let output = self.resume_turn(current).await;
-                if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
-                    return output;
-                }
-                match self.continue_goal(current, root).await? {
-                    Some(next) => current = next,
-                    None => return output,
-                }
-            }
+            // Claimed before any read, under the gate that serializes
+            // supersession, and released by any drop of this future.
+            let operation = OperationId::from_bytes(task.into_bytes());
+            let claim = super::admission::serialized(&self.admission, async || {
+                self.drivers.drive(operation)
+            })
+            .await;
+            self.resume_claimed(task, Some(claim)).await
         })
     }
 
-    pub(super) async fn resume_turn(&self, task: TaskId) -> Result<TurnOutput> {
+    // Each claim, taken under the admission gate where its head was admitted,
+    // is held until that head is driven: no await separates them.
+    async fn resume_claimed(
+        &self,
+        task: TaskId,
+        mut claim: Option<super::orphans::Driving<'_>>,
+    ) -> Result<TurnOutput> {
+        let root = self.loop_root(task).await?;
+        let mut current = task;
+        loop {
+            let output = self.drive_turn(current, claim.take()).await;
+            if !matches!(&output, Ok(_) | Err(Error::TaskFailed { .. })) {
+                return output;
+            }
+            match self.continue_goal(current, root).await? {
+                Some((next, next_claim)) => {
+                    current = next;
+                    claim = Some(next_claim);
+                }
+                None => return output,
+            }
+        }
+    }
+
+    /// Drives one turn, carrying the claim taken where it was admitted, or
+    /// claiming it under the admission gate when there is none.
+    pub(super) async fn drive_turn(
+        &self,
+        task: TaskId,
+        claim: Option<super::orphans::Driving<'_>>,
+    ) -> Result<TurnOutput> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        // Claim under the gate: a new prompt never supersedes a driven turn.
+        let _driving = match claim.filter(|claim| claim.operation() == operation) {
+            Some(claim) => claim,
+            None => {
+                super::admission::serialized(&self.admission, async || {
+                    self.drivers.drive(operation)
+                })
+                .await
+            }
+        };
+        let _executing = _driving.execute()?;
         let definition = self
             .runtime
             .harness()
@@ -622,15 +684,7 @@ impl LocalHarness {
             Err(Error::NotFound(_)) => self.recover_unadmitted_turn(task).await?,
             Err(error) => return Err(error),
         };
-        let terminal = matches!(
-            self.runtime.task_host().outcome(task).await?,
-            Some(
-                crate::Outcome::Succeeded(_)
-                    | crate::Outcome::Failed { .. }
-                    | crate::Outcome::Cancelled
-            )
-        );
-        if !terminal {
+        if !super::orphans::settled(self.runtime.task_host().outcome(task).await?.as_ref()) {
             let commands = self.commands()?;
             #[cfg(feature = "native-execution")]
             self.advance_with_children(task, &commands, self.task_files.clone(), None)

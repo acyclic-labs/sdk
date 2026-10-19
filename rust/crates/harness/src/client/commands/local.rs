@@ -107,6 +107,9 @@ async fn execute(
     settings: &serde_json::Value,
 ) -> Result<serde_json::Value> {
     let target = target.filter(|task| task.to_string() != local.client_owner().id);
+    // The head this command admits is held from before its admission until
+    // its driving ends, so no await between them leaves it undriven.
+    let _driving = local.driver_claim(operation).await;
     let mut result = local
         .dispatch_configured_command(operation, target, resolution, settings)
         .await?;

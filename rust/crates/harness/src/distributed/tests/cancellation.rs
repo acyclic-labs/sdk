@@ -232,3 +232,67 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
     ));
     Ok(())
 }
+
+/// A cancellation whose tail another writer takes between its refresh and its
+/// append publishes against the new tail; the negative control restores the
+/// untailed retry identity and the publication fails, and so does every
+/// retry of it, bricking the cancellation.
+async fn cancel_across_a_lost_tail(legacy: bool) -> Result<()> {
+    use super::super::coordinator::lost_tail;
+    let client = Arc::new(MemoryStream::default());
+    let mut coordinator = open(&client).await?;
+    let target = OperationId::from_bytes([47; 16]);
+    let other = OperationId::from_bytes([48; 16]);
+    declare(&mut coordinator, spec(target, 0)?, "lost-tail-target").await?;
+    declare(&mut coordinator, spec(other, 0)?, "lost-tail-other").await?;
+    let writer = client.clone();
+    lost_tail::before_next_append(
+        Box::pin(async move {
+            let mut writer = open(&writer).await.expect("writer opens");
+            publish(
+                &mut writer,
+                "lost-tail-interloper",
+                SchedulerEvent::CancellationRequested {
+                    operation_id: other,
+                    recursive: true,
+                },
+            )
+            .await
+            .expect("the interloper publishes");
+        }),
+        legacy,
+    );
+    let cancel = SchedulerEvent::CancellationRequested {
+        operation_id: target,
+        recursive: true,
+    };
+    let first = publish(&mut coordinator, "lost-tail-cancel", cancel.clone()).await;
+    let retried = publish(&mut coordinator, "lost-tail-cancel", cancel).await;
+    lost_tail::before_next_append(Box::pin(async {}), false);
+    assert!(first?, "the cancellation was not appended by its publisher");
+    assert!(!retried?, "an exact retry appended twice");
+    let mut reopened = open(&client).await?;
+    reopened.refresh(&mut None).await?;
+    for operation in [target, other] {
+        assert!(
+            reopened
+                .scheduler()
+                .operation(operation)
+                .is_some_and(
+                    |operation| operation.cancellation_requested || operation.outcome.is_some()
+                ),
+            "{operation:?} was not cancelled"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_publication_whose_tail_is_taken_publishes_against_the_new_tail() -> Result<()> {
+    cancel_across_a_lost_tail(false).await
+}
+
+#[tokio::test]
+async fn negative_control_an_untailed_retry_identity_bricks_the_publication() {
+    assert!(cancel_across_a_lost_tail(true).await.is_err());
+}

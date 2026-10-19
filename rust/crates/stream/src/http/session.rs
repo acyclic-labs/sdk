@@ -30,7 +30,9 @@ impl HttpStream {
                     .map_err(|_| StreamError::Unavailable)?;
                 crate::grpc::Client::from_channel(channel, authorization)
             };
-            Ok(client.with_session_verifier(Arc::clone(&self.session_verifier)))
+            Ok(client
+                .with_session_verifier(Arc::clone(&self.session_verifier))
+                .with_operation_claims(Arc::clone(&self.operation_claims)))
         })
     }
 }

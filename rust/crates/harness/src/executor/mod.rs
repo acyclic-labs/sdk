@@ -33,7 +33,9 @@ pub(crate) use native_stock::{
     stage_json, stock_boundary, stock_string_copy, stock_string_push, stock_vec_push,
 };
 
+pub(crate) mod execution_claim;
 mod journal;
+pub use execution_claim::{ExecutionClaim, ExecutionClaims};
 pub use journal::ExecutionJournal;
 use journal::validate_journal;
 mod replay;
@@ -60,6 +62,28 @@ pub(crate) use tool_failure::{CauseText, ToolFailureText};
 pub use tool_failure::{TOOL_FAILURE_MESSAGE_BYTES, ToolErrorClass, ToolFailureCause};
 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
 mod tool_hooks;
+
+/// Restores the defect where a resumed driver settled nothing it could not
+/// reconcile: an interrupted effect-free model call and an unreconcilable
+/// tool effect both left the turn unsettled.
+pub(crate) mod unsettled_resume {
+    #[cfg(test)]
+    thread_local! {
+        static ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[cfg(test)]
+    pub(crate) fn set(enabled: bool) {
+        ENABLED.set(enabled);
+    }
+    #[cfg(test)]
+    pub(crate) fn enabled() -> bool {
+        ENABLED.get()
+    }
+    #[cfg(not(test))]
+    pub(crate) const fn enabled() -> bool {
+        false
+    }
+}
 mod tool_resolution;
 pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(test, feature = "filesystem"))]
@@ -319,6 +343,9 @@ pub enum ToolFailureKind {
     InvalidInput,
     /// The bound policy denied the call.
     Refused,
+    /// The executing process ended before the outcome was recorded, and the
+    /// executor cannot reconcile it. The effect may have run, partly or fully.
+    Interrupted,
 }
 
 impl ToolFailureKind {
@@ -333,6 +360,9 @@ impl ToolFailureKind {
             Self::Unavailable => "tool is not available",
             Self::InvalidInput => "tool arguments violated the input schema",
             Self::Refused => "tool policy refused the call",
+            Self::Interrupted => {
+                "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
+            }
         }
     }
 
@@ -396,6 +426,8 @@ pub enum ExecutionProgress<T> {
     Pending(OperationId),
     /// The original approval operation was rejected.
     Rejected(crate::InteractionRejection),
+    /// A recorded tool failure ended the turn.
+    Failed(ToolFailureKind),
 }
 
 impl ExecutionProgress<TurnOutput> {
@@ -404,6 +436,7 @@ impl ExecutionProgress<TurnOutput> {
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
             Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
+            Self::Failed(reason) => Err(Error::Invalid(reason.message().into())),
         }
     }
 }

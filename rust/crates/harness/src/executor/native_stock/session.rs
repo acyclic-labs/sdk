@@ -228,6 +228,7 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        let _execution = journal.claim_execution(operation, None)?;
         StockExecution::ordinary(self)
             .summarize(journal, None, operation, 0, source, instruction)
             .await
@@ -242,6 +243,7 @@ impl StockExecutor {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        let _ownership = journal.claim_execution(input.operation_id, None)?;
         let execution = StockExecution::ordinary(self);
         execution.validate_turn_input(journal, input).await?;
         execution

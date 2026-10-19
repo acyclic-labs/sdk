@@ -367,6 +367,7 @@ struct Journal(
     AtomicUsize,
     AtomicUsize,
     AtomicUsize,
+    ExecutionClaims,
 );
 
 impl Journal {
@@ -428,6 +429,14 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<ExecutionClaim<'a>> {
+        self.6.claim([0; 32], operation, io)
+    }
+
     fn verify_model_content<'a>(
         &'a self,
         content: &'a ModelContent,
@@ -718,6 +727,7 @@ mod compaction;
 mod compaction_resolution;
 mod content;
 mod invocation_bounds;
+mod live_execution;
 mod output_bounds;
 #[cfg(feature = "filesystem")]
 mod reconciliation_scan;

@@ -32,6 +32,25 @@ impl LocalHarness {
         inherited: Option<acyclic_fs::CancellationToken>,
     ) -> BoxProviderFuture<'a, Result<(Component, u64)>> {
         Box::pin(async move {
+            let FileKey::Child {
+                reference: requested,
+                file: ChildFile::Request,
+            } = &request.key
+            else {
+                return Err(Error::Invalid("child controller requires a request".into()));
+            };
+            if requested != &reference {
+                return Err(Error::Invalid("child controller reference differs".into()));
+            }
+            // Admission reads may wait on a live executor. Exclude another
+            // controller before the first read, using admission's same identity.
+            let operation =
+                super::admission::child_operation(files.volume(), reference.as_str(), b"child")?;
+            let driving = super::super::admission::serialized(&self.admission, async || {
+                self.drivers.drive(operation)
+            })
+            .await;
+            let _executing = driving.execute()?;
             let snapshot = files
                 .inner
                 .child_lifecycle(Some(&reference))
@@ -99,11 +118,60 @@ impl LocalHarness {
                     .child_input_count(&reference)
                     .await
                     .map_err(storage)?;
+                // A force-settled orphan has no completed receive checkpoint.
+                // Its terminal scheduler outcome is authoritative: acknowledge
+                // cancellation in files without reclaiming a released lease or
+                // inventing a successful result for the interrupted receive.
+                let cancelled_outcome = matches!(
+                    self.runtime.task_host().terminal_status(child).await?,
+                    Some(crate::Outcome::Cancelled)
+                );
+                let cancelled_suspension = if cancelled_outcome {
+                    self.runtime
+                        .task_host()
+                        .cancelled_workflow_suspension(child, &mut None)
+                        .await?
+                } else {
+                    None
+                };
+                if cancelled_outcome
+                    && (!matches!(state, ChildState::Cancelled | ChildState::Archived)
+                        || !stopping::cancelled_turn_is_quiet(
+                            previous,
+                            child,
+                            results::published(&reference, &values),
+                            cancelled_suspension.as_ref(),
+                        ))
+                {
+                    stopping::cancel(
+                        files.as_ref(),
+                        &reference,
+                        &mut cursor,
+                        &mut values,
+                        &mut generation,
+                    )
+                    .await?;
+                    let status = ChildStatus {
+                        task: child,
+                        state: desired(&reference, &values)?,
+                        settled: true,
+                        inputs: previous.map_or(inputs, |status| status.inputs),
+                    };
+                    if publish(
+                        files.as_ref(),
+                        &reference,
+                        status,
+                        &mut values,
+                        &mut generation,
+                    )
+                    .await?
+                    {
+                        return Ok((reference, generation.position));
+                    }
+                    continue;
+                }
                 let cancelled = matches!(state, ChildState::Cancelled | ChildState::Archived)
-                    && matches!(
-                        self.runtime.task_host().terminal_status(child).await?,
-                        Some(crate::Outcome::Cancelled)
-                    );
+                    && cancelled_outcome;
                 let suspension = if cancelled
                     || (state == ChildState::Running
                         && previous.is_some_and(|status| {
@@ -111,7 +179,7 @@ impl LocalHarness {
                         })) {
                     let host = self.runtime.task_host();
                     if cancelled {
-                        host.cancelled_workflow_suspension(child, &mut None).await?
+                        cancelled_suspension
                     } else {
                         host.workflow_suspension(child, &mut None).await?
                     }

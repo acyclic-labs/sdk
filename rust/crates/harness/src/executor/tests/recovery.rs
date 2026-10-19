@@ -552,3 +552,84 @@ async fn direct_model_steps_reject_empty_and_partial_eof() -> Result<()> {
     }
     Ok(())
 }
+
+/// A stream cut and process loss leave the same retained incomplete prefix.
+async fn unrecoverable_prefix(unsettled: bool) -> Result<()> {
+    let prefix = vec![ModelEvent::Content {
+        delta: "partial".into(),
+    }];
+    let provider = Arc::new(
+        ScriptedModelProvider::new([ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(prefix[0].clone()),
+            ScriptedEvent::Error {
+                error: "stream lost".into(),
+            },
+        ])])
+        .with_token_counter(fixture_token_count)
+        .with_reconciliations([ScriptedReconciliation {
+            orphan: false,
+            observed: prefix,
+            continuation: None,
+        }]),
+    );
+    let executor = uncompacted_executor(
+        Model::new("fixture".into(), "partial".into(), "1".into(), Value::Null)?,
+        provider.clone(),
+        ContextPipeline::default(),
+        ToolRegistry::default(),
+    );
+    let journal = Journal::default();
+    let input = TurnInput {
+        operation_id: OperationId::new(),
+        input: ModelContent::Text("start".into()),
+        selected_context: None,
+        max_steps: 1,
+    };
+    assert!(matches!(
+        executor.execute(input.clone(), &journal).await,
+        Err(Error::Storage(_))
+    ));
+    let records_before = journal.0.lock().unwrap().len();
+    let original = super::super::unsettled_resume::enabled();
+    super::super::unsettled_resume::set(unsettled);
+    let result = executor.clone().execute(input, &journal).await;
+    super::super::unsettled_resume::set(original);
+    assert_eq!(
+        provider.dispatches().len(),
+        1,
+        "incomplete response was redispatched"
+    );
+    assert_eq!(provider.reconciliations(), provider.dispatches());
+    assert_eq!(
+        journal.0.lock().unwrap().len(),
+        records_before,
+        "retained prefix changed"
+    );
+    match result {
+        Err(
+            _error @ Error::ModelUnavailable {
+                failure: crate::ModelTransportFailure::Interrupted,
+                ..
+            },
+        ) => {
+            #[cfg(feature = "filesystem")]
+            assert!(!_error.leaves_outcome_uncertain());
+            Ok(())
+        }
+        Err(error) => Err(error),
+        Ok(_) => panic!("incomplete response was treated as completed"),
+    }
+}
+
+#[tokio::test]
+async fn an_unrecoverable_partial_model_stream_fails_without_redispatch() -> Result<()> {
+    unrecoverable_prefix(false).await
+}
+
+#[tokio::test]
+async fn negative_control_retaining_an_unrecoverable_partial_stream_strands_it() {
+    assert!(matches!(
+        unrecoverable_prefix(true).await,
+        Err(Error::Indeterminate(_))
+    ));
+}

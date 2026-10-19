@@ -5,6 +5,7 @@ use async_trait::async_trait;
 
 type Service = wire::stream_service_client::StreamServiceClient<tonic_web_wasm_client::Client>;
 pub(super) struct Remote {
+    operation_claims: crate::OperationClaims,
     endpoint: socket::Endpoint,
     sessions: crate::session::Client,
 }
@@ -18,7 +19,11 @@ impl Remote {
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
         let endpoint = socket::Endpoint::new(url, credential)?;
         let sessions = socket::sessions(endpoint.clone());
-        Ok(Self { endpoint, sessions })
+        Ok(Self {
+            endpoint,
+            sessions,
+            operation_claims: crate::OperationClaims::default(),
+        })
     }
     fn service(&self) -> Service {
         self.service_with_options(
@@ -81,6 +86,10 @@ impl Remote {
 }
 #[async_trait(?Send)]
 impl StreamProvider for Remote {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

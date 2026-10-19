@@ -1,6 +1,10 @@
 use super::*;
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthority<'_, P> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.0.operation_claims()
+    }
+
     async fn head(
         &self,
         authority: AuthorityId,

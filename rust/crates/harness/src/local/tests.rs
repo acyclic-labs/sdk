@@ -516,6 +516,10 @@ async fn corrupt_owner_is_rejected_without_reissuing_credentials() -> Result<()>
     let config = || Ok::<_, Error>(volume_config(directory.path(), project.clone(), text())?);
     let path = config()?.resolved_state_directory()?.join("owner.json");
     drop(LocalHarness::open(config()?).await?);
+    assert!(
+        path.is_file(),
+        "the corruption probe must address the persisted owner"
+    );
     std::fs::write(&path, b"invalid owner").map_err(|error| Error::Storage(error.to_string()))?;
     assert!(matches!(
         LocalHarness::open(config()?).await,
@@ -754,6 +758,8 @@ async fn assert_pending_command_returns_control(harness: &LocalHarness) -> Resul
     Ok(())
 }
 
+#[path = "tests/interrupted_turns.rs"]
+mod interrupted_turns;
 #[path = "tests/retained_failure.rs"]
 mod retained_failure;
 

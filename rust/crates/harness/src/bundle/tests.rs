@@ -155,11 +155,20 @@ async fn fork_binding_cannot_capture_a_different_parent_revision() -> Result<()>
 
 #[derive(Default)]
 struct RecordingTurnJournal {
+    claims: crate::executor::ExecutionClaims,
     replays: std::sync::atomic::AtomicUsize,
     events: std::sync::Mutex<Vec<crate::executor::ExecutionEvent>>,
 }
 
 impl ExecutionJournal for RecordingTurnJournal {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: crate::OperationId,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::executor::ExecutionClaim<'a>> {
+        self.claims.claim([0; 32], operation, io)
+    }
+
     fn replay<'a>(
         &'a self,
         _: crate::OperationId,

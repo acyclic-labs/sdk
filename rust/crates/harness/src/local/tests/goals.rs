@@ -284,7 +284,7 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
     else {
         panic!()
     };
-    harness.resume_turn(task_id).await?;
+    harness.drive_turn(task_id, None).await?;
     let publisher = crate::filesystem::FilesystemContentPublisher::new(
         harness.files.clone(),
         harness.scratch(),
@@ -305,12 +305,21 @@ async fn local_goal_settle_loses_to_a_new_user_admission() -> Result<()> {
         )?
         .await?;
     let user = OperationId::new();
+    // The user's submitter owns its head, as `execute` does, while the
+    // stale goal settle and a duplicate prompt race it.
+    let _claim = harness.driver_claim(user).await;
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: next, .. }) =
         harness.submit(user, "user").await?
     else {
         panic!()
     };
-    assert_eq!(harness.continue_goal(task_id, first).await?, None);
+    assert_eq!(
+        harness
+            .continue_goal(task_id, first)
+            .await?
+            .map(|(next, _)| next),
+        None
+    );
     assert!(matches!(
         harness.submit(OperationId::new(), "duplicate").await?,
         Admission::Rejected { .. }
@@ -366,7 +375,7 @@ async fn local_goal_recovers_staged_input_before_reading_an_edited_goal() -> Res
     else {
         panic!()
     };
-    harness.resume_turn(task_id).await?;
+    harness.drive_turn(task_id, None).await?;
     write_goal(&harness, "original objective").await?;
     let continuation = crate::goal::continuation_operation(task_id, root);
     // Interrupt the production path after immutable inputs, before HEAD publication.
@@ -431,27 +440,27 @@ async fn local_goal_resuming_an_old_continuation_drives_its_pending_successor() 
     else {
         panic!()
     };
-    harness.resume_turn(task_id).await?;
+    harness.drive_turn(task_id, None).await?;
     write_goal(&harness, "Keep going").await?;
     // Retained inputs must still recover even if the task view becomes unreachable.
     let first_operation = crate::goal::continuation_operation(task_id, root);
     harness
         .stage_turn(first_operation, "first retained continuation")
         .await?;
-    let first = harness.continue_goal(task_id, root).await?.unwrap();
-    assert_eq!(harness.resume_turn(first).await?.text, "first");
+    let first = harness.continue_goal(task_id, root).await?.unwrap().0;
+    assert_eq!(harness.drive_turn(first, None).await?.text, "first");
     let second_operation = crate::goal::continuation_operation(task_id, first_operation);
     harness
         .stage_turn(second_operation, "second retained continuation")
         .await?;
-    let second = harness.continue_goal(first, root).await?.unwrap();
+    let second = harness.continue_goal(first, root).await?.unwrap().0;
     // Negative control: the former wrapper used the resumed task as its root.
-    assert_eq!(harness.resume_turn(first).await?.text, "first");
-    assert_eq!(
+    assert_eq!(harness.drive_turn(first, None).await?.text, "first");
+    assert!(
         harness
             .continue_goal(first, OperationId::from_bytes(first.into_bytes()))
-            .await?,
-        None
+            .await?
+            .is_none()
     );
     assert!(harness.runtime.task_host().outcome(second).await?.is_none());
     assert_eq!(provider.requests().len(), 2);

@@ -11,6 +11,10 @@ struct ReceiptFaultStream<P = MemoryStream> {
 
 #[async_trait::async_trait]
 impl<P: StreamProvider> StreamProvider for ReceiptFaultStream<P> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     fn native_inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,

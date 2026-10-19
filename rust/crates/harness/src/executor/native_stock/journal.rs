@@ -158,6 +158,8 @@ pub(in crate::executor) fn native_progress_owned_bytes(
         ExecutionProgress::Ready(output) => {
             native_size_add(root, native_output_payload_bytes(output)?)
         }
-        ExecutionProgress::Pending(_) | ExecutionProgress::Rejected(_) => Ok(root),
+        ExecutionProgress::Pending(_)
+        | ExecutionProgress::Rejected(_)
+        | ExecutionProgress::Failed(_) => Ok(root),
     }
 }

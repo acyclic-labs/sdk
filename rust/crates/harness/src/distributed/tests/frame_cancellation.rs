@@ -52,6 +52,8 @@ macro_rules! provider {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
         impl StreamProvider for YieldingProvider {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims { self.0.operation_claims() }
+
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, StreamError> {
                 suspend().await;
                 self.0.$name($arg).await

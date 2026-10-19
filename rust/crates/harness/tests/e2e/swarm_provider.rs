@@ -63,6 +63,10 @@ impl Observed {
 
 #[async_trait::async_trait]
 impl StreamProvider for Observed {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.memory.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

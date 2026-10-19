@@ -76,6 +76,10 @@ pub(super) struct EndingFollow {
 
 #[async_trait]
 impl StreamProvider for EndingFollow {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

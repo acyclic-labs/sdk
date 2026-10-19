@@ -22,6 +22,27 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::executor::ExecutionClaim<'a>> {
+        self.require_operation(operation, io)?;
+        let namespace = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::canonical_json_digest(
+                &self.volume,
+                self.maximum_payload_bytes,
+                work,
+            )
+        })?;
+        crate::executor::execution_claim::claim(
+            self.host.filesystem.operation_claims(),
+            namespace,
+            operation,
+            io,
+        )
+    }
+
     fn model_cancellation(&self) -> acyclic_stream::BoxProviderFuture<'_, Result<()>> {
         Box::pin(self.follow_cancellation())
     }

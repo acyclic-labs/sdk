@@ -47,6 +47,8 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+mod operation_claim;
+pub use operation_claim::{OperationClaim, OperationClaims};
 #[cfg(all(
     not(target_arch = "wasm32"),
     any(feature = "grpc", feature = "http", feature = "local")

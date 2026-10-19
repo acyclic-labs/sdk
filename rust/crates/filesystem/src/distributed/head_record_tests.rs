@@ -7,6 +7,10 @@ const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 struct Fallback<'a>(&'a StreamAuthorityStore<MemoryStream>);
 impl AsyncAuthorityStore for Fallback<'_> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.0.operation_claims()
+    }
+
     async fn head(
         &self,
         authority: AuthorityId,
@@ -78,8 +82,12 @@ async fn single_record(
         .ok_or_else(|| "missing source record".into())
 }
 
-struct FundedReplay<'a>(&'a [u8]);
+struct FundedReplay<'a>(&'a [u8], acyclic_stream::OperationClaims);
 impl AsyncAuthorityStore for FundedReplay<'_> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.1
+    }
+
     async fn head(
         &self,
         _: AuthorityId,
@@ -130,7 +138,7 @@ async fn default_head_payload_keeps_external_replay_funding_until_payload_drops(
     let baseline = original.live_allocation_bytes();
     // Bind funding first, then destructure the payload: this is also the
     // facade's drop order on all normal, error and unwinding paths.
-    let (value, allocation) = FundedReplay(b"funded-head-value!")
+    let (value, allocation) = FundedReplay(b"funded-head-value!", Default::default())
         .head_payload(
             AUTHORITY,
             4096,
@@ -354,7 +362,7 @@ proptest::proptest! {
             let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
                 .map_err(|(e, _)| e).unwrap();
             let baseline = original.live_allocation_bytes();
-            let (value, allocation) = FundedReplay(&body).head_payload(
+            let (value, allocation) = FundedReplay(&body, Default::default()).head_payload(
                 AUTHORITY, 4096, &mut AuthorityWork::native(&original, &cancellation)
             ).await.unwrap();
             let (_, payload) = value;

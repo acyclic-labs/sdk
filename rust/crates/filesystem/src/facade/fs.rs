@@ -38,6 +38,14 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
+    /// Live ownership shared by compositions of the same backend owner.
+    #[must_use]
+    pub fn operation_claims(&self) -> &crate::OperationClaims
+    where
+        A: AsyncAuthorityStore,
+    {
+        self.inner.authority.operation_claims()
+    }
     /// Deployment guarantees supplied when this engine was composed.
     #[must_use]
     pub fn capabilities(&self) -> EmbeddedCapabilities {

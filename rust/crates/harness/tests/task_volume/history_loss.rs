@@ -91,6 +91,7 @@ struct Case {
 
 #[derive(Clone)]
 struct FaultStream {
+    operation_claims: std::sync::Arc<acyclic_stream::OperationClaims>,
     // Fixture lock order: fault -> current; calls, accepted and release are never nested.
     current: Arc<RwLock<Arc<MemoryStream>>>,
     replacement: Arc<MemoryStream>,
@@ -158,6 +159,10 @@ impl FaultStream {
 
 #[async_trait::async_trait]
 impl StreamProvider for FaultStream {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,
@@ -401,6 +406,7 @@ async fn run(case: Case) -> Result {
     }
     let replacement = replacement(&original, case.loss).await?;
     let provider = Arc::new(FaultStream {
+        operation_claims: Default::default(),
         current: Arc::new(RwLock::new(original.clone())),
         replacement,
         fault: Default::default(),
@@ -531,6 +537,7 @@ async fn obsolete_ack_cannot_corrupt_a_rebuilt_generation_at_the_same_position()
         .find(|case| case.name == "append-after-accept-reused-position")
         .ok_or("missing ack case")?;
     let provider = Arc::new(FaultStream {
+        operation_claims: Default::default(),
         current: Arc::new(RwLock::new(original)),
         replacement,
         fault: Arc::new(Mutex::new(Some(case))),

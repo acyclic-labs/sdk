@@ -82,6 +82,7 @@ struct Cache {
     announced: u64,
 }
 struct Inner {
+    operation_claims: crate::OperationClaims,
     database: Database,
     // Lock order: cache -> memory state or refresh request. The refresh lock is
     // released before acquiring cache; interest/Change dispatch follows release.
@@ -135,6 +136,7 @@ impl BrowserStream {
         let clock = Arc::new(ReplayClock::default());
         let provider = memory(limits.memory, Arc::clone(&clock));
         let inner = Rc::new(Inner {
+            operation_claims: crate::OperationClaims::default(),
             publications: discovery::Publications::new(name)?,
             database,
             cache: crate::query_sync::Mutex::new(Cache {
@@ -397,6 +399,10 @@ impl BrowserStreamLimits {
 
 #[async_trait(?Send)]
 impl StreamProvider for BrowserStream {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        &self.inner.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

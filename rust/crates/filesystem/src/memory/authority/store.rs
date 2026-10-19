@@ -2,6 +2,10 @@ use super::*;
 use crate::async_storage::{AsyncAuthorityStore, authority_error, seal};
 
 impl AsyncAuthorityStore for MemoryAuthorityStore {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn fork_workspace<G: crate::AuthorityGuard>(
         &self,
         fork: crate::WorkspaceForkCommit,

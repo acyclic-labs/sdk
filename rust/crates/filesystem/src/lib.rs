@@ -67,7 +67,9 @@ pub(crate) fn initialize_test_native_io() {
 
 pub mod access;
 mod arc_layout;
+mod operation_claim;
 mod sync;
+pub use acyclic_stream::{OperationClaim, OperationClaims};
 
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
@@ -79,11 +81,11 @@ pub use collection::{Collection, PublicationHold};
 pub mod cache;
 pub mod cancellation;
 pub mod compat_wire;
-/// Session filesystem payloads.
-pub mod session;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub mod core_state;
 pub mod demand;
+/// Session filesystem payloads.
+pub mod session;
 pub use demand::DemandError;
 #[cfg(feature = "distributed")]
 pub mod distributed;

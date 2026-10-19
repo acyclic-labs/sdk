@@ -351,6 +351,7 @@ impl PreparationRecord for Observation {
                 "unavailable",
                 "invalid_input",
                 "refused",
+                "interrupted",
             ];
             let mut bytes = 0;
             let mut remaining = labels.as_slice();

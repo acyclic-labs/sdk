@@ -581,6 +581,10 @@ impl ReleaseSpy {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl StreamProvider for ReleaseSpy {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

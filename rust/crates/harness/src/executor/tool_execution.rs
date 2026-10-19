@@ -42,6 +42,12 @@ pub(in crate::executor) enum PolicyStop {
 /// A recorded tool failure's model-visible content, received instead of a result.
 type ToolSettlement<T> = std::result::Result<T, crate::model::ToolResultContent>;
 
+/// A settled call can be shown to the model; an interrupted effect ends the turn.
+enum ToolInvocationOutcome {
+    Settled(crate::model::ToolResultContent),
+    Interrupted,
+}
+
 impl StockExecution<'_> {
     pub(super) async fn settle_tool_call(
         &self,
@@ -162,6 +168,12 @@ impl StockExecution<'_> {
         // One match over every record state: a settlement replays whether or not it has a
         // start, so the turn's scan never stops at a settled call.
         let content = match recorded {
+            RecordedCall::Failed {
+                reason: ToolFailureKind::Interrupted,
+                ..
+            } => {
+                return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+            }
             RecordedCall::Failed { reason, cause, .. } => {
                 tool_failure_content(reason, cause, self.io)?
             }
@@ -227,7 +239,10 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    Ok(content) | Err(content) => content,
+                    ToolInvocationOutcome::Settled(content) => content,
+                    ToolInvocationOutcome::Interrupted => {
+                        return Ok(ExecutionProgress::Failed(ToolFailureKind::Interrupted));
+                    }
                 }
             }
         };
@@ -434,7 +449,7 @@ impl StockExecution<'_> {
         context: &mut Option<crate::runtime::ToolContext>,
         started: bool,
         _hook_context: &mut Vec<ModelMessage>,
-    ) -> Result<ToolSettlement<crate::model::ToolResultContent>> {
+    ) -> Result<ToolInvocationOutcome> {
         let (operation_id, step) = identity;
         let invocation = record.invocation;
         let claimed = self
@@ -476,11 +491,29 @@ impl StockExecution<'_> {
         let result = match execution {
             Ok(Some(result)) => result,
             Err(error) if error.is_native_failure() => return Err(error),
-            Err(error) if error.leaves_effect_uncertain() => {
-                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
-                return Err(Error::Indeterminate(operation_id));
+            // A resumed driver settles an unreconcilable effect as a typed
+            // failure instead of running it again; reconciliation records nothing.
+            Ok(None) | Err(Error::Indeterminate(_))
+                if !claimed
+                    && !self.stock.reconciliation_only
+                    && !super::unsettled_resume::enabled() =>
+            {
+                self.reject_tool_call(
+                    journal,
+                    operation_id,
+                    step,
+                    &invocation.call_id,
+                    ToolFailureKind::Interrupted,
+                    Error::Indeterminate(operation_id),
+                )
+                .await?;
+                return Ok(ToolInvocationOutcome::Interrupted);
             }
             Ok(None) | Err(Error::Indeterminate(_)) => {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            Err(error) if error.leaves_effect_uncertain() => {
+                tracing::error!(%operation_id, call_id = %invocation.call_id, ?error, "tool outcome is uncertain");
                 return Err(Error::Indeterminate(operation_id));
             }
             Err(error) => {
@@ -494,7 +527,7 @@ impl StockExecution<'_> {
                         error,
                     )
                     .await
-                    .map(Err);
+                    .map(ToolInvocationOutcome::Settled);
             }
         };
         let (projection, content) = match self
@@ -502,7 +535,7 @@ impl StockExecution<'_> {
             .await?
         {
             Ok(projected) => projected,
-            Err(reason) => return Ok(Err(reason)),
+            Err(content) => return Ok(ToolInvocationOutcome::Settled(content)),
         };
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         {
@@ -517,13 +550,13 @@ impl StockExecution<'_> {
                 .await?
             {
                 Ok(feedback) => self.append_hook_context(_hook_context, feedback)?,
-                Err(content) => return Ok(Err(content)),
+                Err(content) => return Ok(ToolInvocationOutcome::Settled(content)),
             }
-            Ok(Ok(content))
+            Ok(ToolInvocationOutcome::Settled(content))
         }
         #[cfg(not(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32"))))]
         {
-            Ok(self
+            let publication = self
                 .publish_tool_completion(
                     journal,
                     (operation_id, step),
@@ -531,8 +564,11 @@ impl StockExecution<'_> {
                     &result,
                     &projection,
                 )
-                .await?
-                .map(|()| content))
+                .await?;
+            Ok(ToolInvocationOutcome::Settled(match publication {
+                Ok(()) => content,
+                Err(content) => content,
+            }))
         }
     }
 

@@ -89,6 +89,10 @@ fn ready<F: Future>(future: F) -> F::Output {
 
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.call(self.inner.tail(path)).await
     }

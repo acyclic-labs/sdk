@@ -52,6 +52,10 @@ impl Default for Provider {
 
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

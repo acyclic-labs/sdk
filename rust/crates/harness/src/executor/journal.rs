@@ -20,6 +20,14 @@ pub(super) fn validate_journal(
 
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
+    /// Excludes live attempts before replay can mistake them for crashed work.
+    /// All aliases of an operation must use the same ownership registry.
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<ExecutionClaim<'a>>;
+
     /// Authenticated canonical aggregate whose selections this journal publishes.
     fn canonical_authority(&self) -> Option<&crate::core::Authority> {
         None

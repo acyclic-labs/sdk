@@ -64,6 +64,10 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
     }
 }
 impl AsyncAuthorityStore for IndexedDbAuthorityStore {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn create_first_record<G: crate::AuthorityGuard>(
         &self,
         authority: AuthorityId,

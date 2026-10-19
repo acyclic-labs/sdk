@@ -241,11 +241,12 @@ mod tests {
     use proptest::prelude::*;
 
     /// Every failure kind; `entry` fails to compile when a kind is added without coverage.
-    const KINDS: [ToolFailureKind; 7] = [
+    const KINDS: [ToolFailureKind; 8] = [
         ToolFailureKind::ExecutorRejected,
         ToolFailureKind::InvalidOutput,
         ToolFailureKind::ProjectionRejected,
         ToolFailureKind::PublicationRejected,
+        ToolFailureKind::Interrupted,
         ToolFailureKind::Unavailable,
         ToolFailureKind::InvalidInput,
         ToolFailureKind::Refused,
@@ -262,7 +263,8 @@ mod tests {
             ToolFailureKind::ExecutorRejected
             | ToolFailureKind::InvalidOutput
             | ToolFailureKind::ProjectionRejected
-            | ToolFailureKind::PublicationRejected => ToolFailureCause::of(error, &mut None),
+            | ToolFailureKind::PublicationRejected
+            | ToolFailureKind::Interrupted => ToolFailureCause::of(error, &mut None),
         }
     }
 

@@ -8,6 +8,7 @@ use acyclic_stream::{
 type StreamResult<T> = std::result::Result<T, StreamError>;
 
 struct Restartable {
+    operation_claims: acyclic_stream::OperationClaims,
     provider: std::sync::RwLock<Arc<MemoryStream>>,
     after_read: std::sync::Mutex<Option<(u64, Arc<MemoryStream>)>>,
     before_commit: std::sync::Mutex<Option<Arc<MemoryStream>>>,
@@ -17,6 +18,7 @@ impl Restartable {
     fn new(provider: Arc<MemoryStream>) -> Self {
         Self {
             provider: std::sync::RwLock::new(provider),
+            operation_claims: Default::default(),
             after_read: Default::default(),
             before_commit: Default::default(),
         }
@@ -40,6 +42,10 @@ impl Restartable {
 
 #[async_trait::async_trait]
 impl StreamProvider for Restartable {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

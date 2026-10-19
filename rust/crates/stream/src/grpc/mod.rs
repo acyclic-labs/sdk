@@ -68,6 +68,7 @@ pub enum ConnectError {
 /// Authenticated remote provider over one TLS channel.
 #[derive(Clone)]
 pub struct Client {
+    operation_claims: Arc<crate::OperationClaims>,
     channel: Channel,
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
@@ -189,6 +190,7 @@ impl Client {
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
+            operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
@@ -204,6 +206,7 @@ impl Client {
             authorization: None,
             credential: Some(credential),
             acknowledge_deliveries: true,
+            operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
@@ -216,6 +219,12 @@ impl Client {
         verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
     ) -> Self {
         self.session_verifier = Some(verifier);
+        self
+    }
+
+    #[cfg(feature = "http")]
+    pub(crate) fn with_operation_claims(mut self, claims: Arc<crate::OperationClaims>) -> Self {
+        self.operation_claims = claims;
         self
     }
 

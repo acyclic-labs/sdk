@@ -299,6 +299,13 @@ where
             ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
             ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
             ExecutionProgress::Rejected(reason) => rejected(reason, io),
+            // A recorded tool failure settles the turn with its stable message.
+            ExecutionProgress::Failed(reason) => ready(
+                Outcome::<Value>::Failed {
+                    message: crate::executor::stock_string_copy(reason.message(), io)?,
+                },
+                io,
+            ),
         }
     }
 

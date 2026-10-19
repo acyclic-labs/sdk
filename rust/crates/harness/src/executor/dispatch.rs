@@ -78,9 +78,12 @@ impl StockExecution<'_> {
         };
         #[cfg(feature = "filesystem")]
         let _continuation_hold;
-        let stream = if started {
-            let continuation = self.reconcile_model_events(dispatch, &replayed).await?;
-            let continuation = continuation.ok_or(Error::Indeterminate(input.operation_id))?;
+        let continuation = if started {
+            self.reconcile_model_events(dispatch, &replayed).await?
+        } else {
+            None
+        };
+        let stream = if let Some(continuation) = continuation {
             #[cfg(feature = "filesystem")]
             {
                 _continuation_hold = io
@@ -99,14 +102,34 @@ impl StockExecution<'_> {
             {
                 _continuation_hold = None;
             }
-            self.claim_model_dispatch(
-                journal,
-                input,
-                (step, purpose, purpose_key),
-                &request,
-                dispatch,
-            )
-            .await?;
+            if !started {
+                self.claim_model_dispatch(
+                    journal,
+                    input,
+                    (step, purpose, purpose_key),
+                    &request,
+                    dispatch,
+                )
+                .await?;
+            } else if replayed.is_empty()
+                && !self.stock.reconciliation_only
+                && !super::unsettled_resume::enabled()
+            {
+                // Nothing of the interrupted call was observed, so it had no
+                // effect: the same claimed attempt generates again.
+                self.claim_task_model(dispatch).await?;
+            } else if !self.stock.reconciliation_only && !super::unsettled_resume::enabled() {
+                // An incomplete response has not dispatched any of its tool calls.
+                // When the provider cannot recover its prefix, fail definitively
+                // instead of retaining a reservation that can never make progress.
+                // Keep the recorded prefix and never generate a different suffix.
+                return Err(Error::ModelUnavailable {
+                    failure: crate::ModelTransportFailure::Interrupted,
+                    excerpt: String::new(),
+                });
+            } else {
+                return Err(Error::Indeterminate(input.operation_id));
+            }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let generated = if let Some(work) = self.native_work() {
                 Either::Right(

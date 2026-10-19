@@ -311,191 +311,237 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         verified_revision: Option<u64>,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        let mut frame = CodecQuota::new(work, 0)?;
-        let future =
-            crate::store::HistoryContentFuture::with_quota(&mut frame, |work| async move {
-                self.refresh(work).await?;
-                if verified_revision.is_some_and(|revision| revision != self.revision) {
-                    return Err(guarded_boundary(
-                        work,
-                        wire::ErrorCode::Conflict,
-                        "coordinator changed after owner verification",
-                    ));
-                }
-                self.validate_parent_owner(&event, parent_fence, work)?;
-                validate_idempotency_key(idempotency_key.as_str(), work)?;
-                let key = idempotency_key.as_str();
-                let operation_id = event.operation_id();
-                let mut custody = CodecQuota::new(work, 0)?;
-                let canonical = crate::store::history::canonical_bytes_with_work(
-                    &event,
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    custody.work(),
-                )?;
-                if custody.work().is_some() {
-                    custody.adopt(canonical.capacity() as u64)?;
-                }
-                if let Some(work) = custody.work().as_deref_mut() {
-                    work.hashed_bytes(canonical.len() as u64)?;
-                }
-                let digest = *blake3::hash(&canonical).as_bytes();
-                if let Some(matches) = self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                {
-                    return if matches {
-                        self.validate_command_wait(&event, waiting_command, true, custody.work())?;
-                        self.validate_replay(&event, custody.work()).map(|()| false)
-                    } else {
-                        Err(guarded_boundary(
-                            custody.work(),
+        // A conditional append that loses the tail to another writer leaves
+        // its intent unpublished; it is retried against the new tail, under a
+        // stream retry identity bound to that tail, until it publishes or its
+        // intent is found published.
+        loop {
+            let event = &event;
+            let idempotency_key = &idempotency_key;
+            let this = &mut *self;
+            let mut frame = CodecQuota::new(work, 0)?;
+            let future =
+                crate::store::HistoryContentFuture::with_quota(&mut frame, |work| async move {
+                    this.refresh(work).await?;
+                    if verified_revision.is_some_and(|revision| revision != this.revision) {
+                        return Err(guarded_boundary(
+                            work,
                             wire::ErrorCode::Conflict,
-                            "coordinator retry identity reused",
-                        ))
-                    };
-                }
-                self.validate_command_wait(&event, waiting_command, false, custody.work())?;
-                if let SchedulerEvent::Declared { spec } = &event {
-                    self.verify_content(&spec.state, custody.work()).await?;
-                }
-                self.verify_published_result(&event, custody.work()).await?;
-                self.scheduler.validate_event(&event, custody.work())?;
-                let revision = next_revision(self.revision)?;
-                let committed_at_ms = self.next_commit_time(custody.work())?;
-                custody.transfer();
-                let bytes = encode(
-                    revision,
-                    operation_id,
-                    key,
-                    digest,
-                    canonical,
-                    committed_at_ms,
-                    custody.work(),
-                )?;
-                let (record, retained) =
-                    operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
-                custody.adopt(retained)?;
-                let current_revision = self.revision;
-                let digits = |value: u64| {
-                    value
-                        .checked_ilog10()
-                        .map_or(1, |digits| digits as usize + 1)
-                };
-                let (stream_key, retained) = if parent_fence.is_some() {
-                    stream_key(
-                        key.len() + ":owned-parent:".len() + digits(current_revision),
-                        format_args!("{key}:owned-parent:{current_revision}"),
-                        custody.work(),
-                    )
-                } else if waiting_command.is_some() {
-                    stream_key(
-                        key.len() + ":owned-wait:".len() + digits(current_revision),
-                        format_args!("{key}:owned-wait:{current_revision}"),
-                        custody.work(),
-                    )
-                } else if let Some((execution, tail)) = idle_execution {
-                    stream_key(
-                        key.len()
-                            + ":idle-execution:".len()
-                            + 36
-                            + 2
-                            + digits(tail)
-                            + digits(current_revision),
-                        format_args!("{key}:idle-execution:{execution}:{tail}:{current_revision}"),
-                        custody.work(),
-                    )
-                } else {
-                    stream_key(key.len(), format_args!("{key}"), custody.work())
-                }?;
-                custody.adopt(retained)?;
-                let origin = origins::event_path(&event, custody.work())?;
-                if let Some(path) = &origin {
-                    custody.adopt(path.as_str().len() as u64)?;
-                }
-                let appended = if let Some(path) = origin {
-                    origins::append_origin::<true, _, 1>(
-                        (&self.stream.0, &self.client),
-                        [record],
-                        0,
-                        self.revision,
-                        stream_key,
-                        operation_id,
-                        path,
-                        custody.work(),
-                    )
-                    .await
-                } else if let Some((execution, expected_tail)) = idle_execution {
-                    append_if_execution_idle(
-                        &self.client,
-                        &self.stream.0,
-                        record,
-                        self.revision,
-                        stream_key,
-                        operation_id,
-                        execution,
-                        expected_tail,
-                        workflow_guard,
-                        custody.work(),
-                    )
-                    .await
-                } else {
-                    append(
-                        (&self.stream.0, &self.client),
-                        [record],
-                        0,
-                        Some(self.revision),
-                        stream_key,
-                        operation_id,
-                        custody.work(),
-                    )
-                    .await
-                };
-                custody.relinquish(custody.retained())?;
-
-                let applied = match appended {
-                    Ok(AppendOutcome::Committed(receipt)) => {
-                        if receipt.end.checked_sub(receipt.start) != Some(1)
-                            || receipt.tail < receipt.end
-                        {
-                            return Err(guarded_boundary(
-                                custody.work(),
-                                wire::ErrorCode::Storage,
-                                "invalid coordinator append receipt",
-                            ));
-                        }
-                        Ok(receipt.start == revision - 1)
+                            "coordinator changed after owner verification",
+                        ));
                     }
-                    Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
-                    Err(error)
-                        if idle_execution.is_none()
-                            && error.code() == wire::ErrorCode::Conflict =>
+                    this.validate_parent_owner(event, parent_fence, work)?;
+                    validate_idempotency_key(idempotency_key.as_str(), work)?;
+                    let key = idempotency_key.as_str();
+                    let operation_id = event.operation_id();
+                    let mut custody = CodecQuota::new(work, 0)?;
+                    let canonical = crate::store::history::canonical_bytes_with_work(
+                        event,
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        custody.work(),
+                    )?;
+                    if custody.work().is_some() {
+                        custody.adopt(canonical.capacity() as u64)?;
+                    }
+                    if let Some(work) = custody.work().as_deref_mut() {
+                        work.hashed_bytes(canonical.len() as u64)?;
+                    }
+                    let digest = *blake3::hash(&canonical).as_bytes();
+                    if let Some(matches) = this
+                        .intent_matches(key, event, &digest, custody.work())
+                        .await?
                     {
-                        Err(error)
+                        return if matches {
+                            this.validate_command_wait(
+                                event,
+                                waiting_command,
+                                true,
+                                custody.work(),
+                            )?;
+                            this.validate_replay(event, custody.work())
+                                .map(|()| Some(false))
+                        } else {
+                            Err(guarded_boundary(
+                                custody.work(),
+                                wire::ErrorCode::Conflict,
+                                "coordinator retry identity reused",
+                            ))
+                        };
                     }
-                    Err(error) => return Err(error),
-                };
-                self.refresh(custody.work()).await?;
-                if self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                    != Some(true)
-                {
-                    return applied.and_then(|_| {
-                        Err(guarded_boundary(
+                    this.validate_command_wait(event, waiting_command, false, custody.work())?;
+                    if let SchedulerEvent::Declared { spec } = event {
+                        this.verify_content(&spec.state, custody.work()).await?;
+                    }
+                    this.verify_published_result(event, custody.work()).await?;
+                    this.scheduler.validate_event(event, custody.work())?;
+                    let revision = next_revision(this.revision)?;
+                    let committed_at_ms = this.next_commit_time(custody.work())?;
+                    custody.transfer();
+                    let bytes = encode(
+                        revision,
+                        operation_id,
+                        key,
+                        digest,
+                        canonical,
+                        committed_at_ms,
+                        custody.work(),
+                    )?;
+                    let (record, retained) =
+                        operations::owned_bytes_from_retained_vec(bytes, custody.work())?;
+                    custody.adopt(retained)?;
+                    let current_revision = this.revision;
+                    let digits = |value: u64| {
+                        value
+                            .checked_ilog10()
+                            .map_or(1, |digits| digits as usize + 1)
+                    };
+                    let (stream_key, retained) = if parent_fence.is_some() {
+                        stream_key(
+                            key.len() + ":owned-parent:".len() + digits(current_revision),
+                            format_args!("{key}:owned-parent:{current_revision}"),
                             custody.work(),
-                            wire::ErrorCode::Conflict,
-                            "coordinator publication differs from its intent",
-                        ))
-                    });
-                }
-                if applied.is_err() {
-                    self.validate_command_wait(&event, waiting_command, true, custody.work())?;
-                }
-                self.validate_replay(&event, custody.work())?;
-                self.validate_parent_owner(&event, parent_fence, custody.work())?;
-                Ok(applied.unwrap_or(false))
-            })?;
-        future.await
+                        )
+                    } else if waiting_command.is_some() {
+                        stream_key(
+                            key.len() + ":owned-wait:".len() + digits(current_revision),
+                            format_args!("{key}:owned-wait:{current_revision}"),
+                            custody.work(),
+                        )
+                    } else if let Some((execution, tail)) = idle_execution {
+                        stream_key(
+                            key.len()
+                                + ":idle-execution:".len()
+                                + 36
+                                + 2
+                                + digits(tail)
+                                + digits(current_revision),
+                            format_args!(
+                                "{key}:idle-execution:{execution}:{tail}:{current_revision}"
+                            ),
+                            custody.work(),
+                        )
+                    } else if lost_tail::legacy() {
+                        stream_key(key.len(), format_args!("{key}"), custody.work())
+                    } else {
+                        stream_key(
+                            key.len() + ":tail:".len() + digits(current_revision),
+                            format_args!("{key}:tail:{current_revision}"),
+                            custody.work(),
+                        )
+                    }?;
+                    custody.adopt(retained)?;
+                    let origin = origins::event_path(event, custody.work())?;
+                    if let Some(path) = &origin {
+                        custody.adopt(path.as_str().len() as u64)?;
+                    }
+                    #[cfg(test)]
+                    lost_tail::interleave().await;
+                    let appended = if let Some(path) = origin {
+                        origins::append_origin::<true, _, 1>(
+                            (&this.stream.0, &this.client),
+                            [record],
+                            0,
+                            this.revision,
+                            stream_key,
+                            operation_id,
+                            path,
+                            custody.work(),
+                        )
+                        .await
+                    } else if let Some((execution, expected_tail)) = idle_execution {
+                        append_if_execution_idle(
+                            &this.client,
+                            &this.stream.0,
+                            record,
+                            this.revision,
+                            stream_key,
+                            operation_id,
+                            execution,
+                            expected_tail,
+                            workflow_guard,
+                            custody.work(),
+                        )
+                        .await
+                    } else {
+                        append(
+                            (&this.stream.0, &this.client),
+                            [record],
+                            0,
+                            Some(this.revision),
+                            stream_key,
+                            operation_id,
+                            custody.work(),
+                        )
+                        .await
+                    };
+                    custody.relinquish(custody.retained())?;
+
+                    let applied = match appended {
+                        Ok(AppendOutcome::Committed(receipt)) => {
+                            if receipt.end.checked_sub(receipt.start) != Some(1)
+                                || receipt.tail < receipt.end
+                            {
+                                return Err(guarded_boundary(
+                                    custody.work(),
+                                    wire::ErrorCode::Storage,
+                                    "invalid coordinator append receipt",
+                                ));
+                            }
+                            Ok(receipt.start == revision - 1)
+                        }
+                        Ok(AppendOutcome::TailConflict { .. }) => {
+                            if idle_execution.is_none()
+                                && parent_fence.is_none()
+                                && !lost_tail::legacy()
+                            {
+                                this.refresh(custody.work()).await?;
+                                // Only a tail another writer advanced is
+                                // retried; any other refusal keeps its typed
+                                // conflict.
+                                if this.revision != current_revision
+                                    && this
+                                        .intent_matches(key, event, &digest, custody.work())
+                                        .await?
+                                        .is_none()
+                                {
+                                    return Ok(None);
+                                }
+                            }
+                            Ok(false)
+                        }
+                        Err(error)
+                            if idle_execution.is_none()
+                                && error.code() == wire::ErrorCode::Conflict =>
+                        {
+                            Err(error)
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    this.refresh(custody.work()).await?;
+                    if this
+                        .intent_matches(key, event, &digest, custody.work())
+                        .await?
+                        != Some(true)
+                    {
+                        return applied.and_then(|_| {
+                            Err(guarded_boundary(
+                                custody.work(),
+                                wire::ErrorCode::Conflict,
+                                "coordinator publication differs from its intent",
+                            ))
+                        });
+                    }
+                    if applied.is_err() {
+                        this.validate_command_wait(event, waiting_command, true, custody.work())?;
+                    }
+                    this.validate_replay(event, custody.work())?;
+                    this.validate_parent_owner(event, parent_fence, custody.work())?;
+                    Ok(Some(applied.unwrap_or(false)))
+                })?;
+            if let Some(applied) = future.await? {
+                return Ok(applied);
+            }
+        }
     }
 
     fn validate_replay(
@@ -680,5 +726,44 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             work,
         )
         .await
+    }
+}
+
+/// A writer that advances the coordinator tail between a publication's refresh
+/// and its append, and the defect that publication once had.
+pub(super) mod lost_tail {
+    #[cfg(test)]
+    type Interleaved = acyclic_stream::BoxProviderFuture<'static, ()>;
+    #[cfg(test)]
+    thread_local! {
+        static INTERLEAVE: std::cell::RefCell<Option<Interleaved>> =
+            const { std::cell::RefCell::new(None) };
+        static LEGACY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Runs `writer` once, inside the next publication's tail window.
+    #[cfg(test)]
+    pub(crate) fn before_next_append(writer: Interleaved, legacy: bool) {
+        INTERLEAVE.set(Some(writer));
+        LEGACY.set(legacy);
+    }
+
+    #[cfg(test)]
+    pub(super) async fn interleave() {
+        if let Some(writer) = INTERLEAVE.take() {
+            writer.await;
+        }
+    }
+
+    /// Restores the defect: an untailed retry identity that a lost tail burns,
+    /// and no retry of the unpublished intent.
+    #[cfg(test)]
+    pub(super) fn legacy() -> bool {
+        LEGACY.get()
+    }
+
+    #[cfg(not(test))]
+    pub(super) const fn legacy() -> bool {
+        false
     }
 }

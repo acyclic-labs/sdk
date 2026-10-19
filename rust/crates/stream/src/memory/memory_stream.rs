@@ -3,6 +3,7 @@
 pub struct MemoryStream {
     // Lock order: TaskVolume index -> LocalStream visibility -> state -> watch internals.
     state: Arc<RwLock<State>>,
+    operation_claims: Arc<crate::OperationClaims>,
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.
     clock: Arc<dyn UnixMillisClock>,
@@ -40,6 +41,7 @@ impl MemoryStream {
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::default())),
+            operation_claims: Arc::new(crate::OperationClaims::default()),
             limits,
             clock,
             commit_clock,

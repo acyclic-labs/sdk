@@ -2,6 +2,7 @@ use super::*;
 use proptest::prelude::*;
 
 mod active;
+mod orphans;
 mod recovery;
 
 fn file(reference: &Component, kind: ChildFile, body: Vec<u8>) -> FileValue {

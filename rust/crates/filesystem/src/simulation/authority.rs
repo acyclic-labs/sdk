@@ -36,6 +36,10 @@ fn lost_authority_acknowledgement(operation: &'static str) -> AuthorityStoreErro
 }
 
 impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn create_first_record<G: crate::AuthorityGuard>(
         &self,
         authority: AuthorityId,

@@ -19,6 +19,10 @@ struct Owners {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Owners {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        self.memory.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

@@ -23,6 +23,10 @@ impl<P> NativeOnly<P> {
 
 #[async_trait::async_trait]
 impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.0.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         _: IdempotencyKey,

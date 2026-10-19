@@ -48,6 +48,10 @@ fn replaced(request: &CommitRequest) -> bool {
 
 #[async_trait::async_trait]
 impl StreamProvider for Audited {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.inner.operation_claims()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

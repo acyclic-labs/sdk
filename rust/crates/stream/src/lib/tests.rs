@@ -90,6 +90,10 @@ mod replay_tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     impl StreamProvider for Gapped {
+        fn operation_claims(&self) -> &crate::OperationClaims {
+            self.inner.operation_claims()
+        }
+
         async fn inspect_idempotency(
             &self,
             key: IdempotencyKey,

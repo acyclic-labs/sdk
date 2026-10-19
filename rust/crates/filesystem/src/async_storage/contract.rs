@@ -5,6 +5,13 @@ macro_rules! contract {
         impl<T: $name + ?Sized> $name for Arc<T> { contract!(@methods $($body)*); }
     };
     (@methods) => {};
+    (@methods $(#[$doc:meta])* fn $name:ident
+        (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?) -> $out:ty; $($rest:tt)*) => {
+        fn $name(&$receiver $(, $arg: $ty)*) -> $out {
+            (**$receiver).$name($($arg),*)
+        }
+        contract!(@methods $($rest)*);
+    };
     (@methods $(#[$doc:meta])* fn $name:ident $(<$g:ident: $bound:path>)?
         (&$receiver:ident $(, $arg:ident: $ty:ty)* $(,)?)
         -> impl Future<Output = $out:ty $(,)?> + ProviderTask $end:tt $($rest:tt)*) => {

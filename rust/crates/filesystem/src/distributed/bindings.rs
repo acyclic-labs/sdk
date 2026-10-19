@@ -1,6 +1,10 @@
 use super::*;
 
 impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityStore<P> {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        self.provider.operation_claims()
+    }
+
     fn supports_generation_lineage_prefix(&self) -> bool {
         true
     }

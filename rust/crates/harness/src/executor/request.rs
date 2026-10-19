@@ -20,6 +20,7 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
+        let _execution = journal.claim_execution(input.operation_id, self.io)?;
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
         if step >= input.max_steps {

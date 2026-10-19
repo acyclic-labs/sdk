@@ -23,6 +23,7 @@ pub struct ConnectError;
 /// Bounded authenticated HTTP provider. Mutations are never automatically retried.
 #[derive(Clone)]
 pub struct HttpStream {
+    operation_claims: Arc<crate::OperationClaims>,
     client: Client,
     endpoint: Url,
     authorization: Option<HeaderValue>,
@@ -118,6 +119,7 @@ impl HttpStream {
             credential,
             maximum,
             sessions: Arc::new(crate::query_sync::SyncMutex::new(None)),
+            operation_claims: Arc::new(crate::OperationClaims::default()),
             session_endpoint,
             session_verifier,
         })
@@ -341,6 +343,10 @@ impl HttpStream {
 
 #[async_trait]
 impl StreamProvider for HttpStream {
+    fn operation_claims(&self) -> &crate::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

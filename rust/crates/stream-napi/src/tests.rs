@@ -222,6 +222,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
 }
 
 struct TcpDropProbe {
+    operation_claims: acyclic_stream::OperationClaims,
     started: Arc<tokio::sync::Notify>,
     dropped: Arc<tokio::sync::Notify>,
 }
@@ -234,6 +235,10 @@ impl Drop for TcpDropped {
 
 #[async_trait]
 impl StreamProvider for TcpDropProbe {
+    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
+        &self.operation_claims
+    }
+
     async fn inspect_idempotency(
         &self,
         _idempotency_key: IdempotencyKey,
@@ -338,6 +343,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         let started = Arc::new(tokio::sync::Notify::new());
         let dropped = Arc::new(tokio::sync::Notify::new());
         let provider = Arc::new(TcpDropProbe {
+            operation_claims: Default::default(),
             started: Arc::clone(&started),
             dropped: Arc::clone(&dropped),
         });

@@ -19,6 +19,14 @@ macro_rules! forward {
 }
 
 impl ExecutionJournal for OmitBufferRelease<'_> {
+    fn claim_execution<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::executor::ExecutionClaim<'a>> {
+        self.0.claim_execution(operation, io)
+    }
+
     forward! {
         fn replay<'a>(operation: OperationId, after: u64, maximum: u32,
             io: Option<&'a PreparationIo>) -> Vec<ExecutionRecord>;
