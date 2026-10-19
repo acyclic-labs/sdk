@@ -2,8 +2,8 @@
 //! the root's object id where the filesystem keeps it stable.
 use super::super::config::LocalProject;
 use super::super::owner::{
-    Checkout, DEVICE_KEYED, INJECTED, Owner, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED, directory,
-    incarnation_of, state_directory_in,
+    Checkout, DEVICE_KEYED, INJECTED, Owner, RootWitness, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED,
+    directory, incarnation_of, state_directory_in,
 };
 use super::*;
 use acyclic_fs::NativeRootGeneration::{FileHandle, StableObjectId, Unstable};
@@ -179,58 +179,146 @@ async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> 
 }
 
 proptest::proptest! {
-    /// The token separates incarnations; a stable object id and its handle
-    /// separate roots; an unstable id never enters the key.
+    #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+    /// State selection depends on the token; strong evidence independently
+    /// rejects replacement roots and ignores remount-local device numbers.
     #[test]
-    fn an_incarnation_is_its_token_bound_to_a_stable_id(
-        objects: ([u8; 16], [u8; 16]),
-        handle: [u8; 32],
+    fn token_selection_and_root_evidence_are_independent(
+        objects: ([u8; 16], [u8; 16]), handle: [u8; 32],
         tokens: ([u8; 16], [u8; 16]),
     ) {
-        let first = incarnation_of(objects.0, FileHandle(handle), tokens.0);
-        proptest::prop_assert_eq!(first, incarnation_of(objects.0, FileHandle(handle), tokens.0));
-        if tokens.0 != tokens.1 {
-            for generation in [FileHandle(handle), StableObjectId, Unstable] {
-                proptest::prop_assert_ne!(
-                    incarnation_of(objects.0, generation, tokens.0),
-                    incarnation_of(objects.0, generation, tokens.1),
-                    "a new token kept the incarnation"
-                );
-            }
-        }
+        proptest::prop_assert_eq!(incarnation_of(tokens.0), incarnation_of(tokens.0));
+        if tokens.0 != tokens.1 { proptest::prop_assert_ne!(incarnation_of(tokens.0), incarnation_of(tokens.1)); }
         let distinct = if cfg!(unix) { objects.0[8..] != objects.1[8..] } else { objects.0 != objects.1 };
-        if distinct {
-            proptest::prop_assert_ne!(first, incarnation_of(objects.1, FileHandle(handle), tokens.0));
-            proptest::prop_assert_ne!(
-                incarnation_of(objects.0, StableObjectId, tokens.0),
-                incarnation_of(objects.1, StableObjectId, tokens.0)
-            );
-        }
-        proptest::prop_assert_eq!(
-            incarnation_of(objects.0, Unstable, tokens.0),
-            incarnation_of(objects.1, Unstable, tokens.0),
-            "a renumbered unstable root changed its incarnation"
-        );
-        proptest::prop_assert_ne!(first, incarnation_of(objects.0, StableObjectId, tokens.0));
-        proptest::prop_assert_ne!(
-            incarnation_of(objects.0, StableObjectId, tokens.0),
-            incarnation_of(objects.0, Unstable, tokens.0)
-        );
-        #[cfg(unix)]
-        {
-            let mut remounted = objects.0;
-            remounted[..8].copy_from_slice(&objects.1[..8]);
-            for generation in [FileHandle(handle), StableObjectId] {
-                let original = incarnation_of(objects.0, generation, tokens.0);
-                proptest::prop_assert_eq!(original, incarnation_of(remounted, generation, tokens.0));
+        for generation in [FileHandle(handle), StableObjectId] {
+            let original = RootWitness::capture(objects.0, generation);
+            if distinct {
+                proptest::prop_assert!(matches!(original.verify(RootWitness::capture(objects.1, generation)), Err(Error::Unauthorized(_))));
+            }
+            #[cfg(unix)] {
+                let mut remounted = objects.0;
+                remounted[..8].copy_from_slice(&objects.1[..8]);
+                proptest::prop_assert!(original.verify(RootWitness::capture(remounted, generation)).is_ok());
                 DEVICE_KEYED.set(true);
-                let old = incarnation_of(objects.0, generation, tokens.0);
-                let new = incarnation_of(remounted, generation, tokens.0);
+                let old = RootWitness::capture(objects.0, generation);
+                let new = RootWitness::capture(remounted, generation);
                 DEVICE_KEYED.set(false);
-                if objects.0[..8] != objects.1[..8] { proptest::prop_assert_ne!(old, new); }
+                if objects.0[..8] != objects.1[..8] { proptest::prop_assert!(old.verify(new).is_err()); }
             }
         }
     }
+}
+
+async fn changed_root(
+    explicit: bool,
+    before: acyclic_fs::NativeRootGeneration,
+    after: acyclic_fs::NativeRootGeneration,
+    replacement: Option<[u8; 16]>,
+) -> Result<Result<()>> {
+    let parent = tempfile::tempdir().map_err(super::super::storage)?;
+    let users = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = parent.path().join("state");
+    let workspace = parent.path().join("checkout");
+    std::fs::create_dir(&workspace).map_err(super::super::storage)?;
+    let _reset = Reset;
+    STATE_ROOT.set(Some(users.path().to_path_buf()));
+    let config = || {
+        super::checkout_config(&workspace, (model()?, text())).map(|config| {
+            if explicit {
+                config.state_directory(&state)
+            } else {
+                config
+            }
+        })
+    };
+    INJECTED.set(Some((REUSED, before)));
+    let harness = LocalHarness::open(config()?).await?;
+    super::checkout_reopen::run(&harness).await?;
+    harness.close().await?;
+    let owner_path = if explicit {
+        state.join("owner.json")
+    } else {
+        std::fs::read_dir(users.path().join("acyclic/harness"))
+            .map_err(super::super::storage)?
+            .next()
+            .unwrap()
+            .map_err(super::super::storage)?
+            .path()
+            .join("owner.json")
+    };
+    let original = std::fs::read(&owner_path).map_err(super::super::storage)?;
+    if replacement.is_some() {
+        // Fixture SDK token only; this never reads a user login or home.
+        let token = std::fs::read(workspace.join(".volumes/.incarnation/token"))
+            .map_err(super::super::storage)?;
+        std::fs::rename(&workspace, parent.path().join("original"))
+            .map_err(super::super::storage)?;
+        std::fs::create_dir_all(workspace.join(".volumes/.incarnation"))
+            .map_err(super::super::storage)?;
+        std::fs::write(workspace.join(".volumes/.incarnation/token"), token)
+            .map_err(super::super::storage)?;
+    }
+    INJECTED.set(Some((replacement.unwrap_or(REUSED), after)));
+    let result = match LocalHarness::open(config()?).await {
+        Ok(harness) => {
+            super::checkout_reopen::run(&harness).await?;
+            harness.close().await
+        }
+        Err(error) => Err(error),
+    };
+    assert_eq!(
+        std::fs::read(&owner_path).map_err(super::super::storage)?,
+        original
+    );
+    if !explicit {
+        assert_eq!(
+            std::fs::read_dir(users.path().join("acyclic/harness"))
+                .map_err(super::super::storage)?
+                .count(),
+            1
+        );
+    }
+    Ok(result)
+}
+
+/// Both entry points keep the selected owner through verifiable changes and
+/// refuse ambiguous downgrades without silently allocating a second state.
+#[tokio::test]
+async fn capability_changes_keep_state_and_verify_retained_evidence() -> Result<()> {
+    for explicit in [false, true] {
+        changed_root(explicit, StableObjectId, FileHandle([3; 32]), None).await??;
+        changed_root(explicit, Unstable, StableObjectId, None).await??;
+        for (before, after) in [
+            (FileHandle([3; 32]), StableObjectId),
+            (StableObjectId, Unstable),
+            (FileHandle([3; 32]), Unstable),
+        ] {
+            assert!(matches!(
+                changed_root(explicit, before, after, None).await?,
+                Err(Error::Unsupported(_))
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A copied token locates the original state but cannot replace its strong
+/// object/handle proof. This catches a token-only hash or owner comparison.
+#[tokio::test]
+async fn copied_tokens_cannot_attach_another_strongly_bound_root() -> Result<()> {
+    for explicit in [false, true] {
+        for (before, object, after) in [
+            (StableObjectId, [9; 16], StableObjectId),
+            (FileHandle([3; 32]), REUSED, FileHandle([4; 32])),
+            (FileHandle([3; 32]), [9; 16], FileHandle([3; 32])),
+        ] {
+            assert!(matches!(
+                changed_root(explicit, before, after, Some(object)).await?,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Replacing the checkout's path after its root is held and before scratch

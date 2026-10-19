@@ -1,4 +1,4 @@
-pub(super) use super::owner_record::Owner;
+pub(super) use super::owner_record::{Owner, RootWitness};
 use super::*;
 use std::{fs, io::Read};
 
@@ -120,8 +120,8 @@ pub(super) use directory::separated_directory;
 #[derive(Debug)]
 pub(super) struct Checkout {
     pub(super) path: PathBuf,
-    /// The root's object id, where the filesystem keeps it stable.
-    pub(super) identity: Option<[u8; 16]>,
+    /// Evidence validated separately from the token-based state selection.
+    pub(super) identity: RootWitness,
     pub(super) incarnation: [u8; 16],
     #[cfg(feature = "native-execution")]
     pub(super) root: acyclic_fs::HeldRoot,
@@ -148,9 +148,8 @@ impl Checkout {
             let (object, generation) = INJECTED.get().unwrap_or((object, generation));
             Ok(Self {
                 path,
-                identity: (generation != acyclic_fs::NativeRootGeneration::Unstable)
-                    .then(|| durable_object(object)),
-                incarnation: incarnation_of(object, generation, token),
+                identity: RootWitness::capture(object, generation),
+                incarnation: incarnation_of(token),
                 root,
             })
         }
@@ -182,45 +181,56 @@ fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
     .map_err(storage)
 }
 
-/// A checkout's incarnation: the token published in its root, bound to the
-/// root's object id where the filesystem keeps that id stable. The token
-/// tells a re-created root from its predecessor even when the filesystem
-/// reissues the id; a filesystem that may renumber ids is keyed on the token
-/// alone.
+/// The token locates state across capability changes. Physical root evidence is
+/// retained in the owner record and checked before that state is attached.
 #[cfg(any(test, feature = "native-execution"))]
-pub(super) fn incarnation_of(
-    object: [u8; 16],
-    generation: acyclic_fs::NativeRootGeneration,
-    token: [u8; 16],
-) -> [u8; 16] {
-    let object = durable_object(object);
+pub(super) fn incarnation_of(token: [u8; 16]) -> [u8; 16] {
     #[cfg(test)]
     let token = if UNTOKENED.get() { [0; 16] } else { token };
     let mut hash = blake3::Hasher::new();
-    hash.update(b"acyclic.local.workspace-incarnation/v4");
-    hash.update(&[0]);
+    hash.update(b"acyclic.local.workspace-incarnation/v5\0");
     hash.update(&token);
-    match generation {
-        acyclic_fs::NativeRootGeneration::FileHandle(handle) => {
-            hash.update(&[1]);
-            hash.update(&object);
-            hash.update(&handle);
-        }
-        acyclic_fs::NativeRootGeneration::StableObjectId => {
-            hash.update(&[2]);
-            hash.update(&object);
-        }
-        acyclic_fs::NativeRootGeneration::Unstable => {
-            hash.update(&[3]);
-            #[cfg(test)]
-            if UNSTABLE_KEYED.get() {
-                hash.update(&object);
-            }
-        }
-    }
     let mut identity = [0; 16];
     identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     identity
+}
+
+impl RootWitness {
+    #[cfg(any(test, feature = "native-execution"))]
+    pub(super) fn capture(object: [u8; 16], generation: acyclic_fs::NativeRootGeneration) -> Self {
+        use acyclic_fs::NativeRootGeneration;
+        let object = durable_object(object);
+        match generation {
+            NativeRootGeneration::FileHandle(handle) => Self::FileHandle { object, handle },
+            NativeRootGeneration::StableObjectId => Self::StableObjectId(object),
+            NativeRootGeneration::Unstable => {
+                #[cfg(test)]
+                if UNSTABLE_KEYED.get() {
+                    return Self::StableObjectId(object);
+                }
+                Self::Unstable
+            }
+        }
+    }
+
+    pub(super) fn verify(self, observed: Self) -> Result<()> {
+        match (self, observed) {
+            // A root first opened without durable native identity has only its
+            // token continuity contract. A copied token cannot be distinguished
+            // from that root after arbitrary id renumbering across a restart.
+            (Self::Unstable, _) => Ok(()),
+            (Self::StableObjectId(expected), Self::StableObjectId(actual))
+            | (Self::StableObjectId(expected), Self::FileHandle { object: actual, .. })
+                if expected == actual => Ok(()),
+            (Self::FileHandle { object: expected, handle: expected_handle },
+             Self::FileHandle { object: actual, handle: actual_handle })
+                if expected == actual && expected_handle == actual_handle => Ok(()),
+            (Self::StableObjectId(_), Self::Unstable)
+            | (Self::FileHandle { .. }, Self::Unstable | Self::StableObjectId(_)) =>
+                Err(Error::Unsupported("checkout root identity capability decreased; retained physical identity cannot be verified".into())),
+            _ => Err(Error::Unauthorized("local state belongs to a different checkout root".into())),
+        }
+    }
 }
 
 /// Unix st_dev identifies the current kernel device assignment, not the
@@ -258,7 +268,7 @@ impl Owner {
             }
         };
         let path = directory.join("owner.json");
-        let workspace_identity = checkout.and_then(|checkout| checkout.identity);
+        let workspace_identity = checkout.map(|checkout| checkout.identity);
         let workspace_incarnation = checkout.map(|checkout| checkout.incarnation);
         let owner = match Self::load(&path) {
             Ok(owner) => owner,
@@ -305,13 +315,21 @@ impl Owner {
             || owner.project.class() != VolumeClass::Project
             || owner.project.provider().family() != "filesystem"
             || owner.workspace != workspace
-            || owner.workspace_identity != workspace_identity
             || owner.workspace_incarnation != workspace_incarnation
             || matches!(selection, LocalProject::Volume { volume, .. } if volume != &owner.project)
         {
             return Err(Error::Unauthorized(
                 "local state belongs to a different workspace or volume".into(),
             ));
+        }
+        match (owner.workspace_identity, workspace_identity) {
+            (Some(retained), Some(observed)) => retained.verify(observed)?,
+            (None, None) => {}
+            _ => {
+                return Err(Error::Unauthorized(
+                    "local state checkout identity is missing".into(),
+                ));
+            }
         }
         Ok(owner)
     }
