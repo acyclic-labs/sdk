@@ -291,3 +291,84 @@ pub(in crate::filesystem) fn journal_absent(error: &Error) -> bool {
 }
 
 use crate::executor::{stock_boundary, stock_string_copy};
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    async fn first_publication_wins(metered: bool) -> Result<()> {
+        let provider = ProviderRef::new(
+            "immutable-journal".into(),
+            "filesystem".into(),
+            "2".into(),
+            &mut None,
+        )?;
+        let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
+        let reference = crate::filesystem::workspace_ref(provider, "first-winner")?;
+        bounded_io::create(
+            &host,
+            "first-winner",
+            &IdempotencyKey::new("create")?,
+            None,
+            None,
+        )
+        .await?;
+        let ledger = PreparationIo::from_budget(
+            acyclic_fs::performance::work_budget(1_000_000, 32_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )?;
+        let io = metered.then_some(&ledger);
+        let path = "/capture-start.json";
+        // Both writers observed absence. The second writer resumes only after
+        // the first publishes, an exact schedule across the read/write awaits.
+        assert!(
+            read_record::<_, _, Uuid>(&host, &reference, path, 4096, io)
+                .await?
+                .is_none()
+        );
+        assert!(
+            read_record::<_, _, Uuid>(&host, &reference, path, 4096, io)
+                .await?
+                .is_none()
+        );
+        let first = Uuid::from_bytes([1; 16]);
+        let second = Uuid::from_bytes([2; 16]);
+        write_record(
+            &host,
+            &reference,
+            path,
+            &first,
+            4096,
+            &IdempotencyKey::new("writer-one")?,
+            io,
+            None,
+        )
+        .await?;
+        write_record(
+            &host,
+            &reference,
+            path,
+            &second,
+            4096,
+            &IdempotencyKey::new("writer-two")?,
+            io,
+            None,
+        )
+        .await?;
+        assert_eq!(
+            read_record::<_, _, Uuid>(&host, &reference, path, 4096, io).await?,
+            Some(first)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resumed_unmetered_writer_cannot_replace_the_first_capture_attempt() -> Result<()> {
+        first_publication_wins(false).await
+    }
+
+    #[tokio::test]
+    async fn resumed_metered_writer_cannot_replace_the_first_capture_attempt() -> Result<()> {
+        first_publication_wins(true).await
+    }
+}
