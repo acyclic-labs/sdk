@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Focused checkout identity gate. Invoke through the shared build slot with
-# --env BUILD_SLOT_TIER=qual: cold model builds can exceed the lane job ceiling.
+# Focused checkout identity gate. Compile separately from bounded runtime suites.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+export CODEX_HOME=$(mktemp -d)
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
 harness_features="acyclic-harness/${features//,/,acyclic-harness/}"
 timed() {
@@ -10,6 +10,25 @@ timed() {
     shift
     TIMEFORMAT="$label: %3R s"
     time "$@"
+}
+run_built() {
+    python3 - "$artifacts" "$@" <<'PY'
+import json,re,subprocess,sys,time
+records=[json.loads(line) for line in open(sys.argv[1]) if line.startswith('{')]
+target,cwd,*filters=sys.argv[2:]
+binaries={record['executable'] for record in records
+          if record.get('reason')=='compiler-artifact' and record.get('executable')
+          and record['profile']['test'] and record['target']['name']==target}
+assert len(binaries)==1,binaries
+binary=binaries.pop()
+for selected in filters:
+    start=time.monotonic()
+    result=subprocess.run([binary,selected,'--nocapture'],cwd=cwd,
+                          timeout=9.5,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+    print(f'{selected}: {time.monotonic()-start:.3f}s\n{result.stdout}',flush=True)
+    assert result.returncode==0,result.returncode
+    assert re.search(r'^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;',result.stdout,re.M),result.stdout
+PY
 }
 case "${1:-all}" in
 all)
@@ -30,36 +49,31 @@ native)
     trap 'rm -f "$artifacts"' EXIT
     timed build cargo test --locked -p acyclic-fs -p acyclic-harness \
         --features "$features" --lib --no-run --message-format=json >"$artifacts"
-    binary() {
-        python3 -c 'import json,sys
-for line in open(sys.argv[1]):
-    item=json.loads(line)
-    if item.get("executable") and item["target"]["name"]==sys.argv[2]:
-        print(item["executable"])' "$artifacts" "$1"
-    }
-    filesystem=$(binary acyclic_fs)
-    harness=$(binary acyclic_harness)
-    (cd rust/crates/filesystem; timed filesystem "$filesystem" \
+    run_built acyclic_fs rust/crates/filesystem \
         native_capture::held_root_tests native_host::held_files::record native_host::leaf \
         native_host::interrupted_sync_tests \
         native_exchange::tests::exchange_refuses_normalized_directory_aliases \
         demand::tests::a_held_root \
-        demand::tests::negative_control_binding)
-    (cd rust/crates/harness; timed incarnation "$harness" \
-        local::tests::checkout_incarnation local::owner:: local::owner_record::)
-    (cd rust/crates/harness; timed reopen "$harness" local::tests::checkout_reopen)
-    (cd rust/crates/harness; timed setup "$harness" \
+        demand::tests::negative_control_binding
+    run_built acyclic_harness rust/crates/harness \
+        local::tests::checkout_incarnation local::owner:: local::owner_record:: \
+        local::tests::checkout_reopen \
         local::tests::checkout::checkout_without_bash \
         local::tests::volumes::bash_crosses_granted \
-        local::workspace::volumes::recovery_tests)
-    timed cli cargo test --locked -p graphcoder --test cli --features "$harness_features" \
+        local::workspace::volumes::recovery_tests
+    timed cli-build cargo test --locked -p graphcoder --test cli --features "$harness_features" \
+        --no-run --message-format=json >"$artifacts"
+    run_built cli rust/crates/harness \
         recreated_checkout_runs_a_fresh_operation_through_the_real_cli_and_http
     ;;
 model)
     # This cfg, never a feature or build.rs decision, instruments the actual
     # read/rename/flush operations used by HeldRoot::read_or_publish.
-    timed model env RUSTFLAGS="${RUSTFLAGS:-} --cfg acyclic_fs_native_loom" \
-        cargo test --locked -p acyclic-fs --lib native_host::held_files::models
+    artifacts=$(mktemp)
+    trap 'rm -f "$artifacts"' EXIT
+    timed model-build env RUSTFLAGS="${RUSTFLAGS:-} --cfg acyclic_fs_native_loom" \
+        cargo test --locked -p acyclic-fs --lib --no-run --message-format=json >"$artifacts"
+    run_built acyclic_fs rust/crates/filesystem native_host::held_files::models
     ;;
 windows)
     for phase in windows-base windows-cli windows-fuzz; do bash "$0" "$phase"; done
@@ -83,12 +97,17 @@ windows-fuzz)
         --target x86_64-pc-windows-gnu
     ;;
 fuzz)
-    timed fuzz cargo +nightly-2026-07-01 check --locked -p acyclic-harness-fuzz --bin records
+    timed fuzz env CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}-nightly-incarnation-fuzz" \
+        cargo +nightly-2026-07-01 check --locked -p acyclic-harness-fuzz --bin records
     ;;
 darwin)
     # Run on the macOS host: Linux and Windows cannot prove F_FULLFSYNC on
     # regular files and the directories used for checkout token publication.
-    timed darwin cargo test --locked -p acyclic-native-runtime --lib held_sync::tests
+    artifacts=$(mktemp)
+    trap 'rm -f "$artifacts"' EXIT
+    timed darwin-build cargo test --locked -p acyclic-native-runtime --lib \
+        --no-run --message-format=json >"$artifacts"
+    run_built acyclic_native_runtime rust/crates/native-runtime held_sync::tests
     ;;
 *) echo "usage: $0 [all|static|native|model|windows|windows-base|windows-cli|windows-fuzz|fuzz|darwin]" >&2; exit 2 ;;
 esac
