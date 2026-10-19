@@ -63,7 +63,8 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let retained_before = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
 
     let stop = CancellationToken::new();
-    let mut cancelled = crate::NativeMaterializationWork::new(ORIGINAL_BUDGET, &stop)?;
+    let mut cancelled = crate::NativeMaterializationWork::new(ORIGINAL_BUDGET, &stop)
+        .map_err(|(error, _)| error)?;
     stop.cancel();
     assert!(matches!(
         watch.admit_with_work(Path::new("a/b/c"), &mut cancelled),
