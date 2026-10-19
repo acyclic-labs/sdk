@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
+include = ["clippy.toml", "Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "tests/**", "examples/**", "fixtures/**", "conformance/**", "fuzz/corpus/**", "fuzz-context/fuzz_targets/file_guidance_input.rs", "fuzz-context/corpus/file_guidance/**"]
 autotests = false
 autobins = false
 name = "acyclic-harness"
@@ -203,7 +203,7 @@ terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
-filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom"]
+filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
@@ -262,6 +262,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+dirs.workspace = true
 blake3.workspace = true
 prost-build.workspace = true
 protoc-bin-vendored.workspace = true
@@ -287,6 +288,8 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
+proc-macro2 = "=1.0.107"
+syn = { version = "=3.0.6", features = ["full", "visit"] }
 proptest.workspace = true
 diffy.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }

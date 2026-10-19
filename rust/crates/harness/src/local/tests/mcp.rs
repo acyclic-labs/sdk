@@ -50,7 +50,7 @@ async fn configured_server_failures_are_visible_and_required_failures_precede_ow
             crate::native_settings::SettingsConfig::new(root.path(), root.path())
                 .codex_home(root.path().join("codex")),
         );
-        let owner = super::super::owner::state_directory(&config.project)?.join("owner.json");
+        let owner = config.resolved_state_directory()?.join("owner.json");
         let opened = LocalHarness::open(config).await;
         if required {
             assert!(

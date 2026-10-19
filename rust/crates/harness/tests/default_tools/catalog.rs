@@ -3,10 +3,9 @@ use proptest::prelude::*;
 
 #[test]
 fn catalog_preserves_pinned_file_contracts_and_digests() -> Result<()> {
-    let contract: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../fixtures/harness/v2/file-tools-contract.json"
-    )))
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../fixtures/harness/v2/file-tools-contract.json"
+    ))
     .map_err(|error| Error::Invalid(error.to_string()))?;
     for name in ["read", "write", "edit"] {
         let spec = tools::catalog().find(|spec| spec.name == name).unwrap();

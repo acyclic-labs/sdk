@@ -34,7 +34,7 @@ fn request_seed_corpus_settles() {
         .enable_all()
         .build()
         .unwrap();
-    let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let corpus = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
         .join("../harness-fuzz/corpus/search_request");
     for entry in std::fs::read_dir(corpus).unwrap() {
         runtime.block_on(support::check(

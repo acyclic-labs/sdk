@@ -68,7 +68,7 @@ async fn harness_content_matches_its_oracle_and_detects_divergence() -> TestResu
 #[tokio::test]
 #[ignore = "needs a local cloud: node scripts/local-cloud.mjs"]
 async fn objects_and_harness_content_match_the_local_cloud() -> TestResult {
-    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD")
+    let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
     let objects = endpoints.objects.objects().await?;

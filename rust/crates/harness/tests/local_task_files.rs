@@ -10,8 +10,80 @@ use futures::StreamExt as _;
 use std::sync::Arc;
 
 #[tokio::test]
+async fn explicitly_hermetic_compositions_default_to_private_state() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .hermetic()
+    .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(
+        acyclic_harness::native_settings::SettingsConfig::new(directory.path(), directory.path())
+            .codex_home(directory.path().join(".codex")),
+    );
+    let first = LocalHarness::open(config).await?;
+    // A second explicit fixture config must not reopen the first composition's per-project
+    // user store: its private volume identities must be distinct.
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .hermetic()
+    .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(
+        acyclic_harness::native_settings::SettingsConfig::new(directory.path(), directory.path())
+            .codex_home(directory.path().join(".codex")),
+    );
+    let second = LocalHarness::open(config).await?;
+    assert_ne!(first.task_files().volume(), second.task_files().volume());
+    first.close().await?;
+    second.close().await
+}
+
+#[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+#[tokio::test]
+async fn integration_compositions_cannot_discover_the_real_settings_home() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(storage)?;
+    let model = Model::new(
+        "scripted".into(),
+        "test".into(),
+        "1".into(),
+        serde_json::Value::Null,
+    )?;
+    let config = acyclic_harness::LocalHarnessConfig::new(
+        directory.path(),
+        (model, Arc::new(ScriptedModelProvider::new([]))),
+    )
+    .hermetic()
+    .without_default_tools();
+    // This compiles Harness as a dependency, without cfg(test). Bypassing the
+    // settings helper while explicitly hermetic must fail before reading the real user's settings.
+    assert!(matches!(
+        LocalHarness::open(config).await,
+        Err(Error::Unsupported(message)) if message == "hermetic compositions must inject settings"
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let model = Model::new(
         "scripted".into(),
@@ -19,10 +91,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
         "1".into(),
         serde_json::Value::Null,
     )?;
-    let harness = LocalHarness::open(local_harness_config(
-        directory.path(),
-        (model.clone(), provider.clone()),
-    )?)
+    let harness = LocalHarness::open(
+        local_harness_config(directory.path(), (model.clone(), provider.clone()))?
+            .state_directory(state.path()),
+    )
     .await?;
     let files = harness.task_files();
     assert_eq!(files.volume().class(), VolumeClass::AgentPrivate);
@@ -75,8 +147,10 @@ async fn private_request_files_follow_immediately_and_survive_reopen() -> Result
     drop(initial);
     drop(harness);
 
-    let harness =
-        LocalHarness::open(local_harness_config(directory.path(), (model, provider))?).await?;
+    let harness = LocalHarness::open(
+        local_harness_config(directory.path(), (model, provider))?.state_directory(state.path()),
+    )
+    .await?;
     let reopened = harness
         .task_files()
         .observe(Query::Requests(task.clone()), None, 8)

@@ -10,6 +10,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[expect(
+    clippy::disallowed_macros,
+    reason = "Cargo-provided executable metadata for this integration crate"
+)]
+const EXECUTABLE: &str = env!("CARGO_BIN_EXE_graphcoder");
 const ANSWERS: [&str; 3] = ["ALPHA_REPLY", "BRAVO_REPLY", "CHARLIE_REPLY"];
 
 fn answer(text: &str) -> String {
@@ -148,7 +153,7 @@ async fn three_prompts_in_the_tui_continue_one_conversation() {
     let child = Running(
         Command::new("setsid")
             .arg("--ctty")
-            .arg(env!("CARGO_BIN_EXE_graphcoder"))
+            .arg(EXECUTABLE)
             .arg("--workspace")
             .arg(&workspace)
             .arg("--catalog")

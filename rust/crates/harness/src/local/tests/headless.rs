@@ -300,7 +300,20 @@ async fn restored_jsonl_checks_ready_input_without_waiting_for_a_scheduled_frame
 
 #[tokio::test]
 async fn disconnect_preserves_an_unfinished_admission_and_releases_its_mounts() -> Result<()> {
-    let (directory, harness, provider) = local().await?;
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            crate::test_support::local_harness_config(
+                directory.path(),
+                (model()?, provider.clone()),
+            )?
+            .state_directory(state.path())
+            .without_default_tools(),
+        )
+        .await?,
+    );
     let operation = OperationId::new();
     let task = match harness.submit(operation, "hello").await? {
         Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) => task_id,
@@ -316,6 +329,7 @@ async fn disconnect_preserves_an_unfinished_admission_and_releases_its_mounts() 
     crate::client::disconnect_local(harness).await?;
     let reopened = LocalHarness::open(
         crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path())
             .without_default_tools(),
     )
     .await?;

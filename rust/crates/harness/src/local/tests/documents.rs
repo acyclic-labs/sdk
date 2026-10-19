@@ -57,9 +57,9 @@ proptest::proptest! {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
             .block_on(async {
                 let directory = tempfile::tempdir().map_err(super::super::storage)?;
-                let harness = LocalHarness::open(LocalHarnessConfig::new(
+                let harness = LocalHarness::open(crate::test_support::local_harness_config(
                     directory.path(), (model()?, scripted([])),
-                )).await?;
+                )?).await?;
                 assert!(harness.scratch_files(acyclic_fs::WorkBudget::UNBOUNDED).is_err());
                 let publisher = FilesystemContentPublisher::new(
                     harness.files.clone(), harness.scratch(), &harness.verifier,

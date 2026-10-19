@@ -4,7 +4,7 @@ use std::path::Path;
 
 #[tokio::test]
 async fn limit_oracles_reject_changed_allowances_counts_and_deltas() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     for (file, pointer, replacement) in [
         ("input-utf8-at", "/limits/render_bytes", json!(3)),
         ("output-utf8-at", "/limits/file_bytes", json!(3)),

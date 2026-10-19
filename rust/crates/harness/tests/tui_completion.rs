@@ -117,7 +117,7 @@ fn completion_through_a_real_pty() -> Result {
 
 #[test]
 fn pty_child() -> Result {
-    if std::env::var_os("GC_COMPLETION_PTY").is_none() {
+    if acyclic_harness::test_support::environment("GC_COMPLETION_PTY").is_none() {
         return Ok(());
     }
     use acyclic_harness::tui::crossterm::{

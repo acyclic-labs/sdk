@@ -32,7 +32,9 @@ impl LocalStream {
         Self::open_with_clock_and_anchor(root, limits, clock, None).await
     }
 
-    async fn open_with_clock_and_anchor(
+    /// Opens a provider with a trusted clock and an optional retained owner.
+    #[doc(hidden)]
+    pub async fn open_with_clock_and_anchor(
         root: impl AsRef<Path>,
         limits: LocalStreamLimits,
         clock: Arc<dyn UnixMillisClock>,

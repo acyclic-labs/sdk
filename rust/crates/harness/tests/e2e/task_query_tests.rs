@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path};
 
 fn fixture(name: &str) -> TestResult<Value> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     Ok(super::scenario::load_value(
         &root,
         &root.join(format!("task-query/{name}.json")),
@@ -207,7 +207,8 @@ proptest! {
 
 #[test]
 fn task_query_codec_seed_corpus() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/task_query_case");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+        .join("../harness-fuzz/corpus/task_query_case");
     for entry in std::fs::read_dir(root)? {
         let bytes = std::fs::read(entry?.path())?;
         if let Ok(case) = serde_json::from_slice::<TaskQueryCase>(&bytes) {

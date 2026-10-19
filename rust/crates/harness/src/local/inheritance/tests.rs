@@ -339,9 +339,7 @@ proptest! {
     ) {
         let model: String = model.into_iter().collect();
         let summary: String = summary.into_iter().collect();
-        let mut selected: crate::context::SummarySelection = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"), "/fuzz-context/corpus/context_manifest/summary-selection.json"
-        ))).unwrap();
+        let mut selected: crate::context::SummarySelection = serde_json::from_str(include_str!("../../../fuzz-context/corpus/context_manifest/summary-selection.json")).unwrap();
         selected.continuation.as_mut().unwrap().frozen = frozen;
         for summary in [json!(summary), serde_json::to_value(selected).unwrap()] {
         let bound = [json!({"model":model}), json!({"summary":summary})]

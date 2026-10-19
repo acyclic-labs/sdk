@@ -42,6 +42,8 @@ pub struct LocalCoreStateStore {
     /// Open while this handle's commits defer durability.
     deferral: Option<Arc<AtomicBool>>,
     journal_work: Option<crate::materializer::NativeMaterializationWork>,
+    // Last: retained storage owners must outlive the namespace's open WAL and locks.
+    ownership_anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
 
 impl std::fmt::Debug for LocalCoreStateStore {
@@ -161,6 +163,7 @@ impl LocalCoreStateStore {
             ownership: Ownership::Shared,
             deferral: None,
             journal_work: None,
+            ownership_anchor: None,
         }
     }
 
@@ -178,6 +181,7 @@ impl LocalCoreStateStore {
             })),
             deferral: None,
             journal_work: None,
+            ownership_anchor: None,
         })
     }
 
@@ -189,6 +193,22 @@ impl LocalCoreStateStore {
             ..self.clone()
         };
         (store.clone(), DeferredDurability { store })
+    }
+
+    /// Retains an external storage owner through clones and in-flight transactions.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_ownership_anchor(
+        mut self,
+        owner: Option<acyclic_native_runtime::OwnershipAnchor>,
+    ) -> Self {
+        if let Some(owner) = owner {
+            self.ownership_anchor = Some(match self.ownership_anchor.take() {
+                Some(previous) => acyclic_native_runtime::OwnershipAnchor::new((previous, owner)),
+                None => owner,
+            });
+        }
+        self
     }
 
     /// Returns the namespace root.

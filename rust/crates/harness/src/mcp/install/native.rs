@@ -20,7 +20,7 @@ pub(super) async fn connect(
     let (connection, binding) = match &server.transport {
         #[cfg(feature = "mcp-stdio")]
         McpTransport::Stdio { .. } => {
-            let child = command_for(server, workspace, |name| std::env::var_os(name))?;
+            let child = command_for(server, workspace, crate::native_environment::variable)?;
             let binding = command_binding(&child, server);
             (
                 Connection::Stdio(
@@ -42,7 +42,7 @@ pub(super) async fn connect(
             bearer_token_env_var,
         } => {
             use super::super::http::{HttpMcpTransport, McpHttpProvider, NativeMcpHttpProvider};
-            let environment = |name: &str| std::env::var_os(name);
+            let environment = crate::native_environment::variable;
             let headers = headers_for(
                 headers,
                 env_headers,
@@ -65,7 +65,7 @@ pub(super) async fn connect(
             let request = transport.initialization_request(
                 operation,
                 "acyclic-harness",
-                env!("CARGO_PKG_VERSION"),
+                crate::build_metadata::PACKAGE_VERSION,
             )?;
             let response = provider.exchange(operation, request).await?;
             let (transport, _, initialized) =

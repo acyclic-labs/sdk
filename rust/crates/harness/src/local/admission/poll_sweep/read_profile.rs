@@ -36,7 +36,7 @@ impl<S: tracing::Subscriber> Layer<S> for Reads {
 }
 
 pub(super) fn start() -> Option<std::time::Instant> {
-    std::env::var_os("GC_LOCAL_READ_PROFILE").map(|_| std::time::Instant::now())
+    crate::native_environment::variable("GC_LOCAL_READ_PROFILE").map(|_| std::time::Instant::now())
 }
 
 pub(super) fn install(

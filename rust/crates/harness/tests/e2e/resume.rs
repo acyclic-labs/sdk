@@ -316,7 +316,7 @@ impl ModelProvider for PausedPrefix {
 #[tokio::test]
 #[ignore = "the child of resume::killed_turn_resumes_from_a_loopback_journal"]
 async fn child() -> TestResult {
-    let Some(config) = std::env::var_os(CHILD) else {
+    let Some(config) = acyclic_harness::test_support::environment(CHILD) else {
         return Ok(());
     };
     let config: Child = serde_json::from_str(config.to_str().ok_or("child config is not UTF-8")?)?;

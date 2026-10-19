@@ -497,3 +497,28 @@ fn bounded_write_retains_custody_through_denial_drop_and_cancellation() -> io::R
     }
     Ok(())
 }
+
+#[test]
+fn fenced_ownership_cleans_up_before_releasing_the_fence() {
+    struct Cleanup(Arc<AtomicBool>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+    struct Fence(Arc<AtomicBool>);
+    impl Drop for Fence {
+        fn drop(&mut self) {
+            assert!(self.0.load(Ordering::SeqCst));
+        }
+    }
+    let cleaned = Arc::new(AtomicBool::new(false));
+    let owner = OwnershipAnchor::new(Cleanup(cleaned.clone()));
+    // A store may have retained the root before the filesystem registers its fence.
+    let retained = owner.clone();
+    let owner = OwnershipAnchor::fenced(owner, Fence(cleaned.clone()));
+    drop(owner);
+    assert!(!cleaned.load(Ordering::SeqCst));
+    drop(retained);
+    assert!(cleaned.load(Ordering::SeqCst));
+}

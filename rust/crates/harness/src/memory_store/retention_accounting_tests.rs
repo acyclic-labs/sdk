@@ -116,8 +116,9 @@ fn retained_path_without_accounting() -> Result<()> {
 fn profile(accounted: bool) -> Result<()> {
     let store = fixture(4096)?;
     let path = "files/new";
-    let selected = std::env::var("HARNESS_PATH_PROFILE").ok();
-    let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
+    let selected = crate::native_environment::variable("HARNESS_PATH_PROFILE")
+        .and_then(|value| value.into_string().ok());
+    let syscalls = crate::native_environment::variable("HARNESS_PATH_SYSCALLS").is_some();
     for tracing in [false, true] {
         let dispatch = if tracing {
             tracing::Dispatch::new(tracing_subscriber::registry())
@@ -231,8 +232,9 @@ fn contended_retained_path_accounting() -> Result<()> {
     use std::sync::Barrier;
     use std::time::Instant;
     let store = fixture(4096)?;
-    let selected = std::env::var("HARNESS_PATH_PROFILE").ok();
-    let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
+    let selected = crate::native_environment::variable("HARNESS_PATH_PROFILE")
+        .and_then(|value| value.into_string().ok());
+    let syscalls = crate::native_environment::variable("HARNESS_PATH_SYSCALLS").is_some();
     let samples = if syscalls { 1 } else { 8 };
     let calls = if syscalls { 1_u32 } else { 32 };
     for tracing in [false, true] {

@@ -18,6 +18,10 @@ pub struct LocalHarnessConfig {
     pub(super) goal_continuations: Option<crate::goal::GoalContinuationPolicy>,
     pub(super) project: LocalProject,
     pub(super) state_directory: Option<PathBuf>,
+    /// Refuses ambient state and settings discovery; set only by `hermetic()`.
+    pub(super) hermetic: bool,
+    /// Test-owned state root, retained by every store opened in it.
+    pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: (Model, Arc<dyn ModelProvider>),
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
@@ -52,6 +56,8 @@ impl LocalHarnessConfig {
             goal_continuations: Some(Default::default()),
             project: LocalProject::Workspace(workspace.into()),
             state_directory: None,
+            hermetic: false,
+            test_state: None,
             model,
             context_manifest: None,
             tools: Vec::new(),
@@ -87,7 +93,38 @@ impl LocalHarnessConfig {
     #[must_use]
     pub fn state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
         self.state_directory = Some(directory.into());
+        self.test_state = None;
         self
+    }
+    /// Refuses ambient state/settings discovery and allocates state lazily unless explicitly rooted.
+    #[must_use]
+    pub fn hermetic(mut self) -> Self {
+        self.hermetic = true;
+        self
+    }
+    /// Embedded bindings without a checkout never allocate an unused state root.
+    pub(super) fn prepare_state(mut self) -> Result<Self> {
+        if self.hermetic && self.state_directory.is_none() {
+            #[cfg(test)]
+            TEMPORARY_STATES.with(|count| count.set(count.get() + 1));
+            let state = tempfile::tempdir().map_err(storage)?;
+            self.state_directory = Some(state.path().to_path_buf());
+            self.test_state = Some(acyclic_native_runtime::OwnershipAnchor::new(state));
+        }
+        Ok(self)
+    }
+    /// The one resolution of this composition's durable state directory: the injected directory, else the
+    /// project's default under the per-user root.
+    pub(super) fn resolved_state_directory(&self) -> Result<PathBuf> {
+        match &self.state_directory {
+            Some(directory) => crate::native_environment::state(Some(directory)).ok_or_else(|| {
+                Error::Unsupported("injected state directory is unavailable".into())
+            }),
+            None if self.hermetic => Err(Error::Unsupported(
+                "hermetic compositions must prepare or inject state".into(),
+            )),
+            None => owner::state_directory_in(&owner::user_state_root()?, &self.project),
+        }
     }
     /// Overrides default per-turn AGENTS.md/CLAUDE.md capture with an immutable manifest.
     #[must_use]
@@ -172,4 +209,9 @@ impl LocalHarnessConfig {
         self.clock = clock;
         self
     }
+}
+
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }

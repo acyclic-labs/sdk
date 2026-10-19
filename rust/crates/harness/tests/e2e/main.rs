@@ -133,7 +133,7 @@ async fn scenario_oracles_reject_wrong_text_context_events_files_and_unused_turn
 
 #[tokio::test]
 async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("summary/exact-capacity.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["mode", "text", "result", "context", "budget"] {
@@ -166,7 +166,7 @@ async fn summary_oracles_reject_ignored_mode_text_result_context_and_recovery() 
 
 #[tokio::test]
 async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accounting() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("compaction/threshold.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["context", "capacity", "policy", "accounting", "output"] {
@@ -191,7 +191,7 @@ async fn compaction_oracles_reject_ignored_context_capacity_policy_and_accountin
 
 #[tokio::test]
 async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("compaction/recover-summary.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for files in [
@@ -214,7 +214,7 @@ async fn compaction_oracles_check_the_attached_recovered_summary() -> TestResult
 
 #[tokio::test]
 async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let baseline = root.join("recovery/midstream.json");
     run(Scenario::load(&root, &baseline)?).await?;
     for field in ["prefix", "continuation", "count", "resume", "unused"] {
@@ -246,7 +246,7 @@ async fn recovery_oracles_reject_wrong_prefixes_replies_counts_and_attempts() ->
 
 #[test]
 fn scenarios() -> TestResult {
-    if std::env::var_os("E2E_TRACE").is_some() {
+    if acyclic_harness::test_support::environment("E2E_TRACE").is_some() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new(
                 "warn,acyclic_harness::filesystem::task_runtime::dispatch=trace",
@@ -294,9 +294,11 @@ const SCENARIOS_PER_CPU: usize = 4;
 
 /// The admission bound; `E2E_SCENARIO_CAPACITY` overrides it for measurement.
 fn scenario_capacity() -> TestResult<usize> {
-    let capacity = match std::env::var("E2E_SCENARIO_CAPACITY") {
-        Ok(capacity) => capacity.parse()?,
-        Err(_) => std::thread::available_parallelism()?.get() * SCENARIOS_PER_CPU,
+    let capacity = match acyclic_harness::test_support::environment("E2E_SCENARIO_CAPACITY")
+        .and_then(|value| value.into_string().ok())
+    {
+        Some(capacity) => capacity.parse()?,
+        None => std::thread::available_parallelism()?.get() * SCENARIOS_PER_CPU,
     };
     if capacity == 0 {
         return Err("scenario capacity is zero".into());
@@ -332,15 +334,18 @@ async fn run_guarded_scenarios(
     registry: std::sync::Arc<progress_registry::Registry>,
     io: acyclic_native_runtime::testing::Schedule,
 ) -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut paths = Vec::new();
     discover(&root, &mut paths)?;
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
-    let local_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/local-scenarios");
+    let local_root =
+        Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/local-scenarios");
     #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
     discover(&local_root, &mut paths)?;
     paths.sort();
-    if let Ok(filter) = std::env::var("E2E_FILTER") {
+    if let Some(filter) = acyclic_harness::test_support::environment("E2E_FILTER")
+        .and_then(|value| value.into_string().ok())
+    {
         paths.retain(|path| path.to_string_lossy().contains(&filter));
     }
     if paths.is_empty() {
@@ -381,7 +386,7 @@ async fn run_guarded_scenarios(
     let mut failures = Vec::new();
     while let Some((path, result)) = results.next().await {
         let name = path
-            .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"))?
+            .strip_prefix(Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests"))?
             .display();
         match result {
             Ok(()) => println!("PASS {name}"),

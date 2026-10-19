@@ -32,7 +32,7 @@ fn deadlines(source: &str) -> Vec<String> {
 
 #[test]
 fn scenario_sources_contain_no_wall_clock_deadline() -> crate::TestResult {
-    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let tests = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests");
     let mut sources = Vec::new();
     for entry in std::fs::read_dir(tests.join("e2e"))? {
         sources.push(entry?.path());

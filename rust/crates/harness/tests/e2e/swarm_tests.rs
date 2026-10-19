@@ -132,7 +132,7 @@ async fn duplicate_session_delivery_is_rejected_before_another_fold() -> TestRes
 
 #[test]
 fn checked_swarm_cases_round_trip_and_reject_out_of_bounds_layouts() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let mut paths = Vec::new();
     super::scenario_data::discover(&root.join("swarm"), &mut paths)?;
     for path in paths {

@@ -7,7 +7,7 @@ async fn stock_bash_preserves_host_path_and_home_and_mounts_win() -> Result<()> 
     const HOME: &str = "/acyclic-stock-bash-home";
     const TOOL: &str = "acyclic-host-path-only";
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
-    if std::env::var_os(CHILD).is_none() {
+    if crate::native_environment::variable(CHILD).is_none() {
         let bin = directory.path().join("bin");
         std::fs::create_dir(&bin).map_err(super::super::storage)?;
         std::fs::write(
@@ -28,7 +28,7 @@ async fn stock_bash_preserves_host_path_and_home_and_mounts_win() -> Result<()> 
             "--exact",
             "--nocapture",
         ])
-        .env(CHILD, "1")
+        .env(CHILD, HOME)
         .env("PATH", path)
         .env("HOME", HOME)
         .env("ACYCLIC_VOLUME_PROJECT", "stale project")
@@ -48,8 +48,18 @@ async fn stock_bash_preserves_host_path_and_home_and_mounts_win() -> Result<()> 
         return Ok(());
     }
 
-    assert_eq!(std::env::var("HOME").unwrap(), HOME);
-    assert_eq!(std::env::var("ACYCLIC_VOLUME_SCRATCH_MODE").unwrap(), "ro");
+    assert_eq!(
+        crate::native_environment::variable(CHILD)
+            .and_then(|value| value.into_string().ok())
+            .unwrap(),
+        HOME
+    );
+    assert_eq!(
+        crate::native_environment::variable("ACYCLIC_VOLUME_SCRATCH_MODE")
+            .and_then(|value| value.into_string().ok())
+            .unwrap(),
+        "ro"
+    );
     let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([
         super::checked_commands::call(0, "bash", TOOL),

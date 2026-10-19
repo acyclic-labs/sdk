@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 fn fixture(name: &str) -> TestResult<Value> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/fixtures");
     Ok(scenario_data::load_value(
         &root,
         &root.join(format!("diffs/{name}.json")),
@@ -137,7 +137,8 @@ fn diff_case_codec_rejects_unknown_fields_missing_expectations_and_invalid_bytes
 
 #[test]
 fn diff_case_codec_replays_fuzz_seeds() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../harness-fuzz/corpus/client_diff");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
+        .join("../harness-fuzz/corpus/client_diff");
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         if entry.file_name().to_string_lossy().starts_with("case-") {
@@ -155,7 +156,8 @@ fn run(value: Value) -> TestResult {
 
 #[test]
 fn bounded_diff_unit_cases() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/diffs");
+    let root =
+        Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/fixtures/diffs");
     let mut cases = Vec::new();
     scenario_data::discover(&root, &mut cases)?;
     assert_eq!(cases.len(), 29);

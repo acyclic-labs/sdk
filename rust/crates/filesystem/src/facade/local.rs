@@ -41,9 +41,14 @@ pub(super) struct LocalRootRegistration {
 pub(super) type LocalRootRegistry = std::collections::BTreeMap<PathBuf, LocalRootRegistration>;
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-async fn canonical_local_root(requested: PathBuf) -> Result<PathBuf, FsError> {
+async fn canonical_local_root(
+    requested: PathBuf,
+    owner: Option<OwnershipAnchor>,
+) -> Result<PathBuf, FsError> {
     acyclic_native_runtime::run_blocking_io(
         move || {
+            // Cancellation must not remove an externally owned root while this worker uses it.
+            let _owner = owner;
             std::fs::create_dir_all(&requested)?;
             std::fs::canonicalize(requested)
         },
@@ -126,9 +131,24 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     }
     /// Opens the infrastructure-free durable local composition.
     pub async fn local(options: LocalOptions) -> Result<Self, FsError> {
+        Self::local_with_anchor(options, None).await
+    }
+    /// Opens a new local root while retaining its owner in every derived provider.
+    /// A supplied owner cannot be attached to an already-live root.
+    #[doc(hidden)]
+    pub async fn local_with_ownership_anchor(
+        options: LocalOptions,
+        ownership: OwnershipAnchor,
+    ) -> Result<Self, FsError> {
+        Self::local_with_anchor(options, Some(ownership)).await
+    }
+    async fn local_with_anchor(
+        options: LocalOptions,
+        external_owner: Option<OwnershipAnchor>,
+    ) -> Result<Self, FsError> {
         (async move {
             static REGISTRY: OnceLock<tokio::sync::Mutex<LocalRootRegistry>> = OnceLock::new();
-            let root = canonical_local_root(options.root.clone()).await?;
+            let root = canonical_local_root(options.root.clone(), external_owner.clone()).await?;
             let mut options = options;
             options.root = root.clone();
             let registry =
@@ -138,7 +158,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 if let Some(existing) = registrations.get(&root)
                     && let Some(inner) = existing.live.upgrade()
                 {
-                    if existing.options != options {
+                    if existing.options != options || external_owner.is_some() {
                         return Err(FsError::LocalOptionsConflict);
                     }
                     return Ok(Self { inner });
@@ -152,7 +172,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     .get(&root)
                     .ok_or(FsError::LocalInitializationWorker)?;
                 if let Some(inner) = existing.live.upgrade() {
-                    if existing.options != options {
+                    if existing.options != options || external_owner.is_some() {
                         return Err(FsError::LocalOptionsConflict);
                     }
                     return Ok(Self { inner });
@@ -162,8 +182,22 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             let ownership = lifecycle.lock_owned().await;
             let open_options = options.clone();
             let fs = run_local_initialization(ownership, move |ownership| async move {
-                let ownership = OwnershipAnchor::new(ownership);
-                Self::open_local_unshared(open_options, Some(ownership)).await
+                match external_owner {
+                    Some(owner) => {
+                        owner
+                            .initialize_fenced(ownership, |ownership| {
+                                Self::open_local_unshared(open_options, Some(ownership))
+                            })
+                            .await
+                    }
+                    None => {
+                        Self::open_local_unshared(
+                            open_options,
+                            Some(OwnershipAnchor::new(ownership)),
+                        )
+                        .await
+                    }
+                }
             })
             .await??;
             let mut registrations = registry.lock().await;

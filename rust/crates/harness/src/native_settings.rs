@@ -31,9 +31,13 @@ impl SettingsConfig {
     /// Selects user settings by default; repository settings require explicit trust.
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
         let home = home.into();
-        let codex_home = codex_directory(&home, std::env::var_os("CODEX_HOME").as_deref());
+        let codex_home = codex_directory(&home, configured_codex_home().as_deref());
+        Self::with_roots(workspace.into(), home, codex_home)
+    }
+
+    fn with_roots(workspace: PathBuf, home: PathBuf, codex_home: PathBuf) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace,
             home,
             codex_home,
             trust_project_hooks: false,
@@ -52,7 +56,11 @@ impl SettingsConfig {
     ))]
     pub(crate) fn for_test(workspace: impl Into<PathBuf>) -> Result<Self> {
         let home = tempfile::tempdir().map_err(Error::process_io)?;
-        let mut settings = Self::new(workspace, home.path()).codex_home(home.path().join(".codex"));
+        let mut settings = Self::with_roots(
+            workspace.into(),
+            home.path().to_owned(),
+            home.path().join(".codex"),
+        );
         settings._test_home = Some(home);
         Ok(settings)
     }
@@ -394,6 +402,18 @@ fn parse<T: serde::de::DeserializeOwned>(bytes: &[u8], toml: bool) -> Result<T> 
     } else {
         serde_json::from_slice(bytes).map_err(|error| Error::Invalid(format!("settings: {error}")))
     }
+}
+
+/// The process's CODEX_HOME. Unit tests never consult it: their settings resolve under the home they inject, so no
+/// test can reach a real Codex directory or its credentials.
+#[cfg(not(test))]
+fn configured_codex_home() -> Option<std::ffi::OsString> {
+    crate::native_environment::variable("CODEX_HOME")
+}
+
+#[cfg(test)]
+fn configured_codex_home() -> Option<std::ffi::OsString> {
+    None
 }
 
 fn codex_directory(home: &Path, configured: Option<&std::ffi::OsStr>) -> PathBuf {

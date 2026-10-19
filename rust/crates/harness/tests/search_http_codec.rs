@@ -65,7 +65,7 @@ fn corpus(exa: bool) {
         .build()
         .unwrap();
     for corpus in ["search_http_codec", "search_http_envelope"] {
-        let corpus = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        let corpus = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
             .join("../harness-fuzz/corpus")
             .join(corpus);
         for entry in std::fs::read_dir(corpus).unwrap() {

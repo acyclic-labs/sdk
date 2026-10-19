@@ -3,10 +3,7 @@ use acyclic_harness::task_volume::{Change, Generation};
 use std::sync::atomic::Ordering;
 mod fixture {
     use acyclic_stream;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../stream/tests/support/session.rs"
-    ));
+    include!("../../../stream/tests/support/session.rs");
 }
 use fixture::{Counts, Fixture, Options, Traffic};
 impl Fixture {

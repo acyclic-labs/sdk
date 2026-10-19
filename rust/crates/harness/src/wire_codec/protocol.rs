@@ -1,6 +1,6 @@
 use super::*;
 pub(crate) const COMPILED_PROTOCOL: (&str, &str) =
-    (EVENT_WIRE_VERSION, env!("HARNESS_DESCRIPTOR_DIGEST"));
+    (EVENT_WIRE_VERSION, crate::build_metadata::DESCRIPTOR_DIGEST);
 pub(crate) fn protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
         version: COMPILED_PROTOCOL.0.into(),

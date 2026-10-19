@@ -17,6 +17,10 @@ fn child(mode: &str) -> Output {
 #[test]
 fn fresh_process_child() {
     // Only meaningful when re-executed by the test below.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "fixed child-mode control set by this test's own parent; this target has no test-support seam"
+    )]
     let Ok(mode) = std::env::var(MODE) else {
         return;
     };

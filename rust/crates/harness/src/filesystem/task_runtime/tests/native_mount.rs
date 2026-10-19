@@ -230,10 +230,11 @@ async fn native_command_reads_lazy_snapshot_and_publishes_on_finite_work()
     let mut stderr = work.copy_bytes(&[0; 128])?;
     stdout.0.clear();
     stderr.0.clear();
-    let executable =
-        std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows root"))
-            .join("System32")
-            .join("cmd.exe");
+    let executable = std::path::PathBuf::from(
+        crate::native_environment::variable("SystemRoot").expect("Windows root"),
+    )
+    .join("System32")
+    .join("cmd.exe");
     let mut command = Command::new(executable);
     command.creation_flags(0x08000000); // CREATE_NO_WINDOW.
     command

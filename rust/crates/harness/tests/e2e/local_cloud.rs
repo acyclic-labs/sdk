@@ -41,8 +41,11 @@ struct Endpoints {
 /// The scenario data. Cargo names the crate at run time too; a prebuilt test
 /// binary run by the fixture, away from its build tree, is given it the same way.
 fn root() -> PathBuf {
-    std::env::var_os("CARGO_MANIFEST_DIR")
-        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+    acyclic_harness::test_support::environment("CARGO_MANIFEST_DIR")
+        .map_or_else(
+            || PathBuf::from(acyclic_harness::build_metadata::MANIFEST_DIR),
+            PathBuf::from,
+        )
         .join("tests/scenarios")
 }
 
@@ -351,7 +354,7 @@ async fn subagent_follows_match_over_a_loopback_session_and_detect_divergence() 
 #[tokio::test]
 #[ignore = "needs a local cloud: node scripts/local-cloud.mjs"]
 async fn scenario_families_match_between_memory_and_local_cloud_streams() -> TestResult {
-    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD")
+    let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD")
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
     let remote = endpoints.streams.connect().await?;

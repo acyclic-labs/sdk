@@ -64,6 +64,7 @@ impl LocalCoreStateStore {
             ownership: Ownership::Owned(owner),
             deferral: None,
             journal_work: None,
+            ownership_anchor: None,
         })
     }
 }

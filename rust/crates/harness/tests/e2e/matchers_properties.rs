@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 #[test]
 fn expectation_codec_replays_fuzz_seeds() -> crate::TestResult {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let root = std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR)
         .join("../harness-fuzz/corpus/e2e_expectations");
     for entry in std::fs::read_dir(root)? {
         let bytes = std::fs::read(entry?.path())?;

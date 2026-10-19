@@ -203,7 +203,7 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
     let [(old, _), (new, _)] = pair(&text, invalid, restore);
     let expected: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            std::path::Path::new(crate::build_metadata::MANIFEST_DIR)
                 .join("src/executor/tests/preparation_expected.json"),
         )
         .unwrap(),

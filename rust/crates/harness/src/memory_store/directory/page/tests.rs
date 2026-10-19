@@ -417,14 +417,15 @@ fn profile(tracing: bool) {
         tracing::Dispatch::none()
     };
     let _dispatch = tracing::dispatcher::set_default(&dispatch);
-    let implementation = std::env::var("HARNESS_DIRECTORY_PROFILE").ok();
+    let implementation = crate::native_environment::variable("HARNESS_DIRECTORY_PROFILE")
+        .and_then(|value| value.into_string().ok());
     let implementations: &[Implementation] = match implementation.as_deref() {
         Some("before") => &[Scan],
         Some("after") => &[SinglePass],
         Some("counted") => &[Counted],
         _ => &[Scan, Counted, SinglePass],
     };
-    let syscalls = std::env::var_os("HARNESS_DIRECTORY_SYSCALLS").is_some();
+    let syscalls = crate::native_environment::variable("HARNESS_DIRECTORY_SYSCALLS").is_some();
     for (label, nested, path, after, maximum) in [
         ("distinct", false, "files", None, 1),
         ("nested", true, "files", None, 1),

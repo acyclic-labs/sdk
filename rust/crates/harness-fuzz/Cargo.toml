@@ -8,6 +8,14 @@ publish = false
 cargo-fuzz = true
 
 [[bin]]
+name = "local_state_directory"
+path = "fuzz_targets/local_state_directory.rs"
+required-features = ["runtime"]
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "effect_certificate"
 path = "fuzz_targets/effect_certificate.rs"
 test = false

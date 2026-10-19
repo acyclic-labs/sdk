@@ -86,7 +86,7 @@ proptest! {
         let stopped = ExecutionEvent::ModelStopped { step, purpose };
         let encoded = serde_json::to_vec(&stopped).unwrap();
         prop_assert_eq!(serde_json::from_slice::<ExecutionEvent>(&encoded).unwrap(), stopped.clone());
-        let seed: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../harness-fuzz/corpus/child_control/child-agent-turn"))).unwrap();
+        let seed: serde_json::Value = serde_json::from_slice(include_bytes!("../../../../../harness-fuzz/corpus/child_control/child-agent-turn")).unwrap();
         let request: FileRef = serde_json::from_value(seed["initial"]["model"]["payload"].clone()).unwrap();
         let mut state = ExecutionSummary::default();
         prop_assert!(state.require_next(&stopped, None).is_err());

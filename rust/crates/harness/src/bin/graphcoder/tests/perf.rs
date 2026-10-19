@@ -522,7 +522,9 @@ fn prepare(rig: &mut Rig, name: &str) {
 #[test]
 #[ignore = "measurement table, not an assertion"]
 fn baseline() {
-    let lines = std::env::var("PERF_LINES").unwrap_or_else(|_| "1000,10000".into());
+    let lines = acyclic_harness::test_support::environment("PERF_LINES")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| "1000,10000".into());
     println!(
         "| scenario | lines | output | events | frames | bytes/event | writes/event | allocs/event | us/event |"
     );

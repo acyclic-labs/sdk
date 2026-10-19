@@ -65,6 +65,11 @@ pub(super) fn child() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err("native process did not receive its exact literal input and EOF".into());
     }
     std::fs::write("destination/output.txt", std::fs::read("source/input.txt")?)?;
-    println!("{}", std::env::var("APPROVED_TOKEN")?);
+    println!(
+        "{}",
+        acyclic_harness::test_support::environment("APPROVED_TOKEN")
+            .and_then(|value| value.into_string().ok())
+            .ok_or("missing explicit child input")?
+    );
     Ok(())
 }

@@ -35,12 +35,9 @@ impl McpStdioRequest {
             ));
         }
         let maximum_bytes = self.maximum_bytes as usize;
-        let params: &serde_json::value::RawValue = serde_json::from_str(concat!(
-            "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
-            env!("CARGO_PKG_VERSION"),
-            "\"},\"protocolVersion\":\"2025-11-25\"}",
-        ))
-        .map_err(|_| error(work, ErrorCode::Invalid, "invalid MCP client identity"))?;
+        let params: &serde_json::value::RawValue =
+            serde_json::from_str(crate::build_metadata::MCP_INITIALIZATION)
+                .map_err(|_| error(work, ErrorCode::Invalid, "invalid MCP client identity"))?;
         let first = encode_line(
             &Envelope {
                 id: self.initialization,

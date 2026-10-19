@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 async fn baseline(path: &str) -> TestResult<Value> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scenarios");
+    let root = Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("tests/scenarios");
     let case = scenario::load_value(&root, &root.join(path))?;
     drivers::run(case.clone()).await?;
     Ok(case)

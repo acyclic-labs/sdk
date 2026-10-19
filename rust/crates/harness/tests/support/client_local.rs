@@ -165,7 +165,7 @@ proptest::proptest! {
 #[test]
 fn omitting_state_directory_is_detected() {
     const CHILD: &str = "ACYCLIC_COMMAND_FIXTURE_OMIT_STATE";
-    if std::env::var_os(CHILD).is_some() {
+    if acyclic_harness::test_support::environment(CHILD).is_some() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

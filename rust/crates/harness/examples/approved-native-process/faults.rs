@@ -313,7 +313,8 @@ async fn disk_restart(
 #[cfg(feature = "filesystem-local")]
 pub(super) async fn host_child() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let storage = std::path::PathBuf::from(
-        std::env::var_os("MCP_HOST_STORAGE").ok_or("missing host storage")?,
+        acyclic_harness::test_support::environment("MCP_HOST_STORAGE")
+            .ok_or("missing host storage")?,
     );
     let filesystem = Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem"))).await?;
     let stream = Arc::new(

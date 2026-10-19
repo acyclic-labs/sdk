@@ -110,7 +110,7 @@ proptest! {
     fn resume_acknowledges_only_real_completed_receive_checkpoints(turns in 1u64..9) {
         use crate::workflow::{MachineCheckpoint, MachineRegistry, ResumableMachine};
         use std::borrow::Cow;
-        let seed: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../harness-fuzz/corpus/child_control/child-agent-turn"))).unwrap();
+        let seed: serde_json::Value = serde_json::from_slice(include_bytes!("../../../../../harness-fuzz/corpus/child_control/child-agent-turn")).unwrap();
         let machine = Arc::new(crate::filesystem::ChildAgentMachine::new());
         let mut registry = MachineRegistry::default();
         registry.register(machine.clone(), &mut None).unwrap();

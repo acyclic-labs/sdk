@@ -19,7 +19,7 @@ impl Drop for Owner {
 
 #[test]
 fn scratch_mount_owner() -> TestResult {
-    let Some(root) = std::env::var_os(OWNER_ROOT) else {
+    let Some(root) = crate::native_environment::variable(OWNER_ROOT) else {
         return Ok(());
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()

@@ -105,7 +105,8 @@ fn production_labels_use_the_filesystem_vocabulary() -> Result<(), Box<dyn std::
         DIRECTORY_READ_PREFIX,
         SCOPE_PREFIX,
     ];
-    let mut directories = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    let mut directories =
+        vec![std::path::Path::new(acyclic_harness::build_metadata::MANIFEST_DIR).join("src")];
     while let Some(directory) = directories.pop() {
         for entry in std::fs::read_dir(directory)? {
             let path = entry?.path();

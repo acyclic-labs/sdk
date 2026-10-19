@@ -12,7 +12,7 @@ export const gateQualifications = [
   { args: ["--timer"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
-  { args: ["--session-fs"] },
+  { args: ["--session-fs"] }, { args: ["--ownership"] },
 ];
 const planOnly = Symbol("qualification plan");
 
@@ -142,6 +142,13 @@ export function qualifySessionFsLoom(run = spawnSync) {
   });
 }
 
+export function qualifyOwnershipLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-native-runtime", "acyclic_native_runtime", [], run, {
+    kind: "--lib", filter: "ownership::model::", exact: false, passed: 8, timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_native_runtime_loom` }, targetCfg: [],
+  });
+}
+
 function qualifyLoom(crate, target, features, run, options = {}) {
   const args = [
     options.kind === "--lib" ? "test" : "rustc", "--locked", "--message-format=json", "-p", crate,
@@ -150,7 +157,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
   ];
   const tests = (options.filters ?? [options.filter]).map(filter => ({
     args: filter ? [filter, ...(options.exact === false ? [] : ["--exact"])] : [],
-    passed: options.exact === false ? 4 : filter ? 1 : null,
+    passed: options.exact === false ? (options.passed ?? 4) : filter ? 1 : null,
   }));
   const env = options.env ?? process.env;
   const plan = { args, target, tests, rustflags: env.RUSTFLAGS ?? "" };
@@ -192,7 +199,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
   "--guest": qualifyGuestLoom, "--memory-accounting": qualifyMemoryAccountingLoom,
-  "--session-fs": qualifySessionFsLoom,
+  "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
 };
 const selectableModels = {
   "--e2e-progress": qualifyE2eProgressLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,

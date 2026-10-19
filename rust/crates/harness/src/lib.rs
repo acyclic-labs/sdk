@@ -17,6 +17,21 @@
 )]
 #![doc = include_str!("../README.md")]
 
+#[cfg(any(
+    test,
+    feature = "test-support",
+    all(
+        not(target_arch = "wasm32"),
+        any(
+            feature = "filesystem-local",
+            feature = "hooks",
+            feature = "mcp-stdio",
+            feature = "mcp-http",
+            feature = "search-http"
+        )
+    )
+))]
+mod native_environment;
 mod sync;
 #[cfg(all(
     test,
@@ -126,27 +141,7 @@ pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub type NativeCustody = Option<()>;
 
-/// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
-#[allow(
-    missing_docs,
-    clippy::pedantic,
-    clippy::large_enum_variant,
-    reason = "generated prost bindings"
-)]
-mod generated {
-    pub mod acyclic {
-        pub mod harness {
-            pub mod v2 {
-                include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
-            }
-        }
-        pub mod protocol {
-            pub mod v1 {
-                include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
-            }
-        }
-    }
-}
+use build_metadata::generated;
 
 /// Generated Protobuf envelopes shared by every transport: the harness contract and the protocol handshake it negotiates with.
 pub mod wire {
@@ -155,8 +150,7 @@ pub mod wire {
 }
 
 /// Canonical harness descriptor set used for transport compatibility.
-pub const FILE_DESCRIPTOR_SET: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
+pub const FILE_DESCRIPTOR_SET: &[u8] = build_metadata::FILE_DESCRIPTOR_SET;
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use crate::executor::json::json_from_value_bounded;
@@ -189,3 +183,7 @@ pub use resource_preparation::ChildScratchCreationProof;
 
 mod process_error;
 pub use process_error::ProcessError;
+
+/// Cargo-provided build metadata, isolated from ambient user environment discovery.
+#[doc(hidden)]
+pub mod build_metadata;

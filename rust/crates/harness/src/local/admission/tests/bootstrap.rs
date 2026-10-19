@@ -27,12 +27,10 @@ impl Bootstrap {
             .clone()
             .expect("explicit fixture state");
         assert!(state.starts_with(directory.path()));
-        // Negative control for the former snapshot location: this is not the
-        // per-user default that open bypasses when an override is configured.
-        assert_ne!(
-            state,
-            super::super::super::owner::state_directory(&config.project)?
-        );
+        // Open resolves exactly the injected directory; under test the per-user
+        // default is unreachable, so it cannot be the snapshot source.
+        assert_eq!(config.resolved_state_directory()?, state);
+        assert!(super::super::super::owner::user_state_root().is_err());
         let source = Root { directory, state };
         let harness = LocalHarness::open(config).await?;
         let agent = harness.signed.agent();

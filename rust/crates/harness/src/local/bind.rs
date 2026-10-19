@@ -14,7 +14,7 @@ impl LocalHarness {
 
     /// Binds command files to an existing runtime and its authenticated volume.
     pub async fn bind(
-        config: LocalHarnessConfig,
+        mut config: LocalHarnessConfig,
         runtime: LocalTaskRuntime,
         files: Arc<LocalFilesystem>,
         storage: (acyclic_fs::LocalFs, Arc<LocalStream>),
@@ -22,6 +22,18 @@ impl LocalHarness {
         checkout: Option<&Path>,
     ) -> Result<Self> {
         config.limits.validate(&mut None)?;
+        #[cfg(feature = "native-execution")]
+        if checkout.is_some() {
+            config = config.prepare_state()?;
+        }
+        #[cfg(feature = "native-execution")]
+        let state_owner = config.test_state.clone();
+        #[cfg(feature = "native-execution")]
+        let checkout_state = checkout
+            .map(|checkout| {
+                owner::separated_directory(&config.resolved_state_directory()?, Some(checkout))
+            })
+            .transpose()?;
         let (verifier, signed) = authority;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(
@@ -39,13 +51,13 @@ impl LocalHarness {
             )?;
         }
         #[cfg(feature = "hooks")]
-        let settings = settings::configuration(&config.project, config.settings)?;
-        let (model, provider) = config.model;
-        model.validate()?;
+        let settings =
+            settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
+        config.model.0.validate()?;
         let compaction = compaction::select(
-            config.compaction,
-            &model,
-            provider.as_ref(),
+            config.compaction.take(),
+            &config.model.0,
+            config.model.1.as_ref(),
             runtime.tool_registry(),
             config.limits,
         )
@@ -65,8 +77,7 @@ impl LocalHarness {
         let mut runtime = runtime.with_task_files(erased_files.clone())?;
         runtime.bind_task_files(Some(task_files.clone()));
         #[cfg(feature = "native-execution")]
-        let workspace = if let Some(checkout) = checkout {
-            let directory = owner::directory(&owner::state_directory(&config.project)?)?;
+        let workspace = if let Some((checkout, directory)) = checkout.zip(checkout_state) {
             let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
@@ -86,7 +97,8 @@ impl LocalHarness {
                     operation,
                     true,
                     false,
-                    acyclic_fs::LocalCoreStateStore::new(directory.join("workspace")),
+                    acyclic_fs::LocalCoreStateStore::new(directory.join("workspace"))
+                        .with_ownership_anchor(state_owner),
                 )
                 .await?,
             ))
@@ -116,6 +128,7 @@ impl LocalHarness {
         } else {
             runtime
         };
+        let (model, provider) = config.model;
         let local = Self {
             files,
             runtime: Arc::new(runtime),

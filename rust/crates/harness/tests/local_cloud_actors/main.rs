@@ -39,7 +39,7 @@ struct Endpoints {
 }
 
 fn endpoints() -> TestResult<Endpoints> {
-    let file = std::env::var_os("ACYCLIC_LOCAL_CLOUD").ok_or("local-cloud endpoints required")?;
+    let file = acyclic_harness::test_support::environment("ACYCLIC_LOCAL_CLOUD").ok_or("local-cloud endpoints required")?;
     Ok(serde_json::from_slice(&std::fs::read(file)?)?)
 }
 

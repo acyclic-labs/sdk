@@ -237,7 +237,7 @@ fn lock_order(broken: bool) {
 #[test]
 fn checkout_then_projection_order_cannot_deadlock() {
     const CONTROL: &str = "ACYCLIC_PROJECTION_LOCK_ORDER_CONTROL";
-    if std::env::var_os(CONTROL).is_some() {
+    if crate::native_environment::variable(CONTROL).is_some() {
         loom::model(|| lock_order(true));
         panic!("inverted lock order was not detected");
     }

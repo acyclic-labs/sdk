@@ -1,6 +1,9 @@
 //! Builds the canonical harness Protobuf messages and descriptor set, plus
 //! the tonic service glue under the `grpc` feature.
 
+#[path = "src/native_environment.rs"]
+pub mod native_environment;
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-check-cfg=cfg(fuzzing)");
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
@@ -11,8 +14,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");
-    let descriptor =
-        std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin");
+    let descriptor = std::path::PathBuf::from(
+        native_environment::variable("OUT_DIR").ok_or("OUT_DIR is unset")?,
+    )
+    .join("harness_descriptor.bin");
     config.file_descriptor_set_path(&descriptor);
     config.compile_protos(&[proto], &[include])?;
     let digest = blake3::hash(&std::fs::read(descriptor)?);
@@ -24,7 +29,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         // Tonic service glue reuses the canonical messages generated above;
         // it lives in its own directory because it shares the package name.
-        let out = std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("grpc");
+        let out = std::path::PathBuf::from(
+            native_environment::variable("OUT_DIR").ok_or("OUT_DIR is unset")?,
+        )
+        .join("grpc");
         std::fs::create_dir_all(&out)?;
         let mut prost = tonic_prost_build::Config::new();
         prost.protoc_executable(protoc_bin_vendored::protoc_bin_path()?);

@@ -165,30 +165,25 @@ pub(crate) mod tests {
 
     #[test]
     fn checked_in_summary_seeds_parse() {
-        serde_json::from_slice::<SummarySource>(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fuzz-context/corpus/context_manifest/summary-source.json"
-        )))
+        serde_json::from_slice::<SummarySource>(include_bytes!(
+            "../../fuzz-context/corpus/context_manifest/summary-source.json"
+        ))
         .unwrap();
-        serde_json::from_slice::<SummarySource>(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fuzz-context/corpus/context_manifest/summary-source-previous.json"
-        )))
+        serde_json::from_slice::<SummarySource>(include_bytes!(
+            "../../fuzz-context/corpus/context_manifest/summary-source-previous.json"
+        ))
         .unwrap();
-        serde_json::from_slice::<SummaryCheckpoint>(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fuzz-context/corpus/context_manifest/summary-checkpoint.json"
-        )))
+        serde_json::from_slice::<SummaryCheckpoint>(include_bytes!(
+            "../../fuzz-context/corpus/context_manifest/summary-checkpoint.json"
+        ))
         .unwrap();
-        serde_json::from_slice::<SummarySelection>(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fuzz-context/corpus/context_manifest/summary-selection.json"
-        )))
+        serde_json::from_slice::<SummarySelection>(include_bytes!(
+            "../../fuzz-context/corpus/context_manifest/summary-selection.json"
+        ))
         .unwrap();
-        serde_json::from_slice::<SummarySelection>(include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/fuzz-context/corpus/context_manifest/summary-selection-live.json"
-        )))
+        serde_json::from_slice::<SummarySelection>(include_bytes!(
+            "../../fuzz-context/corpus/context_manifest/summary-selection-live.json"
+        ))
         .unwrap();
     }
 

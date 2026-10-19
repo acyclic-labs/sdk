@@ -24,8 +24,8 @@ fn unnested<F: Future>(future: F) -> impl Future<Output = F::Output> {
 
 #[test]
 fn initialization_yields_after_exhausting_tokios_cooperative_budget() -> TestResult {
-    if let Some(marker) = std::env::var_os(CHILD) {
-        let nested = std::env::var_os(NESTED).is_some();
+    if let Some(marker) = acyclic_harness::test_support::environment(CHILD) {
+        let nested = acyclic_harness::test_support::environment(NESTED).is_some();
         // The child's own progress guard ends a lost wakeup; it has no deadline.
         return super::on_runtime(crate::stall::guarded(
             Path::new("notification initialization"),

@@ -66,11 +66,14 @@ async fn child_file_recovery(point: &'static str) -> Result<()> {
         "1".into(),
         serde_json::Value::Null,
     )?;
+    // Every reopen shares one state directory outside the checkout.
+    let state = tempfile::tempdir().map_err(crate::local::storage)?;
     let config = || {
         crate::test_support::local_harness_config(
             directory.path(),
             (model.clone(), provider.clone()),
         )
+        .map(|config| config.state_directory(state.path()))
     };
     let harness = LocalHarness::open(config()?).await?;
     let operation = OperationId::new();

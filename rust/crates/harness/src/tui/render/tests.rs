@@ -22,10 +22,7 @@ fn partition(text: &str, cuts: &[bool]) {
 
 #[test]
 fn provisional_archive_row_is_invalidated() {
-    let seed = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../harness-fuzz/corpus/ui_prompt/utf8-archive-row-repair"
-    ));
+    let seed = include_str!("../../../../harness-fuzz/corpus/ui_prompt/utf8-archive-row-repair");
     let text = format!("retained archive\n\n{seed}");
     let mut cuts = vec![false; text.len()];
     cuts[text.len() - 3] = true;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { hermeticCompilerPlans } from "./check-hermetic-clippy.mjs";
 import { qualificationGatePlans } from "./qualify-mcp-loom.mjs";
 
 export function artifact(plans, args, directory) {
@@ -43,6 +44,7 @@ const shellGate = {
 export function expectedGate(plans, base = "") {
   const shell = ([command, added]) => [command, [base, added].filter(Boolean).join(" ")];
   return [
+    ...hermeticCompilerPlans().map(plan => [plan.args.join(" "), base]),
     ...shellGate.before.map(shell),
     ...plans.map(plan => [plan.args.join(" "), plan.rustflags]),
     ...shellGate.after.map(shell),
@@ -82,8 +84,15 @@ function prepare(plans, directory) {
     builds.set(built.executable, build);
   }
   const executable = { mode: 0o755 };
+  const compilerCases = hermeticCompilerPlans().map(plan => {
+    // Offline preflight validates dispatch/order; real Clippy separately proves these rejections.
+    const messages = plan.negative ? Array.from({length: 11}, (_, index) => JSON.stringify({reason: "compiler-message", message: {
+      level: "error", code: {code: "clippy::disallowed_methods"}, rendered: "fixture rejection", spans: [{is_primary: true, line_start: index + 1}],
+    }}) + "\n").join("") : "";
+    return [plan.args, `printf '%s' ${quote(messages)}; exit ${plan.negative ? 1 : 0}`];
+  });
   writeFileSync(join(directory, "cargo"), dispatcher([...builds.values()]
-    .map(build => [build.args, `printf '%s' ${quote(build.artifact)}`]), "unplanned model build"), executable);
+    .map(build => [build.args, `printf '%s' ${quote(build.artifact)}`]).concat(compilerCases), "unplanned model build"), executable);
   for (const [path, build] of builds) writeFileSync(path, dispatcher([...build.tests.values()], "unplanned model invocation"), executable);
 }
 

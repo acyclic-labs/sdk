@@ -143,7 +143,7 @@ impl StdioMcpTransport {
         );
         let client = ClientConfig::new(
             Default::default(),
-            Implementation::new("acyclic-harness", env!("CARGO_PKG_VERSION")),
+            Implementation::new("acyclic-harness", crate::build_metadata::PACKAGE_VERSION),
         )
         .with_protocol_version(ProtocolVersion::V_2025_11_25);
         let service = client

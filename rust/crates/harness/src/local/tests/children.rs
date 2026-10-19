@@ -16,10 +16,10 @@ async fn child_request_prepares_a_replayable_lazy_fork_and_runs_under_its_origin
     std::fs::write(directory.path().join("source.txt"), b"parent source")
         .map_err(super::super::storage)?;
     let provider = scripted([ScriptedTurn::Text("child done".into())]);
-    let harness = LocalHarness::open(LocalHarnessConfig::new(
+    let harness = LocalHarness::open(crate::test_support::local_harness_config(
         directory.path(),
         (model()?, provider.clone()),
-    ))
+    )?)
     .await?;
     let operation = OperationId::new();
     let Admission::Accepted(crate::runtime::RuntimeTask::Durable {

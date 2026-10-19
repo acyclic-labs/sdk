@@ -30,11 +30,14 @@ async fn cancelled_child_reopen_repairs_a_lost_settled_ack_without_a_new_lease()
                 output_tokens: Some(4096),
             }),
         );
+        // Every reopen shares one state directory outside the checkout.
+        let state = tempfile::tempdir().map_err(crate::local::storage)?;
         let config = || {
             crate::test_support::local_harness_config(
                 directory.path(),
                 (model.clone(), provider.clone()),
             )
+            .map(|config| config.state_directory(state.path()))
         };
         let harness = LocalHarness::open(config()?).await?;
         let operation = OperationId::new();

@@ -12,15 +12,7 @@ use futures::{StreamExt as _, stream::BoxStream};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-/// Generated tonic client and server surfaces using the canonical Harness messages.
-#[allow(
-    clippy::pedantic,
-    clippy::allow_attributes_without_reason,
-    reason = "generated tonic bindings"
-)]
-pub mod transport {
-    include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
-}
+pub use crate::build_metadata::transport;
 
 /// Thin tonic service; all admission and replay semantics belong to [`HarnessWireApi`].
 #[derive(Clone)]

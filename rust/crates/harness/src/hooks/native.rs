@@ -132,7 +132,7 @@ pub(super) async fn run_hook(
 fn hook_command(hook: &HookSpec, workspace: &Path) -> Result<Command> {
     Ok(match &hook.run {
         HookRun::Executable { executable, argv } => {
-            let environment = |name: &str| std::env::var_os(name);
+            let environment = crate::native_environment::variable;
             let executable = expand_exec_path(executable, workspace, environment)?;
             let mut command = Command::new(&*executable);
             for argument in argv {

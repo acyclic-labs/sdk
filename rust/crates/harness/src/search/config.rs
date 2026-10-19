@@ -80,7 +80,10 @@ impl SearchConfig {
     }
 
     fn key(&self) -> Result<Option<String>> {
-        self.resolve_with(keychain, |variable| Ok(std::env::var(variable).ok()))
+        self.resolve_with(keychain, |variable| {
+            Ok(crate::native_environment::variable(variable)
+                .and_then(|value| value.into_string().ok()))
+        })
     }
 
     fn resolve_with(

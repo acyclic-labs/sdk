@@ -138,7 +138,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
     let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    if std::env::var_os(CHILD).is_none() {
+    if crate::native_environment::variable(CHILD).is_none() {
         let bin = temp.path().join("bin");
         let home = temp.path().join("home");
         std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
@@ -166,7 +166,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             .run(&prop::collection::vec(1u8..=255, 0..32), |value| {
                 let result = std::process::Command::new(&executable)
                     .args([test_name.as_str(), "--exact", "--nocapture"])
-                    .env(CHILD, "1")
+                    .env(CHILD, &home)
                     .env("PATH", &bin)
                     .env("HOME", &home)
                     .env("ACYCLIC_VOLUME_DATA", "stale mount")
@@ -200,6 +200,8 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             .map_err(|error| Error::Invalid(error.to_string()))?;
         return Ok(());
     }
+    let home = crate::native_environment::variable(CHILD).expect("fixture-owned child home");
+    let home = home.to_str().expect("UTF-8 fixture path");
     std::fs::create_dir_all(temp.path().join(".volumes/data"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
@@ -224,9 +226,7 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
     let mut broken = prepared;
     broken.inherit_environment = false;
     broken.environment = mounts.environment()?;
-    broken
-        .environment
-        .insert("HOME".into(), std::env::var("HOME").unwrap());
+    broken.environment.insert("HOME".into(), home.into());
     assert!(
         !capture::capture_checked(broken, None, || Ok(()))
             .await?
@@ -241,10 +241,9 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let mut expected =
-        format!("host tool: {}\nnative: ", std::env::var("HOME").unwrap()).into_bytes();
+    let mut expected = format!("host tool: {}\nnative: ", home).into_bytes();
     expected.extend(
-        std::env::var_os("ACYCLIC_TEST_NATIVE_BYTES")
+        crate::native_environment::variable("ACYCLIC_TEST_NATIVE_BYTES")
             .unwrap()
             .into_vec(),
     );

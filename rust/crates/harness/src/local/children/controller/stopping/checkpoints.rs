@@ -9,10 +9,9 @@ use std::borrow::Cow;
 type Predicate = fn(Option<ChildStatus>, TaskId, u64, Option<&WorkflowSuspension>) -> bool;
 
 fn checkpoint_cuts(predicate: Predicate, task: TaskId, turns: u64, assert_property: bool) {
-    let seed: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../harness-fuzz/corpus/child_control/child-agent-turn"
-    )))
+    let seed: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../../../../../harness-fuzz/corpus/child_control/child-agent-turn"
+    ))
     .unwrap();
     let machine = Arc::new(crate::filesystem::ChildAgentMachine::new());
     let mut registry = MachineRegistry::default();

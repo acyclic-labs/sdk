@@ -1,0 +1,12 @@
+[package]
+name = "hermetic-environment-ui"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+negative = []
+filesystem-local = []
+test-support = []

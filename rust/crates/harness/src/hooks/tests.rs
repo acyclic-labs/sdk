@@ -57,7 +57,9 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
     if let Some(argument) = std::env::args()
         .find_map(|argument| argument.strip_prefix("hook-exec-child:").map(str::to_owned))
     {
-        let root = std::env::var("CLAUDE_PROJECT_DIR").expect("project root environment");
+        let root = crate::native_environment::variable("CLAUDE_PROJECT_DIR")
+            .and_then(|value| value.into_string().ok())
+            .expect("project root environment");
         if argument != format!("{root}/payload with ' $ ` spaces") {
             eprintln!("guard argument was changed");
             std::process::exit(3);

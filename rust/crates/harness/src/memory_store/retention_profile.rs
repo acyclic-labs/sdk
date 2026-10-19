@@ -38,7 +38,7 @@ fn profile(tracing: bool) -> Result<()> {
         tracing::Dispatch::none()
     };
     let _guard = tracing::dispatcher::set_default(&dispatch);
-    let syscalls = std::env::var_os("HARNESS_PATH_SYSCALLS").is_some();
+    let syscalls = crate::native_environment::variable("HARNESS_PATH_SYSCALLS").is_some();
     let mut counts = vec![
         0, 1, 2, 3, 4, 5, 6, 8, 10, 11, 12, 16, 24, 32, 48, 64, 65, 96, 128, 256, 4096,
     ];
@@ -148,7 +148,8 @@ fn measure(
         before.err().map(|e| e.to_string()),
         after.err().map(|e| e.to_string())
     );
-    let implementation = std::env::var("HARNESS_PATH_PROFILE").ok();
+    let implementation = crate::native_environment::variable("HARNESS_PATH_PROFILE")
+        .and_then(|value| value.into_string().ok());
     let samples = if syscalls { 1 } else { 64 };
     let batch = if cfg!(debug_assertions) || syscalls {
         1

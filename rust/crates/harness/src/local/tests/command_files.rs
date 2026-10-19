@@ -30,9 +30,12 @@ proptest! {
 
 async fn roundtrip(prompt: String) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    // Reopen below must find the same owner, so both opens share one injected state directory.
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = text();
     let harness = LocalHarness::open(
-        LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path())
             .without_default_tools(),
     )
     .await?;
@@ -99,7 +102,8 @@ async fn roundtrip(prompt: String) -> Result<()> {
     harness.close().await?;
 
     let harness = LocalHarness::open(
-        LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path())
             .without_default_tools(),
     )
     .await?;
@@ -128,7 +132,7 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
     let provider = scripted([]);
     let harness = LocalHarness::open(
-        LocalHarnessConfig::new(directory.path(), (model()?, provider.clone()))
+        crate::test_support::local_harness_config(directory.path(), (model()?, provider.clone()))?
             .without_default_tools(),
     )
     .await?;
@@ -180,13 +184,19 @@ async fn foreign_request(mut bytes: [u8; 16]) -> Result<()> {
 #[tokio::test]
 async fn retaining_a_mount_without_close_prevents_reopen_negative_control() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
     // The native mount is composed by the default bash binding.
-    let make = || LocalHarnessConfig::new(directory.path(), (model().unwrap(), scripted([])));
-    let harness = LocalHarness::open(make()).await?;
+    let make = || {
+        Ok::<_, Error>(
+            crate::test_support::local_harness_config(directory.path(), (model()?, scripted([])))?
+                .state_directory(state.path()),
+        )
+    };
+    let harness = LocalHarness::open(make()?).await?;
     let retained = Arc::clone(&harness.workspace.as_ref().unwrap().mounts);
     crate::local::workspace::volumes::project(&retained).await?;
     drop(harness);
-    let reopened = LocalHarness::open(make()).await?;
+    let reopened = LocalHarness::open(make()?).await?;
     let failure =
         crate::local::workspace::volumes::project(&reopened.workspace.as_ref().unwrap().mounts)
             .await

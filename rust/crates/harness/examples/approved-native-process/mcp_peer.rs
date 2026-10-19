@@ -118,8 +118,16 @@ pub(super) fn child(lost_response: bool) -> std::result::Result<(), Box<dyn std:
     use rmcp::transport::async_rw::JsonRpcMessageCodec;
     use std::io::{BufRead as _, Read as _, Write as _};
     use tokio_util::codec::{Decoder as _, Encoder as _};
-    let maximum: u32 = std::env::var("MCP_MAX_BYTES")?.parse()?;
-    if maximum == 0 || std::env::var("APPROVED_TOKEN")? != "exact-token" {
+    let maximum: u32 = acyclic_harness::test_support::environment("MCP_MAX_BYTES")
+        .and_then(|value| value.into_string().ok())
+        .ok_or("missing explicit child input")?
+        .parse()?;
+    if maximum == 0
+        || acyclic_harness::test_support::environment("APPROVED_TOKEN")
+            .and_then(|value| value.into_string().ok())
+            .ok_or("missing explicit child input")?
+            != "exact-token"
+    {
         return Err("invalid explicit server input".into());
     }
     let mut input = std::io::stdin().lock();
