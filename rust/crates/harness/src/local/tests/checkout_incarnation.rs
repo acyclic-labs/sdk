@@ -7,6 +7,7 @@ use super::super::owner::{
 };
 use super::*;
 use acyclic_fs::NativeRootGeneration::{FileHandle, StableObjectId, Unstable};
+use acyclic_fs::facade::FsWork as _;
 
 /// An object id that every injected capture reports, as a filesystem that
 /// reissues a deleted directory's id to the next one.
@@ -359,4 +360,92 @@ async fn replacing_the_checkout_before_setup_never_redirects_it() -> Result<()> 
         "setup that reopens the saved path left the replacement untouched"
     );
     Ok(())
+}
+
+/// Both initial source selection and later watcher capture preserve authored
+/// siblings while keeping the SDK incarnation subtree outside the conversation.
+#[tokio::test]
+async fn incarnation_controls_never_enter_initial_or_watched_capture() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let authored = directory.path().join(".volumes/authored");
+    std::fs::create_dir_all(directory.path().join(".volumes")).map_err(super::super::storage)?;
+    std::fs::write(&authored, b"base").map_err(super::super::storage)?;
+    let fs = crate::tools::defaults()?
+        .get("fs", None, None)?
+        .ok_or_else(|| Error::NotFound("fs".into()))?
+        .clone();
+    let provider = scripted([
+        super::checked_commands::call(0, "fs", "status"),
+        ScriptedTurn::Text("baseline".into()),
+        super::checked_commands::call(1, "fs", "status"),
+        ScriptedTurn::Text("watched".into()),
+    ]);
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider))?
+            .state_directory(state.path())
+            .without_default_tools()
+            .tool(fs),
+    )
+    .await?;
+    let token_path = directory.path().join(".volumes/.incarnation/token");
+    let token = std::fs::read(&token_path).map_err(super::super::storage)?;
+    let workspace = harness
+        .workspace()
+        .ok_or_else(|| Error::NotFound("checkout".into()))?
+        .view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let initial = workspace
+        .read(
+            "/.volumes/.incarnation/token",
+            64,
+            &mut acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation),
+        )
+        .await;
+    assert!(matches!(
+        initial,
+        Err(acyclic_fs::LazyWorkspaceError::NotFound)
+    ));
+    for (reply, expected) in [("baseline", b"base".as_slice()), ("watched", b"changed")] {
+        if reply == "watched" {
+            std::fs::write(&authored, expected).map_err(super::super::storage)?;
+            std::fs::write(token_path.with_file_name("private-probe"), b"control")
+                .map_err(super::super::storage)?;
+        }
+        assert_eq!(harness.run(reply).await?.text, reply);
+        let head = workspace
+            .workspace()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        let contents = head
+            .read(
+                "/.volumes/authored",
+                64,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(super::super::storage)?
+            .value;
+        assert_eq!(contents.as_ref(), expected);
+        for path in [
+            "/.volumes/.incarnation/token",
+            "/.volumes/.incarnation/private-probe",
+        ] {
+            let captured = head
+                .read(path, 64, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                .await;
+            assert!(
+                matches!(captured, Err(failure) if matches!(failure.error, acyclic_fs::WorkspaceError::NotFound)),
+                "private control entered capture: {path}"
+            );
+        }
+    }
+    assert_eq!(
+        std::fs::read(&token_path).map_err(super::super::storage)?,
+        token
+    );
+    harness.close().await
 }

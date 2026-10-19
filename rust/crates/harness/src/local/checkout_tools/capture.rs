@@ -209,6 +209,11 @@ pub(super) fn configuration(workspace: &LocalWorkspace) -> Result<(CaptureOption
                 .map_err(storage)
         })
         .collect::<Result<Vec<_>>>()?;
+    excluded.push(workspace::volumes::namespace(
+        &workspace.path,
+        config,
+        &workspace.path.join(workspace::volumes::INCARNATION_PATH),
+    )?);
     for (relative, mount) in workspace.mounts.mounts() {
         if !relative.is_empty() && mount.view.source.is_some() {
             excluded.extend(workspace::volumes::excluded(
