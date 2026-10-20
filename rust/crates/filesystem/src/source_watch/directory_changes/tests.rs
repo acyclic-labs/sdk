@@ -290,8 +290,11 @@ mod original {
                     observer_work.receipt().source_bytes_read,
                     observer_prefix.source_bytes_read
                 );
-                child.stop_with_cleanup_wait(&CancellationToken::new())?;
-                source.stop_with_cleanup_wait(&CancellationToken::new())?;
+                // No caller cancellation is under test here. Retire accepted
+                // resources directly; a cancellable try-lock may report a
+                // transient WorkerUnavailable while a completion owns it.
+                child.stop_accepted_cleanup()?;
+                source.stop_accepted_cleanup()?;
             }
         }
         Ok(())
