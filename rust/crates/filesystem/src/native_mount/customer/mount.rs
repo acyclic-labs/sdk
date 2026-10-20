@@ -1,3 +1,4 @@
+use super::super::session::NativeSessionControl;
 use super::*;
 
 /// One process-owned customer mount over a canonical workspace checkout.
@@ -32,11 +33,12 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         #[cfg(all(test, not(acyclic_fs_native_loom)))]
         super::command_tests::record("sync");
-        with_session_work(
+        with_session_work_async(
             &self.session,
             self.source.as_ref(),
-            NativeMountSession::flush_callbacks,
-        )?;
+            NativeSessionControl::FlushCallbacks,
+        )
+        .await?;
         self.source
             .sync_async(PublicationPermit::Unrestricted)
             .await
@@ -50,11 +52,12 @@ where
         super::command_tests::record("advance");
         let advanced = self.source.advance_to_head_async().await;
         // Even a failed advance may have moved part of the view.
-        with_session_work(
+        with_session_work_async(
             &self.session,
             self.source.as_ref(),
-            NativeMountSession::revalidate,
-        )?;
+            NativeSessionControl::Revalidate,
+        )
+        .await?;
         advanced.map_err(MountLifecycleError::Source)
     }
 

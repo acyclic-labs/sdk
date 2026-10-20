@@ -21,6 +21,13 @@ pub struct NativeMountSession {
     pub(super) _destination_custody: Option<crate::NativeAllocation>,
 }
 
+/// Synchronous SDK controls that async callers submit to an owned worker.
+#[derive(Clone, Copy)]
+pub(in crate::native_mount) enum NativeSessionControl {
+    FlushCallbacks,
+    Revalidate,
+}
+
 impl NativeMountSession {
     /// Recognizes only entries still owned by this mount's held parent resources.
     pub fn owns_parent_entry(
@@ -226,6 +233,36 @@ impl NativeMountSession {
                     work,
                 )
                 .map_err(NativeMountError::Source)
+        }
+    }
+
+    pub(in crate::native_mount) fn start_control(
+        &self,
+        work: &NativeMaterializationWork,
+        control: NativeSessionControl,
+    ) -> Result<
+        Option<acyclic_native_runtime::NativeCompletion<Result<(), NativeMountError>>>,
+        NativeMountError,
+    > {
+        #[cfg(windows)]
+        {
+            match self.driver.as_ref() {
+                Some(session) => session.start_control(work, control).map(Some),
+                None => {
+                    if matches!(control, NativeSessionControl::Revalidate) {
+                        self.revalidate(work)?;
+                    }
+                    Ok(None)
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            match control {
+                NativeSessionControl::FlushCallbacks => self.flush_callbacks(work)?,
+                NativeSessionControl::Revalidate => self.revalidate(work)?,
+            }
+            Ok(None)
         }
     }
 

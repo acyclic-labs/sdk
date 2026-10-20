@@ -1,3 +1,4 @@
+use super::super::session::NativeSessionControl;
 use super::*;
 
 /// Runs one session control on the source's original meter, which its
@@ -88,4 +89,58 @@ impl NativeMountDrainProof {
             None
         }
     }
+}
+
+/// Admit under the session lock, then release it before waiting for the owner.
+pub(in crate::native_mount) async fn with_live_session_async(
+    session: &Mutex<Option<NativeMountSession>>,
+    work: &NativeMaterializationWork,
+    control: NativeSessionControl,
+) -> Result<(), MountLifecycleError> {
+    let completion = {
+        let owner = session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        owner
+            .as_ref()
+            .map(|session| session.start_control(work, control))
+            .transpose()?
+            .flatten()
+    };
+    if let Some(completion) = completion {
+        completion
+            .await
+            .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))??;
+    }
+    Ok(())
+}
+
+pub(in crate::native_mount) async fn with_session_work_async(
+    session: &Mutex<Option<NativeMountSession>>,
+    source: &dyn MountFilesystem,
+    control: NativeSessionControl,
+) -> Result<(), MountLifecycleError> {
+    let completion = {
+        let owner = session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(session) = owner.as_ref() {
+            let work = source
+                .native_original_work()?
+                .ok_or(MountLifecycleError::NativePolicy(
+                    "mounted volume has no original native work",
+                ))?;
+            session
+                .start_control(&work, control)?
+                .map(|completion| (work, completion))
+        } else {
+            None
+        }
+    };
+    if let Some((work, completion)) = completion {
+        completion
+            .await
+            .map_err(|cause| NativeMountError::from(work.runtime_error(cause)))??;
+    }
+    Ok(())
 }

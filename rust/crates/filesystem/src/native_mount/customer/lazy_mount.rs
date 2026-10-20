@@ -1,3 +1,4 @@
+use super::super::session::NativeSessionControl;
 use super::*;
 
 /// Process-owned native mount over a sparse workspace.
@@ -162,7 +163,8 @@ where
             work.admit(crate::WorkCounters::default())
                 .map_err(MountLifecycleError::from)
                 .map_err(|cause| (E::from(cause), None))?;
-            with_live_session(&self.session, |session| session.flush_callbacks(work))
+            with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
+                .await
                 .map_err(|cause| (E::from(cause), None))?;
             self.source
                 .sync_async_with_permit_qualified_native_work_guarded_with_ack(
@@ -184,7 +186,8 @@ where
                     publication: acknowledged.map(Box::new),
                 },
             )?;
-        self.revalidate()
+        self.revalidate_async()
+            .await
             .map_err(|cause| NativeMountPublicationFailure {
                 cause: E::from(cause),
                 accounting_failure: None,
@@ -238,7 +241,8 @@ where
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     )));
                 }
-                with_live_session(&self.session, |session| session.flush_callbacks(work))
+                with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
+                    .await
                     .map_err(E::from)?;
                 let snapshot = self
                     .source
@@ -251,7 +255,7 @@ where
                         before_publication,
                     )
                     .await?;
-                self.revalidate().map_err(E::from)?;
+                self.revalidate_async().await.map_err(E::from)?;
                 Ok(snapshot)
             }
             .await;
@@ -268,12 +272,16 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<Option<crate::LazySnapshotRef>, NativeMountError> {
         work.admit(crate::WorkCounters::default())?;
-        with_live_session(&self.session, |session| session.flush_callbacks(work))
-            .and_then(|()| self.revalidate())
-            .map_err(|cause| match cause {
-                MountLifecycleError::Native(cause) => cause,
-                _ => unreachable!("session operation only returns native errors"),
-            })?;
+        async {
+            with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks)
+                .await?;
+            self.revalidate_async().await
+        }
+        .await
+        .map_err(|cause| match cause {
+            MountLifecycleError::Native(cause) => cause,
+            _ => unreachable!("session operation only returns native errors"),
+        })?;
         self.source
             .selected_import_snapshot(operation, work, cancellation)
             .await
@@ -283,7 +291,7 @@ where
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
-        self.revalidate()?;
+        self.revalidate_async().await?;
         advanced.map_err(Into::into)
     }
 
@@ -304,10 +312,19 @@ where
         )
     }
 
-    fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
+    async fn revalidate_async(&self) -> Result<(), MountLifecycleError> {
+        with_session_work_async(
+            &self.session,
+            self.source.as_ref(),
+            NativeSessionControl::Revalidate,
+        )
+        .await
+    }
+
+    async fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
         work.admit(crate::WorkCounters::default())?;
-        with_live_session(&self.session, |session| session.flush_callbacks(work))?;
-        self.revalidate()
+        with_live_session_async(&self.session, work, NativeSessionControl::FlushCallbacks).await?;
+        self.revalidate_async().await
     }
 
     /// Reads the actual lazy namespace through its current publication owner.
@@ -316,7 +333,7 @@ where
         work: &NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::LazySnapshotRef, MountLifecycleError> {
-        self.settle(work)?;
+        self.settle(work).await?;
         self.source
             .snapshot(
                 super::super::adapter::NativeDemandCarrier::Native(work),
@@ -334,7 +351,7 @@ where
         accounting_failure: &mut Option<MountSourceError>,
     ) -> Result<crate::NativePublicationSnapshot, MountLifecycleError> {
         *accounting_failure = None;
-        self.settle(work)?;
+        self.settle(work).await?;
         self.source
             .publication_snapshot(
                 super::super::adapter::NativeDemandCarrier::Native(work),

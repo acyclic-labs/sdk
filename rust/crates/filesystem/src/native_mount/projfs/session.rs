@@ -492,6 +492,38 @@ impl ProjFsSession {
         Ok(())
     }
 
+    pub(in crate::native_mount) fn start_control(
+        &self,
+        work: &crate::NativeMaterializationWork,
+        control: super::super::session::NativeSessionControl,
+    ) -> Result<
+        acyclic_native_runtime::NativeCompletion<Result<(), NativeMountError>>,
+        NativeMountError,
+    > {
+        let (runtime, _) = self.live()?;
+        let runtime = Arc::clone(runtime);
+        let scope = self.begin_original_work(work)?;
+        let owned_work = work.clone();
+        // SDK controls may synchronously await filesystem futures. Retain the
+        // original invocation and retirement claim in the physical worker so
+        // neither an async progress driver nor cancellation can strand it.
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                let _scope = scope;
+                match control {
+                    super::super::session::NativeSessionControl::FlushCallbacks => {
+                        Self::flush_runtime_callbacks(&runtime, &owned_work)
+                    }
+                    super::super::session::NativeSessionControl::Revalidate => {
+                        Self::revalidate_runtime(&runtime, &owned_work)
+                    }
+                }
+            },
+            Some((work.runtime_meter(), true)),
+        )
+        .map_err(|cause| work.runtime_error(cause).into())
+    }
+
     pub(in crate::native_mount) fn flush_callbacks(
         &self,
         work: &crate::NativeMaterializationWork,
@@ -500,6 +532,13 @@ impl ProjFsSession {
             .runtime
             .as_ref()
             .ok_or(NativeMountError::ControlPending)?;
+        Self::flush_runtime_callbacks(runtime, work)
+    }
+
+    fn flush_runtime_callbacks(
+        runtime: &Runtime,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         let source = runtime.source.as_ref();
         flush_callback_gate(
             &runtime.callbacks,
@@ -601,6 +640,13 @@ impl ProjFsSession {
     ) -> Result<(), NativeMountError> {
         let (runtime, _context) = self.live()?;
         let _scope = self.begin_original_work(work)?;
+        Self::revalidate_runtime(runtime, work)
+    }
+
+    fn revalidate_runtime(
+        runtime: &Runtime,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         if runtime.source.view_stamp_with_meter(work)?.is_none() {
             runtime.projector.invalidate_all();
         }

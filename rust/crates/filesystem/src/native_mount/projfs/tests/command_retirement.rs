@@ -1,5 +1,55 @@
 use super::*;
 
+#[tokio::test]
+async fn async_controls_retain_original_work_until_completion_or_drop()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::session::NativeSessionControl;
+
+    crate::initialize_native_mount_services()?;
+    let source = windows_checkout_source().await?;
+    let (_root, _destination, mut session) = mount_source(&source)?;
+    let work = session.driver.as_ref().unwrap().original_stop_work.clone();
+    let foreign =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    for control in [
+        NativeSessionControl::FlushCallbacks,
+        NativeSessionControl::Revalidate,
+    ] {
+        for finish in [false, true] {
+            let completion = session.start_control(&work, control)?.unwrap();
+            // Submission owns the invocation before its first poll. A stop
+            // cannot take the SDK runtime away from this physical operation.
+            assert!(matches!(
+                session.stop_with_cleanup_wait(&CancellationToken::new()),
+                Err(NativeMountError::ControlPending)
+            ));
+            assert!(session.begin_original_work(&foreign).is_err());
+            if finish {
+                completion.await??;
+            } else {
+                drop(completion);
+            }
+            // Both completion and cancellation release exactly that claim.
+            drop(session.begin_original_work(&foreign)?);
+        }
+    }
+    session.stop()?;
+    assert!(
+        session
+            .start_control(&work, NativeSessionControl::FlushCallbacks)?
+            .is_none()
+    );
+    let error = session
+        .start_control(&work, NativeSessionControl::Revalidate)
+        .err()
+        .ok_or("retired session accepted revalidation")?;
+    assert!(
+        matches!(error, NativeMountError::Io(error) if error.kind() == std::io::ErrorKind::NotConnected)
+    );
+    Ok(())
+}
+
 async fn retire_after_cancellation(
     fresh_cleanup_credit: bool,
 ) -> Result<u64, Box<dyn std::error::Error>> {
