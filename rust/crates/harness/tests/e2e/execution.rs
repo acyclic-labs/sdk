@@ -1,6 +1,7 @@
 use super::{
     TestResult,
     expectations::Expectations,
+    file_bytes::FileBytes,
     matchers,
     scenario::{self, Scenario},
 };
@@ -12,7 +13,7 @@ use acyclic_harness::{
     },
     executor::{ExecutionEvent, Executor, StockExecutor, TurnInput},
     filesystem::MemoryHarnessStorage,
-    model::{Model, ModelContent},
+    model::{Model, ModelContent, ModelContentPart},
     test_support::ScriptedModelProvider,
     tool::ToolRegistry,
 };
@@ -56,10 +57,37 @@ pub(super) async fn run_on<P: StreamProvider>(
     let limits = case.execution_limits()?;
     let storage = workspace_on(&case.seed, stream).await?;
     case.seed.clear();
+    let instruction = case.take_instruction()?;
+    let content = if case.input_files.is_empty() {
+        ModelContent::Text(instruction)
+    } else {
+        let mut parts =
+            Vec::with_capacity(case.input_files.len() + usize::from(!instruction.is_empty()));
+        if !instruction.is_empty() {
+            parts.push(ModelContentPart::Text { text: instruction });
+        }
+        for file in std::mem::take(&mut case.input_files) {
+            let reference = storage
+                .stage(
+                    OperationId::new(),
+                    &file.path,
+                    file.contents.as_bytes(),
+                    &file.media_type,
+                    file.path.rsplit('/').next().unwrap_or(&file.path),
+                )
+                .await?;
+            parts.push(ModelContentPart::File {
+                file: reference,
+                policy: file.policy,
+            });
+        }
+        ModelContent::Parts(parts)
+    };
+    publish(&storage, &case.after_capture).await?;
     let (executor, provider, source) = configure(&mut case, limits)?;
     let input = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::Text(case.take_instruction()?),
+        input: content,
         selected_context: None,
         max_steps: case.max_steps.unwrap_or(16),
     };
@@ -303,7 +331,7 @@ async fn check_provider(
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()?;
         if let Some(expected) = &expected.requests {
-            matchers::ordered(expected, &requests, "requests")?;
+            matchers::model_requests(expected, &requests)?;
         }
         for forbidden in &expected.not_requests {
             if requests
@@ -401,7 +429,7 @@ async fn replay(
 }
 
 pub(super) async fn check_files<P: StreamProvider>(
-    expected: &std::collections::BTreeMap<String, Option<String>>,
+    expected: &std::collections::BTreeMap<String, Option<FileBytes>>,
     storage: &MemoryHarnessStorage<P>,
 ) -> TestResult {
     for (path, expected) in expected {

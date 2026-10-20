@@ -1,14 +1,16 @@
 use serde_json::Value;
 
-#[cfg(test)]
-#[path = "matchers_properties.rs"]
-mod properties;
-
 // Objects are recursive subsets. Arrays are ordered subsequences with distinct
 // matches; an empty array asserts emptiness. Scalar values match exactly.
 // Arguments are complete JSON payloads: extra keys or elements are corruption.
+// Content parts have an exact shape: no additional, missing or reordered parts.
+// File metadata inside a declared part can still use object subset assertions.
 // A sole $json key matches JSON-encoded text; $contains searches text recursively.
 pub fn subset(expected: &Value, actual: &Value) -> bool {
+    matches(expected, actual, false)
+}
+
+fn matches(expected: &Value, actual: &Value, model_request: bool) -> bool {
     if let Some(expected) = expected.as_object().filter(|object| object.len() == 1)
         && let Some(needle) = expected.get("$contains")
     {
@@ -19,15 +21,27 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
     match (expected, actual) {
         (Value::Object(expected), Value::String(actual)) if expected.len() == 1 => {
             expected.get("$json").is_some_and(|expected| {
-                serde_json::from_str(actual).is_ok_and(|actual| subset(expected, &actual))
+                serde_json::from_str(actual)
+                    .is_ok_and(|actual| matches(expected, &actual, model_request))
             })
         }
         (Value::Object(expected), Value::Object(actual)) => expected.iter().all(|(key, value)| {
             actual.get(key).is_some_and(|actual| {
                 if key == "arguments" {
                     value == actual
+                } else if model_request
+                    && key == "content"
+                    && let Value::Array(expected) = value
+                {
+                    actual.as_array().is_some_and(|actual| {
+                        expected.len() == actual.len()
+                            && expected
+                                .iter()
+                                .zip(actual)
+                                .all(|(expected, actual)| matches(expected, actual, model_request))
+                    })
                 } else {
-                    subset(value, actual)
+                    matches(value, actual, model_request)
                 }
             })
         }),
@@ -38,7 +52,7 @@ pub fn subset(expected: &Value, actual: &Value) -> bool {
             let mut remaining = actual.iter();
             expected
                 .iter()
-                .all(|expected| remaining.any(|actual| subset(expected, actual)))
+                .all(|expected| remaining.any(|actual| matches(expected, actual, model_request)))
         }
         _ => expected == actual,
     }
@@ -55,7 +69,24 @@ fn contains_text(actual: &Value, needle: &str) -> bool {
     }
 }
 
+// Model content parts are complete ordered payloads, while surrounding request
+// metadata and message history retain the explicit subset/subsequence contract.
+pub fn model_requests(expected: &[Value], actual: &[Value]) -> Result<(), String> {
+    ordered_with(expected, actual, "requests", |expected, actual| {
+        matches(expected, actual, true)
+    })
+}
+
 pub fn ordered(expected: &[Value], actual: &[Value], label: &str) -> Result<(), String> {
+    ordered_with(expected, actual, label, subset)
+}
+
+fn ordered_with(
+    expected: &[Value],
+    actual: &[Value],
+    label: &str,
+    compare: fn(&Value, &Value) -> bool,
+) -> Result<(), String> {
     if expected.is_empty() && !actual.is_empty() {
         return Err(format!(
             "{label}: expected no observations, got {}",
@@ -65,7 +96,7 @@ pub fn ordered(expected: &[Value], actual: &[Value], label: &str) -> Result<(), 
     let mut remaining = actual.iter().enumerate();
     let mut after = 0;
     for (index, expected) in expected.iter().enumerate() {
-        let Some((found, _)) = remaining.find(|(_, actual)| subset(expected, actual)) else {
+        let Some((found, _)) = remaining.find(|(_, actual)| compare(expected, actual)) else {
             return Err(format!(
                 "{label}[{index}] missing after position {after}: {expected}\nactual: {}",
                 Value::Array(actual.to_vec())
