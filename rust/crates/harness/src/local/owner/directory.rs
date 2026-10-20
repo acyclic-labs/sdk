@@ -29,7 +29,7 @@ pub(crate) fn separated_directory(path: &Path, checkout: Option<&Path>) -> Resul
 
 /// Canonical form of a not-yet-created directory: its nearest existing ancestor plus plain
 /// components. `None` when the missing suffix is not lexically resolvable.
-fn planned_directory(path: &Path) -> Option<PathBuf> {
+pub(super) fn planned_directory(path: &Path) -> Option<PathBuf> {
     for ancestor in path.ancestors() {
         let existing = if ancestor.as_os_str().is_empty() {
             Path::new(".")
