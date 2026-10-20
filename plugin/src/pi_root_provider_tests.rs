@@ -188,19 +188,6 @@ impl Fixture {
         let command = stage_root_command(&owner, &filesystem, &request, &startup)
             .await
             .unwrap();
-        drop(owner);
-        // Registration persisted the immutable command. Model the subsequent
-        // worker invocation by reopening its owner on that invocation's ledger,
-        // as the service does after returning the pending registration.
-        let startup = crate::pi_fork::tests::work();
-        let owner = PiOwnerConfig::load(
-            &resources.data,
-            session.strip_prefix(&resources.data).unwrap(),
-            &startup,
-        )
-        .unwrap()
-        .into_native_shared(&startup)
-        .unwrap();
         let stream = Arc::new(
             LocalStream::open(session.join("stream"), LocalStreamLimits::default())
                 .await
@@ -219,6 +206,29 @@ impl Fixture {
             .admit_root(&request.binding, &request.root, &command.0, &startup)
             .await
             .unwrap();
+        drop(runtime);
+        drop(owner);
+        // Registration returns only after persisting the admitted task. Reopen
+        // its owner and runtime for the subsequent worker invocation, matching
+        // the service boundary while retaining one ledger through recovery.
+        let startup = crate::pi_fork::tests::work();
+        let owner = PiOwnerConfig::load(
+            &resources.data,
+            session.strip_prefix(&resources.data).unwrap(),
+            &startup,
+        )
+        .unwrap()
+        .into_native_shared(&startup)
+        .unwrap();
+        let runtime = PiTaskRuntime::open_with_native_work(
+            stream.clone(),
+            filesystem.clone(),
+            &journal,
+            owner.authority(&startup).unwrap(),
+            &startup,
+        )
+        .await
+        .unwrap();
         let worker = Worker {
             id: "pi-root-provider-worker".into(),
             available: Default::default(),
