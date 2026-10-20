@@ -118,7 +118,7 @@ fn oracle() -> Term<Events> {
 
 #[test]
 fn profile_detection_and_setup_matrix() -> Result<(), Box<dyn std::error::Error>> {
-    let profiles: Vec<Profile> = serde_json::from_str(include_str!("profiles.json"))?;
+    let profiles: Vec<Profile> = serde_json::from_str(include_str!("../profiles.json"))?;
     assert_eq!(profiles.len(), 14);
     for profile in profiles {
         let mut responder = Script {
@@ -368,7 +368,7 @@ fn environment_fallback_ladders_and_policy() {
 
 #[test]
 fn profile_environment_colour_evidence_matrix() -> Result<(), Box<dyn std::error::Error>> {
-    let profiles: Vec<Profile> = serde_json::from_str(include_str!("profiles.json"))?;
+    let profiles: Vec<Profile> = serde_json::from_str(include_str!("../profiles.json"))?;
     for profile in profiles {
         let base = Environment([("TERM_PROGRAM".into(), profile.identity.clone())].into());
         let known = ProbeReplies::default().capabilities(&base).colour;
@@ -450,7 +450,7 @@ fn malformed_replies_do_not_swallow_user_input() -> io::Result<()> {
 }
 
 #[cfg(unix)]
-#[path = "support/status_flags.rs"]
+#[path = "../support/status_flags.rs"]
 mod status_flags;
 
 #[cfg(unix)]
@@ -767,7 +767,7 @@ proptest! {
     }
 }
 
-#[path = "terminal/mouse.rs"]
+#[path = "../terminal/mouse.rs"]
 mod mouse;
 #[test]
 fn scrolling_requires_a_screen_oracle_and_dumb_always_disables_it() {

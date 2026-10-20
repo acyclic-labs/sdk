@@ -24,10 +24,10 @@ use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 
-#[path = "terminal_frames/contents.rs"]
+#[path = "../terminal_frames/contents.rs"]
 mod contents;
 
-#[path = "terminal_frames/regions.rs"]
+#[path = "../terminal_frames/regions.rs"]
 mod regions;
 
 const WIDTH: u16 = 24;
@@ -768,5 +768,5 @@ fn negative_control_snapshot_then_empty_skip_loses_resume() {
     resume_inside_render::<false>(true, false);
 }
 
-#[path = "terminal_frames/attributes.rs"]
+#[path = "../terminal_frames/attributes.rs"]
 mod attributes;

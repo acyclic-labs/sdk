@@ -914,10 +914,10 @@ fn a_render_unwinding_after_a_region_scroll_leaves_the_next_frame_exact() {
     );
 }
 
-#[path = "terminal_regions/native_profiles.rs"]
+#[path = "../terminal_regions/native_profiles.rs"]
 mod native_profiles;
 
-#[path = "terminal_regions/recovery.rs"]
+#[path = "../terminal_regions/recovery.rs"]
 mod recovery;
 
 #[test]

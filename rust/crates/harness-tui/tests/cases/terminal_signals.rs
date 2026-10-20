@@ -240,7 +240,11 @@ impl Process {
         let observer = File::from(pty.user);
         let original = tcgetattr(&observer)?;
         let child = Command::new(std::env::current_exe()?)
-            .args(["--exact", "lifecycle_child", "--nocapture"])
+            .args([
+                "--exact",
+                "terminal_signals::lifecycle_child",
+                "--nocapture",
+            ])
             .env("ACYCLIC_TERMINAL_SIGNAL_CHILD", mode)
             .stdin(Stdio::from(observer.try_clone()?))
             .stdout(Stdio::from(observer.try_clone()?))

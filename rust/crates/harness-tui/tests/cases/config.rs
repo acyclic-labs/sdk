@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use sequences::{Parsed, Stage};
 use serde_json::json;
 #[cfg(test)]
-#[path = "support/config_sequences.rs"]
+#[path = "../support/config_sequences.rs"]
 mod sequences;
 
 fn apply(view: &ConfigView, input: &mut PromptInput) {
@@ -323,51 +323,51 @@ fn config_seed_corpus() {
     for (file, data) in [
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/aliases").as_slice(),
+            include_bytes!("../../fuzz/corpus/config_keymap/aliases").as_slice(),
         ),
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/chord"),
+            include_bytes!("../../fuzz/corpus/config_keymap/chord"),
         ),
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/defaults"),
+            include_bytes!("../../fuzz/corpus/config_keymap/defaults"),
         ),
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/duplicate"),
+            include_bytes!("../../fuzz/corpus/config_keymap/duplicate"),
         ),
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/syntax"),
+            include_bytes!("../../fuzz/corpus/config_keymap/syntax"),
         ),
         (
             ConfigFile::Keymap,
-            include_bytes!("../fuzz/corpus/config_keymap/unknown"),
+            include_bytes!("../../fuzz/corpus/config_keymap/unknown"),
         ),
         (
             ConfigFile::Settings,
-            include_bytes!("../fuzz/corpus/config_settings/defaults"),
+            include_bytes!("../../fuzz/corpus/config_settings/defaults"),
         ),
         (
             ConfigFile::Theme,
-            include_bytes!("../fuzz/corpus/config_theme/defaults"),
+            include_bytes!("../../fuzz/corpus/config_theme/defaults"),
         ),
         (
             ConfigFile::Theme,
-            include_bytes!("../fuzz/corpus/config_theme/invalid-rgb"),
+            include_bytes!("../../fuzz/corpus/config_theme/invalid-rgb"),
         ),
         (
             ConfigFile::Theme,
-            include_bytes!("../fuzz/corpus/config_theme/rgb"),
+            include_bytes!("../../fuzz/corpus/config_theme/rgb"),
         ),
         (
             ConfigFile::Theme,
-            include_bytes!("../fuzz/corpus/config_theme/syntax"),
+            include_bytes!("../../fuzz/corpus/config_theme/syntax"),
         ),
         (
             ConfigFile::Theme,
-            include_bytes!("../fuzz/corpus/config_theme/unknown"),
+            include_bytes!("../../fuzz/corpus/config_theme/unknown"),
         ),
     ] {
         // The fuzz entry itself, then the judged observations.

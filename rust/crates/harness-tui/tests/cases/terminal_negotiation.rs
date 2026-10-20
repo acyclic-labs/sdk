@@ -10,7 +10,7 @@ use alacritty_terminal::vte::ansi::Processor;
 use proptest::prelude::*;
 use proptest::test_runner::{Config as PropertyConfig, TestRunner};
 
-#[path = "support/negotiation.rs"]
+#[path = "../support/negotiation.rs"]
 mod negotiation;
 
 struct Size;

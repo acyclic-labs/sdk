@@ -9,7 +9,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use std::io;
 
-#[path = "support/terminal_keys.rs"]
+#[path = "../support/terminal_keys.rs"]
 mod table;
 
 fn event(code: KeyCode, modifiers: KeyModifiers) -> InputEvent {

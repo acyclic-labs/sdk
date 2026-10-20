@@ -4,7 +4,7 @@ use acyclic_harness_tui::ratatui::{Terminal, backend::TestBackend, layout::Rect,
 use acyclic_harness_tui::{Editor, PromptInput, Screen, Viewport};
 use proptest::prelude::*;
 
-#[path = "screen/wrapping.rs"]
+#[path = "../screen/wrapping.rs"]
 mod wrapping;
 
 fn visible(terminal: &Terminal<TestBackend>) -> String {
@@ -287,7 +287,7 @@ fn composed_prompt_restores_each_item_draft_and_shared_history_from_files()
     Ok(())
 }
 
-#[path = "screen/display_text.rs"]
+#[path = "../screen/display_text.rs"]
 mod display_text;
 
 #[test]

@@ -11,9 +11,9 @@ use acyclic_harness_tui::{
 };
 use proptest::prelude::*;
 
-#[path = "support/completion_deltas.rs"]
+#[path = "../support/completion_deltas.rs"]
 mod deltas;
-#[path = "support/completion_sequences.rs"]
+#[path = "../support/completion_sequences.rs"]
 mod sequences;
 
 #[test]
@@ -43,15 +43,15 @@ proptest! {
 #[test]
 fn completion_regression_corpus() {
     for seed in [
-        include_bytes!("../fuzz/corpus/completion_events/undo-refresh").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/slash").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/mention").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/quotes").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/unicode").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/catalog-alias").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/themes").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/greek-theme").as_slice(),
-        include_bytes!("../fuzz/corpus/completion_events/quoted-delta").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/undo-refresh").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/slash").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/mention").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/quotes").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/unicode").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/catalog-alias").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/themes").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/greek-theme").as_slice(),
+        include_bytes!("../../fuzz/corpus/completion_events/quoted-delta").as_slice(),
     ] {
         assert!(sequences::exercise(seed).is_ok());
         deltas::exercise(seed);
@@ -548,7 +548,7 @@ fn oracle_fold(text: &str) -> String {
     static TABLE: std::sync::OnceLock<Option<std::collections::BTreeMap<char, String>>> =
         std::sync::OnceLock::new();
     let table = TABLE.get_or_init(|| {
-        include_str!("data/casefold.tsv")
+        include_str!("../data/casefold.tsv")
             .lines()
             .filter(|line| !line.starts_with('#'))
             .flat_map(|line| line.split('|'))
@@ -609,7 +609,7 @@ fn leaving_a_dismissed_request_allows_the_same_token_in_a_new_draft() {
 
 #[test]
 fn unicode_data_mappings_are_matched_in_both_directions() {
-    for record in include_str!("data/casefold.tsv")
+    for record in include_str!("../data/casefold.tsv")
         .lines()
         .filter(|line| !line.starts_with('#'))
         .flat_map(|line| line.split('|'))
