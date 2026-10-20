@@ -369,23 +369,25 @@ async fn cursors_reject_scope_offset_and_anchor_changes() -> Result {
 
 #[test]
 fn seed_corpus_round_trips() -> Result {
-    let sub = include_bytes!("../fuzz/corpus/session_fs/subscription");
+    let sub = include_bytes!("../../fuzz/corpus/session_fs/subscription");
     assert_eq!(Subscription::decode(sub)?.encode()?.as_ref(), sub);
-    let publication = include_bytes!("../fuzz/corpus/session_fs/publication");
+    let publication = include_bytes!("../../fuzz/corpus/session_fs/publication");
     assert_eq!(
         Publication::decode(publication)?.encode()?.as_ref(),
         publication
     );
-    let cursor = include_bytes!("../fuzz/corpus/session_fs/cursor");
+    let cursor = include_bytes!("../../fuzz/corpus/session_fs/cursor");
     assert_eq!(Cursor::decode(cursor)?.encode()?.as_ref(), cursor);
     assert!(matches!(
-        Subscription::decode(include_bytes!("../fuzz/corpus/session_fs/unknown-version")),
+        Subscription::decode(include_bytes!(
+            "../../fuzz/corpus/session_fs/unknown-version"
+        )),
         Err(StreamError::Unsupported)
     ));
     Ok(())
 }
 
-#[path = "support/session_fs.rs"]
+#[path = "../support/session_fs.rs"]
 mod support;
 
 fn closed(frame: &session::SessionFrame, error: StreamError) -> bool {
@@ -712,7 +714,7 @@ async fn authorization_is_current_when_the_provider_open_is_polled() -> Result {
     Ok(())
 }
 
-#[path = "session_fs/allocations.rs"]
+#[path = "../session_fs/allocations.rs"]
 mod allocations;
 
 #[tokio::test]

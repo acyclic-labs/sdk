@@ -3,10 +3,10 @@ use acyclic_fs::access::*;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[path = "access_review.rs"]
+#[path = "../access_review.rs"]
 mod review;
 
-#[path = "access_roundtrip.rs"]
+#[path = "../access_roundtrip.rs"]
 mod roundtrip;
 
 fn principal() -> Principal {

@@ -14,51 +14,8 @@ keywords = ["filesystem", "copy-on-write", "versioned", "storage"]
 categories = ["filesystem", "data-structures"]
 
 [[test]]
-name = "projfs_enumeration"
-path = "tests/projfs_enumeration.rs"
-required-features = ["local", "native-mount"]
-
-[[test]]
-name = "projfs_profile"
-path = "tests/projfs_profile.rs"
-required-features = ["local", "native-mount"]
-
-[[test]]
-name = "projfs_metadata"
-path = "tests/projfs_metadata.rs"
-required-features = ["local", "memory", "native-mount"]
-
-[[test]]
 name = "main"
 path = "tests/main.rs"
-
-[[test]]
-name = "access"
-path = "tests/access.rs"
-
-[[test]]
-name = "path_properties"
-path = "tests/path_properties.rs"
-
-[[test]]
-name = "workspace_names"
-path = "tests/workspace_names.rs"
-required-features = ["fuzzing"]
-
-[[test]]
-name = "cloud_contract"
-path = "tests/cloud_contract.rs"
-required-features = ["memory"]
-
-[[test]]
-name = "native_owner_registry"
-path = "tests/native_owner_registry.rs"
-required-features = ["native-watch"]
-
-[[test]]
-name = "projfs_names"
-path = "tests/projfs_names.rs"
-required-features = ["native-mount"]
 
 [[bench]]
 name = "lease_paths"
@@ -71,11 +28,6 @@ harness = false
 required-features = ["memory"]
 
 [[test]]
-name = "projfs_paths"
-path = "tests/projfs_paths.rs"
-required-features = ["native-mount"]
-
-[[test]]
 name = "native_binding_model"
 path = "tests/native_binding_model.rs"
 required-features = ["native-mount"]
@@ -84,25 +36,6 @@ required-features = ["native-mount"]
 name = "native_stage_loom"
 path = "tests/native_stage_loom.rs"
 required-features = ["native-mount"]
-
-[[test]]
-name = "accounting_reconciliation"
-path = "tests/accounting_reconciliation.rs"
-required-features = ["memory"]
-
-[[test]]
-name = "accounting_layout"
-path = "tests/accounting_layout.rs"
-
-[[test]]
-name = "workspace_reads"
-path = "tests/workspace_reads.rs"
-required-features = ["memory"]
-
-[[test]]
-name = "native_owner_notifications"
-path = "tests/native_owner_notifications.rs"
-required-features = ["native-watch"]
 
 [[bench]]
 name = "filesystem"
@@ -118,11 +51,6 @@ required-features = ["local", "memory", "native-watch"]
 name = "native_capture"
 harness = false
 required-features = ["memory", "native-watch", "native-mount"]
-
-[[test]]
-name = "native_source_watch_custody"
-path = "tests/native_source_watch_custody.rs"
-required-features = ["local", "native-mount"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
@@ -286,11 +214,6 @@ required-features = ["memory"]
 name = "object_batches_alloc"
 harness = false
 required-features = ["memory"]
-
-[[test]]
-name = "session_fs"
-path = "tests/session_fs.rs"
-required-features = ["memory", "session"]
 
 [[test]]
 name = "session_fs_model"

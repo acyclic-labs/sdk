@@ -1,11 +1,11 @@
 //! Scoped reuse of native names and their existing buffers.
 
-#[path = "../src/native_mount/path.rs"]
+#[path = "../../src/native_mount/path.rs"]
 mod mount_path;
 pub use mount_path::MountPath;
 use std::sync::{RwLock, TryLockError};
 
-#[path = "../src/native_mount/projfs/creating_name.rs"]
+#[path = "../../src/native_mount/projfs/creating_name.rs"]
 mod creating_name;
 use creating_name::*;
 

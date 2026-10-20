@@ -1,18 +1,18 @@
 //! Shrinking properties for portable filesystem path admission.
-#[path = "path_input.rs"]
+#[path = "../path_input.rs"]
 mod input;
 use proptest::prelude::*;
 
 #[test]
 fn path_seed_corpus() {
     for bytes in [
-        include_bytes!("../fuzz/corpus/paths/unicode").as_slice(),
-        include_bytes!("../fuzz/corpus/paths/parent"),
-        include_bytes!("../fuzz/corpus/paths/repeated-separator"),
-        include_bytes!("../fuzz/corpus/paths/embedded-nul"),
-        include_bytes!("../fuzz/corpus/paths/posix-bytes"),
-        include_bytes!("../fuzz/corpus/paths/utf16-surrogate"),
-        include_bytes!("../fuzz/corpus/paths/fold-expansions"),
+        include_bytes!("../../fuzz/corpus/paths/unicode").as_slice(),
+        include_bytes!("../../fuzz/corpus/paths/parent"),
+        include_bytes!("../../fuzz/corpus/paths/repeated-separator"),
+        include_bytes!("../../fuzz/corpus/paths/embedded-nul"),
+        include_bytes!("../../fuzz/corpus/paths/posix-bytes"),
+        include_bytes!("../../fuzz/corpus/paths/utf16-surrogate"),
+        include_bytes!("../../fuzz/corpus/paths/fold-expansions"),
     ] {
         input::check(bytes);
         path_oracle().check(&bytes.to_vec());

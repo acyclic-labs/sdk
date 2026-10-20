@@ -17,14 +17,14 @@ proptest! {
 #[test]
 fn seed_corpus_covers_unicode_ordering_truncation_and_name_boundaries() {
     for seed in [
-        include_bytes!("../fuzz/corpus/workspace_name/ascii").as_slice(),
-        include_bytes!("../fuzz/corpus/workspace_name/decomposed"),
-        include_bytes!("../fuzz/corpus/workspace_name/hangul"),
-        include_bytes!("../fuzz/corpus/workspace_name/combining"),
-        include_bytes!("../fuzz/corpus/workspace_name/invalid"),
-        include_bytes!("../fuzz/corpus/workspace_name/long"),
-        include_bytes!("../fuzz/corpus/workspace_name/maximum"),
-        include_bytes!("../fuzz/corpus/workspace_name/truncated"),
+        include_bytes!("../../fuzz/corpus/workspace_name/ascii").as_slice(),
+        include_bytes!("../../fuzz/corpus/workspace_name/decomposed"),
+        include_bytes!("../../fuzz/corpus/workspace_name/hangul"),
+        include_bytes!("../../fuzz/corpus/workspace_name/combining"),
+        include_bytes!("../../fuzz/corpus/workspace_name/invalid"),
+        include_bytes!("../../fuzz/corpus/workspace_name/long"),
+        include_bytes!("../../fuzz/corpus/workspace_name/maximum"),
+        include_bytes!("../../fuzz/corpus/workspace_name/truncated"),
         b"",
         b".",
         b"..",

@@ -4,8 +4,7 @@
 
 use acyclic_fs::{
     CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication,
-    NativeMaterializationWork, OperationReceipt, PublicationPermit, WorkBudget, WorkCounters,
-    WorkspaceError, kernel,
+    NativeMaterializationWork, WorkBudget,
 };
 use bytes::Bytes;
 use std::collections::HashSet;
@@ -39,4 +38,4 @@ fn manual_mount_options() -> MountOptions {
     MountOptions::read_write().publication(MountPublication::Manual)
 }
 
-include!("../src/native_mount/projfs/tests/enumeration.rs");
+include!("../../src/native_mount/projfs/tests/enumeration.rs");

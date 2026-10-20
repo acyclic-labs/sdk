@@ -96,7 +96,7 @@ async fn profile_enumeration_hydration_write_capture() -> Result<(), Box<dyn std
         .args([
             "--ignored",
             "--exact",
-            "profile_external_client",
+            "projfs_profile::profile_external_client",
             "--nocapture",
         ])
         .env("ACYCLIC_PROJFS_PROFILE_ROOT", destination.join(prefix));

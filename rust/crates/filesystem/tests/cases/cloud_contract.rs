@@ -1,6 +1,6 @@
 //! Hosted and generated clients replay Cloud's filesystem handler-test JSON.
 
-#[path = "support/cloud_contract.rs"]
+#[path = "../support/cloud_contract.rs"]
 mod contract;
 
 use acyclic_fs::model::FilesystemProfile;
@@ -227,7 +227,7 @@ fn renamed(mut responses: Vec<Value>) -> Vec<Value> {
 /// the SDK's own. The live test checks that the real Filesystem service names it too.
 fn golden() -> TestResult<Vec<Value>> {
     let mut cases: Vec<Value> =
-        serde_json::from_str(include_str!("fixtures/cloud-filesystem/golden.json"))?;
+        serde_json::from_str(include_str!("../fixtures/cloud-filesystem/golden.json"))?;
     *cases
         .first_mut()
         .and_then(|handshake| handshake.pointer_mut("/response/protocol/protocol/descriptorDigest"))
