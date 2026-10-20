@@ -87,6 +87,26 @@ pub struct WorkflowRecord {
     pub transition: MachineTransition,
 }
 impl WorkflowRecord {
+    pub(super) fn digest(&self, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+        #[cfg(all(
+            feature = "native-execution",
+            feature = "filesystem",
+            not(target_arch = "wasm32")
+        ))]
+        if let Some(io) = io
+            && io.original_native_work().is_some()
+            && canonical::ordered(self, io)?
+        {
+            return io
+                .digest(&canonical::Canonical(self), u64::MAX, None)?
+                .map(|(_, digest)| digest)
+                .ok_or_else(|| {
+                    stock_boundary(Some(io), Invalid, "workflow digest is unavailable")
+                });
+        }
+        crate::executor::preparation_digest(self, io)
+    }
+
     /// Borrows the checkpoint committed by this transition.
     pub fn checkpoint(&self) -> Result<(&MachineIdentity, u64, &Value)> {
         Ok((

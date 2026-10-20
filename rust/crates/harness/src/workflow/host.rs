@@ -117,10 +117,7 @@ impl DurableWorkflowHost {
                 host.reserved_operations.extend(record.operation_ids());
                 host.intents.insert(
                     record.operation_id,
-                    (
-                        record.prior.revision,
-                        crate::executor::preparation_digest(&record, io)?,
-                    ),
+                    (record.prior.revision, record.digest(io)?),
                 );
                 let restored = host
                     .registry
@@ -188,10 +185,7 @@ impl DurableWorkflowHost {
                 &self.checkpoint.state,
             )
             || self.intents.get(&record.operation_id)
-                != Some(&(
-                    record.prior.revision,
-                    crate::executor::preparation_digest(record, io)?,
-                ))
+                != Some(&(record.prior.revision, record.digest(io)?))
         {
             return Err(stock_boundary(
                 io,
@@ -360,7 +354,7 @@ impl DurableWorkflowHost {
             ));
         }
         let digest = if io.is_some() {
-            Some(crate::executor::preparation_digest(&record, io)?)
+            Some(record.digest(io)?)
         } else {
             None
         };
@@ -440,7 +434,7 @@ impl DurableWorkflowHost {
                 "workflow retry record is unavailable",
             ));
         };
-        if crate::executor::preparation_digest(record, io)? != *digest {
+        if record.digest(io)? != *digest {
             return Err(stock_boundary(io, Storage, "workflow retry record changed"));
         }
         if &record.idempotency_key != key || &record.input != input {

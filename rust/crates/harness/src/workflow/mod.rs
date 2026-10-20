@@ -1,5 +1,11 @@
 //! Pinned resumable machines with atomic checkpoints and command outboxes.
 
+#[cfg(all(
+    feature = "native-execution",
+    feature = "filesystem",
+    not(target_arch = "wasm32")
+))]
+mod canonical;
 mod copies;
 mod host;
 mod io;
