@@ -7,6 +7,7 @@ use crate::{
 };
 
 mod bootstrap;
+mod replay;
 
 // Interrupt the actual production publication future at each admission await
 // boundary: HEAD acknowledged before admission, and admission committed before
