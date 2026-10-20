@@ -154,17 +154,60 @@ mod tests {
         LocalCoreStateStore::open_owned(directory.path()).unwrap();
     }
     #[test]
+    fn joining_a_replaced_identity_never_returns_the_live_owner() {
+        let owners = OrderedMutex::new(BTreeMap::new());
+        let path = PathBuf::from("namespace");
+        let first = join::<_, true>(&owners, path.clone(), [1; 16], || Ok(Arc::new(1))).unwrap();
+        let alias = join::<_, true>(&owners, path.clone(), [1; 16], || {
+            panic!("an existing identity must be joined")
+        })
+        .unwrap();
+        assert!(Arc::ptr_eq(&first, &alias));
+        assert!(matches!(
+            join::<_, true>(&owners, path.clone(), [2; 16], || {
+                panic!("replacement cannot initialize while the owner is live")
+            }),
+            Err(LocalCoreStateStoreError::OwnershipConflict(_))
+        ));
+        drop(first);
+        drop(alias);
+        assert_eq!(
+            *join::<_, true>(&owners, path, [2; 16], || Ok(Arc::new(2))).unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn a_live_owner_cannot_be_joined_after_its_directory_is_replaced() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("namespace");
         let first = LocalCoreStateStore::open_shared_owner(&root).unwrap();
-        std::fs::rename(&root, directory.path().join("retired")).unwrap();
+        let retired = directory.path().join("retired");
+        #[cfg(windows)]
+        {
+            // Windows pins the namespace while its owner holds the directory.
+            let error = std::fs::rename(&root, &retired).unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            assert!(root.is_dir() && !retired.exists());
+            let joined = LocalCoreStateStore::open_shared_owner(&root).unwrap();
+            let (Ownership::Owned(a), Ownership::Owned(b)) = (&first.ownership, &joined.ownership)
+            else {
+                panic!("joined store is not owned")
+            };
+            assert!(Arc::ptr_eq(a, b));
+            drop(joined);
+            drop(first);
+        }
+        std::fs::rename(&root, &retired).unwrap();
         std::fs::create_dir(&root).unwrap();
-        assert!(matches!(
-            LocalCoreStateStore::open_shared_owner(&root),
-            Err(LocalCoreStateStoreError::OwnershipConflict(_))
-        ));
-        drop(first);
+        #[cfg(not(windows))]
+        {
+            assert!(matches!(
+                LocalCoreStateStore::open_shared_owner(&root),
+                Err(LocalCoreStateStoreError::OwnershipConflict(_))
+            ));
+            drop(first);
+        }
         LocalCoreStateStore::open_shared_owner(&root).unwrap();
     }
 }
