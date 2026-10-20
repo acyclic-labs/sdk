@@ -223,6 +223,28 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
             assert_eq!(page.len(), 16);
             assert!(physical.bytes_current <= native.live_allocation_bytes() as i64);
             drop(page);
+
+            // A flat Value array has many scalar entries and only one typed
+            // container. Keep serde buffering for all entries without charging
+            // each boolean as a possible WorkflowCommand or FileRef.
+            let mut scalars = record.clone();
+            scalars.input = serde_json::json!({"scalars": vec![true; 1024]});
+            let bytes =
+                serde_json::to_vec(&scalars).map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.decode(
+                    std::marker::PhantomData::<WorkflowRecord>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let (actual, custody) = decoded.expect("scalar array decoder ran")?;
+            assert_eq!(actual, scalars);
+            assert!(physical.bytes_current <= custody.bytes() as i64);
+            assert!(physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline);
+            drop(actual);
+            drop(custody);
         }
         drop(io);
         assert_eq!(native.live_allocation_bytes(), baseline);
