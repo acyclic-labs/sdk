@@ -1,6 +1,60 @@
 use super::*;
 
 #[tokio::test]
+async fn hard_linked_skill_pins_the_shadow_identity_without_loading_its_body() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::super::storage)?;
+    let skill = root.path().join(".agents/skills/greet2/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).map_err(super::super::super::storage)?;
+    std::fs::write(
+        &skill,
+        "---\nname: greet2\ndescription: Original\n---\nbody",
+    )
+    .map_err(super::super::super::storage)?;
+    std::fs::hard_link(&skill, root.path().join("alias.md"))
+        .map_err(super::super::super::storage)?;
+    let harness = LocalHarness::open(
+        checkout_config(root.path(), (model()?, text()))?.without_default_tools(),
+    )
+    .await?;
+    let view = harness.workspace.as_ref().unwrap().view();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+        work: &work,
+        cancellation: &cancellation,
+    };
+    let body = "---\nname: greet2\ndescription: Updated through alias\n---\nRetained shadow body";
+    view.write(
+        "/alias.md",
+        acyclic_stream::OwnedBytes::copy_from_slice(body.as_bytes()),
+        acyclic_fs::IdempotencyKey::new(),
+        acyclic_fs::PublicationPermit::Unrestricted,
+        &mut accounting,
+    )
+    .await?;
+    let skills = harness.skills().await?;
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].description, "Updated through alias");
+    // Changing the authored alias after discovery must not change the retained cut.
+    view.write(
+        "/alias.md",
+        acyclic_stream::OwnedBytes::from_static(b"later body"),
+        acyclic_fs::IdempotencyKey::new(),
+        acyclic_fs::PublicationPermit::Unrestricted,
+        &mut accounting,
+    )
+    .await?;
+    let reader = harness.context_reader()?;
+    let (_, bytes) = skills[0].source.read(reader.as_ref(), 4096).await?;
+    assert_eq!(bytes.as_ref(), body.as_bytes());
+    Ok(())
+}
+
+#[tokio::test]
 async fn unchanged_checkout_generation_reuses_skill_catalog_without_rescanning() -> Result<()> {
     let root = tempfile::tempdir().map_err(super::super::super::storage)?;
     let skill = root.path().join(".agents/skills/greet2/SKILL.md");

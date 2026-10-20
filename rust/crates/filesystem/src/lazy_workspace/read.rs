@@ -119,6 +119,59 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         self.retire_lookup((lookup, guard), ctx)?;
         result
     }
+    /// Reads an immutable authored or shadow file by identity, including files
+    /// whose source alias has no entry in the authored namespace.
+    pub async fn read_file_at_snapshot(
+        &self,
+        cut: LazySnapshotRef,
+        file_id: FileId,
+        maximum: u64,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        self.validate_snapshot(cut, ctx).await?;
+        let mut checkout = self
+            .checkout(
+                crate::model::GenerationSelector::Exact(cut.authored_generation),
+                ctx,
+            )
+            .await?;
+        let record = accounted!(ctx, |work, cancel| checkout
+            .value
+            .read_file_record_by_id(file_id, work, cancel));
+        checkout.retire(ctx)?;
+        let record = match record {
+            Ok(record) => record,
+            Err(LazyWorkspaceError::Filesystem(crate::FsError::NotFound)) => {
+                self.shadow_record(cut.shadows, file_id, ctx)
+                    .await?
+                    .ok_or(LazyWorkspaceError::NotFound)?
+                    .0
+            }
+            Err(error) => return Err(error),
+        };
+        if record.kind != FileKind::Regular {
+            return Err(LazyWorkspaceError::NotRegularFile);
+        }
+        let detached = accounted!(ctx, |work, cancel| async {
+            crate::facade::DetachedFile::from_record(
+                self.workspace.volume.clone(),
+                record,
+                &work,
+                cancel,
+            )
+        })?;
+        let length = record_logical_bytes(record).ok_or(LazyWorkspaceError::NotRegularFile)?;
+        if length > maximum {
+            return Err(LazyWorkspaceError::TooLarge);
+        }
+        let read = accounted!(ctx, |work, cancel| detached.read_range(
+            crate::ByteRange { offset: 0, length },
+            work,
+            cancel
+        ))?;
+        Ok(read_chunk(read.bytes, read.logical_owned_bytes, ctx))
+    }
+
     pub(crate) async fn read_resolved(
         &self,
         lookup: &LazyLookup,

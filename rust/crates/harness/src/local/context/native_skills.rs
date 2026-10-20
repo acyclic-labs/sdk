@@ -21,6 +21,16 @@ struct Source {
     node: SourceNode,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+enum RetainedSource {
+    Native(Source),
+    Shadow {
+        volume: VolumeRef,
+        cut: acyclic_fs::LazySnapshotRef,
+        file_id: acyclic_fs::FileId,
+    },
+}
+
 type Catalog = Option<(acyclic_fs::LazySnapshotId, Vec<SkillMetadata>)>;
 
 pub(crate) struct NativeSkills {
@@ -124,7 +134,11 @@ impl NativeSkills {
             path: path.into(),
             node,
         };
-        let bytes = serde_json::to_vec(&record).map_err(storage)?;
+        self.retain_record(&RetainedSource::Native(record))
+    }
+
+    fn retain_record(&self, record: &RetainedSource) -> Result<PinnedContextPath> {
+        let bytes = serde_json::to_vec(record).map_err(storage)?;
         let digest = blake3::hash(&bytes);
         let destination = self.directory.join(format!("{digest}.json"));
         if !destination.exists() {
@@ -184,7 +198,64 @@ impl NativeSkills {
         if blake3::hash(&bytes).to_hex().as_str() != digest {
             return Err(Error::Conflict("retained skill source changed".into()));
         }
-        let record: Source = serde_json::from_slice(&bytes).map_err(storage)?;
+        let retained: RetainedSource = serde_json::from_slice(&bytes).map_err(storage)?;
+        if let RetainedSource::Shadow {
+            volume: owner,
+            cut,
+            file_id,
+        } = &retained
+        {
+            if owner != volume {
+                return Err(Error::Unauthorized(
+                    "skill source belongs to another journal".into(),
+                ));
+            }
+            let workspace = self
+                .workspace
+                .as_ref()
+                .ok_or_else(|| Error::Conflict("skill checkout is absent".into()))?;
+            let cancellation = acyclic_fs::CancellationToken::new();
+            let owned;
+            let work = if let Some(io) = io {
+                io.original_native_work().ok_or_else(|| {
+                    Error::Unsupported("native skill reads require original native work".into())
+                })?
+            } else {
+                owned = native_work(&cancellation)?;
+                &owned
+            };
+            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            };
+            let related;
+            let view = if cut.workspace_id == workspace.view().workspace().id() {
+                workspace.view()
+            } else {
+                let selected = acyclic_fs::WorkspaceResolver::resolve(
+                    &(
+                        workspace.filesystem.clone(),
+                        acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
+                    ),
+                    cut.workspace_id,
+                )
+                .await
+                .map_err(storage)?;
+                related = workspace
+                    .view()
+                    .open_related(selected, &mut accounting)
+                    .await?;
+                &related
+            };
+            return Ok(Some(
+                view.read_file_at_snapshot(*cut, *file_id, maximum, &mut accounting)
+                    .await?
+                    .bytes,
+            ));
+        }
+        let RetainedSource::Native(record) = retained else {
+            return Err(Error::Invalid("skill source is not native".into()));
+        };
         if record.volume != *volume {
             return Err(Error::Unauthorized(
                 "skill source belongs to another journal".into(),
@@ -339,7 +410,14 @@ impl NativeSkills {
                         acyclic_fs::LazyLookup::Source { node, .. } => {
                             self.retain(&native, &workspace.path, &path, *node)?
                         }
-                        _ => PinnedContextPath {
+                        acyclic_fs::LazyLookup::Shadow { record, .. } => {
+                            self.retain_record(&RetainedSource::Shadow {
+                                volume: self.journal.clone(),
+                                cut,
+                                file_id: record.file_id,
+                            })?
+                        }
+                        acyclic_fs::LazyLookup::Authored { .. } => PinnedContextPath {
                             root: ContextRoot {
                                 volume: self.project.clone(),
                                 directory: root.into(),
