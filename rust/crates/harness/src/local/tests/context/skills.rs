@@ -114,21 +114,44 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     .await?;
     let stream = harness.task_stream();
     let storage = harness.workspace.as_ref().unwrap().filesystem.clone();
-    let volume = harness.task_files().volume().clone();
+    let volume = harness.journal.clone();
     let verifier = harness.verifier.clone();
-    let signed = harness.signed.clone();
-    let LocalHarness { runtime, files, .. } = harness;
-    let runtime = Arc::try_unwrap(runtime)
-        .map_err(|_| Error::Conflict("fixture runtime is still shared".into()))?;
+    let files = harness.files.clone();
     let provider = scripted([ScriptedTurn::Text("done".into())]);
     let config = checkout_config(checkout.path(), (model()?, provider.clone()))?
-        .volume(volume)
+        .volume(volume.clone())
         .without_default_tools()
         .goal_continuations(None)
         .settings(
             crate::native_settings::SettingsConfig::new(checkout.path(), home.path())
                 .codex_home(home.path().join(".codex")),
         );
+    // bind() composes one authenticated volume. Build that composition rather
+    // than reusing open()'s runtime scope for three distinct private volumes.
+    let (runtime, signed, _) =
+        super::super::super::runtime::open(super::super::super::runtime::Configuration {
+            files: files.clone(),
+            workspace: None,
+            stream: stream.clone(),
+            task_volume: &volume,
+            issuer: harness.issuer.as_ref().unwrap(),
+            verifier: &verifier,
+            agent: crate::AgentId::new(),
+            project: &volume,
+            scratch: &volume,
+            journal: &volume,
+            tools: &crate::tool::ToolRegistry::default(),
+            #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
+            capabilities: &crate::Capabilities::default(),
+            limits: config.limits,
+            run_limits: config.run_limits,
+            session_limits: config.session_limits,
+            concurrency: config.concurrency,
+            clock: config.clock.clone(),
+        })
+        .await?;
+    let runtime = Arc::try_unwrap(runtime)
+        .map_err(|_| Error::Conflict("fixture runtime is still shared".into()))?;
     let bound = LocalHarness::bind(
         config,
         runtime,
