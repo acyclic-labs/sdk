@@ -140,21 +140,50 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
+    /// Refreshes source facts while the path retains the opened identity.
+    /// A replacement path keeps the pinned source facts of this handle.
     fn lookup_with_meter(
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
-        self.observe(work, |file, node, _| {
-            if let Some(file) = file {
-                return file.lookup_with_meter(work);
-            }
-            Ok(mount_lookup(
-                &LazyLookup::Source {
-                    node,
-                    source: self.lazy.source_reference(),
-                },
-                self.expected_source,
-            ))
+        let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Native(work);
+        with_native_callback_carrier(&self.runtime, &mut carrier, |carrier, prepared| {
+            self.runtime.wait_prepared(prepared, || async {
+                let owner = ViewGate::callback_owner()?;
+                let caller = carrier.cancellation();
+                let _lease = self
+                    .source_view
+                    .read_for_callback_with_carrier(
+                        owner,
+                        Some(self.source_generation),
+                        carrier,
+                        &caller,
+                        Some(self.authored.cancellation()),
+                    )
+                    .await?;
+                if let Some((file, bytes)) = self.current_authored(owner, carrier).await? {
+                    let result = file.lookup_with_meter(work);
+                    drop(file);
+                    carrier
+                        .with_work(|work| work.release(bytes))
+                        .map_err(MountSourceError::from)?;
+                    return result;
+                }
+                let mut accounting =
+                    crate::kernel::KernelAccounting::native(work, work.cancellation());
+                let source = self.lazy.source_reference();
+                let node = self
+                    .lazy
+                    .source_lookup(source, &self.path, &mut accounting)
+                    .await
+                    .map_err(lazy_error)?
+                    .filter(|node| node.file_identity == self.source_node.file_identity)
+                    .unwrap_or(self.source_node);
+                Ok(mount_lookup(
+                    &LazyLookup::Source { node, source },
+                    self.expected_source,
+                ))
+            })
         })
     }
 
