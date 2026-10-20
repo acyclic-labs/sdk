@@ -5,6 +5,91 @@ use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
 #[test]
+fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<()> {
+    use crate::conversation::FileDescriptor;
+    use crate::workflow::{
+        MachineCheckpoint, MachineIdentity, MachineStatus, MachineTransition, WorkflowCommand,
+        WorkflowRecord,
+    };
+    let payload = FileRef::new(
+        VolumeRef::new(
+            crate::resources::ProviderRef::new(
+                "workflow-codec".into(),
+                "filesystem".into(),
+                "2".into(),
+                &mut None,
+            )?,
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([4; 16])),
+            &mut None,
+        )?,
+        "commands/input.json".into(),
+        "immutable-version".into(),
+        FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+        "input.json".into(),
+        &mut None,
+    )?;
+    for count in [1, 2, 4] {
+        let record = WorkflowRecord {
+            operation_id: crate::OperationId::from_bytes([5; 16]),
+            idempotency_key: IdempotencyKey::new("workflow-codec")?,
+            prior: MachineCheckpoint {
+                machine: MachineIdentity {
+                    name: "test.codec".into(),
+                    version: "1".into(),
+                    digest: [1; 32],
+                },
+                revision: 0,
+                state: serde_json::json!({"text": "x".repeat(1024), "scalars": [1, 2, 3, 4]}),
+            },
+            input: serde_json::json!({"nested": [{"value": true}]}),
+            transition: MachineTransition {
+                state: serde_json::json!({"ready": true}),
+                commands: (0..count)
+                    .map(|id| WorkflowCommand {
+                        operation_id: crate::OperationId::from_bytes([id; 16]),
+                        kind: "test.command".into(),
+                        payload: payload.clone(),
+                    })
+                    .collect(),
+                status: MachineStatus::Suspended,
+            },
+        };
+        let bytes =
+            serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = native.live_allocation_bytes();
+        let io = PreparationIo::from_native_work(&native)?;
+        let mut decoded = None;
+        let physical = acyclic_test_support::measure(|| {
+            decoded = Some(io.decode(
+                std::marker::PhantomData::<WorkflowRecord>,
+                &bytes,
+                crate::wire::ErrorCode::Storage,
+            ));
+        });
+        let (actual, custody) = decoded.expect("decoder ran")?;
+        assert_eq!(actual, record);
+        assert!(physical.count_total > 0, "allocation observer is active");
+        assert!(
+            physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+            "physical={physical:?}; receipt={:?}",
+            native.receipt()
+        );
+        drop(actual);
+        drop(custody);
+        drop(io);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
+
+#[test]
 fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
     let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
     budget.bytes_copied = 0;
