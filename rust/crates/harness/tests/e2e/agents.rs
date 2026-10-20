@@ -430,7 +430,14 @@ pub(super) async fn run(value: Value) -> TestResult {
     for (name, expected) in case.expect.requests {
         let model = provider.get(&name)?;
         if model.requests().len() != expected || model.remaining() != 0 {
-            return Err(format!("model {name}: expected {expected} requests and no unused turns, got {} requests and {} unused turns", model.requests().len(), model.remaining()).into());
+            // A parent may finish normally after a child refuses its input.
+            // Preserve the same reader evidence as the failed-parent path.
+            let requests: BTreeMap<_, _> = provider
+                .scripts
+                .iter()
+                .map(|(name, model)| (name.as_str(), model.requests().len()))
+                .collect();
+            return Err(format!("model {name}: expected {expected} requests and no unused turns, got {} requests and {} unused turns; model requests: {requests:?}; unauthorized content readers: {:?}", model.requests().len(), model.remaining(), denied_readers.try_iter().collect::<Vec<_>>()).into());
         }
     }
     for (name, expected) in case.expect.model_requests {
