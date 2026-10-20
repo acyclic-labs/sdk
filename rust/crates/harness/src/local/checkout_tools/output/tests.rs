@@ -53,7 +53,33 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
             )
             .await?,
     );
-    let context = ToolContext::new(task, OperationId::new(), "bash-call", None)?;
+    let context = ToolContext::new(task.clone(), OperationId::new(), "bash-call", None)?;
+    let task_key = Component::new(task_id.to_string())?;
+    let turn = harness
+        .task_files()
+        .inner
+        .model_turn(
+            task_key.clone(),
+            Component::new(context.model_turn.0.to_string())?,
+            context.model_turn.1,
+            None,
+        )
+        .await?;
+    let head = harness.task_files().inner.head().await?;
+    harness
+        .task_files()
+        .inner
+        .append(
+            head,
+            &Write::new(
+                FileKey::Task {
+                    task: task_key.clone(),
+                    file: TaskFile::Chunk { turn, sequence: 0 },
+                },
+                b"model text".to_vec(),
+            ),
+        )
+        .await?;
     let mut output =
         Output::open(&context, Arc::clone(harness.task_files()), b"bash".to_vec()).await?;
     output = tokio::task::spawn_blocking(move || {
@@ -116,6 +142,46 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
         .map(|file| file.bytes.as_ref())
         .collect();
     assert_eq!(chunks, [b"before".as_slice(), b"after".as_slice()]);
+    let first_turn = files
+        .inner
+        .snapshot(
+            &Query::Turn {
+                task: task_key.clone(),
+                turn,
+            },
+            16,
+        )
+        .await?;
+    assert_eq!(
+        first_turn.files.len(),
+        5,
+        "text, request, both stdout chunks and result share one turn"
+    );
+    // A later input restarts its model step at zero, under a new execution.
+    let mut next = ToolContext::new(task, OperationId::new(), "next-call", None)?;
+    next.model_turn = (OperationId::new(), 0);
+    let mut second = Output::open(&next, files.clone(), b"next bash".to_vec()).await?;
+    second
+        .finish(&ToolResult {
+            value: serde_json::json!({}),
+        })
+        .await?;
+    assert_ne!(second.step, turn);
+    assert_eq!(
+        files
+            .inner
+            .snapshot(
+                &Query::Turn {
+                    task: task_key,
+                    turn
+                },
+                16
+            )
+            .await?
+            .files,
+        first_turn.files,
+        "a later input cannot overwrite or join the earlier turn"
+    );
     harness.disconnect_unfinished().await?;
     Ok(())
 }

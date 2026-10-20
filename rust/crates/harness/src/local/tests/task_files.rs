@@ -3,6 +3,84 @@ use super::*;
 use crate::task_volume::{Component, FileKey, FileValue, Query, TaskFile};
 use futures::StreamExt as _;
 
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn model_text_and_shell_output_share_the_same_turn_after_reopen() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    let provider = scripted([
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::Content {
+                delta: "before shell".into(),
+            }),
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                "shell-call".into(),
+                "bash".into(),
+                json!({"command":"printf shell-output"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
+        ]),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let config = || {
+        Ok::<_, Error>(
+            super::checkout_config(directory.path(), (model()?, provider.clone()))?
+                .state_directory(state.path()),
+        )
+    };
+    let harness = LocalHarness::open(config()?).await?;
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) =
+        harness.submit(OperationId::new(), "text and shell").await?
+    else {
+        panic!("durable admission")
+    };
+    harness.resume(task_id).await?;
+    let task = Component::new(task_id.to_string())?;
+    let snapshot = harness
+        .task_files()
+        .inner
+        .snapshot(&Query::Task(task.clone()), 64)
+        .await?;
+    let turn = snapshot
+        .files
+        .iter()
+        .find_map(|file| match &file.key {
+            FileKey::Task {
+                file: TaskFile::Chunk { turn, .. },
+                ..
+            } if file.bytes.as_ref() == b"before shell" => Some(*turn),
+            _ => None,
+        })
+        .expect("canonical model text");
+    let query = Query::Turn { task, turn };
+    let selected = harness.task_files().inner.snapshot(&query, 32).await?;
+    for file in [
+        crate::task_volume::ToolFile::Request,
+        crate::task_volume::ToolFile::Stdout(0),
+        crate::task_volume::ToolFile::Result,
+    ] {
+        assert!(
+            selected.files.iter().any(|value| matches!(&value.key,
+            FileKey::Task { file: TaskFile::Tool { file: actual, .. }, .. } if actual == &file)),
+            "the text turn must include {file:?}"
+        );
+    }
+    harness.disconnect().await?;
+    let reopened = LocalHarness::open(config()?).await?;
+    assert_eq!(
+        reopened
+            .task_files()
+            .inner
+            .snapshot(&query, 32)
+            .await?
+            .files,
+        selected.files
+    );
+    reopened.disconnect().await
+}
+
 #[tokio::test]
 async fn private_request_files_follow_immediately_and_survive_reopen() -> Result<()> {
     let directory = tempfile::tempdir().map_err(super::super::storage)?;

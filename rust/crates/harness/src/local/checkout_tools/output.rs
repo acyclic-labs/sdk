@@ -34,6 +34,15 @@ impl Output {
         // Runtime operation IDs are canonical and unique across model turns.
         // The request retains the provider's call_id unchanged.
         let call = Component::new(context.operation_id().to_string())?;
+        let turn = volume
+            .inner
+            .model_turn(
+                task.clone(),
+                Component::new(context.model_turn.0.to_string())?,
+                context.model_turn.1,
+                None,
+            )
+            .await?;
         let generation = volume.inner.head().await?;
         let mut output = Self {
             owner,
@@ -42,7 +51,7 @@ impl Output {
             task,
             call,
             sequence: (0, 0),
-            step: u64::from(context.model_step),
+            step: turn,
             runtime: tokio::runtime::Handle::current(),
         };
         output.publish(ToolFile::Request, request.into()).await?;
