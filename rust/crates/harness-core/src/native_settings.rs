@@ -24,7 +24,7 @@ pub struct SettingsConfig {
     maximum_file_bytes: u64,
     #[doc(hidden)]
     pub load_mcp: bool,
-    #[cfg(feature = "test-support")]
+    #[cfg(any(test, feature = "test-support"))]
     _test_home: Option<tempfile::TempDir>,
 }
 
@@ -54,13 +54,13 @@ impl SettingsConfig {
             trust_project_mcp: false,
             maximum_file_bytes: 1_048_576,
             load_mcp: true,
-            #[cfg(feature = "test-support")]
+            #[cfg(any(test, feature = "test-support"))]
             _test_home: None,
         }
     }
 
     #[cfg(all(
-        feature = "test-support",
+        any(test, feature = "test-support"),
         feature = "filesystem-local",
         any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
     ))]

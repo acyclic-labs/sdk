@@ -8,6 +8,8 @@ use std::{future::Future, sync::Arc};
 pub(crate) mod imports;
 pub(crate) use imports::Document;
 mod budget;
+#[cfg(test)]
+mod mcp_identity_tests;
 #[cfg(feature = "filesystem")]
 #[doc(hidden)]
 pub mod effects;
@@ -233,3 +235,6 @@ thread_local! {
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) mod identity_test_support;

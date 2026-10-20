@@ -51,7 +51,14 @@ wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Headers", "ReadableStream", "ReadableStreamDefaultReader", "RequestCredentials", "RequestInit", "RequestRedirect", "Response"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness = { path = "../harness", version = "=0.2.0", default-features = false, features = ["test-support", "filesystem-local", "native-execution"] }
 acyclic-test-support = { path = "../test-support" }
+acyclic-fs = { path = "../filesystem", version = "=0.2.0", default-features = false, features = ["local"] }
+acyclic-native-runtime = { path = "../native-runtime", version = "=0.2.0", features = ["test-support"] }
+prost.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
 acyclic-objects = { path = "../objects", version = "=0.2.0", default-features = false }
 # The paused clock drives the exchange deadline properties without wall time.
 tokio = { workspace = true, features = ["test-util"] }
@@ -65,3 +72,7 @@ proptest.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "harness-integration"
+path = "tests/integration/main.rs"

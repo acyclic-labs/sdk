@@ -6,12 +6,11 @@
 //! Deadlines are measured on a fixture clock, not the wall clock: time passes only when the
 //! scripted server has fallen silent after output, so scheduling delay on a loaded host never
 //! reads as provider silence, and the one test that measures silence measures only that.
-#![cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_harness::{
     Error, LocalHarness, OperationId, Result, client,
     context::{CompactionPolicy, ModelContextCapacity},
-    model::ModelProvider as _,
     test_support::local_harness_config,
 };
 use acyclic_harness_providers::{

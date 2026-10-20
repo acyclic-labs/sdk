@@ -4,6 +4,8 @@ use libfuzzer_sys::fuzz_target;
 
 #[path = "../../harness/tests/support/file_diff_case.rs"]
 mod diff_case;
+#[path = "../../harness/tests/support/expected_outcome.rs"]
+mod expected_outcome;
 #[path = "../../harness/tests/e2e/local_case.rs"]
 mod local_case;
 #[path = "../../harness/tests/e2e/local_tool_files_check.rs"]

@@ -32,8 +32,6 @@ pub mod build_metadata;
 pub mod client;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
-#[cfg(all(test, feature = "hooks", not(target_arch = "wasm32")))]
-mod mcp_identity_tests;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 #[cfg(feature = "tui")]

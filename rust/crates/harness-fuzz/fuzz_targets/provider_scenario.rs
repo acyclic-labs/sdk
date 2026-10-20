@@ -1,5 +1,7 @@
 #![no_main]
-#[path = "../../harness/tests/e2e/provider_case.rs"]
+#[path = "../../harness/tests/support/expected_outcome.rs"]
+mod expected_outcome;
+#[path = "../../harness-providers/tests/integration/provider_case.rs"]
 mod provider_case;
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     let Ok(case) = serde_json::from_slice::<provider_case::ProviderCase>(bytes) else {

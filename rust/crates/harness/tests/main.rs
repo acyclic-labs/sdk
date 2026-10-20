@@ -23,8 +23,6 @@ mod local_conversation_fork;
 #[cfg(feature = "test-support")]
 mod model_tool_call;
 #[cfg(feature = "test-support")]
-mod native_hook_http;
-#[cfg(feature = "test-support")]
 mod native_media_boundary;
 #[cfg(feature = "test-support")]
 mod portable_file_replay;
@@ -34,8 +32,6 @@ mod portable_text_tools;
 mod portable_text_variants;
 #[cfg(feature = "test-support")]
 mod project_workspaces;
-#[cfg(feature = "test-support")]
-mod provider_failure_exit;
 #[cfg(feature = "test-support")]
 mod recursive_fork;
 #[cfg(feature = "test-support")]

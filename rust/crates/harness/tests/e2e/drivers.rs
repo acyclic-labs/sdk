@@ -5,7 +5,8 @@ use serde_json::Value;
 // Raw local execution is visible only inside this guarded dispatcher.
 #[path = "local_execution.rs"]
 mod local_execution;
-pub(super) use local_execution::{check_frames, check_results, model_results};
+pub(super) use super::frame_oracle::check_frames;
+pub(super) use local_execution::{check_results, model_results};
 
 trait Driver {
     type Case;
@@ -103,13 +104,6 @@ impl Driver for super::subagents::SubagentCase {
     }
 }
 
-impl Driver for super::provider_case::ProviderCase {
-    type Case = Self;
-    async fn execute(case: Self) -> TestResult {
-        super::providers::run(case).await
-    }
-}
-
 async fn run_execution(case: scenario::Scenario) -> TestResult {
     TaskDriver::execute(case).await
 }
@@ -183,12 +177,6 @@ async fn dispatch_recipe(mut value: Value) -> TestResult {
         }
         Some("subagents") => {
             Box::pin(super::subagents::SubagentCase::execute(
-                serde_json::from_value(value)?,
-            ))
-            .await
-        }
-        Some("provider") => {
-            Box::pin(super::provider_case::ProviderCase::execute(
                 serde_json::from_value(value)?,
             ))
             .await

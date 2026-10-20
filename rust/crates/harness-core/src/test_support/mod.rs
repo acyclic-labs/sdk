@@ -1,8 +1,11 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
+#[cfg(feature = "hooks")]
+pub use crate::hooks::identity_test_support::assert_canonical_tool_consumers;
+
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod accounted;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub mod admission_work;
 #[cfg(all(

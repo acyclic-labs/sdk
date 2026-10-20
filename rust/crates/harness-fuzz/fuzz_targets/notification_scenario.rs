@@ -1,6 +1,6 @@
 #![no_main]
 
-#[path = "../../harness/tests/e2e/matchers.rs"]
+#[path = "../../harness/tests/support/scenario_matchers.rs"]
 mod matchers;
 #[path = "../../harness/tests/e2e/notification_history.rs"]
 mod notification_history;

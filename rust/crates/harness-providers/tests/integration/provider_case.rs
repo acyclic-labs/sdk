@@ -45,15 +45,15 @@ pub struct Expectations {
     pub statuses: Vec<Value>,
     pub files: BTreeMap<String, Option<String>>,
     #[serde(default, skip_serializing_if = "is_succeeded")]
-    pub outcome: super::local_case::ExpectedOutcome,
+    pub outcome: super::expected_outcome::ExpectedOutcome,
 }
 
 fn is_zero(count: &u8) -> bool {
     *count == 0
 }
 
-fn is_succeeded(outcome: &super::local_case::ExpectedOutcome) -> bool {
-    *outcome == super::local_case::ExpectedOutcome::Succeeded
+fn is_succeeded(outcome: &super::expected_outcome::ExpectedOutcome) -> bool {
+    *outcome == super::expected_outcome::ExpectedOutcome::Succeeded
 }
 
 impl ProviderCase {
@@ -75,7 +75,7 @@ impl ProviderCase {
 
 impl ProviderCase {
     pub fn validate(&self) -> Result<(), &'static str> {
-        let succeeded = self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded;
+        let succeeded = self.expect.outcome == super::expected_outcome::ExpectedOutcome::Succeeded;
         // No response is consumed only when every attempt was refused.
         if self.responses.is_empty() {
             return if self.prompt.is_empty()
@@ -106,7 +106,7 @@ impl ProviderCase {
                 .stalls
                 .last()
                 .is_some_and(|last| *last >= self.responses.len())
-            || (self.expect.outcome == super::local_case::ExpectedOutcome::Succeeded)
+            || (self.expect.outcome == super::expected_outcome::ExpectedOutcome::Succeeded)
                 != self.completes(self.responses.len() - 1)
             || self.responses.iter().any(|response| {
                 response.is_empty() || response.iter().map(String::len).sum::<usize>() > 1_048_576

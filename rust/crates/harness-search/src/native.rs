@@ -1,6 +1,6 @@
 use super::{SearchRequest, SearchResponse};
 use crate::{Result, filesystem::UploadRecord};
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 
 pub(crate) fn labels() -> u64 {
@@ -71,7 +71,7 @@ pub(crate) fn response_bytes(response: &SearchResponse) -> Result<u64> {
         })
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn copy_response(
     response: &SearchResponse,
     work: &NativeMaterializationWork,

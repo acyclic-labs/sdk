@@ -42,14 +42,7 @@ pub(super) struct Expectations {
     pub not_requests: Vec<Value>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExpectedOutcome {
-    #[default]
-    Succeeded,
-    Failed,
-    Indeterminate,
-}
+pub use super::expected_outcome::ExpectedOutcome;
 
 impl LocalCase {
     pub(super) fn validate(&self) -> Result<(), &'static str> {

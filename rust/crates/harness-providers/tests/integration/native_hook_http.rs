@@ -1,5 +1,5 @@
 //! F9 through the shared shipping entrypoint, native hooks and real HTTP.
-#![cfg(all(feature = "filesystem-local", feature = "native-execution", unix))]
+#![cfg(unix)]
 use acyclic_harness::{
     Admission, LocalHarness, LocalHarnessConfig, OperationId, Result,
     context::{CompactionPolicy, ModelContextCapacity},

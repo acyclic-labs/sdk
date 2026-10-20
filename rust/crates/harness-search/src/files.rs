@@ -564,7 +564,7 @@ where
 }
 
 /// Drives the actual file worker once over scripted task-volume fixtures.
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub async fn drive_for_test<P: StreamProvider>(
     volume: &TaskVolume<P>,
     task: &Component,

@@ -235,11 +235,11 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
     let output = harness.resume(task_id).await;
     super::local_admission::settled(&harness, task_id, status, &case.expect.statuses).await?;
     match (case.expect.outcome, output) {
-        (super::local_case::ExpectedOutcome::Succeeded, Ok(output))
+        (super::expected_outcome::ExpectedOutcome::Succeeded, Ok(output))
             if output.text == case.expect.text
                 && output.steps as usize == case.completed_steps() => {}
         (
-            super::local_case::ExpectedOutcome::Failed,
+            super::expected_outcome::ExpectedOutcome::Failed,
             Err(acyclic_harness::Error::TaskFailed { task, .. }),
         ) if task == task_id => {}
         (_, output) => return Err(format!("provider task output differs: {output:?}").into()),
@@ -257,7 +257,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
             acyclic_harness::wire::SchedulerEventEnvelope::decode(record.value.as_ref())?;
         wire.push(serde_json::from_slice(&envelope.canonical_event_json)?);
     }
-    super::drivers::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)?;
+    super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)?;
     // Keep other child completions: only the root publication is dropped.
     let root = serde_json::to_value(operation)?;
     let terminal = wire
@@ -265,7 +265,7 @@ async fn task(case: &ProviderCase, transport: &Arc<Recorded>, added: Option<&str
         .position(|event| event["kind"] == "completed" && event["operation_id"] == root)
         .ok_or("missing terminal")?;
     wire.remove(terminal);
-    if super::drivers::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)
+    if super::frame_oracle::check_frames(&case.expect.frames, &wire, operation, case.expect.outcome)
         .is_ok()
     {
         return Err("wire oracle accepted a dropped root completion".into());

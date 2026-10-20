@@ -33,10 +33,6 @@ mod progress_guard;
 mod progress_guard_tests;
 #[path = "../support/progress_registry.rs"]
 mod progress_registry;
-mod provider_case;
-mod provider_http;
-mod provider_tests;
-mod providers;
 #[path = "../support/quiescent.rs"]
 mod quiescent;
 mod remote_swarm;
@@ -45,6 +41,8 @@ mod runtime_tests;
 mod scenario;
 #[path = "../support/scenario_data.rs"]
 mod scenario_data;
+#[path = "../support/scenario_matchers.rs"]
+mod scenario_matchers;
 mod stall;
 mod subagents;
 mod swarm;
@@ -60,6 +58,10 @@ mod swarm_wire;
 mod task_queries;
 mod task_query_case;
 mod task_query_tests;
+#[path = "../support/expected_outcome.rs"]
+mod expected_outcome;
+#[path = "../support/frame_oracle.rs"]
+mod frame_oracle;
 use acyclic_harness::context::CompactionPolicy;
 use drivers::run;
 use futures::{StreamExt as _, stream};
