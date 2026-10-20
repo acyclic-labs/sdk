@@ -12,6 +12,7 @@
   "acyclic-objects",
   "acyclic-manifest",
   "acyclic-workers",
+  "acyclic-fs-base",
   "acyclic-fs",
   "acyclic-markdown",
   "acyclic-harness-tui",

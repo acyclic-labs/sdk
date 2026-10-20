@@ -115,9 +115,8 @@ pub mod merge_driver;
 pub mod model;
 pub mod mount;
 pub mod multi_root;
-mod numeric;
 mod obs;
-pub use numeric::exact_u32_from_f64;
+pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;
 #[cfg(feature = "native-watch")]
@@ -158,7 +157,7 @@ pub mod streams_record;
 #[cfg(all(test, feature = "memory"))]
 #[path = "tests/support.rs"]
 pub(crate) mod test_support;
-pub mod text_merge;
+pub use acyclic_fs_base::text_merge;
 #[cfg(feature = "native-watch")]
 pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]

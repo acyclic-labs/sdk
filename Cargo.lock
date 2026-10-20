@@ -164,6 +164,7 @@ name = "acyclic-fs"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-fs-base",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
@@ -180,7 +181,6 @@ dependencies = [
  "cap-std",
  "cc",
  "crc-fast",
- "diffy",
  "dirs",
  "divan",
  "fs2",
@@ -234,6 +234,13 @@ dependencies = [
  "web-sys",
  "windows",
  "writeable",
+]
+
+[[package]]
+name = "acyclic-fs-base"
+version = "0.2.0"
+dependencies = [
+ "diffy",
 ]
 
 [[package]]

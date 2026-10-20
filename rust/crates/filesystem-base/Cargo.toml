@@ -1,0 +1,18 @@
+[package]
+name = "acyclic-fs-base"
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = true
+description = "Dependency-free primitives at the base of the Acyclic filesystem crates"
+documentation = "https://docs.rs/acyclic-fs-base"
+keywords = ["filesystem", "merge"]
+categories = ["filesystem"]
+
+[dependencies]
+diffy.workspace = true
+
+[lints]
+workspace = true

@@ -126,10 +126,10 @@ required-features = ["local", "native-mount"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
+acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
 async-trait.workspace = true
 blake3.workspace = true
 bytes.workspace = true
-diffy.workspace = true
 futures.workspace = true
 hex.workspace = true
 notify = { workspace = true, optional = true }
