@@ -12,7 +12,11 @@ struct Fixture {
 }
 
 fn fixture(runtime: &tokio::runtime::Runtime) -> Fixture {
-    let source = tempfile::tempdir().unwrap();
+    fixture_with_prefix(runtime, ".tmp")
+}
+
+fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixture {
+    let source = tempfile::Builder::new().prefix(prefix).tempdir().unwrap();
     std::fs::create_dir(source.path().join("d")).unwrap();
     std::fs::write(source.path().join("empty"), []).unwrap();
     std::fs::write(source.path().join("d/body"), [0x5a; 96]).unwrap();
@@ -75,6 +79,8 @@ struct Output {
     health_items: u64,
     live_before: u64,
     live_after: u64,
+    #[cfg(windows)]
+    root_path_units: u64,
 }
 
 #[cfg(target_os = "linux")]
@@ -160,6 +166,16 @@ fn run(
     limit: u64,
     cancelled: bool,
 ) -> (Output, AllocationInfo) {
+    #[cfg(windows)]
+    let root_path_units = {
+        use std::os::windows::ffi::OsStrExt as _;
+        fixture
+            .options
+            .source_root
+            .as_os_str()
+            .encode_wide()
+            .count() as u64
+    };
     let (work, cancellation) = fixture
         .setup
         .native_volume_work(WorkBudget {
@@ -250,6 +266,8 @@ fn run(
             health_items,
             live_before,
             live_after,
+            #[cfg(windows)]
+            root_path_units,
         },
         heap,
     )
@@ -303,10 +321,7 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
             );
             if after.result.is_ok() {
                 assert!(before.health_items > 0 && after.health_items > 0);
-                assert_eq!(
-                    after.work["itemsExamined"],
-                    if cfg!(windows) { 436 } else { 331 }
-                );
+                assert_eq!(after.work["itemsExamined"], expected_rescan_items(&after));
             }
             assert_eq!(before.result, after.result);
             assert_eq!(before.work, after.work);
@@ -405,4 +420,53 @@ fn complete_rescans_have_exact_native_calls_heap_and_unchanged_outputs()
         }
     }
     Ok(())
+}
+
+fn expected_rescan_items(output: &Output) -> u64 {
+    #[cfg(windows)]
+    {
+        // with_root_name counts and encodes each original UTF-16 unit once.
+        // The remaining 348 examinations belong to the fixed rescan fixture.
+        348 + 2 * output.root_path_units
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = output;
+        331
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn exact_rescan_work_tracks_ascii_and_surrogate_pair_root_names() {
+    acyclic_native_runtime::initialize_native_io_services().unwrap();
+    let _inline = acyclic_native_runtime::InlineBlocking::enter();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let mut observations = Vec::new();
+    for prefix in ["rescan-", "longer-rescan-Ω-🦀-"] {
+        let (output, heap) = run(
+            &runtime,
+            fixture_with_prefix(&runtime, prefix),
+            false,
+            0,
+            u64::MAX,
+            false,
+        );
+        assert!(output.result.is_ok());
+        assert!(output.unchanged_root);
+        assert_eq!(heap.count_total, 324);
+        let items = output.work["itemsExamined"].as_u64().unwrap() - output.health_items;
+        assert_eq!(items, expected_rescan_items(&output));
+        observations.push((output.root_path_units, items));
+    }
+    assert_eq!(
+        observations[1].1 - observations[0].1,
+        2 * (observations[1].0 - observations[0].0)
+    );
+    assert_ne!(
+        observations[0].1, observations[1].1,
+        "fixed-count control accepted both roots"
+    );
 }
