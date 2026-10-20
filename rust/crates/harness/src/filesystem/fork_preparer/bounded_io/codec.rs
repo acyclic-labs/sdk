@@ -19,6 +19,44 @@ pub(in crate::filesystem) fn decode_record<T: PreparationRecord>(
 }
 
 impl PreparationIo {
+    pub(crate) fn canonical_digest<T: Serialize>(&self, value: &T) -> Result<[u8; 32]> {
+        let remaining = self.remaining()?;
+        if remaining.bytes_encoded != 0 {
+            self.preflight(WorkCounters {
+                bytes_encoded: 1,
+                items_examined: 1,
+                ..Default::default()
+            })?;
+        }
+        let bounds = JsonBounds {
+            maximum_bytes: remaining.bytes_encoded,
+            maximum_items: remaining.items_examined,
+            maximum_depth: 256,
+        };
+        let code = self
+            .original_native_work()
+            .is_some()
+            .then_some(crate::wire::ErrorCode::Invalid);
+        #[cfg(not(target_arch = "wasm32"))]
+        let diagnostics = code
+            .map(|_| self.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes()))
+            .transpose()?;
+        let result = crate::executor::with_history_io(Some(self), |work| {
+            crate::executor::json::canonical_digest_with_work(
+                value,
+                bounds,
+                code,
+                work.as_deref_mut().expect("preparation history observer"),
+            )
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = match diagnostics {
+            Some(guard) => finish_encoding(guard, result),
+            None => result,
+        };
+        result
+    }
+
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) fn write_json<T: Serialize>(
         &self,

@@ -22,6 +22,8 @@ pub(crate) use diagnostics::{
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };
+#[cfg(feature = "filesystem")]
+pub(crate) use serialization::canonical_digest_with_work;
 pub(crate) use serialization::count_json_bytes_trusted;
 mod copy;
 mod decode;

@@ -466,8 +466,23 @@ fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Resu
     let value = serde_json::json!({"z": "q".repeat(128 * 1024), "a": [1, 2, 3]});
     let canonical = crate::contract::canonical_json_bytes(&value)?;
     let expected = *blake3::hash(&canonical).as_bytes();
+    let unmeasured =
+        crate::executor::PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+    assert_eq!(
+        crate::executor::preparation_digest(&value, Some(&unmeasured))?,
+        expected
+    );
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    let bounded =
+        crate::executor::PreparationIo::from_budget(budget, &acyclic_fs::CancellationToken::new())?;
+    for _ in 0..16 {
+        assert_eq!(
+            crate::executor::preparation_digest(&value, Some(&bounded))?,
+            expected
+        );
+    }
+    assert_eq!(bounded.receipt().bytes_hashed, 16 * canonical.len() as u64);
     let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let io = crate::executor::PreparationIo::from_native_work(&native)?;

@@ -73,10 +73,7 @@ pub(crate) fn preparation_digest<T: Serialize>(
     let _ = io;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let maximum = io.remaining()?.bytes_encoded;
-        return with_history_io(Some(io), |work| {
-            crate::executor::json::canonical_json_digest(value, maximum, work)
-        });
+        return io.canonical_digest(value);
     }
     crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
 }
