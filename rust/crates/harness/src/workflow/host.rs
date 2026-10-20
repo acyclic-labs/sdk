@@ -344,7 +344,7 @@ impl DurableWorkflowHost {
             idempotency_key: IdempotencyKey(crate::executor::stock_string_copy(&key.0, io)?),
             prior: self.checkpoint.copy(io)?,
             input,
-            transition: transition.copy(io)?,
+            transition,
         };
         record.validate(io)?;
         if record
@@ -391,7 +391,7 @@ impl DurableWorkflowHost {
                 },
             ),
         );
-        Ok((transition, checkpoint_retained, transition_retained))
+        Ok((record.transition, checkpoint_retained, transition_retained))
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reserve_native_index(&mut self, commands: usize, io: &PreparationIo) -> Result<()> {
