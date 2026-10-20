@@ -21,6 +21,10 @@ pub(crate) struct ControlPlane {
     pub(crate) slots: StateSlots,
     #[cfg(test)]
     pub(crate) owns_local_root: bool,
+    /// Observes the release of a standalone test control's own core-state
+    /// owner, which mount threads may still hold after the control drops.
+    #[cfg(test)]
+    pub(crate) store_released: Option<acyclic_native_runtime::OwnershipReleaseBarrier>,
     #[cfg(test)]
     pub(crate) fail_next_flush: bool,
     #[cfg(test)]
@@ -43,11 +47,19 @@ pub(crate) struct ControlPlane {
 impl ControlPlane {
     #[cfg(test)]
     pub(crate) async fn open(data: PathBuf) -> Result<Self, String> {
+        // The same daemon-lifetime services `ServiceResources::configure`
+        // starts before any measured native work.
+        acyclic_native_runtime::initialize_native_io_services().map_err(display)?;
+        acyclic_fs::initialize_native_mount_services().map_err(display)?;
         fs::create_dir_all(&data).map_err(display)?;
         let fs = LocalFs::local(LocalOptions::new(data.join("filesystem")))
             .await
             .map_err(display)?;
-        let store = LocalCoreStateStore::open_owned(data.join("core-state")).map_err(display)?;
+        let anchor = acyclic_native_runtime::OwnershipAnchor::new(());
+        let store_released = anchor.release_barrier();
+        let store = LocalCoreStateStore::open_owned(data.join("core-state"))
+            .map_err(display)?
+            .with_ownership_anchor(Some(anchor));
         let mut control = Box::pin(Self::open_with(
             data.clone(),
             data,
@@ -57,7 +69,29 @@ impl ControlPlane {
         ))
         .await?;
         control.owns_local_root = true;
+        control.store_released = Some(store_released);
         Ok(control)
+    }
+
+    /// Ends a standalone test control without any shutdown step, as a
+    /// process crash would, and returns once the owners a crash releases
+    /// (its filesystem root and core-state namespace) are released, so the
+    /// next open models the restarted process.
+    #[cfg(test)]
+    pub(crate) async fn crash(mut self) -> Result<(), String> {
+        let released = self.standalone_release_barriers();
+        drop(self);
+        wait_for_standalone_release(released).await
+    }
+
+    #[cfg(test)]
+    fn standalone_release_barriers(&mut self) -> Vec<acyclic_native_runtime::OwnershipReleaseBarrier> {
+        let mut barriers = Vec::new();
+        if self.owns_local_root {
+            barriers.extend(self.fs.local_root_release_barrier());
+            barriers.extend(self.store_released.take());
+        }
+        barriers
     }
 
     pub(crate) async fn open_with(
@@ -86,6 +120,8 @@ impl ControlPlane {
             slots,
             #[cfg(test)]
             owns_local_root: false,
+            #[cfg(test)]
+            store_released: None,
             #[cfg(test)]
             fail_next_flush: false,
             #[cfg(test)]
@@ -167,11 +203,7 @@ impl ControlPlane {
             self.fs.flush_deferred_authority().map_err(display)?;
         }
         #[cfg(test)]
-        let root_released = if self.owns_local_root {
-            self.fs.local_root_release_barrier()
-        } else {
-            None
-        };
+        let released = self.standalone_release_barriers();
         let result = async {
             let operations = OperationWindowCoordinator::new(self.fs.operation_window_store());
             let now = now_millis();
@@ -281,17 +313,23 @@ impl ControlPlane {
         // owns its root directly, so it waits here after dropping every provider handle.
         drop(self);
         #[cfg(test)]
-        if let Some(barrier) = root_released {
-            tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                while !barrier.is_released() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .map_err(|_| {
-                "standalone control retained filesystem handles after shutdown".to_owned()
-            })?;
-        }
+        wait_for_standalone_release(released).await?;
         result.map(|()| slots)
     }
+}
+
+#[cfg(test)]
+async fn wait_for_standalone_release(
+    barriers: Vec<acyclic_native_runtime::OwnershipReleaseBarrier>,
+) -> Result<(), String> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        async {
+            while barriers.iter().any(|barrier| !barrier.is_released()) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        },
+    )
+    .await
+    .map_err(|_| "standalone control retained filesystem or core-state handles".to_owned())
 }

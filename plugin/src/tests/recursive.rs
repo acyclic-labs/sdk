@@ -170,7 +170,7 @@ fn recursive_publication_is_direct_parent_only() {
                 .is_err()
         );
         drop(grandchild);
-        drop(control);
+        control.crash().await.unwrap();
         let recovered = ControlPlane::open(fixture.data.clone()).await.unwrap();
         assert!(recovered.state.routes.is_empty());
         assert!(recovered.state.pending_discards.is_empty());
@@ -322,7 +322,7 @@ fn root_registration_recovers_intent_and_fences_identity_changes() {
                 .is_err()
         );
         let context = control.state.root_context_id;
-        drop(control);
+        control.crash().await.unwrap();
         let mut recovered = ControlPlane::open(fixture.data.clone()).await.unwrap();
         assert_eq!(recovered.state.root_context_id, context);
         assert!(!recovered.state.pending_root_registration);
@@ -334,7 +334,7 @@ fn root_registration_recovers_intent_and_fences_identity_changes() {
                 .await
                 .is_err()
         );
-        drop(recovered);
+        recovered.crash().await.unwrap();
         let mut recovered = ControlPlane::open(fixture.data.clone()).await.unwrap();
         assert_eq!(recovered.state.roots.len(), 2);
         assert!(recovered.state.pending_root_adoptions.is_empty());
@@ -361,7 +361,10 @@ fn root_registration_recovers_intent_and_fences_identity_changes() {
             .unwrap()
             .native_root_identity = [u8::MAX; 16];
         recovered.persist().unwrap();
-        drop(recovered);
-        assert!(ControlPlane::open(fixture.data.clone()).await.is_err());
+        recovered.crash().await.unwrap();
+        let Err(error) = ControlPlane::open(fixture.data.clone()).await else {
+            panic!("a replaced native root identity reopened");
+        };
+        assert!(error.contains("identity"), "{error}");
     });
 }
