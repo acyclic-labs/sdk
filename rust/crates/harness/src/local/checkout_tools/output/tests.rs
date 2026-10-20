@@ -66,20 +66,15 @@ async fn client_goal_write_between_bash_chunks_preserves_the_command() -> Result
         )
         .await?;
     let head = harness.task_files().inner.head().await?;
-    harness
-        .task_files()
-        .inner
-        .append(
-            head,
-            &Write::new(
-                FileKey::Task {
-                    task: task_key.clone(),
-                    file: TaskFile::Chunk { turn, sequence: 0 },
-                },
-                b"model text".to_vec(),
-            ),
-        )
-        .await?;
+    let mut chunk = Write::new(
+        FileKey::Task {
+            task: task_key.clone(),
+            file: TaskFile::Chunk { turn, sequence: 0 },
+        },
+        b"model text".to_vec(),
+    );
+    chunk.channel = Some(crate::task_volume::Channel::Text);
+    harness.task_files().inner.append(head, &chunk).await?;
     let mut output =
         Output::open(&context, Arc::clone(harness.task_files()), b"bash".to_vec()).await?;
     output = tokio::task::spawn_blocking(move || {
