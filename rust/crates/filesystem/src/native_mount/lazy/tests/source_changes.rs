@@ -123,6 +123,38 @@ fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::err
     assert_eq!(facts.node.logical_bytes, 5);
     Ok(())
 }
+
+#[test]
+fn an_open_handle_keeps_facts_when_its_parent_path_stops_resolving()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    std::fs::create_dir(source.path().join("a"))?;
+    std::fs::write(source.path().join("a/file"), b"short")?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let view = runtime.block_on(mounted_view(source.path(), "handle-moved-parent"))?;
+    let handle = view.open_file(&mounted(&["a", "file"]))?;
+    let opened = handle.lookup()?.node;
+    std::fs::rename(source.path().join("a"), source.path().join("moved"))?;
+    std::fs::write(source.path().join("a"), b"not a directory")?;
+    let current = handle.lookup()?.node;
+    assert_eq!(current.file_id, opened.file_id);
+    assert_eq!(current.logical_bytes, opened.logical_bytes);
+    std::fs::remove_file(source.path().join("a"))?;
+    assert_eq!(handle.lookup()?.node.file_id, opened.file_id);
+    let cancelled = CancellationToken::new();
+    let denied = crate::NativeMaterializationWork::new(
+        WorkBudget {
+            backend_read_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancelled,
+    )
+    .map_err(|(error, _)| error)?;
+    assert!(handle.lookup_with_meter(&denied).is_err());
+    cancelled.cancel();
+    assert!(handle.lookup_with_meter(&denied).is_err());
+    Ok(())
+}
 #[test]
 fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn std::error::Error>> {
     use crate::LocalCoreStateStore;

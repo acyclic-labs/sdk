@@ -172,13 +172,31 @@ where
                 let mut accounting =
                     crate::kernel::KernelAccounting::native(work, work.cancellation());
                 let source = self.lazy.source_reference();
-                let node = self
+                let node = match self
                     .lazy
                     .source_lookup(source, &self.path, &mut accounting)
                     .await
-                    .map_err(lazy_error)?
-                    .filter(|node| node.file_identity == self.source_node.file_identity)
-                    .unwrap_or(self.source_node);
+                {
+                    Ok(node) => node,
+                    Err(LazyWorkspaceError::Demand(DemandError::Io(error)))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound
+                                | std::io::ErrorKind::NotADirectory
+                                | std::io::ErrorKind::PermissionDenied
+                        ) =>
+                    {
+                        None
+                    }
+                    Err(LazyWorkspaceError::Demand(
+                        DemandError::NotDirectory
+                        | DemandError::Absent
+                        | DemandError::SourceUnavailable,
+                    )) => None,
+                    Err(error) => return Err(lazy_error(error)),
+                }
+                .filter(|node| node.file_identity == self.source_node.file_identity)
+                .unwrap_or(self.source_node);
                 Ok(mount_lookup(
                     &LazyLookup::Source { node, source },
                     self.expected_source,
