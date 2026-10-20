@@ -200,8 +200,10 @@ impl Exclusion {
             appended.push_str(&self.pattern);
             appended.push('\n');
             acyclic_native_runtime::write_file_all(&mut file, appended.as_bytes()).map_err(storage)?;
-            info.sync_file(&file).map_err(storage)?;
         }
+        // A previous publisher may have died after writing the complete rule
+        // but before flushing it. The reader must settle those same bytes too.
+        info.sync_file(&file).map_err(storage)?;
         info.sync_directory().map_err(storage)
     }
 }

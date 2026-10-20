@@ -28,6 +28,8 @@ for selected in filters:
     print(f'{selected}: {time.monotonic()-start:.3f}s\n{result.stdout}',flush=True)
     assert result.returncode==0,result.returncode
     assert re.search(r'^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;',result.stdout,re.M),result.stdout
+if target=='acyclic_harness' and sys.platform.startswith('linux'):
+    subprocess.run([sys.executable,'scripts/check-exclusion-flush.py',binary],check=True)
 PY
 }
 case "${1:-all}" in
@@ -61,6 +63,10 @@ native)
         local::tests::checkout::checkout_without_bash \
         local::tests::volumes::bash_crosses_granted \
         local::workspace::volumes::recovery_tests
+    run_built acyclic_harness rust/crates/harness \
+        local::tests::hermetic::default_state_overlap_is_refused_before_checkout_publication \
+        local::tests::hermetic::explicit_state_overlap_is_refused_before_checkout_publication \
+        local::tests::hermetic::canonical_separation_rejects_both_overlap_directions
     timed cli-build cargo test --locked -p graphcoder --test cli --features "$harness_features" \
         --no-run --message-format=json >"$artifacts"
     run_built cli rust/crates/harness \
