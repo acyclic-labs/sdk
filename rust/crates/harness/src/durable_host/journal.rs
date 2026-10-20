@@ -231,15 +231,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             None => input,
         };
-        let (next, transition, _, _) = self.host.machines.step(&record.prior, input, io)?;
-        if record.checkpoint()? != (&next.machine, next.revision, &next.state)
-            || transition != record.transition
-        {
-            return Err(Error::Conflict(
-                "workflow transition differs from pinned machine".into(),
-            ));
-        }
-        if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
+        self.host
+            .machines
+            .validate_transition(&record.prior, input, &record.transition, io)?;
+        if let crate::workflow::MachineStatus::Completed { value } = &record.transition.status {
             crate::executor::with_history_io(io, |work| {
                 crate::executor::validate_json_schema_value(
                     self.tool_output_schema

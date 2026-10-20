@@ -265,6 +265,47 @@ impl MachineRegistry {
         input: Cow<'_, Value>,
         io: Option<&PreparationIo>,
     ) -> Result<(MachineCheckpoint, MachineTransition, u64, u64)> {
+        let (transition, transition_retained) = self.transition(checkpoint, input, io)?;
+        let before = workflow_owned_bytes(io)?;
+        let next = MachineCheckpoint {
+            machine: workflow_copy_identity(&checkpoint.machine, io)?,
+            revision: next_revision(checkpoint.revision, io)?,
+            state: crate::model::clone_value(&transition.state, io)?,
+        };
+        Ok((
+            next,
+            transition,
+            workflow_owned_bytes(io)? - before,
+            transition_retained,
+        ))
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn validate_transition(
+        &self,
+        checkpoint: &MachineCheckpoint,
+        input: Cow<'_, Value>,
+        expected: &MachineTransition,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        let (transition, _) = self.transition(checkpoint, input, io)?;
+        next_revision(checkpoint.revision, io)?;
+        if &transition != expected {
+            return Err(stock_boundary(
+                io,
+                Conflict,
+                "workflow transition differs from pinned machine",
+            ));
+        }
+        Ok(())
+    }
+
+    fn transition(
+        &self,
+        checkpoint: &MachineCheckpoint,
+        input: Cow<'_, Value>,
+        io: Option<&PreparationIo>,
+    ) -> Result<(MachineTransition, u64)> {
         let machine = self.machine(
             &checkpoint.machine,
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
@@ -304,20 +345,9 @@ impl MachineRegistry {
             )
         })?;
         validate_commands(&transition.commands, io)?;
-        let before = workflow_owned_bytes(io)?;
-        let next = MachineCheckpoint {
-            machine: workflow_copy_identity(&checkpoint.machine, io)?,
-            revision: next_revision(checkpoint.revision, io)?,
-            state: crate::model::clone_value(&transition.state, io)?,
-        };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         drop(input);
-        Ok((
-            next,
-            transition,
-            workflow_owned_bytes(io)? - before,
-            transition_retained,
-        ))
+        Ok((transition, transition_retained))
     }
 
     pub(super) fn replayed_checkpoint(

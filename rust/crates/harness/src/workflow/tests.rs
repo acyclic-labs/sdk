@@ -75,6 +75,72 @@ impl ResumableMachine for Counter {
     }
 }
 
+#[cfg(feature = "filesystem")]
+#[test]
+fn workflow_transition_validation_checks_state_status_and_revision() -> Result<()> {
+    let identity = MachineIdentity {
+        name: "test.validation".into(),
+        version: "1".into(),
+        digest: [1; 32],
+    };
+    let mut registry = MachineRegistry::default();
+    registry.register(
+        Arc::new(Counter {
+            identity: identity.clone(),
+            schema: json!({"type": "integer", "minimum": 0}),
+        }),
+        &mut None,
+    )?;
+    let mut checkpoint = MachineCheckpoint {
+        machine: identity,
+        revision: 0,
+        state: json!(1),
+    };
+    let mut expected = MachineTransition {
+        state: json!(3),
+        commands: vec![],
+        status: MachineStatus::Suspended,
+    };
+    let input = json!(2);
+    registry.validate_transition(&checkpoint, Cow::Borrowed(&input), &expected, None)?;
+    expected.state = json!(4);
+    assert_eq!(
+        registry
+            .validate_transition(&checkpoint, Cow::Borrowed(&input), &expected, None)
+            .unwrap_err()
+            .code(),
+        Conflict
+    );
+    expected.state = json!(3);
+    expected.status = MachineStatus::Completed { value: Value::Null };
+    assert_eq!(
+        registry
+            .validate_transition(&checkpoint, Cow::Borrowed(&input), &expected, None)
+            .unwrap_err()
+            .code(),
+        Conflict
+    );
+    expected.status = MachineStatus::Suspended;
+    checkpoint.revision = u64::MAX;
+    assert_eq!(
+        registry
+            .validate_transition(&checkpoint, Cow::Borrowed(&input), &expected, None)
+            .unwrap_err()
+            .code(),
+        Invalid
+    );
+    checkpoint.revision = 0;
+    checkpoint.state = json!(-1);
+    assert_eq!(
+        registry
+            .validate_transition(&checkpoint, Cow::Borrowed(&input), &expected, None)
+            .unwrap_err()
+            .code(),
+        Invalid
+    );
+    Ok(())
+}
+
 #[test]
 fn workflow_history_and_command_counts_have_no_fixed_ceiling() -> Result<()> {
     use crate::{
