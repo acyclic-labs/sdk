@@ -361,7 +361,7 @@ fn every_event_round_trips_with_a_single_discriminant() -> Result<(), Box<dyn st
 #[test]
 fn generated_authoring_contract_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../typescript/packages/actors/src/generated/guest.ts");
+        .join("tests/fixtures/authoring/guest.ts");
     let generated = typescript();
     assert_eq!(std::fs::read_to_string(path)?, generated);
     Ok(())
