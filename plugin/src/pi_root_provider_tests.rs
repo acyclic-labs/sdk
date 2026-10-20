@@ -329,6 +329,24 @@ impl Fixture {
     }
 
     async fn reopen(&self) -> Arc<PiRootProvider> {
+        // A cold restart cannot keep the previous process's native producers
+        // alive. Settle and release their actual handles before recovering from
+        // durable resource records with a fresh physical-root registry. The
+        // original ledger and all spent work survive this simulated boundary.
+        let handles = self.provider.take_created_handles().await;
+        for handle in handles.values() {
+            assert!(
+                handle
+                    .physical
+                    .watcher
+                    .lock()
+                    .unwrap()
+                    .shutdown_with_native_work(&self.startup)
+                    .unwrap()
+            );
+        }
+        drop(handles);
+        assert_eq!(self.resources.shared_roots.live_roots().await, 0);
         let owner = PiOwnerConfig::load(
             &self.resources.data,
             self.session.strip_prefix(&self.resources.data).unwrap(),
