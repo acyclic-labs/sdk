@@ -30,7 +30,7 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         "input.json".into(),
         &mut None,
     )?;
-    for count in [1, 2, 4] {
+    for count in [1, 2, 4, 8] {
         let record = WorkflowRecord {
             operation_id: crate::OperationId::from_bytes([5; 16]),
             idempotency_key: IdempotencyKey::new("workflow-codec")?,
