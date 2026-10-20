@@ -456,7 +456,7 @@ impl PiSession {
         }
         tasks.sort_unstable();
         tasks.dedup();
-        let native = if target == root.task_id && tasks.is_empty() {
+        let native = if tasks.is_empty() {
             None
         } else {
             match self.native_host_with_native_work(work) {
