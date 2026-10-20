@@ -56,13 +56,19 @@ impl NativeSourceWatch {
     }
     #[cfg(windows)]
     pub(crate) fn start_directory_with_work<W: SourceDemandReadWork>(
+        &self,
         directory: &cap_std::fs::Dir,
         sink: Arc<dyn HostChangeSink>,
         complete: bool,
         work: &mut W,
     ) -> Result<Self, DemandError> {
         use std::os::windows::io::AsHandle;
-        Delivery::new(sink, work)?.start(work, |delivery, work| {
+        let mut delivery = Delivery::new(sink, work)?;
+        // The observer funds registration and its retained resources. Physical
+        // notifications continue on the root producer's original authority;
+        // discovering a directory cannot replace it with a metadata-only leaf.
+        delivery.read_authority = Some(self.read_authority());
+        delivery.start(work, |delivery, work| {
             Self::open_watch(
                 directory.as_handle(),
                 delivery,

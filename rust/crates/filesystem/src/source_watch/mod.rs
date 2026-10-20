@@ -192,6 +192,8 @@ pub(crate) enum CallbackWork {
 }
 
 pub(crate) struct Delivery {
+    #[cfg(windows)]
+    read_authority: Option<Arc<Delivery>>,
     sink: Arc<dyn HostChangeSink>,
     exact: AtomicBool,
     budget: crate::performance::WorkBudget,

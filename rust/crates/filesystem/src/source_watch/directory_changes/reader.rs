@@ -180,6 +180,15 @@ impl Shared {
                     reads.cursor = reads.filled;
                     break;
                 };
+                let paired = if action == 4 && next != 0 {
+                    notification(
+                        &bytes[reads.cursor + next..],
+                        self.extended.load(Ordering::Acquire),
+                    )
+                    .filter(|(_, action, _, identity)| *action == 5 && *identity == file)
+                } else {
+                    None
+                };
                 let changes = [
                     HostChangeWide::Path { action, path },
                     HostChangeWide::File(file.unwrap_or(0)),
@@ -189,11 +198,31 @@ impl Shared {
                 } else {
                     std::slice::from_ref(&changes[0])
                 };
-                self.delivery.deliver_wide(delivered, work)?;
-                reads.cursor = if next == 0 {
+                if let Some((_, _, to, _)) = paired {
+                    work.started_io(ITEM)?;
+                    let pair = [
+                        HostChangeWide::Path { action, path },
+                        HostChangeWide::Path {
+                            action: 5,
+                            path: to,
+                        },
+                        HostChangeWide::File(file.unwrap_or(0)),
+                    ];
+                    self.delivery
+                        .deliver_wide(&pair[..if file.is_some() { 3 } else { 2 }], work)?;
+                } else {
+                    self.delivery.deliver_wide(delivered, work)?;
+                }
+                let consumed = paired.map_or(
+                    next,
+                    |(after, _, _, _)| {
+                        if after == 0 { 0 } else { next + after }
+                    },
+                );
+                reads.cursor = if consumed == 0 {
                     reads.filled
                 } else {
-                    reads.cursor + next
+                    reads.cursor + consumed
                 };
             }
             if self.stopping.load(Ordering::Acquire) {

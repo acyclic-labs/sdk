@@ -231,6 +231,72 @@ mod original {
         });
     }
     #[test]
+    fn child_reads_keep_root_authority_and_registration_keeps_its_owner() -> TestResult {
+        for source_bytes_read in [0, 1024 * 1024] {
+            for observer_bytes in [0, 4 * 1024 * 1024] {
+                let (root, held) = held()?;
+                let cancellation = CancellationToken::new();
+                let producer = birth(
+                    WorkBudget {
+                        source_bytes_read,
+                        ..budget()
+                    },
+                    &cancellation,
+                );
+                let observer = birth(
+                    WorkBudget {
+                        source_bytes_read: observer_bytes,
+                        ..budget()
+                    },
+                    &cancellation,
+                );
+                let mut producer_work =
+                    crate::NativeMaterializationWork::from_meter(producer.clone());
+                let mut observer_work =
+                    crate::NativeMaterializationWork::from_meter(observer.clone());
+                let source = driver(&held, &mut producer_work)?;
+                let child = source.start_directory_with_work(
+                    &held,
+                    Arc::new(Quiet),
+                    true,
+                    &mut observer_work,
+                )?;
+                assert!(
+                    child
+                        .delivery()
+                        .original
+                        .as_ref()
+                        .unwrap()
+                        .shares_ledger(&observer_work)
+                );
+                let callback = child.delivery().callback_work();
+                assert!(
+                    callback
+                        .native_source_work()
+                        .unwrap()
+                        .shares_ledger(&producer_work)
+                );
+                let observer_prefix = observer_work.receipt();
+                std::fs::write(root.path().join("payload"), b"changed")?;
+                let result = child.fence_with_work(Duration::from_secs(1), &mut producer_work);
+                if source_bytes_read == 0 {
+                    assert!(matches!(result, Err(DemandError::Work(_))));
+                    assert_eq!(producer_work.receipt().source_bytes_read, 0);
+                } else {
+                    assert!(result?);
+                    assert!(producer_work.receipt().source_bytes_read > 0);
+                }
+                assert_eq!(
+                    observer_work.receipt().source_bytes_read,
+                    observer_prefix.source_bytes_read
+                );
+                child.stop_with_cleanup_wait(&CancellationToken::new())?;
+                source.stop_with_cleanup_wait(&CancellationToken::new())?;
+            }
+        }
+        Ok(())
+    }
+    #[test]
     fn native_birth_denies_the_known_final_drop_plan_before_the_first_native_owner() -> TestResult {
         let (_root, held) = held()?;
         let budget = WorkBudget {
@@ -395,7 +461,17 @@ mod original {
                 .unwrap_or_else(PoisonError::into_inner)
                 .is_some()
         );
-        no_growth(&birth, before, budget);
+        // The retry still owns its terminal reservation. Its capacity cannot
+        // return to the original ledger until the protected handle retires.
+        let parked_budget = birth.with_original_leaf(|work| work.budget);
+        let cleanup = completion
+            .cleanup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(cleanup[0].is_none());
+        assert!(cleanup[1].is_some());
+        drop(cleanup);
+        no_growth(&birth, before, parked_budget);
         birth.with_original_leaf(|work| {
             assert!(matches!(
                 work.check(),

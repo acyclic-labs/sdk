@@ -840,6 +840,13 @@ impl WindowsDirectorySink {
         work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         use crate::source_watch::HostChangeWide;
+        // A native batch may contain both halves of a rename. Keep polling
+        // from sealing the first record before its matching second record.
+        let mut state = self
+            .delivery
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
         let mut file = 1;
         for change in changes {
             work.started_io(WorkCounters {
@@ -858,15 +865,18 @@ impl WindowsDirectorySink {
             })?;
             match change {
                 HostChangeWide::Path { action, path } => {
-                    self.deliver_names_measured(
+                    self.deliver_names_locked(
                         wide_hint_names(&self.prefix.0).chain(wide_hint_names(path)),
                         self.prefix.0.is_empty().then_some((*action, file)),
+                        &mut state,
                         work,
                     )?;
                 }
                 HostChangeWide::File(_) => {}
                 HostChangeWide::Everything | HostChangeWide::Unconfirmed => {
-                    self.invalidate_measured(work)?;
+                    work.check()?;
+                    state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+                    self.delivery.fenced.notify_all();
                 }
             }
         }
@@ -887,23 +897,30 @@ impl WindowsDirectorySink {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     fn deliver_names_measured<'a, W: crate::demand::SourceDemandReadWork>(
         &self,
         names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
         action: Option<(u32, usize)>,
         work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
-        use crate::demand::DemandError;
         work.check()?;
         let mut state = self
             .delivery
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
+        self.deliver_names_locked(names, action, &mut state, work)
+    }
+
+    fn deliver_names_locked<'a, W: crate::demand::SourceDemandReadWork>(
+        &self,
+        names: impl Iterator<Item = Result<HintName<'a>, crate::demand::DemandError>> + Clone,
+        action: Option<(u32, usize)>,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        work.check()?;
         if state.invalidation.is_some() {
             return Ok(());
         }
@@ -953,77 +970,88 @@ impl WindowsDirectorySink {
                     return Ok(());
                 }
             }
-            if payload.0.is_root() {
-                state.invalidation = Some(WatchInvalidationReason::RootChanged);
-                return Ok(());
-            }
-            if let Some((4, cookie)) = action {
-                if state.pending_rename.is_some() {
-                    state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                } else {
-                    state.pending_rename = Some(PendingRename {
-                        tracker: cookie,
-                        from: payload.0,
-                        allocation: payload.2,
-                    });
-                }
-                return Ok(());
-            }
-            if action.is_some_and(|(action, cookie)| {
-                action == 5
-                    && !state
-                        .pending_rename
-                        .as_ref()
-                        .is_some_and(|pending| pending.tracker == cookie)
-            }) {
-                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
-                return Ok(());
-            }
-            work.started_io(WorkCounters {
-                items_returned: 1,
-                ..WorkCounters::default()
-            })?;
-            let change = match action {
-                Some((1, _)) => QueuedWatchChange {
-                    change: WatchChange::Created(payload.0),
-                    allocations: [payload.2, None],
-                },
-                Some((2, _)) => QueuedWatchChange {
-                    change: WatchChange::Removed(payload.0),
-                    allocations: [payload.2, None],
-                },
-                Some((5, _)) => {
-                    let pending = state
-                        .pending_rename
-                        .take()
-                        .ok_or(DemandError::InvalidRequest)?;
-                    QueuedWatchChange {
-                        change: WatchChange::Renamed {
-                            from: pending.from,
-                            to: payload.0,
-                        },
-                        allocations: [pending.allocation, payload.2],
-                    }
-                }
-                _ => QueuedWatchChange {
-                    change: WatchChange::Modified(payload.0),
-                    allocations: [payload.2, None],
-                },
-            };
-            match self.delivery.sender.try_send(change) {
-                Ok(()) => {
-                    self.delivery.queued.fetch_add(1, Ordering::Release);
-                }
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
-                    state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-                }
-            }
-            Ok::<(), DemandError>(())
+            self.queue_names(payload.0, payload.2, action, state, work)
         })();
         if bytes != 0 {
             work.release(bytes)?;
         }
         result
+    }
+    fn queue_names<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        path: NamespacePath,
+        allocation: Option<crate::NativeAllocation>,
+        action: Option<(u32, usize)>,
+        state: &mut SharedState,
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        if path.is_root() {
+            state.invalidation = Some(WatchInvalidationReason::RootChanged);
+            return Ok(());
+        }
+        if let Some((4, cookie)) = action {
+            if state.pending_rename.is_some() {
+                state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+            } else {
+                state.pending_rename = Some(PendingRename {
+                    tracker: cookie,
+                    from: path,
+                    allocation: allocation,
+                });
+            }
+            return Ok(());
+        }
+        if action.is_some_and(|(action, cookie)| {
+            action == 5
+                && !state
+                    .pending_rename
+                    .as_ref()
+                    .is_some_and(|pending| pending.tracker == cookie)
+        }) {
+            state.invalidation = Some(WatchInvalidationReason::AmbiguousRename);
+            return Ok(());
+        }
+        work.started_io(WorkCounters {
+            items_returned: 1,
+            ..WorkCounters::default()
+        })?;
+        let change = match action {
+            Some((1, _)) => QueuedWatchChange {
+                change: WatchChange::Created(path),
+                allocations: [allocation, None],
+            },
+            Some((2, _)) => QueuedWatchChange {
+                change: WatchChange::Removed(path),
+                allocations: [allocation, None],
+            },
+            Some((5, _)) => {
+                let pending = state
+                    .pending_rename
+                    .take()
+                    .ok_or(DemandError::InvalidRequest)?;
+                QueuedWatchChange {
+                    change: WatchChange::Renamed {
+                        from: pending.from,
+                        to: path,
+                    },
+                    allocations: [pending.allocation, allocation],
+                }
+            }
+            _ => QueuedWatchChange {
+                change: WatchChange::Modified(path),
+                allocations: [allocation, None],
+            },
+        };
+        match self.delivery.sender.try_send(change) {
+            Ok(()) => {
+                self.delivery.queued.fetch_add(1, Ordering::Release);
+            }
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
+                state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
+            }
+        }
+        Ok::<(), DemandError>(())
     }
 }
 
@@ -2097,13 +2125,13 @@ impl NativeWatch {
                         delivery: Arc::clone(&self.windows_delivery),
                         _allocation: allocation,
                     });
+                    let NativeWatchDriver::Source(source) = &self.watcher else {
+                        return Err(DemandError::from(
+                            NativeWatchError::BoundedObservationUnavailable,
+                        ));
+                    };
                     let watcher =
-                        match crate::source_watch::NativeSourceWatch::start_directory_with_work(
-                            &held,
-                            sink,
-                            self.complete,
-                            work,
-                        ) {
+                        match source.start_directory_with_work(&held, sink, self.complete, work) {
                             Ok(watcher) => watcher,
                             Err(crate::demand::DemandError::SourceWatchStartup(owner)) => {
                                 self.pending_source_watch = Some(Arc::clone(&owner));

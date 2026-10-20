@@ -35,6 +35,8 @@ mod startup;
 use reader::notification;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_rename;
 
 const BUFFER_WORDS: usize = 64 * 1024 / size_of::<u64>();
 const BUFFER_BYTES: u64 = size_of::<[u64; BUFFER_WORDS]>() as u64;
@@ -126,6 +128,9 @@ impl Shared {
     }
 }
 impl NativeSourceWatch {
+    pub(super) fn read_authority(&self) -> Arc<Delivery> {
+        Arc::clone(&self.shared.delivery)
+    }
     pub(crate) fn delivery(&self) -> &Delivery {
         &self.shared.delivery
     }
