@@ -24,7 +24,7 @@ with the same Cloud SDK pin bump after reviewing the new handler tests:
 
 ```sh
 cargo run -p acyclic-fs --example record_cloud_contract --locked
-cargo test -p acyclic-fs --locked --test main cloud_contract::
+cargo test -p acyclic-fs --test cloud_contract --locked
 node --test typescript/packages/filesystem/test/cloud-contract.test.mjs
 ```
 
