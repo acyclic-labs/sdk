@@ -7,6 +7,7 @@
       "hooks": [
        {
         "type": "command",
+        "shell": "sh",
         "command": "cat >/dev/null; printf '%s' '{\"decision\":\"block\",\"reason\":\"HOOK-BLOCK-KITE\"}'"
        }
       ]

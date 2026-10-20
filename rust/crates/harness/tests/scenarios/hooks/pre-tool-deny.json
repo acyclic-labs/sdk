@@ -8,6 +8,7 @@
       "hooks": [
        {
         "type": "command",
+        "shell": "sh",
         "command": "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"HOOK-DENY-OTTER\"}}'"
        }
       ]

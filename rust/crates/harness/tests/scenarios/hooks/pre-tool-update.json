@@ -8,6 +8,7 @@
       "hooks": [
        {
         "type": "command",
+        "shell": "sh",
         "command": "cat >/dev/null; printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"printf hooked > plans/a.md; printf replaced\"}}}'"
        }
       ]

@@ -8,6 +8,7 @@
       "hooks": [
        {
         "type": "command",
+        "shell": "sh",
         "command": "printf '%s' '{\"decision\":\"block\",\"reason\":\"HOOK-WRONG-TOOL\"}'"
        }
       ]
@@ -19,6 +20,7 @@
       "hooks": [
        {
         "type": "command",
+        "shell": "sh",
         "command": "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"HOOK-WRONG-TOOL\"}}'"
        }
       ]
