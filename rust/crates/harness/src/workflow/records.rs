@@ -107,7 +107,23 @@ impl WorkflowRecord {
     /// Validates the envelope before storage or replay.
     pub fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
         validate_key(&self.idempotency_key, io)?;
-        crate::executor::preparation_digest(&self.input, io)?;
+        with_history_io(io, |work| {
+            let maximum = work
+                .as_deref()
+                .map(|work| work.remaining())
+                .transpose()?
+                .map_or(u64::MAX, |remaining| remaining.bytes_encoded);
+            // The input is already a resident Value. Validate its complete
+            // encoding and depth without materializing a canonical document
+            // and digest that this envelope check does not retain.
+            crate::executor::json::json_byte_length_at_depth(
+                &self.input,
+                maximum,
+                if work.is_some() { 256 } else { u32::MAX },
+                work,
+            )
+            .map(|_| ())
+        })?;
         next_revision(self.prior.revision, io)?;
         validate_commands(&self.transition.commands, io)?;
         if self

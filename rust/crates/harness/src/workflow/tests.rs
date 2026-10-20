@@ -2,6 +2,50 @@ use super::*;
 use records::validate_commands;
 use serde_json::json;
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn workflow_validation_scans_resident_input_without_copying_it() -> Result<()> {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let mut budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    budget.bytes_copied = 0;
+    let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&native)?;
+    let mut record = WorkflowRecord {
+        operation_id: OperationId::from_bytes([1; 16]),
+        idempotency_key: IdempotencyKey::new("resident-input")?,
+        prior: MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "test.input".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision: 0,
+            state: Value::Null,
+        },
+        input: json!({"reply": "q".repeat(128 * 1024)}),
+        transition: MachineTransition {
+            state: Value::Null,
+            commands: vec![],
+            status: MachineStatus::Suspended,
+        },
+    };
+    record.validate(Some(&io))?;
+    let receipt = native.receipt();
+    assert_eq!(receipt.bytes_copied, 0);
+    assert!(receipt.bytes_encoded > 128 * 1024);
+    assert!(receipt.items_examined > 0);
+    record.input = (0..257).fold(Value::Null, |value, _| Value::Array(vec![value]));
+    assert_eq!(record.validate(Some(&io)).unwrap_err().code(), Invalid);
+    record.input = Value::Null;
+    cancellation.cancel();
+    assert_eq!(
+        record.validate(Some(&io)).unwrap_err().code(),
+        crate::wire::ErrorCode::Cancelled
+    );
+    Ok(())
+}
+
 struct Counter {
     identity: MachineIdentity,
     schema: Value,
