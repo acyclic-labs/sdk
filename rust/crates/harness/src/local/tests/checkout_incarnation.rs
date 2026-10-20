@@ -184,26 +184,34 @@ async fn a_checkout_recreated_on_a_reused_object_id_opens_new_state() -> Result<
     Ok(())
 }
 
-/// Unstable roots retain token continuity; a strong physical witness cannot
-/// authenticate another volume merely because its object number is identical.
-#[tokio::test]
-async fn changed_volumes_cannot_reuse_strong_owner_state() -> Result<()> {
+/// A strong physical witness cannot authenticate another volume merely
+/// because its object number is identical. Each state entry point runs as its
+/// own test so the suite's bound covers the slowest, not their sum.
+async fn changed_volumes_cannot_reuse_strong_owner_state(explicit: bool) -> Result<()> {
     let mut another_volume = REUSED;
     another_volume[..8].fill(9);
-    for explicit in [false, true] {
-        for generation in [StableObjectId, FileHandle([3; 32])] {
-            assert!(matches!(
-                changed_root(explicit, generation, generation, Some(another_volume)).await?,
-                Err(Error::Unauthorized(_))
-            ));
-            // Actual former comparison ignores volume scope and accepts the
-            // replacement's copied token, object number and handle payload.
-            let _reset = Reset;
-            DISCARD_VOLUME.set(true);
-            changed_root(explicit, generation, generation, Some(another_volume)).await??;
-        }
+    for generation in [StableObjectId, FileHandle([3; 32])] {
+        assert!(matches!(
+            changed_root(explicit, generation, generation, Some(another_volume)).await?,
+            Err(Error::Unauthorized(_))
+        ));
+        // Actual former comparison ignores volume scope and accepts the
+        // replacement's copied token, object number and handle payload.
+        let _reset = Reset;
+        DISCARD_VOLUME.set(true);
+        changed_root(explicit, generation, generation, Some(another_volume)).await??;
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn changed_volumes_cannot_reuse_default_owner_state() -> Result<()> {
+    changed_volumes_cannot_reuse_strong_owner_state(false).await
+}
+
+#[tokio::test]
+async fn changed_volumes_cannot_reuse_explicit_owner_state() -> Result<()> {
+    changed_volumes_cannot_reuse_strong_owner_state(true).await
 }
 
 proptest::proptest! {
@@ -301,42 +309,60 @@ async fn changed_root(
 
 /// Both entry points keep the selected owner through verifiable changes and
 /// refuse ambiguous downgrades without silently allocating a second state.
-#[tokio::test]
-async fn capability_changes_keep_state_and_verify_retained_evidence() -> Result<()> {
-    for explicit in [false, true] {
-        changed_root(explicit, StableObjectId, FileHandle([3; 32]), None).await??;
-        changed_root(explicit, Unstable, StableObjectId, None).await??;
-        for (before, after) in [
-            (FileHandle([3; 32]), StableObjectId),
-            (StableObjectId, Unstable),
-            (FileHandle([3; 32]), Unstable),
-        ] {
-            assert!(matches!(
-                changed_root(explicit, before, after, None).await?,
-                Err(Error::Unsupported(_))
-            ));
-        }
+async fn capability_changes_keep_state_and_verify_retained_evidence(explicit: bool) -> Result<()> {
+    changed_root(explicit, StableObjectId, FileHandle([3; 32]), None).await??;
+    changed_root(explicit, Unstable, StableObjectId, None).await??;
+    for (before, after) in [
+        (FileHandle([3; 32]), StableObjectId),
+        (StableObjectId, Unstable),
+        (FileHandle([3; 32]), Unstable),
+    ] {
+        assert!(matches!(
+            changed_root(explicit, before, after, None).await?,
+            Err(Error::Unsupported(_))
+        ));
     }
     Ok(())
 }
 
+#[tokio::test]
+async fn capability_changes_keep_state_and_verify_retained_evidence_with_default_state()
+-> Result<()> {
+    capability_changes_keep_state_and_verify_retained_evidence(false).await
+}
+
+#[tokio::test]
+async fn capability_changes_keep_state_and_verify_retained_evidence_with_explicit_state()
+-> Result<()> {
+    capability_changes_keep_state_and_verify_retained_evidence(true).await
+}
+
 /// A copied token locates the original state but cannot replace its strong
 /// object/handle proof. This catches a token-only hash or owner comparison.
-#[tokio::test]
-async fn copied_tokens_cannot_attach_another_strongly_bound_root() -> Result<()> {
-    for explicit in [false, true] {
-        for (before, object, after) in [
-            (StableObjectId, [9; 16], StableObjectId),
-            (FileHandle([3; 32]), REUSED, FileHandle([4; 32])),
-            (FileHandle([3; 32]), [9; 16], FileHandle([3; 32])),
-        ] {
-            assert!(matches!(
-                changed_root(explicit, before, after, Some(object)).await?,
-                Err(Error::Unauthorized(_))
-            ));
-        }
+async fn copied_tokens_cannot_attach_another_strongly_bound_root(explicit: bool) -> Result<()> {
+    for (before, object, after) in [
+        (StableObjectId, [9; 16], StableObjectId),
+        (FileHandle([3; 32]), REUSED, FileHandle([4; 32])),
+        (FileHandle([3; 32]), [9; 16], FileHandle([3; 32])),
+    ] {
+        assert!(matches!(
+            changed_root(explicit, before, after, Some(object)).await?,
+            Err(Error::Unauthorized(_))
+        ));
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn copied_tokens_cannot_attach_another_strongly_bound_root_with_default_state() -> Result<()>
+{
+    copied_tokens_cannot_attach_another_strongly_bound_root(false).await
+}
+
+#[tokio::test]
+async fn copied_tokens_cannot_attach_another_strongly_bound_root_with_explicit_state() -> Result<()>
+{
+    copied_tokens_cannot_attach_another_strongly_bound_root(true).await
 }
 
 /// Replacing the checkout's path after its root is held and before scratch
