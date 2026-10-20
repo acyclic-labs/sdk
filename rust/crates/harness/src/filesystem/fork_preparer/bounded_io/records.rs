@@ -4,6 +4,9 @@ use crate::executor::json::{JsonValueSchema as Schema, JsonValueShape};
 use std::mem::size_of;
 
 pub(crate) trait PreparationRecord: serde::de::DeserializeOwned {
+    fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
+        shape.input_bytes()
+    }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         Ok(None)
     }
@@ -153,6 +156,11 @@ records!(
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
 impl PreparationRecord for crate::workflow::WorkflowRecord {
+    fn diagnostic_source_bytes(shape: JsonValueShape) -> u64 {
+        // The closed workflow envelope's Value fields accept any admitted
+        // JSON tree. Only typed metadata can render unexpected string data.
+        shape.typed_diagnostic_source_bytes()
+    }
     fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
         use crate::executor::json::json_value_retained_owned_bytes as value_bytes;
         use crate::workflow::{MachineStatus, WorkflowCommand};

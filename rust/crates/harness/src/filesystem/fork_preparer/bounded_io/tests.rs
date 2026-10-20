@@ -5,6 +5,92 @@ use crate::filesystem::workspace_ref;
 use acyclic_fs::Fs;
 
 #[test]
+fn workflow_value_payloads_do_not_reserve_typed_metadata_diagnostics() -> Result<()> {
+    use crate::workflow::{
+        MachineCheckpoint, MachineIdentity, MachineStatus, MachineTransition, WorkflowRecord,
+    };
+    let mut record = WorkflowRecord {
+        operation_id: crate::OperationId::from_bytes([5; 16]),
+        idempotency_key: IdempotencyKey::new("workflow-value-diagnostics")?,
+        prior: MachineCheckpoint {
+            machine: MachineIdentity {
+                name: "test.diagnostics".into(),
+                version: "1".into(),
+                digest: [1; 32],
+            },
+            revision: 0,
+            state: serde_json::Value::Null,
+        },
+        input: serde_json::json!({"body": "q".repeat(128 * 1024), "escaped": "\"\\".repeat(1024)}),
+        transition: MachineTransition {
+            state: serde_json::json!({"reply": "q".repeat(128 * 1024)}),
+            commands: vec![],
+            status: MachineStatus::Suspended,
+        },
+    };
+    for status in [
+        MachineStatus::Suspended,
+        MachineStatus::Completed {
+            value: serde_json::json!({"body": "q".repeat(128 * 1024)}),
+        },
+        MachineStatus::Failed {
+            message: "failed".into(),
+        },
+    ] {
+        record.transition.status = status;
+        let mut wire =
+            serde_json::to_value(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+        for malformed in [false, true] {
+            if malformed {
+                wire.as_object_mut()
+                    .expect("record object")
+                    .insert("unexpected\\\"".repeat(4096), serde_json::Value::Null);
+            }
+            let bytes =
+                serde_json::to_vec(&wire).map_err(|error| Error::Invalid(error.to_string()))?;
+            let native = acyclic_fs::NativeMaterializationWork::new(
+                acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+                &CancellationToken::new(),
+            )
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+            let baseline = native.live_allocation_bytes();
+            let io = PreparationIo::from_native_work(&native)?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.decode(
+                    std::marker::PhantomData::<WorkflowRecord>,
+                    &bytes,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let decoded = decoded.expect("decoder ran");
+            if malformed {
+                assert_eq!(
+                    decoded
+                        .as_ref()
+                        .err()
+                        .expect("unknown metadata rejected")
+                        .code(),
+                    crate::wire::ErrorCode::Storage
+                );
+            } else {
+                assert_eq!(decoded.as_ref().expect("valid workflow").0, record);
+            }
+            assert!(physical.count_total > 0);
+            assert!(
+                physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
+                "physical={physical:?}; receipt={:?}",
+                native.receipt()
+            );
+            drop(decoded);
+            drop(io);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<()> {
     use crate::conversation::FileDescriptor;
     use crate::workflow::{

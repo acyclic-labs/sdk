@@ -17,7 +17,8 @@ pub(crate) use identity::{
 pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
 pub(crate) use diagnostics::{
-    audited_serde_diagnostic_bytes, json_decode_owned_bytes, snapshot_json_admission,
+    audited_serde_diagnostic_bytes, json_decode_owned_bytes,
+    json_typed_diagnostic_source_owned_bytes, snapshot_json_admission,
 };
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
@@ -86,6 +87,7 @@ enum Origin {
 #[derive(Clone, Copy, Debug)]
 pub struct JsonValueShape {
     input_bytes: u64,
+    value_string_bytes: u64,
     lexical_items: u64,
     containers: u64,
     virtual_items: u64,
@@ -95,6 +97,18 @@ pub struct JsonValueShape {
     origin: Origin,
 }
 impl JsonValueShape {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn typed_diagnostic_source_bytes(self) -> u64 {
+        if self.origin == Origin::Slice && !self.unresolved_raw {
+            // Decoded lengths are at most their encoded source spans. Retain
+            // the quotes, escapes and all typed metadata in this upper bound.
+            self.input_bytes
+                .checked_sub(self.value_string_bytes)
+                .unwrap_or(self.input_bytes)
+        } else {
+            self.input_bytes
+        }
+    }
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
     pub(crate) fn is_slice(self) -> bool {
         self.origin == Origin::Slice

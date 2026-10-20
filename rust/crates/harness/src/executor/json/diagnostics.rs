@@ -22,11 +22,14 @@ pub fn json_typed_diagnostic_owned_bytes(
     labels: u64,
     code: Option<crate::wire::ErrorCode>,
 ) -> Result<u64> {
-    multiply_with_code(
-        diagnostic_bytes(shape.input_bytes(), labels, code)?,
-        2,
-        code,
-    )
+    json_typed_diagnostic_source_owned_bytes(shape.input_bytes(), labels, code)
+}
+pub(crate) fn json_typed_diagnostic_source_owned_bytes(
+    source_bytes: u64,
+    labels: u64,
+    code: Option<crate::wire::ErrorCode>,
+) -> Result<u64> {
+    multiply_with_code(diagnostic_bytes(source_bytes, labels, code)?, 2, code)
 }
 pub(crate) fn audited_serde_diagnostic_bytes(input: u64, labels: u64) -> Result<u64> {
     diagnostic_bytes(input, labels, None)

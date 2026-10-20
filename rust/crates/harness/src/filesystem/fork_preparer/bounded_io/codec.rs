@@ -124,6 +124,7 @@ impl PreparationIo {
     fn decode_guarded<T>(
         &self,
         labels: Option<u64>,
+        diagnostic_source: impl Fn(crate::executor::json::JsonValueShape) -> u64,
         code: Option<crate::wire::ErrorCode>,
         mut allowance: impl FnMut(crate::executor::json::JsonValueShape, u64) -> Result<u64>,
         decode: impl FnOnce(&mut dyn FnMut(Charge) -> Result<()>) -> Result<T>,
@@ -138,8 +139,8 @@ impl PreparationIo {
                 let owned = allowance(value_shape, maximum_owned_bytes)?;
                 let diagnostics = labels
                     .map(|labels| {
-                        crate::executor::json::json_typed_diagnostic_owned_bytes(
-                            value_shape,
+                        crate::executor::json::json_typed_diagnostic_source_owned_bytes(
+                            diagnostic_source(value_shape),
                             labels,
                             code,
                         )
@@ -171,6 +172,7 @@ impl PreparationIo {
         let schema = T::json_value_schema();
         let mut decoded: (T, _) = self.decode_guarded(
             Some(T::diagnostic_label_bytes()),
+            |shape| shape.input_bytes(),
             code,
             |shape, maximum| {
                 if schema == Schema::None {
@@ -219,6 +221,7 @@ impl PreparationIo {
         let code = self.original_native_work().is_some().then_some(code);
         let mut decoded = self.decode_guarded(
             (schema != Schema::Root).then(T::diagnostic_label_bytes),
+            T::diagnostic_source_bytes,
             code,
             |shape, scratch| T::decode_owned_allowance(shape, scratch, bytes.len() as u64, code),
             |observe| {
@@ -361,6 +364,7 @@ impl PreparationIo {
         let bounds = self.bounds(u64::MAX, 128)?;
         self.decode_guarded(
             (schema != Schema::Root).then_some(labels),
+            |shape| shape.input_bytes(),
             Some(code),
             |shape, _| owned(shape),
             |observe| {

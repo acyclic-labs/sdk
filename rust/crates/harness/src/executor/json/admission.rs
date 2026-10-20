@@ -12,6 +12,7 @@ struct Counts {
     frames: u64,
     depth: u32,
     unresolved: bool,
+    value_string_bytes: u64,
 }
 impl Counts {
     fn add(&mut self, other: Self) -> Result<()> {
@@ -29,6 +30,11 @@ impl Counts {
         )?;
         self.depth = self.depth.max(other.depth);
         self.unresolved |= other.unresolved;
+        self.value_string_bytes = checked(
+            self.value_string_bytes
+                .checked_add(other.value_string_bytes),
+            "JSON Value string count overflow",
+        )?;
         Ok(())
     }
 }
@@ -146,6 +152,12 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
     }
     fn visit_str<E: de::Error>(self, text: &str) -> std::result::Result<Branches, E> {
         let mut counts = self.base();
+        // Value accepts every JSON string. These decoded source bytes cannot
+        // appear in an invalid-type diagnostic at a typed metadata boundary.
+        // Virtual RawValue expansion has no disjoint original source span.
+        if !self.virtual_value && self.raw.is_none() && std::ptr::eq(self.schema, &ROOT) {
+            counts.always.value_string_bytes = text.len() as u64;
+        }
         match self.raw {
             Some(schema) if std::ptr::eq(schema, &ROOT) => {
                 self.charge.borrow_mut()(JsonCodecCharge::Inspect {
@@ -206,6 +218,16 @@ impl<'de> Visitor<'de> for Walk<'_, '_> {
         let (mut index, mut tag) = (0, None);
         while let Some(key) = fields.next_key::<String>()? {
             let key = key.as_bytes();
+            if !self.virtual_value && std::ptr::eq(self.schema, &ROOT) {
+                counts.always.value_string_bytes = checked(
+                    counts
+                        .always
+                        .value_string_bytes
+                        .checked_add(key.len() as u64),
+                    "JSON Value key count overflow",
+                )
+                .map_err(|error| self.error::<A::Error>(error))?;
+            }
             if self.virtual_value {
                 counts
                     .always
@@ -424,6 +446,7 @@ fn finish(
     }
     Ok(JsonValueShape {
         input_bytes: bytes,
+        value_string_bytes: counts.value_string_bytes,
         lexical_items: items,
         containers,
         virtual_items: counts.nodes,
