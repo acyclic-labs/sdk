@@ -180,6 +180,46 @@ impl LocalFileClient {
 
     async fn submit(&mut self, file: &FileValue) -> Result<()> {
         validate(file, self.operation)?;
+        // Both -p and JSONL enter through this boundary. Already pinned prompt
+        // resolutions are data, so template expansion is never parsed twice.
+        let normalized;
+        let file = match serde_json::from_slice::<CommandResolution>(&file.bytes) {
+            Ok(CommandResolution::Prompt {
+                text,
+                source: None,
+                mentions,
+            }) if mentions.is_empty() => {
+                let resolution = self.local.resolve_input(self.operation, &text).await?;
+                let mut captured = file.clone();
+                captured.bytes = serde_json::to_vec(&resolution)
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+                    .into();
+                normalized = captured;
+                validate(&normalized, self.operation)?;
+                &normalized
+            }
+            _ => file,
+        };
+        let resolution = serde_json::from_slice::<CommandResolution>(&file.bytes)
+            .or_else(|_| {
+                serde_json::from_slice::<CommandRequest>(&file.bytes)
+                    .map(|request| CommandResolution::Submit { request })
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        match resolution {
+            CommandResolution::Select { .. }
+            | CommandResolution::Confirm { .. }
+            | CommandResolution::Sdk { .. }
+            | CommandResolution::Submit {
+                request:
+                    CommandRequest::Quit | CommandRequest::Theme { .. } | CommandRequest::CycleMode,
+            } => {
+                return Err(Error::Unsupported(
+                    "command requires an interactive client".into(),
+                ));
+            }
+            _ => {}
+        }
         let cursor = self.query.cursor();
         let mut expected = Generation {
             volume: cursor.volume,

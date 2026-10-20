@@ -85,6 +85,7 @@ pub async fn local_ui(
             .write_state(super::CommandFileRoot::Session, "layout.json", &layout)
             .await?;
     }
+    files.bind_composer(local.composer_resolver()?);
     Ok(files)
 }
 

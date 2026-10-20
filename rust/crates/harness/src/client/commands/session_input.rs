@@ -80,13 +80,17 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
                 return Ok(operation);
             }
             let cut = self.generation;
-            let resolution = self
-                .catalog
-                .resolve(input, reader, self.maximum_bytes)
-                .await?;
+            let resolution = match &self.composer {
+                Some(composer) => composer.resolve(operation, input).await?,
+                None => {
+                    self.catalog
+                        .resolve(input, reader, self.maximum_bytes)
+                        .await?
+                }
+            };
             self.load_task_settings().await?;
             if self.generation != cut {
-                if RETRY {
+                if RETRY && self.composer.is_none() {
                     continue;
                 }
                 return Err(Error::Conflict(

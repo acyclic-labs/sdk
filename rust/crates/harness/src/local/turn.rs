@@ -267,6 +267,15 @@ impl LocalHarness {
                 "local prompt is empty or exceeds the file limit".into(),
             ));
         }
+        self.retain_prompt_input(
+            operation,
+            crate::client::CommandResolution::Prompt {
+                text: prompt.into(),
+                source: None,
+                mentions: Vec::new(),
+            },
+        )
+        .await?;
         self.submit_turn(operation, prompt).await
     }
 
@@ -391,7 +400,9 @@ impl LocalHarness {
         let model = crate::filesystem::ModelTaskCommand {
             summary_source: None,
             context_manifest: manifest,
-            input: ModelContent::Text(prompt.into()),
+            input: self
+                .turn_input_content(operation, prompt, publisher)
+                .await?,
             selected_context: None,
             max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,

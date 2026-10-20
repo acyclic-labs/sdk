@@ -10,7 +10,7 @@ pub(super) mod binding;
 mod checkout;
 mod guidance;
 
-fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
+pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(domain);
     hash.update(key);

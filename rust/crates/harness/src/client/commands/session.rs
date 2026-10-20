@@ -26,6 +26,14 @@ mod publication;
 #[path = "session_view.rs"]
 mod view;
 
+pub(crate) trait ComposerResolver: acyclic_stream::ProviderPlatform {
+    fn resolve<'a>(
+        &'a self,
+        operation: OperationId,
+        input: &'a str,
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<CommandResolution>>;
+}
+
 /// Disposable command/UI fold. All authoritative contents and execution markers
 /// are ordinary files in the supplied, already-authorized private/config volume.
 pub struct CommandSession<P: ?Sized> {
@@ -41,6 +49,7 @@ pub struct CommandSession<P: ?Sized> {
     outputs: BTreeMap<u64, files::FileKey>,
     activity_cursor: Option<(u64, String)>,
     catalog: CommandCatalog,
+    composer: Option<Arc<dyn ComposerResolver>>,
     loaded_task: Option<Option<TaskId>>,
     observed_change: Option<bool>,
     #[cfg(test)]
@@ -75,6 +84,15 @@ fn ui(directory: &str, name: &str) -> Result<files::FileKey> {
 }
 
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "tui",
+        not(target_arch = "wasm32")
+    ))]
+    pub(crate) fn bind_composer(&mut self, composer: Arc<dyn ComposerResolver>) {
+        self.composer = Some(composer);
+    }
+
     /// Open one atomic snapshot and its exact cursor follow. Reopening discovers
     /// unconsumed requests and never reruns a claimed external effect.
     pub async fn open(
@@ -135,6 +153,7 @@ impl<P: StreamProvider + ?Sized> CommandSession<P> {
             outputs: BTreeMap::new(),
             activity_cursor: None,
             catalog: CommandCatalog::builtins()?,
+            composer: None,
             loaded_task: None,
             observed_change: None,
             #[cfg(test)]

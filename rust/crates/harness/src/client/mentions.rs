@@ -39,6 +39,35 @@ pub async fn resolve_file_mentions(
     let mut result = Vec::new();
     let mut files: BTreeMap<String, FileRef> = BTreeMap::new();
     let mut remaining = maximum_bytes;
+    for (start, end, path) in file_mention_paths(input)? {
+        let file = if let Some(file) = files.get(path) {
+            file.clone()
+        } else {
+            let source = PinnedContextPath {
+                root: root.clone(),
+                generation: generation.clone(),
+                path: if root.directory.is_empty() {
+                    path.into()
+                } else {
+                    format!("{}/{path}", root.directory)
+                },
+            };
+            let (file, bytes) = source.read_remaining(reader, remaining).await?;
+            remaining = remaining
+                .checked_sub(bytes.len() as u64)
+                .ok_or_else(|| Error::Storage("mention reader exceeded bound".into()))?;
+            files.insert(path.into(), file.clone());
+            file
+        };
+        result.push(FileMention { start, end, file });
+    }
+    Ok(result)
+}
+
+/// Parse once before checkout capture and again against the captured revision.
+/// Both routes use precisely the same ranges and path validation.
+pub(crate) fn file_mention_paths(input: &str) -> Result<Vec<(usize, usize, &str)>> {
+    let mut result = Vec::new();
     let mut offset = 0;
     while offset < input.len() {
         let tail = &input[offset..];
@@ -67,26 +96,13 @@ pub async fn resolve_file_mentions(
         if end < input.len() && !input[end..].starts_with(char::is_whitespace) {
             return Err(Error::Invalid("file mention must end at whitespace".into()));
         }
-        let file = if let Some(file) = files.get(path) {
-            file.clone()
-        } else {
-            let source = PinnedContextPath {
-                root: root.clone(),
-                generation: generation.clone(),
-                path: if root.directory.is_empty() {
-                    path.into()
-                } else {
-                    format!("{}/{path}", root.directory)
-                },
-            };
-            let (file, bytes) = source.read_remaining(reader, remaining).await?;
-            remaining = remaining
-                .checked_sub(bytes.len() as u64)
-                .ok_or_else(|| Error::Storage("mention reader exceeded bound".into()))?;
-            files.insert(path.into(), file.clone());
-            file
-        };
-        result.push(FileMention { start, end, file });
+        crate::conversation::validate_content_path(path, &mut None)?;
+        if crate::conversation::is_internal_path(path) {
+            return Err(Error::Invalid(
+                "file mention targets internal content".into(),
+            ));
+        }
+        result.push((start, end, path));
         offset = end;
     }
     Ok(result)

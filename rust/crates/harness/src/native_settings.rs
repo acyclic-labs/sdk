@@ -28,6 +28,14 @@ pub struct SettingsConfig {
 }
 
 impl SettingsConfig {
+    #[cfg(feature = "native-execution")]
+    pub(crate) fn command_roots(&self) -> [(PathBuf, &'static str); 2] {
+        [
+            (self.home.join(".claude/commands"), ".claude/commands"),
+            (self.codex_home.join("prompts"), ".codex/prompts"),
+        ]
+    }
+
     /// Selects user settings by default; repository settings require explicit trust.
     pub fn new(workspace: impl Into<PathBuf>, home: impl Into<PathBuf>) -> Self {
         let home = home.into();

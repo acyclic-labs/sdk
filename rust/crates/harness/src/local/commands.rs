@@ -43,7 +43,8 @@ impl LocalHarness {
             CommandResolution::Tool { tool, input } => {
                 self.direct_tool(operation, target, tool, input).await
             }
-            CommandResolution::Prompt { text, .. } => {
+            resolution @ CommandResolution::Prompt { .. } => {
+                let text = self.retain_prompt_input(operation, resolution).await?;
                 self.queue_prompt(operation, target, &text, settings).await
             }
             CommandResolution::Submit {
@@ -296,6 +297,15 @@ impl LocalHarness {
         prompt: &str,
         settings: &Value,
     ) -> Result<Value> {
+        self.retain_prompt_input(
+            operation,
+            CommandResolution::Prompt {
+                text: prompt.into(),
+                source: None,
+                mentions: Vec::new(),
+            },
+        )
+        .await?;
         self.retain_settings(operation, settings).await?;
         let task = accepted(self.submit_to(operation, target, prompt).await?, operation)?;
         self.refresh_command_task(task).await?;
