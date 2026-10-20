@@ -119,11 +119,11 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         if count == 1 {
             // Replay retains several resident records simultaneously. Serde's
             // transient buffering allowance must not accumulate with them.
-            let mut page = Vec::with_capacity(8);
+            let mut page = Vec::with_capacity(16);
             let mut result = Ok(());
             let physical = acyclic_test_support::measure(|| {
                 result = (|| -> Result<()> {
-                    for _ in 0..8 {
+                    for _ in 0..16 {
                         page.push(io.decode(
                             std::marker::PhantomData::<WorkflowRecord>,
                             &bytes,
@@ -134,7 +134,7 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
                 })();
             });
             result?;
-            assert_eq!(page.len(), 8);
+            assert_eq!(page.len(), 16);
             assert!(physical.bytes_current <= native.live_allocation_bytes() as i64);
             drop(page);
         }
