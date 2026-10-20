@@ -66,7 +66,7 @@ pub(super) fn decode(mut input: &[u8]) -> Result<Envelope, VerifyError> {
                 });
             }
             32 => {
-                version = u32::try_from(varint(&mut input)?).map_err(|_| VerifyError::Malformed)?
+                version = u32::try_from(varint(&mut input)?).map_err(|_| VerifyError::Malformed)?;
             }
             _ => return Err(VerifyError::Malformed),
         }

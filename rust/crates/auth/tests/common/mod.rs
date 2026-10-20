@@ -53,15 +53,3 @@ pub fn grants(name: &str, prefix: bool, action: &str) -> GrantSet {
         }],
     }
 }
-pub fn limits(value: Option<u64>) -> Limits {
-    Limits {
-        rps: value,
-        burst: value,
-        bytes_per_s: value,
-        channels: value,
-        concurrency: value,
-        bytes: value,
-        spend_micros: value,
-        tokens: value,
-    }
-}

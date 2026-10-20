@@ -50,17 +50,25 @@ fn unreserved(b: u8) -> bool {
 /// are escaped; no Unicode normalization or case folding occurs here.
 pub fn encode_component(value: &[u8]) -> String {
     let mut result = String::new();
-    const HEX: &[u8] = b"0123456789ABCDEF";
     for &b in value {
         if unreserved(b) {
             result.push(char::from(b));
         } else {
             result.push('%');
-            result.push(char::from(HEX[usize::from(b >> 4)]));
-            result.push(char::from(HEX[usize::from(b & 15)]));
+            result.push(hex_digit(b >> 4));
+            result.push(hex_digit(b & 15));
         }
     }
     result
+}
+
+/// The uppercase hexadecimal digit for a nibble below 16.
+fn hex_digit(nibble: u8) -> char {
+    char::from(if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'A' - 10 + nibble
+    })
 }
 
 /// Decode only the unique canonical spelling; reject alternate escapes.
