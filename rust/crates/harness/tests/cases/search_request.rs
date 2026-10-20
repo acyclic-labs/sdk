@@ -1,6 +1,6 @@
 //! Arbitrary request bytes and shrinking admission/settlement properties.
 #![cfg(not(target_arch = "wasm32"))]
-#[path = "search_request/support.rs"]
+#[path = "../search_request/support.rs"]
 mod support;
 use acyclic_harness::search::SearchRequest;
 use proptest::prelude::*;

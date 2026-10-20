@@ -3,7 +3,7 @@
 //! the production results, verified with assertion deletion.
 #![cfg(not(target_arch = "wasm32"))]
 
-#[path = "support/wire_input.rs"]
+#[path = "../support/wire_input.rs"]
 mod wire;
 use acyclic_test_support::differential::oracle::{Observer, Oracle};
 use proptest::prelude::*;
@@ -40,13 +40,13 @@ fn wire_oracle() -> Oracle<Vec<u8>, WireFault, wire::Seen> {
 fn decoder_seed_corpus() {
     let wire_oracle = wire_oracle();
     for data in [
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/acknowledge").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/admission"),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/truncated-protobuf"),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/invalid-json"),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/oversized-journal-header"),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/utf8"),
-        include_bytes!("../../harness-fuzz/corpus/wire_frames/empty-request"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/acknowledge").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/admission"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/truncated-protobuf"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/invalid-json"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/oversized-journal-header"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/utf8"),
+        include_bytes!("../../../harness-fuzz/corpus/wire_frames/empty-request"),
     ] {
         // The fuzz entries themselves, then the judged observations.
         wire::check(data);

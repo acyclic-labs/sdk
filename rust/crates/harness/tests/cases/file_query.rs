@@ -16,13 +16,13 @@ use acyclic_harness::{
 use acyclic_stream::MemoryStream;
 use futures::{FutureExt as _, StreamExt as _};
 use std::sync::Arc;
-#[path = "file_query/goal_sources.rs"]
+#[path = "../file_query/goal_sources.rs"]
 mod goal_sources;
-#[path = "file_query/goals.rs"]
+#[path = "../file_query/goals.rs"]
 mod goals;
-#[path = "file_query/objects.rs"]
+#[path = "../file_query/objects.rs"]
 mod objects;
-#[path = "file_query/replacements.rs"]
+#[path = "../file_query/replacements.rs"]
 mod replacements;
 use objects::CountingObjects;
 

@@ -15,7 +15,7 @@ fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
 def terminal():
     os.setsid()
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-child = subprocess.Popen([sys.argv[1], "--exact", "pty_child", "--nocapture"],
+child = subprocess.Popen([sys.argv[1], "--exact", "tui_completion::pty_child", "--nocapture"],
     stdin=slave, stdout=slave, stderr=slave, preexec_fn=terminal,
     env={**os.environ, "GC_COMPLETION_PTY": "1", "TERM": "xterm-256color"})
 os.close(slave)

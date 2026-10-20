@@ -1,19 +1,19 @@
 //! The reducer is exercised through actual volume writes and platform frames.
-#[path = "../../harness-fuzz/support/swarm_limits.rs"]
+#[path = "../../../harness-fuzz/support/swarm_limits.rs"]
 mod limits;
-#[path = "../../harness-fuzz/support/swarm_views.rs"]
+#[path = "../../../harness-fuzz/support/swarm_views.rs"]
 mod oracle;
 
-#[path = "client_swarm_views_follow.rs"]
+#[path = "../client_swarm_views_follow.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod follow;
 
-#[path = "support/quiescent.rs"]
+#[path = "../support/quiescent.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod quiescent;
-#[path = "client_swarm_views_retention.rs"]
+#[path = "../client_swarm_views_retention.rs"]
 mod retention;
-#[path = "support/swarm_session.rs"]
+#[path = "../support/swarm_session.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod runtime;
 
@@ -117,18 +117,18 @@ fn every_out_of_range_swarm_bound_is_rejected_without_a_transport() {
     }
 }
 
-#[path = "client_swarm_views_files.rs"]
+#[path = "../client_swarm_views_files.rs"]
 mod files;
 
-#[path = "support/swarm_status.rs"]
+#[path = "../support/swarm_status.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod status;
 
-#[path = "client_swarm_membership.rs"]
+#[path = "../client_swarm_membership.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod membership;
 
-#[path = "../../harness-fuzz/support/swarm_membership.rs"]
+#[path = "../../../harness-fuzz/support/swarm_membership.rs"]
 mod membership_codec;
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
@@ -145,7 +145,7 @@ fn membership_ignoring_archive_mutant_is_rejected() {
 }
 #[test]
 fn membership_status_checked_seed_round_trips() {
-    let bytes = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/settled-archive");
+    let bytes = include_bytes!("../../../harness-fuzz/corpus/client_swarm_views/settled-archive");
     assert!(
         !acyclic_harness::task_volume::ChildStatus::parse(bytes)
             .unwrap()
@@ -167,7 +167,7 @@ fn dropped_membership_removal_mutant_fails_the_same_source_oracle() {
     assert!(std::panic::catch_unwind(|| membership_codec::query(&[0, 0, 1, 0], true)).is_err());
 }
 
-#[path = "../../harness-fuzz/support/notification_files.rs"]
+#[path = "../../../harness-fuzz/support/notification_files.rs"]
 mod notification_files;
 proptest::proptest! {
     #[test]
@@ -193,8 +193,9 @@ fn notification_parser_control_cannot_drop_valid_records() {
         ))
         .is_err()
     );
-    let seed = include_bytes!("../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
+    let seed =
+        include_bytes!("../../../harness-fuzz/corpus/client_swarm_views/notification-blocked");
     notification_files::exercise(seed);
 }
-#[path = "client_task_files.rs"]
+#[path = "../client_task_files.rs"]
 mod task_files;

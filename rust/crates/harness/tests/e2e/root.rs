@@ -1,4 +1,4 @@
-//! Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
+// Data-driven harness scenarios. `E2E_FILTER` selects a path substring.
 #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 mod agents;
 mod composer;
@@ -64,7 +64,7 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Instant,
 };
-type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 use scenario_data::discover;
 
 #[tokio::test]

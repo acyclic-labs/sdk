@@ -178,7 +178,7 @@ fn omitting_state_directory_is_detected() {
     let home = Directory::new().unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
-            "client_local::omitting_state_directory_is_detected",
+            "client_commands::client_local::omitting_state_directory_is_detected",
             "--exact",
             "--nocapture",
         ])

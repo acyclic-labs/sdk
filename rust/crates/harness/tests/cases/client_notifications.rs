@@ -5,7 +5,7 @@ use acyclic_harness::client::{
     AttentionEvent, AttentionNotification, NotificationMode, TerminalNotificationProtocol,
     write_terminal_notifications,
 };
-#[path = "e2e/notification_history.rs"]
+#[path = "../e2e/notification_history.rs"]
 mod notification_history;
 use notification_history::Projection;
 

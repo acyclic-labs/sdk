@@ -16,23 +16,23 @@ use std::{
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-#[path = "task_volume/acceptance.rs"]
+#[path = "../task_volume/acceptance.rs"]
 mod acceptance;
-#[path = "task_volume/heads.rs"]
+#[path = "../task_volume/heads.rs"]
 mod heads;
-#[path = "task_volume/history_loss.rs"]
+#[path = "../task_volume/history_loss.rs"]
 mod history_loss;
-#[path = "task_volume/plan_name.rs"]
+#[path = "../task_volume/plan_name.rs"]
 mod plan_name;
-#[path = "task_volume/properties.rs"]
+#[path = "../task_volume/properties.rs"]
 mod properties;
-#[path = "task_volume/recovery.rs"]
+#[path = "../task_volume/recovery.rs"]
 mod recovery;
-#[path = "task_volume/session.rs"]
+#[path = "../task_volume/session.rs"]
 mod session;
-#[path = "task_volume/source.rs"]
+#[path = "../task_volume/source.rs"]
 mod source;
-#[path = "task_volume/work.rs"]
+#[path = "../task_volume/work.rs"]
 mod work;
 
 async fn append_all<P: StreamProvider + ?Sized>(

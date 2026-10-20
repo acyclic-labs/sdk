@@ -25,10 +25,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-#[path = "support/stream/mod.rs"]
+#[path = "../support/stream/mod.rs"]
 mod stream_fixture;
 
-use crate::stream_fixture as stream_fault;
+use crate::context_continuation::stream_fixture as stream_fault;
 use stream_fault::LostSessionAck;
 
 struct StoredContent(Arc<MemoryHarnessStorage>);
@@ -319,19 +319,19 @@ fn assert_fresh_stage_requests(provider: &ScriptedModelProvider, limits: Limits)
     requests.len()
 }
 
-#[path = "context_continuation/projection.rs"]
+#[path = "../context_continuation/projection.rs"]
 mod projection;
 
-#[path = "context_continuation/canonical.rs"]
+#[path = "../context_continuation/canonical.rs"]
 mod canonical;
 
-#[path = "context_continuation/snapshot.rs"]
+#[path = "../context_continuation/snapshot.rs"]
 mod snapshot;
 
-#[path = "context_continuation/recovery.rs"]
+#[path = "../context_continuation/recovery.rs"]
 mod recovery;
 use recovery::*;
 
-#[path = "context_continuation/publication.rs"]
+#[path = "../context_continuation/publication.rs"]
 mod publication;
 use publication::*;

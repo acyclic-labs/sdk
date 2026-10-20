@@ -8,7 +8,11 @@ const BUILT: &str = "built OAuth client in a fresh process";
 
 fn child(mode: &str) -> Output {
     Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "fresh_process_child", "--nocapture"])
+        .args([
+            "--exact",
+            "mcp_oauth_provider::fresh_process_child",
+            "--nocapture",
+        ])
         .env(MODE, mode)
         .output()
         .unwrap()

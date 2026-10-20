@@ -14,152 +14,12 @@ readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
 [[test]]
-name = "client-mention-attachments"
-path = "tests/client_mention_attachments.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "tui-config"
-path = "tests/tui_config.rs"
-required-features = ["tui"]
-
-[[test]]
-name = "tui-completion"
-path = "tests/tui_completion.rs"
-required-features = ["tui"]
-
-[[test]]
 name = "main"
 path = "tests/main.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "decoder-properties"
-path = "tests/decoder_properties.rs"
-required-features = ["test-support"]
-
-[[test]]
-name = "local-task-files"
-path = "tests/local_task_files.rs"
-required-features = ["filesystem-local", "native-execution", "test-support"]
-
-[[test]]
-name = "default_tools"
-path = "tests/default_tools.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "task_view"
-path = "tests/task_view.rs"
-
-[[test]]
-name = "task-volume"
-path = "tests/task_volume.rs"
-
-[[test]]
-name = "file-query"
-path = "tests/file_query.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "client-model-views"
-path = "tests/client_model_views.rs"
-
-[[test]]
-name = "client-views-parity"
-path = "tests/client_views_parity.rs"
-required-features = ["wasm"]
-
-[[test]]
-name = "goal-files"
-path = "tests/goal_files.rs"
-required-features = ["filesystem", "test-support"]
-
-[[test]]
-name = "local-recursive-fork"
-path = "tests/local_recursive_fork.rs"
-required-features = ["filesystem-local"]
-
-[[test]]
-name = "context-continuation"
-path = "tests/context_continuation.rs"
-required-features = ["filesystem-local"]
-
-[[test]]
-name = "context-discovery"
-path = "tests/context_discovery.rs"
-required-features = ["filesystem", "test-support"]
-
-[[test]]
-name = "filesystem_access"
-path = "tests/filesystem_access.rs"
-
-[[test]]
-name = "client_history"
-path = "tests/client_history.rs"
-
-[[test]]
-name = "jsonl-wire"
-path = "tests/jsonl_wire.rs"
-
-[[test]]
-name = "mcp-oauth-provider"
-path = "tests/mcp_oauth_provider.rs"
-required-features = ["mcp-oauth"]
-
-[[test]]
-name = "mcp-durable"
-path = "tests/mcp_durable.rs"
-required-features = ["filesystem-local", "mcp-http"]
-
-[[test]]
-name = "client-commands"
-path = "tests/client_commands.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "client-notifications"
-path = "tests/client_notifications.rs"
-
-[[test]]
-name = "plan-markdown"
-path = "tests/plan_markdown.rs"
-
-[[test]]
-name = "client-interests"
-path = "tests/client_interests.rs"
-
-[[test]]
-name = "client-query"
-path = "tests/client_query.rs"
-
-[[test]]
-name = "client-swarm-views"
-path = "tests/client_swarm_views.rs"
-
-[[test]]
-name = "task-workflow"
-path = "tests/task_workflow.rs"
-required-features = ["filesystem-local"]
 
 [[test]]
 name = "e2e-progress-model"
 path = "tests/e2e_progress_model.rs"
-
-[[test]]
-name = "e2e"
-path = "tests/e2e/main.rs"
-required-features = ["filesystem-local", "native-execution", "test-support", "grpc"]
-
-[[test]]
-name = "search-http-codec"
-path = "tests/search_http_codec.rs"
-required-features = ["filesystem", "search-http", "test-support"]
-
-[[test]]
-name = "search-request"
-path = "tests/search_request.rs"
-required-features = ["filesystem", "test-support"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -301,20 +161,6 @@ wasm-bindgen-test = "=0.3.67"
 workspace = true
 
 [[test]]
-name = "local-cloud-objects"
-path = "tests/local_cloud_objects/main.rs"
-required-features = ["objects", "test-support", "grpc"]
-
-[[test]]
-name = "client-diff"
-path = "tests/client_diff.rs"
-required-features = ["filesystem"]
-
-[[test]]
-name = "client-file-submit"
-path = "tests/client_file_submit.rs"
-
-[[test]]
 name = "client-mailbox-model"
 path = "tests/client_mailbox_model.rs"
 required-features = ["model-checking"]
@@ -323,8 +169,3 @@ required-features = ["model-checking"]
 name = "query-model"
 path = "tests/query_model.rs"
 required-features = ["model-checking"]
-
-[[test]]
-name = "local-cloud-actors"
-path = "tests/local_cloud_actors/main.rs"
-required-features = ["test-support", "grpc"]

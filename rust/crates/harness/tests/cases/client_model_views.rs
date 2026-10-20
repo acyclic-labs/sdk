@@ -445,7 +445,7 @@ fn oversized_follow_preserves_small_rows_and_discards_only_the_large_payload() {
 }
 
 #[cfg(feature = "test-support")]
-#[path = "client_model_view_work.rs"]
+#[path = "../client_model_view_work.rs"]
 mod work;
 
 #[test]

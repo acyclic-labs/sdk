@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
 };
 
-#[path = "support/input_path_sequences.rs"]
+#[path = "../support/input_path_sequences.rs"]
 mod path_sequences;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -42,13 +42,13 @@ fn files_snapshot_follow_and_resume() -> Result {
             put(
                 &volume,
                 "commands/catalog.json",
-                include_bytes!("../src/client/commands.json"),
+                include_bytes!("../../src/client/commands.json"),
             )
             .await?;
             // Builtin names and aliases are reserved, and completion matches
             // either by prefix: no builtin may complete `/thes`.
             let catalog: Vec<serde_json::Value> =
-                serde_json::from_slice(include_bytes!("../src/client/commands.json"))?;
+                serde_json::from_slice(include_bytes!("../../src/client/commands.json"))?;
             let reserved = catalog.iter().flat_map(|command| {
                 std::iter::once(&command["name"])
                     .chain(command["aliases"].as_array().into_iter().flatten())
@@ -103,7 +103,7 @@ fn files_snapshot_follow_and_resume() -> Result {
 #[test]
 fn completion_through_a_real_pty() -> Result {
     let output = std::process::Command::new("python3")
-        .args(["-c", include_str!("support/completion_pty.py")])
+        .args(["-c", include_str!("../support/completion_pty.py")])
         .arg(std::env::current_exe()?)
         .output()?;
     assert!(

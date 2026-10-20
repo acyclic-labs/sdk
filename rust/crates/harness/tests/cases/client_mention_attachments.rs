@@ -5,7 +5,7 @@ use acyclic_harness::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
 
-#[path = "../../harness-fuzz/support/mentions.rs"]
+#[path = "../../../harness-fuzz/support/mentions.rs"]
 mod oracle;
 
 fn checked_input() -> CommandResolution {
@@ -28,11 +28,12 @@ fn checked_input() -> CommandResolution {
 #[test]
 fn fuzz_oracle_checks_every_seed() {
     for data in [
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/pinned-mentions").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/plain-prompt").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/view-selection").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/ordered-mentions").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/conflicting-metadata").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/pinned-mentions").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/plain-prompt").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/view-selection").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/ordered-mentions").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/conflicting-metadata")
+            .as_slice(),
     ] {
         let input: CommandResolution = serde_json::from_slice(data).unwrap();
         oracle::check(&input);
@@ -128,7 +129,7 @@ fn every_conversion_invariant_detects_its_control_and_survives_deletion() {
 
 fn file(id: u8, revision: u8, volume: u8, body: &[u8]) -> FileRef {
     let fixture: FileRef =
-        serde_json::from_str(include_str!("../fixtures/v2/file-ref.json")).unwrap();
+        serde_json::from_str(include_str!("../../fixtures/v2/file-ref.json")).unwrap();
     let reference = fixture.volume();
     FileRef::new(
         VolumeRef::new(
@@ -243,7 +244,7 @@ proptest::proptest! {
     }
 }
 
-#[path = "../../harness-fuzz/support/workspace_media.rs"]
+#[path = "../../../harness-fuzz/support/workspace_media.rs"]
 mod workspace_media;
 
 proptest::proptest! {
@@ -262,9 +263,9 @@ proptest::proptest! {
 #[test]
 fn media_oracle_checks_text_binary_and_invalid_tail_seeds() {
     for seed in [
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/utf8-workspace").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/binary-workspace").as_slice(),
-        include_bytes!("../../harness-fuzz/corpus/client_mentions/invalid-utf8-tail").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/utf8-workspace").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/binary-workspace").as_slice(),
+        include_bytes!("../../../harness-fuzz/corpus/client_mentions/invalid-utf8-tail").as_slice(),
     ] {
         workspace_media::exercise(seed);
     }

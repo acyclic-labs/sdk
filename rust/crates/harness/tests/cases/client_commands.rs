@@ -16,36 +16,43 @@ fn volume_error(error: acyclic_harness::task_volume::Error) -> acyclic_harness::
 }
 
 #[cfg(all(not(target_arch = "wasm32"), feature = "terminal"))]
+#[path = "../client_command_driver.rs"]
 mod client_command_driver;
+#[path = "../client_command_files.rs"]
 mod client_command_files;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "../client_command_owners.rs"]
 mod client_command_owners;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "../client_command_parity.rs"]
 mod client_command_parity;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "../client_command_parser.rs"]
 mod client_command_parser;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "../client_command_session.rs"]
 mod client_command_session;
 #[cfg(not(target_arch = "wasm32"))]
+#[path = "../client_command_views.rs"]
 mod client_command_views;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../src/client/commands/name_index.rs"]
+#[path = "../../src/client/commands/name_index.rs"]
 mod command_name_index;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../../harness-fuzz/command_oracle.rs"]
+#[path = "../../../harness-fuzz/command_oracle.rs"]
 mod command_oracle;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../src/client/commands/parse.rs"]
+#[path = "../../src/client/commands/parse.rs"]
 mod command_parse;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../src/client/commands/syntax.rs"]
+#[path = "../../src/client/commands/syntax.rs"]
 mod command_syntax;
 #[cfg(not(target_arch = "wasm32"))]
 mod frontmatter {
     pub(crate) use acyclic_harness::context::{frontmatter_end, parse_frontmatter};
 }
 
-#[path = "support/client_files.rs"]
+#[path = "../support/client_files.rs"]
 mod client_files;
 use client_files::Fixture;
 
@@ -56,10 +63,10 @@ mod attachments;
     feature = "filesystem-local",
     feature = "test-support"
 ))]
-#[path = "support/client_local.rs"]
+#[path = "../support/client_local.rs"]
 mod client_local;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "client_mention_provider.rs"]
+#[path = "../client_mention_provider.rs"]
 mod mention_provider;
 
 impl Fixture {
@@ -178,7 +185,7 @@ async fn mention_cases_resolve_exact_files_at_the_command_revision() -> Result<(
         ("project/.claude/commands/read.md", "Read $ARGUMENTS"),
         ("project/a.txt", "before"),
         ("project/space name.txt", "spaces"),
-        ("project/λ.txt", "unicode"),
+        ("project/Î».txt", "unicode"),
     ])
     .await?;
     let catalog = fixture
@@ -234,7 +241,7 @@ async fn mention_cases_resolve_exact_files_at_the_command_revision() -> Result<(
     for (text, expected) in [
         ("@a.txt @a.txt", vec!["project/a.txt", "project/a.txt"]),
         ("Read @\"space name.txt\"", vec!["project/space name.txt"]),
-        ("λ @λ.txt", vec!["project/λ.txt"]),
+        ("Î» @Î».txt", vec!["project/Î».txt"]),
         ("mail@example.com \\@a.txt", vec![]),
     ] {
         let mentions = resolve_file_mentions(

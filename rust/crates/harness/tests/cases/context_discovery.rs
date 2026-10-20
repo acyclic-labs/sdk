@@ -73,7 +73,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
     }
 }
 
-#[path = "context_discovery_cases/manifest.rs"]
+#[path = "../context_discovery_cases/manifest.rs"]
 mod manifest;
 
 type TestJournal = acyclic_harness::filesystem::FilesystemExecutionJournal<

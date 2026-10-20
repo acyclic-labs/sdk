@@ -1,10 +1,10 @@
 //! Incremental pinned-file query projection and bounded diff properties.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "client_diff_model.rs"]
+#[path = "../client_diff_model.rs"]
 mod model;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "client_diff_properties.rs"]
+#[path = "../client_diff_properties.rs"]
 mod properties;
 
 use acyclic_fs::Fs;
@@ -935,12 +935,12 @@ async fn rejected_publications_leave_the_view_and_cursor_unchanged() -> Result<(
     Ok(())
 }
 
-#[path = "client_diff_data.rs"]
+#[path = "../client_diff_data.rs"]
 mod data;
-#[path = "support/file_diff_case.rs"]
+#[path = "../support/file_diff_case.rs"]
 mod diff_case;
-#[path = "support/file_diff_oracle.rs"]
+#[path = "../support/file_diff_oracle.rs"]
 mod diff_oracle;
-#[path = "support/scenario_data.rs"]
+#[path = "../support/scenario_data.rs"]
 mod scenario_data;
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

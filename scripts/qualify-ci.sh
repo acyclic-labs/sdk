@@ -459,7 +459,7 @@ case "$lane" in
         --test main client_public_consumer::identical_public_harness_trace
     harness_tests -p acyclic-harness --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
+      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test main client_views_parity::
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \

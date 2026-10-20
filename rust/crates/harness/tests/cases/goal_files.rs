@@ -7,14 +7,14 @@ use acyclic_harness::{
 };
 use serde::Deserialize;
 
-#[path = "goal_files/continuations.rs"]
+#[path = "../goal_files/continuations.rs"]
 mod continuations;
-#[path = "goal_files/parsing.rs"]
+#[path = "../goal_files/parsing.rs"]
 mod parsing;
-#[path = "goal_files/writes.rs"]
+#[path = "../goal_files/writes.rs"]
 mod writes;
 
-#[path = "../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
+#[path = "../../../harness-fuzz/fuzz_targets/goal_parser_input.rs"]
 mod goal_parser_input;
 
 #[test]

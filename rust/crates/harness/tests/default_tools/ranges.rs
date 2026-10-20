@@ -20,7 +20,7 @@ async fn default_read_ranges_are_exact_bounded_utf8_and_replayable() -> Result<(
     run_admitted_file_case(&storage, limits, move |task| {
         let file = file.clone();
         async move {
-            let tool = crate::tool::files::read()?;
+            let tool = acyclic_harness::tool::files::read()?;
             for (range, expected) in [
                 (json!({"start":1,"end":4}), Some("€")),
                 (json!({"start":0,"end":1}), Some("a")),
@@ -41,7 +41,7 @@ async fn default_read_ranges_are_exact_bounded_utf8_and_replayable() -> Result<(
                     name: "read".into(),
                     arguments: json!({"file":file,"range":range}),
                 };
-                let context = crate::runtime::ToolContext::new(
+                let context = acyclic_harness::runtime::ToolContext::new(
                     Arc::new(task.clone()),
                     invocation.operation_id,
                     &invocation.call_id,
@@ -88,7 +88,7 @@ async fn ranged_io_preserves_crlf_and_rejects_non_boundary_intervals() -> Result
     run_admitted_file_case(&storage, limits, move |task| {
         let file = file.clone();
         async move {
-            let tool = crate::tool::files::read()?;
+            let tool = acyclic_harness::tool::files::read()?;
             for (start, end, expected) in [
                 (3, 9, Some("🦀\r\n")),
                 (4, 9, None),

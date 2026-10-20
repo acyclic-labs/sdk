@@ -482,7 +482,7 @@ where
     .with_merge_verifier(FilesystemProjectMergeVerifier::new(host, None)?))
 }
 
-#[path = "local_recursive_fork/deep.rs"]
+#[path = "../local_recursive_fork/deep.rs"]
 mod deep;
-#[path = "local_recursive_fork/recursive.rs"]
+#[path = "../local_recursive_fork/recursive.rs"]
 mod recursive;

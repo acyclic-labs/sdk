@@ -743,7 +743,7 @@ impl ResumableMachine for TaskMachine {
     }
 }
 
-#[path = "support/stream/mod.rs"]
+#[path = "../support/stream/mod.rs"]
 mod stream_fixture;
 use fault_stream::{ExecutionFaultMode, LostSessionAck};
 use stream_fixture as fault_stream;
@@ -817,15 +817,15 @@ fn assert_completed_dispatches(
     );
 }
 
-#[path = "task_workflow_cases/worker.rs"]
+#[path = "../task_workflow_cases/worker.rs"]
 mod worker;
 use worker::*;
-#[path = "task_workflow_cases/merge.rs"]
+#[path = "../task_workflow_cases/merge.rs"]
 mod merge;
-#[path = "task_workflow_cases/stock.rs"]
+#[path = "../task_workflow_cases/stock.rs"]
 mod stock;
 use stock::*;
-#[path = "task_workflow_cases/mail.rs"]
+#[path = "../task_workflow_cases/mail.rs"]
 mod mail;
 
 fn assert_pending_dispatches(

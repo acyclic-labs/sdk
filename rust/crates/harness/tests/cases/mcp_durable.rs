@@ -32,7 +32,7 @@ use std::{
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-#[path = "support/workspace.rs"]
+#[path = "../support/workspace.rs"]
 mod workspace;
 use workspace::workspace;
 
@@ -678,11 +678,11 @@ async fn disk_reopen_never_reposts_a_claimed_mcp_call() -> Result<()> {
     Ok(())
 }
 
-#[path = "mcp_cases/services.rs"]
+#[path = "../mcp_cases/services.rs"]
 mod services_cases;
 
 #[cfg(feature = "mcp-oauth")]
-#[path = "mcp_cases/oauth.rs"]
+#[path = "../mcp_cases/oauth.rs"]
 mod oauth_cases;
 
 #[tokio::test]

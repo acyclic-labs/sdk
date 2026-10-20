@@ -2,11 +2,12 @@
 set -euo pipefail
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http,model-checking
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
-cargo test -p acyclic-harness --features "$features" --test client-query --test client-file-submit
-cargo test -p acyclic-harness --features "$features" --test client-commands --no-run --message-format=json |
-python3 scripts/qualify-graphcoder-artifact.py client_command_session::
-cargo test -p acyclic-harness --features "$features" --test context-discovery manifest::
-cargo test -p acyclic-harness --features "$features" --test default_tools
+cargo test -p acyclic-harness --features "$features" --test main client_query::
+cargo test -p acyclic-harness --features "$features" --test main client_file_submit::
+cargo test -p acyclic-harness --features "$features" --test main --no-run --message-format=json |
+python3 scripts/qualify-graphcoder-artifact.py client_commands::client_command_session::
+cargo test -p acyclic-harness --features "$features" --test main context_discovery::manifest::
+cargo test -p acyclic-harness --features "$features" --test main default_tools::
 cargo test -p acyclic-harness-core --features "$features" --test git_executor facade_commits_branches_merges_and_inspects_managed_files
 cargo test -p acyclic-harness --features "$features" --test main saved_tool_metadata::
 for target in command ui_prompt client_swarm_views; do

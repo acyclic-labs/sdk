@@ -3,22 +3,22 @@ use acyclic_harness::client::{ClientInterests, InterestTier};
 use acyclic_stream::{StreamPath, wire::SessionDelivery};
 use std::collections::BTreeSet;
 
-#[path = "client_interest_continuity.rs"]
+#[path = "../client_interest_continuity.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod continuity;
-#[path = "client_interest_discovery.rs"]
+#[path = "../client_interest_discovery.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod discovery;
-#[path = "client_interest_wire.rs"]
+#[path = "../client_interest_wire.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod platform;
-#[path = "support/quiescent.rs"]
+#[path = "../support/quiescent.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod quiescent;
-#[path = "support/swarm_session.rs"]
+#[path = "../support/swarm_session.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod runtime;
-#[path = "client_interest_session.rs"]
+#[path = "../client_interest_session.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod session;
 
@@ -260,6 +260,6 @@ proptest::proptest! {
     }
 }
 
-#[path = "support/swarm_status.rs"]
+#[path = "../support/swarm_status.rs"]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod status;

@@ -107,7 +107,7 @@ proptest! {
 
 #[test]
 fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
-    let defaults = crate::tools::defaults()?;
+    let defaults = acyclic_harness::tools::defaults()?;
     let expected = defaults.definitions(None)?;
     let bundle = HarnessBuilder::new()
         .agent_loop(Arc::new(DelegatingLoop))
@@ -123,7 +123,7 @@ fn exported_defaults_can_replace_a_complete_bound_registry() -> Result<()> {
 
 #[test]
 fn defaults_are_exported_additive_and_explicitly_disabled() -> Result<()> {
-    let defaults = crate::tools::defaults()?;
+    let defaults = acyclic_harness::tools::defaults()?;
     let names = [
         "bash", "fs", "read", "write", "edit", "spawn", "send", "wait", "archive",
     ];
@@ -201,7 +201,7 @@ fn defaults_cannot_replace_custom_tools_or_broaden_bound_authority() -> Result<(
         HarnessBuilder::new()
             .agent_loop(Arc::new(DelegatingLoop))
             .content(content())
-            .tool(crate::tool::files::read()?)
+            .tool(acyclic_harness::tool::files::read()?)
             .build(),
         Err(Error::Conflict(_))
     ));
@@ -284,10 +284,14 @@ fn registration_and_grants_follow_available_bindings() -> Result<()> {
 
 #[test]
 fn registry_merge_rejects_duplicates_before_mutating_destination() -> Result<()> {
-    let mut destination = crate::tools::defaults()?;
+    let mut destination = acyclic_harness::tools::defaults()?;
     let mut incoming = ToolRegistry::default();
     incoming.register((example_tool(), None), &mut None, None)?;
-    incoming.register((crate::tool::files::read()?, None), &mut None, None)?;
+    incoming.register(
+        (acyclic_harness::tool::files::read()?, None),
+        &mut None,
+        None,
+    )?;
     assert!(matches!(
         destination.extend(incoming),
         Err(Error::Conflict(_))
@@ -306,7 +310,7 @@ fn registry_merge_retains_pinned_revisions_and_hidden_model_selections() -> Resu
     custom.register((second, None), &mut None, None)?;
     custom.select_model_version("example.echo", "2")?;
     custom.remove_from_model("example.echo")?;
-    let mut combined = crate::tools::defaults()?;
+    let mut combined = acyclic_harness::tools::defaults()?;
     combined.extend(custom)?;
     assert!(combined.get("example.echo", None, None)?.is_none());
     assert!(combined.get("example.echo", Some("1"), None)?.is_some());
@@ -329,7 +333,7 @@ async fn workspace_commands_reject_unbound_and_forged_calls_without_native_alloc
     let limits = Limits::default();
     let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
     run_admitted_file_case(&storage, limits, |task| async move {
-        let tools = crate::tools::defaults()?;
+        let tools = acyclic_harness::tools::defaults()?;
         for name in ["bash", "fs"] {
             let tool = tools
                 .get(name, None, None)?
@@ -398,7 +402,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
         fn execute<'a>(
             &'a self,
             invocation: ToolInvocation,
-            context: Option<crate::runtime::ToolContext>,
+            context: Option<acyclic_harness::runtime::ToolContext>,
         ) -> BoxFuture<'a, Result<ToolResult>> {
             Box::pin(async move {
                 let context = context.ok_or_else(|| Error::Unauthorized("missing task".into()))?;
@@ -412,7 +416,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
         fn reconcile<'a>(
             &'a self,
             _: ToolInvocation,
-            _: Option<crate::runtime::ToolContext>,
+            _: Option<acyclic_harness::runtime::ToolContext>,
         ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             Box::pin(async { Ok(None) })
         }
@@ -443,7 +447,7 @@ async fn workspace_commands_use_the_calling_runtime_without_approval() -> Result
         let task = bundle.runtime().task::<(), ()>("commands")?;
         assert_eq!(
             bundle.runtime().spawn(&task, ()).await?.result().await?,
-            crate::Outcome::Succeeded(())
+            acyclic_harness::Outcome::Succeeded(())
         );
     }
     Ok(())

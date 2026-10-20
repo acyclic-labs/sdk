@@ -11,7 +11,7 @@ use acyclic_harness::{
 use acyclic_stream::{MemoryStream, StreamPath};
 use std::{collections::BTreeMap, sync::Arc};
 
-#[path = "../../harness-fuzz/support/queries.rs"]
+#[path = "../../../harness-fuzz/support/queries.rs"]
 mod query_inputs;
 
 const LIMITS: QueryViewLimits = QueryViewLimits {
