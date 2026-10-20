@@ -46,7 +46,7 @@ impl Table {
                         if index > 0 {
                             cell.push(" ↵ ", self.style, None);
                         }
-                        cell.spans.extend(line.spans);
+                        cell.spans.append_shared(line.spans);
                     }
                     row.push(cell);
                 }
@@ -91,17 +91,7 @@ impl Table {
             .iter()
             .enumerate()
             .skip(start)
-            .map(|(index, cells)| {
-                #[cfg(test)]
-                crate::work::copy(
-                    cells
-                        .iter()
-                        .flat_map(|cell| &cell.spans)
-                        .map(|span| span.text.len() + std::mem::size_of::<crate::Span>())
-                        .sum(),
-                );
-                row(cells.clone(), index == 0, widths, &self.alignments)
-            })
+            .map(|(index, cells)| row(cells.clone(), index == 0, widths, &self.alignments))
             .collect()
     }
 
@@ -120,10 +110,13 @@ impl Table {
 }
 
 pub(super) fn width(line: &Line) -> usize {
-    if let [span] = line.spans.as_slice() {
+    let mut spans = line.spans.iter();
+    if let Some(span) = spans.next()
+        && spans.next().is_none()
+    {
         #[cfg(test)]
         crate::work::scan(span.text.len());
-        UnicodeWidthStr::width(span.text.as_str())
+        UnicodeWidthStr::width(span.text.as_str().as_ref())
     } else {
         let text = cell_text(line);
         #[cfg(test)]
@@ -138,7 +131,7 @@ fn cell_text(line: &Line) -> String {
     crate::work::copy(length);
     let mut text = String::with_capacity(length);
     for span in &line.spans {
-        text.push_str(&span.text);
+        text.push_str(span.text.as_str().as_ref());
     }
     text
 }
@@ -169,10 +162,12 @@ fn row(cells: Vec<Line>, header: bool, widths: &[usize], alignments: &[Alignment
             _ => 0,
         };
         line.push(&" ".repeat(left + 1), Style::default(), None);
-        for mut span in cell.spans {
-            span.style.bold |= header;
-            line.spans.push(span);
-        }
+        // Share the cell's runs; a header only adds bold to each of them.
+        let style = Style {
+            bold: header,
+            ..Style::default()
+        };
+        line.spans.append_boundary(cell.spans, style);
         line.push(&" ".repeat(padding - left + 1), Style::default(), None);
         line.push("│", MUTED, None);
     }
@@ -197,18 +192,19 @@ fn trim(mut cell: Line, size: usize) -> Line {
         used += columns;
         remaining = offset + cluster.len();
     }
-    let mut keep = 0;
-    for (index, span) in cell.spans.iter_mut().enumerate() {
-        let end = remaining.min(span.text.len());
-        remaining -= end;
-        let complete = end == span.text.len();
-        span.text.truncate(end);
-        keep = index + usize::from(end > 0);
-        if !complete {
+    // Materialize only the runs that remain visible.
+    let mut spans = Vec::new();
+    for span in cell.spans.iter() {
+        if remaining == 0 {
             break;
         }
+        let mut span = span.owned();
+        let end = remaining.min(span.text.len());
+        remaining -= end;
+        span.text.truncate(end);
+        spans.push(span);
     }
-    cell.spans.truncate(keep);
+    cell.spans = spans.into();
     cell.push("…", Style::default(), None);
     cell
 }

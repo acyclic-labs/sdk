@@ -1,11 +1,72 @@
 use super::*;
 
+type Candidate = (Range<usize>, Range<usize>, render::Renderer, Range<usize>);
+
 impl Markdown {
+    pub(super) fn cache_frontier(
+        &mut self,
+        source: &str,
+        events: &[(Event<'_>, Range<usize>)],
+        calls: &[(usize, usize)],
+        candidates: Vec<Candidate>,
+        (base, prefix): (usize, usize),
+    ) {
+        let mut charges = calls.iter().peekable();
+        for (range, lines, state, window) in candidates {
+            if base + range.end.saturating_sub(prefix) > self.offset {
+                #[cfg(test)]
+                if COMPILE_PROVISIONAL.get() {
+                    Cached::new(
+                        source,
+                        range,
+                        lines,
+                        state,
+                        events.get(window).unwrap_or_default(),
+                    );
+                }
+                break;
+            }
+            let Some(mut cache) = Cached::new(
+                source,
+                range.clone(),
+                lines,
+                state,
+                events.get(window).unwrap_or_default(),
+            ) else {
+                continue;
+            };
+            (cache.cost, cache.budget) = references::expansion(
+                std::iter::from_fn(|| {
+                    #[cfg(test)]
+                    work::scan(1);
+                    if charges.peek().is_some_and(|(end, _)| *end <= range.end) {
+                        charges.next()
+                    } else {
+                        None
+                    }
+                })
+                .filter(|(end, _)| *end > range.start),
+            );
+            self.cache(cache);
+        }
+    }
+
     pub(super) fn advance_budget(&mut self) -> usize {
         if self.source.len().max(100_000) == self.reference_limit {
             return self.visible_lines;
         }
-        let changed = self.resolve(&HashSet::new());
+        let limit = self.source.len().max(100_000);
+        // Growth can only reopen cached blocks after an exhausted expansion
+        // budget. Otherwise their output and its visibility stay unchanged.
+        let reopen = self.reference_cost > self.reference_limit.min(limit);
+        #[cfg(test)]
+        let reopen = reopen || RESCAN_BUDGET.get();
+        let changed = if reopen {
+            self.resolve(&HashSet::new())
+        } else {
+            self.reference_limit = limit;
+            self.visible_lines
+        };
         let remaining = self.reference_limit.saturating_sub(self.reference_cost);
         if self
             .inline
@@ -20,46 +81,10 @@ impl Markdown {
             self.table = None;
             self.plain = false;
         }
-        self.finish_visible();
+        if reopen {
+            self.finish_visible();
+        }
         changed
-    }
-
-    pub(super) fn render_cache(
-        &self,
-        cache: &mut Cached,
-        out: &mut render::Renderer,
-        cost: &mut usize,
-    ) {
-        if cache
-            .template
-            .keys
-            .iter()
-            .all(|key| self.references.get(key).is_none())
-        {
-            return;
-        }
-        let (events, used, interval) = cache.template.events(
-            &self.references,
-            self.source.len().max(100_000).saturating_sub(*cost),
-        );
-        cache.cost = used;
-        cache.budget = interval;
-        *cost = cost.saturating_add(used);
-        let mut replacement = cache.state.checkpoint();
-        if !cache.lines.is_empty()
-            && let Some(line) = out.lines.get_mut(cache.lines.start - self.lines.len())
-        {
-            #[cfg(test)]
-            work::copy(std::mem::size_of::<Line>());
-            replacement.reuse_line(std::mem::take(line));
-        }
-        for event in &events {
-            replacement.event_in(event, Some(&self.references));
-        }
-        replacement.flush();
-        out.lines.truncate(cache.lines.start - self.lines.len());
-        out.lines.extend(replacement.lines);
-        cache.lines.end = self.lines.len() + out.lines.len();
     }
 
     pub(super) fn resolve(&mut self, keys: &HashSet<Key>) -> usize {
@@ -95,6 +120,7 @@ impl Markdown {
         let mut replacements = HashMap::new();
         let mut length = self.lines.len();
         let mut resize = false;
+        let mut growing = false;
         let mut complete = true;
         for index in first..self.cached.len() {
             let Some(cache) = self.cached.get_mut(index) else {
@@ -135,6 +161,7 @@ impl Markdown {
                 changed = changed.min(cache.lines.start);
                 length = length - cache.lines.len() + renderer.lines.len();
                 resize |= cache.lines.len() != renderer.lines.len();
+                growing |= renderer.lines.len() > cache.lines.len();
                 replacements.insert(index, renderer.lines);
             }
             cache.prefix = cost;
@@ -144,7 +171,10 @@ impl Markdown {
         if complete {
             self.reference_cost = cost;
         }
-        self.apply_reference_lines(replacements, length, resize);
+        // Invalidate the alternate before any open-block preview can swap it
+        // back over reference replacements, including budget-only updates.
+        self.spare.invalidate(changed);
+        self.apply_reference_lines(replacements, length, resize, growing);
         changed
     }
 
@@ -153,8 +183,14 @@ impl Markdown {
         replacements: HashMap<usize, Vec<Line>>,
         length: usize,
         resize: bool,
+        growing: bool,
     ) {
-        if resize {
+        let compact = resize && !growing;
+        #[cfg(test)]
+        let compact = compact && !COPY_SUFFIX.get();
+        if compact {
+            self.compact_reference_lines(replacements);
+        } else if resize {
             self.replace_reference_lines(replacements, length);
         } else {
             for (index, lines) in replacements {
@@ -165,14 +201,10 @@ impl Markdown {
                     work::copy(lines.len() * std::mem::size_of::<Line>());
                 }
                 if let Some(cache) = self.cached.get(index) {
-                    for (target, line) in self
-                        .lines
-                        .get_mut(cache.lines.clone())
-                        .unwrap_or_default()
-                        .iter_mut()
-                        .zip(lines)
-                    {
-                        *target = line;
+                    for (index, line) in cache.lines.clone().zip(lines) {
+                        if let Some(row) = self.lines.get_mut(index) {
+                            *row = line;
+                        }
                     }
                     let range = cache.lines.clone();
                     for index in range {
@@ -180,6 +212,102 @@ impl Markdown {
                     }
                 }
             }
+        }
+    }
+
+    fn compact_reference_lines(&mut self, mut replacements: HashMap<usize, Vec<Line>>) {
+        let Some(first) = replacements.keys().copied().min() else {
+            return;
+        };
+        let Some(cache) = self.cached.get(first) else {
+            return;
+        };
+        let first_line = cache.lines.start;
+        let previous_length = self.lines.len();
+        let previous_stable = self.stable_lines;
+        let mut caches = self.cached.iter_mut().enumerate().skip(first).peekable();
+        let (mut read, mut write) = (first_line, first_line);
+        #[cfg(test)]
+        let mut moved = 0;
+        let mut replacement = None::<(Range<usize>, std::vec::IntoIter<Line>)>;
+        // Compact the affected suffix in place. Each surviving old line moves
+        // at most once; no temporary copy of the entire suffix is necessary.
+        self.lines.retain_suffix(first_line, |line| {
+            while caches
+                .peek()
+                .is_some_and(|(_, cache)| cache.lines.start <= read)
+            {
+                let Some((index, cache)) = caches.next() else {
+                    break;
+                };
+                #[cfg(test)]
+                {
+                    self.reference_cache_visits += 1;
+                }
+                let old = cache.lines.clone();
+                let lines = replacements.remove(&index);
+                let length = lines.as_ref().map_or(old.len(), Vec::len);
+                let start = write + old.start - read;
+                cache.lines = start..start + length;
+                if !old.is_empty() {
+                    replacement = lines.map(|lines| (old, lines.into_iter()));
+                }
+            }
+            #[cfg(test)]
+            work::scan(1);
+            #[cfg(test)]
+            let mut replaced = false;
+            let remove = if let Some((_, lines)) = replacement
+                .as_mut()
+                .filter(|(range, _)| range.contains(&read))
+            {
+                if let Some(next) = lines.next() {
+                    #[cfg(test)]
+                    work::copy(std::mem::size_of::<Line>());
+                    *line = next;
+                    #[cfg(test)]
+                    {
+                        replaced = true;
+                    }
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+            if !remove {
+                if read != write {
+                    #[cfg(test)]
+                    work::copy(std::mem::size_of::<Line>());
+                }
+                #[cfg(test)]
+                {
+                    moved += usize::from(replaced || read != write);
+                }
+                write += 1;
+            }
+            read += 1;
+            !remove
+        });
+        for (_, cache) in caches {
+            #[cfg(test)]
+            {
+                self.reference_cache_visits += 1;
+            }
+            debug_assert!(cache.lines.is_empty());
+            cache.lines = write..write;
+        }
+        #[cfg(test)]
+        {
+            self.reference_moved_lines += moved;
+        }
+        self.stable_lines = self.stable_lines + self.lines.len() - previous_length;
+        for index in self.stable_lines..previous_stable {
+            self.visibility.set(index, false);
+        }
+        for index in first_line..self.stable_lines {
+            self.index_visible(index);
         }
     }
 
@@ -200,10 +328,6 @@ impl Markdown {
         let mut previous = self.lines.split_off(first_line).into_iter();
         let mut cursor = first_line;
         let mut lines = std::mem::take(&mut self.lines);
-        #[cfg(test)]
-        if length > lines.capacity() {
-            work::copy(lines.len() * std::mem::size_of::<Line>());
-        }
         lines.reserve(length.saturating_sub(lines.len()));
         // Caches are appended in source order. Walk them once while consuming
         // each old line once; neither splice a suffix nor rescan cache ranges.
@@ -241,3 +365,12 @@ impl Markdown {
         }
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static COMPILE_PROVISIONAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { pub(super) static COPY_SUFFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+thread_local! { pub(crate) static RESCAN_BUDGET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }

@@ -18,17 +18,31 @@ impl Markdown {
         &mut self,
         source: &str,
         events: &[(Event<'_>, Range<usize>)],
-        base: usize,
+        (base, prefix): (usize, usize),
     ) {
-        if self.offset != base || !self.context.is_empty() || !source.ends_with('\n') {
+        if !self.context.is_empty() || !source.ends_with('\n') {
             return;
         }
+        #[cfg(test)]
+        if REJECT_TABLE_PREFIX.get() && self.offset != base {
+            return;
+        }
+        let frontier = self.offset.saturating_sub(base) + prefix;
+        let Some(source) = source.get(frontier..) else {
+            return;
+        };
         let budget = self
             .source
             .len()
             .max(100_000)
             .saturating_sub(self.reference_cost);
-        if !matches!(events.first(), Some((Event::Start(Tag::Table(_)), _))) {
+        if !events.iter().any(|(event, range)| {
+            matches!(event, Event::Start(Tag::Table(_)))
+                && range.start >= frontier
+                && source
+                    .get(..range.start - frontier)
+                    .is_some_and(|prefix| prefix.trim().is_empty())
+        }) {
             return;
         }
         let (events, calls) = events::scoped(source, &self.references, options(), budget);
@@ -151,9 +165,6 @@ impl Markdown {
         #[cfg(test)]
         {
             work::copy((rows.len() + 2) * std::mem::size_of::<Line>());
-            if self.lines.len() + rows.len() + 2 > self.lines.capacity() {
-                work::copy(self.lines.len() * std::mem::size_of::<Line>());
-            }
         }
         self.lines.extend(rows);
         self.lines.push(border('└', '┴', '┘', &widths));
@@ -257,7 +268,11 @@ fn parsed_table(
     let Some((Event::Start(Tag::Table(alignments)), start)) = events.first() else {
         return None;
     };
-    if start.start != 0
+    #[cfg(test)]
+    if REJECT_TABLE_PREFIX.get() && start.start != 0 {
+        return None;
+    }
+    if !source.get(..start.start)?.trim().is_empty()
         || !events.last().is_some_and(|(event, range)| {
             matches!(event, Event::End(TagEnd::Table)) && range.end == source.len()
         })
@@ -273,7 +288,12 @@ fn parsed_table(
 
 #[cfg(test)]
 impl Stream {
-    pub(super) fn retained(&self, targets: &mut HashSet<*const u8>) -> (usize, usize) {
+    pub(super) fn retained(
+        &self,
+        targets: &mut HashSet<*const u8>,
+        texts: &mut HashSet<usize>,
+        nodes: &mut HashSet<usize>,
+    ) -> (usize, usize) {
         let mut payload = self.header.capacity();
         let mut metadata = (self.widths.capacity() + self.displayed.capacity())
             * std::mem::size_of::<usize>()
@@ -282,20 +302,17 @@ impl Stream {
         for row in &self.table.rows {
             metadata += row.capacity() * std::mem::size_of::<Line>();
             for cell in row {
-                metadata += cell.spans.capacity() * std::mem::size_of::<Span>();
-                for span in &cell.spans {
-                    payload += span.text.capacity();
-                    if let Some(target) = &span.link
-                        && targets.insert(std::sync::Arc::as_ptr(target).cast::<u8>())
-                    {
-                        payload += target.len();
-                    }
-                }
+                let (bytes, size) = cell.spans.retained(nodes, texts, targets);
+                payload += bytes;
+                metadata += size;
             }
         }
         (payload, metadata)
     }
 }
+
+#[cfg(test)]
+thread_local! { pub(super) static REJECT_TABLE_PREFIX: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 #[cfg(test)]
 #[path = "../tests/table_shape.rs"]

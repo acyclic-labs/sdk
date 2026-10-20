@@ -1,0 +1,24 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc aba50a3f5609b93ac8623ce68d78c5def308fca73893268a51946638385649f9 # shrinks to parts = ["*", "<https://x>"], separator = ""
+cc a9c3129d7f711ed11ad12a646bec14e28230d8167953fe0b6eb8c2f4d7228ac0 # shrinks to parts = ["<https://x>"], separator = ""
+cc 333a2cd3d8a57736260378787a7ff9eb17690f549d13059c19a756dcf9fb02c3 # shrinks to parts = ["`", "`code`"], separator = " "
+cc 061aa696cdb00ed2252ca4bb43a37f0c93ac990e8a9a7b71b3c43d4d41407ce7 # mixed autolink, escape and image: counted output copies exceed doubling bound
+cc 50a154be60f852578175929321c1bc730f007afdeff3a483467b54d70a5bcb9e # shrinks to parts = [" ", "*"], separator = "\n"
+cc 77ed8a048c11c076ffad7936b73ce4d5915fca3941361b6968ab031860c35e5c # shrinks to parts = ["[x](u)", "<https://x>", "&#0;"], separator = " "
+
+cc d9a6176cfa23f9cbc138f2e9318af71a9fe2bdab470fc718f91847b7c5ec69d1
+
+cc 409607205a8fa50787650a3141fd119536750d055e802e631012a97ff6aca276
+
+cc cd25aafa1a949cbccade3dae35585ecda831986c498e30942cb9806a3f765a99
+
+cc b8bf484c77e7165bbb9c5aad3bd68a67250789a98b099d3e859e53a22f664367 # parts = ["_", "&#10;"], separator = "x"
+
+cc e6fa817f773ce1480860625650533783cb01a3026e1e143f060ab5d2b73ab5a1 # parts = ["\\*", "[x][r]", "](u)"], separator = ""
+
+cc 2b66b76424edfa3855a740e4b7713d092581f7b97e059b862ae12cc71d282bf3

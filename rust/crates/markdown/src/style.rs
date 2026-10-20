@@ -27,7 +27,7 @@ pub struct Style {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Span {
     /// Visible text, with Markdown delimiters removed.
-    pub text: String,
+    pub text: crate::Text,
     /// Presentation attributes.
     pub style: Style,
     /// Link target, retained independently of the visible label.
@@ -38,7 +38,7 @@ pub struct Span {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Line {
     /// Ordered styled runs.
-    pub spans: Vec<Span>,
+    pub spans: crate::Spans,
 }
 
 impl Line {
@@ -46,32 +46,20 @@ impl Line {
         if text.is_empty() {
             return;
         }
-        #[cfg(test)]
-        crate::work::copy(text.len());
-        if let Some(last) = self.spans.last_mut()
-            && last.style == style
-            && match (&last.link, link) {
-                (None, None) => true,
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                _ => false,
-            }
-        {
-            #[cfg(test)]
-            if last.text.capacity() - last.text.len() < text.len() {
-                crate::work::copy(last.text.len());
-            }
-            last.text.push_str(text);
-        } else {
-            self.push_new(text, style, link);
+        if !self.spans.append_last(text, style, link) {
+            self.spans.push_content(
+                Span {
+                    text: text.into(),
+                    style,
+                    link: link.cloned(),
+                },
+                false,
+            );
         }
     }
 
     pub(crate) fn push_new(&mut self, text: &str, style: Style, link: Option<&Arc<str>>) {
         if !text.is_empty() {
-            #[cfg(test)]
-            if self.spans.len() == self.spans.capacity() {
-                crate::work::copy(self.spans.len() * std::mem::size_of::<Span>());
-            }
             self.spans.push(Span {
                 text: text.into(),
                 style,

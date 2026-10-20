@@ -511,10 +511,17 @@ fn line(line: &acyclic_markdown::Line) -> Line<'static> {
                     }
                 }
                 // TODO(#604): emit queried OSC 8 link metadata through the terminal backend.
-                Span::styled(super::display_text(&span.text).into_owned(), style)
+                Span::styled(display_text(span.text.as_str()), style)
             })
             .collect::<Vec<_>>(),
     )
+}
+
+fn display_text(text: std::borrow::Cow<'_, str>) -> String {
+    match super::display_text(&text) {
+        std::borrow::Cow::Borrowed(_) => text.into_owned(),
+        std::borrow::Cow::Owned(visible) => visible,
+    }
 }
 
 #[cfg(test)]

@@ -21,7 +21,11 @@ pub fn check_without_row_replacement(data: &[u8], omit_truncation: bool) {
         if !omit_truncation {
             consumer.truncate(changed);
         }
-        consumer.extend_from_slice(streamed.lines().get(changed..).unwrap_or_default());
+        consumer.extend(
+            (streamed.lines().slice(changed..).unwrap_or_default())
+                .iter()
+                .cloned(),
+        );
         let mut one_shot = Markdown::default();
         one_shot.push(source.get(..end).unwrap_or_default());
         assert_eq!(

@@ -14,11 +14,13 @@ fn check(source: &str, sizes: &[usize]) -> Vec<Line> {
         let changed = markdown.push(source.get(at..end).expect("ASCII chunk boundaries"));
         assert!(changed <= markdown.lines().len());
         consumer.truncate(changed);
-        consumer.extend_from_slice(
-            markdown
+        consumer.extend(
+            (markdown
                 .lines()
-                .get(changed..)
-                .expect("valid change boundary"),
+                .slice(changed..)
+                .expect("valid change boundary"))
+            .iter()
+            .cloned(),
         );
         assert_eq!(
             consumer,
