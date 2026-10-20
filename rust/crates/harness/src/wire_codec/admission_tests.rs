@@ -40,6 +40,52 @@ fn native_event_round_trip_releases_custody() -> Result<()> {
     assert!(decode_event(&bytes, &mut Some(&mut io)).is_err());
     Ok(())
 }
+
+#[test]
+fn event_attachment_slots_follow_containers_and_cover_physical_decode_peak() -> Result<()> {
+    use crate::conversation::{Attachment, ReferencedAttachments};
+    let ((_, event), _) = decode_event(&tests::fixture(), &mut None)?;
+    let EventPayload::ConversationMessageAppended { message } = event.payload else {
+        panic!("conversation message fixture")
+    };
+    for count in [1, 4, 16] {
+        let mut message = message.clone();
+        message.attachments = ReferencedAttachments::Inline {
+            items: (0..count)
+                .map(|index| Attachment {
+                    file: message.content.clone(),
+                    label: Some(format!("attachment-{index}")),
+                })
+                .collect(),
+        };
+        let payload = EventPayload::ConversationMessageAppended { message };
+        let bytes = canonical_json_bytes(&payload)?;
+        let mut allowance = budget();
+        allowance.peak_allocation_bytes = 8 * 1024 * 1024;
+        let native = NativeMaterializationWork::new(allowance, &CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = native.live_allocation_bytes();
+        let mut io = HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?);
+        let mut decoded = None;
+        let physical = acyclic_test_support::measure(|| {
+            decoded = Some(decode_event_payload(
+                payload.tag(),
+                &bytes,
+                &mut Some(&mut io),
+            ));
+        });
+        let (actual, admitted) = decoded.expect("decoder ran")?;
+        assert_eq!(actual, payload);
+        assert!(
+            physical.bytes_max <= admitted,
+            "physical={physical:?}; admitted={admitted}"
+        );
+        drop(actual);
+        drop(io.into_custody()?);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
 #[test]
 fn native_partial_payload_cause_keeps_original_guard_until_cause_drop() -> Result<()> {
     let mut envelope = wire::EventEnvelope::decode(tests::fixture().as_slice())

@@ -87,6 +87,17 @@ pub(crate) fn json_decode_owned_bytes(
         .into_iter()
         .fold(0, usize::max) as u64
     };
+    // Event collection elements larger than a Value are the object-shaped
+    // records audited above. Digest bytes, UUIDs, strings and enum labels do
+    // not each allocate a CapturedResource/ReferenceGrant slot. Bound those
+    // larger slots by the original object/array openings, retaining the
+    // existing growth factor. Content buffering and scalar collections still
+    // use every lexical item. Snapshots keep their separate aggregate bound.
+    let typed_items = if snapshot || shape.unresolved_raw() {
+        items
+    } else {
+        shape.lexical_containers().unwrap_or(items)
+    };
     let value_slot = size_of::<Value>().max(size_of::<(String, Value)>()) as u64;
     let virtual_bytes =
         super::json_value_virtual_owned_bytes(shape).map_err(|error| match (code, error) {
@@ -120,7 +131,8 @@ pub(crate) fn json_decode_owned_bytes(
         ])?;
     }
     let maximum = sum(&[
-        mul(slots, content_slot + typed_slot + value_slot)?,
+        mul(slots, content_slot + value_slot)?,
+        mul(mul(typed_items, 10)?, typed_slot)?,
         virtual_bytes,
         mul(if snapshot { items } else { 1 }, boxed_slot)?,
         mul(input, 6)?,
