@@ -135,7 +135,7 @@ impl CheckoutTools {
         converge::capture(
             &mut cursor,
             &mut checkout,
-            (physical, workspace),
+            physical,
             (options, policy),
             baseline,
             &cancellation,

@@ -332,3 +332,82 @@ async fn replay_rescan_requirement_is_a_transition() -> Result<()> {
     drop(tools);
     harness.close().await
 }
+
+#[tokio::test]
+async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    let cancellation = CancellationToken::new();
+    let workspace = tools.workspace.view().workspace();
+    let mut checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    let original = checkout.generation_id();
+    // A different capture commits after admission of the original candidate.
+    std::fs::write(directory.path().join("marker"), b"other").map_err(storage)?;
+    let mut other = None;
+    run(&tools, &mut other).await?;
+    let winner = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    assert_ne!(original, winner);
+    std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
+    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    converge::capture(
+        &mut cursor,
+        &mut checkout,
+        &tools.workspace,
+        (&tools.capture_options, &tools.capture_policy),
+        true,
+        &cancellation,
+    )
+    .await?;
+    let outcome = checkout
+        .commit(
+            acyclic_fs::OperationId::new(),
+            None,
+            None,
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| {
+                std::future::ready(Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                    acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    assert!(!matches!(
+        outcome,
+        LivePublicationObservation::Committed { .. }
+            | LivePublicationObservation::AlreadyCommitted { .. }
+    ));
+    assert_eq!(
+        workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        winner
+    );
+    assert_eq!(contents(&tools).await?, b"other");
+    drop((cursor, other, checkout));
+    drop(tools);
+    harness.close().await
+}

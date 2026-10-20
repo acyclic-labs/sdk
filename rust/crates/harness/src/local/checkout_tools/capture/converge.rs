@@ -1,9 +1,8 @@
 //! Reconcile invalidated hints before publishing any captured generation.
 use super::*;
-use acyclic_fs::{CaptureError, Checkout, Workspace};
+use acyclic_fs::{CaptureError, Checkout};
 
 type Candidate = Checkout<LocalAuthorityBackend, LocalObjectBackend>;
-type SourceWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 
 // Bound repeated loss of continuity, rather than either publishing a stale
 // candidate or allowing an actively changing source to spin forever.
@@ -66,12 +65,11 @@ impl Cursor {
 pub(super) async fn capture(
     cursor: &mut Cursor,
     checkout: &mut Candidate,
-    (physical, workspace): (&LocalWorkspace, &SourceWorkspace),
+    physical: &LocalWorkspace,
     configuration: (&CaptureOptions, &CapturePolicy),
     mut baseline: bool,
     cancellation: &CancellationToken,
 ) -> Result<()> {
-    let generation = checkout.generation_id();
     let mut initial = cursor.initial.take();
     if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
         require_rescan(reason)?;
@@ -92,18 +90,13 @@ pub(super) async fn capture(
                 ));
             }
             rescans += 1;
-            // A prior replay or scan may have authored mutations. Always retry
-            // from the same committed generation, never from that candidate.
-            *checkout = workspace
-                .checkout(
-                    GenerationSelector::Exact(generation),
-                    CheckoutMode::tracking_transaction(),
-                    WorkBudget::UNBOUNDED,
-                    cancellation,
-                )
+            // Discard private mutations while retaining the ORIGINAL expected
+            // publication head. Reopening Exact would silently refresh that
+            // fence and could overwrite a concurrent writer's generation.
+            checkout
+                .discard(WorkBudget::UNBOUNDED, cancellation)
                 .await
-                .map_err(storage)?
-                .value;
+                .map_err(storage)?;
             initial = None;
             let batch = cursor
                 .baseline(checkout, configuration, cancellation)
