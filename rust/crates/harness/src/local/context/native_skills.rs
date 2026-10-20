@@ -175,7 +175,22 @@ impl NativeSkills {
     }
 
     /// Only host-retained source records, in this owner's private journal, resolve here.
-    pub(crate) async fn read(
+    #[inline(never)]
+    pub(crate) fn read<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        generation: &'a crate::resources::GenerationRef,
+        path: &'a str,
+        maximum: u64,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
+    {
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.read_retained(volume, generation, path, maximum, io)
+        })
+    }
+
+    async fn read_retained(
         &self,
         volume: &VolumeRef,
         generation: &crate::resources::GenerationRef,

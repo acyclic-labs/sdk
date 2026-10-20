@@ -86,7 +86,9 @@ async fn unchanged_checkout_generation_reuses_skill_catalog_without_rescanning()
         checkout_config(root.path(), (model()?, text()))?.without_default_tools(),
     )
     .await?;
-    let first = harness.skills().await?;
+    let discovery = harness.skills();
+    assert!(std::mem::size_of_val(&discovery) <= 4096);
+    let first = discovery.await?;
     assert_eq!(first.len(), 1);
     // No capture boundary has advanced the checkout generation. A rescan would
     // parse this malformed file and fail, instead of reusing the pinned catalog.
@@ -136,7 +138,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
             task_volume: &volume,
             issuer: harness.issuer.as_ref().unwrap(),
             verifier: &verifier,
-            agent: crate::AgentId::new(),
+            agent: harness.signed.agent().unwrap(),
             project: &volume,
             scratch: &volume,
             journal: &volume,

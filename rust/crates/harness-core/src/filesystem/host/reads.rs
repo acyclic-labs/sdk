@@ -274,8 +274,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         ))]
         if let Some(sources) = self.skill_sources(volume)?
             && let Some(source_generation) = expected_generation
+            && sources.matches(volume, source_generation, path)
             && let Some(bytes) = sources
-                .read(volume, source_generation, path, maximum_bytes, io)
+                .read(volume, source_generation, path, maximum_bytes, io)?
                 .await?
         {
             let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;

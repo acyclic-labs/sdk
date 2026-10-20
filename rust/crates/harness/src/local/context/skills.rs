@@ -13,6 +13,18 @@ pub(super) const PROJECT_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"]
 
 impl LocalHarness {
     pub(in crate::local) async fn skills(&self) -> Result<Vec<SkillMetadata>> {
+        self.skill_discovery()?.await
+    }
+
+    // Construct the large discovery state outside the caller's poll frame.
+    #[inline(never)]
+    fn skill_discovery(
+        &self,
+    ) -> Result<crate::conversation::BoundedContentFuture<'_, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || self.discover_skills())
+    }
+
+    async fn discover_skills(&self) -> Result<Vec<SkillMetadata>> {
         #[cfg(feature = "native-execution")]
         if self.checkout_context
             && let Some(sources) = self.files.skill_sources(&self.journal)?
