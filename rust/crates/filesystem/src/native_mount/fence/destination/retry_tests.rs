@@ -187,7 +187,7 @@ fn registry_probe_distinguishes_fixture_locks_from_unrelated_owners()
         .registry_file
         .as_ref()
         .unwrap();
-    fs2::FileExt::lock_exclusive(private)?;
+    fence_io::lock(private)?;
     assert!(!fixture.registry_is_unlocked()?);
     fence_io::unlock(private)?;
     assert!(fixture.registry_is_unlocked()?);

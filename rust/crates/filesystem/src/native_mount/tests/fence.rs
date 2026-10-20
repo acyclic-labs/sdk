@@ -503,3 +503,25 @@ fn recovery_reclaims_a_dead_owner_lock_but_rejects_a_held_lock()
     await_recovery_worker(recovery)?;
     Ok(())
 }
+
+/// Another process may share a lock's open file description: a child spawned
+/// concurrently holds a duplicate between fork and exec. Dropping the owner's
+/// lock must still release ownership at once.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_dropped_lock_is_released_while_another_process_shares_its_description()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("shared.lock");
+    let lock = super::fence::acquire_mount_lock(&path, false)?;
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .stdin(std::process::Stdio::from(lock.try_clone()?))
+        .spawn()?;
+    drop(lock);
+    let reacquired = super::fence::acquire_existing_mount_lock(&path);
+    child.kill()?;
+    child.wait()?;
+    drop(reacquired?);
+    Ok(())
+}
