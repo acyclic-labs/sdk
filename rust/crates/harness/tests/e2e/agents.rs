@@ -443,10 +443,25 @@ pub(super) async fn run(value: Value) -> TestResult {
         matchers::ordered(&expected, &actual, &name)?;
     }
     for (path, expected) in case.expect.files {
-        let actual = match std::fs::read_to_string(file_path(directory.path(), &path)?) {
-            Ok(text) => Some(text),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
+        let actual = if let Some(relative) = path.strip_prefix(".volumes/scratch/") {
+            file_path(directory.path(), &path)?;
+            // Command projections retire between invocations. Observe the
+            // owner's durable private bytes through its authenticated reader.
+            match harness
+                .client_reader()?
+                .read_private_path(harness.scratch(), "", relative, None, 65_536, None)?
+                .await
+            {
+                Ok((_, bytes, _)) => Some(String::from_utf8(bytes.to_vec())?),
+                Err(Error::NotFound(_)) => None,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            match std::fs::read_to_string(file_path(directory.path(), &path)?) {
+                Ok(text) => Some(text),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(error.into()),
+            }
         };
         if actual != expected {
             return Err(format!("workspace {path}: expected {expected:?}, got {actual:?}").into());
