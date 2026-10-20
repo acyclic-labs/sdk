@@ -11,7 +11,7 @@ fn missing(error: &DemandError) -> bool {
     matches!(error, DemandError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
-fn read(root: &HeldRoot, leaf: &str) -> std::result::Result<String, DemandError> {
+fn read(root: &HeldRoot, leaf: &str) -> std::result::Result<Vec<u8>, DemandError> {
     // Pointer records follow the existing local owner-record bound. An opaque
     // exclude file is streamed separately and never needs a size-based buffer.
     const MAXIMUM_METADATA_BYTES: u64 = 65_536;
@@ -23,9 +23,10 @@ fn read(root: &HeldRoot, leaf: &str) -> std::result::Result<String, DemandError>
         )
         .into());
     }
-    let mut text = String::new();
+    // Git writes pointer paths as raw filename bytes, which need not be UTF-8.
+    let mut text = Vec::new();
     file.take(MAXIMUM_METADATA_BYTES + 1)
-        .read_to_string(&mut text)?;
+        .read_to_end(&mut text)?;
     if text.len() as u64 > MAXIMUM_METADATA_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -36,11 +37,16 @@ fn read(root: &HeldRoot, leaf: &str) -> std::result::Result<String, DemandError>
     Ok(text)
 }
 
+/// Whether `pattern` is an exact rule line that no later negation follows, and
+/// whether the file ends at a line boundary. Git applies the last matching
+/// rule and only a negation (`!`) can re-include a path, so a rule followed by
+/// any negation may be undone and is reasserted after it.
 fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)> {
     let length = file.metadata()?.len();
     let mut remaining = length;
     let mut buffer = [0; 8192];
     let (mut index, mut valid, mut carriage_return) = (0, true, false);
+    let (mut start, mut negation, mut effective) = (true, false, false);
     let mut last = None;
     while remaining != 0 {
         let count = (&mut *file).take(remaining).read(&mut buffer)?;
@@ -54,11 +60,15 @@ fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)
         for byte in buffer.iter().take(count) {
             last = Some(*byte);
             if *byte == b'\n' {
-                if valid && index == pattern.len() {
-                    return Ok((true, true));
-                }
+                effective = settled(effective, negation, valid && index == pattern.len());
                 (index, valid, carriage_return) = (0, true, false);
-            } else if valid {
+                (start, negation) = (true, false);
+                continue;
+            }
+            if start {
+                (start, negation) = (false, *byte == b'!');
+            }
+            if valid {
                 if !carriage_return && pattern.get(index) == Some(byte) {
                     index += 1;
                 } else if !carriage_return && index == pattern.len() && *byte == b'\r' {
@@ -73,13 +83,17 @@ fn contains(file: &mut fs::File, pattern: &[u8]) -> std::io::Result<(bool, bool)
         return Err(std::io::Error::other("Git exclusions changed during read"));
     }
     Ok((
-        valid && index == pattern.len(),
+        settled(effective, negation, valid && index == pattern.len()),
         last.is_none_or(|byte| byte == b'\n'),
     ))
 }
 
-fn pointed_directory(root: &HeldRoot, pointer: &str) -> Result<HeldRoot> {
-    let pointer = Path::new(pointer);
+/// The rule's effect after one complete line.
+fn settled(effective: bool, negation: bool, rule: bool) -> bool {
+    !negation && (effective || rule)
+}
+
+fn pointed_directory(root: &HeldRoot, pointer: &Path) -> Result<HeldRoot> {
     if pointer.is_absolute() {
         // Absolute metadata pointers explicitly name their own authority.
         return acyclic_fs::hold_root(pointer).map_err(storage);
@@ -116,13 +130,25 @@ fn pointed_directory(root: &HeldRoot, pointer: &str) -> Result<HeldRoot> {
         .map_err(storage)
 }
 
-fn pointer_line(text: &str) -> Result<&str> {
-    let line = text.strip_suffix('\n').unwrap_or(text);
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    if line.is_empty() || line.contains(['\n', '\r', '\0']) {
+fn pointer_line(text: &[u8]) -> Result<&[u8]> {
+    let line = text.strip_suffix(b"\n").unwrap_or(text);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    if line.is_empty() || line.iter().any(|byte| matches!(byte, b'\n' | b'\r' | 0)) {
         return Err(Error::Invalid("invalid Git metadata pointer record".into()));
     }
     Ok(line)
+}
+
+/// The path a pointer record names: raw filename bytes on Unix, and UTF-8 on
+/// Windows, where Git records paths as UTF-8.
+fn pointer_path(line: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    let path = Some(PathBuf::from(
+        <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(line),
+    ));
+    #[cfg(not(unix))]
+    let path = std::str::from_utf8(line).ok().map(PathBuf::from);
+    path.ok_or_else(|| Error::Invalid("Git metadata pointer is not a path".into()))
 }
 
 fn metadata(root: &HeldRoot) -> Result<Option<HeldRoot>> {
@@ -133,9 +159,9 @@ fn metadata(root: &HeldRoot) -> Result<Option<HeldRoot>> {
             // A linked worktree stores a regular .git pointer instead.
             let text = read(root, ".git").map_err(|_| storage(directory_error))?;
             let pointer = pointer_line(&text)?
-                .strip_prefix("gitdir: ")
+                .strip_prefix(b"gitdir: ")
                 .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
-            pointed_directory(root, pointer).map(Some)
+            pointed_directory(root, &pointer_path(pointer)?).map(Some)
         }
     }
 }
@@ -147,7 +173,9 @@ impl Exclusion {
         loop {
             if let Some(git) = metadata(&held)? {
                 let common = match read(&git, "commondir") {
-                    Ok(pointer) => pointed_directory(&git, pointer_line(&pointer)?)?,
+                    Ok(pointer) => {
+                        pointed_directory(&git, &pointer_path(pointer_line(&pointer)?)?)?
+                    }
                     Err(error) if missing(&error) => git,
                     Err(error) => return Err(storage(error)),
                 };
@@ -241,11 +269,11 @@ mod tests {
     #[test]
     fn pointer_records_preserve_path_spaces_and_reject_extra_records() {
         assert_eq!(
-            pointer_line("dir with trailing space \n").unwrap(),
-            "dir with trailing space "
+            pointer_line(b"dir with trailing space \n").unwrap(),
+            b"dir with trailing space "
         );
-        assert_eq!(pointer_line("dir\r\n").unwrap(), "dir");
-        for malformed in ["", "\n", "dir\nother", "dir\0", "dir\rname"] {
+        assert_eq!(pointer_line(b"dir\r\n").unwrap(), b"dir");
+        for malformed in [&b""[..], b"\n", b"dir\nother", b"dir\0", b"dir\rname"] {
             assert!(pointer_line(malformed).is_err(), "{malformed:?}");
         }
     }
@@ -253,11 +281,16 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(32))]
         #[test]
-        fn streamed_matching_preserves_exact_opaque_line_semantics(bytes in prop::collection::vec(any::<u8>(), 0..20_000), present in any::<bool>()) {
+        fn streamed_matching_preserves_exact_opaque_line_semantics(bytes in prop::collection::vec(any::<u8>(), 0..20_000), present in any::<bool>(), negated in any::<bool>()) {
             let pattern = b"/.volumes/.incarnation";
             let mut bytes = bytes;
             if present { bytes.extend_from_slice(b"\n/.volumes/.incarnation\r\n"); }
-            let expected = bytes.split(|byte| *byte == b'\n').any(|line| line.strip_suffix(b"\r").unwrap_or(line) == pattern);
+            if negated { bytes.extend_from_slice(b"!/.volumes/.incarnation/"); }
+            // Model: the last exact rule line follows every negation line.
+            let lines = bytes.split(|byte| *byte == b'\n').collect::<Vec<_>>();
+            let rule = lines.iter().rposition(|line| line.strip_suffix(b"\r").unwrap_or(line) == pattern);
+            let negation = lines.iter().rposition(|line| line.first() == Some(&b'!'));
+            let expected = rule.is_some() && rule > negation;
             let mut file = tempfile::tempfile().unwrap();
             file.write_all(&bytes).unwrap();
             file.rewind().unwrap();
@@ -328,6 +361,79 @@ mod tests {
             git(root, &["status", "--porcelain", "--untracked-files=all"])
                 .contains(".incarnation/token")
         );
+    }
+
+    #[test]
+    fn later_user_negations_cannot_reinclude_the_token() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "-q"]);
+        let exclude = root.join(".git/info/exclude");
+        let user: &[u8] =
+            b"/.volumes/.incarnation\n!/.volumes/.incarnation/\n!/.volumes/.incarnation/**\n";
+        fs::write(&exclude, user).unwrap();
+        fs::create_dir_all(root.join(".volumes/.incarnation")).unwrap();
+        fs::write(root.join(".volumes/.incarnation/token"), "owned").unwrap();
+        let status = || git(root, &["status", "--porcelain", "--untracked-files=all"]);
+        // Negative control: the exact rule is present but undone, so a
+        // publisher that only looks for the rule leaves the token visible.
+        assert!(status().contains(".incarnation/token"));
+        let held = acyclic_fs::hold_root(root).unwrap();
+        let exclusion = Exclusion::capture(&held).unwrap().unwrap();
+        exclusion.publish().unwrap();
+        exclusion.publish().unwrap();
+        assert!(!status().contains(".incarnation"), "{}", status());
+        let mut expected = user.to_vec();
+        expected
+            .extend_from_slice(b"# acyclic harness checkout incarnation\n/.volumes/.incarnation\n");
+        assert_eq!(fs::read(&exclude).unwrap(), expected);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_worktrees_with_non_utf8_names_publish_through_their_pointer_bytes() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("repo");
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "-q"]);
+        git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        let linked = temporary
+            .path()
+            .join(std::ffi::OsStr::from_bytes(b"linked\xff"));
+        let output = std::process::Command::new("git")
+            .args(["worktree", "add", "-q"])
+            .arg(&linked)
+            .current_dir(&root)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("HOME", &root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        // Negative control: the pointer is not UTF-8, so a text reader fails.
+        assert!(std::str::from_utf8(&fs::read(linked.join(".git")).unwrap()).is_err());
+        let held = acyclic_fs::hold_root(&linked).unwrap();
+        Exclusion::capture(&held)
+            .unwrap()
+            .unwrap()
+            .publish()
+            .unwrap();
+        fs::create_dir_all(linked.join(".volumes/.incarnation")).unwrap();
+        fs::write(linked.join(".volumes/.incarnation/token"), "owned").unwrap();
+        assert_eq!(git(&linked, &["status", "--porcelain"]), "");
     }
 
     #[test]
