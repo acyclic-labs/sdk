@@ -376,7 +376,7 @@ async fn turn(
 }
 
 #[test]
-fn journal_unmetered_task_files_match_main() {
+fn journal_unmetered_task_files_publish_canonical_chunks() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -414,25 +414,46 @@ fn journal_unmetered_task_files_match_main() {
             })
             .unwrap()
     };
-    for broken in [false, true] {
+    for conditional in [false, true] {
         let [expected, actual] =
             differential::pair::<_, _, (&'static str, u64)>(&initialize, |(journal, host), old| {
                 runtime.block_on(async {
                     let artifacts = turn(&journal, old, "chunk", 1, false, Some(host))
                         .await
                         .unwrap();
-                    if broken && !old {
-                        // Restore the erroneous unconditional publication on a fresh
-                        // candidate fixture; canonical journal bytes stay unchanged.
+                    if conditional && !old {
                         let records = journal.records(operation, 0, 64, None).await.unwrap();
                         let record = records
                             .iter()
                             .find(|r| matches!(r.event, ExecutionEvent::Model { .. }))
                             .unwrap();
-                        journal
-                            .publish_chunk("model:0:event:0", &record.event, None)
+                        let key = "model:0:0";
+                        assert_eq!(
+                            record.idempotency_key,
+                            super::content::operation_digest(operation, key, None)
+                                .unwrap()
+                                .to_hex()
+                                .to_string()
+                        );
+                        let published = journal
+                            .append_if_tail(
+                                operation,
+                                record.sequence - 1,
+                                key,
+                                &record.event,
+                                None,
+                            )
+                            .unwrap()
                             .await
                             .unwrap();
+                        assert!(published);
+                        assert!(
+                            !journal
+                                .append_if_tail(operation, 0, "model:0:999", &record.event, None)
+                                .unwrap()
+                                .await
+                                .unwrap()
+                        );
                     }
                     let snapshot = journal
                         .task_files
@@ -444,18 +465,23 @@ fn journal_unmetered_task_files_match_main() {
                     (artifacts, snapshot.files)
                 })
             });
-        assert_eq!(expected.0.0, actual.0.0);
-        assert!(expected.0.1.is_empty());
-        if broken {
-            assert_eq!(actual.0.1.len(), 1);
-            assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
-            assert_ne!(
-                expected, actual,
-                "unconditional publication was not detected"
-            );
-        } else {
-            assert_eq!(expected, actual);
+        assert_eq!(expected.0.0[0], actual.0.0[0]);
+        assert_eq!(expected.0.0[2], actual.0.0[2]);
+        assert_eq!(expected.0.0[1].len(), actual.0.0[1].len());
+        for (before, after) in expected.0.0[1].iter().zip(&actual.0.0[1]) {
+            // The additional task-volume append consumes a provider commit
+            // nonce. Sequence, timestamp and canonical journal bytes remain
+            // identical; only the opaque 32-byte commit identity may differ.
+            assert_eq!(&before[..8], &after[..8]);
+            assert_eq!(&before[40..], &after[40..]);
         }
+        assert!(expected.0.1.is_empty());
+        assert_eq!(actual.0.1.len(), 1);
+        assert_eq!(actual.0.1[0].bytes.as_ref(), b"0:chunk");
+        assert_ne!(
+            expected, actual,
+            "missing chunk publication was not detected"
+        );
     }
 }
 

@@ -8,6 +8,23 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    pub(super) async fn append_with_chunks(
+        &self,
+        operation: OperationId,
+        expected_tail: Option<u64>,
+        key: &str,
+        event: &ExecutionEvent,
+        io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let accepted = self
+            .append_validated(operation, expected_tail, key, event, io)
+            .await?;
+        if accepted {
+            self.publish_chunk(key, event, io).await?;
+        }
+        Ok(accepted)
+    }
+
     pub(super) async fn publish_chunk(
         &self,
         key: &str,

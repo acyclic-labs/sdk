@@ -197,7 +197,7 @@ where
                 let span = obs_span!("acyclic.harness.journal.append");
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, None, key, event, None),
+                    self.append_with_chunks(operation, None, key, event, None),
                 )
                 .await
                 .map(|_| ())
@@ -221,7 +221,10 @@ where
             traced(span, async move {
                 self.append_validated(operation, None, key, event, io)
                     .await?;
-                self.publish_chunk(key, event, io).await
+                if io.is_some() {
+                    self.publish_chunk(key, event, io).await?;
+                }
+                Ok(())
             })
             .await
         })
@@ -243,7 +246,7 @@ where
                 );
                 crate::obs::traced_future(
                     span,
-                    self.append_validated(operation, Some(expected_tail), key, event, None),
+                    self.append_with_chunks(operation, Some(expected_tail), key, event, None),
                 )
                 .await
             });
@@ -253,7 +256,7 @@ where
             if let Some(work) = io.and_then(PreparationIo::original_native_work) {
                 let local = PreparationIo::from_native_work(work)?;
                 let result = self
-                    .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                    .append_with_chunks(operation, Some(expected_tail), key, event, Some(&local))
                     .await;
                 let retained = local.owned_bytes()?;
                 drop(local.into_native_custody(retained)?);
@@ -265,7 +268,7 @@ where
             );
             traced(
                 span,
-                self.append_validated(operation, Some(expected_tail), key, event, io),
+                self.append_with_chunks(operation, Some(expected_tail), key, event, io),
             )
             .await
         })

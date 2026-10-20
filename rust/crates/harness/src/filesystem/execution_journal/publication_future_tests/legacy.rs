@@ -1,4 +1,6 @@
-// Original factories: retain their native branches and concrete frame layouts.
+// Original boxing adapters around the current operation bodies, so allocation
+// comparisons isolate the adapter topology. The ordinary unmetered append below
+// additionally retains the missing-publication behavior as a semantic control.
 use super::*;
 
 thread_local! {
@@ -71,7 +73,7 @@ pub(super) fn append<'a>(
         let span = obs_span!("acyclic.harness.journal.append");
         trace_frame(
             span,
-            journal.append_validated(operation, None, key, event, None),
+            journal.append_with_chunks(operation, None, key, event, None),
         )
         .await
         .map(|_| ())
@@ -120,7 +122,7 @@ pub(super) fn append_if_tail<'a>(
         );
         trace_frame(
             span,
-            journal.append_validated(operation, Some(expected_tail), key, event, None),
+            journal.append_with_chunks(operation, Some(expected_tail), key, event, None),
         )
         .await
     });
@@ -129,7 +131,7 @@ pub(super) fn append_if_tail<'a>(
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             let local = PreparationIo::from_native_work(work)?;
             let result = journal
-                .append_validated(operation, Some(expected_tail), key, event, Some(&local))
+                .append_with_chunks(operation, Some(expected_tail), key, event, Some(&local))
                 .await;
             let retained = local.owned_bytes()?;
             drop(local.into_native_custody(retained)?);
@@ -142,7 +144,7 @@ pub(super) fn append_if_tail<'a>(
         original_trace(
             1,
             span,
-            journal.append_validated(operation, Some(expected_tail), key, event, io),
+            journal.append_with_chunks(operation, Some(expected_tail), key, event, io),
         )
         .await
     })
