@@ -409,6 +409,117 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         drop(alias);
         assert_eq!(original.live_allocation_bytes(), baseline);
     }
+    assert_sparse_initialized_once(&store, record, extent_root).await?;
+    Ok(())
+}
+
+async fn assert_sparse_initialized_once(
+    store: &MemoryObjectStore,
+    record: FileRecord,
+    root: ObjectId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let model = [b'A', b'B', 0, 0, 0, 0, b'E', b'F', b'G', b'H', 0, 0];
+    for (offset, length) in [(0, 2), (1, 8), (2, 4), (10, 2), (12, 0), (5, 6)] {
+        let cancellation = CancellationToken::new();
+        let range = ByteRange { offset, length };
+        // Independent composition oracle: extent/blob reads plus exactly one
+        // initialization of each returned byte, whether content or zero.
+        let plan = crate::kernel::plan_extent_range(
+            store,
+            ExtentRangeRequest {
+                root,
+                file_size: 12,
+                range,
+                maximum_spans: 5,
+                limits: DecodeLimits::default(),
+                budget: WorkBudget::UNBOUNDED,
+            },
+            &cancellation,
+        )
+        .await?;
+        let mut copies = plan.work.bytes_copied + length;
+        for span in plan.spans {
+            if let ExtentKind::Content {
+                object,
+                object_offset,
+            } = span.kind
+            {
+                let blob = crate::kernel::read_blob_range(
+                    store,
+                    object,
+                    ByteRange {
+                        offset: object_offset,
+                        length: span.length,
+                    },
+                    DecodeLimits::default(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?;
+                copies += blob.work.bytes_copied;
+            }
+        }
+        let request = FileRangeRequest {
+            record,
+            range,
+            maximum_spans: 5,
+            limits: DecodeLimits::default(),
+            budget: WorkBudget {
+                bytes_copied: copies,
+                ..WorkBudget::UNBOUNDED
+            },
+        };
+        let expected = &model[offset as usize..(offset + length) as usize];
+        let read = read_file_range_async(store, request, &cancellation).await?;
+        assert_eq!(read.bytes.as_ref(), expected);
+        assert_eq!(read.work.bytes_copied, copies);
+        if let Some(allowance) = copies.checked_sub(1) {
+            let denied = read_file_range_async(
+                store,
+                FileRangeRequest {
+                    budget: WorkBudget {
+                        bytes_copied: allowance,
+                        ..request.budget
+                    },
+                    ..request
+                },
+                &cancellation,
+            )
+            .await
+            .expect_err("one fewer copy byte cannot initialize this range");
+            assert!(denied.error.to_string().contains("bytes_copied"));
+            assert!(denied.work.bytes_copied < copies);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_native_sparse_copy_budget(store, request, expected).await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn assert_native_sparse_copy_budget(
+    store: &MemoryObjectStore,
+    request: FileRangeRequest,
+    expected: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cancellation = CancellationToken::new();
+    let original = crate::NativeMaterializationWork::new(request.budget, &cancellation)
+        .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&original, &cancellation);
+    let read =
+        read_file_range_with_accounting(store, request, &mut accounting, &cancellation).await?;
+    assert_eq!(read.bytes.as_ref(), expected);
+    assert_eq!(original.receipt().bytes_copied, request.budget.bytes_copied);
+    drop(read);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    cancellation.cancel();
+    assert!(
+        read_file_range_with_accounting(store, request, &mut accounting, &cancellation)
+            .await
+            .is_err()
+    );
+    assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
 
