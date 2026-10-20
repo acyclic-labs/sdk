@@ -131,7 +131,6 @@ pub(super) fn validate_git_commits(
             || commit.parents.iter().any(|parent| {
                 !state.commits.contains_key(parent) && !state.external_parents.contains(parent)
             })
-            || commit.parents.iter().collect::<BTreeSet<_>>().len() != commit.parents.len()
         {
             return Err(());
         }

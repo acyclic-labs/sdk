@@ -42,7 +42,6 @@ where
         self.validate().await?;
         let GitFilesystemAction::Join {
             target_tree,
-            source_workspace,
             tracked_paths,
             ..
         } = action
@@ -72,20 +71,27 @@ where
                 "Git merge still contains unresolved conflict markers",
             ));
         };
-        // A continued join tracks the source's newly authored eligible paths
-        // as an unconflicted join does, never a reserved path, and never a
-        // file the resolution itself added.
-        let source = self
-            .workspace(*source_workspace)
-            .await?
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        // A continued join tracks the joined source's newly authored eligible
+        // paths as an unconflicted join does, never a reserved path, and never
+        // a file the resolution itself added. The joined generation is the
+        // immutable one this operation published, so later source writes
+        // cannot change what the merge tracks. A transition that never
+        // published admits no new paths.
+        let before = self.generation(*target_tree).await?;
+        let joined = self
+            .current
+            .operation_generation(
+                IdempotencyKey::from_bytes(operation.into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| Error::from(failure.error))?;
         let tracked_paths = acyclic_fs::git_tracked_paths_after(
-            &self.generation(*target_tree).await?,
+            &before,
             &current,
-            Some(&source),
+            Some(joined.as_ref().unwrap_or(&before)),
             &self.repository,
             &resolved,
             u32::MAX,

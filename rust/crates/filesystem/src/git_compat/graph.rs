@@ -39,6 +39,23 @@ pub(super) fn nearest_common_ancestor(
         .map(|(commit, _, _)| commit)
 }
 
+/// Whether `target` is `from` or one of its ancestors.
+pub(super) fn reaches(state: &GitCompatState, from: GitCommitId, target: GitCommitId) -> bool {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![from];
+    while let Some(commit) = pending.pop() {
+        if commit == target {
+            return true;
+        }
+        if seen.insert(commit)
+            && let Some(record) = state.commits.get(&commit)
+        {
+            pending.extend(record.parents.iter().copied());
+        }
+    }
+    false
+}
+
 pub(super) fn resolve_object<E: std::error::Error + 'static>(
     state: &GitCompatState,
     object: Option<&str>,

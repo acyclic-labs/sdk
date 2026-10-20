@@ -418,11 +418,7 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
     let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
     main.write(
         "/base.txt",
-        bytes::Bytes::from_static(
-            b"base
-",
-        )
-        .into(),
+        bytes::Bytes::from_static(b"base\n").into(),
         IdempotencyKey::new(),
         PublicationPermit::Unrestricted,
         &mut work,
@@ -459,11 +455,7 @@ async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
         child
             .write(
                 path,
-                bytes::Bytes::from_static(
-                    b"kid
-",
-                )
-                .into(),
+                bytes::Bytes::from_static(b"kid\n").into(),
                 IdempotencyKey::new(),
                 PublicationPermit::Unrestricted,
                 &mut work,
@@ -901,6 +893,65 @@ async fn user_owned_volumes_directory_is_committed_and_cleaned() -> Result<()> {
             .bytes
             .as_ref(),
         b"user-owned directory\n"
+    );
+    Ok(())
+}
+
+async fn write_text(view: &Lazy, path: &str, text: &'static [u8]) -> Result<()> {
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    view.write(
+        path,
+        bytes::Bytes::from_static(text).into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    Ok(())
+}
+
+/// `merge --continue` tracks what the conflicted join published, never what
+/// the source happens to hold when the resolution finishes.
+#[tokio::test]
+async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    write_text(&main, "/base.txt", b"base\n").await?;
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let repo = main.workspace().id();
+    run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+    let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+    let child = child.ok_or("missing child view")?;
+    write_text(&child, "/base.txt", b"kid\n").await?;
+    write_text(&child, "/newkid.txt", b"kid\n").await?;
+    run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+    write_text(&main, "/base.txt", b"main\n").await?;
+    run(&fs, &store, &main, repo, &["commit", "-m", "main edit"]).await?;
+    assert!(
+        run(&fs, &store, &main, repo, &["merge", "agents/kid"])
+            .await
+            .is_err(),
+        "the text conflict leaves the merge pending"
+    );
+
+    // The child keeps working while the parent resolves: it deletes the file
+    // the join already published and authors one the parent also creates.
+    child.workspace().remove("/newkid.txt").await?;
+    write_text(&child, "/notes.txt", b"kid notes\n").await?;
+    write_text(&main, "/base.txt", b"resolved\n").await?;
+    write_text(&main, "/notes.txt", b"resolution notes\n").await?;
+    let GitCommandOutput::Committed(merge) =
+        run(&fs, &store, &main, repo, &["merge", "--continue"])
+            .await?
+            .0
+    else {
+        return Err("expected the continued merge commit".into());
+    };
+    assert_eq!(
+        merge.tracked_paths,
+        std::collections::BTreeSet::from(["base.txt".to_owned(), "newkid.txt".to_owned()])
     );
     Ok(())
 }

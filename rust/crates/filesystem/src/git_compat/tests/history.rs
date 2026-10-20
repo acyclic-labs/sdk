@@ -876,32 +876,55 @@ async fn merging_a_branch_reachable_from_head_records_head_once() {
     assert_eq!(merged.parents, vec![head.id]);
 }
 
-#[test]
-fn commits_record_each_parent_once_and_state_rejects_repeats() {
-    let parent = GitCommitId([7; 32]);
-    let commit = GitCommit::new(
-        tree(1),
-        tree(1),
+fn commit_with_parents(seed: u8, parents: Vec<GitCommitId>) -> GitCommit {
+    GitCommit::new(
+        tree(seed),
+        tree(seed),
         None,
         BTreeSet::new(),
-        vec![parent, parent],
+        parents,
         "agent",
-        1,
-        "repeated parent",
-    );
+        i64::from(seed),
+        format!("commit {seed}"),
+    )
+}
+
+#[test]
+fn commits_record_each_parent_once_and_earlier_history_stays_readable() {
+    let parent = GitCommitId([7; 32]);
+    let commit = commit_with_parents(1, vec![parent, parent]);
     assert_eq!(commit.parents, vec![parent]);
 
-    let mut state = GitCompatState::new("main", workspace());
-    state.external_parents.insert(parent);
-    state.commits.insert(commit.id, commit.clone());
-    state.branches.get_mut("main").expect("branch").head = Some(commit.id);
-    assert!(validate_git_commits(&state, &BTreeSet::from([workspace()])).is_ok());
-    // Negative control: a commit hashed over a repeated parent is refused.
+    // History is content addressed and immutable: a repeated-parent commit
+    // that an earlier version recorded keeps validating, so the repository
+    // still loads. Only construction collapses repeats.
     let mut repeated = commit;
     repeated.parents = vec![parent, parent];
     repeated.id = repeated.hash_id();
-    state.commits.clear();
+    let mut state = GitCompatState::new("main", workspace());
+    state.external_parents.insert(parent);
     state.commits.insert(repeated.id, repeated.clone());
     state.branches.get_mut("main").expect("branch").head = Some(repeated.id);
-    assert!(validate_git_commits(&state, &BTreeSet::from([workspace()])).is_err());
+    assert!(validate_git_commits(&state, &BTreeSet::from([workspace()])).is_ok());
+}
+
+#[test]
+fn merge_ancestry_uses_reachability_across_merge_parents() {
+    // A <- S <- X, and HEAD = merge(X, A). S is reachable from HEAD through X.
+    let a = commit_with_parents(1, Vec::new());
+    let s = commit_with_parents(2, vec![a.id]);
+    let x = commit_with_parents(3, vec![s.id]);
+    let head = commit_with_parents(4, vec![x.id, a.id]);
+    let unrelated = commit_with_parents(5, vec![a.id]);
+    let mut state = GitCompatState::new("main", workspace());
+    for commit in [&a, &s, &x, &head, &unrelated] {
+        state.commits.insert(commit.id, commit.clone());
+    }
+    assert!(reaches(&state, head.id, s.id));
+    assert!(reaches(&state, head.id, head.id));
+    assert!(!reaches(&state, head.id, unrelated.id));
+    assert!(!reaches(&state, s.id, head.id));
+    // Negative control: the nearest common ancestor ties S with A on combined
+    // distance and picks A, so it cannot answer whether S is an ancestor.
+    assert_ne!(nearest_common_ancestor(&state, head.id, s.id), Some(s.id));
 }
