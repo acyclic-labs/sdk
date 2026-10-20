@@ -125,6 +125,9 @@ fn baseline_failures_leave_the_rescan_recoverable() -> Result<(), Box<dyn std::e
 fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let root = directory.path().canonicalize()?;
+    for name in ["a", "b"] {
+        std::fs::create_dir(root.join(name))?;
+    }
     let cancellation = CancellationToken::new();
     let mut watch = NativeWatch::open_with_profile_measured(
         &root,
@@ -135,13 +138,18 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
     )?
     .value;
     for name in ["a", "b"] {
-        std::fs::create_dir(root.join(name))?;
         let portable =
             crate::path::PortablePath::parse(&format!("/{name}"), VolumeLimits::default())?;
         watch.watch_directory(&NamespacePath::from_portable(
             &portable,
             VolumeLimits::default(),
         )?)?;
+    }
+    let NativeWatchDriver::Source(source) = &watch.watcher else {
+        panic!("Linux demand watch owns the native registrations");
+    };
+    for name in ["", "a", "b"] {
+        assert!(source.is_admitted(Path::new(name)), "{name} is registered");
     }
     let mut denied = crate::NativeMaterializationWork::new(
         WorkBudget {
@@ -155,8 +163,11 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
         watch.begin_rescan_with_work(&mut denied),
         Err(NativeWatchError::Work(_))
     ));
-    assert!(!watch.watched_directories.contains(&root.join("a")));
-    assert!(watch.watched_directories.contains(&root.join("b")));
+    let NativeWatchDriver::Source(source) = &watch.watcher else {
+        panic!("Linux demand watch owns the native registrations");
+    };
+    assert!(!source.is_admitted(Path::new("a")));
+    assert!(source.is_admitted(Path::new("b")));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     let cancelled = CancellationToken::new();
     let cancelled_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
@@ -166,13 +177,21 @@ fn partial_watch_cleanup_can_be_retried() -> Result<(), Box<dyn std::error::Erro
         watch.accept_lazy_baseline_with_native_work(&cancelled_work),
         Err(NativeWatchError::Cancelled(_))
     ));
-    assert!(watch.watched_directories.contains(&root.join("b")));
+    let NativeWatchDriver::Source(source) = &watch.watcher else {
+        panic!("Linux demand watch owns the native registrations");
+    };
+    assert!(source.is_admitted(Path::new("b")));
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
     assert!(
         matches!(watch.accept_lazy_baseline_with_native_work(&work)?,
         WatchBatch::Changes { changes, .. } if changes.is_empty())
     );
-    assert_eq!(watch.watched_directories, vec![root]);
+    let NativeWatchDriver::Source(source) = &watch.watcher else {
+        panic!("Linux demand watch owns the native registrations");
+    };
+    assert!(source.is_admitted(Path::new("")));
+    assert!(!source.is_admitted(Path::new("a")));
+    assert!(!source.is_admitted(Path::new("b")));
     Ok(())
 }

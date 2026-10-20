@@ -302,6 +302,16 @@ impl NativeSourceWatch {
         .unwrap_or(false)
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_admitted(&self, directory: &Path) -> bool {
+        self.shared
+            .watches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(path, _)| path == directory)
+    }
+
     pub(crate) fn admit_with_work<W: SourceDemandReadWork>(
         &self,
         directory: &Path,
