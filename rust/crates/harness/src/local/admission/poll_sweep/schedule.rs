@@ -118,6 +118,10 @@ pub(super) async fn drive<F: Future>(
     let mut ordinal = 0;
     loop {
         tokio::select! {
+            // Poll the caller's ready continuation before acknowledging another
+            // queued barrier. Random branch priority changes the replay order
+            // when a blocked read and an owned completion are both ready.
+            biased;
             output = &mut future => {
                 drop(future);
                 drain(schedule, events).await;
