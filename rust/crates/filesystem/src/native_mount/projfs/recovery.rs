@@ -24,6 +24,50 @@ pub(super) fn reject_stale_projection(
     }
 }
 
+// ProjFS cannot start a virtualization root below another one: marking the
+// nested directory fails with ERROR_FILE_SYSTEM_VIRTUALIZATION_INVALID_OPERATION
+// only after the destination fence and driver state exist. Reject that layout
+// first, as its own typed cause, while nothing physical has been created.
+pub(super) fn reject_nested_projection(
+    destination: &std::path::Path,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(), NativeMountError> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Foundation::ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    use windows::Win32::System::SystemServices::IO_REPARSE_TAG_PROJFS;
+    let destination = std::path::absolute(destination)?;
+    for ancestor in destination.ancestors().skip(1) {
+        // The ProjFS filter hides a virtualization root's tag from attribute
+        // queries; only the reparse buffer itself reports it.
+        let tag = (&mut &*work).attempt_io(ReadOperations.delta(1), || {
+            let file = std::fs::OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES.0)
+                .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+                .open(ancestor)?;
+            match reparse_data(&file, |data| {
+                data.first_chunk().map(|tag| u32::from_le_bytes(*tag))
+            }) {
+                Err(error)
+                    if error.raw_os_error()
+                        == i32::try_from(ERROR_FILE_SYSTEM_VIRTUALIZATION_UNAVAILABLE.0).ok() =>
+                {
+                    Ok(Some(IO_REPARSE_TAG_PROJFS))
+                }
+                result => result.map(Option::flatten),
+            }
+        })?;
+        if tag == Some(IO_REPARSE_TAG_PROJFS) {
+            return Err(NativeMountError::NestedDestination);
+        }
+    }
+    Ok(())
+}
+
 pub(in crate::native_mount) fn quarantine_crashed_destination(
     destination: &std::path::Path,
 ) -> Result<Option<std::path::PathBuf>, NativeMountError> {

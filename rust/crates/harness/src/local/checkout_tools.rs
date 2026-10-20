@@ -19,6 +19,13 @@ mod output;
 pub(super) mod publisher;
 pub(super) mod reconciliation;
 mod task_views;
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    any(target_os = "linux", windows),
+    not(acyclic_harness_loom)
+))]
+mod task_view_volumes_tests;
 #[cfg(all(test, acyclic_harness_loom))]
 mod tests;
 

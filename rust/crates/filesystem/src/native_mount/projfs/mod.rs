@@ -107,6 +107,7 @@ mod file_writer;
 use file_writer::*;
 mod staging;
 use staging::*;
+pub(super) use staging::staging_path;
 mod replacement;
 use replacement::*;
 mod session;

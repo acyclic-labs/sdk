@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn staging_path(root: &std::path::Path) -> PathBuf {
+pub(in crate::native_mount) fn staging_path(root: &std::path::Path) -> PathBuf {
     let name = root
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())

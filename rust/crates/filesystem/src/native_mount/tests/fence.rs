@@ -16,7 +16,12 @@ proptest::proptest! {
         proptest::prop_assert_eq!(reported[0].parent(), Some(parent.as_path()));
         proptest::prop_assert_eq!(&reported[1], &super::super::registry::path().unwrap());
         proptest::prop_assert_ne!(reported[0].clone(), destination.clone());
-        proptest::prop_assert_ne!(reported[1].clone(), destination);
+        proptest::prop_assert_ne!(reported[1].clone(), destination.clone());
+        #[cfg(windows)]
+        {
+            proptest::prop_assert_eq!(&reported[2], &super::super::projfs::staging_path(&destination));
+            proptest::prop_assert_eq!(reported[2].parent(), Some(parent.as_path()));
+        }
     }
 }
 

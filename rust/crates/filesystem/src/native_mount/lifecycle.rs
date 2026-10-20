@@ -164,9 +164,20 @@ pub fn mount_native_over_existing(
     }
 }
 
+/// Provider-owned paths of one destination: its fence, the process registry,
+/// and on Windows the ProjFS staging sibling.
+#[cfg(windows)]
+pub type NativeMountControlPaths = [PathBuf; 3];
+/// Provider-owned paths of one destination: its fence and the process registry.
+#[cfg(not(windows))]
+pub type NativeMountControlPaths = [PathBuf; 2];
+
 /// Exact provider metadata beside an absolute, canonical mount destination.
-/// Composed namespaces exclude these files from their parent volume's capture.
-pub fn native_mount_control_paths(destination: &Path) -> Result<[PathBuf; 2], NativeMountError> {
+/// Composed namespaces exclude these paths from their parent volume's source
+/// and capture, so a parent never lists another provider's transient state.
+pub fn native_mount_control_paths(
+    destination: &Path,
+) -> Result<NativeMountControlPaths, NativeMountError> {
     if !destination.is_absolute()
         || destination.components().any(|part| {
             matches!(
@@ -178,6 +189,9 @@ pub fn native_mount_control_paths(destination: &Path) -> Result<[PathBuf; 2], Na
         return Err(NativeMountError::InvalidDestination);
     }
     let (fence, registry) = MountDestinationGuard::paths_for_canonical(destination)?;
+    #[cfg(windows)]
+    return Ok([fence, registry, projfs::staging_path(destination)]);
+    #[cfg(not(windows))]
     Ok([fence, registry])
 }
 

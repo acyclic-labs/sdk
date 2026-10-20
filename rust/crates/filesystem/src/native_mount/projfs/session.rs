@@ -109,6 +109,7 @@ impl ProjFsSession {
         let warm = retirement.as_ref().and_then(|packet| packet.warm_namespace);
         if warm.is_none() {
             reject_stale_projection(&root)?;
+            reject_nested_projection(&root, work)?;
         }
         if warm.is_some_and(|warm| warm.root_identity != metadata_root.identity()) {
             return Err(NativeMountError::InvalidDestination);

@@ -11,6 +11,7 @@ mod metadata;
 mod metadata_errors;
 mod mutations;
 mod names;
+mod nested;
 mod notifications;
 mod projection;
 pub(super) mod read_bindings;

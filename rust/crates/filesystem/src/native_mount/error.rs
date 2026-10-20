@@ -12,6 +12,10 @@ pub enum NativeMountError {
     /// Destination must already exist and be empty.
     #[error("mount destination must be an existing empty directory")]
     InvalidDestination,
+    /// The destination lies inside another native projection, which the
+    /// platform cannot nest.
+    #[error("mount destination lies inside another native projection")]
+    NestedDestination,
     /// Another process owns this exact native destination.
     #[error("mount destination is already owned by another process")]
     DestinationBusy,

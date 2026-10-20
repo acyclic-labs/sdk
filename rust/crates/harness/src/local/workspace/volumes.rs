@@ -392,7 +392,7 @@ pub(super) fn prepare_mount_directory(root: &Path, relative: &Path) -> Result<()
     if let Some(parent) = relative.parent() {
         create_mount_directory(root, parent)?;
     }
-    let [fence, _] = controls;
+    let [fence, ..] = controls;
     match std::fs::symlink_metadata(fence) {
         Ok(_) => acyclic_fs::detach_native_mount_destination_after_crash(&destination)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

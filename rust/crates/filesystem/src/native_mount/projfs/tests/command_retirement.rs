@@ -31,7 +31,7 @@ async fn retire_after_cancellation(
         .await?;
     mount.sync().await?;
     assert_eq!(std::fs::read(destination.join("result.txt"))?, b"durable");
-    let [fence, registry] = crate::native_mount_control_paths(&destination)?;
+    let [fence, registry, _] = crate::native_mount_control_paths(&destination)?;
     let fresh =
         crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
