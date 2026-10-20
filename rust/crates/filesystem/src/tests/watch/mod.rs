@@ -247,7 +247,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         limits: VolumeLimits::default(),
         maximum_queued_changes: 1,
     };
-    let (sender, receiver) = sync_channel(1);
+    let (sender, receiver) = crate::watch_queue::bounded(1);
     let queued = Arc::new(AtomicU32::new(0));
     let shared = Arc::new(Mutex::new(SharedState::new(None)));
     for event in [
@@ -328,7 +328,7 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
         ],
     ];
     for events in scenarios {
-        let (sender, receiver) = sync_channel(1);
+        let (sender, receiver) = crate::watch_queue::bounded(1);
         let queued = Arc::new(AtomicU32::new(0));
         let shared = Arc::new(Mutex::new(SharedState::new(None)));
         for event in events {
@@ -461,7 +461,7 @@ fn access_is_ignored_but_native_rescan_and_root_removal_invalidate()
 fn bounded_callback_overflow_invalidates_instead_of_dropping_silently()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(if cfg!(windows) { r"C:\root" } else { "/root" });
-    let (sender, _receiver) = sync_channel(1);
+    let (sender, _receiver) = crate::watch_queue::bounded(1);
     let queued = Arc::new(AtomicU32::new(0));
     let shared = Arc::new(Mutex::new(SharedState::new(None)));
     let context = NativeEventContext {

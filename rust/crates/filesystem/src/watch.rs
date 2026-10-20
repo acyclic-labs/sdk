@@ -13,6 +13,7 @@ use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
 };
+use crate::watch_queue::{QueueReceiver, QueueSender};
 #[cfg(not(windows))]
 use notify::RecursiveMode;
 #[cfg(not(windows))]
@@ -24,7 +25,7 @@ use notify::{Event, EventKind};
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
@@ -374,7 +375,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 #[cfg(any(target_os = "linux", windows))]
 struct NativeEventDelivery {
     context: NativeEventContext,
-    sender: SyncSender<QueuedWatchChange>,
+    sender: QueueSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
     queued: Arc<AtomicU32>,
     fenced: Arc<Condvar>,
@@ -1115,7 +1116,7 @@ pub struct NativeWatch {
     limits: VolumeLimits,
     recursive: bool,
     watched_directories: Vec<PathBuf>,
-    receiver: Mutex<Receiver<QueuedWatchChange>>,
+    receiver: Mutex<QueueReceiver<QueuedWatchChange>>,
     held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
     windows_directories: Vec<WindowsDirectoryWatch>,
@@ -1503,7 +1504,7 @@ impl NativeWatch {
             None
         };
         Self::startup_control(work)?;
-        let (sender, receiver) = sync_channel(capacity);
+        let (sender, receiver) = crate::watch_queue::bounded(capacity);
         Self::startup_control(work)?;
         let queued = Arc::new(AtomicU32::new(0));
         Self::startup_control(work)?;
@@ -3501,7 +3502,7 @@ fn watch_host_name_with_work<W: crate::demand::SourceDemandReadWork>(
 fn accept_native_event(
     event: &notify::Result<Event>,
     context: &NativeEventContext,
-    sender: &SyncSender<QueuedWatchChange>,
+    sender: &QueueSender<QueuedWatchChange>,
     shared: &Arc<Mutex<SharedState>>,
     queued: &Arc<AtomicU32>,
 ) {

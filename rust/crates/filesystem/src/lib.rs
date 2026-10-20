@@ -69,6 +69,7 @@ pub mod access;
 mod arc_layout;
 mod operation_claim;
 mod sync;
+mod watch_queue;
 pub use acyclic_stream::{OperationClaim, OperationClaims};
 
 pub mod accounting;
