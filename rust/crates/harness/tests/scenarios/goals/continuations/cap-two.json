@@ -1,4 +1,4 @@
-{"turns":["settled-0","settled-1","Settled"],"expect":{"result":{"tasks":3,"continuations":2,"requests":3},"view":{"status":
+{"turns":["settled-0","settled-1","Settled"],"expect":{"runtime_error":"GOAL.md is blocked.","replay_runtime_error":"GOAL.md is blocked.","result":{"tasks":3,"continuations":2,"requests":3},"view":{"status":
     "blocked","reason":"Maximum goal continuations reached (limit 2)."},"files":{"GOAL.md":
     "---\nstatus: blocked\nreason: \"Maximum goal continuations reached (limit 2).\"\n---\nShip the change\n"},"requests":[{
     "messages":[{"role":"user","content":"Continue working toward GOAL.md."}]},{"messages":[{"role":"user","content":

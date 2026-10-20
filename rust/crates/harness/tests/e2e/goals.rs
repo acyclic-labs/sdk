@@ -32,6 +32,9 @@ fn one_step() -> u32 {
 pub(super) struct Expectations {
     pub text: String,
     pub runtime_error: Option<String>,
+    // Cold reopen disables future continuations. Blocked goals still report
+    // their terminal error; malformed goals are ignored with that policy off.
+    pub replay_runtime_error: Option<String>,
     pub request_prompt: String,
     pub result: Value,
     pub view: Option<Value>,
@@ -50,9 +53,13 @@ impl GoalCase {
         if case.expect.view.is_some() == case.expect.view_error.is_some() {
             return Err("expect exactly one of goal view or error".into());
         }
-        if [&case.expect.view_error, &case.expect.runtime_error]
-            .into_iter()
-            .any(|error| error.as_ref().is_some_and(String::is_empty))
+        if [
+            &case.expect.view_error,
+            &case.expect.runtime_error,
+            &case.expect.replay_runtime_error,
+        ]
+        .into_iter()
+        .any(|error| error.as_ref().is_some_and(String::is_empty))
         {
             return Err("goal error must not be empty".into());
         }

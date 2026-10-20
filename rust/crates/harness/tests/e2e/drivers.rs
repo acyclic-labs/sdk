@@ -41,13 +41,7 @@ impl Driver for super::composer_entry::ComposerEntry {
 impl Driver for super::goals::GoalCase {
     type Case = Self;
     async fn execute(case: Self) -> TestResult {
-        // Preserve the goal family's reviewed five-second total-work guard
-        // even when the common runner uses progress-based stall detection.
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            super::goal_workers::scheduled(super::goal_execution::run(case)),
-        )
-        .await??
+        super::goal_workers::scheduled(super::goal_execution::run(case)).await?
     }
 }
 

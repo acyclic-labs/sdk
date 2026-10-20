@@ -265,8 +265,11 @@ pub(super) async fn run(mut case: GoalCase) -> TestResult {
     if terminal_statuses(&reopened, &tasks).await? != statuses {
         return Err("cold reopen changed goal task status files".into());
     }
-    if reopened.resume(task_id).await?.text != case.expect.text {
-        return Err("reopened goal task changed its settled result".into());
+    let replay = reopened.resume(task_id).await;
+    match (&case.expect.replay_runtime_error, &replay) {
+        (None, Ok(output)) if output.text == case.expect.text => {}
+        (Some(expected), Err(error)) if error.to_string().contains(expected) => {}
+        _ => return Err(format!("unexpected reopened goal runtime result: {replay:?}").into()),
     }
     if provider.requests().len() != count {
         return Err("reopening a goal task redispatched the model".into());

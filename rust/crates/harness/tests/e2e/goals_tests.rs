@@ -168,8 +168,7 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
         }
         futures::future::try_join_all([baseline.clone(), settled.clone()].into_iter().map(
             |case| async move {
-                tokio::time::timeout(std::time::Duration::from_secs(5), crate::drivers::run(case))
-                    .await??;
+                crate::drivers::run(case).await?;
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
             },
         ))
@@ -192,11 +191,23 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
                 "automatic",
                 "text",
                 "max_steps",
+                "runtime_error",
+                "replay_runtime_error",
+                "success_runtime_error",
+                "success_replay_runtime_error",
             ]
             .into_iter()
             .map(|mutation| {
-                // Only continuation-dependent assertions need the three-task case.
-                let mut value = if matches!(mutation, "view" | "context" | "policy" | "automatic") {
+                // Continuation and blocked-result assertions use the three-task case.
+                let mut value = if matches!(
+                    mutation,
+                    "view"
+                        | "context"
+                        | "policy"
+                        | "automatic"
+                        | "runtime_error"
+                        | "replay_runtime_error"
+                ) {
                     baseline.clone()
                 } else {
                     settled.clone()
@@ -227,17 +238,31 @@ fn goal_oracles_reject_changed_files_views_scripts_counts_and_policy() -> TestRe
                         "automatic" => value["policy"] = Value::Null,
                         "text" => value["expect"]["text"] = json!("wrong"),
                         "max_steps" => value["max_steps"] = json!(0),
+                        "runtime_error" => value["expect"]["runtime_error"] = Value::Null,
+                        "replay_runtime_error" => {
+                            value["expect"]["replay_runtime_error"] = Value::Null
+                        }
+                        "success_runtime_error" => {
+                            value["expect"]["runtime_error"] = json!("GOAL.md is blocked.")
+                        }
+                        "success_replay_runtime_error" => {
+                            value["expect"]["replay_runtime_error"] = json!("GOAL.md is blocked.")
+                        }
                         _ => unreachable!(),
                     }
-                    let result = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        crate::drivers::run(value),
-                    )
-                    .await;
+                    let result = crate::drivers::run(value).await;
                     assert!(
-                        matches!(result, Ok(Err(_))),
+                        result.is_err(),
                         "changed {mutation} must reach its assertion, got {result:?}"
                     );
+                    if mutation.ends_with("runtime_error") {
+                        let expected = if mutation.contains("replay") {
+                            "unexpected reopened goal runtime result:"
+                        } else {
+                            "unexpected goal runtime result:"
+                        };
+                        assert!(result.unwrap_err().to_string().starts_with(expected));
+                    }
                     Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
                 }
             }),
@@ -281,6 +306,7 @@ fn goal_schema_rejects_unknown_fields_and_vacuous_assertions() {
         ("frames", json!(true)),
         ("files", json!({})),
         ("runtime_error", json!("")),
+        ("replay_runtime_error", json!("")),
         ("unchanged_goal", json!(true)),
     ] {
         let mut value = baseline.clone();

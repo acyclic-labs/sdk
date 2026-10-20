@@ -1,5 +1,5 @@
 {"turns":[[{"type":"event","kind":"tool_call","call_id":"goal-0","name":"write","arguments":{"path":
     ".volumes/scratch/GOAL.md","text":"---\nstatus: blocked\nreason: waiting\n---\nFinish the objective","media_type":
     "text/markdown","display_name":"GOAL.md"}},{"type":"event","kind":"completed","metadata":null}],"settle-0"],"expect"
-    :{"text":"settle-0","result":{"tasks":1,"continuations":0,"requests":2},"files":{"GOAL.md":
+    :{"runtime_error":"GOAL.md is blocked.","replay_runtime_error":"GOAL.md is blocked.","text":"settle-0","result":{"tasks":1,"continuations":0,"requests":2},"files":{"GOAL.md":
     "---\nstatus: blocked\nreason: waiting\n---\nFinish the objective"},"view":{"status":"blocked","reason":"waiting"}}}
