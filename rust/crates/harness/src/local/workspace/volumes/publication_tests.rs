@@ -145,7 +145,7 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
 async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
-    let task = tempfile::tempdir().map_err(storage)?;
+    let task = tempfile::tempdir_in(root.path()).map_err(storage)?;
     let blocked = tempfile::tempdir().map_err(storage)?;
     let harness = open(root.path(), state.path()).await?;
     let workspace = harness.workspace().unwrap();
@@ -172,6 +172,21 @@ async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers()
             canonical_destination(&original.destination)?
         );
     }
+    let alias = task.path().join(SCRATCH_PATH);
+    std::fs::rename(&alias, task.path().join("absolute-alias")).map_err(storage)?;
+    let relative = Path::new("../..").join(SCRATCH_PATH);
+    link_directory(&relative, &alias).map_err(storage)?;
+    let aliases = workspace.mounts_at(task.path()).await?;
+    let retained = aliases.named(Some("scratch"))?.1;
+    assert!(Arc::ptr_eq(
+        retained.view.source.as_ref().unwrap(),
+        original
+    ));
+    assert_eq!(
+        retained.native_root.as_deref(),
+        Some(original.destination.as_path())
+    );
+    assert_eq!(std::fs::read_link(&alias).map_err(storage)?, relative);
     // The former Windows entry point rebound the volume beneath the task
     // projection. This loses both the shared execution lock and the physical
     // root that ProjFS can actually mount.
