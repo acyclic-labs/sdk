@@ -31,6 +31,7 @@ mod serialization;
 pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
 pub(crate) use admission::{admit_json_value_shape, json_owned_value_shape_bounded};
 pub use records::json_value_logical_owned_bytes;
+pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,

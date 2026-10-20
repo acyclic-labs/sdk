@@ -153,6 +153,45 @@ records!(
     crate::workflow::WorkflowAdmission => WorkflowAdmission, crate::workflow::MachineCheckpoint => MachineCheckpoint, crate::workflow::WorkflowCommand => None,
 );
 impl PreparationRecord for crate::workflow::WorkflowRecord {
+    fn decoded_owned_bytes(&self) -> Result<Option<u64>> {
+        use crate::executor::json::json_value_retained_owned_bytes as value_bytes;
+        use crate::workflow::{MachineStatus, WorkflowCommand};
+        // Decode admission covers transient serde buffering. Once decoding has
+        // completed, retain only the resident DTO capacities, including sparse
+        // BTreeMap nodes in its arbitrary JSON values.
+        let overflow = || decode_allowance_error("workflow capacity inventory overflows", None);
+        let mut bytes = (size_of::<Self>() as u64)
+            .checked_add(self.idempotency_key.0.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(self.prior.machine.name.capacity() as u64))
+            .and_then(|bytes| bytes.checked_add(self.prior.machine.version.capacity() as u64))
+            .ok_or_else(overflow)?;
+        for value in [&self.prior.state, &self.input, &self.transition.state] {
+            bytes = bytes
+                .checked_add(value_bytes(value)?)
+                .ok_or_else(overflow)?;
+        }
+        bytes = bytes
+            .checked_add(
+                self.transition
+                    .commands
+                    .capacity()
+                    .checked_mul(size_of::<WorkflowCommand>())
+                    .ok_or_else(overflow)? as u64,
+            )
+            .ok_or_else(overflow)?;
+        for command in &self.transition.commands {
+            bytes = bytes
+                .checked_add(command.kind.capacity() as u64)
+                .and_then(|bytes| bytes.checked_add(command.payload.logical_owned_bytes().ok()?))
+                .ok_or_else(overflow)?;
+        }
+        let status = match &self.transition.status {
+            MachineStatus::Suspended => 0,
+            MachineStatus::Completed { value } => value_bytes(value)?,
+            MachineStatus::Failed { message } => message.capacity() as u64,
+        };
+        Ok(Some(bytes.checked_add(status).ok_or_else(overflow)?))
+    }
     fn json_value_schema() -> &'static Schema {
         Schema::WorkflowRecord
     }

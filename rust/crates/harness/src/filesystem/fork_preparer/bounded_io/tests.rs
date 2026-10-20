@@ -95,6 +95,17 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         });
         let (actual, custody) = decoded.expect("decoder ran")?;
         assert_eq!(actual, record);
+        assert_eq!(
+            custody.bytes(),
+            actual
+                .decoded_owned_bytes()?
+                .expect("audited workflow ownership")
+        );
+        assert!(
+            physical.bytes_current <= custody.bytes() as i64,
+            "resident physical={physical:?}; custody={}",
+            custody.bytes()
+        );
         assert!(physical.count_total > 0, "allocation observer is active");
         assert!(
             physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline,
