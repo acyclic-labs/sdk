@@ -845,8 +845,10 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
         .await
         .unwrap();
     assert!(matches!(
-        fixture.execute().await.unwrap().0,
-        EffectStatus::Indeterminate
+        fixture.execute().await,
+        Err(Error::NativeWorkspace { source, .. })
+            if matches!(*source, acyclic_fs::WorkspaceError::Filesystem(
+                acyclic_fs::FsError::CreationRejected))
     ));
     let dispatch = fixture.dispatch().await;
     assert!(
@@ -991,8 +993,11 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
         if fault == "operation" {
             bound.unwrap();
             assert!(matches!(
-                fixture.execute().await.unwrap().0,
-                EffectStatus::Indeterminate
+                fixture.execute().await,
+                Err(Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Invalid,
+                    reason: "ROOT conversation changed during original binding admission",
+                })
             ));
             let dispatch = fixture.dispatch().await;
             assert!(
