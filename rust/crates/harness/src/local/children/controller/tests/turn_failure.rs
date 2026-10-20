@@ -248,13 +248,27 @@ async fn child_tool_failure_is_a_typed_wait_result_and_parent_completes() -> Res
         .map_err(storage)?
         .snapshot
         .unwrap();
-    assert!(snapshot.files.iter().any(|f| matches!(
-        f.key,
-        FileKey::Child {
-            file: ChildFile::Result(2),
-            ..
-        }
-    )));
+    let recovered = snapshot
+        .files
+        .iter()
+        .find(|file| {
+            matches!(
+                file.key,
+                FileKey::Child {
+                    file: ChildFile::Result(2),
+                    ..
+                }
+            )
+        })
+        .expect("second child result");
+    let recovered =
+        crate::task_volume::ChildTurnResult::parse(&recovered.bytes).map_err(storage)?;
+    assert_eq!(recovered.task, status.task);
+    assert!(
+        matches!(recovered.outcome, crate::Outcome::Succeeded(ref output)
+        if output.text == "child recovered")
+    );
+    assert_eq!(provider.requests().len(), 2);
     host.cancel(status.task).await?;
     Ok(())
 }
