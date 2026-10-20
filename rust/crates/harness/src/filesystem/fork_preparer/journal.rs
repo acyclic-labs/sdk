@@ -50,7 +50,10 @@ pub(crate) fn seed_digest(
             .as_mut()
             .map(|history| history as &mut dyn crate::store::history::HistoryIo),
     )?;
-    record_digest(seed, maximum_bytes, io)
+    let digest = record_digest(seed, maximum_bytes, io)?;
+    #[cfg(test)]
+    acyclic_test_support::differential::record(("fork seed digest", 1u64));
+    Ok(digest)
 }
 
 pub(super) fn record_digest<T: Serialize>(

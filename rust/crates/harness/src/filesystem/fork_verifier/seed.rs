@@ -89,14 +89,35 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         volume: &VolumeRef,
         io: &PreparationIo,
     ) -> Result<()> {
+        let mut digest = None;
+        self.allocation_with_digest(seed, volume, &mut digest, io)
+            .await
+    }
+
+    async fn allocation_with_digest(
+        &self,
+        seed: &ForkSeed,
+        volume: &VolumeRef,
+        digest: &mut Option<[u8; 32]>,
+        io: &PreparationIo,
+    ) -> Result<()> {
+        // A verification borrows one immutable seed. Its binding digest is
+        // shared by every allocated volume, while every claim and binding is
+        // still read and authenticated independently below.
+        let digest = match digest {
+            Some(digest) => *digest,
+            missing => {
+                let calculated = crate::filesystem::fork_preparer::seed_digest(
+                    seed,
+                    16 * 1024 * 1024,
+                    Some(io),
+                )?;
+                *missing = Some(calculated);
+                calculated
+            }
+        };
         self.host
-            .read_fork_allocation(
-                seed,
-                volume,
-                crate::filesystem::fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(io))?,
-                16 * 1024 * 1024,
-                Some(io),
-            )
+            .read_fork_allocation(seed, volume, digest, 16 * 1024 * 1024, Some(io))
             .await
             .map(|_| ())
     }
@@ -122,8 +143,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
     pub(super) async fn verify_seed(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
         seed.validate(&mut Some(&mut io.history_io()))?;
+        let mut digest = None;
         if seed.child_private_volume.provider() == &self.host.provider {
-            self.allocation(seed, &seed.child_private_volume, io)
+            self.allocation_with_digest(seed, &seed.child_private_volume, &mut digest, io)
                 .await?;
         }
         for resource in &seed.resources {
@@ -140,7 +162,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ) = (&resource.source, &resource.revision)
                 && source.provider() == &self.host.provider
             {
-                self.allocation(seed, child, io).await?;
+                self.allocation_with_digest(seed, child, &mut digest, io)
+                    .await?;
                 let source = self.pinned(source, fork_point, io).await?;
                 let child = self.pinned(child, initial, io).await?;
                 if !io.sdk(
@@ -542,3 +565,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(())
     }
 }
+
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod allocation_tests;

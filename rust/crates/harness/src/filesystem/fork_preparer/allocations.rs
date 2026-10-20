@@ -568,6 +568,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         drop(journal);
         drop(journal_hold);
+        #[cfg(test)]
+        acyclic_test_support::differential::record(("fork allocation verified", 1u64));
         Ok((claim, claim_hold))
     }
 
