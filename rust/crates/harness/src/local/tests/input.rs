@@ -137,6 +137,16 @@ async fn composer_duplicate_and_unsafe_sources_fail_before_model_work() -> Resul
             .await,
         Err(Error::Conflict(_))
     ));
+    // Unrelated invalid sources never block a command no source defines.
+    assert!(matches!(
+        harness
+            .resolve_input(OperationId::new(), "/shell echo hello")
+            .await?,
+        CommandResolution::Tool {
+            tool: crate::client::CommandTool::Bash,
+            ..
+        }
+    ));
     for input in [
         "inspect @../outside",
         "inspect @/.system/secret",

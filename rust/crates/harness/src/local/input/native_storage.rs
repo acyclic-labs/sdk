@@ -190,7 +190,8 @@ mod tests {
         let frontier_bytes =
             (3 * std::mem::size_of::<NativePath>() + "first".len() + "second".len() - 1) as u64;
         let work = ledger(acyclic_fs::WorkBudget {
-            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + frontier_bytes,
+            peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes()
+                + frontier_bytes,
             ..acyclic_fs::performance::BOUNDARY_BUDGET
         });
         let baseline = work.live_allocation_bytes();

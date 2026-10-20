@@ -33,6 +33,7 @@ pub(super) struct ComposerEntry {
 /// Every case runs through each entry point against a fresh harness.
 #[derive(Clone, Copy, Debug)]
 enum Entry {
+    #[cfg(feature = "tui")]
     /// `local_ui` session and TUI submit effect, consumed by the stock runner.
     Tui,
     /// `graphcoder -p`.
@@ -75,7 +76,15 @@ impl ComposerEntry {
     }
 
     pub(super) async fn run(self) -> TestResult {
-        for entry in [Entry::Tui, Entry::Prompt, Entry::Jsonl] {
+        // The TUI composer binding exists only in `tui` builds; GraphCoder
+        // always enables it, and the headless entries run in every build.
+        let entries = [
+            #[cfg(feature = "tui")]
+            Entry::Tui,
+            Entry::Prompt,
+            Entry::Jsonl,
+        ];
+        for entry in entries {
             Box::pin(self.run_entry(entry))
                 .await
                 .map_err(|error| format!("{entry:?} entry: {error}"))?;
@@ -102,8 +111,6 @@ impl ComposerEntry {
         let outcome = match entry {
             #[cfg(feature = "tui")]
             Entry::Tui => Box::pin(tui(&harness, reader.as_ref(), &self.prompt)).await,
-            #[cfg(not(feature = "tui"))]
-            Entry::Tui => Err("TUI entry cases require the tui feature".into()),
             Entry::Prompt | Entry::Jsonl => {
                 Box::pin(headless(harness.clone(), entry, &self.prompt)).await
             }

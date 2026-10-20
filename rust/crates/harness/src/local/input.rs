@@ -405,7 +405,10 @@ impl ComposerInput {
             directory: prefix.clone(),
         };
         let limits = ContextDiscoveryLimits::default();
-        let catalog = if commands && text.trim_start().starts_with('/') {
+        let catalog = if commands
+            && text.trim_start().starts_with('/')
+            && !catalog.selects_sourceless(text, self.maximum_bytes)?
+        {
             let mut pending = native_storage::PathFrontier::new(&work)?;
             for path in [".claude/commands", ".codex/prompts"] {
                 pending.push(native_storage::path(&work, &[path])?)?;
