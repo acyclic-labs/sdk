@@ -1,0 +1,2 @@
+{"prompt":"compare @a.txt with @notes/b.md and @a.txt",
+ "expect":{"user_text":"compare @a.txt with @notes/b.md and @a.txt","attachments":["alpha-bytes\n","beta-bytes\n"]}}

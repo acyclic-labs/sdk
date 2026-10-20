@@ -1,0 +1,3 @@
+{"seed":{".claude/commands/check.md":"Check @a.txt for $ARGUMENTS"},
+ "prompt":"/check typos",
+ "expect":{"user_text":"Check @a.txt for typos","attachments":["alpha-bytes\n"]}}

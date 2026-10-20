@@ -2,6 +2,7 @@
 #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
 mod agents;
 mod composer;
+mod composer_entry;
 mod deadline_tests;
 mod discovery;
 mod drivers;

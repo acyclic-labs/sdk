@@ -1,0 +1,3 @@
+{"home":{".claude/commands/greet.md":"Hello $ARGUMENTS from home"},
+ "prompt":"/greet world",
+ "expect":{"user_text":"Hello world from home","absent":["/greet"]}}

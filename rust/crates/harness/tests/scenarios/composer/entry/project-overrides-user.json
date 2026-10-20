@@ -1,0 +1,4 @@
+{"seed":{".claude/commands/review.md":"Project review $ARGUMENTS"},
+ "home":{".claude/commands/review.md":"User review $ARGUMENTS"},
+ "prompt":"/review api",
+ "expect":{"user_text":"Project review api","absent":["User review"]}}

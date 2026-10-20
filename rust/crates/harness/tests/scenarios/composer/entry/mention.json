@@ -1,0 +1,2 @@
+{"prompt":"summarize @a.txt",
+ "expect":{"user_text":"summarize @a.txt","attachments":["alpha-bytes\n"]}}
