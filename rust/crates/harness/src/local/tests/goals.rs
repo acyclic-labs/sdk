@@ -35,6 +35,22 @@ async fn local_goal_scenarios_follow_ordinary_frames_and_files() -> Result<()> {
     Ok(())
 }
 
+/// Negative control: a frame the execution never publishes fails at the
+/// execution's accepted tail instead of waiting on a clock.
+#[tokio::test]
+async fn a_missing_goal_frame_fails_at_the_execution_tail() -> Result<()> {
+    let mut case = cases()?.remove(0);
+    case.tasks += 1;
+    let Err(error) = run(case).await else {
+        panic!("an unpublished frame was accepted");
+    };
+    assert!(
+        format!("{error:?}").contains("goal scenario stalled"),
+        "{error:?}"
+    );
+    Ok(())
+}
+
 fn cases() -> Result<Vec<Case>> {
     let cases: Vec<Case> =
         serde_json::from_str(include_str!("goals.json")).map_err(super::super::storage)?;
@@ -68,24 +84,45 @@ async fn run(case: Case) -> Result<()> {
     else {
         panic!("{}", case.name)
     };
+    let events = StreamPath::new("harness/v3/coordinator/events").map_err(super::super::storage)?;
     let mut followed = stream
-        .follow(
-            StreamPath::new("harness/v3/coordinator/events").map_err(super::super::storage)?,
-            0,
-        )
+        .follow(events.clone(), 0)
         .await
         .map_err(super::super::storage)?;
-    let execution = async { check_output(&case, harness.resume(task_id).await) };
+    // The finished execution's accepted tail bounds its frames. A frame still
+    // missing once the follow reaches that tail is a stall, reported without
+    // any wall-clock budget.
+    let (finished, mut horizon) = tokio::sync::watch::channel(None::<u64>);
+    let execution = async {
+        let output = check_output(&case, harness.resume(task_id).await);
+        let tail = stream
+            .tail(events.clone())
+            .await
+            .map_err(super::super::storage)?;
+        finished.send_replace(Some(tail));
+        output
+    };
     let frames = async {
         let mut admitted = Vec::new();
         let mut completed = Vec::new();
         let mut revision = 0;
+        let mut next = 0;
         while completed.len() < case.tasks {
-            let record = followed
-                .try_next()
-                .await
-                .map_err(super::super::storage)?
-                .expect("live task frames ended");
+            let record = tokio::select! {
+                biased;
+                record = followed.try_next() => record
+                    .map_err(super::super::storage)?
+                    .expect("live task frames ended"),
+                _ = horizon.wait_for(|tail| tail.is_some_and(|tail| tail <= next)) => {
+                    return Err(Error::Invalid(format!(
+                        "goal scenario stalled: {}: {} of {} tasks completed by its tail {next}",
+                        case.name,
+                        completed.len(),
+                        case.tasks,
+                    )));
+                }
+            };
+            next = record.sequence + 1;
             let frame = crate::wire::SchedulerEventEnvelope::decode(record.value.as_ref())
                 .map_err(super::super::storage)?;
             assert_eq!(frame.revision, revision + 1, "{}", case.name);
@@ -108,12 +145,7 @@ async fn run(case: Case) -> Result<()> {
         assert_eq!(admitted[0], operation);
         Ok::<_, Error>(admitted)
     };
-    let (_, admitted) = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        futures::future::try_join(execution, frames),
-    )
-    .await
-    .expect("goal scenario stalled")?;
+    let (_, admitted) = futures::future::try_join(execution, frames).await?;
     #[cfg(feature = "native-execution")]
     if case.tasks > 1 {
         let requests =
