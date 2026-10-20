@@ -780,43 +780,44 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
             .reconcile_with_native_work(dispatch.attempt_id, &fixture.startup)
             .unwrap()
             .await;
-        if boundary == 3 {
-            assert!(recovered.is_err());
-            assert!(
-                fixture
-                    .resources
-                    .fs
-                    .open_workspace(
-                        &fixture
-                            .request
-                            .binding
-                            .scratch
-                            .volume
-                            .storage_name(&mut None)
-                            .unwrap(),
-                        &fixture.startup,
-                        fixture.startup.cancellation()
-                    )
-                    .await
-                    .is_err()
-            );
-        } else {
-            let recovered = recovered.unwrap().unwrap();
-            assert!(matches!(recovered.0.status, EffectStatus::Succeeded { .. }));
-            let original = reopened
-                .creation_with_native_work(
-                    dispatch.effect_id,
-                    dispatch.attempt_id,
-                    key,
-                    volume,
-                    VolumeConfig::native(Lifecycle::Durable),
+        assert!(matches!(
+            recovered,
+            Err(Error::NativeBoundary {
+                code: ErrorCode::Unauthorized,
+                reason: "original creation exists without immutable root attachment input",
+            })
+        ));
+        assert!(
+            fixture
+                .resources
+                .fs
+                .open_workspace(
+                    &fixture
+                        .request
+                        .binding
+                        .scratch
+                        .volume
+                        .storage_name(&mut None)
+                        .unwrap(),
                     &fixture.startup,
+                    fixture.startup.cancellation()
                 )
                 .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(original.workspace().id(), generation.workspace().id());
-        }
+                .is_err()
+        );
+        let original = reopened
+            .creation_with_native_work(
+                dispatch.effect_id,
+                dispatch.attempt_id,
+                key,
+                volume,
+                VolumeConfig::native(Lifecycle::Durable),
+                &fixture.startup,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.workspace().id(), generation.workspace().id());
         assert_eq!(
             std::fs::read(fixture.native.join("untouched.txt")).unwrap(),
             b"original native bytes"
