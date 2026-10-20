@@ -2,7 +2,12 @@ use super::*;
 
 #[test]
 fn cancelling_a_goal_driver_cancels_its_original_worker() -> TestResult {
-    crate::scenario_runtime()?.block_on(async {
+    // One executor thread makes the ready signal observable only after the
+    // worker's poll has returned Pending on the unreleased channel.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
         struct Retired(Option<tokio::sync::oneshot::Sender<()>>);
         impl Drop for Retired {
             fn drop(&mut self) {
