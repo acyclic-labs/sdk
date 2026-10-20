@@ -53,7 +53,15 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
                         payload: payload.clone(),
                     })
                     .collect(),
-                status: MachineStatus::Suspended,
+                status: match count {
+                    2 => MachineStatus::Completed {
+                        value: serde_json::json!({"result": ["done", {"nested": true}]}),
+                    },
+                    4 => MachineStatus::Failed {
+                        message: "failed".repeat(20),
+                    },
+                    _ => MachineStatus::Suspended,
+                },
             },
         };
         let bytes =

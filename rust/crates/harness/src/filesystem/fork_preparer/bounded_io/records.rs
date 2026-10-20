@@ -180,9 +180,10 @@ impl PreparationRecord for crate::workflow::WorkflowRecord {
             )
             .ok_or_else(overflow)?;
         for command in &self.transition.commands {
+            let payload = command.payload.logical_owned_bytes()?;
             bytes = bytes
                 .checked_add(command.kind.capacity() as u64)
-                .and_then(|bytes| bytes.checked_add(command.payload.logical_owned_bytes().ok()?))
+                .and_then(|bytes| bytes.checked_add(payload))
                 .ok_or_else(overflow)?;
         }
         let status = match &self.transition.status {
