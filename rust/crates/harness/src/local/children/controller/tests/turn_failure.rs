@@ -40,6 +40,13 @@ impl ToolExecutor for RejectedHook {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async { panic!("rejected child tool must not execute") })
     }
+    fn reconcile<'a>(
+        &'a self,
+        _: ToolInvocation,
+        _: Option<ToolContext>,
+    ) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 struct WaitingParent<'a>(&'a dyn TaskCommandHost, &'a ToolRegistry);
