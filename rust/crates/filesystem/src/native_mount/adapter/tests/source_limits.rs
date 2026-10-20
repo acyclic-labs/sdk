@@ -185,7 +185,7 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                     Some(meter.as_ref()),
                 )?;
                 #[cfg(windows)]
-                {
+                let data = {
                     // An overlapped read reserves both submission and completion
                     // before issuing either call. A one-operation volume cannot
                     // start it, and must not borrow the root's larger allowance.
@@ -201,9 +201,9 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                     assert_eq!(root.receipt().source_bytes_read, prefix.source_bytes_read);
                     assert_eq!(volume.remaining()?.backend_read_operations, 1);
                     None
-                }
+                };
                 #[cfg(not(windows))]
-                {
+                let data = {
                     let data = read?;
                     assert_eq!(data.0.as_ref(), b"original");
                     assert_eq!(volume.remaining()?.backend_read_operations, 0);
@@ -229,9 +229,10 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
                         ),
                         (prefix.backend_read_operations, prefix.source_bytes_read),
                     );
-                    assert!(!local_stop.is_cancelled());
                     Some(data)
-                }
+                };
+                assert!(!local_stop.is_cancelled());
+                data
             };
         assert!(!root_stop.is_cancelled());
         assert!(!source.cancellation.is_cancelled());
