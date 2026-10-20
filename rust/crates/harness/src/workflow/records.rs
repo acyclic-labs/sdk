@@ -108,6 +108,9 @@ impl WorkflowRecord {
     pub fn validate(&self, io: Option<&PreparationIo>) -> Result<()> {
         validate_key(&self.idempotency_key, io)?;
         with_history_io(io, |work| {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.check_cancellation()?;
+            }
             let maximum = work
                 .as_deref()
                 .map(|work| work.remaining())
