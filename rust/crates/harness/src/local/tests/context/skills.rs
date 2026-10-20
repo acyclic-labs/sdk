@@ -36,6 +36,7 @@ async fn hard_linked_skill_pins_the_shadow_identity_without_loading_its_body() -
         &mut accounting,
     )
     .await?;
+    let cut = view.snapshot(&mut accounting).await?;
     let skills = harness.skills().await?;
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].description, "Updated through alias");
@@ -49,6 +50,23 @@ async fn hard_linked_skill_pins_the_shadow_identity_without_loading_its_body() -
     )
     .await?;
     let reader = harness.context_reader()?;
+    // Negative control for the former catalog pin: the original alias is not
+    // present in the authored namespace, even though its shadow is readable.
+    let former = crate::context::PinnedContextPath {
+        root: crate::context::ContextRoot {
+            volume: harness.project.clone(),
+            directory: ".agents/skills".into(),
+        },
+        generation: crate::resources::GenerationRef::new(
+            harness.project.provider(),
+            &cut.authored_generation.digest().into_bytes(),
+            None,
+            None,
+        )?
+        .0,
+        path: ".agents/skills/greet2/SKILL.md".into(),
+    };
+    assert!(former.read(reader.as_ref(), 4096).await.is_err());
     let (_, bytes) = skills[0].source.read(reader.as_ref(), 4096).await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());
     Ok(())
