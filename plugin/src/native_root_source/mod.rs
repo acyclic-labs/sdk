@@ -148,7 +148,7 @@ mod tests {
             .runtime
             .task_context_with_native_work(task, &fixture.fence, work)
             .await?;
-        let journal = context.journal_owner::<LocalStream>(&fixture.fence, work)?;
+        let journal = context.journal_owner::<acyclic_stream::LocalStream>(&fixture.fence, work)?;
         if context.durable_task_id() != Some(task) || journal.task_id() != task {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
