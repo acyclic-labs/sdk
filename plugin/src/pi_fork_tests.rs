@@ -50,20 +50,17 @@ impl Fixture {
         let handle = handles.remove(key).unwrap();
         let task = root.request.binding.task_id;
         let fence = LeaseFence::from(&root.lease.reservation);
-        let journal = Arc::new(
-            root.runtime
-                .runtime
-                .task_host()
-                .journal_owner(task, &(fence.clone()), None)
-                .await
-                .unwrap(),
-        );
         let context = root
             .runtime
             .runtime
-            .task_context(task, fence)
+            .task_context_with_native_work(task, &fence, &root.startup)
             .await
             .unwrap();
+        let journal = Arc::new(
+            context
+                .journal_owner::<LocalStream>(&fence, &root.startup)
+                .unwrap(),
+        );
         Self {
             root_handle: handle,
             context,
