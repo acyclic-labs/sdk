@@ -1,6 +1,96 @@
 use super::*;
 
 #[tokio::test]
+async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let directory = tempfile::tempdir()?;
+    let store = StagedObjects::open(
+        crate::MemoryObjectStore::default(),
+        directory.path().to_owned(),
+    )
+    .await?;
+    let token = CancellationToken::new();
+    let (id, bytes) = blob(OwnedBytes::from_static(b"already durable immutable bytes"));
+    store
+        .inner()
+        .put(
+            id,
+            bytes.clone(),
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    // A publication can remain suspended on this runtime. Neither a direct
+    // read nor a batch read of an already durable object depends on its spill.
+    let _publication = store.spill_io.write().await;
+    for native in [false, true] {
+        let original = NativeMaterializationWork::new(native_read_budget(), &token)
+            .map_err(|(cause, _)| cause)?;
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(native_read_budget(), &token)
+        };
+        let mut future = std::pin::pin!(store.read(id, bytes.len() as u64, &mut work));
+        let Poll::Ready(result) =
+            Future::poll(future.as_mut(), &mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("durable read waited for an unrelated spill publication");
+        };
+        assert_eq!(result?.bytes, bytes);
+        drop(future);
+        let requests = [ObjectReadRequest {
+            object_id: id,
+            maximum_bytes: bytes.len() as u64,
+        }];
+        let mut work = if native {
+            AuthorityWork::native(&original, &token)
+        } else {
+            AuthorityWork::new(native_read_budget(), &token)
+        };
+        let mut future = std::pin::pin!(store.read_many(&requests, &mut work));
+        let Poll::Ready(result) =
+            Future::poll(future.as_mut(), &mut Context::from_waker(Waker::noop()))
+        else {
+            panic!("durable batch read waited for an unrelated spill publication");
+        };
+        assert_eq!(result?.0[0].bytes, bytes);
+    }
+    let denied = NativeMaterializationWork::new(
+        WorkBudget {
+            object_bytes_read: 0,
+            ..native_read_budget()
+        },
+        &token,
+    )
+    .map_err(|(cause, _)| cause)?;
+    assert!(
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut AuthorityWork::native(&denied, &token)
+            )
+            .await
+            .is_err()
+    );
+    assert_eq!(denied.receipt().object_bytes_read, 0);
+    token.cancel();
+    assert!(
+        store
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut AuthorityWork::new(native_read_budget(), &token)
+            )
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_drain_keeps_objects_private_until_a_durable_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
