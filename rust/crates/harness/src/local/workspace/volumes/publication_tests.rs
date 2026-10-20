@@ -1,6 +1,49 @@
 use super::*;
 use crate::test_support::{ScriptedModelProvider, ScriptedTurn};
 
+fn write_projected(path: &Path, bytes: &[u8]) -> Result<()> {
+    #[cfg(windows)]
+    {
+        // ProjFS suppresses notifications for its provider process. Exercise
+        // the physical command boundary from a separate client process.
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new(std::env::current_exe().map_err(storage)?)
+                .args([
+                    "--exact",
+                    "local::workspace::volumes::publication_tests::external_projection_writer",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_TEST_PROJECTION_PATH", path)
+                .env(
+                    "ACYCLIC_TEST_PROJECTION_BYTES",
+                    std::str::from_utf8(bytes).map_err(storage)?,
+                ),
+            std::time::Duration::from_secs(5),
+            4096,
+        )
+        .map_err(storage)?;
+        if !output.status.success() {
+            return Err(Error::Storage(format!(
+                "projection client failed: {output:?}"
+            )));
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    std::fs::write(path, bytes).map_err(storage)
+}
+
+#[cfg(windows)]
+#[test]
+fn external_projection_writer() -> Result<()> {
+    let Some(path) = crate::test_support::environment("ACYCLIC_TEST_PROJECTION_PATH") else {
+        return Ok(());
+    };
+    let bytes = crate::test_support::environment("ACYCLIC_TEST_PROJECTION_BYTES")
+        .ok_or_else(|| Error::Invalid("projection client has no bytes".into()))?;
+    std::fs::write(path, bytes.to_string_lossy().as_bytes()).map_err(storage)
+}
+
 async fn open(root: &Path, state: &Path) -> Result<crate::LocalHarness> {
     let model = crate::model::Model::new(
         "scripted".into(),
@@ -57,7 +100,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
         .as_ref()
         .unwrap();
     native_scope(mounts, async |claims| {
-        std::fs::write(scratch.destination.join("data"), b"acknowledged").map_err(storage)?;
+        write_projected(&scratch.destination.join("data"), b"acknowledged")?;
         Ok(((), claims))
     })
     .await?;
@@ -70,7 +113,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
     let destination = scratch.destination.clone();
     let mut cancelled = Box::pin(native_scope(mounts, async |claims| {
         tokio::task::spawn_blocking(move || {
-            std::fs::write(destination.join("data"), b"unverified").unwrap();
+            write_projected(&destination.join("data"), b"unverified").unwrap();
             started.send(()).unwrap();
             released.recv().unwrap();
             worker_cleaned.store(true, std::sync::atomic::Ordering::Release);
@@ -100,7 +143,7 @@ async fn cancelled_command_retires_before_next_entrant_and_preserves_acknowledge
             b"acknowledged"
         );
         assert_eq!(published(scratch, "/data").await?, b"acknowledged");
-        std::fs::write(scratch.destination.join("data"), b"next verified").map_err(storage)?;
+        write_projected(&scratch.destination.join("data"), b"next verified")?;
         Ok(((), claims))
     }));
     assert!(
@@ -133,7 +176,7 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     let root = projection_root(&scratch.destination, SCRATCH_PATH)?;
     let first = scratch.enter(root, SCRATCH_PATH, false).await?;
     let unverified = scratch.enter(root, SCRATCH_PATH, false).await?;
-    std::fs::write(scratch.destination.join("data"), b"unverified").map_err(storage)?;
+    write_projected(&scratch.destination.join("data"), b"unverified")?;
     scratch.leave(first).await?;
     assert_eq!(published(scratch, "/data").await?, b"unverified");
     scratch.abandon(unverified).await?;
@@ -214,9 +257,11 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         &mounts.root,
         &mounts.named(None)?.1.view.volume,
         None,
-        [("scratch", Arc::clone(scratch)), ("zzz", Arc::clone(&blocked))].map(
-            |(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source)),
-        ),
+        [
+            ("scratch", Arc::clone(scratch)),
+            ("zzz", Arc::clone(&blocked)),
+        ]
+        .map(|(name, source)| (name.to_owned(), mount.view.volume.clone(), Some(source))),
     )?;
     assert_eq!(
         ordered_mounts(&table)?
