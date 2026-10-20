@@ -47,8 +47,8 @@ thread_local! {
     pub(super) static UNTOKENED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a root without stable ids is keyed on its id.
     pub(super) static UNSTABLE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Negative control: persist a Unix device number across remounts.
-    pub(super) static DEVICE_KEYED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: discard the volume component of a strong witness.
+    pub(super) static DISCARD_VOLUME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -153,7 +153,11 @@ impl Checkout {
             let root = acyclic_fs::hold_root(&path).map_err(storage)?;
             let incarnation = root.incarnation().map_err(storage)?;
             let token = incarnation_token(&root)?;
-            let (object, generation) = (incarnation.identity.to_bytes(), incarnation.generation);
+            // The witness scopes the object id by the durable volume, never by
+            // a device number a remount may reassign.
+            let mut object = incarnation.identity.to_bytes();
+            object[..8].copy_from_slice(&incarnation.volume.to_le_bytes());
+            let generation = incarnation.generation;
             #[cfg(test)]
             let (object, generation) = INJECTED.get().unwrap_or((object, generation));
             Ok(Self {
@@ -215,7 +219,14 @@ impl RootWitness {
     #[cfg(any(test, feature = "native-execution"))]
     pub(super) fn capture(object: [u8; 16], generation: acyclic_fs::NativeRootGeneration) -> Self {
         use acyclic_fs::NativeRootGeneration;
-        let object = durable_object(object);
+        #[cfg(test)]
+        let object = if DISCARD_VOLUME.get() {
+            let mut object = object;
+            object[..8].fill(0);
+            object
+        } else {
+            object
+        };
         match generation {
             NativeRootGeneration::FileHandle(handle) => Self::FileHandle { object, handle },
             NativeRootGeneration::StableObjectId => Self::StableObjectId(object),
@@ -249,23 +260,11 @@ impl RootWitness {
     }
 }
 
-/// Unix st_dev identifies the current kernel device assignment, not the
-/// persisted volume. A remount/reboot may renumber it while the same inode,
-/// generation and checkout token remain. The token supplies volume scope.
-#[cfg(any(test, feature = "native-execution"))]
-fn durable_object(object: [u8; 16]) -> [u8; 16] {
-    #[cfg(unix)]
-    let object = {
-        #[cfg(test)]
-        if DEVICE_KEYED.get() {
-            return object;
-        }
-        let mut object = object;
-        object[..8].fill(0);
-        object
-    };
-    object
-}
+// Keep the full physical witness, including its durable volume component. A
+// token locates state but cannot authenticate the filesystem that contains it.
+// The volume is the platform's durable filesystem id where one exists (Linux
+// f_fsid, Windows volume serial); on macOS it is st_dev, so a remount that
+// renumbers the device refuses attachment rather than trusting a copied token.
 
 impl Owner {
     pub(super) fn open(

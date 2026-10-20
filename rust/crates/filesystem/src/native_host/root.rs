@@ -55,9 +55,16 @@ impl HostRoot {
         let generation = stable_object_ids(reports_every_change(&self.directory, work)?);
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let generation = stable_object_ids(false);
+        #[cfg(target_os = "linux")]
+        let volume = durable_volume(&self.directory, self.identity.device, work)?;
+        // A Windows volume serial number is durable; a BSD `f_fsid` is the
+        // device number, so the device is already the best volume witness.
+        #[cfg(not(target_os = "linux"))]
+        let volume = self.identity.device;
         Ok(crate::NativeRootIncarnation {
             identity: self.identity,
             generation,
+            volume,
         })
     }
     #[cfg(unix)]
@@ -484,6 +491,31 @@ pub(crate) const fn same_windows_attributes(before: u32, after: u32) -> bool {
     let marks = before & MARKS;
     let ignored = marks | if before & 0x0040_0000 != 0 { 0x20 } else { 0 };
     before & !ignored == after & !ignored && after & MARKS & !marks == 0
+}
+
+/// The durable id of the filesystem holding `directory`. Linux `st_dev` is the
+/// kernel's current device assignment and may be renumbered across remounts
+/// (btrfs subvolumes, device-mapper minors, probe order), while UUID-backed
+/// filesystems derive `f_fsid` from the volume itself. A filesystem reporting
+/// no `f_fsid` keeps its device number as the volume scope.
+#[cfg(target_os = "linux")]
+fn durable_volume<W: NativeHostWork<Error = DemandError>>(
+    directory: &Dir,
+    device: u64,
+    work: &mut W,
+) -> Result<u64, DemandError> {
+    let fsid = retry_io(work, READ, || {
+        #[cfg(test)]
+        stat_probe::event("fsid");
+        #[cfg(test)]
+        if let Some(error) = stat_probe::fault("fsid") {
+            return Err(error);
+        }
+        rustix::fs::fstatvfs(directory)
+            .map(|stat| stat.f_fsid)
+            .map_err(io::Error::from)
+    })?;
+    Ok(if fsid == 0 { device } else { fsid })
 }
 
 /// A filesystem whose object ids stay stable for a root's lifetime, or one

@@ -2,7 +2,7 @@
 //! the root's object id where the filesystem keeps it stable.
 use super::super::config::LocalProject;
 use super::super::owner::{
-    Checkout, DEVICE_KEYED, INJECTED, Owner, RootWitness, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED,
+    Checkout, DISCARD_VOLUME, INJECTED, Owner, RootWitness, STATE_ROOT, UNSTABLE_KEYED, UNTOKENED,
     directory, incarnation_of, state_directory_in,
 };
 use super::*;
@@ -20,7 +20,7 @@ impl Drop for Reset {
         INJECTED.set(None);
         UNTOKENED.set(false);
         UNSTABLE_KEYED.set(false);
-        DEVICE_KEYED.set(false);
+        DISCARD_VOLUME.set(false);
         STATE_ROOT.set(None);
         super::super::workspace::follow_path(false);
     }
@@ -69,6 +69,40 @@ fn recreations_attach_new_state(steps: &[bool]) -> std::result::Result<(), Strin
             owners.push(owner);
         }
     }
+    Ok(())
+}
+
+/// An initially unverifiable root retains token continuity, rather than
+/// accidentally binding transient object numbers into its state selector.
+#[tokio::test]
+async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> Result<()> {
+    async fn renumbered(keyed: bool) -> Result<Result<()>> {
+        let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+        let state = tempfile::tempdir().map_err(super::super::storage)?;
+        let config = || {
+            super::checkout_config(workspace.path(), (model()?, text()))
+                .map(|config| config.state_directory(state.path()))
+        };
+        let _reset = Reset;
+        UNSTABLE_KEYED.set(keyed);
+        INJECTED.set(Some(([1; 16], Unstable)));
+        let harness = LocalHarness::open(config()?).await?;
+        super::checkout_reopen::run(&harness).await?;
+        harness.close().await?;
+        INJECTED.set(Some(([2; 16], Unstable)));
+        Ok(match LocalHarness::open(config()?).await {
+            Ok(harness) => {
+                super::checkout_reopen::run(&harness).await?;
+                harness.close().await
+            }
+            Err(error) => Err(error),
+        })
+    }
+    renumbered(false).await??;
+    assert!(matches!(
+        renumbered(true).await?,
+        Err(Error::Unauthorized(_))
+    ));
     Ok(())
 }
 
@@ -150,64 +184,32 @@ async fn a_checkout_recreated_on_a_reused_object_id_opens_new_state() -> Result<
     Ok(())
 }
 
-/// Reopen explicit state after a remount: an unstable filesystem may renumber
-/// everything, while a stable one may renumber the Unix device alone. Controls
-/// restore either unstable object ids or the mount's device number to the key.
+/// Unstable roots retain token continuity; a strong physical witness cannot
+/// authenticate another volume merely because its object number is identical.
 #[tokio::test]
-async fn a_checkout_without_stable_ids_reopens_its_state_after_renumbering() -> Result<()> {
-    async fn renumbered(
-        keyed: bool,
-        generation: acyclic_fs::NativeRootGeneration,
-    ) -> Result<Result<()>> {
-        let workspace = tempfile::tempdir().map_err(super::super::storage)?;
-        let state = tempfile::tempdir().map_err(super::super::storage)?;
-        let config = || {
-            super::checkout_config(workspace.path(), (model()?, text()))
-                .map(|config| config.state_directory(state.path()))
-        };
-        let _reset = Reset;
-        UNSTABLE_KEYED.set(keyed);
-        DEVICE_KEYED.set(keyed);
-        INJECTED.set(Some(([1; 16], generation)));
-        let harness = LocalHarness::open(config()?).await?;
-        super::checkout_reopen::run(&harness).await?;
-        harness.close().await?;
-        // A remount can renumber the device, and unstable object ids as well.
-        let mut remounted = [1; 16];
-        remounted[..8].fill(2);
-        if generation == Unstable {
-            remounted.fill(2);
-        }
-        INJECTED.set(Some((remounted, generation)));
-        Ok(match LocalHarness::open(config()?).await {
-            Ok(harness) => {
-                super::checkout_reopen::run(&harness).await?;
-                harness.close().await
-            }
-            Err(error) => Err(error),
-        })
-    }
-    let generations = [Unstable, StableObjectId, FileHandle([3; 32])];
-    for generation in generations {
-        if generation != Unstable && !cfg!(unix) {
-            continue;
-        }
-        renumbered(false, generation).await??;
-        assert!(
-            matches!(
-                renumbered(true, generation).await?,
+async fn changed_volumes_cannot_reuse_strong_owner_state() -> Result<()> {
+    let mut another_volume = REUSED;
+    another_volume[..8].fill(9);
+    for explicit in [false, true] {
+        for generation in [StableObjectId, FileHandle([3; 32])] {
+            assert!(matches!(
+                changed_root(explicit, generation, generation, Some(another_volume)).await?,
                 Err(Error::Unauthorized(_))
-            ),
-            "a device/id-keyed root kept its state across renumbering: {generation:?}"
-        );
+            ));
+            // Actual former comparison ignores volume scope and accepts the
+            // replacement's copied token, object number and handle payload.
+            let _reset = Reset;
+            DISCARD_VOLUME.set(true);
+            changed_root(explicit, generation, generation, Some(another_volume)).await??;
+        }
     }
     Ok(())
 }
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
-    /// State selection depends on the token; strong evidence independently
-    /// rejects replacement roots and ignores remount-local device numbers.
+    /// Token selection is independent, but every strong physical component
+    /// must match before the selected state may attach.
     #[test]
     fn token_selection_and_root_evidence_are_independent(
         objects: ([u8; 16], [u8; 16]), handle: [u8; 32],
@@ -215,21 +217,11 @@ proptest::proptest! {
     ) {
         proptest::prop_assert_eq!(incarnation_of(tokens.0), incarnation_of(tokens.0));
         if tokens.0 != tokens.1 { proptest::prop_assert_ne!(incarnation_of(tokens.0), incarnation_of(tokens.1)); }
-        let distinct = if cfg!(unix) { objects.0[8..] != objects.1[8..] } else { objects.0 != objects.1 };
         for generation in [FileHandle(handle), StableObjectId] {
             let original = RootWitness::capture(objects.0, generation);
-            if distinct {
+            proptest::prop_assert!(original.verify(RootWitness::capture(objects.0, generation)).is_ok());
+            if objects.0 != objects.1 {
                 proptest::prop_assert!(matches!(original.verify(RootWitness::capture(objects.1, generation)), Err(Error::Unauthorized(_))));
-            }
-            #[cfg(unix)] {
-                let mut remounted = objects.0;
-                remounted[..8].copy_from_slice(&objects.1[..8]);
-                proptest::prop_assert!(original.verify(RootWitness::capture(remounted, generation)).is_ok());
-                DEVICE_KEYED.set(true);
-                let old = RootWitness::capture(objects.0, generation);
-                let new = RootWitness::capture(remounted, generation);
-                DEVICE_KEYED.set(false);
-                if objects.0[..8] != objects.1[..8] { proptest::prop_assert!(old.verify(new).is_err()); }
             }
         }
     }

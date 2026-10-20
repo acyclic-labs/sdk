@@ -33,6 +33,11 @@ pub struct NativeRootIncarnation {
     pub identity: NativeRootIdentity,
     /// What makes that object id one incarnation.
     pub generation: NativeRootGeneration,
+    /// The durable id of the volume holding the root: unlike a Unix device
+    /// number, it survives remounts and reboots wherever the platform reports
+    /// one (a Linux `f_fsid`, a Windows volume serial number), and otherwise
+    /// equals the identity's device.
+    pub volume: u64,
 }
 
 impl NativeRootIdentity {

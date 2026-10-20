@@ -37,7 +37,7 @@ fn expected(query: &str, errno: i32) -> Expected {
 fn every_fault_keeps_one_incarnation(fold: bool) -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let baseline = capture(directory.path()).map_err(|error| error.to_string())?;
-    for query in ["openat", "fstat", "handle"] {
+    for query in ["openat", "fstat", "handle", "fsid"] {
         for errno in [libc::EINTR, libc::ENOSYS, libc::EPERM] {
             let fault = Fault::inject(query, errno);
             if fold {
@@ -83,13 +83,43 @@ fn capture_queries(duplicate: bool) -> Vec<&'static str> {
 }
 
 #[test]
-fn a_held_root_capture_makes_exactly_one_open_identity_and_handle_query() {
-    assert_eq!(capture_queries(false), ["openat", "fstat", "handle"]);
+fn a_held_root_capture_makes_exactly_one_open_identity_handle_and_volume_query() {
+    assert_eq!(
+        capture_queries(false),
+        ["openat", "fstat", "handle", "fsid"]
+    );
 }
 
 #[test]
 fn negative_control_a_repeated_identity_query_is_counted() {
-    assert_ne!(capture_queries(true), ["openat", "fstat", "handle"]);
+    assert_ne!(capture_queries(true), ["openat", "fstat", "handle", "fsid"]);
+}
+
+/// A remount may renumber `st_dev`; the held root's volume is the filesystem's
+/// own id, read from the held descriptor. Negative control: at least one
+/// qualification filesystem (a UUID-backed disk or tmpfs) reports an `f_fsid`
+/// that differs from its device number, so a device-scoped volume fails.
+#[test]
+fn a_held_root_names_its_volume_by_the_filesystem_id_not_the_device() {
+    let mut discriminated = false;
+    for parent in [std::env::temp_dir(), std::path::PathBuf::from("/dev/shm")] {
+        let Ok(directory) = tempfile::tempdir_in(&parent) else {
+            continue;
+        };
+        let held = capture(directory.path()).unwrap();
+        let fsid = rustix::fs::statvfs(directory.path()).unwrap().f_fsid;
+        let expected = if fsid == 0 {
+            held.identity.device
+        } else {
+            fsid
+        };
+        assert_eq!(held.volume, expected, "{}", parent.display());
+        discriminated |= fsid != 0 && fsid != held.identity.device;
+    }
+    assert!(
+        discriminated,
+        "no filesystem distinguishes f_fsid from st_dev"
+    );
 }
 
 /// A kill after a step of a record publication, then a later publication
