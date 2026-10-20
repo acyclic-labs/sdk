@@ -98,7 +98,7 @@ pub fn json_value_logical_owned_bytes(value: &Value) -> Result<u64> {
     value_owned_bytes(value, false)
 }
 
-pub(super) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
+pub(crate) fn json_value_retained_owned_bytes(value: &Value) -> Result<u64> {
     value_owned_bytes(value, true)
 }
 
