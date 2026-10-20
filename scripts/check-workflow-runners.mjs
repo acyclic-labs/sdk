@@ -56,6 +56,7 @@ const expected = [
   ".github\\workflows\\sdk-generator.yml:ubuntu-24.04",
   ".github\\workflows\\static.yml:ubuntu-24.04",
   ".github\\workflows\\static.yml:ubuntu-24.04-arm",
+  ".github\\workflows\\static.yml:ubuntu-24.04",
 ];
 if (process.platform !== "win32") {
   for (let index = 0; index < expected.length; index += 1) {

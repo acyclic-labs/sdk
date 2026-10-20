@@ -49,3 +49,17 @@ jobs:
           persist-credentials: false
       - name: Type-check native host crates for aarch64 Linux
         run: cargo check --locked -p acyclic-fs --lib --features s3-http
+  harness:
+    # PR CI otherwise compiles no Harness test, and release qualification runs
+    # rarely, so a broken end-to-end scenario in the Harness `main` target
+    # (#513's effect-history work bound) reached main unnoticed. Run that one
+    # target on the free hosted runner (public repo) for every PR and main push.
+    name: SDK Harness integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the Harness end-to-end integration target
+        run: cargo test --locked -p acyclic-harness --features filesystem-local,test-support --test main
