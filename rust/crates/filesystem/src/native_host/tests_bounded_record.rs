@@ -50,6 +50,30 @@ fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn held_canonical_directory_needs_search_permission_without_directory_read_permission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temporary = tempfile::tempdir()?;
+    let wanted = temporary.path().join("execute-only");
+    std::fs::create_dir(&wanted)?;
+    let expected = wanted.canonicalize()?;
+    let mut work = ordinary_work();
+    let directory = unix_name(wanted.as_os_str(), &mut work, |name, work| {
+        open_unix(libc::AT_FDCWD, name, cwd::cwd_metadata_flags(), work).map(Dir::from_std_file)
+    })?;
+    std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o100))?;
+    let result = canonical_directory_path_held(directory, &mut work);
+    std::fs::set_permissions(&wanted, std::fs::Permissions::from_mode(0o700))?;
+    let (actual, allocation) = result?;
+    assert_eq!(actual, expected);
+    drop(actual);
+    work.release(allocation)?;
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
 #[cfg(windows)]
 #[test]
 fn canonical_wide_directory_retains_native_capacity_without_scalar_conversion()

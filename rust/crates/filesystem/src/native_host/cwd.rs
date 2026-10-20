@@ -170,9 +170,19 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
                 let candidate = Path::new(OsStr::from_bytes(&output));
                 // Reject deleted-descriptor spellings and path replacement.
                 // A missing procfs or a racing rename uses the held walk below.
-                match open_root_directory(candidate, work) {
-                    Ok((_, identity)) => Ok(identity == directory_identity(&current, work)?),
-                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {
+                let reopened = unix_name(candidate.as_os_str(), work, |name, work| {
+                    open_unix(libc::AT_FDCWD, name, cwd_metadata_flags(), work)
+                        .map(Dir::from_std_file)
+                });
+                match reopened {
+                    Ok(directory) => Ok(directory_identity(&directory, work)?
+                        == directory_identity(&current, work)?),
+                    Err(error)
+                        if matches!(
+                            W::io_error_kind(&error),
+                            Some(io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+                        ) =>
+                    {
                         Ok(false)
                     }
                     Err(error) => Err(error),
