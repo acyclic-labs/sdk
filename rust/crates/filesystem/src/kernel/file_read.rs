@@ -124,23 +124,38 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             );
             let length = usize::try_from(request.range.length)
                 .map_err(|_| FileRangeReadError::InvalidRange)?;
-            let zeroed = WorkCounters {
-                bytes_copied: request.range.length,
-                ..WorkCounters::UNCHARGED
-            };
-            accounting.admit(zeroed)?;
             let mut output = allocate_read_buffer(length, accounting)?;
-            output.value.resize(length, 0);
-            accounting.record_completed(zeroed)?;
+            #[cfg(test)]
+            read_work::storage(&mut output.value);
+            // The plan's spans are ordered and cover the range exactly once,
+            // so each output byte is written once: content straight from its
+            // chunks, zeros only for holes and allocated zeros.
             for span in &plan.value.spans {
+                let span_length =
+                    usize::try_from(span.length).map_err(|_| FileRangeReadError::InvalidRange)?;
+                let at = output.value.len();
+                if request.range.offset.checked_add(usize_to_u64(at)) != Some(span.offset)
+                    || at.checked_add(span_length).is_none_or(|end| end > length)
+                {
+                    return Err(FileRangeReadError::InvalidRange.into());
+                }
                 let ExtentKind::Content {
                     object,
                     object_offset,
                 } = span.kind
                 else {
+                    let zeroed = WorkCounters {
+                        bytes_copied: span.length,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    accounting.admit(zeroed)?;
+                    #[cfg(test)]
+                    read_work::record("zero", at, span_length);
+                    output.value.resize(at + span_length, 0);
+                    accounting.record_completed(zeroed)?;
                     continue;
                 };
-                let nested = super::blob::read_blob_range_with_accounting(
+                super::blob::append_blob_range_with_accounting(
                     store,
                     object,
                     ByteRange {
@@ -150,28 +165,12 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                     request.limits,
                     accounting,
                     cancellation,
-                    false,
+                    &mut output.value,
                 )
                 .await?;
-                let start = usize::try_from(span.offset - request.range.offset)
-                    .map_err(|_| FileRangeReadError::InvalidRange)?;
-                let end = start
-                    .checked_add(nested.bytes.len())
-                    .ok_or(FileRangeReadError::InvalidRange)?;
-                let destination = output
-                    .value
-                    .get_mut(start..end)
-                    .ok_or(FileRangeReadError::InvalidRange)?;
-                let copied = WorkCounters {
-                    bytes_copied: span.length,
-                    ..WorkCounters::UNCHARGED
-                };
-                accounting.admit(copied)?;
-                destination.copy_from_slice(&nested.bytes);
-                accounting.record_completed(copied)?;
-                let retained = nested.logical_owned_bytes;
-                drop(nested);
-                release_standalone_read_bytes(retained, accounting)?;
+            }
+            if output.value.len() != length {
+                return Err(FileRangeReadError::InvalidRange.into());
             }
             let retained = plan.value.retained_allocation_bytes;
             drop(plan.value);
@@ -666,6 +665,10 @@ fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure
 #[cfg(test)]
 #[path = "tests/file_read.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/file_read/work.rs"]
+pub(crate) mod read_work;
 
 pub(crate) fn decode_owned<T>(
     accounting: &mut KernelAccounting<'_>,
