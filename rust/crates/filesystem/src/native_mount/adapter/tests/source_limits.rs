@@ -159,55 +159,80 @@ fn source_io_limit_cancellation_and_retirement_cases() -> Result<(), Box<dyn std
         #[cfg(not(windows))]
         let file = NativeFile::from_file(file, accounting);
         let file = file.map_err(|(error, _)| error)?;
-        let data = if cancelled {
-            local_stop.cancel();
-            let prefix = root.receipt();
-            let error = file
-                .read_bounded_async(0, 8, meter.clone(), false)
-                .err()
-                .ok_or("cancelled read admitted")?;
-            assert!(matches!(
-                job.runtime_error(error),
-                crate::NativeTreeMaterializationError::Cancelled
-            ));
-            assert_eq!(root.receipt(), prefix);
-            root.cancellation().check()?;
-            None
-        } else {
-            let data = borrowed.runtime.block_on(
-                || {
-                    file.read_bounded_async(0, 8, meter.clone(), false)
-                        .expect("read submission")
-                },
-                Some(meter.as_ref()),
-            )??;
-            assert_eq!(data.0.as_ref(), b"original");
-            assert_eq!(volume.remaining()?.backend_read_operations, 0);
-            assert!(root.remaining()?.backend_read_operations > 0);
-            let prefix = root.receipt();
-            let error = file
-                .read_bounded_async(0, 8, meter.clone(), false)
-                .and_then(|completion| {
-                    borrowed
-                        .runtime
-                        .block_on(|| completion, Some(meter.as_ref()))?
-                })
-                .err()
-                .ok_or("volume ceiling ignored")?;
-            assert!(matches!(
-                job.runtime_error(error),
-                crate::NativeTreeMaterializationError::Work(_)
-            ));
-            assert_eq!(
-                (
-                    root.receipt().backend_read_operations,
-                    root.receipt().source_bytes_read
-                ),
-                (prefix.backend_read_operations, prefix.source_bytes_read),
-            );
-            assert!(!local_stop.is_cancelled());
-            Some(data)
-        };
+        let data: Option<(bytes::Bytes, Option<acyclic_native_runtime::ReadAllocation>)> =
+            if cancelled {
+                local_stop.cancel();
+                let prefix = root.receipt();
+                let error = file
+                    .read_bounded_async(0, 8, meter.clone(), false)
+                    .err()
+                    .ok_or("cancelled read admitted")?;
+                assert!(matches!(
+                    job.runtime_error(error),
+                    crate::NativeTreeMaterializationError::Cancelled
+                ));
+                assert_eq!(root.receipt(), prefix);
+                root.cancellation().check()?;
+                None
+            } else {
+                #[cfg(windows)]
+                let prefix = root.receipt();
+                let read = borrowed.runtime.block_on(
+                    || {
+                        file.read_bounded_async(0, 8, meter.clone(), false)
+                            .expect("read submission")
+                    },
+                    Some(meter.as_ref()),
+                )?;
+                #[cfg(windows)]
+                {
+                    // An overlapped read reserves both submission and completion
+                    // before issuing either call. A one-operation volume cannot
+                    // start it, and must not borrow the root's larger allowance.
+                    let error = read.err().ok_or("two native calls fit one operation")?;
+                    assert!(matches!(
+                        job.runtime_error(error),
+                        crate::NativeTreeMaterializationError::Work(_)
+                    ));
+                    assert_eq!(
+                        root.receipt().backend_read_operations,
+                        prefix.backend_read_operations
+                    );
+                    assert_eq!(root.receipt().source_bytes_read, prefix.source_bytes_read);
+                    assert_eq!(volume.remaining()?.backend_read_operations, 1);
+                    None
+                }
+                #[cfg(not(windows))]
+                {
+                    let data = read?;
+                    assert_eq!(data.0.as_ref(), b"original");
+                    assert_eq!(volume.remaining()?.backend_read_operations, 0);
+                    assert!(root.remaining()?.backend_read_operations > 0);
+                    let prefix = root.receipt();
+                    let error = file
+                        .read_bounded_async(0, 8, meter.clone(), false)
+                        .and_then(|completion| {
+                            borrowed
+                                .runtime
+                                .block_on(|| completion, Some(meter.as_ref()))?
+                        })
+                        .err()
+                        .ok_or("volume ceiling ignored")?;
+                    assert!(matches!(
+                        job.runtime_error(error),
+                        crate::NativeTreeMaterializationError::Work(_)
+                    ));
+                    assert_eq!(
+                        (
+                            root.receipt().backend_read_operations,
+                            root.receipt().source_bytes_read
+                        ),
+                        (prefix.backend_read_operations, prefix.source_bytes_read),
+                    );
+                    assert!(!local_stop.is_cancelled());
+                    Some(data)
+                }
+            };
         assert!(!root_stop.is_cancelled());
         assert!(!source.cancellation.is_cancelled());
         drop(file);

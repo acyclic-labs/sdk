@@ -497,7 +497,7 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
 /// a native mount reports as is, not as an I/O error.
 #[test]
 fn kind_and_emptiness_refusals_keep_their_posix_errors() -> Result<(), Box<dyn std::error::Error>> {
-    let source = source(FilesystemProfile::Posix)?;
+    let source = source(FilesystemProfile::Portable)?;
     let work = capture_meter(BOUNDARY_BUDGET, source.cancellation())?;
     let (directory, file, full, absent) = (
         native_test_path("directory"),
