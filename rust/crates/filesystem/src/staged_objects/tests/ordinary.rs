@@ -56,6 +56,10 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
             panic!("durable batch read waited for an unrelated spill publication");
         };
         assert_eq!(result?.0[0].bytes, bytes);
+        assert_eq!(
+            original.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
     }
     let denied = NativeMaterializationWork::new(
         WorkBudget {
@@ -86,6 +90,48 @@ async fn durable_reads_do_not_wait_for_the_private_spill_publication_gate()
             )
             .await
             .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn durable_reads_admit_the_original_frame_before_polling_the_backend()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = StagedObjects::open(
+        crate::MemoryObjectStore::default(),
+        directory.path().to_owned(),
+    )
+    .await?;
+    let token = CancellationToken::new();
+    let (id, bytes) = blob(OwnedBytes::from_static(b"durable bytes"));
+    store
+        .inner()
+        .put(
+            id,
+            bytes,
+            &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+        )
+        .await?;
+    let original = NativeMaterializationWork::new(
+        WorkBudget {
+            allocation_operations: 1,
+            ..native_read_budget()
+        },
+        &token,
+    )
+    .map_err(|(cause, _)| cause)?;
+    let before = original.receipt();
+    assert!(
+        store
+            .read(id, 1024, &mut AuthorityWork::native(&original, &token))
+            .await
+            .is_err()
+    );
+    assert_eq!(original.receipt(), before);
+    assert_eq!(
+        original.live_allocation_bytes(),
+        NativeMaterializationWork::accounting_state_bytes()
     );
     Ok(())
 }

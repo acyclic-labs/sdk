@@ -181,7 +181,16 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             // Only spill offsets need protection against reuse by a drain.
             // Durable immutable reads must remain independent of a concurrent
             // publication, including synchronous native callbacks.
-            Lookup::Absent => return self.inner.read(object_id, maximum_bytes, work).await,
+            Lookup::Absent => {
+                let native = work.original;
+                let future = self.inner.read(object_id, maximum_bytes, work);
+                let allocation = frame_allocation(native, &future)?;
+                let mut future = Box::pin(future);
+                let result = future.as_mut().await;
+                drop(future);
+                drop(allocation);
+                return result;
+            }
             Lookup::Spilled { .. } => {}
         }
         let native = work.original;
