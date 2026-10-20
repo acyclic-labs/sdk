@@ -46,7 +46,11 @@ use host_walk::*;
 mod host_observation_tests;
 mod reconcile;
 use reconcile::*;
+mod state_order;
+use state_order::*;
 mod checkout_walk;
+#[cfg(test)]
+mod state_order_tests;
 use checkout_walk::*;
 mod watch_replay;
 pub use watch_replay::capture_watch_batch;

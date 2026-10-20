@@ -181,6 +181,15 @@ impl NativeMaterializationWork {
             |resource| resource.budget,
         )
     }
+    pub(crate) fn budget_ceiling(&self) -> WorkBudget {
+        let mut budget = self.state(|state| state.original_budget());
+        let mut resource = self.resource.as_deref();
+        while let Some(allowance) = resource {
+            budget = budget.intersect_budget(allowance.budget);
+            resource = allowance.parent.as_deref();
+        }
+        budget
+    }
     /// Existing runtime meter for this context.
     pub fn runtime_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         #[cfg(feature = "native-mount")]
