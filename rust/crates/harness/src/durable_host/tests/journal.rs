@@ -73,6 +73,14 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
     wrong.initial.state = json!(1);
     assert!(workflow.admit(wrong).await.is_err());
     assert_eq!(workflow.admit(admission.clone()).await?, admission);
+    let admission_path = format!("harness/v2/workflow-admissions/{}", admission.operation_id);
+    let admission_stream = acyclic_stream::Stream::new(f.stream.clone(), admission_path)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    assert!(matches!(
+        admission_stream.bounds().await,
+        Err(acyclic_stream::StreamError::NotFound)
+    ));
+    assert_eq!(workflow.admission(None)?.await?.0, Some(admission.clone()));
     DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
         .await?
         .step(

@@ -86,6 +86,16 @@ copy!(
     })
 );
 copy!(
+    WorkflowAdmission,
+    self,
+    quota,
+    Ok(Self {
+        operation_id: self.operation_id,
+        request_digest: self.request_digest,
+        initial: self.initial.copy_fields(quota)?,
+    })
+);
+copy!(
     WorkflowRecord,
     self,
     quota,

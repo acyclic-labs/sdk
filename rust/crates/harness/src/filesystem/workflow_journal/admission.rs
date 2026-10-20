@@ -47,6 +47,12 @@ where
         &self,
         io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowAdmission>> {
+        if let Some(owner) = &self.owner {
+            self.verify_observation_owner(owner, true, io).await?;
+            let admission = owner.workflow_admission().copy(io)?;
+            admission.validate(io)?;
+            return Ok(Some(admission));
+        }
         let reject = |code, reason| observation_boundary(io, code, reason);
         let (_path, path) = {
             let path = crate::executor::with_history_io(io, |work| {
@@ -134,16 +140,6 @@ where
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = crate::filesystem::decode_record(&bytes, io)?;
         admission.validate(io)?;
-        if self
-            .owner
-            .as_ref()
-            .is_some_and(|owner| owner.workflow_admission() != &admission)
-        {
-            return Err(reject(
-                crate::wire::ErrorCode::Conflict,
-                "workflow differs from retained task admission",
-            ));
-        }
         Ok(Some(admission))
     }
 
@@ -160,6 +156,9 @@ where
                 ));
             }
             self.verify_observation_owner(owner, false, io).await?;
+            // Task admission already durably retained this exact workflow.
+            // Its original owner is the authority for both live and cold reads.
+            return Ok(admission);
         }
         if let Some(existing) = self.read_admission(io).await? {
             return if existing == admission {
