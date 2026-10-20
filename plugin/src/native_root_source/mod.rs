@@ -143,7 +143,13 @@ mod tests {
         work: &NativeMaterializationWork,
     ) -> RootResult<NativeRootIdentity> {
         let task = fixture.root_request.binding.task_id;
-        if fixture.context.durable_task_id() != Some(task) || fixture.journal.task_id() != task {
+        let context = fixture
+            .runtime
+            .runtime
+            .task_context_with_native_work(task, &fixture.fence, work)
+            .await?;
+        let journal = context.journal_owner::<LocalStream>(&fixture.fence, work)?;
+        if context.durable_task_id() != Some(task) || journal.task_id() != task {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "fixture source changed its original admitted owner context",
@@ -155,15 +161,14 @@ mod tests {
             .project_volumes
             .first_key_value()
             .unwrap();
-        fixture.journal.require_volume_grant(
+        journal.require_volume_grant(
             project,
             acyclic_harness::conversation::VolumeOperation::Read,
             &mut Some(&mut acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
             )),
         )?;
-        fixture
-            .journal
+        journal
             .verify(
                 false,
                 &mut Some(&mut acyclic_harness::store::HistoryWork::new(
