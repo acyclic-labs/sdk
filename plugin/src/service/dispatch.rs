@@ -182,6 +182,17 @@ pub(crate) async fn dispatch_session_request(
             .name
             .split_once(':')
             .ok_or_else(|| "native hook request has no host/event pair".to_owned())?;
+        // An existing session resumes through its serialized actor. The catalog
+        // owns session creation and closure, while this actor validates and
+        // reactivates its original root binding.
+        if matches!(event, "SessionStart" | "sessionStart") {
+            let mut input = request.arguments;
+            input
+                .as_object_mut()
+                .ok_or_else(|| "session bootstrap input must be an object".to_owned())?
+                .insert("host".to_owned(), json!(host));
+            return control.session_start(input).await;
+        }
         return dispatch_native_session_hook(control, host, event, request.arguments, &request.cwd)
             .await;
     }
