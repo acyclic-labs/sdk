@@ -14,7 +14,15 @@ where
     // Goal drivers are Send: use the existing runtime's workers, preserving the
     // native schedule and aborting the owned task if its caller is cancelled.
     let task = acyclic_native_runtime::testing::spawn(work);
-    Ok(tokio_util::task::AbortOnDropHandle::new(task).await?)
+    struct CancelOnDrop<F: Fn()>(F);
+    impl<F: Fn()> Drop for CancelOnDrop<F> {
+        fn drop(&mut self) {
+            self.0();
+        }
+    }
+    let abort = task.abort_handle();
+    let _cancel = CancelOnDrop(|| abort.abort());
+    Ok(task.await?)
 }
 
 #[cfg(test)]
