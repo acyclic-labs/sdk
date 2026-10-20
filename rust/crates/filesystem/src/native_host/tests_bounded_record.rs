@@ -1,5 +1,33 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn held_canonical_directory_does_not_scan_unrelated_siblings()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temporary = tempfile::tempdir()?;
+    for index in 0..128 {
+        std::fs::create_dir(temporary.path().join(format!("sibling-{index}")))?;
+    }
+    let wanted = temporary.path().join("wanted");
+    std::fs::create_dir(&wanted)?;
+    let directory = Dir::open_ambient_dir(&wanted, cap_std::ambient_authority())?;
+    let cancellation = crate::CancellationToken::new();
+    let mut work = DemandWork::new(
+        WorkBudget {
+            backend_read_operations: 8,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    let (actual, allocation) = canonical_directory_path_held(directory, &mut work)?;
+    assert_eq!(actual, std::fs::canonicalize(&wanted)?);
+    assert_eq!(work.work.backend_read_operations, 4);
+    drop(actual);
+    work.release(allocation)?;
+    assert_eq!(work.live_allocation_bytes(), 0);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn held_canonical_directory_observes_renamed_object_not_replaced_spelling()

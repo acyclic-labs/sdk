@@ -139,6 +139,55 @@ pub(crate) fn canonical_directory_path_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
     use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write as _;
+        // The kernel already knows the held directory's spelling. Walking
+        // every sibling of each ancestor makes this query's IO depend on
+        // unrelated processes creating files in shared ancestors such as /tmp.
+        let mut link = [0_u8; 64];
+        let mut remaining = &mut link[..];
+        write!(remaining, "/proc/self/fd/{}\0", current.as_raw_fd())?;
+        let length = 64 - remaining.len();
+        work.started_io(WorkCounters {
+            bytes_encoded: length as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let link = std::ffi::CStr::from_bytes_with_nul(&link[..length])
+            .map_err(|_| W::invalid_request())?;
+        let mut path = [0_u8; libc::PATH_MAX as usize];
+        let length = work.attempt_io(READ, || {
+            // SAFETY: the NUL-terminated input and initialized output are live.
+            let length =
+                unsafe { libc::readlink(link.as_ptr(), path.as_mut_ptr().cast(), path.len()) };
+            Ok((length >= 0 && (length as usize) < path.len()).then_some(length as usize))
+        })?;
+        if let Some(length) = length {
+            let (mut output, allocation) = buffer(length, work)?;
+            let result = (|| {
+                work.started_io(copy_work(length as u64))?;
+                output.extend_from_slice(&path[..length]);
+                let candidate = Path::new(OsStr::from_bytes(&output));
+                // Reject deleted-descriptor spellings and path replacement.
+                // A missing procfs or a racing rename uses the held walk below.
+                match open_root_directory(candidate, work) {
+                    Ok((_, identity)) => Ok(identity == directory_identity(&current, work)?),
+                    Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => {
+                        Ok(false)
+                    }
+                    Err(error) => Err(error),
+                }
+            })();
+            match result {
+                Ok(true) => return Ok((OsString::from_vec(output).into(), allocation)),
+                result => {
+                    drop(output);
+                    work.release(allocation)?;
+                    result?;
+                }
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
     {
         let mut path = [0_u8; libc::PATH_MAX as usize];
