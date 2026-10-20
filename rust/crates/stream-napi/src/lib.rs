@@ -488,8 +488,10 @@ impl NativeStreamClient {
     }
 
     /// Uses a request-local credential while retaining the existing TLS channel.
+    /// This copy of the credential is wiped once the header is built.
     #[napi(js_name = "withCredential")]
     pub fn with_credential(&self, token: String) -> Result<Self> {
+        let token = zeroize::Zeroizing::new(token);
         self.provider
             .with_credential(&token)
             .map(Self::from_client)

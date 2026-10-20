@@ -841,6 +841,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
+ "zeroize",
 ]
 
 [[package]]
