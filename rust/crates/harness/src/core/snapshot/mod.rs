@@ -60,6 +60,18 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 impl Snapshot {
+    /// Canonical checkpoint wire bytes, retaining at most one message's JSON tree.
+    pub(crate) fn encode_canonical_with_work(
+        &self,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Vec<u8>> {
+        if work.is_none() {
+            return digest::encode_without_work(self);
+        }
+        crate::store::history::canonical_bytes_with_work(self, maximum_bytes, work)
+    }
+
     pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = {
         let sizes = [
             std::mem::size_of::<Reducer>(),

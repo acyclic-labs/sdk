@@ -97,6 +97,111 @@ fn canonical_component_peak(value: &impl Serialize) -> Result<u64> {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn conversation_checkpoint_digest_streams_messages_without_changing_canonical_bytes() -> Result<()>
+{
+    let mut snapshot = reducer_fixture().snapshot(1, &mut None)?.0;
+    for count in [1, 128, 1024] {
+        snapshot.projection.conversation.agent = Some(AgentId::from_bytes([3; 16]));
+        snapshot.projection.conversation.messages = (1..=count)
+            .map(|sequence| {
+                Ok(ConversationMessage {
+                    id: uuid::Uuid::from_u128(u128::from(sequence)),
+                    sequence,
+                    kind: crate::conversation::MessageKind::User,
+                    content: request_file(b"checkpoint content")?,
+                    attachments: crate::conversation::ReferencedAttachments::Inline {
+                        items: Vec::new(),
+                    },
+                    reply_to: None,
+                    tool_call_id: None,
+                    extensions: BTreeMap::new(),
+                })
+            })
+            .collect::<Result<_>>()?;
+        let tuple = (
+            snapshot.format_version,
+            &snapshot.authority,
+            snapshot.revision,
+            &snapshot.events,
+            &snapshot.projection,
+        );
+        let bytes = crate::contract::canonical_json_bytes(&tuple)?;
+        let mut digest = None;
+        let allocation = acyclic_test_support::measure(|| {
+            digest = Some(snapshot.digest_with_work(&mut None));
+        });
+        assert_eq!(
+            digest.expect("digest ran")?,
+            *blake3::hash(&bytes).as_bytes()
+        );
+        assert_eq!(allocation.bytes_current, 0);
+        if count > 1 {
+            let legacy_peak = canonical_component_peak(&snapshot.projection)?;
+            assert!(
+                allocation.bytes_max < legacy_peak / 2,
+                "digest retained the conversation: {} versus legacy {legacy_peak}",
+                allocation.bytes_max
+            );
+        }
+        check_streamed_checkpoint_encoding(&snapshot)?;
+        if count > 1 {
+            // Exercise the optional archive metadata, skipped fields, and
+            // nonempty map/set components of the canonical wire projection.
+            let conversation = &snapshot.projection.conversation;
+            snapshot.projection.conversation = serde_json::from_value(json!({
+                "agent": conversation.agent,
+                "messages": &conversation.messages()[1..],
+                "archived_prefix": {
+                    "through_sequence": 1,
+                    "history_digest": ([5_u8; 32].to_vec()),
+                    "checkpoint": request_file(b"archived checkpoint")?,
+                },
+            }))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            snapshot.projection.effects_archived = true;
+            snapshot.projection.latest_context_checkpoint = Some(request_file(b"checkpoint")?);
+            snapshot.projection.active_extension_revision = Some(7);
+            snapshot
+                .projection
+                .published_merges
+                .insert(("merge".into(), vec![1, 2, 3]));
+            let tuple = (
+                snapshot.format_version,
+                &snapshot.authority,
+                snapshot.revision,
+                &snapshot.events,
+                &snapshot.projection,
+            );
+            assert_eq!(
+                snapshot.digest_with_work(&mut None)?,
+                *blake3::hash(&crate::contract::canonical_json_bytes(&tuple)?).as_bytes()
+            );
+            check_streamed_checkpoint_encoding(&snapshot)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_streamed_checkpoint_encoding(snapshot: &Snapshot) -> Result<()> {
+    let expected = crate::contract::canonical_json_bytes(snapshot)?;
+    let legacy_peak = canonical_component_peak(snapshot)?;
+    let mut encoded = None;
+    let allocation = acyclic_test_support::measure(|| {
+        encoded = Some(snapshot.encode_canonical_with_work(u64::MAX, &mut None));
+    });
+    let encoded = encoded.expect("encoder ran")?;
+    assert_eq!(encoded, expected);
+    assert!(
+        allocation.bytes_max < legacy_peak / 2 + encoded.capacity() as u64,
+        "checkpoint encoder retained its JSON tree: peak {} versus legacy {legacy_peak}",
+        allocation.bytes_max
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn snapshot_digest_peak_is_bounded_by_one_canonical_component() -> Result<()> {
     for (events, reason_bytes) in [(1_u64, 262_144), (128, 256), (1000, 0)] {
         let mut reducer = reducer_fixture();

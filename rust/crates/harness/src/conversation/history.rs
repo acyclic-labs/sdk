@@ -1,5 +1,11 @@
 use super::*;
 
+impl ConversationState {
+    pub(crate) fn archived_prefix(&self) -> Option<&ArchivedConversationPrefix> {
+        self.archived_prefix.as_ref()
+    }
+}
+
 #[cfg(test)]
 thread_local! {
     /// Negative-control seam: when set, a missing checkpoint pin is accepted as a no-op.

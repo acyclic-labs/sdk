@@ -113,8 +113,7 @@ pub(in crate::store) async fn publication_with_work<P: StreamProvider>(
             return Ok(());
         }
         let (snapshot, snapshot_owned) = reducer.publication_snapshot_with_work(event, 1, work)?;
-        let encoded =
-            crate::store::history::canonical_bytes_with_work(&snapshot, MAX_PROJECTION_BYTES, work);
+        let encoded = snapshot.encode_canonical_with_work(MAX_PROJECTION_BYTES, work);
         drop(snapshot);
         let bytes = operations::release_owned_after_drop(encoded, snapshot_owned, work)?;
         let mut quota = CodecQuota::from_retained(work, bytes.capacity() as u64);
