@@ -188,6 +188,19 @@ impl Fixture {
         let command = stage_root_command(&owner, &filesystem, &request, &startup)
             .await
             .unwrap();
+        drop(owner);
+        // Registration persisted the immutable command. Model the subsequent
+        // worker invocation by reopening its owner on that invocation's ledger,
+        // as the service does after returning the pending registration.
+        let startup = crate::pi_fork::tests::work();
+        let owner = PiOwnerConfig::load(
+            &resources.data,
+            session.strip_prefix(&resources.data).unwrap(),
+            &startup,
+        )
+        .unwrap()
+        .into_native_shared(&startup)
+        .unwrap();
         let stream = Arc::new(
             LocalStream::open(session.join("stream"), LocalStreamLimits::default())
                 .await
