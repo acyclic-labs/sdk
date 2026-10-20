@@ -124,6 +124,41 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             );
             let length = usize::try_from(request.range.length)
                 .map_err(|_| FileRangeReadError::InvalidRange)?;
+            if let [span] = plan.value.spans.as_slice()
+                && let ExtentKind::Content {
+                    object,
+                    object_offset,
+                } = span.kind
+            {
+                if span.offset != request.range.offset || span.length != request.range.length {
+                    return Err(FileRangeReadError::InvalidRange.into());
+                }
+                let nested = super::blob::read_blob_range_with_accounting(
+                    store,
+                    object,
+                    ByteRange {
+                        offset: object_offset,
+                        length: span.length,
+                    },
+                    request.limits,
+                    accounting,
+                    cancellation,
+                    false,
+                )
+                .await?;
+                if nested.bytes.len() != length {
+                    return Err(FileRangeReadError::InvalidRange.into());
+                }
+                let retained = plan.value.retained_allocation_bytes;
+                drop(plan.value);
+                release_read_allocation(retained, plan.custody, accounting)?;
+                accounting.charge(completed)?;
+                return Ok(FileRangeRead {
+                    bytes: nested.bytes,
+                    logical_owned_bytes: nested.logical_owned_bytes,
+                    work: accounting.spent(),
+                });
+            }
             let mut output = allocate_read_buffer(length, accounting)?;
             for span in &plan.value.spans {
                 let start = span

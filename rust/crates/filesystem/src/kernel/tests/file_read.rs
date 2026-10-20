@@ -419,11 +419,20 @@ async fn assert_sparse_initialized_once(
     root: ObjectId,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let model = [b'A', b'B', 0, 0, 0, 0, b'E', b'F', b'G', b'H', 0, 0];
-    for (offset, length) in [(0, 2), (1, 8), (2, 4), (10, 2), (12, 0), (5, 6)] {
+    for (offset, length) in [
+        (0, 2),
+        (1, 8),
+        (2, 4),
+        (10, 2),
+        (12, 0),
+        (5, 6),
+        (6, 4),
+        (7, 2),
+    ] {
         let cancellation = CancellationToken::new();
         let range = ByteRange { offset, length };
-        // Independent composition oracle: extent/blob reads plus exactly one
-        // initialization of each returned byte, whether content or zero.
+        // Independent composition oracle: extent/blob reads, and one output
+        // initialization only when separate spans must be assembled.
         let plan = crate::kernel::plan_extent_range(
             store,
             ExtentRangeRequest {
@@ -437,7 +446,8 @@ async fn assert_sparse_initialized_once(
             &cancellation,
         )
         .await?;
-        let mut copies = plan.work.bytes_copied + length;
+        let direct = matches!(plan.spans.as_slice(), [span] if matches!(span.kind, ExtentKind::Content { .. }));
+        let mut copies = plan.work.bytes_copied + if direct { 0 } else { length };
         for span in plan.spans {
             if let ExtentKind::Content {
                 object,
