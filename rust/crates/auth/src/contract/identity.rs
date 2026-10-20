@@ -46,7 +46,7 @@ pub struct Validity {
     /// Inclusive Unix seconds, UTC.
     #[wire(tag = 1, uint64)]
     pub not_before_unix_seconds: u64,
-    /// Exclusive Unix seconds, UTC; at most 30 days after not_before.
+    /// Exclusive Unix seconds, UTC; at most 30 days after `not_before`.
     #[wire(tag = 2, uint64)]
     pub expires_at_unix_seconds: u64,
 }
@@ -76,7 +76,7 @@ pub struct BirthCertificate {
     /// Public claims signed by the environment trust root.
     #[wire(tag = 1, message)]
     pub birth: Birth,
-    /// 64-byte Ed25519 signature over BIRTH_DOMAIN and canonical Birth.
+    /// 64-byte Ed25519 signature over `BIRTH_DOMAIN` and canonical Birth.
     #[wire(tag = 2, bytes)]
     pub signature: Vec<u8>,
 }
@@ -121,7 +121,7 @@ pub struct KeyCertificate {
     /// Public claims signed only by the trusted account issuer root, never a leaf.
     #[wire(tag = 1, message)]
     pub key: CertifiedKey,
-    /// 64-byte issuer-root Ed25519 over KEY_DOMAIN and canonical CertifiedKey.
+    /// 64-byte issuer-root Ed25519 over `KEY_DOMAIN` and canonical `CertifiedKey`.
     #[wire(tag = 2, bytes)]
     pub signature: Vec<u8>,
 }
@@ -193,7 +193,7 @@ pub struct SignedKeyringSnapshot {
     /// Canonical published state.
     #[wire(tag = 1, message)]
     pub snapshot: KeyringSnapshot,
-    /// Ed25519 account-root signature over KEYRING_DOMAIN and canonical snapshot.
+    /// Ed25519 account-root signature over `KEYRING_DOMAIN` and canonical snapshot.
     #[wire(tag = 2, bytes)]
     pub signature: Vec<u8>,
 }

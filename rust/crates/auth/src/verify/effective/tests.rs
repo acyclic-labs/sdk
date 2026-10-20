@@ -1,7 +1,6 @@
 //! Count caveat visits on the production iterator, independently of timing.
 use super::*;
-#[path = "../../../tests/common/signed.rs"]
-mod signed;
+use crate::fixtures::signed;
 use proptest::prelude::*;
 
 fn holder(count: usize) -> VerifiedCapability {

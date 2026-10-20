@@ -1,7 +1,10 @@
 //! Request canonicalization and unambiguous DNS/IP grant admission properties.
 mod common;
+#[path = "common/limits.rs"]
+mod limits;
 use acyclic_auth::{authority::*, contract::*, socket::*, valid_resource};
 use common::*;
+use limits::limits;
 use proptest::prelude::*;
 use prost::Message;
 use std::net::{IpAddr, Ipv4Addr};

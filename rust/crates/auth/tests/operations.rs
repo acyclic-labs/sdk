@@ -73,8 +73,12 @@ fn derived_options_preserve_repeated_resources_and_streaming()
     Ok(())
 }
 
-#[test]
-fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::Error>> {
+type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
+type Registry = std::collections::BTreeMap<String, (bool, Vec<String>)>;
+type Catalog = std::collections::BTreeSet<String>;
+
+/// Compiles every product family's protos into one descriptor pool.
+fn product_descriptors() -> TestResult<DescriptorPool> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let temp = tempfile::tempdir()?;
     let output = temp.path().join("products.bin");
@@ -116,18 +120,20 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
         .args(sources)
         .status()?;
     assert!(status.success());
-    let pool = DescriptorPool::decode(std::fs::read(output)?.as_slice())?;
-    let auth = pool
-        .get_extension_by_name("acyclic.validation.v1.auth")
-        .ok_or("missing auth option")?;
+    Ok(DescriptorPool::decode(std::fs::read(output)?.as_slice())?)
+}
+
+/// Every registered extractor's resources-only flag and possible actions,
+/// with the catalog of every declared product action.
+fn extractor_registry(pool: &DescriptorPool) -> TestResult<(Registry, Catalog)> {
     let extractor_extension = pool
         .get_extension_by_name("acyclic.validation.v1.extractors")
         .ok_or("registry")?;
     let product_extension = pool
         .get_extension_by_name("acyclic.validation.v1.products")
         .ok_or("products")?;
-    let mut registry = std::collections::BTreeMap::new();
-    let mut catalog = std::collections::BTreeSet::new();
+    let mut registry = Registry::new();
+    let mut catalog = Catalog::new();
     for file in pool.files() {
         let options = file.options();
         let products = options.get_extension(&product_extension);
@@ -168,6 +174,16 @@ fn every_product_rpc_declares_authorization() -> Result<(), Box<dyn std::error::
             );
         }
     }
+    Ok((registry, catalog))
+}
+
+#[test]
+fn every_product_rpc_declares_authorization() -> TestResult<()> {
+    let pool = product_descriptors()?;
+    let auth = pool
+        .get_extension_by_name("acyclic.validation.v1.auth")
+        .ok_or("missing auth option")?;
+    let (registry, catalog) = extractor_registry(&pool)?;
     assert!(
         registry
             .values()

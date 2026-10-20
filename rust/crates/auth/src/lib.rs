@@ -5,6 +5,8 @@ pub mod authority;
 pub mod contract;
 pub mod credential;
 pub mod crypto;
+#[cfg(test)]
+mod fixtures;
 mod resource;
 pub mod socket;
 mod validation;
@@ -21,12 +23,12 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Ed25519 block transcript prefix. Follow with the zero-based block index as
 /// LE u64, format version as LE u32, previous revocation id (32 zero bytes at root), payload length as
 /// LE u64, then exact canonical Block bytes. Root is signed by the certified
-/// account leaf; each later block by the previous next_public_key.
+/// account leaf; each later block by the previous `next_public_key`.
 pub const BLOCK_DOMAIN: &[u8] = b"acyclic.auth.v1/block\0";
 
 /// Sealing transcript prefix, followed by the tip revocation id. Sign with
 /// the tip private key, then delete it. Verifiers check this signature or
-/// that the supplied 32-byte secret derives the tip's next_public_key.
+/// that the supplied 32-byte secret derives the tip's `next_public_key`.
 pub const SEAL_DOMAIN: &[u8] = b"acyclic.auth.v1/seal\0";
 
 /// Revocation ids are SHA-256(block transcript || 64-byte signature).

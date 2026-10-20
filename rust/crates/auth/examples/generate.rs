@@ -7,135 +7,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(std::env::args_os().nth(1).ok_or("expected output root")?);
     let mut typescript =
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
-    typescript.push_str("export ");
-    typescript.push_str(&PrincipalKind::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&ResourcePattern::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&ResourceGrant::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&ExecutionGrant::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&BillingGrant::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SocketPortRange::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SocketHostRule::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&WebsocketConnectGrant::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Grant::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&GrantSet::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Attribute::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Principal::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&KeyRange::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&AttributeMatch::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Filter::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Pin::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Limits::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Holder::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Caveat::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Block::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SignedBlock::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Capability::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&GrantKind::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&PinValue::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&CaveatKind::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&TipProof::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SubjectId::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SubjectLineage::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SubjectReference::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SubjectReferenceKind::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&LineageAppend::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Validity::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Birth::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&BirthCertificate::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&CertifiedKey::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&KeyCertificate::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&CertificateChain::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&Revocation::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&KeyringSnapshot::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&SignedKeyringSnapshot::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&AuditRecord::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&RecordAttributes::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
-    typescript.push_str("export ");
-    typescript.push_str(&AuditDecision::decl(&ts_rs::Config::default()));
-    typescript.push('\n');
+    let config = ts_rs::Config::default();
+    // Declaration order is the generated file's order.
+    let declarations: [fn(&ts_rs::Config) -> String; 43] = [
+        PrincipalKind::decl,
+        ResourcePattern::decl,
+        ResourceGrant::decl,
+        ExecutionGrant::decl,
+        BillingGrant::decl,
+        SocketPortRange::decl,
+        SocketHostRule::decl,
+        WebsocketConnectGrant::decl,
+        Grant::decl,
+        GrantSet::decl,
+        Attribute::decl,
+        Principal::decl,
+        KeyRange::decl,
+        AttributeMatch::decl,
+        Filter::decl,
+        Pin::decl,
+        Limits::decl,
+        Holder::decl,
+        Caveat::decl,
+        Block::decl,
+        SignedBlock::decl,
+        Capability::decl,
+        GrantKind::decl,
+        PinValue::decl,
+        CaveatKind::decl,
+        TipProof::decl,
+        SubjectId::decl,
+        SubjectLineage::decl,
+        SubjectReference::decl,
+        SubjectReferenceKind::decl,
+        LineageAppend::decl,
+        Validity::decl,
+        Birth::decl,
+        BirthCertificate::decl,
+        CertifiedKey::decl,
+        KeyCertificate::decl,
+        CertificateChain::decl,
+        Revocation::decl,
+        KeyringSnapshot::decl,
+        SignedKeyringSnapshot::decl,
+        AuditRecord::decl,
+        RecordAttributes::decl,
+        AuditDecision::decl,
+    ];
+    for declaration in declarations {
+        typescript.push_str("export ");
+        typescript.push_str(&declaration(&config));
+        typescript.push('\n');
+    }
     let path = root.join("typescript/packages/auth/src/contract.ts");
     fs::create_dir_all(path.parent().ok_or("missing output parent")?)?;
     let typescript = typescript
