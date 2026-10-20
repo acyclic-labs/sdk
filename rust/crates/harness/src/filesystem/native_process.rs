@@ -22,6 +22,9 @@ use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
 
+#[cfg(test)]
+mod path_tests;
+
 impl NativeProcessRequest {
     fn validate(&self) -> Result<()> {
         if let Some(exchange) = &self.mcp_stdio {
@@ -49,7 +52,7 @@ impl NativeProcessRequest {
         if &self.view != view
             || !std::fs::canonicalize(&self.cwd)
                 .map_err(io_error)?
-                .starts_with(&view.options.root)
+                .starts_with(std::fs::canonicalize(&view.options.root).map_err(io_error)?)
         {
             return Err(Error::Conflict("native command view or cwd changed".into()));
         }
