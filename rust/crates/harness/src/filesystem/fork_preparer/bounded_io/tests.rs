@@ -103,12 +103,6 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         });
         let (actual, custody) = decoded.expect("decoder ran")?;
         assert_eq!(actual, record);
-        assert_eq!(
-            custody.bytes(),
-            actual
-                .decoded_owned_bytes()?
-                .expect("audited workflow ownership")
-        );
         assert!(
             physical.bytes_current <= custody.bytes() as i64,
             "resident physical={physical:?}; custody={}",
@@ -122,6 +116,28 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         );
         drop(actual);
         drop(custody);
+        if count == 1 {
+            // Replay retains several resident records simultaneously. Serde's
+            // transient buffering allowance must not accumulate with them.
+            let mut page = Vec::with_capacity(8);
+            let mut result = Ok(());
+            let physical = acyclic_test_support::measure(|| {
+                result = (|| -> Result<()> {
+                    for _ in 0..8 {
+                        page.push(io.decode(
+                            std::marker::PhantomData::<WorkflowRecord>,
+                            &bytes,
+                            crate::wire::ErrorCode::Storage,
+                        )?);
+                    }
+                    Ok(())
+                })();
+            });
+            result?;
+            assert_eq!(page.len(), 8);
+            assert!(physical.bytes_current <= native.live_allocation_bytes() as i64);
+            drop(page);
+        }
         drop(io);
         assert_eq!(native.live_allocation_bytes(), baseline);
     }
