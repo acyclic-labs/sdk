@@ -124,6 +124,12 @@ pub(super) fn ordered(record: &WorkflowRecord, io: &PreparationIo) -> Result<boo
             Value::Object(fields) => {
                 let mut previous = None;
                 for (key, value) in fields {
+                    io.codec_charge(
+                        crate::executor::json::JsonCodecCharge::Inspect {
+                            items: key.len() as u64,
+                        },
+                        true,
+                    )?;
                     if previous.is_some_and(|previous| previous >= key.as_str()) {
                         return Ok(false);
                     }
