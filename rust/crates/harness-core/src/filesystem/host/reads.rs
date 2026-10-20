@@ -283,14 +283,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "skill-body-{}",
                 hex::encode(source_generation.as_resource().key())
             ))?;
+            let (directory, _) = path
+                .rsplit_once('/')
+                .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
             let generation = self
                 .apply_generation(
                     &workspace,
                     None,
-                    &[WorkspaceMutation::PutFile {
-                        path: format!("/{path}"),
-                        bytes,
-                    }],
+                    &[
+                        WorkspaceMutation::CreateDirectory {
+                            path: format!("/{directory}"),
+                        },
+                        WorkspaceMutation::PutFile {
+                            path: format!("/{path}"),
+                            bytes,
+                        },
+                    ],
                     key,
                     io,
                     None,

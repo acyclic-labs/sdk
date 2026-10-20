@@ -156,6 +156,10 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
     let harness =
         LocalHarness::open(config(root.path(), home.path(), state.path(), provider(0))?).await?;
     let reader = harness.client_reader()?;
+    let retained = skills
+        .iter()
+        .find(|skill| skill.name == "greet2")
+        .ok_or("greet2 skill absent")?;
     let unread = skills
         .iter()
         .find(|skill| skill.name == "unread")
@@ -166,7 +170,7 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
         "replacement body",
     )?;
     assert!(unread.source.read(reader.as_ref(), 4096).await.is_err());
-    let (_, bytes) = skills[0].source.read(reader.as_ref(), 4096).await?;
+    let (_, bytes) = retained.source.read(reader.as_ref(), 4096).await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());
     write(
         root.path(),
@@ -174,7 +178,7 @@ async fn lazy_skill_source_survives_reopen_and_retains_materialized_bytes() -> T
         "changed source",
     )?;
     // A materialized body must remain pinned after the source changes.
-    let (_, bytes) = skills[0].source.read(reader.as_ref(), 4096).await?;
+    let (_, bytes) = retained.source.read(reader.as_ref(), 4096).await?;
     assert_eq!(bytes.as_ref(), body.as_bytes());
     Ok(())
 }
@@ -214,11 +218,25 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     let root = super::local_workspace::temporary()?;
     let home = super::local_workspace::temporary()?;
     let state = super::local_workspace::temporary()?;
-    let seed = std::collections::BTreeMap::from([(
-        ".agents/skills/greet2/SKILL.md".into(),
-        "---\nname: greet2\ndescription: Greet formally\n---\nPRIVATE-BODY".into(),
-    )]);
-    let (host, volume, workspace, _) = super::local_workspace::seed(root.path(), &seed).await?;
+    let (host, volume, workspace, _) =
+        super::local_workspace::seed(root.path(), &Default::default()).await?;
+    host.apply(
+        &workspace,
+        None,
+        &[
+            WorkspaceMutation::CreateDirectory {
+                path: "/.agents/skills/greet2".into(),
+            },
+            WorkspaceMutation::PutFile {
+                path: "/.agents/skills/greet2/SKILL.md".into(),
+                bytes: b"---\nname: greet2\ndescription: Greet formally\n---\nPRIVATE-BODY"
+                    .to_vec()
+                    .into(),
+            },
+        ],
+        &IdempotencyKey::new("seed-skill")?,
+    )
+    .await?;
     let model = provider(2);
     let harness = LocalHarness::open(
         config(root.path(), home.path(), state.path(), model.clone())?.volume(volume),
