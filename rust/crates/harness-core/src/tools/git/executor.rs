@@ -71,12 +71,12 @@ where
                 "Git merge still contains unresolved conflict markers",
             ));
         };
-        // A continued join tracks the joined source's newly authored eligible
-        // paths as an unconflicted join does, never a reserved path, and never
-        // a file the resolution itself added. The joined generation is the
-        // immutable one this operation published, so later source writes
-        // cannot change what the merge tracks. A transition that never
-        // published admits no new paths.
+        // A continued join tracks the paths the join itself published, as an
+        // unconflicted join does: never a reserved path, and never a file the
+        // resolution added or edited. The joined generation is the immutable
+        // one this operation published, so later source writes cannot change
+        // what the merge tracks. A transition that never published admits no
+        // new paths.
         let before = self.generation(*target_tree).await?;
         let joined = self
             .current
@@ -90,8 +90,8 @@ where
             .map_err(|failure| Error::from(failure.error))?;
         let tracked_paths = acyclic_fs::git_tracked_paths_after(
             &before,
+            joined.as_ref().unwrap_or(&before),
             &current,
-            Some(joined.as_ref().unwrap_or(&before)),
             &self.repository,
             &resolved,
             u32::MAX,

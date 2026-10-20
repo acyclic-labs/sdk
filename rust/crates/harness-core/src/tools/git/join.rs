@@ -193,7 +193,7 @@ where
         let tracked_paths = acyclic_fs::git_tracked_paths_after(
             &before,
             &generation,
-            None,
+            &generation,
             &self.repository,
             tracked,
             u32::MAX,

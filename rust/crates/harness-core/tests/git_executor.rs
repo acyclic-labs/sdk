@@ -912,7 +912,8 @@ async fn write_text(view: &Lazy, path: &str, text: &'static [u8]) -> Result<()> 
 }
 
 /// `merge --continue` tracks what the conflicted join published, never what
-/// the source happens to hold when the resolution finishes.
+/// the source happens to hold when the resolution finishes, and never a
+/// target-only untracked file the resolution edits.
 #[tokio::test]
 async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Result<()> {
     let (_temp, _root, fs, store, main) = fixture().await?;
@@ -929,6 +930,7 @@ async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Re
     run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
     write_text(&main, "/base.txt", b"main\n").await?;
     run(&fs, &store, &main, repo, &["commit", "-m", "main edit"]).await?;
+    write_text(&main, "/local.txt", b"untracked\n").await?;
     assert!(
         run(&fs, &store, &main, repo, &["merge", "agents/kid"])
             .await
@@ -942,6 +944,7 @@ async fn merge_continue_tracks_the_joined_generation_not_the_live_source() -> Re
     write_text(&child, "/notes.txt", b"kid notes\n").await?;
     write_text(&main, "/base.txt", b"resolved\n").await?;
     write_text(&main, "/notes.txt", b"resolution notes\n").await?;
+    write_text(&main, "/local.txt", b"edited while resolving\n").await?;
     let GitCommandOutput::Committed(merge) =
         run(&fs, &store, &main, repo, &["merge", "--continue"])
             .await?

@@ -689,7 +689,7 @@ async fn reserved_host_paths_are_never_diffed_or_tracked() {
     let after_join = git_tracked_paths_after(
         &before,
         &after,
-        None,
+        &after,
         &reserved,
         &tracked,
         100,
@@ -701,7 +701,7 @@ async fn reserved_host_paths_are_never_diffed_or_tracked() {
     let unreserved = git_tracked_paths_after(
         &before,
         &after,
-        None,
+        &after,
         &GitIgnorePolicy::default(),
         &tracked,
         100,
@@ -754,7 +754,7 @@ async fn tracked_paths_after_a_join_admit_new_eligible_files_only() {
     let tracked = git_tracked_paths_after(
         &before,
         &after,
-        None,
+        &after,
         &GitIgnorePolicy::default(),
         &BTreeSet::from([
             ".gitignore".to_owned(),
@@ -774,20 +774,26 @@ async fn tracked_paths_after_a_join_admit_new_eligible_files_only() {
             "newkid.txt".to_owned(),
         ])
     );
-    // A file the joined source never held stays untracked.
-    let from_source = git_tracked_paths_after(
+    // Changes the target makes after the transition published nothing new,
+    // such as files written while resolving a conflict, stay untracked; a
+    // tracked path that is gone from the committed tree is dropped.
+    let resolved_later = git_tracked_paths_after(
+        &before,
         &before,
         &after,
-        Some(&before),
         &GitIgnorePolicy::default(),
-        &BTreeSet::from([".gitignore".to_owned(), "kept.txt".to_owned()]),
+        &BTreeSet::from([
+            ".gitignore".to_owned(),
+            "kept.txt".to_owned(),
+            "gone.txt".to_owned(),
+        ]),
         100,
         &CancellationToken::new(),
     )
     .await
-    .expect("source-filtered tracked paths");
+    .expect("later tracked paths");
     assert_eq!(
-        from_source,
+        resolved_later,
         BTreeSet::from([".gitignore".to_owned(), "kept.txt".to_owned()])
     );
 }
