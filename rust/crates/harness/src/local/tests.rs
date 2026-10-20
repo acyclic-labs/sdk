@@ -790,6 +790,7 @@ mod checkout_reconciliation;
 mod volume_tools;
 
 mod children;
+mod scale;
 #[cfg(all(feature = "native-execution", unix))]
 mod reconciliation_interruptions;
 
