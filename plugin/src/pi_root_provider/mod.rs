@@ -200,10 +200,19 @@ pub(crate) fn root_provider(
     filesystem: Arc<Host>,
     stream: Arc<LocalStream>,
     preparation: PiRootPreparation,
-    journal_owner: Option<Arc<TaskJournalOwner<LocalStream>>>,
+    journal_fence: Option<&acyclic_harness::scheduler::LeaseFence>,
     original: NativeMaterializationWork,
 ) -> Result<Arc<PiRootProvider>> {
     original.admit(WorkCounters::UNCHARGED)?;
+    // The journal owner is only ever the issued context's own original owner,
+    // so a provider can never pair a context with another owner's journal.
+    let journal_owner = journal_fence
+        .map(|fence| {
+            preparation
+                .context
+                .journal_owner::<LocalStream>(fence, &original)
+        })
+        .transpose()?;
     if !original.budget().has_finite_allowances() {
         return Err(Error::NativeBoundary {
             code: ErrorCode::Invalid,

@@ -92,6 +92,8 @@ impl Fixture {
             "effect:plan".into(),
             "effect:run".into(),
             "conversation:bind".into(),
+            "mail:read".into(),
+            "mail:send".into(),
             format!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"),
             journal
                 .directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None)
@@ -226,37 +228,29 @@ impl Fixture {
             panic!("original root lease")
         };
         let fence = LeaseFence::from(&lease.reservation);
+        let context = runtime
+            .runtime
+            .task_context_with_native_work(task, &fence, &startup)
+            .await
+            .unwrap();
         let preparation = PiRootPreparation::load(
             &owner,
             &runtime,
             &filesystem,
             &request.binding,
             crate::pi_recovery::PiTaskOrigin::Root(&request.root),
-            None,
+            Some(context),
             &startup,
         )
         .await
         .unwrap();
-        let journal = runtime
-            .runtime
-            .task_host()
-            .journal_owner(
-                task,
-                &fence,
-                Some(
-                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&startup)
-                        .unwrap(),
-                ),
-            )
-            .await
-            .unwrap();
         let provider = root_provider(
             owner.clone(),
             &resources,
             filesystem.clone(),
             stream.clone(),
             preparation,
-            Some(journal.into_native_shared(&startup).unwrap()),
+            Some(&fence),
             startup.clone(),
         )
         .unwrap();
@@ -306,6 +300,27 @@ impl Fixture {
             .await
     }
 
+    async fn lose_ack(&self, boundary: u8) {
+        let phase = match boundary {
+            1 => "after-root-creation",
+            2 => "before-result-stage",
+            3 => "before-attachments-stage",
+            4 => "after-result-stage",
+            5 => "after-conversation-bind",
+            _ => panic!("unknown lost acknowledgement boundary"),
+        };
+        self.provider.fault.store(boundary, Ordering::SeqCst);
+        match self.execute().await {
+            Err(Error::NativeBoundary {
+                code: ErrorCode::Storage,
+                reason,
+            }) => {
+                assert_eq!(reason, phase);
+            }
+            other => panic!("expected the original native failure at {phase}, got {other:?}"),
+        }
+    }
+
     async fn dispatch(&self) -> EffectDispatch {
         let id = self
             .provider
@@ -338,31 +353,23 @@ impl Fixture {
         .into_native_shared(&self.startup)
         .unwrap();
         let fence = LeaseFence::from(&self.lease.reservation);
+        let context = self
+            .runtime
+            .runtime
+            .task_context_with_native_work(self.request.binding.task_id, &fence, &self.startup)
+            .await
+            .unwrap();
         let preparation = PiRootPreparation::load(
             &owner,
             &self.runtime,
             &self.filesystem,
             &self.request.binding,
             crate::pi_recovery::PiTaskOrigin::Root(&self.request.root),
-            None,
+            Some(context),
             &self.startup,
         )
         .await
         .unwrap();
-        let journal = self
-            .runtime
-            .runtime
-            .task_host()
-            .journal_owner(
-                self.request.binding.task_id,
-                &fence,
-                Some(
-                    &acyclic_harness::filesystem::PreparationIo::from_native_work(&self.startup)
-                        .unwrap(),
-                ),
-            )
-            .await
-            .unwrap();
         let (mut resources, _custody) =
             service_resources_with_native_work(&self.resources, &self.startup).unwrap();
         resources.shared_roots = crate::SharedRootRegistry::default();
@@ -372,7 +379,7 @@ impl Fixture {
             self.filesystem.clone(),
             self.stream.clone(),
             preparation,
-            Some(journal.into_native_shared(&self.startup).unwrap()),
+            Some(&fence),
             self.startup.clone(),
         )
         .unwrap()
@@ -385,6 +392,40 @@ fn project() -> PiRootIntent {
         root_id: [113; 16],
         paths: BTreeMap::new(),
     }
+}
+
+#[tokio::test]
+async fn provider_requires_the_issued_context_fence() {
+    let fixture = Fixture::new(PiRootIntent::ScratchOnly {}).await;
+    let preparation = PiRootPreparation::load(
+        &fixture.owner,
+        &fixture.runtime,
+        &fixture.filesystem,
+        &fixture.request.binding,
+        crate::pi_recovery::PiTaskOrigin::Root(&fixture.request.root),
+        Some(Arc::clone(&fixture.provider.preparation.context)),
+        &fixture.startup,
+    )
+    .await
+    .unwrap();
+    let mut foreign = LeaseFence::from(&fixture.lease.reservation);
+    foreign.reservation_id.push_str("-foreign");
+    let rejected = root_provider(
+        fixture.owner.clone(),
+        &fixture.resources,
+        fixture.filesystem.clone(),
+        fixture.stream.clone(),
+        preparation,
+        Some(&foreign),
+        fixture.startup.clone(),
+    );
+    assert!(matches!(
+        rejected,
+        Err(Error::NativeBoundary {
+            code: ErrorCode::Unauthorized,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -552,11 +593,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
     for boundary in [1, 2, 3, 4, 5] {
         for cancelled in [false, true] {
             let fixture = Fixture::new(project()).await;
-            fixture.provider.fault.store(boundary, Ordering::SeqCst);
-            assert!(matches!(
-                fixture.execute().await.unwrap().0,
-                EffectStatus::Indeterminate
-            ));
+            fixture.lose_ack(boundary).await;
             let dispatch = fixture.dispatch().await;
             let before = fixture
                 .provider
@@ -656,11 +693,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
 #[tokio::test]
 async fn recovery_rejects_foreign_dispatch_and_replaced_native_identity() {
     let fixture = Fixture::new(project()).await;
-    fixture.provider.fault.store(2, Ordering::SeqCst);
-    assert!(matches!(
-        fixture.execute().await.unwrap().0,
-        EffectStatus::Indeterminate
-    ));
+    fixture.lose_ack(2).await;
     let original = fixture.dispatch().await;
     for mutation in 0..6 {
         let mut forged = original.clone();
@@ -711,11 +744,7 @@ async fn recovery_rejects_foreign_dispatch_and_replaced_native_identity() {
 async fn partial_creation_requires_original_source_intent_and_operation() {
     for boundary in [3, 5] {
         let fixture = Fixture::new(project()).await;
-        fixture.provider.fault.store(boundary, Ordering::SeqCst);
-        assert!(matches!(
-            fixture.execute().await.unwrap().0,
-            EffectStatus::Indeterminate
-        ));
+        fixture.lose_ack(boundary).await;
         let dispatch = fixture.dispatch().await;
         let (key, volume) = fixture
             .request
@@ -893,11 +922,7 @@ async fn root_proofs_reject_foreign_resources_and_exhausted_work() {
         assert_eq!(proof.is_ok(), mutation == 0);
     }
     let substituted = Fixture::new(project()).await;
-    substituted.provider.fault.store(2, Ordering::SeqCst);
-    assert!(matches!(
-        substituted.execute().await.unwrap().0,
-        EffectStatus::Indeterminate
-    ));
+    substituted.lose_ack(2).await;
     let dispatch = substituted.dispatch().await;
     let mut allocation = substituted
         .provider
@@ -940,7 +965,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
         } else {
             fixture.request.binding.task_id
         };
-        let query = crate::pi_fork::tests::work();
+        let (query, invocation_cancel) = fixture.startup.invocation_view().unwrap();
         let authority = fixture
             .owner
             .conversation_authority_with_native_work(
@@ -951,7 +976,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
             )
             .unwrap();
         if fault == "cancel" {
-            query.cancellation().cancel();
+            invocation_cancel.cancel();
         }
         let bound = crate::pi_conversation::bind_task_conversation(
             &fixture.stream,
@@ -1018,11 +1043,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
         }
     }
     let fixture = Fixture::new(PiRootIntent::ScratchOnly {}).await;
-    fixture.provider.fault.store(4, Ordering::SeqCst);
-    assert!(matches!(
-        fixture.execute().await.unwrap().0,
-        EffectStatus::Indeterminate
-    ));
+    fixture.lose_ack(4).await;
     assert!(
         fixture
             .provider
@@ -1121,11 +1142,7 @@ async fn exhausted_or_cancelled_allocation_never_creates_selected_workspaces() {
 #[tokio::test]
 async fn output_replay_uses_original_content_after_mutable_path_replacement() {
     let fixture = Fixture::new(project()).await;
-    fixture.provider.fault.store(4, Ordering::SeqCst);
-    assert!(matches!(
-        fixture.execute().await.unwrap().0,
-        EffectStatus::Indeterminate
-    ));
+    fixture.lose_ack(4).await;
     let dispatch = fixture.dispatch().await;
     let original = fixture
         .provider

@@ -334,7 +334,7 @@ impl PiControlHost<'_> {
                     self.filesystem.clone(),
                     self.stream.clone(),
                     preparation,
-                    Some(journal_owner),
+                    Some(&fence),
                     work.clone(),
                 )?;
                 let effects = pi_owner::root_effects_with_native_work(
