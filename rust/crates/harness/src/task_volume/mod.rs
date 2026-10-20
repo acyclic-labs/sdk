@@ -13,6 +13,7 @@ mod files;
 mod follow;
 mod heads;
 mod listing;
+mod model_turn;
 #[cfg(acyclic_harness_loom)]
 pub mod model_checking;
 mod page;

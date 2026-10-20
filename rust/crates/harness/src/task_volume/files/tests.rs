@@ -161,6 +161,13 @@ fn files() -> Vec<(FileKey, bool)> {
     let task_files = [
         (TaskFile::Request(id.clone()), true),
         (TaskFile::Status, false),
+        (
+            TaskFile::ModelTurn {
+                execution: id.clone(),
+                step: 0,
+            },
+            false,
+        ),
         (TaskFile::TurnRequest(0), false),
         (TaskFile::Completion(0), false),
         (

@@ -65,8 +65,7 @@ pub(super) async fn verify(
         .observe(selected.clone(), None, 64)
         .await?
         .snapshot
-        .ok_or("missing final tool snapshot")?
-        .into_heads()?;
+        .ok_or("missing final tool snapshot")?;
     let mut view = FileQueryView::from_snapshot(selected, initial, 64, 65_536)?;
     while view.cursor().position != target.cursor.position {
         let change = super::stall::waiting(
@@ -82,7 +81,23 @@ pub(super) async fn verify(
         }
         view.apply(change)?;
     }
-    if view.cursor().commit != target.cursor.commit || view.files().values().ne(target.files.iter())
+    // This consumer follows raw files. Assistant chunks now share the turn
+    // selection, so folding only the snapshot into text heads would compare
+    // different representations even when every accepted file agrees.
+    if view.cursor().commit != target.cursor.commit
+        || view.files().len() != target.files.len()
+        || view
+            .files()
+            .values()
+            .zip(&target.files)
+            .any(|(head, file)| {
+                head.key != file.key
+                    || head.publication != file.publication
+                    || head.channel != file.channel
+                    || head.length != file.bytes.len() as u64
+                    || head.through_sequence.is_some()
+                    || head.segments.as_slice() != std::slice::from_ref(&file.bytes)
+            })
     {
         return Err("tool snapshot and follow disagree".into());
     }

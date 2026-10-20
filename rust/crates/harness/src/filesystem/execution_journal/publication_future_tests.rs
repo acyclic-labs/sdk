@@ -337,7 +337,10 @@ async fn turn(
         test_support::{ScriptedEvent, ScriptedModelProvider, ScriptedTurn},
         tool::ToolRegistry,
     };
-    let operation = OperationId::from_bytes([4; 16]);
+    let operation = journal
+        .execution
+        .as_ref()
+        .map_or(OperationId::from_bytes([4; 16]), |identity| identity.0);
     let events = (0..deltas)
         .map(|i| {
             ScriptedEvent::Event(ModelEvent::Content {
@@ -450,7 +453,20 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                         .snapshot(&crate::task_volume::Query::Root, 16)
                         .await
                         .unwrap();
-                    (artifacts, snapshot.files)
+                    let chunks = snapshot
+                        .files
+                        .into_iter()
+                        .filter(|file| {
+                            matches!(
+                                file.key,
+                                crate::task_volume::FileKey::Task {
+                                    file: crate::task_volume::TaskFile::Chunk { .. },
+                                    ..
+                                }
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    (artifacts, chunks)
                 })
             });
         assert_eq!(expected.0.0[0], actual.0.0[0]);
@@ -534,12 +550,150 @@ fn journal_unmetered_task_files_publish_canonical_chunks() {
                 .snapshot(&crate::task_volume::Query::Root, 16)
                 .await
                 .unwrap();
-            assert_eq!(snapshot.files.len(), usize::from(!omitted_publication));
+            assert_eq!(snapshot.files.len(), 2 * usize::from(!omitted_publication));
             if !omitted_publication {
-                assert_eq!(snapshot.files[0].bytes.as_ref(), b"0:chunk");
+                let chunk = snapshot
+                    .files
+                    .iter()
+                    .find(|file| {
+                        matches!(
+                            file.key,
+                            crate::task_volume::FileKey::Task {
+                                file: crate::task_volume::TaskFile::Chunk { .. },
+                                ..
+                            }
+                        )
+                    })
+                    .unwrap();
+                assert_eq!(chunk.bytes.as_ref(), b"0:chunk");
             }
         });
     }
+}
+
+#[tokio::test]
+async fn journal_chunks_distinguish_restarted_steps_in_later_task_inputs() -> Result<()> {
+    use crate::task_volume::{FileKey, Query, TaskFile, TaskFiles};
+    for conditional in [false, true] {
+        let fixture = crate::durable_host::tests::fixture::Fixture::new(
+            Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+                Default::default(),
+                Arc::new(Clock),
+            )),
+            acyclic_fs::Fs::memory(),
+            serde_json::json!({"type":"integer"}),
+            Some(crate::scheduler::SessionLimits {
+                active_tasks: 1,
+                total_tasks: 1,
+                depth: 0,
+                model_steps: 2,
+            }),
+            &[],
+        )
+        .await?;
+        let first =
+            fixture.execution(fixture.running(80).await?, OperationId::from_bytes([4; 16]))?;
+        let files = Arc::new(
+            TaskFiles::open(
+                fixture.stream.clone(),
+                &fixture.storage,
+                &fixture.issuer.verifier(&mut None)?,
+                &first.scope,
+                65_536,
+            )
+            .await?,
+        );
+        let first = first.with_task_files(Some(files.clone()));
+        turn(
+            &first,
+            false,
+            "first",
+            1,
+            false,
+            Some(fixture.host.clone()),
+            conditional,
+        )
+        .await?;
+        let second = fixture
+            .execution(fixture.owner(80).await?, OperationId::from_bytes([5; 16]))?
+            .with_task_files(Some(files.clone()));
+        turn(
+            &second,
+            false,
+            "second",
+            1,
+            false,
+            Some(fixture.host.clone()),
+            conditional,
+        )
+        .await?;
+        let snapshot = files.snapshot(&Query::Root, 16).await?;
+        let chunks = snapshot
+            .files
+            .iter()
+            .filter_map(|file| match &file.key {
+                FileKey::Task {
+                    file: TaskFile::Chunk { turn, sequence },
+                    ..
+                } => Some((*turn, *sequence, file.bytes.as_ref().to_vec())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chunks.len(), 2);
+        assert_ne!(chunks[0].0, chunks[1].0);
+        assert_eq!((chunks[0].1, chunks[1].1), (0, 0));
+        assert_eq!(chunks[0].2, b"0:first");
+        assert_eq!(chunks[1].2, b"0:second");
+
+        // A fresh owner and index replay must recover the same binding, without
+        // consuming a new turn or appending another chunk on a matching retry.
+        let reopened = Arc::new(
+            TaskFiles::open(
+                fixture.stream.clone(),
+                &fixture.storage,
+                &fixture.issuer.verifier(&mut None)?,
+                &first.scope,
+                65_536,
+            )
+            .await?,
+        );
+        let replay = fixture
+            .execution(fixture.owner(80).await?, OperationId::from_bytes([4; 16]))?
+            .with_task_files(Some(reopened.clone()));
+        let records = first
+            .records(OperationId::from_bytes([4; 16]), 0, 64, None)
+            .await?;
+        let record = records
+            .iter()
+            .find(|record| matches!(record.event, ExecutionEvent::Model { .. }))
+            .unwrap();
+        if conditional {
+            assert!(
+                replay
+                    .append_if_tail(
+                        OperationId::from_bytes([4; 16]),
+                        record.sequence - 1,
+                        "model:0:0",
+                        &record.event,
+                        None
+                    )?
+                    .await?
+            );
+        } else {
+            replay
+                .append(
+                    OperationId::from_bytes([4; 16]),
+                    "model:0:0",
+                    &record.event,
+                    None,
+                )?
+                .await?;
+        }
+        let recovered = reopened.snapshot(&Query::Root, 16).await?;
+        assert_eq!(recovered.files, snapshot.files);
+        assert_eq!(recovered.generation, snapshot.generation);
+    }
+    Ok(())
 }
 
 fn journal_wrapper_observations(

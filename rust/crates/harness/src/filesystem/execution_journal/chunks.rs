@@ -31,7 +31,7 @@ where
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let (Some(files), Some((owner, _))) = (&self.task_files, &self.owner) else {
+        let (Some(files), Some((owner, operation))) = (&self.task_files, &self.owner) else {
             return Ok(());
         };
         let ExecutionEvent::Model {
@@ -55,23 +55,30 @@ where
             .next()
             .and_then(|part| part.parse().ok())
             .ok_or_else(|| Error::Invalid("model event has no canonical ordinal".into()))?;
-        let value = FileValue {
-            requester: None,
-            publication: None,
-            key: FileKey::Task {
-                task: Component::new(owner.task_id().to_string())?,
-                file: TaskFile::Chunk {
-                    turn: u64::from(*step),
-                    sequence,
-                },
-            },
-            channel: Some(channel),
-            bytes: delta.into_bytes().into(),
-        };
         #[cfg(not(target_arch = "wasm32"))]
         let work = io.and_then(PreparationIo::original_native_work);
         #[cfg(target_arch = "wasm32")]
         let work = None;
+        let task = Component::new(owner.task_id().to_string())?;
+        let turn = files
+            .inner
+            .model_turn(
+                task.clone(),
+                Component::new(operation.to_string())?,
+                *step,
+                work,
+            )
+            .await?;
+        let value = FileValue {
+            requester: None,
+            publication: None,
+            key: FileKey::Task {
+                task,
+                file: TaskFile::Chunk { turn, sequence },
+            },
+            channel: Some(channel),
+            bytes: delta.into_bytes().into(),
+        };
         loop {
             let head = files.inner.head().await?;
             match files

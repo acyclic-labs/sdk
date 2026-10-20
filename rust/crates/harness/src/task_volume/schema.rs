@@ -59,6 +59,13 @@ pub enum TaskFile {
     ExecutionResult(Component),
     /// Immutable selection made by one child wait operation.
     ChildWait(Component),
+    /// Stable allocation of a task-wide model turn for one execution step.
+    ModelTurn {
+        /// Canonical execution operation, retained without truncation.
+        execution: Component,
+        /// Model step within that execution.
+        step: u32,
+    },
     /// Immutable model turn input; turn numbers include retries/attempts.
     TurnRequest(u64),
     /// One immutable stream chunk.
@@ -122,6 +129,9 @@ impl TaskFile {
             Self::ExecutionClaim(id) => format!("executions/{}/claim.json", id.as_str()),
             Self::ExecutionResult(id) => format!("executions/{}/result.json", id.as_str()),
             Self::ChildWait(id) => format!("child-waits/{}.json", id.as_str()),
+            Self::ModelTurn { execution, step } => {
+                format!("executions/{}/turns/{step}.json", execution.as_str())
+            }
             Self::TurnRequest(n) => format!("turns/{n}/request.json"),
             Self::Chunk { turn, sequence } => format!("turns/{turn}/chunks/{sequence}"),
             Self::TextHead { turn, channel } => format!(
@@ -314,6 +324,13 @@ impl FileKey {
             ["status.json"] => TaskFile::Status,
             ["executions", request, "claim.json"] => TaskFile::ExecutionClaim(id(request)?),
             ["executions", request, "result.json"] => TaskFile::ExecutionResult(id(request)?),
+            ["executions", execution, "turns", step] => TaskFile::ModelTurn {
+                execution: id(execution)?,
+                step: u32::try_from(number(
+                    step.strip_suffix(".json").ok_or(Error::InvalidPath)?,
+                )?)
+                .map_err(|_| Error::InvalidPath)?,
+            },
             ["child-waits", name] => {
                 TaskFile::ChildWait(id(name.strip_suffix(".json").ok_or(Error::InvalidPath)?)?)
             }
