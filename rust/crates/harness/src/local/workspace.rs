@@ -92,9 +92,9 @@ impl LocalWorkspace {
                     )
                 }),
         )?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         volumes::link(path, &mut mounts)?;
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", windows)))]
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }

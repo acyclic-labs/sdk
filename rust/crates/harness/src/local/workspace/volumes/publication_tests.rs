@@ -140,6 +140,89 @@ async fn shared_projection_publication_cannot_isolate_an_unverified_writer() -> 
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", windows))]
+#[tokio::test]
+async fn task_aliases_retain_the_bound_projection_and_refuse_authored_blockers() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let state = tempfile::tempdir().map_err(storage)?;
+    let task = tempfile::tempdir().map_err(storage)?;
+    let blocked = tempfile::tempdir().map_err(storage)?;
+    let harness = open(root.path(), state.path()).await?;
+    let workspace = harness.workspace().unwrap();
+    let original = workspace
+        .mounts
+        .named(Some("scratch"))?
+        .1
+        .view
+        .source
+        .as_ref()
+        .unwrap();
+    for _ in 0..2 {
+        let aliases = workspace.mounts_at(task.path()).await?;
+        let alias = aliases.named(Some("scratch"))?.1;
+        assert!(Arc::ptr_eq(alias.view.source.as_ref().unwrap(), original));
+        assert_eq!(
+            alias.native_root.as_deref(),
+            Some(original.destination.as_path())
+        );
+        assert_eq!(
+            canonical_destination(
+                &std::fs::read_link(task.path().join(SCRATCH_PATH)).map_err(storage)?,
+            )?,
+            canonical_destination(&original.destination)?
+        );
+    }
+    // The former Windows entry point rebound the volume beneath the task
+    // projection. This loses both the shared execution lock and the physical
+    // root that ProjFS can actually mount.
+    let mut rebound = super::super::mounts::owner(
+        task.path(),
+        &workspace.mounts.named(None)?.1.view.volume,
+        None,
+        [(
+            "scratch".into(),
+            workspace
+                .mounts
+                .named(Some("scratch"))?
+                .1
+                .view
+                .volume
+                .clone(),
+            Some(Arc::clone(original)),
+        )],
+    )?;
+    attach(
+        &workspace.filesystem,
+        &workspace.store,
+        task.path(),
+        &mut rebound,
+    )
+    .await?;
+    let rebound = rebound.named(Some("scratch"))?.1;
+    assert!(!Arc::ptr_eq(
+        rebound.view.source.as_ref().unwrap(),
+        original
+    ));
+    assert_eq!(rebound.native_root, None);
+    let alias = task.path().join(SCRATCH_PATH);
+    std::fs::rename(&alias, task.path().join("original-alias")).map_err(storage)?;
+    link_directory(blocked.path(), &alias).map_err(storage)?;
+    assert!(workspace.mounts_at(task.path()).await.is_err());
+    assert_eq!(
+        canonical_destination(&std::fs::read_link(&alias).map_err(storage)?)?,
+        canonical_destination(blocked.path())?
+    );
+    std::fs::create_dir(blocked.path().join(".volumes")).map_err(storage)?;
+    let authored = blocked.path().join(SCRATCH_PATH);
+    std::fs::write(&authored, b"authored blocker").map_err(storage)?;
+    assert!(workspace.mounts_at(blocked.path()).await.is_err());
+    assert_eq!(
+        std::fs::read(authored).map_err(storage)?,
+        b"authored blocker"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn invalid_alias_is_rejected_before_projection_entry() -> Result<()> {
     let root = tempfile::tempdir().map_err(storage)?;

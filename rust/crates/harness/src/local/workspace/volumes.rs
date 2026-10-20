@@ -328,10 +328,10 @@ mod binding_paths {
     }
 }
 
-// fusermount's elevated helper cannot traverse an owner-only FUSE mount.
-// Retain the already bound volume and expose its authorized path instead of
-// starting a second kernel mount below the task's sparse projection.
-#[cfg(target_os = "linux")]
+// FUSE's elevated helper cannot traverse an owner-only mount, and ProjFS cannot
+// start a virtualization root at a placeholder in another projection. Retain
+// the already bound volume instead of mounting again below the task view.
+#[cfg(any(target_os = "linux", windows))]
 pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
     for (relative, mount) in mounts.mounts_mut() {
         if relative.is_empty() {
@@ -350,7 +350,12 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
         let path = root.join(relative);
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                if std::fs::read_link(&path).map_err(mount_io)? != target {
+                let linked = std::fs::read_link(&path).map_err(mount_io)?;
+                let linked = path
+                    .parent()
+                    .ok_or_else(|| Error::Invalid("volume alias has no parent".into()))?
+                    .join(linked);
+                if canonical_destination(&linked)? != canonical_destination(target)? {
                     return Err(Error::Conflict("volume alias names another binding".into()));
                 }
             }
@@ -358,7 +363,7 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
                 // remove_dir atomically refuses a nonempty directory; user
                 // content is never replaced to install a volume binding.
                 std::fs::remove_dir(&path).map_err(mount_io)?;
-                std::os::unix::fs::symlink(target, &path).map_err(mount_io)?;
+                link_directory(target, &path).map_err(mount_io)?;
             }
             Ok(_) => {
                 return Err(Error::Conflict(
@@ -366,13 +371,36 @@ pub(super) fn link(root: &Path, mounts: &mut Mounts) -> Result<()> {
                 ));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                std::os::unix::fs::symlink(target, &path).map_err(mount_io)?;
+                link_directory(target, &path).map_err(mount_io)?;
             }
             Err(error) => return Err(mount_io(error)),
         }
         mount.native_root = Some(target.to_path_buf());
     }
     Ok(())
+}
+
+// A command retires its physical projection. Resolve its held parent rather
+// than requiring that transient destination to exist when validating an alias.
+#[cfg(any(target_os = "linux", windows))]
+fn canonical_destination(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::Invalid("volume destination has no parent".into()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::Invalid("volume destination has no name".into()))?;
+    Ok(std::fs::canonicalize(parent).map_err(mount_io)?.join(name))
+}
+
+#[cfg(target_os = "linux")]
+fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, path)
+}
+
+#[cfg(windows)]
+fn link_directory(target: &Path, path: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, path)
 }
 
 // Recover only SDK-owned mount destinations. The existing recovery API takes
