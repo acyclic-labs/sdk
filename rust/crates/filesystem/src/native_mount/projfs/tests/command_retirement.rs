@@ -1,5 +1,82 @@
 use super::*;
 
+struct RunningControlGate {
+    entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    released: Mutex<std::sync::mpsc::Receiver<()>>,
+    exited: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+}
+
+impl<S> tracing_subscriber::Layer<S> for RunningControlGate
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_enter(&self, id: &tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
+        if context.span(id).unwrap().metadata().name() == "acyclic.runtime.blocking_io"
+            && let Some(entered) = self.entered.lock().unwrap().take()
+        {
+            let _ = entered.send(());
+            // Gate the actual native worker, after it enters the control's
+            // originating span. Dropping the sender also releases a failed test.
+            let _ = self.released.lock().unwrap().recv();
+        }
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
+        if context.span(id).unwrap().metadata().name() == "acyclic.runtime.blocking_io"
+            && let Some(exited) = self.exited.lock().unwrap().take()
+        {
+            let _ = exited.send(());
+        }
+    }
+}
+
+#[tokio::test]
+async fn running_async_controls_keep_original_work_after_caller_cancellation()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::native_mount::session::NativeSessionControl;
+    use tracing_subscriber::prelude::*;
+
+    crate::initialize_native_mount_services()?;
+    let source = windows_checkout_source().await?;
+    let (_root, _destination, mut session) = mount_source(&source)?;
+    let work = session.driver.as_ref().unwrap().original_stop_work.clone();
+    let foreign =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    for control in [
+        NativeSessionControl::FlushCallbacks,
+        NativeSessionControl::Revalidate,
+    ] {
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (exited, finished) = tokio::sync::oneshot::channel();
+        let subscriber = tracing_subscriber::registry().with(RunningControlGate {
+            entered: Mutex::new(Some(entered)),
+            released: Mutex::new(released),
+            exited: Mutex::new(Some(exited)),
+        });
+        let mut completion = tracing::subscriber::with_default(subscriber, || {
+            session.start_control(&work, control)
+        })?
+        .ok_or("live control has no completion")?;
+        tokio::select! {
+            started = started => started?,
+            _ = &mut completion => panic!("control completed before its worker gate released"),
+        }
+        drop(completion);
+        assert!(matches!(
+            session.stop_with_cleanup_wait(&CancellationToken::new()),
+            Err(NativeMountError::ControlPending)
+        ));
+        assert!(session.begin_original_work(&foreign).is_err());
+        release.send(())?;
+        finished.await?;
+        drop(session.begin_original_work(&foreign)?);
+    }
+    session.stop()?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn async_controls_retain_original_work_until_completion_or_drop()
 -> Result<(), Box<dyn std::error::Error>> {
