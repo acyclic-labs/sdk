@@ -56,14 +56,12 @@ impl Fixture {
             .task_context_with_native_work(task, &fence, &root.startup)
             .await
             .unwrap();
-        let journal = Arc::new(
-            context
-                .journal_owner::<LocalStream>(&fence, &root.startup)
-                .unwrap(),
-        );
+        let journal = context
+            .journal_owner::<LocalStream>(&fence, &root.startup)
+            .unwrap();
         Self {
             root_handle: handle,
-            context,
+            context: context.as_ref().clone(),
             journal,
             root_request: root.request,
             root_allocation: allocation.0.1,
