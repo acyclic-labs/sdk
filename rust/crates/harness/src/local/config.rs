@@ -158,6 +158,11 @@ impl LocalHarnessConfig {
         if let StateLocation::Directory(directory) = location {
             return Ok(directory);
         }
+        if let (StateLocation::ProjectRoot(root), LocalProject::Workspace(path)) =
+            (&location, &self.project)
+        {
+            owner::separated_directory(root, Some(path))?;
+        }
         let checkout = match &self.project {
             LocalProject::Workspace(path) => Some(owner::Checkout::capture(path)?),
             LocalProject::Volume { .. } => None,

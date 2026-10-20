@@ -3,6 +3,85 @@ mod feature_policy;
 use super::*;
 use std::path::PathBuf;
 
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn default_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            super::super::owner::STATE_ROOT.set(self.0.take());
+        }
+    }
+    let checkout = tempfile::tempdir().map_err(super::super::storage)?;
+    let info = checkout.path().join(".git/info");
+    std::fs::create_dir_all(&info).map_err(super::super::storage)?;
+    let exclude = info.join("exclude");
+    std::fs::write(&exclude, b"# retained user rule\n").map_err(super::super::storage)?;
+    let _restore =
+        Restore(super::super::owner::STATE_ROOT.replace(Some(checkout.path().join("nested/data"))));
+    let config = LocalHarnessConfig::new(checkout.path(), (model()?, text()))
+        .compaction(crate::context::CompactionPolicy::Disabled)
+        .without_default_tools();
+    #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    let config = config.settings(crate::native_settings::SettingsConfig::for_test(
+        checkout.path(),
+    )?);
+    assert!(matches!(
+        config.resolved_state_directory(),
+        Err(Error::Invalid(_))
+    ));
+    let result = LocalHarness::open(config).await;
+    assert!(
+        matches!(&result, Err(Error::Invalid(_))),
+        "unexpected open result: {}",
+        match &result {
+            Ok(_) => "opened".into(),
+            Err(error) => error.to_string(),
+        }
+    );
+    assert!(!checkout.path().join(".volumes").exists());
+    assert!(!checkout.path().join("nested").exists());
+    assert_eq!(
+        std::fs::read(exclude).map_err(super::super::storage)?,
+        b"# retained user rule\n"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-execution")]
+#[tokio::test]
+async fn explicit_state_overlap_is_refused_before_checkout_publication() -> Result<()> {
+    let root = tempfile::tempdir().map_err(super::super::storage)?;
+    let checkout = root.path().join("checkout");
+    let info = checkout.join(".git/info");
+    std::fs::create_dir_all(&info).map_err(super::super::storage)?;
+    let exclude = info.join("exclude");
+    std::fs::write(&exclude, b"# retained user rule\n").map_err(super::super::storage)?;
+    for state in [
+        root.path().to_path_buf(),
+        checkout.clone(),
+        checkout.join("state"),
+    ] {
+        let config = LocalHarnessConfig::new(&checkout, (model()?, text()))
+            .state_directory(state)
+            .compaction(crate::context::CompactionPolicy::Disabled)
+            .without_default_tools();
+        #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        let config = config.settings(crate::native_settings::SettingsConfig::for_test(&checkout)?);
+        assert!(matches!(
+            LocalHarness::open(config).await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(!checkout.join(".volumes").exists());
+        assert!(!checkout.join("state").exists());
+        assert_eq!(
+            std::fs::read(&exclude).map_err(super::super::storage)?,
+            b"# retained user rule\n"
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn unit_tests_cannot_resolve_the_per_user_store() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(super::super::storage)?;
