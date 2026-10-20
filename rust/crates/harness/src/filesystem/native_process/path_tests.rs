@@ -62,7 +62,11 @@ fn approved_native_paths_reject_a_link_outside_the_view() {
     #[cfg(unix)]
     std::os::unix::fs::symlink(&outside, &link).unwrap();
     #[cfg(windows)]
-    std::os::windows::fs::symlink_dir(&outside, &link).unwrap();
+    match std::os::windows::fs::symlink_dir(&outside, &link) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+        Err(error) => panic!("failed to create test symlink: {error}"),
+    }
     let view = NativeViewManifest {
         options: NativeViewOptions {
             root,
