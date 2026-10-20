@@ -58,6 +58,16 @@ async fn baseline_path_limit_stops_unbounded_traversal() -> Result<(), Box<dyn s
 #[tokio::test]
 async fn coalesced_parent_child_removals_capture_deepest_first()
 -> Result<(), Box<dyn std::error::Error>> {
+    check_coalesced_removals(false).await
+}
+
+#[tokio::test]
+async fn coalesced_removed_child_below_replaced_directory_requires_rescan()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_coalesced_removals(true).await
+}
+
+async fn check_coalesced_removals(replace_parent: bool) -> Result<(), Box<dyn std::error::Error>> {
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let limits = config.limits;
     let cancellation = CancellationToken::new();
@@ -109,7 +119,10 @@ async fn coalesced_parent_child_removals_capture_deepest_first()
     );
     std::fs::remove_file(root.join("parent").join("child.txt"))?;
     std::fs::remove_dir(root.join("parent"))?;
-    capture_watch_batch(
+    if replace_parent {
+        std::fs::write(root.join("parent"), b"replacement file")?;
+    }
+    let answer = capture_watch_batch(
         &mut checkout,
         WatchBatch::Changes {
             epoch: 1,
@@ -126,7 +139,15 @@ async fn coalesced_parent_child_removals_capture_deepest_first()
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await?;
+    .await;
+    if replace_parent {
+        let Err(error) = answer else {
+            return Err("a replaced ancestor was accepted as absent".into());
+        };
+        assert!(matches!(error.error, CaptureError::RescanRequired { .. }));
+        return Ok(());
+    }
+    answer?;
     assert!(
         checkout
             .lookup_no_follow(&parent, WorkBudget::UNBOUNDED, &cancellation)

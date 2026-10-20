@@ -205,9 +205,9 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
         let observation = observe_host_path(source_root, &host_path, meter)?;
         capture_drop_host_path(host_path, meter)?;
         if !observation.is_some_and(|observation| observation.is_dir()) {
-            // A hinted ancestor that is no longer a directory is captured by its
-            // own hint, after its hinted descendants; nothing to hydrate.
-            if capture_position(ordinary, &path, meter)?.is_ok() {
+            // A removed ancestor has its own hint, after its descendants.
+            // Replacement by a file still requires a complete rescan.
+            if observation.is_none() && capture_position(ordinary, &path, meter)?.is_ok() {
                 capture_drop_path(path, meter)?;
                 continue;
             }
