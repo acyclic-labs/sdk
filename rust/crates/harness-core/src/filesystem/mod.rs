@@ -39,6 +39,8 @@ use std::{collections::BTreeMap, future::Future, sync::Arc};
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
+mod content_input;
+use content_input::ContentInput;
 mod content_publisher;
 pub use content_publisher::FilesystemContentPublisher;
 
@@ -205,12 +207,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         clippy::too_many_lines,
         reason = "one implementation pins the complete staged file contract"
     )]
-    async fn put_content_impl(
+    async fn put_content_impl<B: ContentInput + ?Sized>(
         &self,
         volume: &VolumeRef,
         grant: &ContentGrant,
         path: &str,
-        bytes: &[u8],
+        input: &B,
         media_type: &str,
         display_name: &str,
         maximum_bytes: u64,
@@ -223,6 +225,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        let bytes = input.as_ref();
         grant.require(volume, VolumeOperation::Write, io)?;
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(stock_boundary(
@@ -411,7 +414,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 path: stock_string_copy(parent, io)?,
             });
         }
-        let owned_bytes = fork_preparer_io::clone_bytes(bytes, io)?;
+        let owned_bytes = input.mutation_bytes(io)?;
         mutations.push(WorkspaceMutation::PutFile {
             path: absolute,
             bytes: owned_bytes,
