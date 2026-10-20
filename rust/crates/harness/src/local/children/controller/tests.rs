@@ -229,3 +229,6 @@ mod stopped;
 
 #[cfg(unix)]
 mod errors;
+
+#[cfg(unix)]
+mod turn_failure;

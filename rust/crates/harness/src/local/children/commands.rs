@@ -73,7 +73,11 @@ impl Commands<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         if reconcile {
-            return self.inner.reconcile(context, fence, command, payload).await;
+            let model = command.kind == crate::filesystem::MODEL_TASK_COMMAND_KIND;
+            return turn_result(
+                self.inner.reconcile(context, fence, command, payload).await,
+                model,
+            );
         }
         let task = context
             .durable_task_id()
@@ -130,7 +134,7 @@ impl Commands<'_> {
                 other => other,
             });
         }
-        result
+        turn_result(result, model)
     }
 }
 
@@ -159,6 +163,31 @@ impl TaskCommandHost for Commands<'_> {
     }
 }
 
+// Both execution and reconciliation use the same mailbox outcome boundary.
+fn turn_result(result: Result<TaskCommandProgress>, model: bool) -> Result<TaskCommandProgress> {
+    match result {
+        // A definitive model-command rejection belongs to this mailbox
+        // turn. Commit it through ChildAgentMachine's ordinary outcome
+        // checkpoint so wait/status can observe it while the parent and
+        // siblings keep their invocation authority. Uncertain effects and
+        // native accounting failures still require reconciliation.
+        Err(error)
+            if model
+                && !error.is_native_failure()
+                && !error.leaves_outcome_uncertain()
+                && !stopped(false, &error) =>
+        {
+            Ok(TaskCommandProgress::Ready(
+                serde_json::to_value(crate::Outcome::<Value>::Failed {
+                    message: error.to_string(),
+                })
+                .map_err(storage)?,
+            ))
+        }
+        other => other,
+    }
+}
+
 fn stopped(cancelled: bool, error: &Error) -> bool {
     !error.is_native_failure()
         && (cancelled
@@ -172,6 +201,34 @@ fn stopped(cancelled: bool, error: &Error) -> bool {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    proptest! {
+        #[test]
+        fn child_turn_outcomes_preserve_uncertain_and_native_errors(model in any::<bool>(), kind in 0usize..8, message in "[a-z]{1,32}") {
+            let error = match kind {
+                0 => Error::Unauthorized(message.clone()),
+                1 => Error::Invalid(message.clone()),
+                2 => Error::Unsupported(message.clone()),
+                3 => Error::TaskFailed { task: TaskId::from_bytes([1;16]), message: message.clone() },
+                4 => Error::Storage(message.clone()),
+                5 => Error::Indeterminate(OperationId::from_bytes([1;16])),
+                6 => Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native" },
+                _ => Error::InteractionRejected(crate::InteractionRejection::Cancelled),
+            };
+            let expected = error.to_string();
+            match turn_result(Err(error), model) {
+                Ok(TaskCommandProgress::Ready(value)) => {
+                    prop_assert!(model && kind < 4);
+                    prop_assert_eq!(value["Failed"]["message"].as_str(), Some(expected.as_str()));
+                }
+                Err(error) => {
+                    prop_assert!(!model || kind >= 4);
+                    prop_assert_eq!(error.to_string(), expected);
+                }
+                _ => prop_assert!(false, "failure produced a nonterminal result"),
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn a_retained_stop_does_not_require_a_live_cancellation_token(
