@@ -460,6 +460,38 @@ fn canonical_digest_preserves_hash_admission_and_charge() -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[test]
+fn preparation_digest_batches_stream_canonical_output_on_original_work() -> Result<()> {
+    let value = serde_json::json!({"z": "q".repeat(128 * 1024), "a": [1, 2, 3]});
+    let canonical = crate::contract::canonical_json_bytes(&value)?;
+    let expected = *blake3::hash(&canonical).as_bytes();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024);
+    let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&native)?;
+    for _ in 0..16 {
+        assert_eq!(
+            crate::executor::preparation_digest(&value, Some(&io))?,
+            expected
+        );
+    }
+    assert_eq!(native.receipt().bytes_hashed, 16 * canonical.len() as u64);
+    cancellation.cancel();
+    assert!(crate::executor::preparation_digest(&value, Some(&io)).is_err());
+
+    let mut no_hash = budget;
+    no_hash.bytes_hashed = 0;
+    let denied =
+        acyclic_fs::NativeMaterializationWork::new(no_hash, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = crate::executor::PreparationIo::from_native_work(&denied)?;
+    assert!(crate::executor::preparation_digest(&value, Some(&io)).is_err());
+    assert_eq!(denied.receipt().bytes_hashed, 0);
+    Ok(())
+}
+
 #[test]
 fn streamed_identity_matches_canonical_bytes() -> Result<()> {
     #[derive(Serialize)]
