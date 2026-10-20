@@ -1,4 +1,5 @@
 use super::*;
+mod fixture;
 use crate::{
     mcp::{McpCatalog, McpDiscoveryPolicy, McpSchemaExposure},
     tool::{JsonToolProjection, ToolInvocation, ToolProjection, ToolRegistry},
@@ -443,30 +444,7 @@ async fn native_child_is_initialized_once_and_kept_until_the_transport_drops() -
         return Err(invalid("MCP fixture was released instead of terminated"));
     }
     let directory = tempfile::tempdir().map_err(Error::process_io)?;
-    let initialize = r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}}"#;
-    let tools = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
-    #[cfg(windows)]
-    let (filename, script) = (
-        "server.cmd",
-        format!(
-            "@echo off\nset /p input=\necho {initialize}\nset /p input=\nset /p input=\necho {tools}\nset /p input=\n"
-        ),
-    );
-    #[cfg(not(windows))]
-    let (filename, script) = (
-        "server.sh",
-        format!(
-            "IFS= read -r input\nprintf '%s\\n' '{initialize}'\nIFS= read -r input\nIFS= read -r input\nprintf '%s\\n' '{tools}'\nIFS= read -r input\n"
-        ),
-    );
-    let path = directory.path().join(filename);
-    std::fs::write(&path, script).map_err(Error::process_io)?;
-    #[cfg(windows)]
-    let command =
-        acyclic_native_runtime::shell_command(&format!("call \"{}\"", path.display()), Some("cmd"));
-    #[cfg(not(windows))]
-    let command =
-        acyclic_native_runtime::shell_command(&format!(". \"{}\"", path.display()), Some("sh"));
+    let command = fixture::command(directory.path())?;
     let transport = StdioMcpTransport::spawn(command, 4096, 5_000).await?;
     let tools = transport
         .rpc(
