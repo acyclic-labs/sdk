@@ -109,6 +109,37 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
 }
 
 #[tokio::test]
+async fn nested_workflow_retains_its_independent_admission() -> Result<()> {
+    let f = fixture::fixture().await?;
+    let mut owner = f.running(1).await?;
+    let nested = OperationId::from_bytes([2; 16]);
+    // Tool workflows borrow the task owner while admitting their own identity.
+    owner.workflow.operation_id = nested;
+    let admission = owner.workflow_admission().clone();
+    let workflow = f.workflow(owner)?;
+    assert_eq!(workflow.admit(admission.clone()).await?, admission);
+    let stream = acyclic_stream::Stream::new(
+        f.stream.clone(),
+        format!("harness/v2/workflow-admissions/{nested}"),
+    )
+    .map_err(|error| Error::Storage(error.to_string()))?;
+    assert_eq!(
+        stream
+            .bounds()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .tail,
+        1
+    );
+    let mut replacement = f.owner(1).await?;
+    replacement.workflow.operation_id = nested;
+    replacement.workflow.initial.state = json!(1);
+    let changed = replacement.workflow_admission().clone();
+    assert!(f.workflow(replacement)?.admit(changed).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
 async fn b15_replacement_rejects_stale_publications() -> Result<()> {
     let f = Fixture::new(
         Arc::new(MemoryStream::default()),
