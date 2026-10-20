@@ -10,6 +10,9 @@ use acyclic_fs::{
 use std::time::Duration;
 
 mod arrivals;
+mod converge;
+#[cfg(all(test, not(acyclic_harness_loom)))]
+mod tests;
 
 // Exclude owned projections individually below, never their authored siblings.
 const EXCLUDED: &[&str] = &[".git", ".acyclic-sdk", ".system"];
@@ -21,6 +24,8 @@ pub(in crate::local) struct Cursor {
     initial: Option<WatchBatch>,
     #[cfg(target_os = "macos")]
     work: acyclic_fs::NativeMaterializationWork,
+    #[cfg(all(test, not(acyclic_harness_loom)))]
+    injection: Option<tests::Injection>,
 }
 
 impl Cursor {
@@ -60,6 +65,8 @@ impl Cursor {
             initial: None,
             #[cfg(target_os = "macos")]
             work,
+            #[cfg(all(test, not(acyclic_harness_loom)))]
+            injection: None,
         })
     }
 
@@ -112,8 +119,7 @@ impl CheckoutTools {
             Some(cursor) => cursor,
             None => Cursor::open(physical, &self.capture_policy)?,
         };
-        let watcher = &mut cursor.watcher;
-        if watcher.root_identity() != physical.identity {
+        if cursor.watcher.root_identity() != physical.identity {
             return Err(Error::Unauthorized("checkout root was replaced".into()));
         }
         let mut checkout = workspace
@@ -126,79 +132,15 @@ impl CheckoutTools {
             .await
             .map_err(storage)?
             .value;
-        // The producer's native payload guards and its returned vector retain
-        // their original ledger through capture, including the await points.
-        #[cfg(target_os = "macos")]
-        let mut batch_owner = None;
-        let batch = if baseline {
-            None
-        } else {
-            watcher
-                .fence(WATCH_FENCE_TIMEOUT)
-                .map_err(|error| Error::Storage(format!("checkout watch fence: {error:?}")))?;
-            #[cfg(target_os = "macos")]
-            let batch = {
-                let (batch, owner) = watcher
-                    .poll_with_native_work_guarded(MAXIMUM_PATHS, &cursor.work, |_| Ok(()))
-                    .map_err(storage)?;
-                batch_owner = Some(owner);
-                batch
-            };
-            #[cfg(not(target_os = "macos"))]
-            let batch = watcher
-                .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(storage)?
-                .value;
-            Some(batch)
-        };
-        let initial = cursor.initial.take();
-        let reset = matches!(initial, Some(WatchBatch::RescanRequired { .. }));
-        let batch = match batch {
-            Some(batch @ WatchBatch::Changes { .. }) if !reset => batch,
-            None | Some(_) => {
-                // A reset is an explicit requirement to replace the baseline.
-                // Register push watches first, then include changes delivered
-                // during the scan before committing the captured generation.
-                watcher.begin_rescan().map_err(storage)?;
-                watcher.watch_tree(EXCLUDED).map_err(storage)?;
-                capture_baseline(
-                    &mut checkout,
-                    options,
-                    policy,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(storage)?;
-                watcher.finish_rescan().map_err(storage)?
-            }
-        };
-        arrivals::register(watcher, &batch, physical, policy)?;
-        if let Some(initial @ WatchBatch::Changes { .. }) = initial {
-            arrivals::register(watcher, &initial, physical, policy)?;
-            capture_watch_batch(
-                &mut checkout,
-                initial,
-                options,
-                policy,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?;
-        }
-        capture_watch_batch(
+        converge::capture(
+            &mut cursor,
             &mut checkout,
-            batch,
-            options,
-            policy,
-            WorkBudget::UNBOUNDED,
+            (physical, workspace),
+            (options, policy),
+            baseline,
             &cancellation,
         )
-        .await
-        .map_err(storage)?;
-        #[cfg(target_os = "macos")]
-        drop(batch_owner);
+        .await?;
         if checkout.has_pending_mutations() {
             let operation = capture_operation(operation, phase);
             let committed = checkout
