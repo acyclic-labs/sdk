@@ -560,7 +560,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let path = acyclic_stream::StreamPath::new(crate::executor::preparation_format(
-            format_args!("harness/v2/{class}/{}", self.operation_id()),
+            format_args!("harness/v2/{class}/{}", self.workflow.operation_id),
             quota.work(),
         )?)?;
         if quota.work().is_some() {

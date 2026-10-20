@@ -118,6 +118,7 @@ async fn nested_workflow_retains_its_independent_admission() -> Result<()> {
     let admission = owner.workflow_admission().clone();
     let workflow = f.workflow(owner)?;
     assert_eq!(workflow.admit(admission.clone()).await?, admission);
+    assert_eq!(workflow.admission(None)?.await?.0, Some(admission.clone()));
     let stream = acyclic_stream::Stream::new(
         f.stream.clone(),
         format!("harness/v2/workflow-admissions/{nested}"),
@@ -131,6 +132,16 @@ async fn nested_workflow_retains_its_independent_admission() -> Result<()> {
             .tail,
         1
     );
+    DurableWorkflowHost::open(f.host.machines.clone(), admission.initial, workflow.clone())
+        .await?
+        .step(
+            OperationId::from_bytes([3; 16]),
+            IdempotencyKey::new("nested-step")?,
+            json!(1),
+            |_| Ok(()),
+        )
+        .await?;
+    assert_eq!(workflow.replay(0, 2, None)?.await?.0.len(), 1);
     let mut replacement = f.owner(1).await?;
     replacement.workflow.operation_id = nested;
     replacement.workflow.initial.state = json!(1);
