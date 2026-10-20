@@ -449,7 +449,7 @@ fn scrolled(offset: usize) -> impl FnOnce(&mut Frame<'_>) {
 }
 
 /// Real terminal cost per page-scroll frame (every row repainted): `cargo test --release -p acyclic-harness-tui
-/// --features tui --test terminal_frames real_terminal -- --ignored --nocapture`.
+/// --features tui --test main terminal_frames::real_terminal -- --ignored --nocapture`.
 #[test]
 #[ignore = "real terminal measurement, not an assertion"]
 fn real_terminal_frame_cost() -> io::Result<()> {

@@ -56,7 +56,7 @@ public static class TerminalSignalConPty {
             IntPtr parentInput=GetStdHandle(-10),parentOutput=GetStdHandle(-11),parentError=GetStdHandle(-12);
             try {
                 Require(SetStdHandle(-10,IntPtr.Zero)&&SetStdHandle(-11,IntPtr.Zero)&&SetStdHandle(-12,IntPtr.Zero),"clear inherited handles");
-                string test=scenario=="regions"?"regions::real_terminal_region_cost --ignored":"term::windows::tests::windows_lifecycle_child";
+                string test=scenario=="regions"?"terminal_frames::regions::real_terminal_region_cost --ignored":"term::windows::tests::windows_lifecycle_child";
                 Require(CreateProcessW(binary,new StringBuilder("\""+binary+"\" --exact "+test+" --nocapture"),
                     IntPtr.Zero,IntPtr.Zero,false,0x80000|4,IntPtr.Zero,Path.GetDirectoryName(binary),ref startup,out process),"ConPTY child");
             } finally {

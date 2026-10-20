@@ -6,7 +6,7 @@ New-Item -ItemType Directory -Path $fixtures | Out-Null
 $previous = $env:ACYCLIC_REGION_SCREEN_FIXTURES
 try {
     $env:ACYCLIC_REGION_SCREEN_FIXTURES = $fixtures
-    & $Binary --exact native_profiles::export_windows_screen_fixtures --ignored --nocapture
+    & $Binary --exact terminal_regions::native_profiles::export_windows_screen_fixtures --ignored --nocapture
     if ($LASTEXITCODE -ne 0) { throw 'Production fixture export failed' }
     Add-Type -TypeDefinition @'
 using System;
