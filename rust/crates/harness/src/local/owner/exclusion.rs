@@ -339,7 +339,23 @@ mod tests {
         let held = acyclic_fs::hold_root(&root).unwrap();
         let exclusion = Exclusion::capture(&held).unwrap().unwrap();
         let moved = temporary.path().join("original");
-        fs::rename(&root, &moved).unwrap();
+        let renamed = fs::rename(&root, &moved);
+        // Windows refuses to rename a directory below held handles, so the
+        // captured checkout cannot be replaced at all while it is held.
+        if cfg!(windows) {
+            assert_eq!(
+                renamed.unwrap_err().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            exclusion.publish().unwrap();
+            assert!(
+                fs::read_to_string(root.join(".git/info/exclude"))
+                    .unwrap()
+                    .contains("/.volumes/.incarnation")
+            );
+            return;
+        }
+        renamed.unwrap();
         fs::create_dir(&root).unwrap();
         git(&root, &["init", "-q"]);
         let replacement = root.join(".git/info/exclude");
