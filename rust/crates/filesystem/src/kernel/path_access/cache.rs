@@ -15,7 +15,8 @@ pub(super) struct CacheState {
 }
 pub(super) struct OperationReadCache<'a, S> {
     pub(super) store: &'a S,
-    // Cache/view (20) precedes custody/observer and original demand leaf (50).
+    // Operation cache (45) follows any held view state (20) and precedes the
+    // original demand leaf (50).
     // Keep one guard across lookup, optional rehash and insertion.
     pub(super) state: Mutex<CacheState>,
     maximum_entries: usize,
@@ -68,7 +69,7 @@ impl<'a, S> OperationReadCache<'a, S> {
     }
     #[track_caller]
     pub(super) fn lock_state(&self) -> MutexGuard<'_, CacheState> {
-        crate::lock_order::lock::<_, { crate::lock_order::VIEW }>(&self.state)
+        crate::lock_order::lock::<_, { crate::lock_order::OPERATION_CACHE }>(&self.state)
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     pub(super) fn slot_bytes(state: &CacheState) -> Result<u64, WorkError> {

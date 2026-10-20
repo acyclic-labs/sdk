@@ -1,5 +1,7 @@
 // Synchronous callback lock order: operation -> view state -> open file ->
-// observer registry -> source cursor -> original demand leaf -> view gate counters.
+// observer registry -> source cursor -> operation read cache -> original demand
+// leaf -> view gate counters. Native views read their checkout source while
+// holding view state, so the per-operation object cache ranks below the view.
 // View gate counters never acquire the leaf. Resource allowances follow the leaf:
 // ancestor resource -> descendant resource (materializer/allowance.rs).
 #[cfg(any(
@@ -20,6 +22,7 @@ pub(crate) const FILE: u16 = 30;
 pub(crate) const OBSERVERS: u16 = 35;
 #[cfg(any(test, all(feature = "native-watch", not(target_arch = "wasm32"))))]
 pub(crate) const CURSOR: u16 = 40;
+pub(crate) const OPERATION_CACHE: u16 = 45;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 pub(crate) const LEAF: u16 = 50;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
