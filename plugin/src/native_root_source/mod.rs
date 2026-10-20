@@ -143,13 +143,8 @@ mod tests {
         work: &NativeMaterializationWork,
     ) -> RootResult<NativeRootIdentity> {
         let task = fixture.root_request.binding.task_id;
-        let context = fixture
-            .runtime
-            .runtime
-            .task_context_with_native_work(task, &fixture.fence, work)
-            .await?;
-        let journal = context.journal_owner::<acyclic_stream::LocalStream>(&fixture.fence, work)?;
-        if context.durable_task_id() != Some(task) || journal.task_id() != task {
+        work.charge(WorkCounters::UNCHARGED)?;
+        if fixture.context.durable_task_id() != Some(task) || fixture.journal.task_id() != task {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "fixture source changed its original admitted owner context",
@@ -161,20 +156,18 @@ mod tests {
             .project_volumes
             .first_key_value()
             .unwrap();
-        journal.require_volume_grant(
+        fixture.journal.require_volume_grant(
             project,
             acyclic_harness::conversation::VolumeOperation::Read,
             &mut Some(&mut acyclic_harness::store::HistoryWork::new(
                 acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
             )),
         )?;
-        journal
-            .verify(
-                false,
-                &mut Some(&mut acyclic_harness::store::HistoryWork::new(
-                    acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-                )),
-            )
+        // As in the SDK volume callback, the issued owner retains and checks
+        // its original metadata; the source invocation funds its own I/O.
+        fixture
+            .context
+            .verify_volume_owner(&fixture.journal, &fixture.owner_work)
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
@@ -260,6 +253,7 @@ mod tests {
     async fn native_root_cancellation_and_quota_preserve_the_original_prefix() {
         let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
+        std::fs::write(path.join("observed.txt"), b"original").unwrap();
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(budget(), &cancellation).unwrap();
@@ -617,7 +611,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, physical.source.reference());
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(
+            query.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
         assert!(close_native_watch(&physical, &birth).unwrap());
     }
     #[tokio::test]
@@ -682,7 +679,10 @@ mod tests {
         let prefix = failed.receipt();
         assert!(prefix.backend_read_operations > 0);
         assert_eq!(physical.source.reference(), prior);
-        assert_eq!(failed.live_allocation_bytes(), 0);
+        assert_eq!(
+            failed.live_allocation_bytes(),
+            NativeMaterializationWork::accounting_state_bytes()
+        );
         // This is a separate legitimate acquisition, never uncancelling or
         // resetting the exhausted original operation. Warm lazy restore must
         // execute the same real required-rescan transaction before exposing

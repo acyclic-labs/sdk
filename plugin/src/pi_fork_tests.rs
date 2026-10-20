@@ -8,8 +8,8 @@ use acyclic_harness::{
 
 pub(crate) struct Fixture {
     pub(crate) root_handle: crate::pi_root_provider::PiRootHandle,
-    pub(crate) runtime: crate::pi_runtime::PiTaskRuntime,
-    pub(crate) fence: LeaseFence,
+    pub(crate) context: Arc<acyclic_harness::runtime::TaskContext>,
+    pub(crate) owner_work: acyclic_fs::NativeMaterializationWork,
     pub(crate) journal: Arc<TaskJournalOwner<LocalStream>>,
     pub(crate) root_request: PiRootRequest,
     pub(crate) root_allocation: crate::pi_root_allocation::PiRootAllocation,
@@ -62,8 +62,8 @@ impl Fixture {
             .unwrap();
         Self {
             root_handle: handle,
-            runtime: root.runtime,
-            fence,
+            context,
+            owner_work: root.startup.clone(),
             journal,
             root_request: root.request,
             root_allocation: allocation.0.1,
