@@ -243,6 +243,7 @@ impl Fixture {
             )?,
             provider: self.provider.clone(),
             context_manifest: None,
+            skill_cache: super::super::context::skills::cache(),
             context_read_observer: None,
             #[cfg(feature = "hooks")]
             settings: Arc::new(

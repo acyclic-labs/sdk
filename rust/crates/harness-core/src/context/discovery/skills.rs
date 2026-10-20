@@ -176,10 +176,21 @@ pub async fn discover_skills(
     name: &str,
     work: &mut DiscoveryWork,
 ) -> Result<Vec<SkillMetadata>> {
+    discover_skills_at(reader, skills, name, work, None).await
+}
+
+pub(crate) async fn discover_skills_at(
+    reader: &dyn ContentResidencyVerifier,
+    skills: &[ContextRoot],
+    name: &str,
+    work: &mut DiscoveryWork,
+    generation: Option<&GenerationRef>,
+) -> Result<Vec<SkillMetadata>> {
     let mut result: Vec<SkillMetadata> = Vec::new();
+    let mut names = std::collections::HashSet::new();
     for root in skills {
         root.validate(&mut None)?;
-        let (generation, entries) = work.list(reader, root, &root.directory, None).await?;
+        let (generation, entries) = work.list(reader, root, &root.directory, generation).await?;
         for entry in entries {
             if entry.kind != PrivateDirectoryEntryKind::Directory {
                 continue;
@@ -213,7 +224,7 @@ pub async fn discover_skills(
                 return Err(Error::Storage("prefix reader exceeded bound".into()));
             }
             let metadata = parse_skill_metadata(&prefix, source)?;
-            if result.iter().any(|skill| skill.name == metadata.name) {
+            if !names.insert(metadata.name.clone()) {
                 return Err(Error::Conflict(format!(
                     "skill name {} is declared twice",
                     metadata.name

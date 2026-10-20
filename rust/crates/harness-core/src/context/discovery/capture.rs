@@ -123,6 +123,21 @@ impl DiscoveredContext {
         for skill in &self.skills {
             skill.validate(work)?;
         }
+        if work.is_none() {
+            let mut names = std::collections::HashSet::with_capacity(self.skills.len());
+            if self
+                .skills
+                .iter()
+                .any(|skill| !names.insert(skill.name.as_str()))
+            {
+                return Err(discovery_error(
+                    work,
+                    ErrorCode::Conflict,
+                    "discovered skill names are repeated",
+                ));
+            }
+            return Ok(());
+        }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut names = crate::core::reserve_copy_vector::<&str>(self.skills.len(), &mut quota)?;
         names.extend(self.skills.iter().map(|skill| skill.name.as_str()));

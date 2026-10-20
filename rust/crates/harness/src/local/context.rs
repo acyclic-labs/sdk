@@ -9,6 +9,9 @@ pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
 mod guidance;
+#[cfg(feature = "native-execution")]
+pub(crate) mod native_skills;
+pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {
     let mut hash = blake3::Hasher::new();
@@ -109,9 +112,10 @@ impl LocalHarness {
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let discovery = self
+        let mut discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
+        discovery.skills = self.skills().await?;
         let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;

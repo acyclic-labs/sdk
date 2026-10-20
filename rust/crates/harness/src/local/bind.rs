@@ -42,6 +42,11 @@ impl LocalHarness {
                 "existing runtime requires its bound volume".into(),
             ));
         };
+        #[cfg(feature = "native-execution")]
+        let skill_directory = checkout_state
+            .as_ref()
+            .map(|directory| directory.join("skill-sources"))
+            .unwrap_or_else(|| config.project.root().join("skill-sources"));
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             ContentGrant::verify(
                 verifier,
@@ -130,6 +135,14 @@ impl LocalHarness {
         } else {
             runtime
         };
+        #[cfg(feature = "native-execution")]
+        let files = files.with_native_skills(context::native_skills::NativeSkills::new(
+            skill_directory,
+            volume.clone(),
+            volume.clone(),
+            workspace.clone(),
+            settings.skill_roots().to_vec(),
+        )?)?;
         let (model, provider) = config.model;
         let local = Self {
             files,
@@ -144,6 +157,7 @@ impl LocalHarness {
             model,
             provider,
             context_manifest: config.context_manifest,
+            skill_cache: context::skills::cache(),
             #[cfg(feature = "hooks")]
             settings,
             #[cfg(test)]

@@ -246,6 +246,68 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Option<crate::OperationId>,
     )> {
         self.require_private_directory(volume, grant, path, io)?;
+        #[cfg(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        ))]
+        if let Some(sources) = self.skill_sources(volume)?
+            && let Some(generation) = expected_generation
+            && sources.matches(volume, generation, path)
+        {
+            if let Some(retained) = sources.materialized(generation)? {
+                return Box::pin(self.read_private_path_indexed(
+                    volume,
+                    grant,
+                    path,
+                    Some(&retained),
+                    maximum_bytes,
+                    io,
+                ))
+                .await;
+            }
+        }
+        #[cfg(all(
+            feature = "filesystem-local",
+            feature = "native-execution",
+            not(target_arch = "wasm32")
+        ))]
+        if let Some(sources) = self.skill_sources(volume)?
+            && let Some(source_generation) = expected_generation
+            && let Some(bytes) = sources
+                .read(volume, source_generation, path, maximum_bytes, io)
+                .await?
+        {
+            let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
+            let key = IdempotencyKey::new(&format!(
+                "skill-body-{}",
+                hex::encode(source_generation.as_resource().key())
+            ))?;
+            let generation = self
+                .apply_generation(
+                    &workspace,
+                    None,
+                    &[WorkspaceMutation::PutFile {
+                        path: format!("/{path}"),
+                        bytes,
+                    }],
+                    key,
+                    io,
+                    None,
+                )?
+                .await?;
+            let generation = self.generation_ref_id(generation.id(), io)?;
+            sources.retain_materialized(source_generation, &generation)?;
+            return Box::pin(self.read_private_path_indexed(
+                volume,
+                grant,
+                path,
+                Some(&generation),
+                maximum_bytes,
+                io,
+            ))
+            .await;
+        }
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)

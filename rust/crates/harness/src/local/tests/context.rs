@@ -7,6 +7,8 @@ use crate::{
 mod continuations;
 pub(super) mod crash_cuts;
 mod generation;
+#[cfg(feature = "native-execution")]
+mod skills;
 
 #[tokio::test]
 async fn goal_presence_never_reads_the_body_and_disabled_loops_ignore_unreadable_goals()

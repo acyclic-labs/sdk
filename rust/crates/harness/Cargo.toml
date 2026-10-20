@@ -172,6 +172,11 @@ wasm-bindgen-test = "=0.3.67"
 workspace = true
 
 [[test]]
+name = "skills-context"
+path = "tests/skills_context.rs"
+required-features = ["filesystem-local", "native-execution", "test-support"]
+
+[[test]]
 name = "client-mailbox-model"
 path = "tests/client_mailbox_model.rs"
 required-features = ["model-checking"]

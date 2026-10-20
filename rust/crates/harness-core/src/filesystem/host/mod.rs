@@ -5,6 +5,19 @@ pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    native_skills: Arc<
+        crate::sync::SyncMutex<
+            std::collections::HashMap<
+                String,
+                Arc<crate::local::context::native_skills::NativeSkills>,
+            >,
+        >,
+    >,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     project_family: Option<(acyclic_fs::WorkspaceId, acyclic_fs::LocalCoreStateStore)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -45,6 +58,12 @@ impl<A, O> FilesystemHost<A, O> {
             filesystem,
             provider,
             workspace_binding: None,
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
+            native_skills: Arc::new(crate::sync::SyncMutex::new(std::collections::HashMap::new())),
             #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
             project_family: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -73,6 +92,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
             )),
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
+            native_skills: self.native_skills.clone(),
             #[cfg(feature = "filesystem-local")]
             project_family: self.project_family.clone(),
             _native_custody: None,
@@ -82,6 +103,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl<A, O> FilesystemHost<A, O> {
+    #[cfg(feature = "native-execution")]
+    pub(crate) fn with_native_skills(
+        self: Arc<Self>,
+        mut sources: Arc<crate::local::context::native_skills::NativeSkills>,
+    ) -> Result<Arc<Self>> {
+        let mut registry = self
+            .native_skills
+            .lock()
+            .map_err(|_| Error::Storage("skill registry lock is poisoned".into()))?;
+        let key = sources.volume().storage_name(&mut None)?;
+        if let Some(previous) = registry.get(&key) {
+            Arc::get_mut(&mut sources)
+                .ok_or_else(|| Error::Conflict("bind skills before sharing their catalog".into()))?
+                .retain_sources_from(previous);
+        }
+        registry.insert(key, sources);
+        drop(registry);
+        Ok(self)
+    }
+
+    #[cfg(feature = "native-execution")]
+    pub(crate) fn skill_sources(
+        &self,
+        volume: &VolumeRef,
+    ) -> Result<Option<Arc<crate::local::context::native_skills::NativeSkills>>> {
+        Ok(self
+            .native_skills
+            .lock()
+            .map_err(|_| Error::Storage("skill registry lock is poisoned".into()))?
+            .get(&volume.storage_name(&mut None)?)
+            .cloned())
+    }
+
     #[cfg(feature = "native-execution")]
     #[doc(hidden)]
     pub fn with_project_family(

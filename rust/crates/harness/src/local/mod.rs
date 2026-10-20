@@ -34,7 +34,7 @@ mod commands;
 mod compact;
 mod compaction;
 mod config;
-mod context;
+pub(crate) mod context;
 mod files;
 mod inheritance;
 mod input;
@@ -78,6 +78,7 @@ pub struct LocalHarness {
     /// Unbound: each model command binds it to its executing task's reader.
     provider: Arc<dyn ModelProvider>,
     context_manifest: Option<crate::conversation::FileRef>,
+    skill_cache: context::skills::Cache,
     #[cfg(feature = "hooks")]
     settings: Arc<crate::native_settings::SettingsConfig>,
     #[cfg(test)]
@@ -285,6 +286,20 @@ impl LocalHarness {
                 .await?;
             #[cfg(feature = "native-execution")]
             let workspace = workspace.map(Arc::new);
+            #[cfg(feature = "native-execution")]
+            let files = {
+                #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+                let user_roots = settings_configuration.skill_roots().to_vec();
+                #[cfg(not(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
+                let user_roots = Vec::new();
+                files.with_native_skills(context::native_skills::NativeSkills::new(
+                    directory.join("skill-sources"),
+                    journal.clone(),
+                    owner.project.clone(),
+                    workspace.clone(),
+                    user_roots,
+                )?)?
+            };
             let stream = Arc::new(
                 LocalStream::open_with_clock_and_anchor(
                     directory.join("stream"),
@@ -339,6 +354,7 @@ impl LocalHarness {
                 model,
                 provider,
                 context_manifest: config.context_manifest,
+                skill_cache: context::skills::cache(),
                 #[cfg(test)]
                 context_read_observer: None,
                 #[cfg(feature = "native-execution")]

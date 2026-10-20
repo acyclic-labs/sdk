@@ -12,6 +12,27 @@ directory, host path, parent outside a declared root, or implicit global skill
 catalog is consulted. Consumers can change filenames, clear instruction names,
 disable skills, or use their own `ContextSource`, selection and renderer.
 
+The native `LocalHarness` composition supplies these declarations automatically:
+project `.agents/skills` and `.claude/skills`, and user `.agents/skills`,
+`.claude/skills`, and `CODEX_HOME/skills` (defaulting to `~/.codex/skills`).
+Injected settings select fixture homes; hermetic compositions never discover an
+ambient home. Discovery visits immediate skill directories under the existing
+entry, directory, and frontmatter limits. A checkout-generation cache shares the
+catalog through the filesystem host's child bindings; unchanged turns do not
+enumerate skill directories again. User declarations are captured once per host
+binding and refreshed by reopening it.
+
+Native skill bodies remain outside the authored project. The host retains an
+opaque, content-addressed source record in its control directory, including the
+held root identity and exact file version. The manifest's private journal path
+and generation identify that record. A later pinned path read checks journal
+authority, opens the no-follow root, verifies the original root and file version,
+and materializes the requested body into the journal under the caller's byte
+bound. Subsequent reads use the retained immutable volume generation. A missing
+or changed source before materialization fails rather than substituting a newer
+body. Neither model-supplied host paths nor project-authored records can register
+these native sources.
+
 Constructing declarations and binding snapshots is pure. An authorized caller
 explicitly invokes `ContextDiscovery::capture`, then binds the complete snapshot
 with `HarnessBuilder::declared_context` or `DiscoveredContext::stage`. These are
