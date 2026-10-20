@@ -216,7 +216,10 @@ mod tests {
                     status: MachineStatus::Suspended,
                 },
             };
-            for status in [
+            record.input.sort_all_objects();
+            record.prior.state.sort_all_objects();
+            record.transition.state.sort_all_objects();
+            for mut status in [
                 MachineStatus::Suspended,
                 MachineStatus::Completed {
                     value: json!({"z": [0, {"b": 2, "a": 1}], "a": "complete"}),
@@ -225,6 +228,9 @@ mod tests {
                     message: "quoted\" failure\n".into(),
                 },
             ] {
+                if let MachineStatus::Completed { value } = &mut status {
+                    value.sort_all_objects();
+                }
                 record.transition.status = status;
                 let canonical = crate::contract::canonical_json_bytes(&record)?;
                 let borrowed = serde_json::to_vec(&Canonical(&record))
@@ -242,8 +248,26 @@ mod tests {
         assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(work.receipt().bytes_hashed, hashed);
         assert!(work.receipt().items_examined > 0);
+        let mut record = last.expect("canonical fixture");
+        // With serde_json/preserve_order this takes the generic sorter; with
+        // the default map it exercises the same record through the fast path.
+        record.input = json!({"z": {"b": 2, "a": 1}, "a": 0});
+        let fallback = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 8 * 1024 * 1024),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let fallback_io = PreparationIo::from_native_work(&fallback)?;
+        let uses_borrowed = ordered(&record, &fallback_io)?;
+        let expected = crate::contract::canonical_json_bytes(&record)?;
+        assert_eq!(
+            record.digest(Some(&fallback_io))?,
+            *blake3::hash(&expected).as_bytes()
+        );
+        if !uses_borrowed {
+            assert!(fallback.receipt().bytes_copied > 0);
+        }
         cancellation.cancel();
-        let record = last.expect("canonical fixture");
         assert_eq!(
             record.digest(Some(&io)).unwrap_err().code(),
             crate::wire::ErrorCode::Cancelled
