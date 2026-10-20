@@ -119,7 +119,7 @@ where
             },
         )?;
         #[cfg(not(target_arch = "wasm32"))]
-        let retained = if let Some(io) = io {
+        if let Some(io) = io {
             let _work = io.original_native_work().ok_or_else(|| {
                 observed::boundary(
                     Some(io),
@@ -136,40 +136,33 @@ where
                 });
             };
             io.absorb_native_custody(custody)?;
-            retained
-        } else {
-            journal.admission(None)?.await?.0
-        };
-        #[cfg(target_arch = "wasm32")]
-        let retained = journal.admission(None)?.await?.0;
-        let retained = retained.ok_or_else(|| {
-            observed::boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "suspended workflow admission is absent",
-            )
-        })?;
-        if retained.operation_id != admission.operation_id
-            || retained.request_digest
-                != crate::executor::with_history_io(io, |work| {
-                    crate::executor::json::canonical_json_digest(
-                        &admission,
-                        if io.is_some() {
-                            acyclic_stream::MAX_RECORD_BYTES as u64
-                        } else {
-                            u64::MAX
-                        },
-                        work,
-                    )
-                })?
-            || retained.initial.machine != admission.machine
-        {
-            return Err(observed::boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "wake workflow differs from admitted task",
-            ));
+            let retained = retained.ok_or_else(|| {
+                observed::boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Storage,
+                    "suspended workflow admission is absent",
+                )
+            })?;
+            if retained.operation_id != admission.operation_id
+                || retained.request_digest
+                    != crate::executor::with_history_io(Some(io), |work| {
+                        crate::executor::json::canonical_json_digest(
+                            &admission,
+                            acyclic_stream::MAX_RECORD_BYTES as u64,
+                            work,
+                        )
+                    })?
+                || retained.initial.machine != admission.machine
+            {
+                return Err(observed::boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Unauthorized,
+                    "wake workflow differs from admitted task",
+                ));
+            }
         }
+        // The authenticated task admission above is the root workflow's authority.
+        // Ordinary wake readers have no separate admission stream to consult.
         let record = journal.observe_transition(slot.revision, io).await?;
         let checkpoint = record.checkpoint()?;
         if checkpoint.1 != slot.revision

@@ -1131,6 +1131,15 @@ pub(super) async fn worker_restart_with_options(
             old_lease = Some(lease.clone());
         }
         if !reopened && (with_timer || with_mail_receive || with_child || with_approval_wait) {
+            assert!(matches!(
+                acyclic_stream::Stream::new(
+                    Arc::clone(&stream),
+                    format!("harness/v2/workflow-admissions/{operation}")
+                )?
+                .bounds()
+                .await,
+                Err(acyclic_stream::StreamError::NotFound)
+            ));
             let evaluations = policy.evaluated.load(Ordering::SeqCst);
             let generated = model.dispatches().len();
             let first = runtime.poll_task_wake_page(None, 1).await?;
