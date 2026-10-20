@@ -105,7 +105,7 @@ fn git_merge_error_exposes_conflict_markers_in_the_agent_mount() {
             .await
             .unwrap_err();
         assert!(
-            error.contains("projected unresolved text conflicts"),
+            error.contains("Git join has unresolved conflicts"),
             "{error}"
         );
         let path = control.state.routes["child"]
