@@ -76,6 +76,7 @@ fn event_attachment_slots_follow_containers_and_cover_physical_decode_peak() -> 
         });
         let (actual, admitted) = decoded.expect("decoder ran")?;
         assert_eq!(actual, payload);
+        assert!(physical.count_total > 0, "allocation observer is active");
         assert!(
             physical.bytes_max <= admitted,
             "physical={physical:?}; admitted={admitted}"
