@@ -23,15 +23,15 @@
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
-      "descriptorDigest": "sha256:96d0fc8440409110480698ca5eb2b0d3b3e7de314b4dbbf5e26dcf9f12433b02",
+      "schemaDigest": "sha256:00536a6c9044a69468c91761921247047273d51aff05002dc13372892ff38faa",
+      "descriptorDigest": "sha256:cea58f6dcee6ae8e9460eb53ca5cf00269041cf69ff7e08c3d52093c7e5012f5",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
       "schemaDigest": "sha256:57d33f775add8d93c2b78563c8659149e9bd1062050396079d4cf5c390a3e098",
-      "descriptorDigest": "sha256:d51aad9f262b7e06ff86f84a378595a42a9f64c5b8f7de9966ffd3260fdcf0c7",
+      "descriptorDigest": "sha256:94e886bc3d88da299bfbbc8e10d5102275e4426aa221b0493dbd9992659c1ec4",
       "conformanceDigest": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08"
     },
     "objects": {
