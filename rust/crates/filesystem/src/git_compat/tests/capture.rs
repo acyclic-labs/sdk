@@ -366,6 +366,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),
@@ -387,6 +388,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
     let tracked_counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::from(["src/drop.tmp".to_owned()]),
         100,
         &CancellationToken::new(),
@@ -451,6 +453,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),
@@ -496,6 +499,7 @@ async fn ignored_ancestor_cannot_be_reincluded_by_nested_negation() {
     let counts = git_compatible_diff_counts(
         &before,
         &after,
+        &GitIgnorePolicy::default(),
         &BTreeSet::new(),
         100,
         &CancellationToken::new(),
@@ -574,4 +578,253 @@ fn ignore_policy_keeps_tracked_paths_and_honors_last_match() {
     assert!(!policy.eligible("nested/debug.log", false, false));
     assert!(policy.eligible("nested/important.log", false, false));
     assert!(policy.eligible("target/cache", false, true));
+}
+
+#[test]
+fn reserved_host_paths_match_exact_names_and_their_descendants() {
+    let policy = GitIgnorePolicy::parse("!*\n").reserving(["/.volumes/scratch/", "a*"]);
+    assert!(policy.reserves(".volumes/scratch"));
+    assert!(policy.reserves("/.volumes/scratch/note"));
+    assert!(!policy.reserves(".volumes/scratchy"));
+    assert!(!policy.reserves(".volumes"));
+    assert!(policy.reserves("a*"));
+    assert!(!policy.reserves("ab"));
+    assert!(!policy.eligible(".volumes/scratch", false, true));
+    assert!(policy.eligible(".volumes/user", false, false));
+    let layered = GitIgnorePolicy::parse("*.tmp\n").followed_by(&policy);
+    assert!(layered.reserves(".volumes/scratch"));
+    assert!(layered.eligible("drop.tmp", false, false));
+    assert!(!GitIgnorePolicy::default().reserves(".volumes/scratch"));
+}
+
+/// A host-owned alias authored by a mounted child projection. A root
+/// negation, a nested negation, and an earlier tracking record all try to
+/// re-admit it, while authored siblings below the same directory stay content.
+async fn reserved_alias_fixture() -> (
+    Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+) {
+    let workspace = memory_workspace("git-reserved-alias").await;
+    let before = workspace
+        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("baseline")
+        .value;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x5a; 16])).await;
+    transaction
+        .create_dir_all(
+            "/.volumes",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("volume directory");
+    transaction
+        .write_text("/.gitignore", "!.volumes/scratch\n")
+        .await
+        .expect("negation");
+    transaction
+        .write_text("/.volumes/.gitignore", "!scratch\n")
+        .await
+        .expect("nested negation");
+    transaction
+        .write_text("/.volumes/user.txt", "authored")
+        .await
+        .expect("authored sibling");
+    transaction
+        .write_text("/kid.txt", "kid")
+        .await
+        .expect("child file");
+    transaction
+        .create_symbolic_link(
+            "/.volumes/scratch",
+            acyclic_stream::OwnedBytes::from_static(b"/host/scratch"),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("alias");
+    let after = publish_fixture(transaction).await;
+    (workspace, before, after)
+}
+
+#[tokio::test]
+async fn reserved_host_paths_are_never_diffed_or_tracked() {
+    let (_workspace, before, after) = reserved_alias_fixture().await;
+    let reserved = GitIgnorePolicy::default().reserving([".volumes/scratch"]);
+    let tracked = BTreeSet::from([".volumes/scratch".to_owned(), "gone.txt".to_owned()]);
+
+    let counts = git_compatible_diff_counts(
+        &before,
+        &after,
+        &reserved,
+        &tracked,
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("diff");
+    assert_eq!(counts.file_changes, 4, "{counts:?}");
+    assert_eq!(counts.binding_changes, 4, "{counts:?}");
+    // Negative control: without the reservation the alias is Git content.
+    let unreserved = git_compatible_diff_counts(
+        &before,
+        &after,
+        &GitIgnorePolicy::default(),
+        &tracked,
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("unreserved diff");
+    assert_eq!(unreserved.file_changes, 5, "{unreserved:?}");
+
+    let expected = BTreeSet::from([
+        ".gitignore".to_owned(),
+        ".volumes/.gitignore".to_owned(),
+        ".volumes/user.txt".to_owned(),
+        "kid.txt".to_owned(),
+    ]);
+    let after_join = git_tracked_paths_after(
+        &before,
+        &after,
+        None,
+        &reserved,
+        &tracked,
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("tracked paths");
+    assert_eq!(after_join, expected);
+    let unreserved = git_tracked_paths_after(
+        &before,
+        &after,
+        None,
+        &GitIgnorePolicy::default(),
+        &tracked,
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("unreserved tracked paths");
+    assert!(unreserved.contains(".volumes/scratch"));
+}
+
+#[tokio::test]
+async fn tracked_paths_after_a_join_admit_new_eligible_files_only() {
+    let workspace = memory_workspace("git-tracked-after").await;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x5b; 16])).await;
+    initial
+        .write_text("/.gitignore", "*.tmp\n")
+        .await
+        .expect("ignore");
+    initial
+        .write_text("/kept.txt", "kept")
+        .await
+        .expect("tracked");
+    initial
+        .write_text("/gone.txt", "gone")
+        .await
+        .expect("tracked removal");
+    let before = publish_fixture(initial).await;
+    let mut joined = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x5c; 16])).await;
+    joined
+        .write_text("/newkid.txt", "kid")
+        .await
+        .expect("new file");
+    joined
+        .write_text("/scratch.tmp", "ignored")
+        .await
+        .expect("ignored file");
+    joined
+        .create_dir_all("/empty", WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("directory");
+    joined
+        .remove(
+            "/gone.txt",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await
+        .expect("removal");
+    let after = publish_fixture(joined).await;
+    let tracked = git_tracked_paths_after(
+        &before,
+        &after,
+        None,
+        &GitIgnorePolicy::default(),
+        &BTreeSet::from([
+            ".gitignore".to_owned(),
+            "kept.txt".to_owned(),
+            "gone.txt".to_owned(),
+        ]),
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("tracked paths");
+    assert_eq!(
+        tracked,
+        BTreeSet::from([
+            ".gitignore".to_owned(),
+            "kept.txt".to_owned(),
+            "newkid.txt".to_owned(),
+        ])
+    );
+    // A file the joined source never held stays untracked.
+    let from_source = git_tracked_paths_after(
+        &before,
+        &after,
+        Some(&before),
+        &GitIgnorePolicy::default(),
+        &BTreeSet::from([".gitignore".to_owned(), "kept.txt".to_owned()]),
+        100,
+        &CancellationToken::new(),
+    )
+    .await
+    .expect("source-filtered tracked paths");
+    assert_eq!(
+        from_source,
+        BTreeSet::from([".gitignore".to_owned(), "kept.txt".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn capture_never_commits_reserved_host_paths() {
+    let (workspace, _before, _after) = reserved_alias_fixture().await;
+    let tracked = BTreeSet::from([".volumes/scratch".to_owned()]);
+    let captured = capture_git_compatible_generation(
+        &workspace,
+        &GitIgnorePolicy::default().reserving([".volumes/scratch"]),
+        &tracked,
+        OperationId::from_bytes([0x5d; 16]),
+    )
+    .await
+    .expect("capture");
+    assert!(!captured.tracked_paths.contains(".volumes/scratch"));
+    assert!(captured.tracked_paths.contains(".volumes/user.txt"));
+    assert!(
+        captured
+            .generation
+            .stat(
+                "/.volumes/scratch",
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new()
+            )
+            .await
+            .is_err()
+    );
+    // Negative control: an unreserved capture commits the alias.
+    let unreserved = capture_git_compatible_generation(
+        &workspace,
+        &GitIgnorePolicy::default(),
+        &tracked,
+        OperationId::from_bytes([0x5e; 16]),
+    )
+    .await
+    .expect("unreserved capture");
+    assert!(unreserved.tracked_paths.contains(".volumes/scratch"));
 }

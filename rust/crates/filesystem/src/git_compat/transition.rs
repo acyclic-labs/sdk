@@ -182,6 +182,13 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
             let parents = if rebase {
                 source_head.into_iter().collect()
             } else {
+                // A source head already reachable from HEAD adds no ancestry;
+                // the joined workspace content is still recorded by this commit.
+                let source_head = source_head.filter(|source| {
+                    previous.is_none_or(|previous| {
+                        nearest_common_ancestor(state, previous, *source) != Some(*source)
+                    })
+                });
                 previous.into_iter().chain(source_head).collect()
             };
             let verb = if rebase { "rebase" } else { "merge" };

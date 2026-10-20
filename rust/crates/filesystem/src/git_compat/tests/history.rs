@@ -804,3 +804,104 @@ async fn state_changing_filesystem_actions_are_prepared_then_completed() {
     };
     assert_eq!(status.branch, "feature");
 }
+
+async fn merge_reachable_branch(advance_head: bool) -> (GitCommit, GitCommit) {
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let GitCommandOutput::Committed(initial) = repository
+        .record_commit(
+            None,
+            generation(1),
+            BTreeSet::from(["base.txt".to_owned()]),
+            "initial",
+            "parent",
+            1,
+        )
+        .await
+        .expect("initial commit")
+    else {
+        panic!("expected initial commit");
+    };
+    let source = workspace_identity([0x61; 16], "reachable-merge-source");
+    repository
+        .register_branch_workspace("agents/kid", source, Some(initial.id), false)
+        .await
+        .expect("source branch");
+    let head = if advance_head {
+        let GitCommandOutput::Committed(advanced) = repository
+            .record_commit(
+                Some(initial.id),
+                generation(2),
+                BTreeSet::from(["base.txt".to_owned()]),
+                "advanced",
+                "parent",
+                2,
+            )
+            .await
+            .expect("advanced commit")
+        else {
+            panic!("expected advanced commit");
+        };
+        advanced
+    } else {
+        initial
+    };
+    let tracked = BTreeSet::from(["base.txt".to_owned(), "kid.txt".to_owned()]);
+    let GitCommandOutput::Committed(merged) = repository
+        .run(
+            GitCommand::Merge {
+                branch: "agents/kid".to_owned(),
+            },
+            head.tree,
+            &TestExecutor::returning(GitFilesystemResult::Applied {
+                tree: Some(tree(3)),
+                tracked_paths: Some(tracked.clone()),
+            }),
+        )
+        .await
+        .expect("merge")
+    else {
+        panic!("expected a merge commit");
+    };
+    assert_eq!(merged.tracked_paths, tracked);
+    (head, merged)
+}
+
+#[tokio::test]
+async fn merging_a_branch_reachable_from_head_records_head_once() {
+    // The branch head is HEAD itself: [HEAD, HEAD] would repeat a parent.
+    let (head, merged) = merge_reachable_branch(false).await;
+    assert_eq!(merged.parents, vec![head.id]);
+    // The branch head is an ancestor of HEAD and adds no ancestry.
+    let (head, merged) = merge_reachable_branch(true).await;
+    assert_eq!(merged.parents, vec![head.id]);
+}
+
+#[test]
+fn commits_record_each_parent_once_and_state_rejects_repeats() {
+    let parent = GitCommitId([7; 32]);
+    let commit = GitCommit::new(
+        tree(1),
+        tree(1),
+        None,
+        BTreeSet::new(),
+        vec![parent, parent],
+        "agent",
+        1,
+        "repeated parent",
+    );
+    assert_eq!(commit.parents, vec![parent]);
+
+    let mut state = GitCompatState::new("main", workspace());
+    state.external_parents.insert(parent);
+    state.commits.insert(commit.id, commit.clone());
+    state.branches.get_mut("main").expect("branch").head = Some(commit.id);
+    assert!(validate_git_commits(&state, &BTreeSet::from([workspace()])).is_ok());
+    // Negative control: a commit hashed over a repeated parent is refused.
+    let mut repeated = commit;
+    repeated.parents = vec![parent, parent];
+    repeated.id = repeated.hash_id();
+    state.commits.clear();
+    state.commits.insert(repeated.id, repeated.clone());
+    state.branches.get_mut("main").expect("branch").head = Some(repeated.id);
+    assert!(validate_git_commits(&state, &BTreeSet::from([workspace()])).is_err());
+}

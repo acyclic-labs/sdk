@@ -38,11 +38,10 @@ pub(in crate::local) fn require_available(
     })
 }
 
-pub(in crate::local) fn excluded(
-    root: &Path,
-    config: acyclic_fs::VolumeConfig,
-    relative: &str,
-) -> Result<Vec<NamespacePath>> {
+/// Root-relative paths a bound volume owns inside a task view: its alias or
+/// mount destination and the mount control files beside it. Capture excludes
+/// them and the Git facade reserves them; neither is ever authored content.
+pub(in crate::local) fn owned(root: &Path, relative: &str) -> Result<Vec<String>> {
     let destination = root.join(relative);
     std::iter::once(destination.clone())
         .chain(acyclic_fs::native_mount_control_paths(&destination).map_err(Error::from)?)
@@ -54,11 +53,22 @@ pub(in crate::local) fn excluded(
             let relative = relative
                 .to_str()
                 .ok_or_else(|| Error::Invalid("mount path is not UTF-8".into()))?;
-            let path = acyclic_fs::path::PortablePath::parse(
-                &format!("/{}", relative.replace('\\', "/")),
-                config.limits,
-            )
-            .map_err(storage)?;
+            Ok(relative.replace('\\', "/"))
+        })
+        .collect()
+}
+
+pub(in crate::local) fn excluded(
+    root: &Path,
+    config: acyclic_fs::VolumeConfig,
+    relative: &str,
+) -> Result<Vec<NamespacePath>> {
+    owned(root, relative)?
+        .into_iter()
+        .map(|relative| {
+            let path =
+                acyclic_fs::path::PortablePath::parse(&format!("/{relative}"), config.limits)
+                    .map_err(storage)?;
             NamespacePath::from_portable_in_profile(&path, config.profile, config.limits)
                 .map_err(storage)
         })

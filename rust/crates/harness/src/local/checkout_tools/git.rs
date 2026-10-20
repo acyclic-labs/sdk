@@ -111,6 +111,13 @@ impl CheckoutTools {
             native.advance_to_head().await?;
             owner.verify_owner(None)?.await?;
         }
+        // Volume paths are relative to the project root; a volume repository
+        // owns no aliases of its own.
+        let reserved = if source.is_none() {
+            workspace.volume_owned_paths()?
+        } else {
+            Vec::new()
+        };
         const GIT_PUBLICATION_LEASE_MILLIS: u64 = 60_000;
         let lease = coordinator
             .begin_with_lease_id(
@@ -155,6 +162,7 @@ impl CheckoutTools {
                     lease: Some(lease.clone()),
                     checkout: (source.is_none() && workspace.mounted.is_none())
                         .then_some(workspace.identity),
+                    reserved: &reserved,
                     author: "LocalHarness",
                     authored_at_seconds: i64::try_from(self.clock.now_unix_millis() / 1000)
                         .unwrap_or(i64::MAX),

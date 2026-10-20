@@ -98,6 +98,19 @@ impl LocalWorkspace {
         volumes::attach(&self.filesystem, &self.store, path, &mut mounts).await?;
         Ok(Arc::new(mounts))
     }
+
+    /// Root-relative paths that this view's bound volumes own. A mounted
+    /// child projection authors its volume aliases, so every reader of
+    /// authored history must reserve them rather than rely on capture.
+    pub(super) fn volume_owned_paths(&self) -> Result<Vec<String>> {
+        let mut owned = Vec::new();
+        for (relative, mount) in self.mounts.mounts() {
+            if !relative.is_empty() && mount.view.source.is_some() {
+                owned.extend(volumes::owned(&self.path, relative)?);
+            }
+        }
+        Ok(owned)
+    }
     pub(super) async fn created_mounts(
         &self,
         project: &VolumeRef,

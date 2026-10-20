@@ -16,6 +16,9 @@ pub struct Workspace<'a> {
     pub lease: Option<OperationWindowLease>,
     /// Pin for an ordinary checkout that must receive published changes.
     pub checkout: Option<acyclic_fs::NativeRootIdentity>,
+    /// Root-relative paths the host owns inside the view, such as bound
+    /// volume aliases and their mount controls. They are never Git content.
+    pub reserved: &'a [String],
     /// Commit author.
     pub author: &'a str,
     /// Commit timestamp in seconds since the Unix epoch.
@@ -52,6 +55,10 @@ where
     );
     let patch = git_apply_patch(workspace.view, workspace.root, args).await?;
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
+    let ignore = ignore.reserving(workspace.reserved);
+    let repository =
+        GitIgnorePolicy::parse(crate::filesystem::workspace_policy::RESERVED_IGNORE_RULES)
+            .reserving(workspace.reserved);
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,
@@ -61,6 +68,7 @@ where
         lazy_current: workspace.view,
         repository_id: workspace.repository,
         ignore,
+        repository,
         permit,
         lease: workspace.lease.take(),
         merge_drivers,

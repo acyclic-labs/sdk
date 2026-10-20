@@ -116,6 +116,7 @@ impl ControlPlane {
                 repository: repository_id,
                 lease: Some(lease.clone()),
                 checkout: None,
+                reserved: &[],
                 author: &author,
                 authored_at_seconds: i64::try_from(now / 1_000).unwrap_or(i64::MAX),
             },
@@ -249,6 +250,7 @@ impl ControlPlane {
                 checkout: Some(acyclic_fs::NativeRootIdentity::from_bytes(
                     root_binding.created()?.native_root_identity,
                 )),
+                reserved: &[],
                 author: &author,
                 authored_at_seconds: i64::try_from(now_millis() / 1_000).unwrap_or(i64::MAX),
             },

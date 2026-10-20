@@ -65,6 +65,9 @@ pub(crate) struct WorkspaceGitExecutor<'a, F> {
     pub repository_id: acyclic_fs::WorkspaceId,
     /// Current ignore policy.
     pub ignore: GitIgnorePolicy,
+    /// Repository-level policy, Git's `info/exclude`: SDK metadata rules and
+    /// host-reserved paths, beneath whichever tree's own `.gitignore` applies.
+    pub repository: GitIgnorePolicy,
     /// Publication permit for this command.
     pub permit: PublicationPermit,
     /// Optional admitted operation lease.

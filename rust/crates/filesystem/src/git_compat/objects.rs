@@ -101,6 +101,9 @@ impl GitCommit {
         reason = "each argument is one field of the recorded commit"
     )]
     /// Constructs and hashes an explicit compatibility commit.
+    ///
+    /// Like `git commit-tree`, a repeated parent is recorded once: ancestry is
+    /// a set of distinct predecessors in first-occurrence order.
     pub fn new(
         tree: GitTreeRef,
         workspace_tree: GitTreeRef,
@@ -111,6 +114,11 @@ impl GitCommit {
         authored_at_seconds: i64,
         message: impl Into<String>,
     ) -> Self {
+        let mut distinct = BTreeSet::new();
+        let parents = parents
+            .into_iter()
+            .filter(|parent| distinct.insert(*parent))
+            .collect();
         let mut commit = Self {
             id: GitCommitId([0; 32]),
             tree,

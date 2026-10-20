@@ -4,6 +4,8 @@ use super::*;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
+    /// Exact repository-relative paths owned by the host, never Git content.
+    reserved: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -87,12 +89,63 @@ impl GitIgnorePolicy {
                 })
             })
             .collect();
-        Self { rules }
+        Self {
+            rules,
+            reserved: BTreeSet::new(),
+        }
+    }
+
+    /// Reserves exact repository-relative paths, and everything beneath
+    /// them, for the host. A reserved path is never Git content: no ignore
+    /// negation, nested `.gitignore`, or earlier tracking re-admits it, and
+    /// its name is matched byte for byte rather than as a pattern.
+    #[must_use]
+    pub fn reserving<I, S>(mut self, paths: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.reserved.extend(
+            paths
+                .into_iter()
+                .map(|path| path.as_ref().trim_matches('/').to_owned())
+                .filter(|path| !path.is_empty()),
+        );
+        self
+    }
+
+    /// Returns this policy followed by a later, higher-precedence one, as
+    /// Git layers a root `.gitignore` over `info/exclude`. Reservations of
+    /// both are kept.
+    #[must_use]
+    pub fn followed_by(&self, later: &Self) -> Self {
+        Self {
+            rules: self.rules.iter().chain(&later.rules).cloned().collect(),
+            reserved: self.reserved.union(&later.reserved).cloned().collect(),
+        }
+    }
+
+    /// The exact reserved host paths, without leading or trailing slashes.
+    pub fn reserved_paths(&self) -> impl Iterator<Item = &str> {
+        self.reserved.iter().map(String::as_str)
+    }
+
+    /// Returns whether a path is, or lies beneath, a reserved host path.
+    #[must_use]
+    pub fn reserves(&self, path: &str) -> bool {
+        let path = path.trim_start_matches('/');
+        self.reserved.iter().any(|reserved| {
+            path.strip_prefix(reserved.as_str())
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        })
     }
 
     /// Returns whether a path participates in compatibility commit/join state.
     #[must_use]
     pub fn eligible(&self, path: &str, is_directory: bool, already_tracked: bool) -> bool {
+        if self.reserves(path) {
+            return false;
+        }
         if already_tracked {
             return true;
         }
@@ -146,6 +199,9 @@ pub(super) fn git_path_eligible(
     is_directory: bool,
     already_tracked: bool,
 ) -> bool {
+    if root.reserves(path) {
+        return false;
+    }
     if already_tracked {
         return true;
     }

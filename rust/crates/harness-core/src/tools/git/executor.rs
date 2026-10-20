@@ -40,7 +40,13 @@ where
         tree: GitTreeRef,
     ) -> Result<GitFilesystemResult, Self::Error> {
         self.validate().await?;
-        let GitFilesystemAction::Join { tracked_paths, .. } = action else {
+        let GitFilesystemAction::Join {
+            target_tree,
+            source_workspace,
+            tracked_paths,
+            ..
+        } = action
+        else {
             return Err(Error::Invalid("merge continuation requires a join".into()));
         };
         let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
@@ -59,13 +65,34 @@ where
             ));
         };
         let current = self.generation(tree).await?;
-        let Some(tracked_paths) =
+        let Some(resolved) =
             acyclic_fs::git_merge_resolution(&current, paths, tracked_paths).await?
         else {
             return Err(Self::error(
                 "Git merge still contains unresolved conflict markers",
             ));
         };
+        // A continued join tracks the source's newly authored eligible paths
+        // as an unconflicted join does, never a reserved path, and never a
+        // file the resolution itself added.
+        let source = self
+            .workspace(*source_workspace)
+            .await?
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| Error::from(failure.error))?;
+        let tracked_paths = acyclic_fs::git_tracked_paths_after(
+            &self.generation(*target_tree).await?,
+            &current,
+            Some(&source),
+            &self.repository,
+            &resolved,
+            u32::MAX,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(Error::from)?;
         self.validate().await?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(tree),
@@ -252,6 +279,7 @@ where
                     let diff = git_compatible_diff_counts(
                         &from,
                         &to,
+                        &self.repository,
                         tracked_paths,
                         100_000,
                         &CancellationToken::new(),

@@ -95,6 +95,17 @@ async fn run(
     repository_id: acyclic_fs::WorkspaceId,
     args: &[&str],
 ) -> Result<(GitCommandOutput, Option<Lazy>)> {
+    run_reserving(fs, store, lazy, repository_id, &[], args).await
+}
+
+async fn run_reserving(
+    fs: &LocalFs,
+    store: &LocalCoreStateStore,
+    lazy: &Lazy,
+    repository_id: acyclic_fs::WorkspaceId,
+    reserved: &[String],
+    args: &[&str],
+) -> Result<(GitCommandOutput, Option<Lazy>)> {
     let argv: Vec<_> = args.iter().map(|arg| (*arg).to_owned()).collect();
     let output = git::run(
         git::Workspace {
@@ -105,6 +116,7 @@ async fn run(
             repository: repository_id,
             lease: None,
             checkout: None,
+            reserved,
             author: "test",
             authored_at_seconds: 1,
         },
@@ -200,6 +212,7 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
                 repository: repo,
                 lease: None,
                 checkout: None,
+                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
             },
@@ -396,6 +409,167 @@ async fn fixture_native(
     Ok((temp, root, fs, store, main))
 }
 
+/// A child projection authors its volume alias beside its own work. Merging
+/// the child must publish and track the work, never the alias, and record
+/// each parent once.
+async fn merge_child_with_alias(reserved: &[String]) -> Result<AliasMerge> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    main.write(
+        "/base.txt",
+        bytes::Bytes::from_static(
+            b"base
+",
+        )
+        .into(),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut work,
+    )
+    .await?;
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let repo = main.workspace().id();
+    let GitCommandOutput::Committed(base) = run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        reserved,
+        &["commit", "-m", "base"],
+    )
+    .await?
+    .0
+    else {
+        return Err("expected the base commit".into());
+    };
+    let (_, child) = run_reserving(
+        &fs,
+        &store,
+        &main,
+        repo,
+        reserved,
+        &["checkout", "-b", "agents/kid"],
+    )
+    .await?;
+    let child = child.ok_or("missing child view")?;
+    for path in ["/newkid.txt", "/.volumes/user.txt"] {
+        child
+            .write(
+                path,
+                bytes::Bytes::from_static(
+                    b"kid
+",
+                )
+                .into(),
+                IdempotencyKey::new(),
+                PublicationPermit::Unrestricted,
+                &mut work,
+            )
+            .await?;
+    }
+    let mut alias = child
+        .workspace()
+        .begin_transaction(IdempotencyKey::new(), WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    alias
+        .create_symbolic_link(
+            "/.volumes/scratch",
+            acyclic_stream::OwnedBytes::from_static(b"/host/volumes/scratch"),
+            WorkBudget::UNBOUNDED,
+            &stop,
+        )
+        .await?;
+    let committed = alias
+        .commit(
+            None,
+            PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &stop,
+            |_| {
+                std::future::ready(Ok::<
+                    _,
+                    acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>,
+                >(acyclic_fs::OperationReceipt {
+                    value: (),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                }))
+            },
+        )
+        .await?
+        .value;
+    assert!(matches!(
+        committed,
+        acyclic_fs::TransactionCommit::Committed(_)
+    ));
+    run_reserving(&fs, &store, &child, repo, reserved, &["checkout", "main"]).await?;
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { value, .. }) =
+        run_reserving(&fs, &store, &main, repo, reserved, &["diff", "agents/kid"])
+            .await?
+            .0
+    else {
+        return Err("expected an agent diff".into());
+    };
+    run_reserving(&fs, &store, &main, repo, reserved, &["merge", "agents/kid"]).await?;
+    let GitCommandOutput::Commits(log) =
+        run_reserving(&fs, &store, &main, repo, reserved, &["log"])
+            .await?
+            .0
+    else {
+        return Err("expected the merged log".into());
+    };
+    let merge = log.first().ok_or("empty log")?.clone();
+    let alias_merged = main
+        .workspace()
+        .head(WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .stat("/.volumes/scratch", WorkBudget::UNBOUNDED, &stop)
+        .await
+        .is_ok();
+    Ok(AliasMerge {
+        base: base.id,
+        file_changes: value["fileChanges"].as_u64().ok_or("missing file count")?,
+        merge,
+        alias_merged,
+    })
+}
+
+struct AliasMerge {
+    base: acyclic_fs::GitCommitId,
+    file_changes: u64,
+    merge: acyclic_fs::GitCommit,
+    alias_merged: bool,
+}
+
+#[tokio::test]
+async fn agent_merge_reserves_host_aliases_and_tracks_authored_files() -> Result<()> {
+    let merged = merge_child_with_alias(&[".volumes/scratch".to_owned()]).await?;
+    assert_eq!(merged.file_changes, 2);
+    assert!(!merged.alias_merged);
+    assert_eq!(
+        merged.merge.tracked_paths,
+        std::collections::BTreeSet::from([
+            ".volumes/user.txt".to_owned(),
+            "base.txt".to_owned(),
+            "newkid.txt".to_owned(),
+        ])
+    );
+    // The child branch was forked at HEAD, so HEAD is its only parent.
+    assert_eq!(merged.merge.parents, vec![merged.base]);
+
+    // Negative control: an unreserved view diffs, merges, and tracks the
+    // alias as if the child had authored it.
+    let leaked = merge_child_with_alias(&[]).await?;
+    assert_eq!(leaked.file_changes, 3);
+    assert!(leaked.alias_merged);
+    assert!(leaked.merge.tracked_paths.contains(".volumes/scratch"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()> {
     let (_temp, root, fs, store, main) = fixture_native(true).await?;
@@ -445,6 +619,7 @@ async fn agent_diff_exactifies_native_files_with_the_target_lease() -> Result<()
             repository,
             lease: Some(lease.clone()),
             checkout: None,
+            reserved: &[],
             author: "test",
             authored_at_seconds: 1,
         },
@@ -521,6 +696,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 repository: repo,
                 lease: Some(lease.clone()),
                 checkout,
+                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
             },
@@ -542,6 +718,7 @@ async fn checkout_and_mounted_commands_both_reject_expired_leases() -> Result<()
                 repository: repo,
                 lease: Some(lease.clone()),
                 checkout,
+                reserved: &[],
                 author: "test",
                 authored_at_seconds: 1,
             },

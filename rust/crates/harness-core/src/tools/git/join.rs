@@ -14,21 +14,32 @@ where
         tracked: &BTreeSet<String>,
     ) -> crate::Result<GitFilesystemResult> {
         let source = self.workspace(source).await?;
-        let mut builder = source.join_into(&self.current).git_metadata();
-        if rebase {
-            builder = builder.history(acyclic_fs::JoinHistory::Rebase);
-        }
-        let plan = super::materialize::prepared(
-            async {
-                builder
-                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| Error::from(failure.error))
-            },
-            &|| self.validate(),
-        )
-        .await?;
+        let plan = self.plan_join(&source, rebase).await?;
+        // A mounted child projection authors its host-owned volume aliases.
+        // Join from a fork that holds the target's own entries there, so a
+        // merge never publishes them into the target's tree.
+        let reserved = self.reserved_in(&plan).await?;
+        let plan = if reserved.is_empty() {
+            plan
+        } else {
+            let filtered = acyclic_fs::git_generation_with_paths_from(
+                &self
+                    .join_generation(plan.source(), plan.source_head())
+                    .await?,
+                &self
+                    .join_generation(&self.current, plan.target_head())
+                    .await?,
+                &reserved,
+                reserved_source_operation(operation),
+            )
+            .await
+            .map_err(Error::from)?;
+            let filtered = self.plan_join(&filtered.workspace(), rebase).await?;
+            if filtered.target_head() != plan.target_head() {
+                return Err(Self::error("Git join raced with another workspace writer"));
+            }
+            filtered
+        };
         let options = ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::from_bytes(operation.into_bytes()),
@@ -166,10 +177,112 @@ where
                 "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
             ));
         }
-        let tracked_paths = existing_tracked_paths(&generation, tracked).await?;
+        let before = self
+            .current
+            .generation(
+                plan.target_head(),
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| Error::from(failure.error))?;
+        // The joined source's authored files enter history like any capture:
+        // newly published eligible paths become tracked, not only the union of
+        // the two branches' previously committed paths.
+        let tracked_paths = acyclic_fs::git_tracked_paths_after(
+            &before,
+            &generation,
+            None,
+            &self.repository,
+            tracked,
+            u32::MAX,
+            &CancellationToken::new(),
+        )
+        .await
+        .map_err(Error::from)?;
         Ok(GitFilesystemResult::Applied {
             tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
             tracked_paths: Some(tracked_paths),
         })
     }
+
+    async fn plan_join(
+        &self,
+        source: &LocalWorkspace,
+        rebase: bool,
+    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        let mut builder = source.join_into(&self.current).git_metadata();
+        if rebase {
+            builder = builder.history(acyclic_fs::JoinHistory::Rebase);
+        }
+        super::materialize::prepared(
+            async {
+                builder
+                    .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| Error::from(failure.error))
+            },
+            &|| self.validate(),
+        )
+        .await
+    }
+
+    async fn join_generation(
+        &self,
+        workspace: &LocalWorkspace,
+        generation: acyclic_fs::GenerationId,
+    ) -> crate::Result<LocalGeneration> {
+        workspace
+            .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| Error::from(failure.error))
+    }
+
+    /// Reserved host paths present in either side of a planned join.
+    async fn reserved_in(
+        &self,
+        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+    ) -> crate::Result<Vec<String>> {
+        let sides = [
+            self.join_generation(plan.source(), plan.source_head())
+                .await?,
+            self.join_generation(&self.current, plan.target_head())
+                .await?,
+        ];
+        let mut present = Vec::new();
+        for path in self.repository.reserved_paths() {
+            for side in &sides {
+                match side
+                    .stat(
+                        &format!("/{path}"),
+                        WorkBudget::UNBOUNDED,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        present.push(path.to_owned());
+                        break;
+                    }
+                    Err(failure)
+                        if matches!(failure.error, acyclic_fs::WorkspaceError::NotFound) => {}
+                    Err(failure) => return Err(Error::from(failure.error)),
+                }
+            }
+        }
+        Ok(present)
+    }
+}
+
+/// The fork that drops reserved source entries has its own retry identity.
+fn reserved_source_operation(operation: OperationId) -> OperationId {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"acyclic.git.join-reserved-source/v1\0");
+    hash.update(&operation.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
 }

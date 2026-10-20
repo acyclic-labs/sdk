@@ -1,0 +1,178 @@
+{
+  "driver": "agents",
+  "prompt": "merge a child's authored file without its volume alias",
+  "models": {
+    "parent": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "seed-private",
+          "name": "bash",
+          "arguments": {
+            "command": "printf parent-private > .volumes/scratch/parent-secret"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "spawn",
+          "name": "spawn",
+          "arguments": {
+            "task": "author a project file",
+            "name": "worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "wait",
+          "name": "wait",
+          "arguments": {
+            "agents": [
+              "worker"
+            ]
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "diff",
+          "name": "fs",
+          "arguments": {
+            "command": "diff agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "merge",
+          "name": "fs",
+          "arguments": {
+            "command": "merge agents/worker"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "parent finished"
+    ],
+    "worker": [
+      [
+        {
+          "type": "event",
+          "kind": "tool_call",
+          "call_id": "child-shell",
+          "name": "bash",
+          "arguments": {
+            "command": "printf child-private > .volumes/scratch/note && printf kid > newkid.txt && printf ok"
+          }
+        },
+        {
+          "type": "event",
+          "kind": "completed",
+          "metadata": null
+        }
+      ],
+      "child finished"
+    ]
+  },
+  "expect": {
+    "text": "parent finished",
+    "requests": {
+      "parent": 6,
+      "worker": 2
+    },
+    "task_files": {},
+    "model_requests": {
+      "parent": [
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "call_id": "diff",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "result": {
+                      "Filesystem": {
+                        "Data": {
+                          "kind": "diff",
+                          "value": {
+                            "bindingChanges": 1,
+                            "fileChanges": 1
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "messages": [
+            {
+              "role": "tool",
+              "content": {
+                "call_id": "merge",
+                "content": {
+                  "kind": "json",
+                  "value": {
+                    "result": {
+                      "Committed": {
+                        "parents": [],
+                        "tracked_paths": [
+                          "newkid.txt"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "files": {
+      "newkid.txt": "kid"
+    }
+  },
+  "routes": {
+    "author a project file": "worker"
+  }
+}
