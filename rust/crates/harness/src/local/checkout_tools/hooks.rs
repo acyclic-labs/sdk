@@ -11,6 +11,39 @@ impl CheckoutTools {
         context: ToolContext,
         reconcile_only: bool,
     ) -> Result<Option<HookOutput>> {
+        if let Some(project) = self.child_project(&context)? {
+            let selected = self.child_checkout(&context, project).await?;
+            return selected
+                .project_hooks(
+                    configuration,
+                    event,
+                    input,
+                    registry,
+                    context,
+                    reconcile_only,
+                )
+                .await;
+        }
+        self.project_hooks(
+            configuration,
+            event,
+            input,
+            registry,
+            context,
+            reconcile_only,
+        )
+        .await
+    }
+
+    async fn project_hooks(
+        &self,
+        configuration: (&Hooks, [u8; 32]),
+        event: HookEvent,
+        input: crate::hooks::HookInput<'_>,
+        registry: &ToolRegistry,
+        context: ToolContext,
+        reconcile_only: bool,
+    ) -> Result<Option<HookOutput>> {
         let (hooks, digest) = configuration;
         let scope = context.effective_scope();
         if !scope.grants().contains(&self.read_grant) || !scope.grants().contains(&self.write_grant)
