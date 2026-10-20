@@ -72,9 +72,7 @@ pub mod wire_codec;
 pub mod verification;
 #[cfg(all(acyclic_loom, feature = "local"))]
 #[doc(hidden)]
-pub use local::replay_model::{
-    negative_control_acknowledges_an_unflushed_original, replay_and_flush_preserve_durability,
-};
+pub use local::replay_model::replay_durability_case;
 #[cfg(all(acyclic_loom, acyclic_stream_loom, feature = "local"))]
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
