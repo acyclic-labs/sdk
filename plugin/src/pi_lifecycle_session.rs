@@ -100,15 +100,24 @@ impl PiSession {
                 "Pi caller lacks its original cancellation grant".to_owned(),
             ));
         }
-        let subtree = self.native_subtree(target, query_work)?;
-        let tasks = &subtree.0;
-        let host = self.native_host_with_native_work(query_work)?;
+        let mut subtree = self.native_subtree(target, query_work)?;
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid(
                 "Pi cancellation lost its original root".to_owned(),
             ));
         };
-        let _caller_source = if caller == root.task_id {
+        // The session root is an SDK task, not a native child. Its original
+        // admission authorizes cancellation without a child launch runtime.
+        // Native descendants still require their protected host and drain.
+        subtree.0.retain(|task| *task != root.task_id);
+        let tasks = &subtree.0;
+        if tasks.is_empty() {
+            self.runtime.runtime.task_host().cancel(target).await?;
+            return Ok(());
+        }
+        let root_task = root.task_id;
+        let host = self.native_host_with_native_work(query_work)?;
+        let _caller_source = if caller == root_task {
             None
         } else {
             let live = host.live_source(caller, work).await?.ok_or_else(|| {
