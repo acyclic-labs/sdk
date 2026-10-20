@@ -13,11 +13,13 @@ use std::{
 pub fn check(input: &[u8]) {
     let count = usize::from(input.first().copied().unwrap_or(0) % 5);
     let payload = &input.get(1..).unwrap_or_default()[..input.len().saturating_sub(1).min(32)];
-    let path = tempfile::NamedTempFile::new().unwrap();
+    // A path without an open handle: the descriptor census below counts every
+    // remaining descriptor for this unique inode.
+    let path = tempfile::NamedTempFile::new().unwrap().into_temp_path();
     let expected = b"the received descriptor retains the complete original bytes";
-    std::fs::write(path.path(), expected).unwrap();
-    let source = File::open(path.path()).unwrap();
-    let probe = File::open(path.path()).unwrap();
+    std::fs::write(&path, expected).unwrap();
+    let source = File::open(&path).unwrap();
+    let probe = File::open(&path).unwrap();
     flock(&source, FlockOperation::NonBlockingLockExclusive).unwrap();
     let files = (0..count)
         .map(|_| source.try_clone().unwrap())
@@ -65,7 +67,20 @@ pub fn check(input: &[u8]) {
         assert_eq!(bytes, expected);
     }
     // Every rejected or consumed descriptor must be closed, including truncated
-    // ancillary messages. Independent open-file descriptions make this immune to
-    // descriptor-number reuse by other tests.
-    flock(&probe, FlockOperation::NonBlockingLockExclusive).unwrap();
+    // ancillary messages. Census this process's own descriptor table for the
+    // unique inode: that is immune to descriptor-number reuse by other tests,
+    // and to their forked children, which hold copies of every descriptor
+    // until exec and would keep an open-file-description lock held.
+    assert_eq!(descriptors_for(&probe), 1, "only the probe remains open");
+}
+
+fn descriptors_for(probe: &File) -> usize {
+    use std::os::unix::fs::MetadataExt as _;
+    let identity = probe.metadata().unwrap();
+    std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        // Descriptors other tests close mid-census vanish; none is this inode.
+        .filter_map(|entry| std::fs::metadata(entry.ok()?.path()).ok())
+        .filter(|metadata| metadata.dev() == identity.dev() && metadata.ino() == identity.ino())
+        .count()
 }
