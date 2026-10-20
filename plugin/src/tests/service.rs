@@ -57,12 +57,16 @@ fn durable_drain_is_identity_bound_and_answers_concurrent_requesters() {
                 .is_err()
         );
         assert!(acquire_service_lock(&fixture.data).unwrap().is_none());
-        let (first, second) = tokio::join!(
-            drain_service(&fixture.data, Some(&identity)),
-            drain_service(&fixture.data, Some(&identity))
-        );
-        drop(first.unwrap());
-        drop(second.unwrap());
+        // Each drain returns an exclusive handoff fence. Release each fence
+        // in its own requester, so one completed request cannot prevent the
+        // other from claiming the same stopped service.
+        let drain = || async {
+            drop(drain_service(&fixture.data, Some(&identity)).await?);
+            Ok::<(), String>(())
+        };
+        let (first, second) = tokio::join!(drain(), drain());
+        first.unwrap();
+        second.unwrap();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), service)
             .await
             .unwrap()
