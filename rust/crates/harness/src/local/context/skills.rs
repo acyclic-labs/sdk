@@ -12,7 +12,7 @@ pub(in crate::local) fn cache() -> Cache {
 pub(super) const PROJECT_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 
 impl LocalHarness {
-    pub(super) async fn skills(&self) -> Result<Vec<SkillMetadata>> {
+    pub(in crate::local) async fn skills(&self) -> Result<Vec<SkillMetadata>> {
         #[cfg(feature = "native-execution")]
         if self.checkout_context
             && let Some(sources) = self.files.skill_sources(&self.journal)?
