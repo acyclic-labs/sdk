@@ -31,7 +31,7 @@ pub(super) fn calls(turns: &[ScriptedTurn]) -> Vec<(u64, ToolCall)> {
 }
 
 fn query(task: TaskId) -> TestResult<Query> {
-    Ok(Query::Turns(Component::new(task.to_string())?))
+    Ok(Query::Task(Component::new(task.to_string())?))
 }
 
 pub(super) async fn observe(
@@ -67,6 +67,9 @@ pub(super) async fn verify(
         .snapshot
         .ok_or("missing final tool snapshot")?;
     let mut view = FileQueryView::from_snapshot(selected, initial, 64, 65_536)?;
+    let owner = Component::new(task.to_string())?;
+    let execution = Component::new(operation.to_string())?;
+    let mut turns = BTreeMap::new();
     while view.cursor().position != target.cursor.position {
         let change = super::stall::waiting(
             "tool file follow before the settled cut",
@@ -78,6 +81,30 @@ pub(super) async fn verify(
             || change.cursor.position > target.cursor.position
         {
             return Err("tool follow did not advance to the known cut".into());
+        }
+        for file in change.file.iter().chain(&change.files) {
+            if let FileKey::Task {
+                task: marker_owner,
+                file:
+                    TaskFile::ModelTurn {
+                        execution: marker_execution,
+                        step,
+                    },
+            } = &file.key
+            {
+                // This query starts before the execution. The immutable marker's
+                // accepted publication position is its task-wide turn identity.
+                if marker_owner != &owner
+                    || marker_execution != &execution
+                    || !file.bytes.is_empty()
+                    || change.file.iter().chain(&change.files).count() != 1
+                    || turns
+                        .insert(u64::from(*step), change.cursor.position)
+                        .is_some()
+                {
+                    return Err("invalid model turn binding publication".into());
+                }
+            }
         }
         view.apply(change)?;
     }
@@ -105,7 +132,6 @@ pub(super) async fn verify(
     if quiescent::until_idle(next.as_mut()).await.is_some() {
         return Err("tool follow delivered beyond its settled cut".into());
     }
-    let owner = Component::new(task.to_string())?;
     let projected = view.task(&owner);
     if projected.tools().count() != calls.len()
         || projected
@@ -114,7 +140,7 @@ pub(super) async fn verify(
     {
         return Err("shared tool projection lost a request or result".into());
     }
-    check(view.files(), task, operation, calls, results)?;
+    check(view.files(), task, operation, calls, results, &turns)?;
     // Break the consumer's real observed files, retaining the fixture oracle.
     let mut dropped = view.files().clone();
     let result = dropped
@@ -134,7 +160,7 @@ pub(super) async fn verify(
         .cloned()
         .ok_or("missing observed bash result")?;
     dropped.remove(&result);
-    if check(&dropped, task, operation, calls, results).is_ok() {
+    if check(&dropped, task, operation, calls, results, &turns).is_ok() {
         return Err("task-file oracle accepted a dropped result publication".into());
     }
     Ok(())

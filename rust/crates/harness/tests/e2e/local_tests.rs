@@ -263,7 +263,7 @@ proptest::proptest! {
             *file=if stdout {ToolFile::Stdout(1)} else {ToolFile::Stderr(1)};
             value.key=shifted.clone();
             broken.insert(shifted,value);
-            let error=super::local_tool_files_check::check(&broken,task,operation,&calls,&results)
+            let error=super::local_tool_files_check::check(&broken,task,operation,&calls,&results,&[(0,0)].into())
                 .expect_err("a sequence gap with identical payloads passed");
             proptest::prop_assert!(error.to_string().contains("sequence has a gap"));
         }

@@ -15,10 +15,20 @@ pub(super) fn check(
     operation: OperationId,
     calls: &[(u64, ToolCall)],
     results: &BTreeMap<String, Value>,
+    turns: &BTreeMap<u64, u64>,
 ) -> TestResult {
     let task = Component::new(task.to_string())?;
+    if turns
+        .values()
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != turns.len()
+    {
+        return Err("model steps alias the same task turn".into());
+    }
     let mut expected = BTreeMap::new();
     for (step, call) in calls {
+        let turn = *turns.get(step).ok_or("missing model turn binding")?;
         let invocation = ToolInvocation::for_model_call(
             operation,
             u32::try_from(*step)?,
@@ -35,10 +45,7 @@ pub(super) fn check(
             .get("value")
             .ok_or("missing expected bash value")?;
         if expected
-            .insert(
-                (*step, identity),
-                (serde_json::to_value(invocation)?, value),
-            )
+            .insert((turn, identity), (serde_json::to_value(invocation)?, value))
             .is_some()
         {
             return Err("duplicate expected bash identity".into());

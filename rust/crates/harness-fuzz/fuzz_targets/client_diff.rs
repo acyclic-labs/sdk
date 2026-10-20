@@ -49,7 +49,8 @@ fuzz_target!(|input: &[u8]| {
     let operation = acyclic_harness::OperationId::from_bytes([1; 16]);
     let (mut files, calls, results) =
         local_tool_files_tests::fixture(task, operation, "output", "error").unwrap();
-    local_tool_files_check::check(&files, task, operation, &calls, &results).unwrap();
+    local_tool_files_check::check(&files, task, operation, &calls, &results, &[(0, 0)].into())
+        .unwrap();
     if let Some(first) = input.first() {
         let key = files
             .keys()
@@ -62,7 +63,16 @@ fuzz_target!(|input: &[u8]| {
         file.segments = vec![input.to_vec().into()];
         // Arbitrary request/result/output bytes may be invalid, but must never
         // panic or manufacture a different expected identity or terminal value.
-        if local_tool_files_check::check(&files, task, operation, &calls, &results).is_ok() {
+        if local_tool_files_check::check(
+            &files,
+            task,
+            operation,
+            &calls,
+            &results,
+            &[(0, 0)].into(),
+        )
+        .is_ok()
+        {
             use acyclic_harness::task_volume::{FileKey, TaskFile, ToolFile};
             match key {
                 FileKey::Task {

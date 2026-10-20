@@ -77,6 +77,42 @@ mod tests {
     use crate::local_tool_files_check::check;
     use proptest::prelude::*;
 
+    #[test]
+    fn task_tool_wire_uses_the_recorded_turn_not_the_restarted_step() -> TestResult {
+        let task = TaskId::from_bytes([23; 16]);
+        let operation = OperationId::from_bytes([24; 16]);
+        let (files, calls, results) = fixture(task, operation, "out", "err")?;
+        let files = files
+            .into_values()
+            .map(|mut file| {
+                let FileKey::Task {
+                    file: TaskFile::Tool { turn, .. },
+                    ..
+                } = &mut file.key
+                else {
+                    unreachable!()
+                };
+                *turn = 37;
+                (file.key.clone(), file)
+            })
+            .collect();
+        check(&files, task, operation, &calls, &results, &[(0, 37)].into())?;
+        assert!(check(&files, task, operation, &calls, &results, &[(0, 0)].into()).is_err());
+        assert!(check(&files, task, operation, &calls, &results, &BTreeMap::new()).is_err());
+        assert!(
+            check(
+                &files,
+                task,
+                operation,
+                &calls,
+                &results,
+                &[(0, 37), (1, 37)].into()
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
     proptest! {
         #[test]
         fn task_tool_wire_binds_payload_output_sequence_and_terminal(
@@ -86,7 +122,7 @@ mod tests {
             let operation = OperationId::from_bytes(identity);
             let (files,calls,results) = fixture(task,operation,&stdout,&stderr)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
-            prop_assert!(check(&files,task,operation,&calls,&results).is_ok());
+            prop_assert!(check(&files,task,operation,&calls,&results,&[(0,0)].into()).is_ok());
             let request = files.keys().find(|key| matches!(key, FileKey::Task {file:TaskFile::Tool {file:ToolFile::Request,..},..})).unwrap();
             let result = files.keys().find(|key| matches!(key, FileKey::Task {file:TaskFile::Tool {file:ToolFile::Result,..},..})).unwrap();
             for field in ["name","arguments"] {
@@ -95,28 +131,28 @@ mod tests {
                 if field == "name" {payload[field]="fs".into();}
                 else {payload[field]["injected"]=true.into();}
                 broken.insert(request.clone(),head_file(request.clone(),serde_json::to_vec(&payload)?));
-                prop_assert!(check(&broken,task,operation,&calls,&results).is_err());
+                prop_assert!(check(&broken,task,operation,&calls,&results,&[(0,0)].into()).is_err());
             }
             let mut missing = files.clone();missing.remove(result);
-            prop_assert!(check(&missing,task,operation,&calls,&results).is_err());
+            prop_assert!(check(&missing,task,operation,&calls,&results,&[(0,0)].into()).is_err());
             let mut broken = files.clone();
             let mut payload: Value = serde_json::from_slice(&broken[result].segments[0])?;
             payload["injected"]=true.into();
             broken.insert(result.clone(),head_file(result.clone(),serde_json::to_vec(&payload)?));
-            prop_assert!(check(&broken,task,operation,&calls,&results).is_err());
+            prop_assert!(check(&broken,task,operation,&calls,&results,&[(0,0)].into()).is_err());
             let FileKey::Task {task:owner,file:TaskFile::Tool {turn,call,..}}=request else {unreachable!()};
             let mut changed=stdout.as_bytes().to_vec();changed.push(b'X');
             for (sequence,bytes) in [(0,changed),(1,Vec::new())] {
                 let mut broken=files.clone();
                 let key=FileKey::Task {task:owner.clone(),file:TaskFile::Tool {turn:*turn,call:call.clone(),file:ToolFile::Stdout(sequence)}};
                 broken.insert(key.clone(),head_file(key,bytes));
-                prop_assert!(check(&broken,task,operation,&calls,&results).is_err());
+                prop_assert!(check(&broken,task,operation,&calls,&results,&[(0,0)].into()).is_err());
             }
             let mut duplicate=calls.clone();duplicate.push(calls[0].clone());
-            prop_assert!(check(&files,task,operation,&duplicate,&results).is_err());
+            prop_assert!(check(&files,task,operation,&duplicate,&results,&[(0,0)].into()).is_err());
             let mut foreign=identity;foreign[0]^=1;
-            prop_assert!(check(&files,TaskId::from_bytes(foreign),operation,&calls,&results).is_err());
-            prop_assert!(check(&files,task,OperationId::from_bytes(foreign),&calls,&results).is_err());
+            prop_assert!(check(&files,TaskId::from_bytes(foreign),operation,&calls,&results,&[(0,0)].into()).is_err());
+            prop_assert!(check(&files,task,OperationId::from_bytes(foreign),&calls,&results,&[(0,0)].into()).is_err());
         }
     }
 }
