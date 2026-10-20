@@ -65,6 +65,26 @@ fn workflow_decode_slots_follow_containers_and_cover_physical_peak() -> Result<(
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = native.live_allocation_bytes();
         let io = PreparationIo::from_native_work(&native)?;
+        // A resident Value has no parsed-container census. Its conservative
+        // fallback must still cover actual typed decoding and release custody.
+        if count == 1 {
+            let value =
+                serde_json::to_value(&record).map_err(|error| Error::Invalid(error.to_string()))?;
+            let mut decoded = None;
+            let physical = acyclic_test_support::measure(|| {
+                decoded = Some(io.value_decode_preparation::<WorkflowRecord>(
+                    &value,
+                    crate::wire::ErrorCode::Storage,
+                ));
+            });
+            let (actual, custody) = decoded.expect("resident decoder ran")?;
+            assert_eq!(actual, record);
+            assert!(physical.count_total > 0);
+            assert!(physical.bytes_max <= native.receipt().peak_allocation_bytes - baseline);
+            drop(actual);
+            drop(custody);
+            assert_eq!(native.live_allocation_bytes(), baseline);
+        }
         let mut decoded = None;
         let physical = acyclic_test_support::measure(|| {
             decoded = Some(io.decode(
