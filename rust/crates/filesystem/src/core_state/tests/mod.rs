@@ -404,14 +404,48 @@ pub(super) fn assert_core_commits_are_crash_atomic(owned: bool) {
         if owned {
             child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
         }
-        let status =
-            acyclic_native_runtime::process_status(&mut child, std::time::Duration::from_secs(120))
-                .unwrap();
-        if status.success() {
-            assert!(
-                !report.exists(),
-                "a crash child reported success after aborting"
-            );
+        let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut child).unwrap();
+        let mut cut_reached = false;
+        let outcome = tree.wait_with_output(
+            std::time::Duration::from_secs(120),
+            0,
+            None,
+            || {
+                if report.try_exists()? {
+                    cut_reached = true;
+                    Err(std::io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(())
+                }
+            },
+            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
+            None,
+            None,
+        );
+        // A published cut deliberately stops capture, whose supervisor then
+        // hard-kills and reaps the child while its WAL guards are still held.
+        // An unrelated failure must never be accepted as an exercised cut.
+        let crashed = match outcome {
+            Ok(output) => {
+                assert!(
+                    output.status.success(),
+                    "crash child failed before publishing point {point}: {}",
+                    output.status
+                );
+                assert!(!cut_reached && !report.exists());
+                false
+            }
+            Err(failure) => {
+                assert!(
+                    cut_reached
+                        && failure.error.kind() == std::io::ErrorKind::Interrupted
+                        && failure.cleanup_completed,
+                    "crash point {point} was not killed and reaped: {failure:?}"
+                );
+                true
+            }
+        };
+        if !crashed {
             assert_eq!(
                 core_snapshot(&crash_store(&root, owned)),
                 snapshots[snapshots.len() - 1]
@@ -546,9 +580,9 @@ pub(super) fn advanced_origin_parent(parent: &LazyWorkspaceState) -> LazyWorkspa
 mod contexts;
 mod freeze;
 mod journal;
+mod log;
 #[cfg(target_os = "linux")]
 mod logical_release;
-mod log;
 mod native;
 mod nodes;
 mod ownership;

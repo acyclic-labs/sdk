@@ -127,7 +127,7 @@ impl CoreLog {
     }
 }
 
-/// Aborts the process at the configured crash point of a crash-atomicity test,
+/// Stops at a physical WAL cut until the supervising process hard-kills the child.
 #[cfg(test)]
 pub(super) fn crash_point(label: &str, flushed: u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,10 +137,19 @@ pub(super) fn crash_point(label: &str, flushed: u64) {
     };
     let reached = REACHED.fetch_add(1, Ordering::SeqCst) + 1;
     if target.to_str().and_then(|target| target.parse().ok()) == Some(reached) {
-        if let Some(report) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_REPORT") {
-            let _ = std::fs::write(report, format!("{label}\n{flushed}"));
+        let report = std::path::PathBuf::from(
+            std::env::var_os("ACYCLIC_CORE_STATE_CRASH_REPORT")
+                .expect("crash child report path is absent"),
+        );
+        let pending = report.with_extension("pending");
+        std::fs::write(&pending, format!("{label}\n{flushed}")).unwrap();
+        std::fs::rename(pending, report).unwrap();
+        // Keep every log/resident guard and file alive until the parent's
+        // process-tree kill. An abort can invoke platform crash reporting;
+        // neither that latency nor graceful shutdown is part of this cut.
+        loop {
+            std::thread::park();
         }
-        std::process::abort();
     }
 }
 
