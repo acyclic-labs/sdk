@@ -9,6 +9,7 @@ use futures::FutureExt as _;
 #[tokio::test]
 async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
     let home = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let retained = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     for name in ["first", "second"] {
         let directory = home.path().join(name);
         std::fs::create_dir_all(&directory).unwrap();
@@ -57,7 +58,7 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         &mut None,
     )?;
     let sources = NativeSkills::new(
-        home.path().join("retained"),
+        retained.path().join("sources"),
         volume.clone(),
         volume.clone(),
         None,
@@ -111,7 +112,7 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     // An already-running reader and a replacement registration must still
     // share the journal owner and retained source directory.
     let replacement = NativeSkills::new(
-        home.path().join("replacement"),
+        retained.path().join("replacement"),
         volume.clone(),
         volume.clone(),
         None,
