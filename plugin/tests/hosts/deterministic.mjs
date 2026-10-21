@@ -188,7 +188,9 @@ const claudeCases = {
     ],
     check: ({ read, requests }) => ({
       parentPreserved: /parent/.test(read("same.txt") ?? ""),
-      conflictReported: requests.some(request => request.includes("merge agents/") && /conflictCount[^0-9]+[1-9]/.test(request)),
+      // Git's contract: a conflicted merge exits non-zero and lists each
+      // conflicted path on stderr.
+      conflictReported: requests.some(request => /merge agents\/\S+ status 1 [\s\S]*CONFLICT \([a-z]+\): \/same\.txt/.test(request)),
     }),
   },
   parallel: {

@@ -299,7 +299,7 @@ pub(crate) async fn dispatch_plane_request(
                     )
                     .await
                     .map_err(display)?;
-                return Ok(json!({"status":"resolved","automaticStaging":true}));
+                return Ok(json!({"status":ControlStatus::Resolved,"automaticStaging":true}));
             }
             if request
                 .argv

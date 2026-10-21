@@ -106,6 +106,16 @@ impl Session {
     }
 
     fn run(&self, arguments: &[&str], cwd: &Path, input: &[u8]) -> (bool, String) {
+        let output = self.output(arguments, cwd, input);
+        let text = if output.status.success() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            String::from_utf8_lossy(&output.stderr).into_owned()
+        };
+        (output.status.success(), text)
+    }
+
+    fn output(&self, arguments: &[&str], cwd: &Path, input: &[u8]) -> std::process::Output {
         let mut run = command(ACYCLIC);
         run.args(arguments).current_dir(cwd);
         isolated_state(&mut run, self.home.path());
@@ -116,13 +126,7 @@ impl Session {
             .expect("session service owner")
             .attach_process_tree(bounded.process_tree);
         assert!(!bounded.expired, "service client exceeded its deadline");
-        let output = bounded.output;
-        let text = if output.status.success() {
-            String::from_utf8_lossy(&output.stdout).into_owned()
-        } else {
-            String::from_utf8_lossy(&output.stderr).into_owned()
-        };
-        (output.status.success(), text)
+        bounded.output
     }
 
     fn hook(&self, event: &str, payload: &Value, cwd: &Path) -> Value {
@@ -203,11 +207,17 @@ impl Session {
     fn merge(&self, child: &Workspace) -> Result<(), Vec<String>> {
         let parent = child.parent.as_deref().expect("a child workspace");
         self.stop(child);
-        let result = self.cli_json(&["git", "merge", &child.reference()], parent);
+        let output = self.output(&["git", "merge", &child.reference()], parent, b"");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let result: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("merge output is not JSON ({error}): {stderr}"));
         match result.get("status").and_then(Value::as_str) {
-            Some("applied" | "no-changes") => Ok(()),
+            Some("applied" | "no-changes") => {
+                assert!(output.status.success(), "a clean merge failed: {stderr}");
+                Ok(())
+            }
             Some("conflicted") => {
-                let paths = result
+                let paths: Vec<String> = result
                     .get("conflicts")
                     .and_then(Value::as_array)
                     .into_iter()
@@ -215,6 +225,19 @@ impl Session {
                     .filter_map(|conflict| conflict.get("path").and_then(Value::as_str))
                     .map(str::to_owned)
                     .collect();
+                // As with Git, a conflicted merge fails and lists every
+                // conflicted path on stderr.
+                assert!(
+                    !output.status.success(),
+                    "a conflicted merge exited 0: {result}"
+                );
+                for path in &paths {
+                    assert!(
+                        stderr.lines().any(|line| line.starts_with("CONFLICT (")
+                            && line.ends_with(&format!("): {path}"))),
+                        "stderr does not list {path}: {stderr}"
+                    );
+                }
                 self.cli_json(&["git", "merge", "--abort"], parent);
                 Err(paths)
             }
@@ -535,7 +558,9 @@ fn a_deletion_survives_a_conflict_resolved_with_continue() {
     fs::remove_file(other.path.join("README.md")).expect("unlink");
     session.merge(&editor).expect("merge editor");
     session.stop(&other);
-    let conflicted = session.cli_json(&["git", "merge", &other.reference()], &session.repo);
+    let output = session.output(&["git", "merge", &other.reference()], &session.repo, b"");
+    assert!(!output.status.success(), "a conflicted merge exited 0");
+    let conflicted: Value = serde_json::from_slice(&output.stdout).expect("merge output is JSON");
     assert_eq!(
         conflicted.get("status").and_then(Value::as_str),
         Some("conflicted"),

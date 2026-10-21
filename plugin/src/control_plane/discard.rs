@@ -169,7 +169,7 @@ impl ControlPlane {
             self.persist()?;
         }
         self.continue_pending_discard(&agent).await?;
-        Ok(json!({"status":"discarded","agent":agent}))
+        Ok(json!({"status":ControlStatus::Discarded,"agent":agent}))
     }
 
     pub(crate) async fn recover_pending_discards(&mut self) -> Result<(), String> {

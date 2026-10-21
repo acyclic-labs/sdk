@@ -123,7 +123,7 @@ impl ControlPlane {
                 ),
             )) => {
                 return Ok(json!({
-                    "status":"conflicted",
+                    "status":ControlStatus::Conflicted,
                     "conflictCount":plan.conflicts.len(),
                     "conflicts":plan.conflicts.iter().map(typed_conflict_json).collect::<Vec<_>>(),
                     "truncated":plan.truncated
@@ -133,11 +133,11 @@ impl ControlPlane {
         };
         let applied_publication = match publication {
             Publication::StaleBeforeCommit(_) => {
-                return Ok(json!({"status":"stale-target"}));
+                return Ok(json!({"status":ControlStatus::StaleTarget}));
             }
             Publication::Paused(publication) => {
                 return Ok(json!({
-                    "status":"paused",
+                    "status":ControlStatus::Paused,
                     "root":publication.paused_root.map(|id| hex::encode(id.into_bytes()))
                 }));
             }
@@ -151,7 +151,7 @@ impl ControlPlane {
                     .flat_map(|plan| plan.conflicts.iter().map(typed_conflict_json))
                     .collect::<Vec<_>>();
                 return Ok(json!({
-                    "status":"conflicted",
+                    "status":ControlStatus::Conflicted,
                     "operation":hex::encode(publication.candidate.plan.operation_id.into_bytes()),
                     "conflictCount":conflicts.len(),
                     "conflicts":conflicts,
@@ -204,7 +204,7 @@ impl ControlPlane {
             .cloned()
             .ok_or_else(|| "routed parent root disappeared from its context".to_owned())?;
         Ok(json!({
-            "status": if changed { "applied" } else { "no-changes" },
+            "status": if changed { ControlStatus::Applied } else { ControlStatus::NoChanges },
             "generation":generation,
             "roots":generations
         }))

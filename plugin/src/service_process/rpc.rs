@@ -122,8 +122,11 @@ pub(crate) async fn run_rpc_proxy(
                 let result = send_control_request(data, &forwarded).await;
                 obs::record_outcome(&result);
                 match result {
+                    // The dispatcher's failure outcomes are tool errors here,
+                    // exactly as they are a failing exit status on the CLI.
                     Ok(result) => {
-                        json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":serde_json::to_string(&result).map_err(display)?}]}})
+                        let is_error = incomplete_outcome(&result).is_some();
+                        json!({"jsonrpc":"2.0","id":id,"result":{"isError":is_error,"content":[{"type":"text","text":serde_json::to_string(&result).map_err(display)?}]}})
                     }
                     Err(error) => {
                         json!({"jsonrpc":"2.0","id":id,"result":{"isError":true,"content":[{"type":"text","text":error.to_string()}]}})

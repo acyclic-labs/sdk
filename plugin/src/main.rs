@@ -15,6 +15,7 @@ mod cli_output;
 mod codex_hook_mcp;
 mod control_plane;
 mod control_protocol;
+mod control_status;
 mod control_transport;
 mod guidance;
 mod identity;
@@ -95,6 +96,7 @@ use tokio::sync::{Mutex as AsyncMutex, watch};
 
 use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
 use control_protocol::{ControlEnvelope, ControlLedger, LedgerDecision};
+use control_status::{ControlStatus, incomplete_outcome};
 use fs2::FileExt as _;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -708,7 +710,16 @@ async fn run() -> Result<(), CliFailure> {
         } else if command == "doctor" {
             print_doctor_response(&response).map_err(io::Error::other)?
         } else {
-            print_cli_response(response).map_err(io::Error::other)?
+            print_cli_response(response.clone()).map_err(io::Error::other)?
+        };
+        // An incomplete lifecycle outcome (a conflicted, stale or paused
+        // merge) fails the command in every output format, as Git does.
+        let exit_code = match incomplete_outcome(&response) {
+            Some(report) => {
+                eprintln!("{report}");
+                1
+            }
+            None => exit_code,
         };
         if exit_code != 0 {
             obs::finish();

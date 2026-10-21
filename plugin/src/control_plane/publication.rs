@@ -318,7 +318,7 @@ impl ControlPlane {
         }
         self.persist()?;
         Ok(json!({
-            "status": if abort { "aborted" } else { "applied" },
+            "status": if abort { ControlStatus::Aborted } else { ControlStatus::Applied },
             "operation": hex::encode(operation_id.into_bytes())
         }))
     }
