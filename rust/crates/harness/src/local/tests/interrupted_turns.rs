@@ -381,13 +381,14 @@ fn representatives(trace: &[Await]) -> Vec<Await> {
 /// admitted. With `leak`, a claim taken before the entry outlives the cut,
 /// as the former submission mark did, until the probe has answered. Returns
 /// whether the probe was refused, or `None` where this run's handoff never
-/// reached `target`: a write that completed in fewer polls.
+/// reached `target`: a write that completed in fewer polls. Also returns an
+/// admitted probe so reset can complete it instead of superseding it again.
 async fn handoff_cut(
     harness: &LocalHarness,
     entry: Entry,
     target: Await,
     leak: bool,
-) -> Result<Option<bool>> {
+) -> Result<(Option<bool>, Option<OperationId>)> {
     let operation = OperationId::new();
     // Taken without an await, so both sweeps cut the entry identically.
     let leaked = leak.then(|| harness.drivers.drive(operation));
@@ -397,9 +398,20 @@ async fn handoff_cut(
     .await?
     .expect("the entry finished inside its handoff");
     let reached = seen.last() == Some(&target);
-    let refused = rejected(&harness.submit(OperationId::new(), "probe").await?);
+    let probe = OperationId::new();
+    let admission = harness.submit(probe, "probe").await?;
+    let refused = rejected(&admission);
+    let probe = if refused {
+        None
+    } else {
+        assert_eq!(
+            admitted(admission),
+            crate::runtime::task_id_for_admission(probe)
+        );
+        Some(probe)
+    };
     drop(leaked);
-    Ok(reached.then_some(refused))
+    Ok((reached.then_some(refused), probe))
 }
 
 /// Cancels `entry` at a representative of every class of await in its
@@ -425,10 +437,14 @@ async fn every_handoff_cut_leaves_the_head_to_the_next_prompt(entry: Entry) -> R
         assert_eq!(harness.run("settle").await?.text, "done");
         Ok((directory, harness))
     }
-    async fn reset(harness: &LocalHarness) -> Result<()> {
-        let operation = OperationId::new();
-        assert_eq!(harness.run_as(operation, "after").await?.text, "done");
+    async fn reset(harness: &LocalHarness, probe: Option<OperationId>) -> Result<()> {
+        let operation = probe.unwrap_or_else(OperationId::new);
         let task = crate::runtime::task_id_for_admission(operation);
+        let output = match probe {
+            Some(_) => harness.resume(task).await?,
+            None => harness.run_as(operation, "after").await?,
+        };
+        assert_eq!(output.text, "done");
         assert!(super::super::orphans::settled(
             outcome(harness, task).await.as_ref()
         ));
@@ -453,13 +469,13 @@ async fn every_handoff_cut_leaves_the_head_to_the_next_prompt(entry: Entry) -> R
     let mut covered = std::collections::BTreeSet::new();
     let mut refusals = Vec::new();
     for target in targets {
-        let accepted = handoff_cut(&positive, entry, target, false).await?;
+        let (accepted, probe) = handoff_cut(&positive, entry, target, false).await?;
         assert!(accepted != Some(true), "cut {target:?} bricked the host");
         // Also reset cuts whose target disappeared because I/O finished sooner.
         // No unfinished task or claim can pass into the next trial.
-        reset(&positive).await?;
-        let refused = handoff_cut(&negative, entry, target, true).await?;
-        reset(&negative).await?;
+        reset(&positive, probe).await?;
+        let (refused, probe) = handoff_cut(&negative, entry, target, true).await?;
+        reset(&negative, probe).await?;
         if let (Some(_), Some(refused)) = (accepted, refused) {
             if target.0.1 == ADMITTED {
                 assert!(refused, "cut {target:?} escaped the negative control");
