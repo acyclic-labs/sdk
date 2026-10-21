@@ -97,8 +97,10 @@ test("real process captures preserve UTF-8 at every byte boundary", { timeout: 5
       const received = once(child.child.stdout, "data");
       child.child.stdin.write(fragment.toString("hex") + "\n");
       await received;
+      assert.ok(!child.stdout.includes("\uFFFD"), "live PTY capture must share the process streaming decoder");
     }
     child.child.stdin.end();
     assert.equal((await child.closed).stdout, text.repeat(bytes.length + 1));
+    assert.equal(child.stdout, text.repeat(bytes.length + 1));
   } finally { await processes.close(); }
 });

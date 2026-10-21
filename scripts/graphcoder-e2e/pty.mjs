@@ -47,12 +47,13 @@ export async function pty(processes, binary, fixture, input, capture) {
   const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";
   const running = processes.start(program, args, { cwd: fixture.workspace, env: fixture.env, scopeKillSignal: killSignal });
   screen.onData(data => running.child.stdin.write(data));
-  let raw = "", index = 0, failure;
+  let index = 0, failure;
   const snapshots = [];
   function frame() {
     if (failure || index >= input.actions.length) return;
     try {
       const visible = screenText(screen);
+      const raw = running.stdout;
       if (raw.includes("has overflowed its stack") || /task [0-9a-f-]{36} failed:/.test(visible)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
@@ -70,10 +71,10 @@ export async function pty(processes, binary, fixture, input, capture) {
   }
   const unsubscribe = fixture.onRequest(frame);
   running.child.stdout.on("data", bytes => {
-    raw += bytes.toString("utf8");
     screen.write(bytes, frame);
   });
   const result = await running.closed;
+  const raw = result.stdout;
   unsubscribe();
   await new Promise(resolve => screen.write("", resolve));
   const visible = screenText(screen);

@@ -27,7 +27,7 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    return { child, closed };
+    return { child, closed, get stdout() { return stdout; } };
   }
   async run(program, args, options, input = "") {
     const process = this.start(program, args, options);
