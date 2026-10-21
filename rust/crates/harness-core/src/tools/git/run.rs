@@ -57,8 +57,7 @@ where
     let (ignore, merge_drivers) = git_policy(workspace.view).await?;
     let ignore = ignore.reserving(workspace.reserved);
     let repository =
-        GitIgnorePolicy::parse(crate::filesystem::workspace_policy::RESERVED_IGNORE_RULES)
-            .reserving(workspace.reserved);
+        crate::filesystem::workspace_policy::git_view_policy("").reserving(workspace.reserved);
     let tree = git_workspace_tree(workspace.view, args, Some(permit)).await?;
     let executor = WorkspaceGitExecutor {
         before_effect: &before_effect,

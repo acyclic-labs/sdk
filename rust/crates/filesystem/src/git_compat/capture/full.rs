@@ -20,12 +20,17 @@ where
     let mut tracked_paths = BTreeSet::new();
     for (path, is_directory) in &entries {
         let parent_excluded = excluded.iter().any(|parent| is_path_below(path, parent));
-        let tracked = already_tracked.contains(path);
-        let tracked_descendant = *is_directory
+        // A host-owned path is outside the repository even if an earlier
+        // capture recorded it as tracked.
+        let reserved = policy.reserves(path);
+        let tracked = !reserved && already_tracked.contains(path);
+        let tracked_descendant = !reserved
+            && *is_directory
             && already_tracked
                 .iter()
                 .any(|candidate| is_path_below(candidate, path));
         if parent_excluded
+            || reserved
             || (!git_path_eligible(policy, &nested_policies, path, *is_directory, tracked)
                 && !tracked_descendant)
         {

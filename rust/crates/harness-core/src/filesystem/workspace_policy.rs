@@ -12,7 +12,18 @@ pub(super) type LocalLazyWorkspace = LazyWorkspace<
     LocalCoreStateStore,
 >;
 /// Reserved SDK metadata excluded from compatibility commits.
-pub(crate) const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n";
+const RESERVED_IGNORE_RULES: &str = ".acyclic-sdk/\n.git/\n";
+
+/// Root namespaces the harness owns. They hold harness state such as
+/// write-tool metadata and upload receipts, so they are outside every Git
+/// view of the workspace rather than ignored content.
+const HOST_NAMESPACES: [&str; 3] = [".acyclic-sdk", ".git", ".system"];
+
+/// The Git view of a workspace whose root `.gitignore` holds `ignore_text`.
+pub(crate) fn git_view_policy(ignore_text: &str) -> GitIgnorePolicy {
+    GitIgnorePolicy::parse(&format!("{ignore_text}\n{RESERVED_IGNORE_RULES}"))
+        .with_host_namespaces(HOST_NAMESPACES)
+}
 
 /// Loads text merge drivers and workspace attributes.
 pub(crate) async fn merge_drivers_for<'a>(
@@ -47,8 +58,5 @@ pub(crate) async fn ignore_for<'a>(
         .optional("/.gitignore", 1024 * 1024)
         .await?
         .unwrap_or_default();
-    let ignore_text = String::from_utf8_lossy(&bytes);
-    Ok(GitIgnorePolicy::parse(&format!(
-        "{ignore_text}\n{RESERVED_IGNORE_RULES}"
-    )))
+    Ok(git_view_policy(&String::from_utf8_lossy(&bytes)))
 }

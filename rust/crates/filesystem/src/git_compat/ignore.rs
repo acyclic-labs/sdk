@@ -6,6 +6,10 @@ pub struct GitIgnorePolicy {
     rules: Vec<GitIgnoreRule>,
     /// Exact repository-relative paths owned by the host, never Git content.
     reserved: BTreeSet<String>,
+    /// Root names the host owns; they are outside the repository entirely,
+    /// like reserved paths, but joins bind them by their ignore rules.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    host_namespaces: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -28,6 +32,14 @@ impl GitIgnorePolicy {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        // Joins bind host namespaces by their ignore rules alone, exactly as
+        // before they were kept out of the repository view: the
+        // `.acyclic-sdk/` and `.git/` rules make the child win there.
+        let rules = Self {
+            rules: self.rules.clone(),
+            reserved: self.reserved.clone(),
+            host_namespaces: BTreeSet::new(),
+        };
         let mut paths = BTreeSet::new();
         let mut nested_policies = BTreeMap::new();
         for change in changes {
@@ -43,7 +55,7 @@ impl GitIgnorePolicy {
             if !git_path_eligible_with_root_at(
                 generation,
                 &mut nested_policies,
-                self,
+                &rules,
                 &path,
                 is_directory,
                 already_tracked,
@@ -92,6 +104,7 @@ impl GitIgnorePolicy {
         Self {
             rules,
             reserved: BTreeSet::new(),
+            host_namespaces: BTreeSet::new(),
         }
     }
 
@@ -122,6 +135,11 @@ impl GitIgnorePolicy {
         Self {
             rules: self.rules.iter().chain(&later.rules).cloned().collect(),
             reserved: self.reserved.union(&later.reserved).cloned().collect(),
+            host_namespaces: self
+                .host_namespaces
+                .union(&later.host_namespaces)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -130,14 +148,48 @@ impl GitIgnorePolicy {
         self.reserved.iter().map(String::as_str)
     }
 
-    /// Returns whether a path is, or lies beneath, a reserved host path.
+    /// Places root namespaces the host owns outside the repository.
+    ///
+    /// Like a reserved path, no negation, nested policy, or tracked path can
+    /// bring a host-owned path into the repository view.
+    #[must_use]
+    pub fn with_host_namespaces<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.host_namespaces
+            .extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Returns whether a tracked set still names a reserved or host-owned
+    /// path.
+    pub(super) fn tracks_reserved(&self, tracked: &BTreeSet<String>) -> bool {
+        self.reserved
+            .iter()
+            .chain(&self.host_namespaces)
+            .any(|name| {
+                let prefix = format!("{name}/");
+                tracked.contains(name)
+                    || tracked
+                        .range(prefix.clone()..)
+                        .next()
+                        .is_some_and(|path| path.starts_with(&prefix))
+            })
+    }
+
+    /// Returns whether a path is, or lies beneath, a reserved host path or a
+    /// host-owned root namespace.
     #[must_use]
     pub fn reserves(&self, path: &str) -> bool {
         let path = path.trim_start_matches('/');
-        self.reserved.iter().any(|reserved| {
-            path.strip_prefix(reserved.as_str())
-                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-        })
+        let root = path.split_once('/').map_or(path, |(root, _)| root);
+        self.host_namespaces.contains(root)
+            || self.reserved.iter().any(|reserved| {
+                path.strip_prefix(reserved.as_str())
+                    .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+            })
     }
 
     /// Returns whether a path participates in compatibility commit/join state.

@@ -238,34 +238,13 @@ where
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
             .map_err(Error::from)?;
-        let generation = match self
-            .current
-            .restore_generation(
-                &source,
-                current.id(),
-                IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                self.permit,
-            )
+        // A whole-tree restore covers every root entry of either side
+        // except the host's namespaces, whose state never rewinds.
+        let mut roots = root_names(&source).await?;
+        roots.extend(root_names(&current).await?);
+        roots.retain(|name| !self.ignore.reserves(name));
+        self.restore_paths(operation_id, *tree, &roots.into_iter().collect::<Vec<_>>())
             .await
-            .map_err(Error::from)?
-        {
-            WorkspaceRestore::Restored(generation)
-            | WorkspaceRestore::AlreadyRestored(generation)
-            | WorkspaceRestore::Current(generation) => generation,
-            WorkspaceRestore::Stale(_) => {
-                return Err(Self::error(
-                    "Git restore raced with another workspace writer",
-                ));
-            }
-            WorkspaceRestore::Fenced => return Err(Self::error("Git restore was fenced")),
-            WorkspaceRestore::IdempotencyConflict => {
-                return Err(Self::error("Git restore retry identity was reused"));
-            }
-        };
-        Ok(GitFilesystemResult::Applied {
-            tree: Some(GitTreeRef::exact(self.current.id(), generation.id())),
-            tracked_paths: None,
-        })
     }
 
     /// Applies a commit's paths to the live workspace.
@@ -350,7 +329,7 @@ where
     /// Lists a tree's Git-visible entries.
     pub(super) async fn archive(&self, tree: &GitTreeRef) -> Result<GitFilesystemResult, Error> {
         let generation = self.generation(*tree).await?;
-        let entries = walk_git_tree(&generation, None, 100_000)
+        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -373,6 +352,7 @@ where
         let generation = self.generation(*tree).await?;
         let result = grep_git_generation(
             &generation,
+            &self.ignore,
             pattern,
             path,
             100_000,
@@ -398,7 +378,7 @@ where
             let generation = self.generation(commit.tree).await?;
             history.push((commit.clone(), generation));
         }
-        let lines = blame_git_generations(&history, path, 16 * 1024 * 1024)
+        let lines = blame_git_generations(&history, &self.ignore, path, 16 * 1024 * 1024)
             .await
             .map_err(Error::from)?;
         Ok(GitFilesystemResult::Data {
@@ -421,7 +401,7 @@ where
                 "Git clean generation is not the live workspace",
             ));
         }
-        let entries = walk_git_tree(&generation, None, 100_000)
+        let entries = walk_git_tree(&generation, &self.ignore, None, 100_000)
             .await
             .map_err(Error::from)?;
         let candidates: Vec<_> = entries
@@ -527,6 +507,11 @@ where
         tree: &GitTreeRef,
         path: &str,
     ) -> Result<GitFilesystemResult, Error> {
+        // Host namespaces are never part of a commit, even one captured
+        // before they were kept out of the repository view.
+        if self.ignore.reserves(path) {
+            return Err(Error::NotFound(path.to_owned()));
+        }
         let bytes = self
             .generation(*tree)
             .await?
@@ -569,5 +554,37 @@ where
             .await
             .map_err(Error::from)?,
         )
+    }
+}
+
+/// Names bound directly under a generation's root.
+async fn root_names(generation: &LocalGeneration) -> Result<BTreeSet<String>, Error> {
+    let mut names = BTreeSet::new();
+    let mut after = None;
+    loop {
+        let page = generation
+            .list_directory(
+                "/",
+                after.as_ref(),
+                1_024,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value.0)
+            .map_err(|failure| failure.error)
+            .map_err(Error::from)?;
+        for entry in &page.entries {
+            let name = entry
+                .name
+                .unicode_text(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map(|receipt| receipt.value)
+                .map_err(|_| Error::Invalid("non-portable Git path".into()))?;
+            names.insert(name.to_string());
+        }
+        if !page.has_more {
+            return Ok(names);
+        }
+        after = page.entries.last().map(|entry| entry.name.clone());
     }
 }

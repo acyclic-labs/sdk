@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &crate::PinnedReader<A, O>,
+    host: &GitIgnorePolicy,
     root_display: String,
     root: NamespacePath,
     limits: VolumeLimits,
@@ -48,6 +49,9 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
                 } else {
                     format!("{directory_display}/{name}")
                 };
+                if host.reserves(&path) {
+                    continue;
+                }
                 if entry.file.description().kind == FileKind::Directory {
                     let mut components = directory.components().to_vec();
                     components.push(entry.name);
@@ -69,6 +73,7 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
 
 pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &crate::PinnedReader<A, O>,
+    host: &GitIgnorePolicy,
     root_display: String,
     root: NamespacePath,
     limits: VolumeLimits,
@@ -78,6 +83,7 @@ pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObje
     if root_display.is_empty() {
         return resolved_git_regular_files(
             reader,
+            host,
             root_display,
             root,
             limits,
@@ -100,6 +106,7 @@ pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObje
         FileKind::Directory => {
             resolved_git_regular_files(
                 reader,
+                host,
                 root_display,
                 root,
                 limits,
@@ -154,15 +161,18 @@ pub struct GitBlameLine {
 }
 
 /// Walks an authenticated tree in stable portable path order.
+///
+/// Paths in the host's namespaces are outside the repository and never listed.
 pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &Generation<A, O>,
+    host: &GitIgnorePolicy,
     root: Option<&str>,
     maximum_entries: u32,
 ) -> Result<Vec<GitTreeEntry>, WorkspaceError> {
-    if maximum_entries == 0 {
+    let root = root.unwrap_or("").trim_matches('/');
+    if maximum_entries == 0 || host.reserves(root) {
         return Ok(Vec::new());
     }
-    let root = root.unwrap_or("").trim_matches('/');
     let start = if root.is_empty() {
         "/".to_owned()
     } else {
@@ -214,6 +224,9 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 } else {
                     format!("{parent}/{name}")
                 };
+                if host.reserves(&path) {
+                    continue;
+                }
                 entries.push(GitTreeEntry {
                     path: path.clone(),
                     kind: git_kind(entry.kind).to_owned(),
@@ -237,14 +250,23 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Searches UTF-8 regular files without consulting the host filesystem.
+///
+/// Paths in the host's namespaces are outside the repository and never read.
 pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &Generation<A, O>,
+    host: &GitIgnorePolicy,
     pattern: &str,
     root: Option<&str>,
     maximum_entries: u32,
     maximum_file_bytes: u64,
     maximum_matches: u32,
 ) -> Result<GitGrepResult, WorkspaceError> {
+    if root.is_some_and(|root| host.reserves(root)) {
+        return Ok(GitGrepResult {
+            matches: Vec::new(),
+            truncated: false,
+        });
+    }
     if maximum_entries == 0 {
         return Ok(GitGrepResult {
             matches: Vec::new(),
@@ -274,6 +296,7 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
     let (regular, mut truncated) = resolved_git_grep_files(
         &reader,
+        host,
         root_display,
         root_path,
         limits,
@@ -341,15 +364,18 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// Attributes UTF-8 lines across explicit compatibility history.
 pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     history_newest_first: &[(GitCommit, Generation<A, O>)],
+    host: &GitIgnorePolicy,
     path: &str,
     maximum_file_bytes: u64,
 ) -> Result<Vec<GitBlameLine>, WorkspaceError> {
     let relative = path.trim_start_matches('/');
     let absolute = format!("/{relative}");
+    // A commit recorded before its path became host-owned still never shows it.
+    let in_repository = !host.reserves(relative);
     let mut current = Vec::<String>::new();
     let mut owners = Vec::<GitCommitId>::new();
     for (commit, generation) in history_newest_first.iter().rev() {
-        let next = if commit.tracked_paths.contains(relative) {
+        let next = if in_repository && commit.tracked_paths.contains(relative) {
             let bytes = generation
                 .read(
                     &absolute,

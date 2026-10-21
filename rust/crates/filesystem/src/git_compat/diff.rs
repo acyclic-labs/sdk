@@ -43,6 +43,9 @@ where
     for change in paths {
         cancellation.check().map_err(WorkspaceError::from)?;
         let path = portable_changed_path(&change.path)?;
+        if repository.reserves(&path) {
+            continue;
+        }
         let record = change.after.or(change.before);
         let Some(record) = record else { continue };
         if record.kind == FileKind::Directory {

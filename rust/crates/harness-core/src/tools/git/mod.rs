@@ -9,7 +9,7 @@ use acyclic_fs::{
     LocalFs, LocalObjectBackend, MemoryMergeResolutionCache, MergeDriverRegistry, OperationId,
     OperationWindowCoordinator, OperationWindowLease, PublicationPermit, TransactionCommit,
     WorkBudget, Workspace as FsWorkspace, WorkspaceError, WorkspaceGraph, WorkspacePathApply,
-    WorkspaceRestore, apply_git_patch, blame_git_generations, capture_git_compatible_generation,
+    apply_git_patch, blame_git_generations, capture_git_compatible_generation,
     capture_git_compatible_generation_incremental, git_compatible_diff_counts, grep_git_generation,
     walk_git_tree,
 };
