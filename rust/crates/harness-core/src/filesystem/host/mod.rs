@@ -5,6 +5,8 @@ pub struct FilesystemHost<A, O> {
     pub(in crate::filesystem) filesystem: Fs<A, O>,
     pub(in crate::filesystem) provider: ProviderRef,
     workspace_binding: Option<(WorkspaceRef, Workspace<A, O>)>,
+    #[cfg(test)]
+    publication_pause: Option<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>,
     #[cfg(all(
         feature = "filesystem-local",
         feature = "native-execution",
@@ -12,10 +14,7 @@ pub struct FilesystemHost<A, O> {
     ))]
     native_skills: Arc<
         crate::sync::SyncMutex<
-            std::collections::HashMap<
-                String,
-                Arc<crate::local::context::native_skills::NativeSkills>,
-            >,
+            std::collections::HashMap<String, Arc<crate::context::native_skills::NativeSkills>>,
         >,
     >,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -58,6 +57,8 @@ impl<A, O> FilesystemHost<A, O> {
             filesystem,
             provider,
             workspace_binding: None,
+            #[cfg(test)]
+            publication_pause: None,
             #[cfg(all(
                 feature = "filesystem-local",
                 feature = "native-execution",
@@ -92,6 +93,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?,
                 workspace,
             )),
+            #[cfg(test)]
+            publication_pause: self.publication_pause.clone(),
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             native_skills: self.native_skills.clone(),
             #[cfg(feature = "filesystem-local")]
@@ -104,9 +107,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 impl<A, O> FilesystemHost<A, O> {
     #[cfg(feature = "native-execution")]
-    pub(crate) fn with_native_skills(
+    #[doc(hidden)]
+    pub fn with_native_skills(
         self: Arc<Self>,
-        mut sources: Arc<crate::local::context::native_skills::NativeSkills>,
+        mut sources: Arc<crate::context::native_skills::NativeSkills>,
     ) -> Result<Arc<Self>> {
         let mut registry = self
             .native_skills
@@ -124,10 +128,11 @@ impl<A, O> FilesystemHost<A, O> {
     }
 
     #[cfg(feature = "native-execution")]
-    pub(crate) fn skill_sources(
+    #[doc(hidden)]
+    pub fn skill_sources(
         &self,
         volume: &VolumeRef,
-    ) -> Result<Option<Arc<crate::local::context::native_skills::NativeSkills>>> {
+    ) -> Result<Option<Arc<crate::context::native_skills::NativeSkills>>> {
         Ok(self
             .native_skills
             .lock()

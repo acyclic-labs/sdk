@@ -179,7 +179,7 @@ pub async fn discover_skills(
     discover_skills_at(reader, skills, name, work, None).await
 }
 
-pub(crate) async fn discover_skills_at(
+pub async fn discover_skills_at(
     reader: &dyn ContentResidencyVerifier,
     skills: &[ContextRoot],
     name: &str,

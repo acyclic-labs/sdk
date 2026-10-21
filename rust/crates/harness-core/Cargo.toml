@@ -24,6 +24,10 @@ name = "mcp-loom"
 path = "tests/mcp_loom.rs"
 
 [[test]]
+name = "skill-materializer-loom"
+path = "tests/skill_materializer_loom.rs"
+
+[[test]]
 name = "memory-accounting-model"
 path = "tests/memory_accounting_model.rs"
 required-features = ["filesystem"]

@@ -9,8 +9,6 @@ pub(super) mod binding;
 #[cfg(feature = "native-execution")]
 mod checkout;
 mod guidance;
-#[cfg(feature = "native-execution")]
-pub(crate) mod native_skills;
 pub(super) mod skills;
 
 pub(super) fn publication_operation(domain: &[u8], key: &[u8]) -> OperationId {

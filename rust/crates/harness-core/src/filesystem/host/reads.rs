@@ -1,5 +1,13 @@
 use super::*;
 mod media_type;
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32"),
+    not(acyclic_harness_loom)
+))]
+mod skills_tests;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Reads a pinned version using optional preparation accounting.
@@ -275,10 +283,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(sources) = self.skill_sources(volume)?
             && let Some(source_generation) = expected_generation
             && sources.matches(volume, source_generation, path)
-            && let Some(bytes) = sources
+        {
+            // Keep the cache recheck, pinned transaction and retained receipt
+            // under the same journal owner. Disjoint first loads never race HEAD.
+            let materializing = sources.materializer.enter().await;
+            if let Some(retained) = sources.materialized(source_generation)? {
+                drop(materializing);
+                return Box::pin(self.read_private_path_indexed(
+                    volume,
+                    grant,
+                    path,
+                    Some(&retained),
+                    maximum_bytes,
+                    io,
+                ))
+                .await;
+            }
+            let bytes = sources
                 .read(volume, source_generation, path, maximum_bytes, io)?
                 .await?
-        {
+                .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
             let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
             let key = IdempotencyKey::new(&format!(
                 "skill-body-{}",
@@ -307,6 +331,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let generation = self.generation_ref_id(generation.id(), io)?;
             sources.retain_materialized(source_generation, &generation)?;
+            drop(materializing);
             return Box::pin(self.read_private_path_indexed(
                 volume,
                 grant,

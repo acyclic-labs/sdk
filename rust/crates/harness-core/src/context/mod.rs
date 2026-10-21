@@ -25,8 +25,22 @@ mod discovery;
 pub use discovery::frontmatter_end;
 pub use discovery::*;
 #[cfg(feature = "filesystem-local")]
-pub(crate) use discovery::{DiscoveryWork, discover_skills_at};
+#[doc(hidden)]
+pub use discovery::{DiscoveryWork, discover_skills_at};
 mod compaction;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub mod native_skills;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+mod skill_materializer;
 pub(crate) use compaction::clone_context;
 pub(crate) use compaction::mandatory_messages;
 pub use compaction::*;

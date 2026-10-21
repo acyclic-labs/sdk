@@ -1,7 +1,10 @@
 //! Host-owned lazy skill sources. Manifests carry opaque retained identities,
 //! never authority to open a host path supplied by a task.
-use super::*;
+use crate::context::ContextDiscoveryLimits;
 use crate::context::{ContextRoot, PinnedContextPath, SkillMetadata, parse_skill_metadata};
+use crate::conversation::VolumeRef;
+use crate::filesystem::PreparationIo;
+use crate::{Error, OperationId, Result};
 use acyclic_fs::{
     demand::{
         DemandError, DemandSource, SourceNode, SourceNodeKind, SourceReference,
@@ -9,7 +12,18 @@ use acyclic_fs::{
     },
     kernel::NamespacePath,
 };
-use std::io::Write as _;
+use std::{
+    io::Write as _,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+type View = acyclic_fs::LazyWorkspace<
+    acyclic_fs::LocalAuthorityBackend,
+    acyclic_fs::LocalObjectBackend,
+    NativeDemandSource,
+    acyclic_fs::LocalCoreStateStore,
+>;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Source {
@@ -33,11 +47,19 @@ enum RetainedSource {
 
 type Catalog = Option<(acyclic_fs::LazySnapshotId, Vec<SkillMetadata>)>;
 
-pub(crate) struct NativeSkills {
+struct SkillWorkspace {
+    filesystem: acyclic_fs::LocalFs,
+    store: acyclic_fs::LocalCoreStateStore,
+    view: Arc<View>,
+}
+
+#[doc(hidden)]
+pub struct NativeSkills {
     directory: PathBuf,
     journal: VolumeRef,
     project: VolumeRef,
-    workspace: Option<Arc<LocalWorkspace>>,
+    workspace: Option<SkillWorkspace>,
+    pub(crate) materializer: super::skill_materializer::SkillMaterializer,
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
     users: crate::sync::owned::Arc<crate::sync::owned::Mutex<Option<(Vec<SkillMetadata>, Bounds)>>>,
@@ -46,6 +68,7 @@ pub(crate) struct NativeSkills {
 impl NativeSkills {
     pub(crate) fn retain_sources_from(&mut self, previous: &Self) {
         self.directory = previous.directory.clone();
+        self.materializer = previous.materializer.clone();
     }
 
     pub(crate) fn volume(&self) -> &VolumeRef {
@@ -100,19 +123,36 @@ impl NativeSkills {
                     hex::encode(generation.as_resource().key())
                 )
     }
-    pub(in crate::local) fn new(
+    pub fn new(
         directory: PathBuf,
         journal: VolumeRef,
         project: VolumeRef,
-        workspace: Option<Arc<LocalWorkspace>>,
+        workspace: Option<(&View, acyclic_fs::LocalFs, acyclic_fs::LocalCoreStateStore)>,
         user_roots: Vec<PathBuf>,
     ) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&directory).map_err(storage)?;
+        let workspace = workspace
+            .map(|(view, filesystem, store)| {
+                let cancellation = acyclic_fs::CancellationToken::new();
+                let work = native_work(&cancellation)?;
+                let view =
+                    view.share(&mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work: &work,
+                        cancellation: &cancellation,
+                    })?;
+                Ok::<_, Error>(SkillWorkspace {
+                    filesystem,
+                    store,
+                    view,
+                })
+            })
+            .transpose()?;
         Ok(Arc::new(Self {
             directory,
             journal,
             project,
             workspace,
+            materializer: super::skill_materializer::SkillMaterializer::new(),
             user_roots,
             cache: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
             users: crate::sync::owned::Arc::new(crate::sync::owned::Mutex::new(None)),
@@ -244,8 +284,8 @@ impl NativeSkills {
                 cancellation: work.cancellation(),
             };
             let related;
-            let view = if cut.workspace_id == workspace.view().workspace().id() {
-                workspace.view()
+            let view = if cut.workspace_id == workspace.view.workspace().id() {
+                workspace.view.as_ref()
             } else {
                 let selected = acyclic_fs::WorkspaceResolver::resolve(
                     &(
@@ -257,7 +297,7 @@ impl NativeSkills {
                 .await
                 .map_err(storage)?;
                 related = workspace
-                    .view()
+                    .view
                     .open_related(selected, &mut accounting)
                     .await?;
                 &related
@@ -333,17 +373,7 @@ impl NativeSkills {
         Ok(Some(chunk.bytes))
     }
 
-    pub(in crate::local) async fn catalog(&self) -> Result<Vec<SkillMetadata>> {
-        let Some(workspace) = &self.workspace else {
-            return self.user_catalog().await;
-        };
-        let (selected, pending) = workspace.selected_view().await?;
-        if let Some((operation, _)) = pending {
-            return Err(Error::Indeterminate(OperationId::from_bytes(
-                operation.into_bytes(),
-            )));
-        }
-        let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+    pub async fn catalog(&self, root: &Path, view: &View) -> Result<Vec<SkillMetadata>> {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = native_work(&cancellation)?;
         let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
@@ -360,7 +390,7 @@ impl NativeSkills {
         let mut skills = self.user_catalog().await?;
         let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
         let native = NativeDemandSource::open(
-            std::borrow::Cow::Borrowed(&workspace.path),
+            std::borrow::Cow::Borrowed(root),
             config.profile,
             config.limits,
             Some(cut.source),
@@ -375,14 +405,14 @@ impl NativeSkills {
             .as_ref()
             .map(|(_, bounds)| *bounds)
             .unwrap_or_default();
-        for root in super::skills::PROJECT_ROOTS {
+        for directory in [".agents/skills", ".claude/skills"] {
             bounds.directory()?;
             let mut cursor = None;
             loop {
                 let listed = view
                     .list_directory_at_snapshot(
                         cut,
-                        &format!("/{root}"),
+                        &format!("/{directory}"),
                         cursor,
                         bounds.page()?,
                         &mut accounting,
@@ -406,7 +436,7 @@ impl NativeSkills {
                         .name
                         .unicode_text(&work, &cancellation)
                         .map_err(storage)?;
-                    let relative = format!("{root}/{name}/SKILL.md");
+                    let relative = format!("{directory}/{name}/SKILL.md");
                     let path = format!("/{relative}");
                     let (lookup, _, allocation) =
                         view.lookup_at_snapshot(cut, &path, &mut accounting).await?;
@@ -423,7 +453,7 @@ impl NativeSkills {
                         .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
                     let pinned = match &lookup {
                         acyclic_fs::LazyLookup::Source { node, .. } => {
-                            self.retain(&native, &workspace.path, &path, *node)?
+                            self.retain(&native, root, &path, *node)?
                         }
                         acyclic_fs::LazyLookup::Shadow { record, .. } => {
                             self.retain_record(&RetainedSource::Shadow {
@@ -435,7 +465,7 @@ impl NativeSkills {
                         acyclic_fs::LazyLookup::Authored { .. } => PinnedContextPath {
                             root: ContextRoot {
                                 volume: self.project.clone(),
-                                directory: root.into(),
+                                directory: directory.into(),
                             },
                             generation: crate::resources::GenerationRef::new(
                                 self.project.provider(),
@@ -473,7 +503,7 @@ impl NativeSkills {
         Ok(skills)
     }
 
-    pub(in crate::local) async fn user_catalog(&self) -> Result<Vec<SkillMetadata>> {
+    pub async fn user_catalog(&self) -> Result<Vec<SkillMetadata>> {
         let mut cached = crate::sync::owned::lock_owned(self.users.clone()).await;
         if let Some((skills, _)) = &*cached {
             return Ok(skills.clone());
@@ -589,7 +619,7 @@ impl NativeSkills {
         Ok(skills)
     }
 
-    pub(in crate::local) async fn user_discovery(
+    pub async fn user_discovery(
         &self,
     ) -> Result<(Vec<SkillMetadata>, crate::context::DiscoveryWork)> {
         let skills = self.user_catalog().await?;
@@ -617,6 +647,10 @@ fn validate(skills: &[SkillMetadata]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn storage(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
 }
 
 fn native_work(

@@ -573,6 +573,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .await,
                 )?
             };
+            #[cfg(test)]
+            if let Some(pause) = &self.publication_pause {
+                pause().await;
+            }
             crate::conversation::BoundedContentFuture::new(Some(io), || async {
                 for mutation in mutations {
                     #[cfg(not(target_arch = "wasm32"))]

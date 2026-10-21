@@ -28,8 +28,16 @@ impl LocalHarness {
         #[cfg(feature = "native-execution")]
         if self.checkout_context
             && let Some(sources) = self.files.skill_sources(&self.journal)?
+            && let Some(workspace) = &self.workspace
         {
-            return sources.catalog().await;
+            let (selected, pending) = workspace.selected_view().await?;
+            if let Some((operation, _)) = pending {
+                return Err(Error::Indeterminate(OperationId::from_bytes(
+                    operation.into_bytes(),
+                )));
+            }
+            let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+            return sources.catalog(&workspace.path, view).await;
         }
         let workspace = crate::filesystem::workspace_ref(
             self.project.provider().clone(),

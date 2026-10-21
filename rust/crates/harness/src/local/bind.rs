@@ -136,11 +136,17 @@ impl LocalHarness {
             runtime
         };
         #[cfg(feature = "native-execution")]
-        let files = files.with_native_skills(context::native_skills::NativeSkills::new(
+        let files = files.with_native_skills(crate::context::native_skills::NativeSkills::new(
             skill_directory,
             volume.clone(),
             volume.clone(),
-            workspace.clone(),
+            workspace.as_ref().map(|workspace| {
+                (
+                    workspace.view(),
+                    workspace.filesystem.clone(),
+                    workspace.store.clone(),
+                )
+            }),
             settings.skill_roots().to_vec(),
         )?)?;
         let (model, provider) = config.model;

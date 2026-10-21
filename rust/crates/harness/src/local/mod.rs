@@ -292,11 +292,17 @@ impl LocalHarness {
                 let user_roots = settings_configuration.skill_roots().to_vec();
                 #[cfg(not(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")))]
                 let user_roots = Vec::new();
-                files.with_native_skills(context::native_skills::NativeSkills::new(
+                files.with_native_skills(crate::context::native_skills::NativeSkills::new(
                     directory.join("skill-sources"),
                     journal.clone(),
                     owner.project.clone(),
-                    workspace.clone(),
+                    workspace.as_ref().map(|workspace| {
+                        (
+                            workspace.view(),
+                            workspace.filesystem.clone(),
+                            workspace.store.clone(),
+                        )
+                    }),
                     user_roots,
                 )?)?
             };
