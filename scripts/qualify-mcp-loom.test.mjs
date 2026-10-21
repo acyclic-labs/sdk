@@ -2,11 +2,31 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { qualificationMain } from "./qualify-mcp-loom.mjs";
+import { qualificationMain, qualifySkillMaterializerLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyCoordinatorOriginsLoom, qualifySummaryCheckpointsLoom, qualifyHookEffectsLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
+
+test("skill materializer qualification requires the production owner model and its negative control", () => {
+  for (const missing of [null, 1, 2]) {
+    let models = 0;
+    const run = (command, args, options) => {
+      if (command === "cargo") {
+        assert.deepEqual(args.slice(-3), ["--", "--cfg", "acyclic_harness_loom"]);
+        assert.ok(args.includes("skill-materializer-loom"));
+        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "skill-materializer-loom" } }) };
+      }
+      assert.equal(args[0], ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"][models]);
+      assert.equal(args[1], "--exact");
+      assert.equal(options.timeout, 9500);
+      return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
+    };
+    if (missing === null) { qualifySkillMaterializerLoom(run); assert.equal(models, 2); }
+    else assert.throws(() => qualifySkillMaterializerLoom(run), /requires a nonzero/);
+  }
+  assertGateStep(["--skill-materializer"]);
+});
 
 test("gate rejects every trailing argument before starting a build", () => {
   for (const trailing of [["--bogus"], ["--features", "x"], ["--all-features"], ["--timer"], ["--gate"], ["x"]]) {

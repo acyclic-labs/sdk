@@ -15,6 +15,7 @@ export const gateQualifications = [
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
+  { args: ["--skill-materializer"] },
 ];
 const planOnly = Symbol("qualification plan");
 
@@ -43,6 +44,14 @@ export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-ht
   return qualifyLoom("acyclic-harness-core", "mcp-loom", [...features, "--features", "model-checking"], run, {
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });
+}
+
+export function qualifySkillMaterializerLoom(run = spawnSync) {
+  return qualifyLoom("acyclic-harness-core", "skill-materializer-loom",
+    ["--features", "filesystem-local,native-execution,test-support"], run, {
+      targetCfg: ["--", "--cfg", "acyclic_harness_loom"], timeout: 9500,
+      filters: ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"],
+    });
 }
 
 export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
@@ -234,6 +243,7 @@ const fixedModels = {
   "--guest": qualifyGuestLoom, "--memory-accounting": qualifyMemoryAccountingLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
+  "--skill-materializer": qualifySkillMaterializerLoom,
 };
 const selectableModels = {
   "--e2e-progress": qualifyE2eProgressLoom, "--hook-effects": qualifyHookEffectsLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
