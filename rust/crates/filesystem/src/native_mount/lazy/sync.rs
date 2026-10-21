@@ -99,6 +99,17 @@ where
             return Err(MountSourceError::OriginalSnapshotUnavailable.into());
         };
         let (work, cancellation) = (*work, *cancellation);
+        // Every binding of a shared source advances its epoch when any of
+        // them observes a change, such as the root refreshing for a sibling's
+        // spawn. Lookups follow that epoch; a publication follows it too
+        // rather than treating this workspace's own binding as stale.
+        self.lazy
+            .current_binding(
+                || crate::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                accounting,
+            )
+            .await
+            .map_err(lazy_error)?;
         let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let selected_proof = selected
             .map(|(destination, plan, _)| {

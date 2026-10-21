@@ -183,12 +183,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
+        let state = self
+            .current_binding(|| LazyWorkspaceError::NotFound, ctx)
+            .await?;
+        if state.pending_remove.is_some() {
+            return Err(LazyWorkspaceError::Concurrent);
+        }
+        Ok(state)
+    }
+
+    /// Loads the ready binding at the source's current epoch. A source
+    /// shared by several workspaces advances its epoch when any of them
+    /// observes a change; that invalidates source cursors, not this
+    /// workspace's authored or observed state, so every reader of the
+    /// binding follows the newer epoch rather than treating it as stale.
+    pub(crate) async fn current_binding(
+        &self,
+        missing: fn() -> LazyWorkspaceError,
+        ctx: &mut KernelAccounting<'_>,
+    ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id(), ctx)
                 .await?
-                .ok_or(LazyWorkspaceError::NotFound)?;
+                .ok_or_else(missing)?;
             let source = self.source.reference();
             if state.schema_version != LAZY_STATE_SCHEMA
                 || state.workspace_id != self.workspace.id()
@@ -198,9 +217,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Err(LazyWorkspaceError::StaleSource);
             }
             state.require_ready_fork()?;
-            if state.pending_remove.is_some() {
-                return Err(LazyWorkspaceError::Concurrent);
-            }
             if state.source == source {
                 return Ok(state);
             }

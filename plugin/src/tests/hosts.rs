@@ -172,3 +172,56 @@ fn only_spawns_of_one_fork_point_are_interchangeable() {
         assert!(!other.interchangeable_with(&spawn));
     }
 }
+
+/// Spawns wait together only from one fork point. A parent write between two
+/// spawns gives them different fork points, so the second waits for the
+/// first's start; refreshing the root for it advances the source epoch every
+/// mount of that root shares, and each of them still publishes and unmounts.
+#[test]
+fn a_parent_write_between_spawns_separates_their_fork_points() {
+    run_large_stack("fork-points", || async {
+        let fixture = Fixture::new();
+        let (_lock, service) = test_concurrent_service(fixture.data.clone()).await.unwrap();
+        let hook = |event: &str, extra: Value| {
+            native_hook_request("claude-code", event, "session", &fixture.root, extra)
+        };
+        let spawn = |id: &str| {
+            hook(
+                "PreToolUse",
+                json!({"turn_id":"root-turn","tool_name":"Agent","tool_use_id":id,"tool_input":{}}),
+            )
+        };
+        let start = |child: &str| {
+            hook(
+                "SubagentStart",
+                json!({"turn_id":format!("{child}-turn"),"agent_id":child,"agent_type":"general-purpose"}),
+            )
+        };
+        for request in [
+            hook("SessionStart", json!({})),
+            hook("UserPromptSubmit", json!({"turn_id":"root-turn"})),
+            spawn("started"),
+            start("started"),
+            spawn("before"),
+        ] {
+            service.dispatch_request(request, &mut None).await.unwrap();
+        }
+        fs::write(fixture.root.join("changed.txt"), "parent edit").unwrap();
+        let refused = service.dispatch_request(spawn("after"), &mut None).await;
+        assert!(
+            format!("{refused:?}").contains("another fork point is pending"),
+            "{refused:?}"
+        );
+        assert_eq!(host_state(&service).await.pending.len(), 1);
+        service
+            .dispatch_request(start("before"), &mut None)
+            .await
+            .unwrap();
+        service
+            .dispatch_request(spawn("after"), &mut None)
+            .await
+            .unwrap();
+        assert_eq!(host_state(&service).await.pending.len(), 1);
+        service.shutdown().await.unwrap();
+    });
+}
