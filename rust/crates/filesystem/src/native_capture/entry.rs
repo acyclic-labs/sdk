@@ -155,11 +155,28 @@ impl SearchRoot {
             .open_record_file(leaf, false, &mut crate::native_host::ordinary_work())
     }
 
-    /// The device and object id of whatever `leaf` names once the kernel
-    /// follows every link from this held directory.
-    pub fn resolved_identity(&self, leaf: &Path) -> Result<NativeRootIdentity, DemandError> {
+    /// The device and object id of whatever `path` names once every link is
+    /// followed from this held directory. `path` may hold several
+    /// components, `..`, or be absolute, as a Git metadata pointer may.
+    pub fn resolved_identity(&self, path: &Path) -> Result<NativeRootIdentity, DemandError> {
+        // An NT relative open cannot name `..`, so Windows resolves any
+        // pointer other than one leaf by name. A directory with open handles
+        // below it cannot be renamed there, so this held directory's path
+        // still names it.
+        #[cfg(windows)]
+        if crate::native_host::require_leaf(path).is_err() {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+            };
+            let file = std::fs::OpenOptions::new()
+                .access_mode(FILE_READ_ATTRIBUTES.0)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+                .open(self.path.join(path))?;
+            return file_identity(&file);
+        }
         self.root
-            .resolved_identity(leaf, &mut crate::native_host::ordinary_work())
+            .resolved_identity(path, &mut crate::native_host::ordinary_work())
     }
 
     /// The held directory's device and object id, read when it was opened.

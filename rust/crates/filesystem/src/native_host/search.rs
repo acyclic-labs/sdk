@@ -172,16 +172,23 @@ impl HostRoot {
         })
     }
 
-    /// The device and object id of whatever the leaf names once every link
-    /// is followed, resolved by the kernel relative to this held directory.
+    /// The device and object id of whatever `path` names once every link is
+    /// followed, resolved by the kernel from this held directory. On Unix the
+    /// path may hold several components, `..`, or be absolute; on Windows,
+    /// where an NT relative open cannot name `..`, it must be one leaf.
     pub(crate) fn resolved_identity<W: NativeHostWork>(
         &self,
-        leaf: &Path,
+        path: &Path,
         work: &mut W,
     ) -> Result<NativeRootIdentity, W::Error> {
-        require_leaf(leaf)?;
         #[cfg(unix)]
-        return unix_name(leaf.as_os_str(), work, |name, work| {
+        if path.as_os_str().is_empty() {
+            return Err(W::invalid_request());
+        }
+        #[cfg(windows)]
+        require_leaf(path)?;
+        #[cfg(unix)]
+        return unix_name(path.as_os_str(), work, |name, work| {
             let stat = retry_io(work, READ, || {
                 let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
                 // SAFETY: held descriptor, terminated name and complete output remain live.
@@ -205,7 +212,7 @@ impl HostRoot {
             })
         });
         #[cfg(windows)]
-        with_wide_path(leaf, work, |leaf, work| {
+        with_wide_path(path, work, |leaf, work| {
             let name = windows_open_name(leaf, work)?;
             let file = open_windows_named_with_options(
                 &self.directory,
