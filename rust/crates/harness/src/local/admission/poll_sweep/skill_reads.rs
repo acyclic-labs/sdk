@@ -2,7 +2,6 @@
 use super::*;
 use crate::conversation::ContentResidencyVerifier;
 use crate::resources::GenerationRef;
-use std::sync::OnceLock;
 
 async fn selected(harness: &Harness) -> Result<(crate::resources::WorkspaceRef, GenerationRef)> {
     let workspace = crate::filesystem::workspace_ref(
@@ -83,31 +82,6 @@ async fn root_reads(fixture: &mut Fixture, harness: &Harness) -> Result<usize> {
         Ok(())
     })
     .await
-}
-
-pub(super) fn cold_root_reads(scenario: Scenario) -> Result<usize> {
-    // Each scenario has an independent project generation. Measure once, never
-    // once per cut or property case; cache only the independent probe result.
-    static READS: [OnceLock<std::result::Result<usize, String>>; 3] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
-    READS[scenario as usize]
-        .get_or_init(|| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|error| error.to_string())?;
-            runtime
-                .block_on(async {
-                    let _inline = acyclic_native_runtime::InlineBlocking::enter();
-                    let seed = Seed::new(scenario).await?;
-                    let mut fixture = Fixture::new(scenario, Some(&seed)).await?;
-                    let harness = fixture.open().await?;
-                    root_reads(&mut fixture, &harness).await
-                })
-                .map_err(|error| error.to_string())
-        })
-        .clone()
-        .map_err(Error::Storage)
 }
 
 #[test]

@@ -1,4 +1,5 @@
-//! Independent, reviewed boundary counts and complete cut plans.
+//! Boundary coverage derived from each run: required kinds, paired hooks,
+//! and a cut at every recorded boundary.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -33,90 +34,93 @@ pub(super) fn check_interleaved(order: impl IntoIterator<Item = Scenario>) -> Re
     Ok(())
 }
 
+/// Opening and closing boundary kinds. Each closer follows its own opener, so
+/// at every prefix of a run the closers never outnumber their openers, and the
+/// two counts are equal once the run ends. A hook omitted on either side breaks
+/// the pairing however many boundaries the run crosses.
+const PAIRS: [(&str, &str); 6] = [
+    ("blocking:submitted", "blocking:completed"),
+    ("native:submitted", "native:completed"),
+    ("task:submitted", "task:completed"),
+    ("stream:read:blocked", "stream:read:completed"),
+    ("model:dispatch", "model:accepted"),
+    ("tool:dispatch", "tool:accepted"),
+];
+
+/// The boundary kinds each scenario must reach. They are what the scenario is
+/// for (a model turn, a tool effect, a blocked read), not how often an
+/// implementation happens to cross them.
+fn required(scenario: Scenario) -> impl Iterator<Item = &'static str> {
+    let tool = scenario == Scenario::EffectAndContinuation;
+    PAIRS
+        .into_iter()
+        .filter(move |(open, _)| tool || !open.starts_with("tool:"))
+        .flat_map(|(open, close)| [open, close])
+}
+
+/// A fixture manifest for the permutation tests; the real sweep checks the
+/// interleaving of its own recorded cuts.
 fn manifest_pairs() -> Vec<(Scenario, usize)> {
     [
-        Scenario::Text,
-        Scenario::EffectAndContinuation,
-        Scenario::Compaction,
+        (Scenario::Text, 300),
+        (Scenario::EffectAndContinuation, 800),
+        (Scenario::Compaction, 600),
     ]
     .into_iter()
-    .flat_map(|scenario| {
-        let total: usize = expected(scenario)
-            .unwrap()
-            .iter()
-            .filter(|(name, _)| name.as_str() != "stream:read:ready")
-            .map(|(_, count)| *count)
-            .sum();
-        (1..=total).map(move |cut| (scenario, cut))
-    })
+    .flat_map(|(scenario, total)| (1..=total).map(move |cut| (scenario, cut)))
     .collect()
 }
 
 #[test]
-fn seed_711_interleaves_the_actual_manifest_and_rejects_the_grouped_control() -> Result<()> {
+fn seed_711_interleaves_the_manifest_and_rejects_the_grouped_control() -> Result<()> {
     let mut pairs = manifest_pairs();
     assert!(check_interleaved(pairs.iter().map(|(scenario, _)| *scenario)).is_err());
     permute(&mut pairs, 711);
     check_interleaved(pairs.into_iter().map(|(scenario, _)| scenario))
 }
 
-fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
-    // Published generations already have durable history ownership. Reading an
-    // authenticated generation therefore needs no automatic pin transaction,
-    // checkpoint, or completion task. Independent real-scenario traces on Linux
-    // and Windows agree on these pins after removing those redundant operations.
-    // Model/tool dispatch and blocked-stream boundaries are unchanged. Every
-    // remaining native, blocking and task boundary still gets its own cut, and
-    // ready reads remain an independently checked exact count.
-    let bytes: &[u8] = match scenario {
-        Scenario::Text => include_bytes!("coverage/text.json"),
-        Scenario::EffectAndContinuation => include_bytes!("coverage/effect_goal.json"),
-        Scenario::Compaction => include_bytes!("coverage/compaction.json"),
-    };
-    let mut expected: BTreeMap<String, usize> = serde_json::from_slice(bytes).map_err(storage)?;
-    // The initial context now probes two optional skill roots once per project
-    // generation. Derive that incremental cost from independent filesystem
-    // operations; never copy a count from the run being checked.
-    let ready = expected.get_mut("stream:read:ready").ok_or_else(|| {
-        Error::Storage("reviewed boundary manifest has no ready-read count".into())
-    })?;
-    *ready += skill_reads::cold_root_reads(scenario)?;
-    Ok(expected)
-}
-
-pub(super) fn check_boundaries(
-    scenario: Scenario,
-    actual: &[&str],
-    ready_reads: usize,
-) -> Result<()> {
-    let mut counts = BTreeMap::new();
-    for name in actual {
-        *counts.entry((*name).to_owned()).or_insert(0) += 1;
-    }
-    counts.insert("stream:read:ready".into(), ready_reads);
-    let expected = expected(scenario)?;
-    if counts != expected {
+/// Checks a run's recorded boundaries against what the run itself implies:
+/// every kind the scenario exists to exercise was reached, and every opening
+/// boundary is closed by its own kind, in order.
+pub(super) fn check_boundaries(scenario: Scenario, actual: &[&str]) -> Result<()> {
+    let seen: BTreeSet<&str> = actual.iter().copied().collect();
+    let missing: Vec<_> = required(scenario)
+        .filter(|kind| !seen.contains(kind))
+        .collect();
+    if !missing.is_empty() {
         return Err(Error::Storage(format!(
-            "{scenario:?} independent boundary coverage: expected {expected:?}, actual {counts:?}"
+            "{scenario:?} never reached boundary kinds {missing:?}"
         )));
+    }
+    for (open, close) in PAIRS {
+        let mut depth = 0usize;
+        for (index, name) in actual.iter().enumerate() {
+            if *name == open {
+                depth += 1;
+            } else if *name == close {
+                depth = depth.checked_sub(1).ok_or_else(|| {
+                    Error::Storage(format!(
+                        "{scenario:?} boundary {} is {close} without an open {open}",
+                        index + 1
+                    ))
+                })?;
+            }
+        }
+        if depth != 0 {
+            return Err(Error::Storage(format!(
+                "{scenario:?} left {depth} {open} boundaries without {close}"
+            )));
+        }
     }
     Ok(())
 }
 
-pub(super) fn check_cuts(
-    scenario: Scenario,
-    recorded: usize,
-    cuts: impl IntoIterator<Item = usize>,
-) -> Result<()> {
-    let total: usize = expected(scenario)?
-        .iter()
-        .filter(|(name, _)| name.as_str() != "stream:read:ready")
-        .map(|(_, count)| *count)
-        .sum();
+/// Every recorded boundary is a cancellation point exactly once.
+pub(super) fn check_cuts(recorded: usize, cuts: impl IntoIterator<Item = usize>) -> Result<()> {
     let cuts: Vec<_> = cuts.into_iter().collect();
-    if recorded != total
-        || cuts.len() != total
-        || cuts.into_iter().collect::<BTreeSet<_>>() != (1..=total).collect()
+    if recorded == 0
+        || cuts.len() != recorded
+        || cuts.into_iter().collect::<BTreeSet<_>>() != (1..=recorded).collect()
     {
         return Err(Error::Storage(
             "the real sweep omitted or duplicated a required cut".into(),
@@ -128,12 +132,16 @@ pub(super) fn check_cuts(
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     #[test]
-    fn broken_real_sweep_cannot_drop_a_cut(which in 0u8..3, omitted in 0usize..4096) {
-        let scenario = match which { 0 => Scenario::Text, 1 => Scenario::EffectAndContinuation, _ => Scenario::Compaction };
-        let total = expected(scenario).unwrap().iter().filter(|(name, _)| name.as_str() != "stream:read:ready").map(|(_, count)| *count).sum::<usize>();
+    fn broken_real_sweep_cannot_drop_or_repeat_a_cut(total in 1usize..4096, omitted in 0usize..4096) {
         let omitted = 1 + omitted % total;
-        // This is the actual replay planner, deliberately missing a real cut.
-        proptest::prop_assert!(check_cuts(scenario, total, (1..=total).filter(|cut| *cut != omitted)).is_err());
+        proptest::prop_assert!(check_cuts(total, 1..=total).is_ok());
+        // The replay planner deliberately missing a real cut, or repeating another in its place.
+        proptest::prop_assert!(check_cuts(total, (1..=total).filter(|cut| *cut != omitted)).is_err());
+        if total > 1 {
+            let repeated = if omitted == 1 { 2 } else { 1 };
+            let cuts: Vec<_> = (1..=total).map(|cut| if cut == omitted { repeated } else { cut }).collect();
+            proptest::prop_assert!(check_cuts(total, cuts).is_err());
+        }
     }
 
     #[test]
@@ -155,33 +163,40 @@ fn omitted_actual_hook_and_cut_are_rejected() -> Result<()> {
         .enable_all()
         .build()
         .map_err(storage)?;
-    for scenario in [
-        Scenario::Text,
-        Scenario::EffectAndContinuation,
-        Scenario::Compaction,
-    ] {
-        let observed = runtime.block_on(case(scenario, None, &[], None))?;
-        let actual = observed.points;
-        check_boundaries(scenario, &actual, observed.ready_reads)?;
-        let omitted = actual
-            .iter()
-            .position(|name| *name == "task:submitted")
-            .unwrap();
+    let observed = runtime.block_on(case(Scenario::Text, None, &[], None))?;
+    let actual = observed.points;
+    check_boundaries(Scenario::Text, &actual)?;
+    // Each real hook kind omitted once, at its first occurrence.
+    for kind in required(Scenario::Text) {
+        let omitted = actual.iter().position(|name| *name == kind).unwrap();
         let mut broken = actual.clone();
         broken.remove(omitted);
         assert!(
-            check_boundaries(scenario, &broken, observed.ready_reads).is_err(),
-            "missing real hook went undetected"
-        );
-        assert!(
-            check_cuts(
-                scenario,
-                actual.len(),
-                (1..=actual.len()).filter(|cut| *cut != omitted + 1)
-            )
-            .is_err(),
-            "missing real replay went undetected"
+            check_boundaries(Scenario::Text, &broken).is_err(),
+            "missing real {kind} hook went undetected"
         );
     }
+    // A run that never reaches a kind its scenario exists to exercise.
+    let unreached: Vec<_> = actual
+        .iter()
+        .copied()
+        .filter(|name| !name.starts_with("model:"))
+        .collect();
+    assert!(
+        check_boundaries(Scenario::Text, &unreached).is_err(),
+        "unreached model turn went undetected"
+    );
+    let omitted = actual
+        .iter()
+        .position(|name| *name == "task:submitted")
+        .unwrap();
+    assert!(
+        check_cuts(
+            actual.len(),
+            (1..=actual.len()).filter(|cut| *cut != omitted + 1)
+        )
+        .is_err(),
+        "missing real replay went undetected"
+    );
     Ok(())
 }

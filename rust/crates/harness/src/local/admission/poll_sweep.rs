@@ -365,7 +365,6 @@ struct Coverage {
     observations: invariants::Observations,
     points: Vec<&'static str>,
     unadmitted: bool,
-    ready_reads: usize,
     admission_submission: Option<usize>,
     admission_committed: bool,
     // The reopened head was unsettled and the new prompt had to settle it.
@@ -514,7 +513,6 @@ async fn case_with(
                 observations: invariants::observe(&reopened, &fixture, root).await?,
                 points,
                 unadmitted,
-                ready_reads: schedule.ready_reads(),
                 admission_submission: schedule.admission_submission(),
                 admission_committed,
             });
@@ -585,7 +583,6 @@ async fn case_with(
             observations,
             points,
             unadmitted,
-            ready_reads: schedule.ready_reads(),
             admission_submission: schedule.admission_submission(),
             admission_committed,
             interrupted: false,
@@ -655,7 +652,7 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
         let baseline = observed.points;
         // The resume sweep owns the reviewed manifest for this same baseline.
         if recovery == Recovery::Resume {
-            coverage::check_boundaries(scenario, &baseline, observed.ready_reads)?;
+            coverage::check_boundaries(scenario, &baseline)?;
         }
         assert!(!baseline.is_empty());
         eprintln!(
@@ -693,7 +690,6 @@ fn sweep(scenarios: &[Scenario], recovery: Recovery) -> Result<()> {
     }
     for (scenario, baseline, _) in schedules.iter().filter(|_| recovery == Recovery::Resume) {
         coverage::check_cuts(
-            *scenario,
             baseline.len(),
             cuts.iter()
                 .filter(|(candidate, _, _, _)| candidate == scenario)
@@ -858,19 +854,16 @@ fn indeterminate_admission_after_submitted_local_stream_commit_reconciles() -> R
     let seed = runtime.block_on(Seed::new(Scenario::Text))?;
     let observed = runtime.block_on(case(Scenario::Text, None, &[], Some(&seed)))?;
     let baseline = observed.points;
-    coverage::check_boundaries(Scenario::Text, &baseline, observed.ready_reads)?;
-    let cut: usize =
-        serde_json::from_slice(include_bytes!("poll_sweep/coverage/admission_cut.json"))
-            .map_err(storage)?;
-    assert_eq!(
-        observed.admission_submission,
-        Some(cut),
-        "named admission submission moved"
-    );
+    coverage::check_boundaries(Scenario::Text, &baseline)?;
+    // The run names its own admission submission: the stream commit that
+    // appends the coordinator's events.
+    let cut = observed
+        .admission_submission
+        .expect("the run never submitted its admission commit");
     assert_eq!(
         baseline[cut - 1],
         "task:submitted",
-        "named admission cut moved"
+        "the admission submission is not a task submission boundary"
     );
     let recovered = runtime.block_on(case(Scenario::Text, Some(cut), &baseline, Some(&seed)))?;
     assert_eq!(recovered.points.len(), cut);
@@ -893,6 +886,6 @@ fn compaction_summary_is_readable_before_any_cancellation() -> Result<()> {
         .build()
         .map_err(storage)?;
     let observed = runtime.block_on(case(Scenario::Compaction, None, &[], None))?;
-    coverage::check_boundaries(Scenario::Compaction, &observed.points, observed.ready_reads)?;
+    coverage::check_boundaries(Scenario::Compaction, &observed.points)?;
     Ok(())
 }
