@@ -69,3 +69,63 @@ fn explicit_state_directory_is_used_by_a_fresh_registry() -> Result<(), Box<dyn 
     }
     Ok(())
 }
+
+#[test]
+fn empty_state_override_uses_the_fallback_in_a_fresh_process()
+-> Result<(), Box<dyn std::error::Error>> {
+    const CHILD: &str = "ACYCLIC_FS_REGISTRY_EMPTY_OVERRIDE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        #[cfg(windows)]
+        let expected = dirs::data_local_dir();
+        #[cfg(not(windows))]
+        let expected =
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"));
+        // Compare before initialize. A source-negative must never create a
+        // relative registry, and the Windows OS fallback is only inspected.
+        assert_eq!(
+            persistent_base(),
+            expected,
+            "empty state override selected a relative registry"
+        );
+        #[cfg(not(windows))]
+        {
+            let expected = expected.ok_or("fixture HOME is absent")?;
+            initialize()?;
+            assert_eq!(
+                directory()?,
+                expected
+                    .join("acyclic")
+                    .join("native-mount")
+                    .canonicalize()?
+            );
+        }
+        return Ok(());
+    }
+    let fixture = tempfile::tempdir()?;
+    let profile = fixture.path().join("empty-profile");
+    let codex = fixture.path().join("fixture-codex");
+    std::fs::create_dir(&profile)?;
+    std::fs::create_dir(&codex)?;
+    #[cfg(windows)]
+    let variable = "LOCALAPPDATA";
+    #[cfg(not(windows))]
+    let variable = "XDG_STATE_HOME";
+    let name = format!(
+        "{}::empty_state_override_uses_the_fallback_in_a_fresh_process",
+        module_path!().split_once("::").unwrap().1
+    );
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD, "1")
+            .env(variable, "")
+            .env("HOME", &profile)
+            .env("USERPROFILE", &profile)
+            .env("CODEX_HOME", &codex)
+            .env("APPDATA", profile.join("AppData").join("Roaming")),
+        std::time::Duration::from_secs(5),
+        16 * 1024,
+    )?;
+    assert!(output.status.success(), "empty {variable}: {output:?}");
+    Ok(())
+}

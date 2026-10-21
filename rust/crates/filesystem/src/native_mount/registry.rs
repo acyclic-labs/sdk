@@ -89,15 +89,20 @@ where
 // defaults. Known Folder lookup ignores an explicitly supplied LOCALAPPDATA.
 fn persistent_base() -> Option<PathBuf> {
     #[cfg(windows)]
-    if let Some(directory) = std::env::var_os("LOCALAPPDATA") {
+    if let Some(directory) =
+        std::env::var_os("LOCALAPPDATA").filter(|directory| !directory.is_empty())
+    {
         return Some(directory.into());
     }
     #[cfg(not(windows))]
     {
-        if let Some(directory) = std::env::var_os("XDG_STATE_HOME") {
+        if let Some(directory) =
+            std::env::var_os("XDG_STATE_HOME").filter(|directory| !directory.is_empty())
+        {
             return Some(directory.into());
         }
-        if let Some(directory) = std::env::var_os("HOME") {
+        if let Some(directory) = std::env::var_os("HOME").filter(|directory| !directory.is_empty())
+        {
             return Some(PathBuf::from(directory).join(".local").join("state"));
         }
     }
