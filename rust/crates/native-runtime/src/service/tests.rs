@@ -43,3 +43,35 @@ fn readiness_still_reports_other_io_failures() -> io::Result<()> {
     assert_ne!(error.kind(), io::ErrorKind::BrokenPipe);
     Ok(())
 }
+
+#[test]
+fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
+    let (starter, service) = readiness_channel()?;
+    service.signal()?;
+    assert_eq!(starter.wait()?, ServiceStartOutcome::Ready);
+
+    let (starter, service) = readiness_channel()?;
+    service.fail("native mount registry is unavailable")?;
+    assert_eq!(
+        starter.wait()?,
+        ServiceStartOutcome::Failed("native mount registry is unavailable".to_owned())
+    );
+
+    let (starter, service) = readiness_channel()?;
+    drop(service);
+    assert_eq!(starter.wait()?, ServiceStartOutcome::Exited);
+
+    // A pipe buffer may be smaller than the report: the service writes while
+    // its starter reads, as two processes do.
+    let (starter, service) = readiness_channel()?;
+    let writer = std::thread::spawn(move || service.fail(&"x".repeat(10_000)));
+    let outcome = starter.wait()?;
+    writer
+        .join()
+        .map_err(|_| io::Error::other("failure writer panicked"))??;
+    let ServiceStartOutcome::Failed(reason) = outcome else {
+        return Err(io::Error::other("an oversized failure was not reported"));
+    };
+    assert_eq!(reason.len(), 4096);
+    Ok(())
+}

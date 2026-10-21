@@ -43,6 +43,21 @@ pub(crate) async fn run_service_with_identity(
     identity_override: Option<String>,
     ready: Option<acyclic_native_runtime::ServiceReadySignal>,
 ) -> acyclic_harness::Result<SessionCloseState> {
+    let mut ready = ready;
+    let result = run_service_starting(data, identity_override, &mut ready).await;
+    // A service that cannot start says why, so its starter reports the cause
+    // at once rather than waiting out its deadline for an endpoint.
+    if let (Err(error), Some(ready)) = (&result, ready) {
+        let _ = ready.fail(&error.to_string());
+    }
+    result
+}
+
+async fn run_service_starting(
+    data: PathBuf,
+    identity_override: Option<String>,
+    ready: &mut Option<acyclic_native_runtime::ServiceReadySignal>,
+) -> acyclic_harness::Result<SessionCloseState> {
     let Some(lock) = acquire_service_lock(&data).map_err(acyclic_harness::Error::Storage)? else {
         return Ok(SessionCloseState::Closed);
     };
@@ -70,7 +85,7 @@ pub(crate) async fn run_service_with_identity(
 async fn run_locked_service(
     data: PathBuf,
     identity_override: Option<String>,
-    ready: Option<acyclic_native_runtime::ServiceReadySignal>,
+    ready: &mut Option<acyclic_native_runtime::ServiceReadySignal>,
     configured: crate::service::ServiceConfiguredInfrastructure,
     private_root: PathBuf,
     original_bootstrap_work: &acyclic_fs::NativeMaterializationWork,
@@ -114,7 +129,7 @@ async fn run_locked_service(
             return service_cleanup_outcome(cleanup, Err(marker_error));
         }
     };
-    if let Some(ready) = ready {
+    if let Some(ready) = ready.take() {
         // A starter that stopped waiting has nothing to be told.
         let _ = ready.signal();
     }
@@ -231,8 +246,12 @@ pub(crate) async fn wait_for_service_readiness(
         })
         .map_err(display)?;
     let wait = deadline.saturating_duration_since(std::time::Instant::now());
-    let _ = tokio::time::timeout(wait, receiver).await;
-    Ok(())
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(Ok(Ok(acyclic_native_runtime::ServiceStartOutcome::Failed(reason)))) => {
+            Err(format!("Acyclic service could not start: {reason}"))
+        }
+        _ => Ok(()),
+    }
 }
 
 pub(crate) fn ping_request() -> Result<ControlRequest, String> {
