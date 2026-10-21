@@ -120,11 +120,12 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
                 result.value
             } else {
                 let context = ToolContext::new(
-                    local
-                        .task_runtime()
-                        .task_context(task, fence.clone())
-                        .await?
-                        .into_shared()?,
+                    Arc::new(
+                        local
+                            .task_runtime()
+                            .task_context(task, fence.clone())
+                            .await?,
+                    ),
                     invocation.operation_id,
                     &invocation.call_id,
                     None,
