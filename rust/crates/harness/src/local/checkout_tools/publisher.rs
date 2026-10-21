@@ -130,15 +130,29 @@ impl CheckoutPublisher {
                 native.advance_to_head().await?;
             } else if mount.view.source.is_none() {
                 self.materialize(view, operation, &file).await?;
+                #[cfg(test)]
+                if tests::KILL_BEFORE_CAPTURE.get() {
+                    return Err(Error::Storage("killed before the write's capture".into()));
+                }
                 // The physical write carries host metadata (mode, owner,
                 // times) that the staged generation cannot predict. Capture
                 // it now, under the same lock, so the agent's own write is
                 // not observed later as a foreign change to its file.
-                // A replay must not capture again: later foreign changes would
-                // reuse this operation's capture identity for other content.
-                // One operation may publish several paths, so the capture's
+                // The capture is pending exactly while the staged generation
+                // is still the head: a replay after an interrupted capture
+                // finishes it, and a replay after any later commit never
+                // reuses this capture's identity for other content. One
+                // operation may publish several paths, so the capture's
                 // identity names the path too.
-                if original.is_none() {
+                #[cfg(test)]
+                let pending = if tests::REPLAY_SKIPS_CAPTURE.get() {
+                    original.is_none()
+                } else {
+                    self.head_is_staged(view, &file).await?
+                };
+                #[cfg(not(test))]
+                let pending = self.head_is_staged(view, &file).await?;
+                if pending {
                     let captured = OperationId::from_bytes(publication_operation(operation, &relative).into_bytes());
                     self.tools.capture((&self.tools.workspace, view), watcher, captured, 1, PublicationPermit::Unrestricted, None).await?;
                 }
@@ -164,10 +178,7 @@ impl CheckoutPublisher {
         let cancellation = acyclic_fs::CancellationToken::new();
         let budget = acyclic_fs::WorkBudget::UNBOUNDED;
         let workspace = view.workspace();
-        let staged = self.files.file_generation(&file, None)?;
-        let staged = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
-            staged.as_resource().key().try_into().map_err(storage)?,
-        ));
+        let staged = self.staged_generation(&file)?;
         let mut current = workspace
             .head(budget, &cancellation)
             .await
@@ -234,6 +245,28 @@ impl CheckoutPublisher {
             file.display_name().to_owned(),
             &mut None,
         )
+    }
+
+    fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {
+        let staged = self.files.file_generation(file, None)?;
+        Ok(acyclic_fs::GenerationId::new(
+            acyclic_fs::Digest::from_bytes(staged.as_resource().key().try_into().map_err(storage)?),
+        ))
+    }
+
+    /// Whether the head is still the generation that staged `file`, so the
+    /// capture of its physical write has not committed.
+    async fn head_is_staged(&self, view: &workspace::View, file: &FileRef) -> Result<bool> {
+        let head = view
+            .workspace()
+            .head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map_err(storage)?
+            .value;
+        Ok(head.id() == self.staged_generation(file)?)
     }
 
     async fn materialize(

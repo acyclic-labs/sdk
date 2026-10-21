@@ -1,5 +1,12 @@
 use super::*;
 
+thread_local! {
+    /// Stops a publication after its physical write, before its capture.
+    pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: a replay never captures, as before the fix.
+    pub(super) static REPLAY_SKIPS_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 async fn fixture() -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
@@ -551,5 +558,59 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"edited\n"
     );
+    Ok(())
+}
+
+/// Whether an edit through the reference that a replayed write returns
+/// succeeds, after the first attempt stopped between its physical write and
+/// that write's capture.
+async fn replay_after_an_interrupted_capture_is_editable(skip: bool) -> Result<bool> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let write = || {
+        publisher.stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            None,
+        )
+    };
+    KILL_BEFORE_CAPTURE.set(true);
+    let interrupted = match write() {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    KILL_BEFORE_CAPTURE.set(false);
+    assert!(
+        interrupted.is_some(),
+        "the first attempt was not interrupted"
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"agent bytes\n"
+    );
+    REPLAY_SKIPS_CAPTURE.set(skip);
+    let replayed = write();
+    let replayed = match replayed {
+        Ok(staged) => staged.await,
+        Err(error) => Err(error),
+    };
+    REPLAY_SKIPS_CAPTURE.set(false);
+    let (replayed, _) = replayed?;
+    let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None) {
+        Ok(staged) => staged.await.map(|_| ()),
+        Err(error) => Err(error),
+    };
+    Ok(edited.is_ok())
+}
+
+#[tokio::test]
+async fn a_replay_finishes_an_interrupted_capture() -> Result<()> {
+    assert!(replay_after_an_interrupted_capture_is_editable(false).await?);
+    // Negative control: a replay that skips the pending capture returns the
+    // staged reference, which the write's own host metadata makes stale.
+    assert!(!replay_after_an_interrupted_capture_is_editable(true).await?);
     Ok(())
 }
