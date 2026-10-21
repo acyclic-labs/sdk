@@ -124,9 +124,20 @@ pub struct Step {
     /// An explicit HTTP status; absent means 200.
     pub status: Option<u16>,
     /// Return ordinary JSON instead of SSE (search/MCP/error fixtures).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "json_reply"
+    )]
     pub json: Option<Value>,
     /// Leave the stream open after the chunks, for cancellation/crash cases.
     pub hold: bool,
+}
+
+fn json_reply<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// A provider-independent function call.

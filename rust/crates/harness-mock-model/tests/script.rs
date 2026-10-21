@@ -20,6 +20,19 @@ fn json_value() -> impl Strategy<Value = serde_json::Value> {
 
 proptest! {
     #[test]
+    fn json_reply_selection_survives_every_request_value(value in json_value()) {
+        let step: Step = serde_json::from_value(json!({"json":{"$request":""}})).unwrap();
+        prop_assert_eq!(bind_result(&step,&value).unwrap().json,Some(value));
+        let absent = Step::default();
+        let null: Step = serde_json::from_value(json!({"json":null})).unwrap();
+        prop_assert_eq!(null.json.as_ref(),Some(&serde_json::Value::Null));
+        for step in [absent,null] {
+            let copy: Step = serde_json::from_slice(&serde_json::to_vec(&step).unwrap()).unwrap();
+            prop_assert_eq!(step,copy);
+        }
+    }
+
+    #[test]
     fn request_templates_preserve_types_and_freeform_bytes(value in json_value(), text in ".{0,128}") {
         let step: Step = serde_json::from_value(json!({
             "text":["echo {{request:/mount~1path}}"],

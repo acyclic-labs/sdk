@@ -29,7 +29,8 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
     cases.insert("codex".into(),json!({"steps":[
         {"tools":[{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{"message":{"$request":"/metadata/prompt"}}}]},
         {"when":{"tool_result":"child-id"},"custom_tools":[{"id":"patch","name":"apply_patch","input":"*** Begin Patch\n*** Add File: {{tool_result:/mount}}/child.txt\n+{{tool_result:/id}}\n*** End Patch"}]},
-        {"when":{"tool_result":"applied"},"json":{"echo":{"$request":"/input/0/output"}}}
+        {"when":{"tool_result":"applied"},"json":{"echo":{"$request":"/input/0/output"}}},
+        {"json":{"$request":"/value"}}
     ]}));
     cases.insert(
         "bad-template".into(),
@@ -194,6 +195,15 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         echoed.json::<Value>().await.unwrap(),
         json!({"echo":"applied"})
     );
+    let null = client
+        .post(&url)
+        .json(&json!({"value":null}))
+        .send()
+        .await
+        .unwrap();
+    assert!(null.status().is_success());
+    assert_eq!(null.headers()["content-type"], "application/json");
+    assert_eq!(null.text().await.unwrap(), "null");
     assert_eq!(
         client
             .post(format!("{root}/bad-template/v1/responses"))
@@ -250,7 +260,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             .status(),
         500
     );
-    for _ in 0..23 {
+    for _ in 0..24 {
         assert!(
             lines
                 .next()
@@ -264,7 +274,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 23);
+    assert_eq!(records.len(), 24);
     for (index, record) in records.iter().enumerate() {
         assert_eq!(record["sequence"], index + 1);
     }

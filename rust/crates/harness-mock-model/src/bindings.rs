@@ -9,8 +9,15 @@ use serde_json::Value;
 pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
     let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
     let mut value = serde_json::to_value(step).map_err(|error| error.to_string())?;
+    // Guards have already matched; they are request data, not reply templates.
+    value
+        .as_object_mut()
+        .ok_or("step is not an object")?
+        .remove("when");
     bind(&mut value, body, &result)?;
-    serde_json::from_value(value).map_err(|error| error.to_string())
+    let mut bound: Step = serde_json::from_value(value).map_err(|error| error.to_string())?;
+    bound.when = step.when.clone();
+    Ok(bound)
 }
 
 fn lookup<'a>(source: &'a Value, pointer: &str) -> Result<&'a Value, String> {
