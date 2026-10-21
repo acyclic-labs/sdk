@@ -950,3 +950,5 @@ fn linux_demand_watch_accepts_directories_absent_from_the_source()
 }
 
 mod work;
+#[cfg(target_os = "macos")]
+mod fsevents_fence;

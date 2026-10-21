@@ -104,6 +104,16 @@ impl NativeSourceWatch {
         result
     }
 
+    /// Reports a stream failure without claiming delivery: the caller fences
+    /// with a cookie it observes itself.
+    pub(crate) fn take_failure_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
+        self.shared.delivery.take_failure(work)
+    }
+
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
         _timeout: Duration,

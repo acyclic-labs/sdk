@@ -32,7 +32,10 @@ impl Shared {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
+                // A volume mounted or unmounted at a path beneath the root
+                // rebinds only that path; one above the root, or lost
+                // notifications, may have changed anything.
+                if flags & (USER_DROPPED | KERNEL_DROPPED) != 0 {
                     changes.push(HostChange::Everything);
                 } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let (relative, bytes) = clone_path(relative, work)?;
@@ -40,6 +43,8 @@ impl Shared {
                         .checked_add(bytes)
                         .ok_or(crate::WorkError::Overflow)?;
                     changes.push(change(relative, flags));
+                } else if flags & (MOUNT | UNMOUNT) != 0 {
+                    changes.push(HostChange::Everything);
                 }
             }
             self.delivery.deliver(&changes, work)
@@ -85,7 +90,7 @@ fn relative_path<'a, W: SourceDemandReadWork>(
 }
 
 pub(super) fn change(relative: PathBuf, flags: u32) -> HostChange {
-    let unspecific = flags & ITEM_FLAGS == 0 || flags & MUST_SCAN_SUBDIRS != 0;
+    let unspecific = flags & ITEM_FLAGS == 0 || flags & (MUST_SCAN_SUBDIRS | MOUNT | UNMOUNT) != 0;
     if relative.as_os_str().is_empty() {
         return if unspecific {
             HostChange::Everything

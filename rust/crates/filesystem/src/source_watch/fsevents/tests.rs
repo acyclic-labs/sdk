@@ -768,3 +768,58 @@ fn unspecific_events_cover_everything_beneath_their_path() {
         HostChange::Altered(name())
     );
 }
+
+/// A volume mounted beneath the root rebinds only its mount point. One
+/// mounted above the root, or lost notifications, may change anything.
+#[test]
+fn a_mount_beneath_the_root_rebinds_only_its_mount_point() -> TestResult {
+    struct Recorded(Mutex<Vec<HostChange>>);
+    impl HostChangeSink for Recorded {
+        fn logical_owned_bytes(&self) -> u64 {
+            0
+        }
+        fn host_changed(
+            &self,
+            changes: &[HostChange],
+            work: &mut DemandWork,
+        ) -> Result<(), DemandError> {
+            work.check()?;
+            if let Ok(mut recorded) = self.0.lock() {
+                recorded.extend_from_slice(changes);
+            }
+            Ok(())
+        }
+    }
+    let root = tempfile::tempdir()?;
+    let recorded = Arc::new(Recorded(Mutex::new(Vec::new())));
+    let watch = NativeSourceWatch::start_driver(
+        &HostRoot::open(root.path(), &mut ordinary_work()).map_err(ordinary_error)?,
+        Arc::new(Delivery::new(recorded.clone(), &mut ordinary_work())?),
+        &mut ordinary_work(),
+    )?;
+    let held = watch.shared.root.clone();
+    let mount = held.join(".volumes").join("scratch");
+    for flag in [MOUNT, UNMOUNT] {
+        watch.inject(&mount, flag | ITEM_IS_DIR);
+    }
+    let rebound = HostChange::Rebound(PathBuf::from(".volumes/scratch"));
+    assert_eq!(
+        *recorded.0.lock().map_err(|_| "poisoned")?,
+        [rebound.clone(), rebound]
+    );
+    recorded.0.lock().map_err(|_| "poisoned")?.clear();
+    let parent = held.parent().ok_or("root has a parent")?;
+    watch.inject(parent, MOUNT);
+    watch.inject(&mount, KERNEL_DROPPED);
+    assert_eq!(
+        *recorded.0.lock().map_err(|_| "poisoned")?,
+        [HostChange::Everything, HostChange::Everything]
+    );
+    recorded.0.lock().map_err(|_| "poisoned")?.clear();
+    watch.inject(&held, MOUNT);
+    assert_eq!(
+        *recorded.0.lock().map_err(|_| "poisoned")?,
+        [HostChange::Everything]
+    );
+    Ok(())
+}

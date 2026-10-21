@@ -334,7 +334,7 @@ enum NativeWatchDriver {
     StartupFailure(Arc<crate::source_watch::SourceWatchStartupFailure>),
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
     fn logical_owned_bytes(&self) -> u64 {
         0
@@ -356,7 +356,9 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Inotify reports exact changes through its event sink; a root hint
+/// invalidates only when the host lost them.
+#[cfg(target_os = "linux")]
 fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
     state: &Mutex<SharedState>,
     changes: &[crate::source_watch::HostChange],
@@ -368,9 +370,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
             items_examined: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        if cfg!(target_os = "macos")
-            || matches!(change, crate::source_watch::HostChange::Everything)
-        {
+        if matches!(change, crate::source_watch::HostChange::Everything) {
             state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
@@ -378,6 +378,85 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
         }
     }
     Ok(())
+}
+
+/// FSEvents reports only hints, so a change to the captured tree requires a
+/// rescan. A change beneath an excluded subtree is not part of that tree, and
+/// the fence cookie written there confirms that every earlier change was
+/// delivered: a quiet command never rescans, so it never reads files it did
+/// not touch.
+#[cfg(target_os = "macos")]
+struct RootHints {
+    root: PathBuf,
+    shared: Arc<Mutex<SharedState>>,
+    fenced: Arc<Condvar>,
+    _root_allocation: Option<crate::NativeAllocation>,
+}
+
+#[cfg(target_os = "macos")]
+impl RootHints {
+    fn accept<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        changes: &[crate::source_watch::HostChange],
+        work: &mut W,
+    ) -> Result<(), crate::demand::DemandError> {
+        use crate::source_watch::HostChange;
+        work.check()?;
+        let mut state = self
+            .shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        for change in changes {
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let relative = match change {
+                HostChange::Rebound(relative) | HostChange::Altered(relative) => {
+                    Some(relative.as_path())
+                }
+                HostChange::Everything | HostChange::Unconfirmed => None,
+            };
+            let beneath = |host: &Path| {
+                relative.is_some_and(|relative| {
+                    host.strip_prefix(&self.root).is_ok_and(|host| {
+                        !host.as_os_str().is_empty() && relative.starts_with(host)
+                    })
+                })
+            };
+            if state.fence.as_deref().is_some_and(beneath) {
+                state.fence = None;
+                self.fenced.notify_all();
+            } else if !state.excluded.iter().any(|excluded| beneath(excluded)) {
+                state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+                self.fenced.notify_all();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl crate::source_watch::HostChangeSink for RootHints {
+    fn logical_owned_bytes(&self) -> u64 {
+        size_of::<Self>() as u64 + self.root.capacity() as u64
+    }
+
+    fn host_changed(
+        &self,
+        changes: &[crate::source_watch::HostChange],
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.accept(changes, work)
+    }
+
+    fn host_changed_with_native_work(
+        &self,
+        changes: &[crate::source_watch::HostChange],
+        work: &mut crate::NativeMaterializationWork,
+    ) -> Result<(), crate::demand::DemandError> {
+        self.accept(changes, work)
+    }
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1646,7 +1725,14 @@ impl NativeWatch {
         let source_result = if use_adapter {
             None
         } else {
-            let sink = Arc::clone(&shared);
+            let (hint_root, hint_allocation) = Self::copy_startup_path(&root, work, original)?;
+            Self::startup_control(work)?;
+            let sink = Arc::new(RootHints {
+                root: hint_root,
+                shared: Arc::clone(&shared),
+                fenced: Arc::clone(&fenced),
+                _root_allocation: hint_allocation,
+            });
             Some(crate::source_watch::NativeSourceWatch::start(
                 held, sink, work,
             ))
@@ -2934,6 +3020,11 @@ impl NativeWatch {
                 .map_err(demand_watch_error)?;
         }
         let delivered = match &self.watcher {
+            #[cfg(target_os = "macos")]
+            NativeWatchDriver::Source(_) => {
+                self.fence_fsevents(timeout.saturating_sub(started.elapsed()), work)?
+            }
+            #[cfg(not(target_os = "macos"))]
             NativeWatchDriver::Source(watcher) => watcher
                 .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
                 .map_err(demand_watch_error)?,
@@ -2973,6 +3064,29 @@ impl NativeWatch {
         drop(state);
         self.fenced.notify_all();
         Ok(())
+    }
+
+    /// FSEvents cannot report that it delivered everything up to now. A
+    /// cookie in an excluded subtree can, because one stream delivers in
+    /// event order.
+    #[cfg(target_os = "macos")]
+    fn fence_fsevents<W: crate::demand::SourceDemandReadWork>(
+        &mut self,
+        timeout: Duration,
+        work: &mut W,
+    ) -> Result<bool, NativeWatchError> {
+        if let NativeWatchDriver::Source(watcher) = &self.watcher {
+            watcher
+                .take_failure_with_work(work)
+                .map_err(demand_watch_error)?;
+        }
+        let cookie = self.fence_cookie_path()?;
+        work.started_io(WorkCounters {
+            backend_write_operations: 2,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(demand_watch_error)?;
+        self.await_cookie(&cookie, timeout)
     }
 
     fn root_unchanged_with_work<W: crate::demand::SourceDemandReadWork>(
@@ -3044,6 +3158,12 @@ impl NativeWatch {
             crate::native_capture::host_path_to_namespace(relative, self.profile, self.limits)
                 .map_err(|_| NativeWatchError::UnrepresentablePath)?;
         self.watch_directory(&directory)?;
+        self.fence_cookie_path()
+    }
+
+    /// Names a fresh cookie in the preferred excluded subtree.
+    fn fence_cookie_path(&mut self) -> Result<PathBuf, NativeWatchError> {
+        let host_directory = self.fence_directory()?;
         self.fences = self.fences.wrapping_add(1);
         Ok(host_directory.join(format!(
             ".acyclic-fence-{}-{}",
