@@ -253,5 +253,6 @@ pub use readonly::TaskAdmissionReadonlyWitness;
 mod workflow;
 pub use volumes::TaskVolumeSnapshot;
 
-#[cfg(all(test, feature = "filesystem"))]
-pub(crate) mod tests;
+#[cfg(all(any(test, feature = "test-support"), feature = "filesystem"))]
+#[doc(hidden)]
+pub mod tests;

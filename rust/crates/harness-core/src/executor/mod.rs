@@ -380,12 +380,14 @@ impl ToolFailureKind {
 }
 
 #[cfg(feature = "filesystem")]
-pub(crate) use crate::filesystem::PreparationIo;
+#[doc(hidden)]
+pub use crate::filesystem::PreparationIo;
 
 #[cfg(not(feature = "filesystem"))]
 pub(crate) type PreparationIo = ();
 
-pub(crate) fn with_history_io<T>(
+#[doc(hidden)]
+pub fn with_history_io<T>(
     io: Option<&PreparationIo>,
     run: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> T,
 ) -> T {

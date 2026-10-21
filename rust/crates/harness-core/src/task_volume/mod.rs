@@ -286,18 +286,21 @@ impl<P: StreamProvider + ?Sized> TaskVolume<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn shares_provider(&self, provider: &Arc<P>) -> bool {
+    #[doc(hidden)]
+    pub fn shares_provider(&self, provider: &Arc<P>) -> bool {
         Arc::ptr_eq(&self.provider, provider)
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn file_volume(&self, key: &FileKey) -> Result<Self> {
+    #[doc(hidden)]
+    pub async fn file_volume(&self, key: &FileKey) -> Result<Self> {
         Self::open(self.provider.clone(), self.file_volume_path(key).await?).await
     }
 
     /// The stream of `key`'s file volume, which may not exist yet.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn file_volume_path(&self, key: &FileKey) -> Result<StreamPath> {
+    #[doc(hidden)]
+    pub async fn file_volume_path(&self, key: &FileKey) -> Result<StreamPath> {
         // A separate file stream cannot contend with unrelated parent-volume writes.
         // Release the parent index before opening/locking the child volume.
         let identity = {

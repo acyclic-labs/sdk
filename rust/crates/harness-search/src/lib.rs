@@ -1,4 +1,19 @@
+#![deny(unsafe_code)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "unit tests run ordered scenarios over fixtures they built"
+    )
+)]
 //! Provider-neutral web search, with credentials confined to the host.
+//!
+//! Depend on `acyclic-harness`; it re-exports this crate as `search`.
+
+// The core's items keep their `crate::` paths here, as in the facade.
+use acyclic_harness_core::*;
 
 use crate::{Error, Result};
 use acyclic_stream::BoxProviderFuture;
@@ -11,6 +26,9 @@ pub mod files;
 mod http;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod native;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(all(

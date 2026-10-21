@@ -139,6 +139,7 @@ dependencies = [
  "acyclic-actors",
  "acyclic-fs",
  "acyclic-harness-core",
+ "acyclic-harness-search",
  "acyclic-native-runtime",
  "acyclic-stream",
  "arrayvec",
@@ -246,6 +247,24 @@ version = "0.0.0"
 dependencies = [
  "acyclic-harness-providers",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "acyclic-harness-search"
+version = "0.2.0"
+dependencies = [
+ "acyclic-fs",
+ "acyclic-harness-core",
+ "acyclic-stream",
+ "async-trait",
+ "bytes",
+ "futures",
+ "hex",
+ "http",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

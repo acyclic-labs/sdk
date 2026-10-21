@@ -22,7 +22,8 @@ use quota::finish_encoding;
 pub(crate) use quota::native_decoded;
 pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
-pub(crate) use records::{UploadRecord, preparation_slot_bytes};
+pub use records::UploadRecord;
+pub(crate) use records::preparation_slot_bytes;
 use records::{decode_allowance_error, decode_allowance_with_code};
 pub(in crate::filesystem) use sdk::{
     content_workspace, create, generation_ref, operation_key, retain,
@@ -145,7 +146,8 @@ impl PreparationIo {
         }
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
+    #[doc(hidden)]
+    pub fn into_native_custody(self, retained: u64) -> Result<acyclic_fs::NativeAllocation> {
         #[cfg(test)]
         acyclic_test_support::differential::record(("custody-transfer", retained));
         let Self::Native { custody, .. } = self else {
@@ -351,7 +353,8 @@ impl PreparationIo {
             result
         })
     }
-    pub(crate) fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {
+    #[doc(hidden)]
+    pub fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {
         self.account(|accounting| accounting.remaining())
     }
     pub(crate) fn retain_owned(&self, bytes: u64) -> std::result::Result<(), acyclic_fs::FsError> {

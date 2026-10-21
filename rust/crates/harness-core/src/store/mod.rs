@@ -20,7 +20,8 @@ pub(crate) mod history;
 
 pub use checkpoints::{DEFAULT_PROJECTION_EVENTS, default_projection_read_limits};
 
-pub(crate) mod operations;
+#[doc(hidden)]
+pub mod operations;
 
 mod guarded;
 

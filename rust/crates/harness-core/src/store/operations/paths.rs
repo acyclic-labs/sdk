@@ -116,7 +116,8 @@ pub(in crate::store) fn publication_path(
 }
 
 /// Freezes a producer-retained vector without replacing its original claim.
-pub(crate) fn owned_bytes_from_retained_vec(
+#[doc(hidden)]
+pub fn owned_bytes_from_retained_vec(
     bytes: Vec<u8>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(OwnedBytes, u64)> {

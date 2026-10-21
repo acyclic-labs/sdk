@@ -140,7 +140,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence) {
+    #[doc(hidden)]
+    pub fn task_binding(&self) -> (TaskId, &crate::scheduler::LeaseFence) {
         (self.task_id(), &self.fence)
     }
 
@@ -251,7 +252,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn stream(&self) -> Arc<P> {
+    #[doc(hidden)]
+    pub fn stream(&self) -> Arc<P> {
         self.host.stream.clone()
     }
 

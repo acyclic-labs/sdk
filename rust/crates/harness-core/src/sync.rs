@@ -1,8 +1,10 @@
 //! Synchronization selected only by the dedicated model command's cfg.
 #[cfg(acyclic_loom)]
-pub(crate) use acyclic_stream::query_sync::Mutex;
+#[doc(hidden)]
+pub use acyclic_stream::query_sync::Mutex;
 #[cfg(not(acyclic_loom))]
-pub(crate) use tokio::sync::Mutex;
+#[doc(hidden)]
+pub use tokio::sync::Mutex;
 
 #[path = "sync/mutex.rs"]
 mod mutex;

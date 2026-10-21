@@ -1,0 +1,56 @@
+[package]
+include = ["clippy.toml", "Cargo.toml", "src/**"]
+name = "acyclic-harness-search"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Provider-neutral web search behind the acyclic-harness facade"
+documentation = "https://docs.rs/acyclic-harness-search"
+
+[features]
+test-support = ["acyclic-harness-core/test-support"]
+filesystem = ["acyclic-harness-core/filesystem", "dep:hex"]
+search-http = ["acyclic-harness-core/search-http", "dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util"]
+
+[dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex = { workspace = true, optional = true }
+http.workspace = true
+schemars = "=1.2.2"
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true, features = ["unbounded_depth", "raw_value"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync", "time"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest = { workspace = true, optional = true }
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http1"], optional = true }
+hyper-util = { workspace = true, optional = true }
+http-body-util = { version = "0.1.3", optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring"], optional = true }
+keyring = { version = "3.6.3", optional = true, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+
+[dev-dependencies]
+jsonschema.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support", "filesystem-local"] }
+acyclic-harness-search = { version = "=0.2.0", path = ".", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
+hex.workspace = true
+loom = "0.7.2"
+tempfile = "3.27.0"
+tokio = { workspace = true, features = ["test-util", "process"] }
+
+[lints]
+workspace = true

@@ -3,7 +3,8 @@
 use crate::wire::ErrorCode::{Conflict, Invalid};
 use crate::{Error, NativeCustody, Result};
 
-pub(crate) fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
+#[doc(hidden)]
+pub fn allocation(work: crate::NativeWork<'_>, bytes: usize) -> Result<NativeCustody> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         return Ok(Some(work.claim(
@@ -106,11 +107,8 @@ fn allocation_error(
     }
 }
 
-pub(crate) fn reserve_vec<T>(
-    work: &mut NativeCustody,
-    value: &mut Vec<T>,
-    length: usize,
-) -> Result<()> {
+#[doc(hidden)]
+pub fn reserve_vec<T>(work: &mut NativeCustody, value: &mut Vec<T>, length: usize) -> Result<()> {
     if length <= value.capacity() {
         return Ok(());
     }
@@ -130,11 +128,8 @@ pub(crate) fn reserve_vec<T>(
     capacity(work, requested, value.capacity() * slots, old)
 }
 
-pub(crate) fn reserve_string(
-    work: &mut NativeCustody,
-    value: &mut String,
-    length: usize,
-) -> Result<()> {
+#[doc(hidden)]
+pub fn reserve_string(work: &mut NativeCustody, value: &mut String, length: usize) -> Result<()> {
     if length <= value.capacity() {
         return Ok(());
     }
@@ -147,7 +142,8 @@ pub(crate) fn reserve_string(
     capacity(work, length, value.capacity(), old)
 }
 
-pub(crate) fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
+#[doc(hidden)]
+pub fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(custody) = work {
         custody.work().charge(acyclic_fs::WorkCounters {

@@ -28,7 +28,7 @@ fn sole_highlight_moves_its_pointer_and_custody_without_copying() -> Result<()> 
         );
         assert_eq!(
             result.1.as_ref().unwrap().bytes(),
-            crate::search::native::response_bytes(&result.0)?
+            crate::native::response_bytes(&result.0)?
         );
         assert!(result.1.as_ref().unwrap().work().shares_ledger(&work));
         drop(result);

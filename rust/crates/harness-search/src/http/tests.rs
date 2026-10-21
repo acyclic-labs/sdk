@@ -1,5 +1,5 @@
 use super::*;
-use crate::search::SearchResult;
+use crate::SearchResult;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

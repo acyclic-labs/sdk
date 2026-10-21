@@ -45,14 +45,14 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
-test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support"]
+test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-harness-search/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 # Native presentation only; this does not select providers or grant authority.
 terminal = ["dep:hex", "dep:acyclic-markdown", "dep:ratatui", "acyclic-harness-core/terminal"]
 wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/wasm"]
 # Provider adapters. Each pulls only its own SDK family.
-filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem"]
+filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "acyclic-harness-core/filesystem", "acyclic-harness-search/filesystem"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-stream/local", "dep:dirs", "dep:getrandom", "dep:tempfile", "acyclic-harness-core/filesystem-local"]
 # Explicit native host composition; portable defaults never select it.
 native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-harness-core/native-execution"]
@@ -61,7 +61,7 @@ hooks = ["dep:regex-lite", "dep:toml", "acyclic-harness-core/hooks"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
 mcp-http = ["dep:reqwest", "dep:toml", "acyclic-harness-core/mcp-http"]
 mcp-stdio = ["tokio/process", "tokio/io-util", "dep:toml", "dep:which", "acyclic-harness-core/mcp-stdio"]
-search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util", "acyclic-harness-core/search-http"]
+search-http = ["dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util", "acyclic-harness-core/search-http", "acyclic-harness-search/search-http"]
 mcp-oauth = ["rmcp/auth", "rmcp/reqwest-tls-no-provider", "dep:rustls", "acyclic-harness-core/mcp-oauth"]
 objects = ["dep:acyclic-objects", "acyclic-harness-core/objects"]
 machines = ["dep:acyclic-machines", "acyclic-harness-core/machines"]
@@ -72,6 +72,7 @@ once_cell = "1.21.3"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core" }
+acyclic-harness-search = { version = "=0.2.0", path = "../harness-search" }
 acyclic-harness-tui = { version = "=0.2.0", path = "../harness-tui", default-features = false, optional = true }
 arrayvec = { version = "0.7.8", default-features = false }
 async-trait.workspace = true
@@ -132,6 +133,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["signal", "i
 
 [dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support"] }
+acyclic-harness-search = { version = "=0.2.0", path = "../harness-search", features = ["test-support"] }
 acyclic-test-support = { path = "../test-support" }
 proc-macro2 = "=1.0.107"
 syn = { version = "=3.0.6", features = ["full", "visit"] }

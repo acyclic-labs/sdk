@@ -1,6 +1,7 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
 pub use acyclic_harness_core::test_support::*;
+pub use acyclic_harness_search::test_support::{ScriptedSearch, ScriptedSearchProvider};
 
 mod client_views;
 pub use client_views::empty_client_views;

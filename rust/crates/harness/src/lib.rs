@@ -20,6 +20,8 @@
 // Everything below the client and host compositions lives in
 // `acyclic-harness-core`; its public items keep their paths here.
 pub use acyclic_harness_core::*;
+/// Provider-neutral web search, with credentials confined to the host.
+pub use acyclic_harness_search as search;
 
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]

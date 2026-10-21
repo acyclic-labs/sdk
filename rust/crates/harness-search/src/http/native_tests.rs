@@ -1,5 +1,5 @@
 use super::*;
-use crate::search::native::response_bytes;
+use crate::native::response_bytes;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt as _;

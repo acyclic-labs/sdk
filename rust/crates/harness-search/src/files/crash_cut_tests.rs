@@ -2,10 +2,8 @@
 //! directory with a replacement owner, and check recovery against the disk
 //! state found at reopen, never against the candidate's own result.
 use super::*;
-use crate::test_support::{
-    ScriptedSearch, ScriptedSearchProvider,
-    crash_cuts::{Cut, enumerate},
-};
+use crate::test_support::{ScriptedSearch, ScriptedSearchProvider};
+use acyclic_harness_core::test_support::crash_cuts::{Cut, enumerate};
 use acyclic_stream::{LocalStream, StreamPath};
 use std::cell::Cell;
 

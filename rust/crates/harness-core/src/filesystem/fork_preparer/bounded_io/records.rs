@@ -74,7 +74,8 @@ pub trait PreparationRecord: serde::de::DeserializeOwned {
     }
 }
 
-pub(crate) trait UploadRecord: serde::de::DeserializeOwned {
+#[doc(hidden)]
+pub trait UploadRecord: serde::de::DeserializeOwned {
     fn logical_owned_bytes(&self) -> Result<u64>;
     fn diagnostic_label_bytes() -> u64 {
         crate::executor::json::preparation_serde_diagnostic_label_bytes()

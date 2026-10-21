@@ -109,7 +109,8 @@ impl PreparationIo {
             maximum_depth: depth,
         })
     }
-    pub(crate) fn encode<T: Serialize>(
+    #[doc(hidden)]
+    pub fn encode<T: Serialize>(
         &self,
         value: &T,
         maximum: u64,
@@ -197,7 +198,8 @@ impl PreparationIo {
         finish_decode(self, result, admission)
     }
 
-    pub(crate) fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
+    #[doc(hidden)]
+    pub fn decode_json<T: UploadRecord>(&self, bytes: &[u8]) -> Result<T> {
         let code = self
             .original_native_work()
             .is_some()
@@ -331,7 +333,8 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn value_decode<T: UploadRecord>(
+    #[doc(hidden)]
+    pub fn value_decode<T: UploadRecord>(
         &self,
         value: &serde_json::Value,
         code: crate::wire::ErrorCode,
@@ -418,7 +421,8 @@ impl PreparationIo {
         )
     }
 
-    pub(crate) fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {
+    #[doc(hidden)]
+    pub fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {
         let next = match charge {
             Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),
             Charge::Release { bytes } => return self.release(bytes).map_err(Into::into),

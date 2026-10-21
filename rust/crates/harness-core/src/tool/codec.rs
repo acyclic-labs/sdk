@@ -56,7 +56,8 @@ pub(crate) fn clone_value(
 }
 
 /// Builds the canonical result under its byte limit and optional ledger.
-pub(crate) fn value<T: Serialize>(
+#[doc(hidden)]
+pub fn value<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
     work: crate::NativeWork<'_>,

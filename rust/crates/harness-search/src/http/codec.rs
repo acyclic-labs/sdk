@@ -1,9 +1,6 @@
 use super::{ExaResponse, TinyFishResponse};
 use crate::tool::edit::{allocation, charge, reserve_string, reserve_vec};
-use crate::{
-    NativeCustody, NativeWork, Result,
-    search::{SearchResponse, SearchResult, error},
-};
+use crate::{NativeCustody, NativeWork, Result, SearchResponse, SearchResult, error};
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::filesystem::UploadRecord as Record;
@@ -12,17 +9,14 @@ use serde::de::DeserializeOwned as Record;
 
 fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCustody)> {
     if bytes.len() > super::MAXIMUM_RESPONSE_BYTES {
-        return Err(crate::search::rejection(
-            work,
-            "search response exceeds byte limit",
-        ));
+        return Err(crate::rejection(work, "search response exceeds byte limit"));
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         let decoded: T = io.decode_json(bytes).map_err(|failure| match failure {
             crate::Error::NativeJsonAdmission { .. } | crate::Error::NativeJson { .. } => {
-                crate::search::rejection(Some(work), "invalid search response")
+                crate::rejection(Some(work), "invalid search response")
             }
             failure => failure,
         })?;
@@ -56,7 +50,7 @@ fn finish(
         // Raw DTO containers and unused sources have dropped. Moved strings
         // retain their existing ledger; only the final output capacity remains.
         output.absorb(input)?;
-        output.resize(crate::search::native::response_bytes(&paid.0)?)?;
+        output.resize(crate::native::response_bytes(&paid.0)?)?;
     }
     let _ = &mut paid;
     Ok((paid.0, paid.1))
@@ -146,7 +140,7 @@ pub(super) fn tinyfish(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl Record for ExaResponse {
     fn diagnostic_label_bytes() -> u64 {
-        crate::search::native::labels()
+        crate::native::labels()
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let initial = (self.results.capacity() as u64)
@@ -172,7 +166,7 @@ impl Record for ExaResponse {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl Record for TinyFishResponse {
     fn diagnostic_label_bytes() -> u64 {
-        crate::search::native::labels()
+        crate::native::labels()
     }
     fn logical_owned_bytes(&self) -> Result<u64> {
         let initial = (self.results.capacity() as u64)

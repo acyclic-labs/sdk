@@ -12,10 +12,8 @@ pub mod admission_work;
 #[doc(hidden)]
 pub mod crash_cuts;
 mod scripted;
-mod search;
 #[cfg(feature = "test-support")]
 mod task_volume_work;
-pub use search::{ScriptedSearch, ScriptedSearchProvider};
 
 pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,

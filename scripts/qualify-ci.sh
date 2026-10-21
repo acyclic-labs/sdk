@@ -186,11 +186,11 @@ web_warning_closures() {
   local features
   for features in browser wasm browser,test-support wasm,test-support; do
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
   done
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-    cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
+    cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
       --target wasm32-unknown-unknown --lib
 }
 
@@ -206,12 +206,12 @@ case "$lane" in
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core --features model-checking --lib
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features model-checking --lib
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem-local,model-checking --lib
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem-local,model-checking --lib
     # Unit tests compile without optional native features, so a test seam
     # cannot cross a feature gate the all-features suites never close.
-    cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem --lib --tests
+    cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
       harness_tests -p acyclic-harness --features model-checking \
         --test client-mailbox-model --test client_journal_model
@@ -419,7 +419,7 @@ case "$lane" in
   wasm-tests)
     # Compile target-specific test code without a browser or native dev-deps.
     for features in browser,test-support wasm,test-support; do
-      cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
     done
     ;;
@@ -434,7 +434,7 @@ case "$lane" in
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
       --all-targets --all-features --locked -- -D warnings
-    cargo clippy -p acyclic-harness -p acyclic-harness-core --features wasm \
+    cargo clippy -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
     cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
       --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings

@@ -20,7 +20,8 @@ use std::sync::Arc;
 mod codec;
 pub(crate) use codec::*;
 mod paths;
-pub(crate) use paths::*;
+#[doc(hidden)]
+pub use paths::*;
 mod publication;
 pub(crate) use publication::*;
 mod sdk;

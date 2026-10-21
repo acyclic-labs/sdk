@@ -33,12 +33,12 @@ const withTests = [
   // Inference without its gRPC host, as the browser build uses it.
   ["-p", "acyclic-inference", "--no-default-features"],
   // Harness host runtime alone, then each provider adapter feature alone.
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "filesystem"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "filesystem-local"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "objects"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "machines"],
-  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "grpc"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "filesystem-local"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "objects"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "machines"],
+  ["-p", "acyclic-harness", "-p", "acyclic-harness-core", "-p", "acyclic-harness-search", "--features", "grpc"],
   // The conformance runner and its native-mount qualification binaries.
   ["-p", "acyclic-conformance"],
   ["-p", "acyclic-conformance", "--features", "local-runner"],

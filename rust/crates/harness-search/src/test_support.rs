@@ -1,7 +1,4 @@
-use crate::{
-    Error, Result,
-    search::{SearchProvider, SearchRequest, SearchResponse},
-};
+use crate::{Error, Result, SearchProvider, SearchRequest, SearchResponse};
 use acyclic_stream::BoxProviderFuture;
 use serde::Deserialize;
 use std::{collections::VecDeque, sync::Mutex};
@@ -72,21 +69,15 @@ impl SearchProvider for ScriptedSearchProvider {
             let mut steps = self.steps.lock().unwrap_or_else(|p| p.into_inner());
             let step = steps
                 .front()
-                .ok_or_else(|| crate::search::error(Some(work), "scripted search exhausted"))?;
+                .ok_or_else(|| crate::error(Some(work), "scripted search exhausted"))?;
             if &step.request != request {
-                return Err(crate::search::error(
-                    Some(work),
-                    "scripted search request mismatch",
-                ));
+                return Err(crate::error(Some(work), "scripted search request mismatch"));
             }
             let response = match &step.response {
-                Some(response) => crate::search::native::copy_response(response, work)?,
+                Some(response) => crate::native::copy_response(response, work)?,
                 None => {
                     steps.pop_front();
-                    return Err(crate::search::rejection(
-                        Some(work),
-                        "scripted search rejected",
-                    ));
+                    return Err(crate::rejection(Some(work), "scripted search rejected"));
                 }
             };
             steps.pop_front();

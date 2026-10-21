@@ -7,25 +7,26 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
 };
 
-pub(crate) struct Fixture<
+#[doc(hidden)]
+pub struct Fixture<
     P: StreamProvider = MemoryStream,
     A = MemoryAuthorityBackend,
     O = MemoryObjectBackend,
 > {
-    pub(crate) stream: Arc<P>,
+    pub stream: Arc<P>,
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    pub(crate) backend: Fs<A, O>,
-    pub(crate) files: Arc<FilesystemHost<A, O>>,
-    pub(crate) issuer: AuthorityIssuer,
-    pub(crate) host: Arc<CoordinatorTaskHost<P>>,
+    pub backend: Fs<A, O>,
+    pub files: Arc<FilesystemHost<A, O>>,
+    pub issuer: AuthorityIssuer,
+    pub host: Arc<CoordinatorTaskHost<P>>,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) destination: VolumeRef,
-    pub(crate) storage: VolumeRef,
-    pub(crate) reader: Arc<FilesystemContentVerifier<A, O>>,
-    pub(crate) publisher: Arc<FilesystemContentPublisher<A, O>>,
-    pub(crate) task: ComponentIdentity,
-    pub(crate) machine: MachineIdentity,
-    pub(crate) schema: Value,
+    pub destination: VolumeRef,
+    pub storage: VolumeRef,
+    pub reader: Arc<FilesystemContentVerifier<A, O>>,
+    pub publisher: Arc<FilesystemContentPublisher<A, O>>,
+    pub task: ComponentIdentity,
+    pub machine: MachineIdentity,
+    pub schema: Value,
 }
 
 impl<P, A, O> Fixture<P, A, O>
@@ -34,7 +35,7 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
+    pub async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host
             .recover_work(TaskId::from_bytes([byte; 16]), &mut None)
@@ -55,7 +56,7 @@ where
             .await
     }
 
-    pub(crate) fn execution(
+    pub fn execution(
         &self,
         owner: TaskJournalOwner<P>,
         operation: OperationId,
@@ -75,7 +76,7 @@ where
         )
     }
 
-    pub(crate) fn workflow(&self, owner: TaskJournalOwner<P>) -> Result<Arc<Workflow<P, A, O>>> {
+    pub fn workflow(&self, owner: TaskJournalOwner<P>) -> Result<Arc<Workflow<P, A, O>>> {
         Workflow::for_task(
             Arc::new(owner),
             self.files.clone(),
@@ -89,7 +90,8 @@ where
         )
     }
 
-    pub(crate) async fn replace(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
+    #[doc(hidden)]
+    pub async fn replace(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let task = TaskId::from_bytes([byte; 16]);
         self.host
             .suspend_workflow(
@@ -125,12 +127,14 @@ where
         self.owner(byte).await
     }
 
-    pub(crate) async fn running(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
+    #[doc(hidden)]
+    pub async fn running(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         self.host.admit(self.admission(byte, json!(0))).await?;
         self.claim(byte, "original").await?;
         self.owner(byte).await
     }
-    pub(crate) async fn new(
+    #[doc(hidden)]
+    pub async fn new(
         stream: Arc<P>,
         backend: Fs<A, O>,
         schema: Value,
@@ -228,7 +232,7 @@ where
         )?);
         #[cfg(target_arch = "wasm32")]
         let metadata_io = None;
-        let (task, machine, tasks, machines) = super::created_fixture::test_registries(
+        let (task, machine, tasks, machines) = test_registries(
             implementation,
             schema.clone(),
             schema.clone(),
@@ -299,7 +303,7 @@ where
         })
     }
 
-    pub(crate) fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
+    pub fn admission(&self, byte: u8, input: Value) -> TaskAdmissionRecord {
         TaskAdmissionRecord {
             operation_id: OperationId::from_bytes([byte; 16]),
             resource_proofs: Vec::new(),
@@ -318,11 +322,7 @@ where
         }
     }
 
-    pub(crate) async fn claim(
-        &self,
-        byte: u8,
-        worker: &str,
-    ) -> Result<crate::distributed::WorkLease> {
+    pub async fn claim(&self, byte: u8, worker: &str) -> Result<crate::distributed::WorkLease> {
         let crate::distributed::WorkPull::Claimed(lease) = self
             .host
             .pull_work(
@@ -342,7 +342,7 @@ where
         Ok(lease)
     }
 
-    pub(crate) async fn reopen(
+    pub async fn reopen(
         &self,
         issuer: &AuthorityIssuer,
         subject: &str,
@@ -388,7 +388,7 @@ where
         Ok(Arc::new(host))
     }
 
-    pub(crate) fn batch(&self, byte: u8, parent: Option<TaskId>) -> DurableBatchRequest {
+    pub fn batch(&self, byte: u8, parent: Option<TaskId>) -> DurableBatchRequest {
         DurableBatchRequest {
             group_id: GroupId::from_bytes([9; 16]),
             batch_id: BatchId::from_bytes([byte; 16]),
@@ -406,7 +406,7 @@ where
     }
 }
 
-pub(super) async fn fixture() -> Result<Fixture> {
+pub async fn fixture() -> Result<Fixture> {
     Fixture::new(
         Arc::new(MemoryStream::default()),
         Fs::memory(),
@@ -417,9 +417,9 @@ pub(super) async fn fixture() -> Result<Fixture> {
     .await
 }
 
-pub(super) struct FixtureMachine {
-    pub(super) identity: MachineIdentity,
-    pub(super) schema: Value,
+pub struct FixtureMachine {
+    pub identity: MachineIdentity,
+    pub schema: Value,
 }
 impl ResumableMachine for FixtureMachine {
     fn identity(&self) -> &MachineIdentity {
@@ -527,4 +527,50 @@ impl FixtureMachine {
             status: MachineStatus::Suspended,
         })
     }
+}
+
+#[doc(hidden)]
+pub fn test_registries(
+    machine: Arc<dyn ResumableMachine>,
+    input: Value,
+    output: Value,
+    _native_io: Option<&crate::filesystem::PreparationIo>,
+) -> Result<(
+    ComponentIdentity,
+    MachineIdentity,
+    crate::runtime::TaskRegistry,
+    MachineRegistry,
+)> {
+    let identity = machine.identity().clone();
+    let definition = {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) =
+            _native_io.and_then(crate::filesystem::PreparationIo::original_native_work)
+        {
+            let (input, mut custody) = crate::tool::clone_value(&input, None, work)?;
+            let (output, mut output_custody) = crate::tool::clone_value(&output, None, work)?;
+            custody.absorb(&mut output_custody)?;
+            crate::runtime::TaskDefinition::<Value, Value>::resumable_with_native_work(
+                machine.clone(),
+                input,
+                output,
+                custody,
+                work,
+            )?
+        } else {
+            crate::runtime::TaskDefinition::<Value, Value>::resumable(
+                machine.clone(),
+                input,
+                output,
+            )?
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::runtime::TaskDefinition::<Value, Value>::resumable(machine.clone(), input, output)?
+    };
+    let task = definition.identity().clone();
+    let mut tasks = crate::runtime::TaskRegistry::default();
+    tasks.register(definition)?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine, &mut None)?;
+    Ok((task, identity, tasks, machines))
 }
