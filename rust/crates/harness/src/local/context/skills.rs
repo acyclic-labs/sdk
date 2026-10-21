@@ -54,12 +54,11 @@ impl LocalHarness {
         // Instructions already selected this generation. Reuse it both for
         // consistency and to keep cache hits free of authority stream reads.
         let observed;
-        let generation = match generation {
-            Some(generation) => generation,
-            None => {
-                observed = self.files.resolve(&workspace, None).await?.generation;
-                &observed
-            }
+        let generation = if let Some(generation) = generation {
+            generation
+        } else {
+            observed = self.files.resolve(&workspace, None).await?.generation;
+            &observed
         };
         let mut cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
         if let Some((cached, skills)) = &*cache
@@ -79,14 +78,15 @@ impl LocalHarness {
             (skills, work) = sources.user_discovery().await?;
         }
         for directory in PROJECT_ROOTS {
-            match self
+            if let Err(error) = self
                 .files
                 .stat(&workspace, Some(generation), &format!("/{directory}"))
                 .await
             {
-                Ok(_) => {}
-                Err(Error::NotFound(_)) => continue,
-                Err(error) => return Err(error),
+                if matches!(error, Error::NotFound(_)) {
+                    continue;
+                }
+                return Err(error);
             }
             let root = ContextRoot {
                 volume: self.project.clone(),

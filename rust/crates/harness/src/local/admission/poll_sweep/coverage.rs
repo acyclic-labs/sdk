@@ -77,7 +77,10 @@ fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
     // The initial context now probes two optional skill roots once per project
     // generation. Derive that incremental cost from independent filesystem
     // operations; never copy a count from the run being checked.
-    *expected.get_mut("stream:read:ready").unwrap() += skill_reads::cold_root_reads(scenario)?;
+    let ready = expected.get_mut("stream:read:ready").ok_or_else(|| {
+        Error::Storage("reviewed boundary manifest has no ready-read count".into())
+    })?;
+    *ready += skill_reads::cold_root_reads(scenario)?;
     Ok(expected)
 }
 
