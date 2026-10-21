@@ -59,7 +59,7 @@ pub(super) fn proc_fd_path(descriptor: i32) -> ([u8; 24], usize) {
     reason = "Ancestor registration keeps its admitted allocations and rollback in one frame."
 )]
 pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
-    inotify: &OwnedFd,
+    watch: &Shared,
     root: &OwnedFd,
     ancestors: &mut Vec<(i32, std::ffi::OsString)>,
     retained: &mut u64,
@@ -151,36 +151,46 @@ pub(super) fn watch_ancestors<W: SourceDemandReadWork>(
             let mut c_path = Vec::with_capacity(length);
             c_path.extend_from_slice(parent.as_os_str().as_bytes());
             c_path.push(0);
+            let hub = hub::hub()?;
             let registered = (|| {
                 work.started_io(READ)?;
-                // SAFETY: the complete NUL-terminated path lives through registration.
-                let descriptor = unsafe {
-                    libc::inotify_add_watch(inotify.as_raw_fd(), c_path.as_ptr().cast(), ANCESTRAL)
-                };
-                if descriptor < 0 {
-                    Err(DemandError::from(io::Error::last_os_error()))
-                } else {
-                    Ok(descriptor)
-                }
+                let c_path = std::ffi::CStr::from_bytes_with_nul(&c_path)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+                hub.add(watch, c_path, ANCESTRAL, hub::Interest::Named(&pending))
+                    .map_err(DemandError::from)
             })();
             drop(c_path);
-            work.release(bytes)?;
+            let released = work.release(bytes);
             let descriptor = registered?;
-            let mut prior = None;
-            for (index, (watched, _)) in ancestors.iter().enumerate() {
-                work.started_io(ITEM)?;
-                if *watched == descriptor {
-                    prior = Some(index);
-                    break;
+            // Until listed, the registration withdraws here on failure.
+            let listed = released.and_then(|()| {
+                let mut prior = None;
+                for (index, (watched, _)) in ancestors.iter().enumerate() {
+                    work.started_io(ITEM)?;
+                    if *watched == descriptor {
+                        prior = Some(index);
+                        break;
+                    }
                 }
-            }
+                Ok(prior)
+            });
+            let prior = match listed {
+                Ok(prior) => prior,
+                Err(error) => {
+                    hub.remove(watch.subscriber, descriptor, hub::Interest::Named(&pending))?;
+                    return Err(error);
+                }
+            };
             if let Some(index) = prior {
                 let prior = ancestors
                     .get_mut(index)
                     .ok_or(DemandError::InvalidRequest)?;
+                if prior.1 != pending {
+                    hub.remove(watch.subscriber, descriptor, hub::Interest::Named(&prior.1))?;
+                }
                 let old = prior.1.capacity() as u64;
-                cleanup.record(ITEM, work)?;
                 prior.1 = std::mem::take(&mut pending);
+                cleanup.record(ITEM, work)?;
                 work.release(old)?;
                 *retained -= old;
             } else {
@@ -277,19 +287,10 @@ impl Shared {
             let path =
                 CString::new(path).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
             work.with_original_leaf(|work| work.started_io(READ))?;
-            // SAFETY: a NUL-terminated path that outlives the call, through the held root rather than a newly resolved root name.
-            let descriptor = unsafe {
-                libc::inotify_add_watch(
-                    self.inotify.load(Ordering::Acquire),
-                    path.as_ptr(),
-                    WATCHED,
-                )
-            };
-            if descriptor < 0 {
-                Err(io::Error::last_os_error().into())
-            } else {
-                Ok(descriptor)
-            }
+            // Through the held root rather than a newly resolved root name.
+            hub::hub()?
+                .add(self, &path, WATCHED, hub::Interest::All)
+                .map_err(DemandError::from)
         })();
         work.release(bytes)?;
         result
@@ -472,16 +473,7 @@ impl Shared {
             work.with_original_leaf(|work| work.work.admit(&copied, &work.budget))?;
             if !shared {
                 work.with_original_leaf(|work| work.started_io(WRITE))?;
-                // SAFETY: removes only this instance's admitted descriptor.
-                if unsafe {
-                    libc::inotify_rm_watch(self.inotify.load(Ordering::Acquire), descriptor)
-                } < 0
-                {
-                    let error = io::Error::last_os_error();
-                    if error.raw_os_error() != Some(libc::EINVAL) {
-                        return Err(error.into());
-                    }
-                }
+                hub::hub()?.remove(self.subscriber, descriptor, hub::Interest::All)?;
             }
             work.record(copied)?;
             let (removed, _) = watches.remove(at);

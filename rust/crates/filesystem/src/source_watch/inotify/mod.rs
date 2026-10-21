@@ -1,4 +1,7 @@
 //! Linux source notifications with bounded admission and cleanup.
+//!
+//! Every watch shares one process-wide inotify instance through [`hub`]; a
+//! watch owns its registrations, its inbox of routed records and its held root.
 #![allow(unsafe_code, reason = "watches through the Linux inotify API")]
 use super::{
     Delivery, HostChange, arc_control_bytes, cancel_cleanup_credits, record_cleanup_credits,
@@ -17,6 +20,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 mod cleanup;
 mod events;
+mod hub;
 mod lifecycle;
 mod registration;
 use cleanup::{clear_records, close, close_component, stop_custody};
@@ -58,13 +62,27 @@ const EVENT_HEADER_BYTES: usize = 16;
 
 pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
-    thread: Mutex<Option<libc::pthread_t>>,
+    /// Background delivery through the hub's service pool, until retired.
+    worker: Mutex<Option<Worker>>,
 }
 
+/// Custody of background delivery for one watch.
+#[derive(Clone, Copy, Debug)]
+struct Worker;
+
 struct Shared {
+    /// The hub's descriptor while this watch holds hub registrations, else -1.
+    /// The hub owns the descriptor; a watch withdraws its registrations
+    /// instead of closing it.
     inotify: AtomicI32,
-    wake: AtomicI32,
     root: AtomicI32,
+    /// This watch's identity in the hub's routing tables.
+    subscriber: u64,
+    this: std::sync::Weak<Shared>,
+    inbox: Mutex<hub::Inbox>,
+    /// Background delivery ended: an error, a panic, or stop. Held while
+    /// retirement runs so every retirer returns only once it completed.
+    retired: Mutex<bool>,
     ancestors: Mutex<Vec<(i32, std::ffi::OsString)>>,
     retained_variable_bytes: AtomicU64,
     reading: Mutex<RawReads>,

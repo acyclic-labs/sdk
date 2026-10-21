@@ -1,55 +1,102 @@
 use super::*;
 
 impl Shared {
-    pub(super) fn run(&self) {
-        let mut descriptors = [
-            libc::pollfd {
-                fd: self.inotify.load(Ordering::Acquire),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.wake.load(Ordering::Acquire),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        while !self.stopping.load(Ordering::Acquire) {
-            let mut work = self.delivery.callback_work();
-            if let Err(error) = work.started_io(READ) {
+    /// One background delivery pass, run by the hub's service pool after
+    /// records were routed to this watch.
+    pub(super) fn service(&self) {
+        self.inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .begin_service();
+        if self.is_retired() {
+            return;
+        }
+        if self.stopping.load(Ordering::Acquire) {
+            // A controller that could not stop leaves retirement to delivery.
+            if self.delivery.original.is_some() && !self.controller_alive.load(Ordering::Acquire) {
+                self.retire();
+            }
+            return;
+        }
+        if self
+            .reading
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .blocked
+        {
+            // The fence that unblocks delivery reschedules waiting records.
+            return;
+        }
+        #[cfg(test)]
+        self.polling.store(false, Ordering::Release);
+        let mut work = self.delivery.callback_work();
+        let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            work.started_io(READ)?;
+            self.read_events_and_deliver(std::time::Duration::MAX, &mut work)
+        }));
+        #[cfg(test)]
+        self.polling.store(true, Ordering::Release);
+        match delivered {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => {
                 self.delivery.failed_with_work(error, &mut work);
-                return;
+                self.retire();
             }
-            #[cfg(test)]
-            self.polling.store(true, Ordering::Release);
-            // SAFETY: two initialized pollfd records in a live array.
-            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
-            #[cfg(test)]
-            self.polling.store(false, Ordering::Release);
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                self.delivery.failed_with_work(error.into(), &mut work);
-                return;
+            Err(_) => {
+                self.delivery.exact.store(false, Ordering::Release);
+                self.retire();
             }
-            {
-                let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
-                while reading.blocked && !self.stopping.load(Ordering::Acquire) {
-                    reading = self
-                        .reading_changed
-                        .wait(reading)
-                        .unwrap_or_else(PoisonError::into_inner);
-                }
+        }
+    }
+
+    /// Moves routed records into the read buffer. Returns the exactness to
+    /// report when no record waits; an idle watch then holds no buffer.
+    fn refill<W: SourceDemandReadWork>(
+        &self,
+        reading: &mut RawReads,
+        work: &mut W,
+    ) -> Result<Option<bool>, DemandError> {
+        let maximum = usize::try_from(
+            work.remaining()?
+                .source_bytes_read
+                .min(READ_BUFFER_BYTES as u64),
+        )
+        .map_err(|_| WorkError::Overflow)?;
+        if maximum < EVENT_HEADER_BYTES {
+            work.admit(WorkCounters {
+                source_bytes_read: EVENT_HEADER_BYTES as u64,
+                ..WorkCounters::default()
+            })?;
+        }
+        work.admit(WorkCounters {
+            source_bytes_read: maximum as u64,
+            ..WorkCounters::default()
+        })?;
+        work.started_io(READ)?;
+        // Records the kernel queued reach this inbox before it is read.
+        hub::hub()?.drain()?;
+        let taken = self
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take(&mut reading.buffer, maximum);
+        reading.cursor = 0;
+        reading.alias_cursor = 0;
+        match taken {
+            Ok(read) => {
+                reading.filled = read;
+                work.record(WorkCounters {
+                    source_bytes_read: read as u64,
+                    ..WorkCounters::default()
+                })?;
+                Ok(None)
             }
-            if self.stopping.load(Ordering::Acquire) {
-                return;
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                reading.buffer = Vec::new();
+                reading.filled = 0;
+                Ok(Some(self.delivery.is_exact()))
             }
-            if let Err(error) = self.read_events_and_deliver(std::time::Duration::MAX, &mut work) {
-                self.delivery.failed_with_work(error, &mut work);
-                return;
-            }
+            Err(error) => Err(error.into()),
         }
     }
 
@@ -95,51 +142,10 @@ impl Shared {
                     self.retained_variable_bytes
                         .fetch_sub(bytes, Ordering::AcqRel);
                 }
-                if reading.cursor == reading.filled {
-                    let maximum = usize::try_from(
-                        work.remaining()?
-                            .source_bytes_read
-                            .min(reading.buffer.len() as u64),
-                    )
-                    .map_err(|_| WorkError::Overflow)?;
-                    if maximum < EVENT_HEADER_BYTES {
-                        work.admit(WorkCounters {
-                            source_bytes_read: EVENT_HEADER_BYTES as u64,
-                            ..WorkCounters::default()
-                        })?;
-                    }
-                    work.admit(WorkCounters {
-                        source_bytes_read: maximum as u64,
-                        ..WorkCounters::default()
-                    })?;
-                    work.started_io(READ)?;
-                    // SAFETY: no competing reader can use this owned page.
-                    let read = unsafe {
-                        libc::read(
-                            self.inotify.load(Ordering::Acquire),
-                            reading.buffer.as_mut_ptr().cast(),
-                            maximum,
-                        )
-                    };
-                    if read < 0 {
-                        let error = io::Error::last_os_error();
-                        match error.kind() {
-                            io::ErrorKind::WouldBlock => return Ok(self.delivery.is_exact()),
-                            io::ErrorKind::Interrupted => continue,
-                            _ => return Err(error.into()),
-                        }
-                    }
-                    reading.filled =
-                        usize::try_from(read).map_err(|_| DemandError::InvalidRequest)?;
-                    reading.cursor = 0;
-                    reading.alias_cursor = 0;
-                    work.record(WorkCounters {
-                        source_bytes_read: reading.filled as u64,
-                        ..WorkCounters::default()
-                    })?;
-                    if reading.filled == 0 {
-                        return Ok(self.delivery.is_exact());
-                    }
+                if reading.cursor == reading.filled
+                    && let Some(exact) = self.refill(reading, work)?
+                {
+                    return Ok(exact);
                 }
                 work.started_io(ITEM)?;
                 let raw = reading
@@ -432,6 +438,8 @@ impl Shared {
         }
         if !reading.blocked {
             self.reading_changed.notify_all();
+            // Records routed while delivery was blocked were left for this pass.
+            self.reschedule();
         }
         result
     }

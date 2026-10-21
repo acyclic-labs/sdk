@@ -3,9 +3,10 @@ use super::*;
 impl StartupCleanup {
     pub(super) fn reserve<W: SourceDemandReadWork>(work: &mut W) -> Result<Self, DemandError> {
         let mut cleanup = Self::default();
+        // Withdrawing the hub registrations and closing the held root.
         cleanup.extend(
             WorkCounters {
-                backend_write_operations: 3,
+                backend_write_operations: 2,
                 ..WorkCounters::UNCHARGED
             },
             work,
@@ -233,10 +234,7 @@ impl Shared {
             .ok_or(WorkError::Overflow)?;
         self.ensure_cleanup_covered(
             WorkCounters {
-                backend_write_operations: [&self.inotify, &self.wake, &self.root]
-                    .into_iter()
-                    .filter(|descriptor| descriptor.load(Ordering::Acquire) >= 0)
-                    .count() as u64,
+                backend_write_operations: self.held_descriptors(),
                 items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
                 ..WorkCounters::UNCHARGED
             },
@@ -244,12 +242,17 @@ impl Shared {
         )?;
         let retired_bytes = self.retained_variable_bytes.load(Ordering::Acquire);
         let mut result = Ok(());
-        for descriptor in [&self.inotify, &self.wake, &self.root] {
-            let descriptor = descriptor.swap(-1, Ordering::AcqRel);
-            if descriptor >= 0 {
-                let closed = close(descriptor);
-                result = result.and(self.record_cleanup(WRITE, work).and(closed));
-            }
+        if self.inotify.swap(-1, Ordering::AcqRel) >= 0 {
+            let withdrawn = hub::hub().and_then(|hub| {
+                hub.withdraw(self.subscriber, &watches, &ancestors)
+                    .map_err(Into::into)
+            });
+            result = result.and(self.record_cleanup(WRITE, work).and(withdrawn));
+        }
+        let descriptor = self.root.swap(-1, Ordering::AcqRel);
+        if descriptor >= 0 {
+            let closed = close(descriptor);
+            result = result.and(self.record_cleanup(WRITE, work).and(closed));
         }
         result = result.and(self.record_cleanup(clear_records(&mut ancestors), work));
         result = result.and(self.record_cleanup(clear_records(&mut watches), work));

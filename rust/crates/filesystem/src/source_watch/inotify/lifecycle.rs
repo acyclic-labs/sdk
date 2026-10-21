@@ -1,17 +1,5 @@
 use super::*;
 
-pub(super) extern "C" fn run_reader(payload: *mut libc::c_void) -> *mut libc::c_void {
-    // SAFETY: startup transfers one Arc reference to this entrypoint.
-    let reader = unsafe { Arc::from_raw(payload.cast::<Shared>()) };
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.run())).is_err() {
-        reader.delivery.exact.store(false, Ordering::Release);
-    }
-    if reader.delivery.original.is_some() {
-        reader.finish_native_reader();
-    }
-    std::ptr::null_mut()
-}
-
 impl NativeSourceWatch {
     #[allow(
         clippy::too_many_lines,
@@ -36,29 +24,31 @@ impl NativeSourceWatch {
                 return Err(error);
             }
         };
-        let mut inotify = None;
-        let mut wake = None;
+        let mut subscribed = false;
         let mut root = None;
         let mut ancestors = Vec::new();
-        let mut buffer = Vec::new();
         let mut watches = Vec::new();
-        let mut shared = None;
+        let mut shared: Option<Arc<Shared>> = None;
         let mut retained = 0_u64;
         let mut transferred = false;
         let control_bytes = arc_control_bytes::<Shared>();
         let mut control_transferred = false;
         let result = (|| {
             work.admit(READ)?;
+            let hub = hub::hub()?;
             work.claim_allocation(
                 control_bytes,
                 u64::from((control_bytes) != 0),
                 crate::WorkCounters::UNCHARGED,
             )?;
             retained = control_bytes;
-            shared = Some(Arc::new(Shared {
+            shared = Some(Arc::new_cyclic(|this| Shared {
                 inotify: AtomicI32::new(-1),
-                wake: AtomicI32::new(-1),
                 root: AtomicI32::new(-1),
+                subscriber: hub.next_subscriber(),
+                this: this.clone(),
+                inbox: Mutex::new(hub::Inbox::default()),
+                retired: Mutex::new(false),
                 ancestors: Mutex::new(Vec::new()),
                 retained_variable_bytes: AtomicU64::new(0),
                 reading: Mutex::new(RawReads::default()),
@@ -76,40 +66,35 @@ impl NativeSourceWatch {
             let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
             initialized.ownership.retain(control_bytes, work)?;
             control_transferred = true;
+            // Background delivery waits for this guard: no routed record is
+            // consumed before this watch's registrations are recorded.
+            let startup_reading = initialized
+                .reading
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             work.started_io(READ)?;
-            // SAFETY: plain descriptor creation with valid flags.
-            inotify = Some(owned(unsafe {
-                libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC)
-            })?);
-            work.started_io(READ)?;
-            // SAFETY: as above.
-            wake = Some(owned(unsafe {
-                libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC)
-            })?);
+            hub.subscribe(initialized)?;
+            subscribed = true;
             work.started_io(READ)?;
             // SAFETY: duplicating a live descriptor the root holds.
             root = Some(owned(unsafe {
                 libc::fcntl(directory.directory_fd(), libc::F_DUPFD_CLOEXEC, 0)
             })?);
-            let held_inotify = inotify.as_ref().ok_or(DemandError::InvalidRequest)?;
             let held_root = root.as_ref().ok_or(DemandError::InvalidRequest)?;
             watch_ancestors(
-                held_inotify,
+                initialized,
                 held_root,
                 &mut ancestors,
                 &mut retained,
                 &mut cleanup,
                 work,
             )?;
-            let bytes = READ_BUFFER_BYTES as u64;
+            // The read buffer and the inbox are reserved here and allocated
+            // only while records are pending.
+            let bytes = (READ_BUFFER_BYTES + hub::INBOX_BYTES) as u64;
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            work.claim_allocation(
-                bytes,
-                u64::from((bytes) != 0),
-                crate::WorkCounters::UNCHARGED,
-            )?;
+            work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED)?;
             retained = next_retained;
-            buffer = vec![0; READ_BUFFER_BYTES];
             cleanup.extend(ITEM, work)?;
             let bytes = std::mem::size_of::<(PathBuf, i32)>() as u64;
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
@@ -120,34 +105,14 @@ impl NativeSourceWatch {
             )?;
             retained = next_retained;
             watches = Vec::with_capacity(1);
-            let (root_path, _) = proc_fd_path(held_root.as_raw_fd());
+            let (root_path, length) = proc_fd_path(held_root.as_raw_fd());
+            let root_path = root_path
+                .get(..=length)
+                .and_then(|path| std::ffi::CStr::from_bytes_with_nul(path).ok())
+                .ok_or(DemandError::InvalidRequest)?;
             work.started_io(READ)?;
-            // SAFETY: this stack C path names the held root and lives through registration, exactly as for every later admitted directory.
-            let descriptor = unsafe {
-                libc::inotify_add_watch(
-                    held_inotify.as_raw_fd(),
-                    root_path.as_ptr().cast(),
-                    WATCHED,
-                )
-            };
-            if descriptor < 0 {
-                return Err(io::Error::last_os_error().into());
-            }
+            let descriptor = hub.add(initialized, root_path, WATCHED, hub::Interest::All)?;
             watches.push((PathBuf::new(), descriptor));
-            let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
-            initialized.inotify.store(
-                inotify
-                    .take()
-                    .ok_or(DemandError::InvalidRequest)?
-                    .into_raw_fd(),
-                Ordering::Release,
-            );
-            initialized.wake.store(
-                wake.take()
-                    .ok_or(DemandError::InvalidRequest)?
-                    .into_raw_fd(),
-                Ordering::Release,
-            );
             initialized.root.store(
                 root.take()
                     .ok_or(DemandError::InvalidRequest)?
@@ -158,15 +123,15 @@ impl NativeSourceWatch {
                 .ancestors
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut ancestors);
-            initialized
-                .reading
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .buffer = std::mem::take(&mut buffer);
             *initialized
                 .watches
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut watches);
+            // The watch's registrations now withdraw with its other payload.
+            initialized
+                .inotify
+                .store(hub.raw_descriptor(), Ordering::Release);
+            subscribed = false;
             initialized
                 .retained_variable_bytes
                 .store(retained - control_bytes, Ordering::Release);
@@ -183,50 +148,25 @@ impl NativeSourceWatch {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .reserve_worker(work)?;
-            let initialized = shared.as_ref().ok_or(DemandError::InvalidRequest)?;
-            let _startup_reading = initialized
-                .reading
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            work.started_io(WorkCounters {
-                backend_read_operations: 1,
-                allocation_operations: 1,
-                ..WorkCounters::default()
-            })?;
-            let reader = Arc::into_raw(Arc::clone(
-                shared.as_ref().ok_or(DemandError::InvalidRequest)?,
-            ));
-            let mut thread = std::mem::MaybeUninit::<libc::pthread_t>::uninit();
-            // SAFETY: pthread_create writes the thread ID on success, and the raw Arc payload is consumed either by run_reader or by failure.
-            let status = unsafe {
-                libc::pthread_create(
-                    thread.as_mut_ptr(),
-                    std::ptr::null(),
-                    run_reader,
-                    reader.cast_mut().cast(),
-                )
-            };
-            if status != 0 {
-                // SAFETY: no thread was created, so startup retains this Arc.
-                drop(unsafe { Arc::from_raw(reader) });
-                return Err(io::Error::from_raw_os_error(status).into());
-            }
+            work.started_io(READ)?;
+            #[cfg(test)]
+            initialized.polling.store(true, Ordering::Release);
+            drop(startup_reading);
             let cancelled = work.check().err();
             if cancelled.is_some() {
                 initialized.stopping.store(true, Ordering::Release);
             }
-            // SAFETY: successful pthread_create initialized the ID.
-            Ok((unsafe { thread.assume_init() }, cancelled))
+            Ok((Worker, cancelled))
         })();
         match result {
-            Ok((thread, cancelled)) => {
+            Ok((worker, cancelled)) => {
                 let watch = Self {
                     shared: shared.ok_or(DemandError::InvalidRequest)?,
-                    thread: Mutex::new(Some(thread)),
+                    worker: Mutex::new(Some(worker)),
                 };
                 if let Some(error) = cancelled {
                     let stopped = watch.stop_admitted(
-                        &mut watch.thread.lock().unwrap_or_else(PoisonError::into_inner),
+                        &mut watch.worker.lock().unwrap_or_else(PoisonError::into_inner),
                         work,
                     );
                     if let Err(stop_error) = stopped {
@@ -262,18 +202,27 @@ impl NativeSourceWatch {
             }
             Err(error) => {
                 let mut cleaned = Ok(());
-                if let Some(shared) = shared {
+                if let Some(shared) = &shared {
+                    shared.stopping.store(true, Ordering::Release);
+                    *shared
+                        .retired
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) = true;
                     cleaned = cleaned.and(shared.clear_measured(work));
                     shared.cancel_cleanup(work);
                 }
+                if let (true, Some(shared)) = (subscribed, &shared) {
+                    let withdrawn = hub::hub().and_then(|hub| {
+                        hub.withdraw(shared.subscriber, &watches, &ancestors)
+                            .map_err(Into::into)
+                    });
+                    cleaned = cleaned.and(cleanup.record(WRITE, work).and(withdrawn));
+                }
                 cleaned = cleaned.and(cleanup.record(clear_records(&mut ancestors), work));
                 cleaned = cleaned.and(cleanup.record(clear_records(&mut watches), work));
-                drop(std::mem::take(&mut buffer));
-                for descriptor in [&mut inotify, &mut wake, &mut root] {
-                    if let Some(descriptor) = descriptor.take() {
-                        let closed = close(descriptor.into_raw_fd());
-                        cleaned = cleaned.and(cleanup.record(WRITE, work).and(closed));
-                    }
+                if let Some(descriptor) = root.take() {
+                    let closed = close(OwnedFd::into_raw_fd(descriptor));
+                    cleaned = cleaned.and(cleanup.record(WRITE, work).and(closed));
                 }
                 cleanup.cancel(work);
                 let released_bytes = if work.is_native_original() && control_transferred {
@@ -415,14 +364,14 @@ impl NativeSourceWatch {
         if !prepaid {
             work.check()?;
         }
-        let mut thread = stop_custody(&self.thread, wait)?;
+        let mut worker = stop_custody(&self.worker, wait)?;
         if wait.is_some_and(crate::CancellationToken::is_cancelled) {
             return Err(DemandError::Cancelled);
         }
         if self.is_stopped() {
             if prepaid {
                 let cleanup = stop_custody(&self.shared.cleanup, wait)?;
-                if cleanup.reads < u64::from(thread.is_some()) {
+                if cleanup.reads < u64::from(worker.is_some()) {
                     return Err(DemandError::NativeWorkUnavailable);
                 }
                 drop(cleanup);
@@ -430,8 +379,8 @@ impl NativeSourceWatch {
                     return Err(DemandError::Cancelled);
                 }
             }
-            let result = self.join_thread(&mut thread, work);
-            if thread.is_none() {
+            let result = self.join_worker(&mut worker, work);
+            if worker.is_none() {
                 self.shared.cancel_cleanup(work);
             }
             return result;
@@ -445,18 +394,15 @@ impl NativeSourceWatch {
             .checked_add(watches.len())
             .and_then(|count| count.checked_add(ancestors.len()))
             .ok_or(WorkError::Overflow)?;
-        let worker = u64::from(thread.is_some());
-        let descriptors = [&self.shared.inotify, &self.shared.wake, &self.shared.root]
-            .into_iter()
-            .filter(|descriptor| descriptor.load(Ordering::Acquire) >= 0)
-            .count() as u64;
+        let running = u64::from(worker.is_some());
+        let registered = self.shared.inotify.load(Ordering::Acquire) >= 0;
         let suffix = WorkCounters {
-            backend_read_operations: worker,
-            backend_write_operations: descriptors
+            backend_read_operations: running,
+            backend_write_operations: self.shared.held_descriptors()
                 + if prepaid {
-                    u64::from(thread.is_some() && self.shared.wake.load(Ordering::Acquire) >= 0)
+                    u64::from(worker.is_some() && registered)
                 } else {
-                    worker
+                    running
                 },
             items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
@@ -485,41 +431,27 @@ impl NativeSourceWatch {
         drop(ancestors);
         drop(watches);
         drop(reading);
-        self.stop_admitted(&mut thread, work)
+        self.stop_admitted(&mut worker, work)
     }
+
     pub(super) fn stop_admitted<W: SourceDemandReadWork>(
         &self,
-        thread: &mut Option<libc::pthread_t>,
+        worker: &mut Option<Worker>,
         work: &mut W,
     ) -> Result<(), DemandError> {
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.reading_changed.notify_all();
         let mut result = Ok(());
-        if thread.is_some() {
-            let reading = self
-                .shared
-                .reading
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let descriptor = self.shared.wake.load(Ordering::Acquire);
-            let wake_error = if descriptor >= 0 {
+        if worker.is_some() {
+            if self.shared.inotify.load(Ordering::Acquire) >= 0 {
+                // Queue overflow records stop scheduling this watch.
                 self.shared.ensure_cleanup_covered(WRITE, work)?;
-                let one = 1_u64.to_ne_bytes();
-                // SAFETY: the existing read custody lock excludes terminal descriptor retirement throughout this actual wake attempt.
-                let wake = unsafe { libc::write(descriptor, one.as_ptr().cast(), one.len()) };
-                let error = (wake < 0).then(io::Error::last_os_error);
-                result = self.shared.record_cleanup(WRITE, work);
-                error
-            } else {
-                None
-            };
-            drop(reading);
-            if let Some(error) = wake_error {
-                return result.and(Err(error.into()));
+                let unsubscribed = hub::hub().map(|hub| hub.unsubscribe(self.shared.subscriber));
+                self.shared.record_cleanup(WRITE, work).and(unsubscribed)?;
             }
-            let joined = self.join_thread(thread, work);
+            let joined = self.join_worker(worker, work);
             result = result.and(joined);
-            if thread.is_some() {
+            if worker.is_some() {
                 return result;
             }
         }
@@ -537,24 +469,23 @@ impl NativeSourceWatch {
         result
     }
 
-    pub(super) fn join_thread<W: SourceDemandReadWork>(
+    /// Ends background delivery: returns once no service pass can deliver
+    /// for this watch again and native custody, if any, was retired.
+    pub(super) fn join_worker<W: SourceDemandReadWork>(
         &self,
-        thread: &mut Option<libc::pthread_t>,
+        worker: &mut Option<Worker>,
         work: &mut W,
     ) -> Result<(), DemandError> {
         let mut result = Ok(());
-        if let Some(worker) = *thread {
+        if worker.is_some() {
             self.shared.ensure_cleanup_covered(READ, work)?;
-            // SAFETY: this controller owns the one joinable worker returned by pthread_create.
-            let joined = unsafe { libc::pthread_join(worker, std::ptr::null_mut()) };
+            self.shared.retire();
             result = self.shared.record_cleanup(READ, work);
-            if joined != 0 {
-                return result.and(Err(io::Error::from_raw_os_error(joined).into()));
-            }
-            *thread = None;
+            *worker = None;
         }
         result
     }
+
     #[cfg(test)]
     pub(crate) fn paused(&self) -> impl Sized + '_ {
         self.shared
@@ -571,6 +502,8 @@ impl Drop for NativeSourceWatch {
                 self.shared.controller_alive.store(false, Ordering::Release);
                 self.shared.stopping.store(true, Ordering::Release);
                 self.shared.reading_changed.notify_all();
+                // The next service pass retires native custody.
+                self.shared.force_service();
                 return;
             }
             let _ = self.stop_accepted_cleanup();
@@ -585,16 +518,10 @@ impl Drop for NativeSourceWatch {
             };
             if completed {
                 let mut work = self.shared.delivery.callback_work();
-                let thread = self
-                    .thread
+                *self
+                    .worker
                     .get_mut()
-                    .unwrap_or_else(PoisonError::into_inner);
-                if let Some(worker) = *thread {
-                    if let Err(error) = self.shared.detach_terminal_thread(worker, &mut work) {
-                        self.shared.delivery.failed_with_work(error, &mut work);
-                    }
-                    *thread = None;
-                }
+                    .unwrap_or_else(PoisonError::into_inner) = None;
                 self.shared.cancel_cleanup(&mut work);
             }
             return;
@@ -608,6 +535,45 @@ impl Drop for NativeSourceWatch {
 }
 
 impl Shared {
+    /// Ends background delivery once. Delivery runs under the reading lock
+    /// and observes `stopping` or retirement first, so once this returns no
+    /// service pass delivers for this watch again; a concurrent retirer waits
+    /// for the first to finish.
+    pub(super) fn retire(&self) {
+        let mut retired = self.retired.lock().unwrap_or_else(PoisonError::into_inner);
+        if *retired {
+            return;
+        }
+        *retired = true;
+        drop(self.reading.lock().unwrap_or_else(PoisonError::into_inner));
+        if self.delivery.original.is_some() {
+            self.finish_native_reader();
+        }
+    }
+
+    pub(super) fn is_retired(&self) -> bool {
+        *self.retired.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Schedules a service pass when routed records wait unscheduled.
+    pub(super) fn reschedule(&self) {
+        let due = self
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .reschedule();
+        if let (true, Some(watch), Ok(hub)) = (due, self.this.upgrade(), hub::hub()) {
+            hub.schedule(watch);
+        }
+    }
+
+    /// Schedules a service pass regardless of routed records.
+    pub(super) fn force_service(&self) {
+        if let (Some(watch), Ok(hub)) = (self.this.upgrade(), hub::hub()) {
+            hub.schedule(watch);
+        }
+    }
+
     pub(super) fn finish_native_reader(&self) {
         self.stopping.store(true, Ordering::Release);
         let mut work = self.delivery.callback_work();
@@ -620,54 +586,61 @@ impl Shared {
             self.reading_changed.notify_all();
             return;
         }
-        let detach = {
+        let orphaned = {
             let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
             let keep = u64::from(self.controller_alive.load(Ordering::Acquire));
             let reads = cleanup.reads.min(keep);
-            let writes = cleanup.writes.min(1);
             let unused = WorkCounters {
                 backend_read_operations: cleanup.reads - reads,
-                backend_write_operations: cleanup.writes - writes,
+                backend_write_operations: cleanup.writes,
                 items_examined: cleanup.records,
                 ..WorkCounters::UNCHARGED
             };
             work.with_original_leaf(|work| super::cancel_cleanup_credits(work, unused));
             cleanup.reads = reads;
-            cleanup.writes = writes;
+            cleanup.writes = 0;
             cleanup.records = 0;
             self.completed.store(true, Ordering::Release);
             keep == 0
         };
-        if detach {
-            // SAFETY: the actual reader has retired its native payload. With no controller left, detachment releases only pthread bookkeeping.
-            let worker = unsafe { libc::pthread_self() };
-            if let Err(error) = self.detach_terminal_thread(worker, &mut work) {
-                self.delivery.failed_with_work(error, &mut work);
-            }
+        if orphaned {
             self.cancel_cleanup(&mut work);
         }
         self.reading_changed.notify_all();
     }
 
-    pub(super) fn detach_terminal_thread<W: SourceDemandReadWork>(
-        &self,
-        worker: libc::pthread_t,
-        work: &mut W,
-    ) -> Result<(), DemandError> {
-        self.ensure_cleanup_covered(WRITE, work)?;
-        // SAFETY: cleanup's controller-alive decision selected this sole terminal bookkeeping owner; no live controller can join this thread.
-        let detached = unsafe { libc::pthread_detach(worker) };
-        let recorded = self.record_cleanup(WRITE, work);
-        if detached != 0 {
-            return Err(io::Error::from_raw_os_error(detached).into());
-        }
-        recorded
+    /// Payload descriptors still held: the hub registrations and the root.
+    pub(super) fn held_descriptors(&self) -> u64 {
+        [&self.inotify, &self.root]
+            .into_iter()
+            .filter(|descriptor| descriptor.load(Ordering::Acquire) >= 0)
+            .count() as u64
     }
 
     pub(super) fn physically_cleared(&self) -> bool {
-        self.retained_variable_bytes.load(Ordering::Acquire) == 0
-            && [&self.inotify, &self.wake, &self.root]
-                .into_iter()
-                .all(|descriptor| descriptor.load(Ordering::Acquire) < 0)
+        self.retained_variable_bytes.load(Ordering::Acquire) == 0 && self.held_descriptors() == 0
+    }
+}
+
+impl Drop for Shared {
+    fn drop(&mut self) {
+        // Every stop path withdraws first; this keeps an abandoned watch from
+        // leaving routes or kernel registrations in the process-wide hub.
+        let Ok(hub) = hub::hub() else {
+            return;
+        };
+        if *self.inotify.get_mut() >= 0 {
+            let watches = self
+                .watches
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            let ancestors = self
+                .ancestors
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            let _ = hub.withdraw(self.subscriber, watches, ancestors);
+        } else {
+            hub.unsubscribe(self.subscriber);
+        }
     }
 }
