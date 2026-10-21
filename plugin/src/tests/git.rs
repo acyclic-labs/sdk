@@ -46,14 +46,44 @@ async fn child_git(control: &mut ControlPlane, args: &[&str]) -> Result<Value, S
 }
 
 async fn write_child(control: &ControlPlane, name: &str, text: &'static str) {
+    write_child_bytes(control, name, text.as_bytes()).await;
+}
+
+async fn write_child_bytes(control: &ControlPlane, name: &str, bytes: &'static [u8]) {
     let path = control.state.routes["child"]
         .active_path()
         .unwrap()
         .join(name);
-    tokio::task::spawn_blocking(move || fs::write(path, text))
-        .await
-        .unwrap()
-        .unwrap();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            // ProjFS does not report its provider process's own file I/O.
+            // Write through a real host process, including non-UTF-8 bodies.
+            let staging = tempfile::tempdir()?;
+            let source = staging.path().join("host-write.bin");
+            fs::write(&source, bytes)?;
+            let output = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "copy", "/b", "/y"])
+                .arg(&source)
+                .arg(&path)
+                .creation_flags(0x0800_0000)
+                .output()?;
+            if !output.status.success() {
+                return Err(std::io::Error::other(format!(
+                    "host write failed: {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        fs::write(path, bytes)
+    })
+    .await
+    .unwrap()
+    .unwrap();
 }
 
 async fn write_child_text(control: &ControlPlane, text: &'static str) {
@@ -133,14 +163,7 @@ async fn merge_child_attributes(attributes: &'static [u8]) {
     fs::write(fixture.root.join("base.txt"), "base\n").unwrap();
     fs::write(fixture.root.join(".gitattributes"), "*.txt merge=text\n").unwrap();
     let mut control = open_child(&fixture).await;
-    let path = control.state.routes["child"]
-        .active_path()
-        .unwrap()
-        .join(".gitattributes");
-    tokio::task::spawn_blocking(move || fs::write(path, attributes))
-        .await
-        .unwrap()
-        .unwrap();
+    write_child_bytes(&control, ".gitattributes", attributes).await;
     write_child(&control, ".gitignore", "ignored/\n").await;
     write_child(&control, "result.txt", "child result\n").await;
     control
