@@ -143,21 +143,7 @@ jobs:
 
       - name: Prepare native SDK adapter for Pi controls
         shell: bash
-        run: |
-          bun install --frozen-lockfile --ignore-scripts
-          node node_modules/typescript/bin/tsc -b typescript/packages/actors --pretty false
-          cargo build -p acyclic-fs-napi --locked
-          node --input-type=module <<'JS'
-          import { mkdir, copyFile, readFile, writeFile } from "node:fs/promises";
-          import { resolve, join } from "node:path";
-          const {version} = JSON.parse(await readFile("typescript/packages/filesystem/package.json", "utf8"));
-          const name = `@acyclic-labs/fs-${process.platform}-${process.arch}`;
-          const directory = resolve("node_modules", name);
-          const library = {win32: "acyclic_fs_napi.dll", linux: "libacyclic_fs_napi.so", darwin: "libacyclic_fs_napi.dylib"}[process.platform];
-          await mkdir(directory, {recursive: true});
-          await copyFile(resolve(process.env.CARGO_TARGET_DIR ?? "target", "debug", library), join(directory, "index.node"));
-          await writeFile(join(directory, "package.json"), JSON.stringify({name, version, main: "index.node"}));
-          JS
+        run: node plugin/tests/hosts/prepare-native.mjs
 
       - name: Build host scenario
         shell: bash
