@@ -277,6 +277,18 @@ where
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
+        self.commit_borrowed_with_io(expected_revision, idempotency_key, &record, io)
+            .await?;
+        Ok(record)
+    }
+
+    pub(crate) async fn commit_borrowed_with_io(
+        &self,
+        expected_revision: u64,
+        idempotency_key: IdempotencyKey,
+        record: &WorkflowRecord,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
         self.require_machine_io(io)?;
         if let Some(io) = io {
             io.check_cancellation()?;
@@ -294,36 +306,29 @@ where
                 .transpose()?;
             (held, admission)
         };
-        crate::workflow::validate_workflow_commit(
-            expected_revision,
-            &idempotency_key,
-            &record,
-            io,
-        )?;
+        crate::workflow::validate_workflow_commit(expected_revision, &idempotency_key, record, io)?;
         if let Some(owner) = &self.owner {
-            owner.validate_workflow_record(&record, io)?;
+            owner.validate_workflow_record(record, io)?;
         }
         {
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let (history_hold, (revision, existing)) = {
                 let (revision, existing) =
-                    self.verified_history(&admission, &record, true, io).await?;
+                    self.verified_history(&admission, record, true, io).await?;
                 let history_hold = io
                     .map(|io| io.guard_owned(io.owned_since(before)?))
                     .transpose()?;
                 (history_hold, (revision, existing))
             };
             if let Some(existing) = existing {
-                if existing != record {
+                if existing != *record {
                     return Err(Error::Conflict(
                         "workflow operation identity is already bound".into(),
                     ));
                 }
                 self.verify_command_payloads(&existing, io).await?;
-                if let Some(held) = history_hold {
-                    held.into_retained()?;
-                }
-                return Ok(existing);
+                drop(history_hold);
+                return Ok(());
             }
             if revision != expected_revision {
                 return Err(Error::Conflict(
@@ -332,11 +337,11 @@ where
             }
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        self.verify_command_payloads(&record, io).await?;
+        self.verify_command_payloads(record, io).await?;
         let (_reference, reference) = {
             let reference = self
                 .stage_payload(
-                    &record,
+                    record,
                     Some((record.prior.revision, record.operation_id)),
                     io,
                 )
@@ -355,7 +360,7 @@ where
                     .transpose()?;
                 (held, staged)
             };
-            if staged != record {
+            if staged != *record {
                 return Err(Error::Conflict(
                     "staged workflow record disagrees with its transition".into(),
                 ));
@@ -372,18 +377,18 @@ where
             )
             .await;
         match appended {
-            Ok(true) => Ok(record),
-            Ok(false) => match self.reconcile(&record, io).await? {
-                Some(previous) => Ok(previous),
+            Ok(true) => Ok(()),
+            Ok(false) => match self.reconcile(record, io).await? {
+                Some(_) => Ok(()),
                 None => Err(Error::Conflict(
                     "workflow checkpoint or ownership changed".into(),
                 )),
             },
             Err(Error::Indeterminate(_)) if self.owner.is_none() => match self
-                .reconcile(&record, io)
+                .reconcile(record, io)
                 .await
             {
-                Ok(Some(previous)) => Ok(previous),
+                Ok(Some(_)) => Ok(()),
                 Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(record.operation_id)),
                 #[cfg(not(target_arch = "wasm32"))]
                 Err(Error::NativeStream {

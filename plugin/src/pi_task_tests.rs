@@ -693,6 +693,16 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
     );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     let query = crate::pi_fork::tests::work();
+    assert!(
+        runtime
+            .open_task_with_native_work(task, &fence, context, &query)
+            .await
+            .is_err()
+    );
+    let context = runtime
+        .task_context_with_native_work(task, &fence, &query)
+        .await
+        .unwrap();
     let mut current = runtime
         .open_task_with_native_work(task, &fence, context, &query)
         .await
@@ -752,4 +762,50 @@ fn malformed_task_inputs_and_cancelled_work_are_denied() {
             )
             .is_err()
     );
+}
+
+#[test]
+fn native_reply_validation_borrows_body_and_rejects_tampering() {
+    let allocation = preparation().payload;
+    let operation = OperationId::from_bytes([178; 16]);
+    let body = json!("q".repeat(128 * 1024));
+    let state = json!({"state":"controlling", "allocation":allocation, "operation":operation});
+    let input = json!({"commands":[{"operation_id":operation, "value":body}]});
+    let machine_work = work();
+    let machine = PiTaskMachine::new(&machine_work).unwrap();
+    let (expected, _custody) = machine
+        .transition_with_native_work(&state, input.clone(), &machine_work)
+        .unwrap();
+    for (prior, input) in [(&state, &input), (&expected.state, &Value::Null)] {
+        let verification = work();
+        machine
+            .validate_transition_with_native_work(prior, input, &expected, &verification)
+            .unwrap();
+        assert!(
+            verification.receipt().bytes_copied < 128 * 1024,
+            "borrowed reply validation copied its body: {:?}",
+            verification.receipt()
+        );
+        for mutation in 0..5 {
+            let mut forged = expected.clone();
+            match mutation {
+                0 => forged.state["reply"]["value"] = json!("r".repeat(128 * 1024)),
+                1 => {
+                    forged.state["reply"]["operation_id"] =
+                        json!(OperationId::from_bytes([179; 16]))
+                }
+                2 => {
+                    forged.state["extra"] = Value::Null;
+                }
+                3 => forged.status = MachineStatus::Completed { value: Value::Null },
+                _ => forged.commands.push(preparation()),
+            }
+            assert!(
+                machine
+                    .validate_transition_with_native_work(prior, input, &forged, &work())
+                    .is_err(),
+                "accepted forged native transition {mutation}"
+            );
+        }
+    }
 }

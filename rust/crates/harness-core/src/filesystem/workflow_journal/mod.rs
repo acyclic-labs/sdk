@@ -417,20 +417,19 @@ where
         &'a self,
         expected_revision: u64,
         idempotency_key: IdempotencyKey,
-        record: WorkflowRecord,
+        record: &'a WorkflowRecord,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowRecord, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (&'a WorkflowRecord, acyclic_fs::NativeAllocation)>>
+    {
         if let Some(owner) = &self.owner {
             owner.require_native_workflow_validation()?;
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            let outcome = self
-                .commit_with_io(expected_revision, idempotency_key, record, Some(&io))
+            self.commit_borrowed_with_io(expected_revision, idempotency_key, record, Some(&io))
                 .await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((outcome, custody))
+            let custody = io.into_native_custody(0)?;
+            Ok((record, custody))
         })
     }
 

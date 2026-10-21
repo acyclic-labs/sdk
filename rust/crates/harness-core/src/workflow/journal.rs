@@ -53,15 +53,17 @@ pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
             "journal has no native admission publication callback",
         ))
     }
-    /// Commits with the original CAS, cancellation and lease fence.
+    /// Borrows the original record through fenced CAS and returns the committed record.
+    /// Implementations must reject a retry whose durable contents differ from the input.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn commit_with_native_work<'a>(
         &'a self,
         _: u64,
         _: IdempotencyKey,
-        _: WorkflowRecord,
+        _: &'a WorkflowRecord,
         _: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (WorkflowRecord, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (&'a WorkflowRecord, acyclic_fs::NativeAllocation)>>
+    {
         Err(unsupported("journal has no native commit callback"))
     }
 }

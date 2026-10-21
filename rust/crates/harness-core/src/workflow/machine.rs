@@ -82,6 +82,28 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     ) -> Result<(MachineTransition, acyclic_fs::NativeAllocation)> {
         Err(unsupported("machine has no native state callback"))
     }
+    /// Verifies a retained transition while borrowing its already resident input.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn validate_transition_with_native_work(
+        &self,
+        state: &Value,
+        input: &Value,
+        expected: &MachineTransition,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let io = PreparationIo::from_native_work(work)?;
+        let input = crate::model::clone_value(input, Some(&io))?;
+        let (transition, custody) = self.transition_with_native_work(state, input, work)?;
+        io.absorb_native_custody(custody)?;
+        if &transition != expected {
+            return Err(stock_boundary(
+                Some(&io),
+                Conflict,
+                "workflow transition differs from pinned machine",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Registry of exactly pinned machine implementations.
@@ -288,6 +310,38 @@ impl MachineRegistry {
         expected: &MachineTransition,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io {
+            let machine = self.machine(&checkpoint.machine, true)?;
+            let work = io
+                .original_native_work()
+                .ok_or_else(|| unsupported("native state requires the original ledger"))?;
+            with_history_io(Some(io), |history| {
+                crate::executor::validate_json_schema_value(
+                    machine.state_schema(),
+                    &checkpoint.state,
+                    "machine state",
+                    history,
+                )
+            })?;
+            machine.validate_transition_with_native_work(
+                &checkpoint.state,
+                &input,
+                expected,
+                work,
+            )?;
+            next_revision(checkpoint.revision, Some(io))?;
+            with_history_io(Some(io), |history| {
+                crate::executor::validate_json_schema_value(
+                    machine.state_schema(),
+                    &expected.state,
+                    "machine state",
+                    history,
+                )
+            })?;
+            validate_commands(&expected.commands, Some(io))?;
+            return Ok(());
+        }
         let (transition, _) = self.transition(checkpoint, input, io)?;
         next_revision(checkpoint.revision, io)?;
         if &transition != expected {

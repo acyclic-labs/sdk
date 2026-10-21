@@ -180,4 +180,73 @@ impl ResumableMachine for PiTaskMachine {
             state_metadata.1,
         ))
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn validate_transition_with_native_work(
+        &self,
+        state: &Value,
+        input: &Value,
+        expected: &MachineTransition,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> acyclic_harness::Result<()> {
+        use crate::pi_root_provider::guarded_pi_value;
+        let controlling = state.get("state").and_then(Value::as_str) == Some("controlling");
+        let retaining_reply =
+            state.get("state").and_then(Value::as_str) == Some("hosting") && input.is_null();
+        if !controlling && !retaining_reply {
+            let input = guarded_pi_value(input, work.remaining()?.bytes_encoded, work)?;
+            let (transition, _custody) = self.transition_with_native_work(state, input.0, work)?;
+            if &transition != expected {
+                return Err(acyclic_harness::Error::NativeBoundary {
+                    code: acyclic_harness::wire::ErrorCode::Conflict,
+                    reason: "Pi retained transition differs from its machine",
+                });
+            }
+            return Ok(());
+        }
+        // Reply bodies are forwarded unchanged. Recompute all metadata through
+        // the same transition implementation and compare the borrowed body
+        // separately, so verification never copies that body into scratch JSON.
+        let state_header = guarded_pi_value(
+            &MetadataValue(state, MetadataRole::State),
+            NATIVE_METADATA_MAXIMUM,
+            work,
+        )?;
+        let input_header = guarded_pi_value(
+            &MetadataValue(input, MetadataRole::Results),
+            NATIVE_METADATA_MAXIMUM,
+            work,
+        )?;
+        let (transition, _custody) =
+            self.transition_with_native_work(&state_header.0, input_header.0, work)?;
+        let expected_header = guarded_pi_value(
+            &MetadataValue(&expected.state, MetadataRole::State),
+            NATIVE_METADATA_MAXIMUM,
+            work,
+        )?;
+        let body = if controlling {
+            require_single_command(input)?;
+            input
+                .get("commands")
+                .and_then(Value::as_array)
+                .and_then(|commands| commands.first())
+                .and_then(|reply| reply.get("value"))
+        } else {
+            state.get("reply").and_then(|reply| reply.get("value"))
+        };
+        let expected_body = expected
+            .state
+            .get("reply")
+            .and_then(|reply| reply.get("value"));
+        if transition.state != expected_header.0
+            || transition.commands != expected.commands
+            || transition.status != expected.status
+            || body != expected_body
+        {
+            return Err(acyclic_harness::Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi retained transition differs from its machine",
+            });
+        }
+        Ok(())
+    }
 }

@@ -227,13 +227,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         let input = std::borrow::Cow::Borrowed(&record.input);
-        #[cfg(not(target_arch = "wasm32"))]
-        let input = match io {
-            Some(io) => {
-                std::borrow::Cow::Owned(crate::model::clone_value(&record.input, Some(io))?)
-            }
-            None => input,
-        };
         self.host
             .machines
             .validate_transition(&record.prior, input, &record.transition, io)?;

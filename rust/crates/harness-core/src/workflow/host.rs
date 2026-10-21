@@ -362,14 +362,7 @@ impl DurableWorkflowHost {
         if let Some(io) = io {
             self.reserve_native_index(record.transition.commands.len(), io)?;
         }
-        let committed = self.commit_transition(&record, &key, io).await?;
-        if committed != record {
-            return Err(stock_boundary(
-                io,
-                Conflict,
-                "workflow retry identity is bound to another transition",
-            ));
-        }
+        self.commit_transition(&record, &key, io).await?;
         self.checkpoint = next;
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         self.reserved_operations.extend(record.operation_ids());
@@ -426,7 +419,7 @@ impl DurableWorkflowHost {
     ) -> Result<(MachineTransition, u64, u64)> {
         let (revision, digest) = replay;
 
-        let page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
+        let mut page = journal::page(self.journal.as_ref(), *revision, 1, io).await?;
         let [record] = page.0.as_slice() else {
             return Err(stock_boundary(
                 io,
@@ -445,6 +438,22 @@ impl DurableWorkflowHost {
             ));
         }
         check(&record.transition)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io {
+            // The page already owns the validated transition. Transfer that
+            // payload and its original custody instead of copying its JSON.
+            let record = page.0.pop().ok_or_else(|| {
+                stock_boundary(Some(io), Storage, "workflow retry record is unavailable")
+            })?;
+            let retained = page
+                .1
+                .as_ref()
+                .map_or(0, acyclic_fs::NativeAllocation::bytes);
+            if let Some(custody) = page.1.take() {
+                io.absorb_native_custody(custody)?;
+            }
+            return Ok((record.transition, 0, retained));
+        }
         let before = workflow_owned_bytes(io)?;
         let transition = record.transition.copy(io)?;
         Ok((transition, 0, workflow_owned_bytes(io)? - before))
@@ -455,36 +464,38 @@ impl DurableWorkflowHost {
         record: &WorkflowRecord,
         key: &IdempotencyKey,
         io: Option<&PreparationIo>,
-    ) -> Result<WorkflowRecord> {
-        let committed_record = record.copy(io)?;
+    ) -> Result<()> {
         let commit_key = IdempotencyKey(crate::executor::stock_string_copy(&key.0, io)?);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let observed = if let Some(io) = io {
+        if let Some(io) = io {
             let work = io
                 .original_native_work()
                 .ok_or_else(|| unsupported("native commit requires the original ledger"))?;
-            let (observed, custody) = self
+            let (committed, custody) = self
                 .journal
-                .commit_with_native_work(
-                    self.checkpoint.revision,
-                    commit_key,
-                    committed_record,
-                    work,
-                )?
+                .commit_with_native_work(self.checkpoint.revision, commit_key, record, work)?
                 .await?;
             io.absorb_native_custody(custody)?;
-            observed
-        } else {
-            self.journal
-                .commit(self.checkpoint.revision, commit_key, committed_record)
-                .await?
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let observed = self
+            if committed != record {
+                return Err(stock_boundary(
+                    Some(io),
+                    Conflict,
+                    "workflow retry identity is bound to another transition",
+                ));
+            }
+            return Ok(());
+        }
+        let committed = self
             .journal
-            .commit(self.checkpoint.revision, commit_key, committed_record)
+            .commit(self.checkpoint.revision, commit_key, record.copy(io)?)
             .await?;
-        let committed = observed;
-        Ok(committed)
+        if committed != *record {
+            return Err(stock_boundary(
+                io,
+                Conflict,
+                "workflow retry identity is bound to another transition",
+            ));
+        }
+        Ok(())
     }
 }
