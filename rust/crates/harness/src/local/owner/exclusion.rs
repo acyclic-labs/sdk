@@ -11,6 +11,31 @@ fn missing(error: &DemandError) -> bool {
     matches!(error, DemandError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
+fn read_only(error: &DemandError) -> bool {
+    matches!(error, DemandError::Io(error) if matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    ))
+}
+
+/// Flushes a retained rule that a previous publisher may have written but
+/// died before flushing, together with the name that holds it.
+fn settle(info: &HeldRoot, file: &fs::File) -> Result<()> {
+    match info.sync_file(file) {
+        Ok(()) => {}
+        // Windows flushes only through a writable handle. Read-only metadata
+        // admits no writer on this host whose bytes could still be
+        // unflushed, so there is nothing left to settle.
+        Err(error) if read_only(&error) => match info.open_file(Path::new("exclude"), true) {
+            Ok(writable) => info.sync_file(&writable).map_err(storage)?,
+            Err(error) if read_only(&error) => return Ok(()),
+            Err(error) => return Err(storage(error)),
+        },
+        Err(error) => return Err(storage(error)),
+    }
+    info.sync_directory().map_err(storage)
+}
+
 fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
     // Pointer records follow the existing local owner-record bound. An opaque
     // exclude file is streamed separately and never needs a size-based buffer.
@@ -236,13 +261,25 @@ impl Exclusion {
     }
 
     pub(super) fn publish(&self) -> Result<()> {
+        // Read first through the held Git directory: an effective rule needs
+        // no write access, so read-only metadata that carries it reopens.
+        if self.effective()? {
+            return Ok(());
+        }
+        let denied = |error: DemandError| {
+            if read_only(&error) {
+                Error::ReadOnlyGitMetadata {
+                    path: self.common.path().join("info").join("exclude"),
+                }
+            } else {
+                storage(error)
+            }
+        };
         let info = self
             .common
             .create_directories(Path::new("info"))
-            .map_err(storage)?;
-        let mut file = info
-            .open_file(Path::new("exclude"), true)
-            .map_err(storage)?;
+            .map_err(denied)?;
+        let mut file = info.open_file(Path::new("exclude"), true).map_err(denied)?;
         // Serialize the read/append pair across processes; retain opaque user
         // bytes and avoid duplicate records on reopen.
         file.lock().map_err(storage)?;
@@ -257,10 +294,30 @@ impl Exclusion {
             appended.push(b'\n');
             acyclic_native_runtime::write_file_all(&mut file, &appended).map_err(storage)?;
         }
-        // A previous publisher may have died after writing the complete rule
-        // but before flushing it. The reader must settle those same bytes too.
         info.sync_file(&file).map_err(storage)?;
         info.sync_directory().map_err(storage)
+    }
+
+    /// Whether the held exclude file already makes the rule effective, read
+    /// without write access. A retained rule is settled before it is trusted.
+    fn effective(&self) -> Result<bool> {
+        let info = match self.common.open_directory(Path::new("info")) {
+            Ok(info) => info,
+            Err(error) if missing(&error) => return Ok(false),
+            Err(error) => return Err(storage(error)),
+        };
+        let mut file = match info.open_file(Path::new("exclude"), false) {
+            Ok(file) => file,
+            Err(error) if missing(&error) => return Ok(false),
+            Err(error) => return Err(storage(error)),
+        };
+        // Serialize with appenders, which re-check under their own lock.
+        file.lock().map_err(storage)?;
+        if !contains(&mut file, &self.pattern).map_err(storage)?.0 {
+            return Ok(false);
+        }
+        settle(&info, &file)?;
+        Ok(true)
     }
 }
 
@@ -794,5 +851,99 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// Sets read-only permissions on `paths`, restoring them on drop so the
+    /// temporary directory can be removed.
+    struct ReadOnly(Vec<(PathBuf, fs::Permissions)>);
+
+    impl ReadOnly {
+        fn new(paths: &[PathBuf]) -> Self {
+            Self(
+                paths
+                    .iter()
+                    .map(|path| {
+                        let original = fs::metadata(path).unwrap().permissions();
+                        let mut read_only = original.clone();
+                        read_only.set_readonly(true);
+                        fs::set_permissions(path, read_only).unwrap();
+                        (path.clone(), original)
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for ReadOnly {
+        fn drop(&mut self) {
+            for (path, original) in self.0.drain(..).rev() {
+                let _ = fs::set_permissions(path, original);
+            }
+        }
+    }
+
+    #[test]
+    fn read_only_git_metadata_reopens_with_an_effective_rule_and_names_a_missing_one() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        git(root, &["init", "-q"]);
+        let info = root.join(".git/info");
+        let exclude = info.join("exclude");
+        let held = acyclic_fs::hold_root(root).unwrap();
+        let exclusion = Exclusion::capture(&held).unwrap().unwrap();
+        // (a) The rule is already effective: reopening needs no write access.
+        exclusion.publish().unwrap();
+        let published = fs::read(&exclude).unwrap();
+        {
+            // Windows honors the read-only attribute only on files; Unix also
+            // refuses new names in the directory.
+            let paths = if cfg!(unix) {
+                vec![exclude.clone(), info.clone()]
+            } else {
+                vec![exclude.clone()]
+            };
+            let _read_only = ReadOnly::new(&paths);
+            // Negative control: the metadata really refuses a writer, which
+            // is what publication used to open first.
+            assert!(fs::OpenOptions::new().append(true).open(&exclude).is_err());
+            Exclusion::capture(&held)
+                .unwrap()
+                .unwrap()
+                .publish()
+                .unwrap();
+            assert_eq!(fs::read(&exclude).unwrap(), published);
+        }
+        // (b) The rule is missing: the typed error names the file to fix.
+        let user = b"# user\n/keep\n";
+        fs::write(&exclude, user).unwrap();
+        let paths = if cfg!(unix) {
+            vec![exclude.clone(), info.clone()]
+        } else {
+            vec![exclude.clone()]
+        };
+        let read_only = ReadOnly::new(&paths);
+        match exclusion.publish() {
+            Err(Error::ReadOnlyGitMetadata { path }) => assert_eq!(
+                fs::canonicalize(path).unwrap(),
+                fs::canonicalize(&exclude).unwrap()
+            ),
+            other => panic!("expected read-only Git metadata, got {other:?}"),
+        }
+        assert_eq!(fs::read(&exclude).unwrap(), user);
+        drop(read_only);
+        // Negative control: once writable, the same exclusion appends.
+        exclusion.publish().unwrap();
+        let after = git(
+            root,
+            &[
+                "check-ignore",
+                "-q",
+                "--no-index",
+                ".volumes/.incarnation/token",
+            ],
+        );
+        assert!(after.is_empty(), "{after}");
+        assert!(fs::read(&exclude).unwrap().starts_with(user));
+        assert_ne!(fs::read(&exclude).unwrap(), user);
     }
 }

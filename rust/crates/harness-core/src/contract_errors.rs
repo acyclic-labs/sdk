@@ -123,6 +123,13 @@ pub enum Error {
     /// The caller lacks authority.
     #[error("unauthorized: {0}")]
     Unauthorized(String),
+    /// A checkout's Git metadata needs the SDK's exclusion rule appended, but
+    /// the file that must hold it is read-only.
+    #[error("read-only Git metadata: {} needs the checkout incarnation exclusion rule", path.display())]
+    ReadOnlyGitMetadata {
+        /// The Git exclude file that must hold the rule.
+        path: std::path::PathBuf,
+    },
     /// The invocation's cancellation token fired before the operation finished.
     #[error("operation cancelled")]
     Cancelled,
@@ -478,7 +485,7 @@ impl Error {
             }
             Self::Invalid(_) => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } => *code,
-            Self::Unauthorized(_) => ErrorCode::Unauthorized,
+            Self::Unauthorized(_) | Self::ReadOnlyGitMetadata { .. } => ErrorCode::Unauthorized,
             Self::ModelUnavailable { failure, .. } if failure.retryable() => ErrorCode::Unavailable,
             Self::ModelUnavailable { .. } => ErrorCode::Invalid,
             Self::Cancelled => ErrorCode::Cancelled,
@@ -602,6 +609,7 @@ impl Error {
             | Self::Invalid(_)
             | Self::ToolRejected { .. }
             | Self::Unauthorized(_)
+            | Self::ReadOnlyGitMetadata { .. }
             | Self::Cancelled
             | Self::InteractionRejected(_)
             | Self::Storage(_)
