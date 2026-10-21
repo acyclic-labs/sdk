@@ -98,6 +98,11 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// Darwin's "illegal byte sequence", which APFS returns for a name it
+    /// cannot store.
+    #[cfg(target_os = "macos")]
+    const EILSEQ: i32 = 92;
+
     fn git(root: &Path, args: &[&str]) -> String {
         let output = std::process::Command::new("git")
             .args(args)
@@ -272,7 +277,15 @@ mod tests {
             let mut root = repository.to_path_buf();
             for part in parts { root.push(part); }
             let mount = root.join(".volumes/scratch");
-            std::fs::create_dir_all(&mount).unwrap();
+            let created = std::fs::create_dir_all(&mount);
+            // APFS refuses a name holding a code point its Unicode tables do
+            // not assign (`EILSEQ`), so no checkout can carry that component.
+            #[cfg(target_os = "macos")]
+            prop_assume!(
+                created.as_ref().err().and_then(std::io::Error::raw_os_error) != Some(EILSEQ),
+                "unrepresentable on APFS"
+            );
+            created.unwrap();
             let authored = root.join(".volumes/user-owned");
             std::fs::write(&authored, "keep").unwrap();
             let control = root.join(".volumes/.acyclic-fs-mount-test.lock");
@@ -331,7 +344,14 @@ mod tests {
         let root = directory
             .path()
             .join(std::ffi::OsStr::from_bytes(b"non-\xff"));
-        std::fs::create_dir(&root).unwrap();
+        match std::fs::create_dir(&root) {
+            Ok(()) => {}
+            // APFS and HFS+ store only valid UTF-8 names, so no checkout there
+            // can have this path. Every other Unix host must create it.
+            #[cfg(target_os = "macos")]
+            Err(error) if error.raw_os_error() == Some(EILSEQ) => return,
+            Err(error) => panic!("{}: {error}", root.display()),
+        }
         let error = exclude_mount_paths(&root, &[root.join(".volumes/scratch")]).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
         assert_eq!(std::fs::read_to_string(&exclude).unwrap(), "user-pattern\n");
