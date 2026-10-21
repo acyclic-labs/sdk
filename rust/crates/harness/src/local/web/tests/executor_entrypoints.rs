@@ -1,6 +1,10 @@
 use super::*;
 use crate::durable_host::tests::fixture::{Fixture, FixtureMachine, test_registries};
-use crate::{runtime::ToolContext, tool::ToolInvocation, wire::ErrorCode};
+use crate::{
+    runtime::{TaskSpawner as _, ToolContext},
+    tool::ToolInvocation,
+    wire::ErrorCode,
+};
 use acyclic_fs::NativeMaterializationWork;
 
 fn fixture_error(error: impl std::fmt::Display) -> Error {
