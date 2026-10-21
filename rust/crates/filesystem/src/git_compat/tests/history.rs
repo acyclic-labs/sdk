@@ -306,6 +306,146 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
 }
 
 #[tokio::test]
+async fn discard_retires_only_an_idle_non_current_branch() {
+    fn names(output: &GitCommandOutput) -> Vec<&str> {
+        let GitCommandOutput::Branches { branches, .. } = output else {
+            panic!("discard lists the remaining branches: {output:?}");
+        };
+        branches.iter().map(|branch| branch.name.as_str()).collect()
+    }
+    fn argv(command: &str, branch: &str) -> Vec<String> {
+        vec![command.to_owned(), branch.to_owned()]
+    }
+    let child = workspace_identity([9; 16], "discard");
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    repository
+        .run(
+            GitCommand::Branch {
+                create: Some("agents/kid".to_owned()),
+            },
+            tree(1),
+            &TestExecutor::returning(GitFilesystemResult::Forked {
+                workspace_id: child,
+            }),
+        )
+        .await
+        .expect("child branch");
+    // The checked-out branch is the destination of every merge; dropping it
+    // would leave HEAD without a branch.
+    assert!(matches!(
+        repository
+            .run_argv(&argv("discard", "main"), tree(1), "agent", 0, &TestExecutor::failing())
+            .await,
+        Err(GitCompatRunError::Compat(GitCompatError::InvalidCommand(message)))
+            if message.contains("checked-out")
+    ));
+    assert!(matches!(
+        repository
+            .run_argv(
+                &argv("discard", "agents/none"),
+                tree(1),
+                "agent",
+                0,
+                &TestExecutor::failing()
+            )
+            .await,
+        Err(GitCompatRunError::Compat(GitCompatError::UnknownObject(_)))
+    ));
+    assert!(matches!(
+        repository
+            .execute_argv(&["discard".to_owned()], tree(1), "agent", 0)
+            .await,
+        Err(GitCompatError::InvalidCommand(_))
+    ));
+
+    // A conflicted merge of the branch is still pending: its continuation
+    // needs the source, so the catalog is frozen until it ends.
+    assert!(matches!(
+        repository
+            .run(
+                GitCommand::Merge {
+                    branch: "agents/kid".to_owned()
+                },
+                tree(2),
+                &TestExecutor::failing(),
+            )
+            .await,
+        Err(GitCompatRunError::Executor(_))
+    ));
+    assert!(matches!(
+        repository
+            .run(
+                GitCommand::Discard {
+                    branch: "agents/kid".to_owned()
+                },
+                tree(2),
+                &TestExecutor::failing(),
+            )
+            .await,
+        Err(GitCompatRunError::Compat(
+            GitCompatError::TransitionPending(_)
+        ))
+    ));
+    repository
+        .run(
+            GitCommand::MergeAbort,
+            tree(3),
+            &TestExecutor::returning(GitFilesystemResult::Applied {
+                tree: Some(tree(1)),
+                tracked_paths: None,
+            }),
+        )
+        .await
+        .expect("abort merge");
+
+    // The filesystem is never asked to act: only the catalog entry goes.
+    let discarded = repository
+        .run_argv(
+            &argv("discard", "agents/kid"),
+            tree(1),
+            "agent",
+            0,
+            &TestExecutor::failing(),
+        )
+        .await
+        .expect("discard child branch");
+    assert_eq!(names(&discarded), ["main"]);
+    for command in ["merge", "rebase", "discard"] {
+        assert!(
+            matches!(
+                repository
+                    .run_argv(
+                        &argv(command, "agents/kid"),
+                        tree(1),
+                        "agent",
+                        0,
+                        &TestExecutor::failing()
+                    )
+                    .await,
+                Err(GitCompatRunError::Compat(GitCompatError::UnknownObject(_)))
+            ),
+            "{command} still reaches a discarded branch"
+        );
+    }
+    let listed = repository
+        .run(
+            GitCommand::Branch { create: None },
+            tree(1),
+            &TestExecutor::failing(),
+        )
+        .await
+        .expect("branch catalog");
+    assert_eq!(names(&listed), ["main"]);
+    assert!(
+        repository
+            .pending_transition()
+            .await
+            .expect("state")
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn filtered_commit_completes_and_clears_its_transition() {
     let workspace = memory_workspace("git-filtered-commit").await;
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6b; 16])).await;

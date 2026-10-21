@@ -229,6 +229,9 @@ pub fn parse_git_argv<E: std::error::Error + 'static>(
         "merge" if matches!(args, [operation] if operation == "--abort") => {
             Ok(GitCommand::MergeAbort)
         }
+        "discard" => Ok(GitCommand::Discard {
+            branch: exactly_one(command, args)?,
+        }),
         "merge" | "rebase" => {
             let branch = exactly_one(command, args)?;
             if command == "merge" {

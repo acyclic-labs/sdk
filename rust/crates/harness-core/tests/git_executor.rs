@@ -1292,3 +1292,73 @@ three
     }
     Ok(())
 }
+
+/// `discard agents/<ref>` drops the parent's reference to a child's branch:
+/// its changes can no longer be diffed or merged into the parent, the parent
+/// tree never sees them, and the child's own workspace stays intact for its
+/// owner. The checked-out branch can never be discarded.
+#[tokio::test]
+async fn agent_discard_retires_only_the_parent_reference() -> Result<()> {
+    let (_temp, _root, fs, store, main) = fixture().await?;
+    let stop = CancellationToken::new();
+    let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+    acyclic_fs::WorkspaceGraph::new(store.clone())
+        .register_root(main.workspace())
+        .await?;
+    let repo = main.workspace().id();
+    let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+    let child = child.ok_or("missing child view")?;
+    child
+        .write(
+            "/child.txt",
+            bytes::Bytes::from_static(b"child\n").into(),
+            IdempotencyKey::new(),
+            PublicationPermit::Unrestricted,
+            &mut work,
+        )
+        .await?;
+    run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+    assert!(
+        run(&fs, &store, &main, repo, &["diff", "agents/kid"])
+            .await
+            .is_ok()
+    );
+    assert!(
+        run(&fs, &store, &main, repo, &["discard", "main"])
+            .await
+            .is_err(),
+        "the checked-out branch was discarded"
+    );
+    let (discarded, _) = run(&fs, &store, &main, repo, &["discard", "agents/kid"]).await?;
+    let GitCommandOutput::Branches { current, branches } = discarded else {
+        return Err(format!("discard lists the remaining branches: {discarded:?}").into());
+    };
+    assert_eq!(current, "main");
+    assert_eq!(
+        branches
+            .iter()
+            .map(|branch| branch.name.as_str())
+            .collect::<Vec<_>>(),
+        ["main"]
+    );
+    for command in [
+        ["diff", "agents/kid"],
+        ["merge", "agents/kid"],
+        ["discard", "agents/kid"],
+    ] {
+        assert!(
+            run(&fs, &store, &main, repo, &command).await.is_err(),
+            "{command:?} still reaches the discarded branch"
+        );
+    }
+    assert!(main.read("/child.txt", 64, &mut work).await.is_err());
+    assert_eq!(
+        child
+            .read("/child.txt", 64, &mut work)
+            .await?
+            .bytes
+            .as_ref(),
+        b"child\n"
+    );
+    Ok(())
+}

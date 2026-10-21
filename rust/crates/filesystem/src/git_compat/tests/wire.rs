@@ -56,6 +56,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
         json!({"Merge": {"branch": "topic"}}),
         json!("MergeContinue"),
         json!("MergeAbort"),
+        json!({"Discard": {"branch": "topic"}}),
         json!({"Rebase": {"branch": "main"}}),
         json!("StashPush"),
         json!("StashPop"),

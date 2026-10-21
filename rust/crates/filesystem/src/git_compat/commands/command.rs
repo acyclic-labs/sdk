@@ -98,6 +98,11 @@ pub enum GitCommand {
     MergeContinue => ("merge-continue", r#"{ readonly kind: "merge-continue" }"#),
 /// Restore the pre-merge working tree and clear the durable merge intent.
     MergeAbort => ("merge-abort", r#"{ readonly kind: "merge-abort" }"#),
+/// Drop another branch's unmerged changes by retiring it from the catalog.
+    Discard {
+        /// Branch whose changes are dropped; never the checked-out branch.
+        branch: String,
+    } => ("discard", r#"{ readonly kind: "discard"; readonly branch: string }"#),
 /// Rebase onto another compatibility branch.
     Rebase {
         /// New base branch.
