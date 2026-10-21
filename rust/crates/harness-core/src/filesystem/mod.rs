@@ -7,7 +7,6 @@
     )
 )]
 #![doc = include_str!("../../docs/filesystem.md")]
-
 use crate::contract::capability;
 use crate::{
     AgentId, Error, IdempotencyKey, Result,
@@ -36,14 +35,11 @@ use acyclic_fs::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, sync::Arc};
-
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
-
 mod content_input;
 use content_input::ContentInput;
 mod content_publisher;
 pub use content_publisher::FilesystemContentPublisher;
-
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
@@ -159,7 +155,6 @@ pub use task_runtime::{
     TaskSourceInspection, TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome,
     TaskWorkerTick,
 };
-
 mod config;
 use config::*;
 pub use config::{FilesystemJournalBinding, WorkspaceMutation, WorkspaceObservation};
@@ -180,7 +175,6 @@ mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
 pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
         &self,
@@ -203,7 +197,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(hold);
         Ok(Some(file))
     }
-
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,
@@ -490,7 +483,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await?;
         Ok(reference)
     }
-
     async fn read_retained_file(
         &self,
         generation: &Generation<A, O>,
@@ -544,7 +536,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         pinned_read_tests::retained::sample_items(true, io);
         Ok(bytes)
     }
-
     async fn read_pinned_io(
         &self,
         reference: &FileRef,
