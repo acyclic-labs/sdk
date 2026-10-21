@@ -37,7 +37,7 @@ async fn hard_linked_skill_pins_the_shadow_identity_without_loading_its_body() -
     )
     .await?;
     let cut = view.snapshot(&mut accounting).await?;
-    let skills = harness.skills().await?;
+    let skills = harness.skills(None).await?;
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].description, "Updated through alias");
     // Changing the authored alias after discovery must not change the retained cut.
@@ -86,14 +86,14 @@ async fn unchanged_checkout_generation_reuses_skill_catalog_without_rescanning()
         checkout_config(root.path(), (model()?, text()))?.without_default_tools(),
     )
     .await?;
-    let discovery = harness.skills();
+    let discovery = harness.skills(None);
     assert!(std::mem::size_of_val(&discovery) <= 4096);
     let first = discovery.await?;
     assert_eq!(first.len(), 1);
     // No capture boundary has advanced the checkout generation. A rescan would
     // parse this malformed file and fail, instead of reusing the pinned catalog.
     std::fs::write(skill, "malformed replacement").map_err(super::super::super::storage)?;
-    assert_eq!(harness.skills().await?, first);
+    assert_eq!(harness.skills(None).await?, first);
     Ok(())
 }
 
@@ -167,7 +167,7 @@ async fn binding_an_existing_runtime_discovers_checkout_and_user_skills() -> Res
     let supplied =
         serde_json::to_string(&provider.requests()).map_err(super::super::super::storage)?;
     assert!(supplied.contains("Greet formally"));
-    let catalog = bound.skills().await?;
+    let catalog = bound.skills(None).await?;
     assert_eq!(catalog.len(), 2);
     assert!(catalog.iter().any(|skill| skill.name == "project"));
     assert!(catalog.iter().any(|skill| skill.name == "user"));

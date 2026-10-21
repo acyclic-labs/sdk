@@ -12,21 +12,29 @@ pub(in crate::local) fn cache() -> Cache {
 pub(super) const PROJECT_ROOTS: [&str; 2] = [".agents/skills", ".claude/skills"];
 
 impl LocalHarness {
-    pub(in crate::local) async fn skills(&self) -> Result<Vec<SkillMetadata>> {
-        self.skill_discovery()?.await
+    pub(in crate::local) async fn skills(
+        &self,
+        generation: Option<&crate::resources::GenerationRef>,
+    ) -> Result<Vec<SkillMetadata>> {
+        self.skill_discovery(generation)?.await
     }
 
     // Construct the large discovery state outside the caller's poll frame.
     #[inline(never)]
-    fn skill_discovery(
-        &self,
-    ) -> Result<crate::conversation::BoundedContentFuture<'_, Vec<SkillMetadata>>> {
-        crate::conversation::BoundedContentFuture::new(None, || self.discover_skills())
+    fn skill_discovery<'a>(
+        &'a self,
+        generation: Option<&'a crate::resources::GenerationRef>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<SkillMetadata>>> {
+        crate::conversation::BoundedContentFuture::new(None, || self.discover_skills(generation))
     }
 
-    async fn discover_skills(&self) -> Result<Vec<SkillMetadata>> {
+    async fn discover_skills(
+        &self,
+        generation: Option<&crate::resources::GenerationRef>,
+    ) -> Result<Vec<SkillMetadata>> {
         #[cfg(feature = "native-execution")]
-        if self.checkout_context
+        if generation.is_none()
+            && self.checkout_context
             && let Some(sources) = self.files.skill_sources(&self.journal)?
             && let Some(workspace) = &self.workspace
         {
@@ -43,10 +51,19 @@ impl LocalHarness {
             self.project.provider().clone(),
             &self.project.storage_name(&mut None)?,
         )?;
-        let generation = self.files.resolve(&workspace, None).await?.generation;
+        // Instructions already selected this generation. Reuse it both for
+        // consistency and to keep cache hits free of authority stream reads.
+        let observed;
+        let generation = match generation {
+            Some(generation) => generation,
+            None => {
+                observed = self.files.resolve(&workspace, None).await?.generation;
+                &observed
+            }
+        };
         let mut cache = crate::sync::owned::lock_owned(self.skill_cache.clone()).await;
         if let Some((cached, skills)) = &*cache
-            && cached == &generation
+            && cached == generation
         {
             return Ok(skills.as_ref().clone());
         }
@@ -64,7 +81,7 @@ impl LocalHarness {
         for directory in PROJECT_ROOTS {
             match self
                 .files
-                .stat(&workspace, Some(&generation), &format!("/{directory}"))
+                .stat(&workspace, Some(generation), &format!("/{directory}"))
                 .await
             {
                 Ok(_) => {}
@@ -81,7 +98,7 @@ impl LocalHarness {
                     &[root],
                     "SKILL.md",
                     &mut work,
-                    Some(&generation),
+                    Some(generation),
                 )
                 .await?,
             );
@@ -91,7 +108,7 @@ impl LocalHarness {
             skills: skills.clone(),
         }
         .validate(&mut None)?;
-        *cache = Some((generation, Arc::new(skills.clone())));
+        *cache = Some((generation.clone(), Arc::new(skills.clone())));
         Ok(skills)
     }
 }

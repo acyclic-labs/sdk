@@ -110,10 +110,9 @@ impl LocalHarness {
         let policy = ContextDiscoveryPolicy::default();
         let limits = ContextDiscoveryLimits::default();
         let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
-        let mut discovery = self
+        let discovery = self
             .instructions(&policy.instruction_names, maximum, publisher)
             .await?;
-        discovery.skills = self.skills().await?;
         let (goal, plans) = self.file_guidance(prompt.unwrap_or_default()).await?;
         let manifest =
             ContextManifest::for_files(discovery, Vec::new(), self.tools(), goal, plans)?;
@@ -151,9 +150,11 @@ impl LocalHarness {
         if self.checkout_context
             && let Some(workspace) = &self.workspace
         {
-            return self
+            let mut discovery = self
                 .checkout_instructions(workspace, names, maximum, publisher)
-                .await;
+                .await?;
+            discovery.skills = self.skills(None).await?;
+            return Ok(discovery);
         }
         let _ = publisher;
         self.volume_instructions(names, maximum, self.context_reader()?.as_ref())
@@ -197,6 +198,7 @@ impl LocalHarness {
                 Err(error) => return Err(error),
             }
         }
+        discovery.skills = self.skills(Some(&generation)).await?;
         Ok(discovery)
     }
 }

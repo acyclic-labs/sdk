@@ -23,6 +23,7 @@ mod read_profile;
 mod requests;
 mod seed;
 mod selected_history;
+mod skill_reads;
 mod supersede;
 use seed::Seed;
 

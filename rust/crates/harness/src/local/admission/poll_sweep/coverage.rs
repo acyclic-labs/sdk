@@ -73,7 +73,12 @@ fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
         Scenario::EffectAndContinuation => include_bytes!("coverage/effect_goal.json"),
         Scenario::Compaction => include_bytes!("coverage/compaction.json"),
     };
-    serde_json::from_slice(bytes).map_err(storage)
+    let mut expected: BTreeMap<String, usize> = serde_json::from_slice(bytes).map_err(storage)?;
+    // The initial context now probes two optional skill roots once per project
+    // generation. Derive that incremental cost from independent filesystem
+    // operations; never copy a count from the run being checked.
+    *expected.get_mut("stream:read:ready").unwrap() += skill_reads::cold_root_reads(scenario)?;
+    Ok(expected)
 }
 
 pub(super) fn check_boundaries(
