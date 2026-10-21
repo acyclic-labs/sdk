@@ -498,9 +498,10 @@ impl LocalMount {
     /// failure leaves every route mounted and publishing again.
     pub(crate) async fn unmount(&self) -> Result<(), String> {
         self.sync().await?;
-        // Each route's own unmount is exactly this publication followed by
-        // its detach; publishing once per route is enough.
-        self.abandon()
+        for mount in self.routes.values() {
+            mount.unmount().await.map_err(display)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn abandon(&self) -> Result<(), String> {

@@ -169,7 +169,14 @@ impl ProjFsSession {
         warm: Option<ProjFsNamespaceQualification>,
     ) -> Result<(), NativeMountError> {
         let guid = warm.map_or_else(
-            || guid_from_key(u128::from_le_bytes(request.mount_id.into_bytes())),
+            // ProjFS associates cached file control blocks with the root's instance
+            // ID even after its reparse tag is removed. A fresh mount request
+            // must reuse that physical directory's ID, not mint another one.
+            || {
+                guid_from_key(u128::from_le_bytes(
+                    runtime.metadata_root.identity().to_bytes(),
+                ))
+            },
             |warm| warm.instance_id,
         );
         let root_name = HSTRING::from(runtime.root.as_os_str());

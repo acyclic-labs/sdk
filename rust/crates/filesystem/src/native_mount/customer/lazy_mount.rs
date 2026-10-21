@@ -365,6 +365,16 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
+        #[cfg(windows)]
+        {
+            let mut owner = self
+                .session
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(session) = owner.as_mut() {
+                session.prepare_projection_cleanup()?;
+            }
+        }
         self.retire(&crate::CancellationToken::new()).map(drop)
     }
 

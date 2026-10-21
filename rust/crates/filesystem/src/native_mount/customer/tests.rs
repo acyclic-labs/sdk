@@ -799,3 +799,104 @@ pub(super) fn test_work(
 ) -> Result<NativeMaterializationWork, crate::NativeTreeMaterializationError> {
     NativeMaterializationWork::new(budget, cancellation).map_err(|(cause, _)| cause)
 }
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn published_lazy_unmount_reuses_the_same_windows_destination()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    std::fs::write(physical.path().join("source.txt"), b"original")?;
+    let lazy = native_lazy_source(physical.path(), "published-lazy-remount", &cancellation).await?;
+    let destination = tempfile::tempdir()?;
+    for _ in 0..2 {
+        let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
+        let mount = lazy
+            .mount(
+                destination.path(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .native_context(&work, None, None),
+            )
+            .await
+            .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
+        assert_eq!(
+            std::fs::read(destination.path().join("source.txt"))?,
+            b"original"
+        );
+        mount.unmount().await?;
+        drop(mount);
+        assert_eq!(
+            std::fs::read(physical.path().join("source.txt"))?,
+            b"original"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn published_lazy_unmount_captures_authored_changes_before_detach()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    let cancellation = crate::CancellationToken::new();
+    let physical = tempfile::tempdir()?;
+    std::fs::write(physical.path().join("source.txt"), b"original")?;
+    let lazy = native_lazy_source(physical.path(), "published-lazy-remount", &cancellation).await?;
+    lazy.workspace()
+        .write_text("/authored.txt", "before")
+        .await?;
+    let destination = tempfile::tempdir()?;
+    for (previous, expected) in [
+        (b"before".as_slice(), b"first".as_slice()),
+        (b"first".as_slice(), b"second".as_slice()),
+    ] {
+        let work = test_work(crate::performance::BOUNDARY_BUDGET, &cancellation)?;
+        let mount = lazy
+            .mount(
+                destination.path(),
+                MountOptions::read_write()
+                    .publication(MountPublication::Manual)
+                    .native_context(&work, None, None),
+            )
+            .await
+            .map_err(|error| format!("published unmount left a stale projection: {error}"))?;
+        assert_eq!(
+            std::fs::read(destination.path().join("authored.txt"))
+                .map_err(|error| format!("mounted authored read failed: {error}"))?,
+            previous
+        );
+        use std::os::windows::process::CommandExt as _;
+        let staging = tempfile::tempdir()?;
+        let host_input = staging.path().join("authored.bin");
+        std::fs::write(&host_input, expected)?;
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/d", "/v:off", "/c"])
+            .raw_arg(r#"copy /b /y "%ACYCLIC_COPY_SOURCE%" "%ACYCLIC_COPY_DESTINATION%""#)
+            .env("ACYCLIC_COPY_SOURCE", &host_input)
+            .env(
+                "ACYCLIC_COPY_DESTINATION",
+                destination.path().join("authored.txt"),
+            )
+            .creation_flags(0x0800_0000)
+            .output()?;
+        assert!(output.status.success(), "host writer failed: {:?}", output);
+        mount
+            .unmount()
+            .await
+            .map_err(|error| format!("published unmount failed: {error}"))?;
+        drop(mount);
+        let mut accounting =
+            KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        assert_eq!(
+            lazy.read("/authored.txt", 32, &mut accounting)
+                .await
+                .map_err(|error| format!("published authored read failed: {error}"))?
+                .bytes
+                .as_ref(),
+            expected
+        );
+    }
+    Ok(())
+}
