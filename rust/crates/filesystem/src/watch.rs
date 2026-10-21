@@ -1261,7 +1261,8 @@ impl NativeWatch {
         }
     }
 
-    /// Settles the same native producer, its child producers, and held root.
+    /// Settles the native producer and its children using their birth-paid cleanup.
+    /// The current invocation funds housekeeping and controls cancellation while waiting.
     pub fn shutdown_with_native_work(
         &mut self,
         original: &crate::NativeMaterializationWork,
@@ -1285,7 +1286,7 @@ impl NativeWatch {
         match &self.watcher {
             NativeWatchDriver::Source(watcher) => {
                 watcher
-                    .stop_with_work(&mut work)
+                    .retire_with_work(&mut work)
                     .map_err(demand_watch_error)?;
                 if !watcher.is_stopped() {
                     return Err(NativeWatchError::SourceUnavailable);
@@ -2047,7 +2048,7 @@ impl NativeWatch {
                             .get_mut(at)
                             .ok_or(DemandError::InvalidRequest)?
                             .watcher
-                            .stop_with_work(work)?;
+                            .retire_with_work(work)?;
                         if !self
                             .windows_directories
                             .get(at)
@@ -2179,7 +2180,7 @@ impl NativeWatch {
                 items_examined: 1,
                 ..WorkCounters::default()
             })?;
-            observed.watcher.stop_with_work(work)?;
+            observed.watcher.retire_with_work(work)?;
             if !observed.watcher.is_stopped() {
                 return Err(crate::demand::DemandError::WorkerUnavailable);
             }
@@ -2378,7 +2379,7 @@ impl NativeWatch {
                                 .get_mut(at)
                                 .ok_or(NativeWatchError::WorkerUnavailable)?
                                 .watcher
-                                .stop_with_work(work)
+                                .retire_with_work(work)
                                 .map_err(demand_watch_error)?;
                             if !self
                                 .windows_directories

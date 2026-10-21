@@ -73,7 +73,7 @@ impl SourceWatchStartupFailure {
         &self,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
-        self.stop_with_work(&mut crate::NativeMaterializationWork::clone(work))
+        self.stop_retained_with_work(&mut crate::NativeMaterializationWork::clone(work), true)
     }
 
     /// Retires the retained original watch using only its birth-paid cleanup.
@@ -136,6 +136,15 @@ impl SourceWatchStartupFailure {
         &self,
         work: &mut W,
     ) -> Result<(), DemandError> {
+        self.stop_retained_with_work(work, false)
+    }
+
+    fn stop_retained_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+        retiring: bool,
+    ) -> Result<(), DemandError> {
+        work.check()?;
         let owner = self
             .watch
             .lock()
@@ -152,11 +161,15 @@ impl SourceWatchStartupFailure {
             owner: Some(owner),
             failure: self,
         };
-        lease
+        let owner = lease
             .owner
             .as_ref()
-            .ok_or(DemandError::NativeWorkUnavailable)?
-            .stop_with_work(work)
+            .ok_or(DemandError::NativeWorkUnavailable)?;
+        if retiring {
+            owner.retire_with_work(work)
+        } else {
+            owner.stop_with_work(work)
+        }
     }
 
     /// True only after the retained native owner has actually quiesced.

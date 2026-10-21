@@ -1,6 +1,22 @@
 use super::*;
 
 impl NativeSourceWatch {
+    /// Retires physical resources on their birth credits, with the caller's wait.
+    pub(crate) fn retire_with_work<W: SourceDemandReadWork>(
+        &self,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.check()?;
+        if self.delivery().original.is_some() {
+            let current = work
+                .native_source_work()
+                .ok_or(DemandError::NativeWorkUnavailable)?;
+            self.stop_with_cleanup_wait(current.cancellation())
+        } else {
+            self.stop_with_work(work)
+        }
+    }
+
     #[cfg(target_os = "linux")]
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
