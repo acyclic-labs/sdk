@@ -1,5 +1,7 @@
 use super::*;
 use serde::ser::{SerializeMap, SerializeSeq};
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod message_tests;
 
 struct Canonical<T>(T);
 
@@ -171,9 +173,58 @@ impl Serialize for CanonicalMessages<'_> {
         serializer: S,
     ) -> std::result::Result<S::Ok, S::Error> {
         let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
+        let mut previous = None;
         for message in self.0 {
-            sequence.serialize_element(&Canonical(message))?;
+            // Repeated file references are immutable complete descriptors. Keep
+            // only the previous reference's canonical component, not a JSON
+            // tree for every message or an unbounded cache of distinct files.
+            if !previous
+                .as_ref()
+                .is_some_and(|(reference, _)| *reference == &message.content)
+            {
+                let mut content =
+                    serde_json::to_value(&message.content).map_err(serde::ser::Error::custom)?;
+                content.sort_all_objects();
+                previous = Some((&message.content, content));
+            }
+            let (_, content) = previous
+                .as_ref()
+                .ok_or_else(|| serde::ser::Error::custom("canonical content is absent"))?;
+            sequence.serialize_element(&CanonicalMessage { message, content })?;
         }
         sequence.end()
+    }
+}
+
+struct CanonicalMessage<'a> {
+    message: &'a ConversationMessage,
+    content: &'a serde_json::Value,
+}
+
+impl Serialize for CanonicalMessage<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        let ConversationMessage {
+            attachments,
+            content: _,
+            extensions,
+            id,
+            kind,
+            reply_to,
+            sequence,
+            tool_call_id,
+        } = self.message;
+        let mut map = serializer.serialize_map(Some(8))?;
+        map.serialize_entry("attachments", &Canonical(attachments))?;
+        map.serialize_entry("content", self.content)?;
+        map.serialize_entry("extensions", &Canonical(extensions))?;
+        map.serialize_entry("id", id)?;
+        map.serialize_entry("kind", kind)?;
+        map.serialize_entry("reply_to", reply_to)?;
+        map.serialize_entry("sequence", sequence)?;
+        map.serialize_entry("tool_call_id", tool_call_id)?;
+        map.end()
     }
 }
