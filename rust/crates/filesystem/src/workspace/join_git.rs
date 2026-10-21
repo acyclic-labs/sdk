@@ -29,29 +29,22 @@ fn metadata(base: FileMetadata, mut ours: FileMetadata, theirs: FileMetadata) ->
     ours
 }
 
-/// A Git path whose identity one side replaced while the other side kept it.
-/// Git has no file identities: the replacing side still holds the path's
-/// content, so the conflict merges content by path and keeps the base identity.
-pub(super) struct GitRebound {
-    /// Base, ours and theirs records at the path; one is the replacement.
+/// A conflicted file one side replaced under its path. The kernel merges a
+/// replacement as the deleting side's value of the base identity; these are
+/// the three records it merges, so drivers see the same content.
+pub(super) struct ReplacedFile {
+    /// Base, ours and theirs records, the replacement carrying its own identity.
     pub(super) records: [FileRecord; 3],
-    /// Index of the side record that still carries the base identity.
-    kept: usize,
-    /// The path's binding, which the resolution points back at the base identity.
-    binding: MergeConflict,
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
-    /// Finds a Git path whose identity exactly one side replaced with a
-    /// single-link regular file while the other side still holds it.
-    pub(super) async fn git_rebound(
+    /// Finds a conflicted file whose identity exactly one side replaced at
+    /// `path` with a single-link regular file.
+    pub(super) async fn replaced_file(
         &self,
         file_id: FileId,
         path: &str,
-    ) -> Result<Option<GitRebound>, WorkspaceError> {
-        if !self.git_metadata {
-            return Ok(None);
-        }
+    ) -> Result<Option<ReplacedFile>, WorkspaceError> {
         let volume = &self.target_head.workspace.volume;
         let fs = &volume.fs;
         let mut records = [None; 3];
@@ -64,9 +57,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 .workspace_conflict_record(volume, generation, file_id)
                 .await?;
         }
-        let (side, kept, replaced) = match records {
-            [Some(_), None, Some(_)] => (&self.target_head, 2, 1),
-            [Some(_), Some(_), None] => (&self.source_head, 1, 2),
+        let (side, replaced) = match records {
+            [Some(_), None, Some(_)] => (&self.target_head, 1),
+            [Some(_), Some(_), None] => (&self.source_head, 2),
             _ => return Ok(None),
         };
         let cancellation = CancellationToken::new();
@@ -91,37 +84,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         {
             return Ok(None);
         }
-        Ok(Some(GitRebound {
-            records,
-            kept,
-            binding: self.binding_conflict(&self.target_head, path).await?,
-        }))
+        Ok(Some(ReplacedFile { records }))
     }
 
-    /// Resolves a replaced Git path to the selected content under the base
-    /// identity and rebinds the path to it; the replacement loses its only
-    /// link, so the join prunes it.
-    pub(super) async fn git_rebound_resolution(
+    /// Resolves a replaced file to the selected content under the base
+    /// identity; the kernel binds the path back to it and drops the replacement.
+    pub(super) async fn replaced_file_resolution(
         &self,
         file_id: FileId,
-        rebound: GitRebound,
+        replaced: ReplacedFile,
         resolution: &MergeResolution,
-        resolutions: &mut BTreeMap<MergeConflict, MergeConflictResolution>,
-    ) -> Result<(), DrivenJoinError> {
+    ) -> Result<MergeConflictResolution, DrivenJoinError> {
         let volume = &self.target_head.workspace.volume;
+        let records = replaced.records;
         let template = FileRecord {
             file_id,
-            ..rebound.records[rebound.kept]
+            ..records[1]
         };
         let mut record = match resolution {
             MergeResolution::Select(side) => FileRecord {
-                payload: rebound.records[match side {
+                file_id,
+                ..records[match side {
                     ConflictSide::Base => 0,
                     ConflictSide::Ours => 1,
                     ConflictSide::Theirs => 2,
                 }]
-                .payload,
-                ..template
             },
             MergeResolution::Text(text) => {
                 volume
@@ -147,16 +134,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 )));
             }
         };
-        record.metadata = self.git_merged_metadata(&rebound.records).await?;
-        resolutions.insert(
-            MergeConflict::File(file_id),
-            MergeConflictResolution::File(Some(record)),
-        );
-        resolutions.insert(
-            rebound.binding,
-            MergeConflictResolution::Binding(Some(file_id)),
-        );
-        Ok(())
+        if self.git_metadata {
+            record.metadata = self.git_merged_metadata(&records).await?;
+        }
+        Ok(MergeConflictResolution::File(Some(record)))
     }
 
     async fn binding_conflict(

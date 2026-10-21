@@ -209,68 +209,55 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                             }
                         }
                         if matches!(resolved, OptionalResolution::Conflict)
-                            && is_extent_regular(base)
-                            && is_extent_regular(ours_value)
-                            && is_extent_regular(theirs_value)
-                            && let Some((record, examined)) = merge_regular_record_async(
-                                store,
-                                base.ok_or(FsError::InvalidDiff)?,
-                                ours_value.ok_or(FsError::InvalidDiff)?,
-                                theirs_value.ok_or(FsError::InvalidDiff)?,
-                                state.remaining_changes,
-                                limits,
-                                accounting,
-                                cancellation,
-                            )
-                            .await?
+                            && resolutions.converges_additions()
+                            && replaceable([base, ours_value, theirs_value])
                         {
-                            state.consume(examined as usize)?;
-                            resolved = OptionalResolution::Resolved(Some(record));
+                            state.replacements.ensure_for_push(usize::MAX, accounting)?;
+                            state
+                                .replacements
+                                .value
+                                .push((file, [base, ours_value, theirs_value]));
+                            state.records.ensure_for_push(usize::MAX, accounting)?;
+                            state.records.value.push((file, (ours_value, ours_value)));
+                            continue;
                         }
-                        if matches!(resolved, OptionalResolution::Conflict) {
-                            resolved = merge_records_async(
-                                store,
-                                [base, ours_value, theirs_value],
-                                limits,
-                                accounting,
-                                cancellation,
-                            )
-                            .await?
-                            .map_or(OptionalResolution::Conflict, |record| {
-                                OptionalResolution::Resolved(Some(record))
-                            });
-                        }
-                        let after = match resolved {
-                            OptionalResolution::Resolved(record) => record,
-                            OptionalResolution::Conflict => {
-                                match resolutions.file(file, accounting)? {
-                                    Some(MergeConflictResolution::Select(side)) => {
-                                        select_optional(*side, base, ours_value, theirs_value)
-                                    }
-                                    Some(MergeConflictResolution::File(record)) => {
-                                        if record.is_some_and(|record| record.file_id != file) {
-                                            return Err(FsError::InvalidDiff);
-                                        }
-                                        *record
-                                    }
-                                    Some(MergeConflictResolution::Binding(_)) => {
-                                        return Err(FsError::InvalidDiff);
-                                    }
-                                    None => {
-                                        state.conflict(
-                                            MergeConflict::File(file),
-                                            request.maximum_conflicts,
-                                            accounting,
-                                        )?;
-                                        ours_value
-                                    }
-                                }
+                        let after = match settle_record(
+                            store,
+                            file,
+                            [base, ours_value, theirs_value],
+                            resolved,
+                            resolutions,
+                            limits,
+                            &mut state,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?
+                        {
+                            Some(after) => after,
+                            None => {
+                                state.conflict(
+                                    MergeConflict::File(file),
+                                    request.maximum_conflicts,
+                                    accounting,
+                                )?;
+                                ours_value
                             }
                         };
                         state.records.ensure_for_push(usize::MAX, accounting)?;
                         state.records.value.push((file, (ours_value, after)));
                     }
-                    Ok(())
+                    settle_replacements(
+                        store,
+                        [&ours.value.changes, &theirs.value.changes],
+                        resolutions,
+                        request.maximum_conflicts,
+                        limits,
+                        &mut state,
+                        accounting,
+                        cancellation,
+                    )
+                    .await
                 }
                 .await;
                 theirs.retire(accounting)?;
@@ -328,6 +315,7 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
         state.records.retire(accounting)?;
         state.folds.retire(accounting)?;
         state.file_folds.retire(accounting)?;
+        state.replacements.retire(accounting)?;
         match result {
             Ok(None) => {
                 let Owned {

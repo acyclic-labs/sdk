@@ -305,6 +305,9 @@ struct MergeState {
     conflicts: Owned<Vec<MergeConflict>>,
     folds: Owned<Vec<(FileId, FileId)>>,
     file_folds: Owned<Vec<FileFold>>,
+    /// Delete/modify conflicts whose deleting side may have replaced the
+    /// file under its name; settled after both table diffs are known.
+    replacements: Owned<Vec<(FileId, [Option<FileRecord>; 3])>>,
     truncated: bool,
     remaining_changes: u32,
 }
@@ -316,6 +319,7 @@ impl MergeState {
             conflicts: Owned::allocate(0, accounting)?,
             folds: Owned::allocate(0, accounting)?,
             file_folds: Owned::allocate(0, accounting)?,
+            replacements: Owned::allocate(0, accounting)?,
             truncated: false,
             remaining_changes: maximum_changes,
         })
@@ -462,6 +466,7 @@ include!("merge/checkpoint.rs");
 include!("merge/regular.rs");
 include!("merge/directory.rs");
 include!("merge/links.rs");
+include!("merge/replacements.rs");
 include!("merge/fields.rs");
 
 fn project_merge_error(error: FsError) -> MergeGenerationError {

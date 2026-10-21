@@ -292,3 +292,94 @@ async fn three_way_merge_rejects_guards_and_bounds_file_conflicts() -> TestResul
     assert!(ours.has_pending_mutations());
     Ok(())
 }
+
+/// One side replaces a file under its name (a new identity), the other edits
+/// it. Matched by identity alone this was a delete/modify conflict; the merge
+/// pairs the replacement with the identity it replaced, merges them as one
+/// file and binds the name back to the original identity.
+#[tokio::test]
+async fn three_way_merge_pairs_a_replaced_file_with_the_identity_it_replaced() -> TestResult {
+    let cancel = CancellationToken::new();
+    for ours_replaces in [false, true] {
+        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let original = create(
+            &mut seed,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        commit(&mut seed, &cancel).await?;
+        let mut ours = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        let mut theirs = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        let (replacing, editing) = if ours_replaces {
+            (&mut ours, &mut theirs)
+        } else {
+            (&mut theirs, &mut ours)
+        };
+        // Equal content under a new identity, as an atomic save writes it.
+        replacing
+            .mutate(
+                vec![Mutation::Remove {
+                    path: path("doc.txt")?,
+                    expected_file_id: MetadataField::Value(original),
+                }],
+                B,
+                &cancel,
+            )
+            .await?;
+        let replacement = create(
+            replacing,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        assert_ne!(replacement, original);
+        editing
+            .change_content(
+                path("doc.txt")?,
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(b"ONE"),
+                },
+                ContentTimes::Preserve,
+                B,
+                &cancel,
+            )
+            .await?;
+        commit(&mut theirs, &cancel).await?;
+        let prepared = ours
+            .prepare_merge(theirs.generation_id(), 32, 8, B, &cancel)
+            .await?
+            .value;
+        assert!(
+            matches!(prepared, MergePreparation::Prepared { .. }),
+            "ours_replaces={ours_replaces}: {prepared:?}"
+        );
+        commit(&mut ours, &cancel).await?;
+        let mut merged = volume
+            .checkout(
+                GenerationSelector::Exact(ours.generation_id()),
+                pinned(),
+                B,
+                &cancel,
+            )
+            .await?
+            .value;
+        let record = merged
+            .lookup_no_follow(&path("doc.txt")?, B, &cancel)
+            .await?
+            .value
+            .record
+            .ok_or("merged file is missing")?;
+        assert_eq!(record.file_id, original);
+        assert_eq!(record.link_count, 1);
+        assert_eq!(
+            read(&mut merged, original, 0, 13, &cancel).await?.as_ref(),
+            b"ONE two three"
+        );
+        assert!(read(&mut merged, replacement, 0, 1, &cancel).await.is_err());
+    }
+    Ok(())
+}

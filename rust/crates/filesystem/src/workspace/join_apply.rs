@@ -124,10 +124,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             }
             if let ConflictKey::File(file_id) = conflict.key
                 && let Some(path) = conflict.path.as_deref()
-                && let Some(rebound) = self.git_rebound(file_id, path).await?
+                && let Some(replaced) = self.replaced_file(file_id, path).await?
             {
-                self.git_rebound_resolution(file_id, rebound, resolution, &mut resolutions)
+                let resolution = self
+                    .replaced_file_resolution(file_id, replaced, resolution)
                     .await?;
+                resolutions.insert(MergeConflict::File(file_id), resolution);
                 continue;
             }
             let resolution = match resolution {

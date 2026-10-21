@@ -151,3 +151,118 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
     assert!(merged.contains("agent"));
     Ok(())
 }
+
+/// A workspace join (no Git metadata) where one side replaced the file under
+/// its path: the replacement merges with the identity it replaced, the text
+/// driver sees both texts, and the path keeps its original identity.
+#[tokio::test]
+async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(), Box<dyn Error>> {
+    let base = "one\ntwo\nthree\n";
+    for (agent_replaces, agent_text, main_text, expected) in [
+        (true, base, "ONE\ntwo\nthree\n", "ONE\ntwo\nthree\n"),
+        (
+            true,
+            "one\ntwo\nTHREE\n",
+            "ONE\ntwo\nthree\n",
+            "ONE\ntwo\nTHREE\n",
+        ),
+        (
+            false,
+            "one\ntwo\nTHREE\n",
+            "ONE\ntwo\nthree\n",
+            "ONE\ntwo\nTHREE\n",
+        ),
+    ] {
+        let fs = Fs::memory();
+        let main = unbounded!(fs, create_workspace("replaced-main"))?;
+        main.write_text("/shared", base).await?;
+        let original = unbounded!(main, stat("/shared"))?.file_id;
+        let agent = fork_workspace(
+            &main,
+            "replaced-agent",
+            ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+        )
+        .await?;
+        let (replacing, replacing_text, editing, editing_text) = if agent_replaces {
+            (&agent, agent_text, &main, main_text)
+        } else {
+            (&main, main_text, &agent, agent_text)
+        };
+        replacing.remove("/shared").await?;
+        replacing.write_text("/shared", replacing_text).await?;
+        assert_ne!(unbounded!(replacing, stat("/shared"))?.file_id, original);
+        editing.write_text("/shared", editing_text).await?;
+
+        let plan = agent
+            .join_into(&main)
+            .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
+        // Equal content merges without a driver; edits on both sides reach
+        // the text driver as one text conflict at the path.
+        let outcome = match plan
+            .apply(
+                ApplyOptions {
+                    if_target: plan.target_head(),
+                    idempotency_key: IdempotencyKey::new(),
+                },
+                BTreeMap::new(),
+                crate::PublicationPermit::Unrestricted,
+            )
+            .await?
+        {
+            JoinOutcome::Conflicted {
+                conflicts,
+                truncated,
+            } => {
+                let described = plan.describe_conflicts(conflicts, truncated).await?;
+                assert_eq!(described.conflicts.len(), 1);
+                assert_eq!(described.conflicts[0].kind, crate::ConflictKind::Text);
+                assert_eq!(described.conflicts[0].path.as_deref(), Some("/shared"));
+                let mut registry = crate::MergeDriverRegistry::new();
+                registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
+                registry.set_default("text")?;
+                let mut cache = crate::MemoryMergeResolutionCache::default();
+                plan.apply_with_drivers(
+                    ApplyOptions {
+                        if_target: plan.target_head(),
+                        idempotency_key: IdempotencyKey::new(),
+                    },
+                    &registry,
+                    &mut cache,
+                    false,
+                    crate::PublicationPermit::Unrestricted,
+                )
+                .await?
+            }
+            outcome => outcome,
+        };
+        let variant = match &outcome {
+            JoinOutcome::Applied(_) => "applied",
+            JoinOutcome::AlreadyApplied(_) => "already applied",
+            JoinOutcome::NoChanges(_) => "no changes",
+            JoinOutcome::StaleTarget(_) => "stale target",
+            JoinOutcome::Conflicted { .. } => "conflicted",
+            JoinOutcome::Fenced => "fenced",
+            JoinOutcome::IdempotencyConflict => "idempotency conflict",
+        };
+        // Merging an equal replacement into the target's edit leaves the
+        // target as it is.
+        let expected_variant = if agent_text == base {
+            "no changes"
+        } else {
+            "applied"
+        };
+        assert_eq!(
+            variant, expected_variant,
+            "agent_replaces={agent_replaces} agent_text={agent_text:?}"
+        );
+        let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
+        assert_eq!(merged, expected);
+        let record = unbounded!(main, stat("/shared"))?;
+        assert_eq!(record.file_id, original);
+        assert_eq!(record.link_count, 1);
+    }
+    Ok(())
+}
