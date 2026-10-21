@@ -93,7 +93,8 @@ fn accepted_records_reuse_one_follow_and_cancellation_drops_its_pending_read() {
         .build()
         .unwrap();
     for count in [8, 16] {
-        let pair = differential::pair::<_, _, (&'static str, u64)>(
+        let pair = differential::pair_of(
+            &["child-follow-open"],
             || runtime.block_on(fixture(count)),
             |(_directory, harness, cursor), old| {
                 runtime.block_on(async {
@@ -157,7 +158,8 @@ fn accepted_metadata_refresh_avoids_replaying_a_stale_admission_cut() {
         .build()
         .unwrap();
     let reference = Component::new("worker").unwrap();
-    let pair = differential::pair::<_, _, (&'static str, u64)>(
+    let pair = differential::pair_of(
+        &["child-status-publish", "child-follow-open"],
         || {
             runtime.block_on(async {
                 let (directory, harness, _) = fixture(1).await;

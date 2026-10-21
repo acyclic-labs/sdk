@@ -1,28 +1,16 @@
 //! Independent current-thread runs with an ordered, caller-defined operation trace.
 pub mod oracle;
 
-use std::{any::Any, cell::RefCell};
-thread_local! {
-    static TRACE: RefCell<Option<Box<dyn Any>>> = const { RefCell::new(None) };
-}
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::differential as storage;
+/// The native runtime does not build for wasm32, where no production hook records; captures
+/// there compile the same storage into this test-only crate.
+#[cfg(target_arch = "wasm32")]
+#[path = "../../native-runtime/src/differential.rs"]
+mod storage;
 
-/// Record an event into an active capture of the same event type. Inactive
-/// recording, or an event of another type, does nothing: independent
-/// observation points share code paths, and a capture subscribes to exactly
-/// one of them by its type.
-pub fn record<T: 'static>(event: T) {
-    let mut pending = Some(event);
-    TRACE.with_borrow_mut(|trace| {
-        if let Some(trace) = trace
-            .as_mut()
-            .and_then(|trace| trace.downcast_mut::<Vec<T>>())
-        {
-            trace.push(pending.take().unwrap());
-        }
-    });
-    // Inactive events may themselves record from Drop.
-    drop(pending);
-}
+pub use storage::record;
+use storage::{begin, capturing, end};
 
 /// Initialize outside capture, then return one run's result and ordered events.
 /// Captures this thread only; rejects overlapping capture and restores on panic.
@@ -30,27 +18,24 @@ pub fn observe<S, R, T: 'static>(
     initialize: impl FnOnce() -> S,
     run: impl FnOnce(S) -> R,
 ) -> (R, Vec<T>) {
-    TRACE.with_borrow(|trace| assert!(trace.is_none(), "nested differential capture"));
+    assert!(!capturing(), "nested differential capture");
     let state = initialize();
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
             // Event destructors may themselves record operations.
-            drop(TRACE.with_borrow_mut(Option::take));
+            drop(end());
         }
     }
-    TRACE.with_borrow_mut(|trace| *trace = Some(Box::new(Vec::<T>::new())));
+    begin::<T>();
     let _reset = Reset;
     let result = run(state);
     (
         result,
-        TRACE.with_borrow_mut(|trace| {
-            *trace
-                .take()
-                .unwrap()
-                .downcast::<Vec<T>>()
-                .expect("trace event type")
-        }),
+        *end()
+            .unwrap()
+            .downcast::<Vec<T>>()
+            .expect("trace event type"),
     )
 }
 

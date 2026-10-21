@@ -3,11 +3,7 @@ use acyclic_fs::{CancellationToken, WorkCounters, performance::BOUNDARY_BUDGET};
 use acyclic_test_support::differential;
 use proptest::prelude::*;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Observation {
-    Hash(u64),
-    Storage(String),
-}
+pub(crate) use crate::test_support::EffectRootObservation as Observation;
 
 pub(crate) fn verifier() -> AuthorityVerifier {
     AuthorityIssuer::new(

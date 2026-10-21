@@ -41,6 +41,8 @@ function metadata(releaseVersion) {
   if (new Set(order).size !== order.length || order.some(name => !byName.has(name)) || byName.size !== order.length) {
     fail("release/cargo-crates.json must contain every publishable local crate exactly once");
   }
+  const unpublishable = publicationDependencyErrors(packages, byName);
+  if (unpublishable.length) fail(unpublishable.join("\n"));
   const position = new Map(order.map((name, index) => [name, index]));
   for (const item of publishable) {
     if (releaseVersion && item.version !== releaseVersion) fail(`${item.name} is not version ${releaseVersion}`);
@@ -52,6 +54,26 @@ function metadata(releaseVersion) {
     }
   }
   return byName;
+}
+
+// `cargo package` rejects every non-dev local dependency, optional or not, that
+// is not itself published with a version requirement. Test-only crates
+// (`publish = false`) must stay dev-dependencies of published crates.
+export function publicationDependencyErrors(packages, byName) {
+  const errors = [];
+  for (const item of packages) {
+    if (!byName.has(item.name)) continue;
+    for (const dependency of item.dependencies) {
+      if (dependency.kind === "dev" || !dependency.path) continue;
+      const kind = `${dependency.optional ? "optional " : ""}${dependency.kind ?? "normal"}`;
+      if (!byName.has(dependency.name)) {
+        errors.push(`${item.name} depends on unpublished ${dependency.name} (${kind} dependency)`);
+      } else if (dependency.req === "*") {
+        errors.push(`${item.name} depends on ${dependency.name} without a version requirement`);
+      }
+    }
+  }
+  return errors;
 }
 
 async function registryVersion(name, version) {

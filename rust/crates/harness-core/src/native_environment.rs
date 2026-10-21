@@ -27,6 +27,7 @@ impl PlatformPolicy {
     }
 }
 
+#[derive(Clone, Copy)]
 enum Read<'a> {
     Variable(&'a str),
     #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]

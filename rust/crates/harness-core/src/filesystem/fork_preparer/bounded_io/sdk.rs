@@ -187,8 +187,8 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     generation: &Generation<A, O>,
     io: Option<&PreparationIo>,
 ) -> std::result::Result<(), acyclic_fs::LazyWorkspaceError> {
-    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
-    acyclic_test_support::differential::record(("retain", 0u64));
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    acyclic_native_runtime::differential::record(("retain", 0u64));
     use acyclic_fs::LazyWorkspaceError as LazyError;
     let encoding = WorkCounters {
         bytes_encoded: 64,

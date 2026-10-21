@@ -17,6 +17,8 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(feature = "differential")]
+pub mod differential;
 #[cfg(target_os = "linux")]
 mod linux;
 pub mod obs;

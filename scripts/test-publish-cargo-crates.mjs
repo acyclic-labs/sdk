@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { registryArchiveMatches } from "./publish-cargo-crates.mjs";
+import { publicationDependencyErrors, registryArchiveMatches } from "./publish-cargo-crates.mjs";
 
 test("pinned Cargo archives require identical inputs and an ancestor source", async t => {
   const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-equivalence-"));
@@ -81,4 +81,19 @@ test("pinned Cargo archives require identical inputs and an ancestor source", as
   } finally {
     rmSync(repository, { recursive: true, force: true });
   }
+});
+
+test("published crates depend only on published, versioned local crates outside dev-dependencies", () => {
+  const local = (name, extra = {}) => ({ name, path: `/crates/${name}`, req: "=0.2.0", kind: null, optional: false, ...extra });
+  const published = { name: "published", dependencies: [] };
+  const byName = new Map([["published", published], ["runtime", { name: "runtime", dependencies: [] }]]);
+  const check = dependencies => publicationDependencyErrors([{ ...published, dependencies }], byName);
+  assert.deepEqual(check([local("runtime"), local("test-support", { kind: "dev", req: "*" })]), []);
+  assert.deepEqual(check([local("test-support", { optional: true, req: "*" })]),
+    ["published depends on unpublished test-support (optional normal dependency)"]);
+  assert.deepEqual(check([local("generator", { kind: "build" })]),
+    ["published depends on unpublished generator (build dependency)"]);
+  assert.deepEqual(check([local("runtime", { req: "*" })]),
+    ["published depends on runtime without a version requirement"]);
+  assert.deepEqual(publicationDependencyErrors([{ name: "unpublished", dependencies: [local("test-support")] }], byName), []);
 });

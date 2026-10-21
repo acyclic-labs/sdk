@@ -1,14 +1,14 @@
 [
   "acyclic-proto-build",
-  "acyclic-inference",
-  "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-contract-derive",
   "acyclic-auth",
+  "acyclic-inference",
+  "acyclic-machines",
   "acyclic-tonic-web-wasm-client",
   "acyclic-grpc-observability",
-  "acyclic-actors",
   "acyclic-stream",
+  "acyclic-actors",
   "acyclic-objects",
   "acyclic-manifest",
   "acyclic-workers",
@@ -19,5 +19,6 @@
   "acyclic-harness-core",
   "acyclic-harness-search",
   "acyclic-harness",
+  "acyclic-harness-providers",
   "acyclic-plugin"
 ]

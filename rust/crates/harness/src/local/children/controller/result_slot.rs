@@ -24,7 +24,8 @@ mod tests {
     use proptest::prelude::*;
 
     fn run(count: usize) -> [(BTreeMap<FileKey, FileValue>, Vec<(&'static str, u64)>); 2] {
-        differential::pair::<_, _, (&'static str, u64)>(
+        differential::pair_of(
+            &["result-fold-visit"],
             || {
                 (0..count)
                     .map(|index| {

@@ -14,6 +14,9 @@ categories = ["filesystem"]
 [features]
 test-support = ["dep:blake3", "tokio/macros", "tokio/time", "tokio/test-util"]
 
+# Operation traces that test captures in any crate can observe; no runtime effect.
+differential = []
+
 [dependencies]
 bytes.workspace = true
 blake3 = { workspace = true, optional = true }

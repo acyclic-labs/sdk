@@ -179,8 +179,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         display: &'a str,
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(("content stage", bytes.len() as u64));
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        acyclic_native_runtime::differential::record(("content stage", bytes.len() as u64));
         BoundedContentFuture::new(io, || async move {
             let file = self
                 .publish(operation, None, path, bytes, media, display, io)

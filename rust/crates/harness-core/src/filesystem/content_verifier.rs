@@ -123,8 +123,8 @@ where
         maximum_bytes: u64,
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(("content read", maximum_bytes));
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        acyclic_native_runtime::differential::record(("content read", maximum_bytes));
         crate::conversation::BoundedContentFuture::new(io, || {
             self.read_file(reference, maximum_bytes, io)
         })

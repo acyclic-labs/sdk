@@ -535,8 +535,14 @@ impl AuthorityVerifier {
         if let Some(io) = work.as_deref_mut() {
             io.hashed_bytes(bytes)?;
         }
-        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-        acyclic_test_support::differential::record(effect_root_tests::Observation::Hash(bytes));
+        #[cfg(all(
+            feature = "test-support",
+            feature = "filesystem",
+            not(target_arch = "wasm32")
+        ))]
+        acyclic_native_runtime::differential::record(
+            crate::test_support::EffectRootObservation::Hash(bytes),
+        );
         let mut hasher = blake3::Hasher::new_keyed(&self.key);
         hasher.update(domain);
         hasher.update(&[match self.audience.kind {
