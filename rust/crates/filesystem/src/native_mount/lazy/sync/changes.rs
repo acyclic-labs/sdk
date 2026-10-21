@@ -233,7 +233,7 @@ where
         .await?;
         Ok((namespace_allocations, namespaces, installed, _allocation))
     }
-    pub(super) async fn install_publication(
+    pub(in crate::native_mount::lazy) async fn install_publication(
         &self,
         candidate: CheckoutCandidate<'_, A, O>,
         installed: &ViewEffect,
@@ -248,10 +248,12 @@ where
                 carrier,
                 cancellation,
                 Some(self.authored.cancellation()),
-                |carrier, stamp| {
-                    if self.authored.shared_checkout().ledger.stamp() != stamp {
-                        return Err(MountSourceError::Stale);
-                    }
+                |carrier, _| {
+                    // Publication contains authored identities and, for a
+                    // selected import, immutable snapshot records. Source
+                    // notifications do not invalidate those inputs. Exact
+                    // candidate rebasing still rejects overlapping writes;
+                    // live host captures retain their separate stamp fence.
                     self.authored
                         .shared_checkout()
                         .ledger

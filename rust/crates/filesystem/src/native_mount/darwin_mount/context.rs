@@ -76,6 +76,7 @@ impl ViewObserver for DarwinMountContext {
     }
 }
 
+#[cfg(test)]
 pub(super) fn uptime(
     clock: &super::super::clock::Clock,
     work: &Work,
@@ -242,21 +243,8 @@ impl DarwinMountContext {
             return Ok(false);
         }
         self.callbacks.drain(work)?;
-        let arrived_by = uptime(&self.clock, work)? + REPLY_DELIVERY_SLACK;
-        work.charge(READ_WORK)?;
-        // SAFETY: the transport reports its fixed client-cache timeout.
-        let expired = Duration::from_secs(
-            arrived_by.as_secs()
-                + u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() }),
-        );
-        loop {
-            let now = uptime(&self.clock, work)?;
-            if now >= expired {
-                break;
-            }
-            work.charge(READ_WORK)?;
-            std::thread::sleep((expired - now).min(Duration::from_millis(10)));
-        }
+        // actimeo=0 and nonegnamecache make the next kernel access consult
+        // this source. No wall-clock expiry or reply-delivery guess is needed.
         self.around_settled.fetch_max(made, Ordering::AcqRel);
         Ok(true)
     }

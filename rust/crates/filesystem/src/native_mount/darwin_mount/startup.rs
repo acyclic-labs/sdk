@@ -45,6 +45,7 @@ impl DriverSessionResources {
         context: Arc<DarwinMountContext>,
         destination: &Path,
         work: &Work,
+        owned: bool,
     ) -> Result<Arc<Self>, NativeMountError> {
         let probe = MountProbe::new(destination, work)?;
         const PROBES: u64 = control_visits(DISKUTIL_VISIBILITY_TIMEOUT, STOP_POLL_INTERVAL) + 3;
@@ -68,7 +69,7 @@ impl DriverSessionResources {
                 .then_some(c"namedattr"),
         ];
         let mut pointers = [0; 7];
-        pointers[0] = c"acyclic-fs".as_ptr() as usize;
+        pointers[0] = if owned { c"acyclic-fs" } else { c"darwinfuse" }.as_ptr() as usize;
         for (index, option) in options.into_iter().flatten().enumerate() {
             pointers[2 * index + 1] = c"-o".as_ptr() as usize;
             pointers[2 * index + 2] = option.as_ptr() as usize;
@@ -222,7 +223,12 @@ impl DarwinMountSession {
         context
             .source
             .observe_view_with_meter(Arc::downgrade(&observer), original)?;
-        let resources = DriverSessionResources::new(context, &request.destination, original)?;
+        let resources = DriverSessionResources::new(
+            context,
+            &request.destination,
+            original,
+            retirement.is_some(),
+        )?;
         *out = Some(Self {
             handler_failure: Arc::clone(&resources.context()?.handler_failure),
             unmount: resources,

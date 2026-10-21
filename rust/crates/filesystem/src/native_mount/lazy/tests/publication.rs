@@ -2,6 +2,80 @@ use super::*;
 
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread")]
+async fn publication_rebases_authored_records_but_rejects_overlapping_callbacks()
+-> Result<(), Box<dyn std::error::Error>> {
+    for overlap in [false, true] {
+        let root = tempfile::tempdir()?;
+        let view = mounted_view(root.path(), "publication-callback").await?;
+        let work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
+        let first = mounted(&["first"]);
+        let second = mounted(&["second"]);
+        let file = view
+            .create_file(&first, FileMetadata::default(), None, &work)?
+            .node
+            .file_id;
+        view.create_file(&second, FileMetadata::default(), None, &work)?;
+        let mut carrier = adapter::NativeDemandCarrier::Native(&work);
+        let mut candidate = view
+            .authored
+            .shared_checkout()
+            .candidate(
+                None,
+                &mut carrier,
+                work.cancellation(),
+                Some(view.authored.cancellation()),
+            )
+            .await?;
+        candidate
+            .checkout
+            .change_content(
+                file,
+                crate::ContentChange::Write {
+                    offset: 0,
+                    bytes: Bytes::from_static(b"published").into(),
+                },
+                crate::ContentTimes::Preserve,
+                &work,
+                work.cancellation(),
+            )
+            .await?;
+        // Force the callback between staging and adoption; no scheduler race.
+        view.write_range(
+            if overlap { &first } else { &second },
+            0,
+            Bytes::from_static(b"callback"),
+        )?;
+        assert_ne!(
+            candidate.stamp,
+            view.authored.shared_checkout().ledger.stamp()
+        );
+        let result = view
+            .install_publication(
+                candidate,
+                &ViewEffect {
+                    nodes: vec![file],
+                    ..ViewEffect::default()
+                },
+                &mut carrier,
+                work.cancellation(),
+            )
+            .await;
+        if overlap {
+            assert!(matches!(result, Err(MountSourceError::Stale)));
+            assert_eq!(view.read_range(&first, 0, 8)?.as_ref(), b"callback");
+        } else {
+            result?;
+            assert_eq!(view.read_range(&first, 0, 9)?.as_ref(), b"published");
+            assert_eq!(view.read_range(&second, 0, 8)?.as_ref(), b"callback");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "multi_thread")]
 async fn rebound_does_not_publish_a_stale_removed_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();

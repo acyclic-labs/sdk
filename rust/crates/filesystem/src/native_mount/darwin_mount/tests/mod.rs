@@ -23,6 +23,17 @@ unsafe extern "C" {
     fn nfs4_test_verify_attributes() -> c_int;
     fn nfs4_test_node_identity() -> c_int;
     fn nfs4_test_release_open_files() -> c_int;
+    fn nfs4_test_mounted_io(root: *const c_char) -> c_int;
+}
+
+#[test]
+#[ignore = "requires a live macOS NFS mount"]
+fn readiness_callback_can_issue_synchronous_nfs_io() -> TestResult {
+    let root = tempfile::tempdir()?;
+    let root = CString::new(root.path().canonicalize()?.as_os_str().as_bytes())?;
+    // SAFETY: the fixture owns this empty directory and retains its terminated path.
+    assert_eq!(unsafe { nfs4_test_mounted_io(root.as_ptr()) }, 0);
+    Ok(())
 }
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -257,13 +268,17 @@ fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult 
 }
 
 #[test]
-fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -> TestResult {
+fn revalidation_uses_uncached_metadata_for_changes_around_the_mount() -> TestResult {
     let (source, context, work) = checkout_context(MountPublication::Manual)?;
     let context = Arc::new(context);
     let observer: Arc<dyn ViewObserver> = context.clone();
     source.observe_view_with_meter(Arc::downgrade(&observer), &work)?;
     // SAFETY: the bridge reports a constant.
     let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
+    assert_eq!(
+        timeout, 0,
+        "a cached client requires a TTL wait at every boundary"
+    );
     let barrier = || -> Result<_, NativeMountError> {
         let began = uptime(&context.clock, &work)?;
         context.revalidate(&work)?;
@@ -286,9 +301,9 @@ fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -
     let (began, ended) = barrier()?;
     assert!(ended - began < REPLY_DELIVERY_SLACK);
 
-    let waits_out_the_timeout = || -> TestResult {
+    let revalidates_immediately = || -> TestResult {
         let (began, ended) = barrier()?;
-        assert!(ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout);
+        assert!(ended - began < REPLY_DELIVERY_SLACK);
         let (began, ended) = barrier()?;
         assert!(ended - began < REPLY_DELIVERY_SLACK);
         Ok(())
@@ -299,9 +314,9 @@ fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -
         None,
         &work,
     )?;
-    waits_out_the_timeout()?;
+    revalidates_immediately()?;
     context.forget_view();
-    waits_out_the_timeout()?;
+    revalidates_immediately()?;
     Ok(())
 }
 
@@ -817,3 +832,4 @@ mod callbacks;
 
 mod folded;
 mod lifecycle;
+mod reclaim;

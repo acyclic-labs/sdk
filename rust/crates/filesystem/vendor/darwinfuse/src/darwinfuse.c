@@ -25,6 +25,7 @@
 #include <stdatomic.h>
 #include <sys/mount.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 /* ---- Diagnostics ---- */
 
@@ -132,24 +133,22 @@ struct fuse {
 
 static void *server_thread_func(void *arg)
 {
-    nfs4_server_run((darwinfuse_server_t *)arg);
-    return NULL;
+    return (void *)(intptr_t)nfs4_server_run((darwinfuse_server_t *)arg);
 }
 
 /* ---- Mount via mount_nfs ---- */
 
 /*
- * Mount the server's local socket.  The attribute timeout matches libfuse's
- * default one-second attribute and entry timeouts; the change attribute
- * makes every revalidation exact.  NFSv4.0 callbacks need an IP address, so a local
- * socket mount takes none (nocallback): the server never delegates.
+ * Mount the server's local socket. Metadata is revalidated on access; the
+ * change attribute makes every revalidation exact. NFSv4.0 callbacks need an
+ * IP address, so a local socket mount takes none: the server never delegates.
  */
 static int do_mount_nfs(const char *socket_path, const char *mount_point,
                          const parsed_args_t *args)
 {
     char opts[512];
     int len = snprintf(opts, sizeof(opts),
-        "vers=4,nocallback,actimeo=%d,noacl,"
+        "vers=4,nocallback,actimeo=%d,nonegnamecache,noacl,"
         "rsize=262144,wsize=262144,"
         "soft,intr,retrycnt=0", DARWINFUSE_ATTRIBUTE_TIMEOUT);
     char server[128];
@@ -265,6 +264,8 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
     memset(&config, 0, sizeof(config));
     config.uid = getuid();
     config.gid = getgid();
+    config.acyclic_owner = args && args->argc > 0 && args->argv &&
+        strcmp(args->argv[0], "acyclic-fs") == 0;
     config.inode_table = ch->inode_table;
 
     ch->server = nfs4_server_create(&config);
@@ -282,23 +283,23 @@ struct fuse_chan *fuse_mount(const char *mountpoint, struct fuse_args *args)
 }
 
 /*
- * Mount a channel whose operations and private data are attached. A
- * temporary event-loop thread answers mount_nfs; the kernel's connection
- * then stays open for the caller's own event loop.
+ * Mount a channel whose operations and private data are attached. An
+ * event-loop thread answers both mount_nfs and subsequent I/O. Keep it
+ * running across readiness: a mounted callback may itself issue NFS I/O.
  */
-static int mount_channel(struct fuse_chan *ch)
+static int mount_channel(struct fuse_chan *ch, pthread_t *srv_thread)
 {
-    pthread_t srv_thread;
-    if (pthread_create(&srv_thread, NULL, server_thread_func, ch->server) != 0) {
+    if (pthread_create(srv_thread, NULL, server_thread_func, ch->server) != 0) {
         DFUSE_ERR("Failed to create server thread");
         return -1;
     }
     int rc = do_mount_nfs(nfs4_server_socket_path(ch->server), ch->mountpoint,
                           &ch->mount_args);
-    if (rc < 0)
+    if (rc < 0) {
         DFUSE_ERR("Failed to mount NFS");
-    nfs4_server_stop(ch->server);
-    pthread_join(srv_thread, NULL);
+        nfs4_server_stop(ch->server);
+        pthread_join(*srv_thread, NULL);
+    }
     if (rc == 0)
         DFUSE_LOG("fuse_loop: mounted on %s", ch->mountpoint);
     return rc;
@@ -404,19 +405,16 @@ int fuse_loop(struct fuse *f)
                                   f->init_result ? f->init_result : f->user_data);
 
     /* Mount only now: every answer the NFS client caches must come from the
-     * attached operations.  Restart the event loop, then honor an exit
-     * requested meanwhile (fuse_exit() sets exited before it stops the
-     * server, so one of the two is always observed). */
-    int rc = mount_channel(f->chan);
+     * attached operations. The same event loop serves the entire mount
+     * lifetime, including synchronous I/O from the readiness callback. */
+    pthread_t srv_thread;
+    int rc = mount_channel(f->chan, &srv_thread);
     if (rc == 0) {
         if (f->mounted)
             f->mounted(f->mounted_arg);
-        nfs4_server_restart(f->chan->server);
-        if (!atomic_load_explicit(&f->exited, memory_order_acquire)) {
-            DFUSE_LOG("fuse_loop: running event loop (pid=%d)", getpid());
-            rc = nfs4_server_run(f->chan->server);
-            DFUSE_LOG("fuse_loop: server exited");
-        }
+        void *result = NULL;
+        pthread_join(srv_thread, &result);
+        rc = (int)(intptr_t)result;
     }
 
     /* Call ops->destroy() */
@@ -467,4 +465,71 @@ int fuse_getgroups(int size, gid_t list[])
         return -ERANGE;
     memcpy(list, tls_groups, tls_ngroups * sizeof(*list));
     return (int)tls_ngroups;
+}
+
+/* Live transport regression: readiness may synchronously use the mount.
+ * mkdir requires an RPC even when root attributes are in the client cache. */
+struct mounted_io_test {
+    struct fuse *fuse;
+    const char *root;
+    _Atomic int created;
+    int result;
+};
+
+static int mounted_io_getattr(const char *path, struct stat *st)
+{
+    struct mounted_io_test *test = fuse_get_context()->private_data;
+    if (strcmp(path, "/") != 0 &&
+        (strcmp(path, "/ready") != 0 || !atomic_load(&test->created)))
+        return -ENOENT;
+    memset(st, 0, sizeof(*st));
+    st->st_mode = S_IFDIR | 0755;
+    st->st_nlink = 2;
+    st->st_ino = strcmp(path, "/") == 0 ? 1 : 2;
+    st->st_uid = getuid();
+    st->st_gid = getgid();
+    return 0;
+}
+
+static int mounted_io_mkdir(const char *path, mode_t mode)
+{
+    (void)mode;
+    if (strcmp(path, "/ready") != 0) return -EINVAL;
+    struct mounted_io_test *test = fuse_get_context()->private_data;
+    atomic_store(&test->created, 1);
+    return 0;
+}
+
+static void mounted_io_ready(void *arg)
+{
+    struct mounted_io_test *test = arg;
+    char path[4096];
+    int len = snprintf(path, sizeof(path), "%s/ready", test->root);
+    test->result = len < 0 || (size_t)len >= sizeof(path) ? ENAMETOOLONG :
+        mkdir(path, 0755) == 0 ? 0 : errno;
+    if (unmount(test->root, MNT_FORCE) != 0 && test->result == 0)
+        test->result = errno;
+    fuse_exit(test->fuse);
+}
+
+int nfs4_test_mounted_io(const char *root)
+{
+    struct mounted_io_test test = { .root = root, .result = EIO };
+    atomic_init(&test.created, 0);
+    struct fuse_args args = FUSE_ARGS_INIT(0, NULL);
+    struct fuse_chan *channel = fuse_mount(root, &args);
+    if (!channel) return EIO;
+    struct fuse_operations ops = {
+        .getattr = mounted_io_getattr,
+        .mkdir = mounted_io_mkdir,
+    };
+    test.fuse = fuse_new(channel, &args, &ops, sizeof(ops), &test);
+    if (!test.fuse) {
+        fuse_chan_destroy(channel);
+        return EIO;
+    }
+    fuse_set_mounted_callback(test.fuse, mounted_io_ready, &test);
+    int rc = fuse_loop_mt(test.fuse);
+    fuse_destroy(test.fuse);
+    return rc == 0 ? test.result : EIO;
 }

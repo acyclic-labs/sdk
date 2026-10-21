@@ -60,6 +60,7 @@ unsafe extern "C" {
         session: *mut c_void,
         path: *const c_char,
     ) -> c_int;
+    #[cfg(test)]
     pub(super) fn acyclic_fs_darwin_mount_attribute_timeout() -> u32;
     pub(super) fn acyclic_fs_darwin_mount_fill_directory(
         buffer: *mut c_void,

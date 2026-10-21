@@ -34,6 +34,7 @@ const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
 const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
 const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 
@@ -65,6 +66,8 @@ pub use teardown_error::DarwinTeardownFailure;
 
 mod mount_probe;
 use mount_probe::*;
+mod reclaim;
+pub(in crate::native_mount) use reclaim::reclaim_stale_mounts;
 
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 

@@ -107,9 +107,9 @@ struct fuse_context {
  * hard links as one file; otherwise a fileid names a path. */
 #define FUSE_CAP_NODE_IDENTITY   (1 << 21)
 
-/* DarwinFUSE: whole seconds the NFS client caches attributes and names
- * (actimeo); a change made around the mount reaches it once they expire. */
-#define DARWINFUSE_ATTRIBUTE_TIMEOUT 1
+/* The source also changes outside this NFS client. Revalidate metadata on
+ * access instead of sleeping through a client TTL at every tool boundary. */
+#define DARWINFUSE_ATTRIBUTE_TIMEOUT 0
 
 #ifdef __APPLE__
 /* macFUSE-specific capability flags */

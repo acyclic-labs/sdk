@@ -480,7 +480,8 @@ darwinfuse_server_t *nfs4_server_create(const darwinfuse_config_t *config)
 
     /* Listen on a local socket in a directory only this user can enter.
      * (A short /tmp path: sun_path holds barely a hundred bytes.) */
-    strlcpy(srv->socket_dir, "/tmp/darwinfuse.XXXXXXXX", sizeof(srv->socket_dir));
+    strlcpy(srv->socket_dir, config->acyclic_owner
+        ? "/tmp/acyclic-fs.XXXXXXXX" : "/tmp/darwinfuse.XXXXXXXX", sizeof(srv->socket_dir));
     if (!mkdtemp(srv->socket_dir)) {
         DFUSE_ERR("mkdtemp: %s", strerror(errno));
         srv->socket_dir[0] = '\0';

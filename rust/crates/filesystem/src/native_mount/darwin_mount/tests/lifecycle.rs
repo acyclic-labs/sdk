@@ -5,7 +5,7 @@ fn sdk(
     work: &Work,
 ) -> Result<Arc<DriverSessionResources>, Box<dyn std::error::Error>> {
     let (_, context, _) = checkout_context(MountPublication::Manual)?;
-    let resources = DriverSessionResources::new(Arc::new(context), path, work)?;
+    let resources = DriverSessionResources::new(Arc::new(context), path, work, false)?;
     resources.birth(work)?;
     Ok(resources)
 }

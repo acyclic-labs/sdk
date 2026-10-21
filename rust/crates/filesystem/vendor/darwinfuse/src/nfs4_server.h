@@ -22,6 +22,7 @@ typedef struct {
     void       *user_data;
     uid_t       uid;            /* Owner UID (for access control) */
     gid_t       gid;            /* Owner GID */
+    int         acyclic_owner; /* SDK mount naming, separate from generic transport users */
     struct dfuse_inode_table_s  *inode_table;  /* dynamic inode table */
     atomic_uint_fast64_t namespace_change; /* READDIR continuation revision */
     atomic_uint_fast64_t fresh_change;     /* counter behind unlabeled change values */
