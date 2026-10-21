@@ -687,9 +687,17 @@ async fn run() -> Result<(), CliFailure> {
             name: String::new(),
             arguments: cli_routing(cwd),
         };
-        let response = send_cli_control_request(&data, &request)
-            .await
-            .map_err(io::Error::other)?;
+        let response = match send_cli_control_request(&data, &request).await {
+            Ok(response) => response,
+            // Doctor diagnoses the installation exactly when no service can
+            // answer, so it reports the service failure with every other check.
+            Err(error) if request.command == ControlCommand::Doctor => {
+                let executable = executable_digests_async().await.map_err(io::Error::other)?;
+                doctor_report(&data, Err(&error), &executable.sha256, &executable.blake3)
+                    .map_err(io::Error::other)?
+            }
+            Err(error) => return Err(io::Error::other(error).into()),
+        };
         let exit_code = if json_output {
             println!("{}", serde_json::to_string_pretty(&response)?);
             if command == "doctor" && response.get("ok").and_then(Value::as_bool) != Some(true) {

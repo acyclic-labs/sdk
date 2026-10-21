@@ -68,13 +68,15 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
             }
             return doctor_report(
                 &self.data,
-                &self.binary_identity,
+                Ok(&ServiceSummary {
+                    identity: self.binary_identity.clone(),
+                    sessions: session_claims,
+                    routes,
+                    leases,
+                    pending_recovery,
+                }),
                 &executable.sha256,
                 &executable.blake3,
-                session_claims,
-                routes,
-                leases,
-                pending_recovery,
             )
             .map(|value| (value, None))
             .map_err(Error::Storage);
@@ -219,13 +221,16 @@ pub(crate) async fn dispatch_plane_request(
             let executable = executable_digests_async().await?;
             doctor_report(
                 &control.config_root,
-                &executable.service_identity,
+                Ok(&ServiceSummary {
+                    identity: executable.service_identity,
+                    sessions: 1,
+                    routes: control.state.routes.len(),
+                    leases: control.state.leases.len(),
+                    pending_recovery: !control.state.pending_discards.is_empty()
+                        || !control.state.pending.is_empty(),
+                }),
                 &executable.sha256,
                 &executable.blake3,
-                1,
-                control.state.routes.len(),
-                control.state.leases.len(),
-                !control.state.pending_discards.is_empty() || !control.state.pending.is_empty(),
             )
         }
         ControlCommand::Agents => {

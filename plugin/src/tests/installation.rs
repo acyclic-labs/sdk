@@ -172,7 +172,61 @@ fn codex_installations_run_from_the_marketplace_or_codexs_plugin_copy() {
         config_path: None,
         prior_default_permissions: None,
     };
-    assert!(runs_owned_codex_plugin(&ownership, &marketplace, &codex_home));
+    assert!(runs_owned_codex_plugin(
+        &ownership,
+        &marketplace,
+        &codex_home
+    ));
     assert!(runs_owned_codex_plugin(&ownership, &copy, &codex_home));
     assert!(!runs_owned_codex_plugin(&ownership, &foreign, &codex_home));
+}
+
+#[test]
+fn doctor_judges_claude_code_hooks_by_the_executable_each_event_runs() {
+    let fixture = Fixture::new();
+    let settings = fixture.data.join("claude").join("settings.json");
+    let status = |path: &Path| {
+        claude_code_installation_check_at(path)["status"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(status(&settings), "warn");
+    let executable = fixture.data.join(if cfg!(windows) {
+        "acyclic.exe"
+    } else {
+        "acyclic"
+    });
+    fs::write(&executable, "").unwrap();
+    install_claude_hooks_at(&executable, &settings).unwrap();
+    assert_eq!(status(&settings), "pass");
+    fs::remove_file(&executable).unwrap();
+    assert_eq!(status(&settings), "fail");
+    fs::write(&executable, "").unwrap();
+    let mut document = read_optional_json(&settings, "settings").unwrap().unwrap();
+    document["hooks"]
+        .as_object_mut()
+        .unwrap()
+        .remove("SubagentStop");
+    fs::write(&settings, serde_json::to_vec(&document).unwrap()).unwrap();
+    let check = claude_code_installation_check_at(&settings);
+    assert_eq!(check["status"], "fail");
+    assert!(check["detail"].as_str().unwrap().contains("SubagentStop"));
+}
+
+#[test]
+fn doctor_reports_a_service_that_cannot_start_as_a_failed_check() {
+    let (service, state) = service_checks(Err("native mount registry is unavailable"));
+    assert_eq!(service["status"], "fail");
+    assert_eq!(service["detail"], "native mount registry is unavailable");
+    assert_eq!(state["status"], "warn");
+    let (service, state) = service_checks(Ok(&ServiceSummary {
+        identity: "identity".to_owned(),
+        sessions: 1,
+        routes: 0,
+        leases: 0,
+        pending_recovery: false,
+    }));
+    assert_eq!(service["status"], "pass");
+    assert_eq!(state["status"], "pass");
 }

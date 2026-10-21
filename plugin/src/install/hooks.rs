@@ -216,10 +216,26 @@ pub(crate) fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
     remove_owned_json(path, "copilot-hooks", "Copilot hooks")
 }
 
+/// The Claude Code events Acyclic routes, in the order Claude fires them.
+pub(crate) const CLAUDE_HOOK_EVENTS: [&str; 7] = [
+    "SessionStart",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "SubagentStart",
+    "SubagentStop",
+    "SessionEnd",
+];
+
 pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
     let path = claude_settings_path(project)?;
+    install_claude_hooks_at(executable, &path)?;
+    Ok(path)
+}
+
+pub(crate) fn install_claude_hooks_at(executable: &Path, path: &Path) -> Result<(), String> {
     install_owned_json_normalized(
-        &path,
+        path,
         "claude-hooks",
         "Claude Code hooks",
         normalize_claude_hook_document,
@@ -231,15 +247,7 @@ pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<P
                 .cloned()
                 .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?;
             let hooks = object_entry(&mut document, "hooks")?;
-            for event in [
-                "SessionStart",
-                "PreToolUse",
-                "PostToolUse",
-                "PostToolUseFailure",
-                "SubagentStart",
-                "SubagentStop",
-                "SessionEnd",
-            ] {
+            for event in CLAUDE_HOOK_EVENTS {
                 let entries = hooks
                     .entry(event.to_owned())
                     .or_insert_with(|| json!([]))
@@ -265,8 +273,7 @@ pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<P
             }
             Ok(Value::Object(document))
         },
-    )?;
-    Ok(path)
+    )
 }
 
 pub(crate) fn normalize_claude_hook_document(
@@ -379,9 +386,10 @@ pub(crate) fn claude_settings_path(project: bool) -> Result<PathBuf, String> {
             .join(".claude/settings.json"));
     }
     match env::var_os("CLAUDE_CONFIG_DIR") {
-        Some(directory) if !directory.is_empty() => {
-            Ok(claude_user_settings(Some(Path::new(&directory)), Path::new("")))
-        }
+        Some(directory) if !directory.is_empty() => Ok(claude_user_settings(
+            Some(Path::new(&directory)),
+            Path::new(""),
+        )),
         _ => Ok(claude_user_settings(None, &home_directory()?)),
     }
 }

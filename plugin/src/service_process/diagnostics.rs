@@ -143,16 +143,25 @@ pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
     clippy::too_many_arguments,
     reason = "each argument is one independently gathered service fact"
 )]
+/// What the running service reports about itself to doctor.
+pub(crate) struct ServiceSummary {
+    pub(crate) identity: String,
+    pub(crate) sessions: usize,
+    pub(crate) routes: usize,
+    pub(crate) leases: usize,
+    pub(crate) pending_recovery: bool,
+}
+
+/// The doctor report. `service` is the running service's summary, or why no
+/// service could answer: the report is still complete then, so doctor
+/// diagnoses the installation exactly when the service cannot start.
 pub(crate) fn doctor_report(
     data: &Path,
-    identity: &str,
+    service: Result<&ServiceSummary, &str>,
     executable_sha256: &str,
     executable_blake3: &str,
-    sessions: usize,
-    routes: usize,
-    leases: usize,
-    pending_recovery: bool,
 ) -> Result<Value, String> {
+    let routes = service.map_or(0, |service| service.routes);
     let executable = current_executable()?;
     let mut checks = Vec::new();
     let binary_identity_path = executable
@@ -249,9 +258,15 @@ pub(crate) fn doctor_report(
             });
             checks.push(doctor_check(
                 "codex-install",
-                if configured_owned { "pass" } else { "fail" },
-                ownership.map_or_else(
-                    || "Acyclic has no Codex installation ownership record".to_owned(),
+                // Like every host, Codex is optional: only an installation
+                // that exists can be broken.
+                match (&ownership, configured_owned) {
+                    (None, _) => "warn",
+                    (Some(_), true) => "pass",
+                    (Some(_), false) => "fail",
+                },
+                ownership.as_ref().map_or_else(
+                    || "no owned Codex installation".to_owned(),
                     |ownership| {
                         format!(
                             "marketplace={} plugin-version={}",
@@ -307,11 +322,8 @@ pub(crate) fn doctor_report(
         }
     }
 
-    checks.push(doctor_check(
-        "service",
-        "pass",
-        format!("identity={identity} sessions={sessions} routes={routes} leases={leases}"),
-    ));
+    let (service_check, state_check) = service_checks(service);
+    checks.push(service_check);
     let native = acyclic_fs::probe_native_mount();
     checks.push(doctor_check(
         "mount-backend",
@@ -337,15 +349,7 @@ pub(crate) fn doctor_report(
                 .unwrap_or_default()
         ),
     ));
-    checks.push(doctor_check(
-        "persistent-state",
-        if pending_recovery { "warn" } else { "pass" },
-        if pending_recovery {
-            "durable recovery work is pending"
-        } else {
-            "durable state loaded with no pending adapter recovery"
-        },
-    ));
+    checks.push(state_check);
     let cli_on_path = env::var_os("PATH").is_some_and(|paths| {
         env::split_paths(&paths).any(|directory| {
             ["acyclic", "acyclic.exe", "acyclic.cmd", "acyclic.ps1"]
@@ -387,6 +391,7 @@ pub(crate) fn doctor_report(
     if let Some(filters) = obs::active_filters() {
         checks.push(doctor_check("tracing", "pass", filters));
     }
+    checks.push(claude_code_installation_check());
     checks.push(pi_installation_check());
     let ok = checks
         .iter()
@@ -411,4 +416,88 @@ pub(crate) fn doctor_report(
         "platform": {"os": env::consts::OS, "arch": env::consts::ARCH},
         "checks": checks,
     }))
+}
+
+/// The service and durable-state checks, from the service's own summary or
+/// from the reason no service answered.
+pub(crate) fn service_checks(service: Result<&ServiceSummary, &str>) -> (Value, Value) {
+    match service {
+        Ok(service) => (
+            doctor_check(
+                "service",
+                "pass",
+                format!(
+                    "identity={} sessions={} routes={} leases={}",
+                    service.identity, service.sessions, service.routes, service.leases
+                ),
+            ),
+            if service.pending_recovery {
+                doctor_check(
+                    "persistent-state",
+                    "warn",
+                    "durable recovery work is pending",
+                )
+            } else {
+                doctor_check(
+                    "persistent-state",
+                    "pass",
+                    "durable state loaded with no pending adapter recovery",
+                )
+            },
+        ),
+        Err(error) => (
+            doctor_check("service", "fail", error),
+            doctor_check(
+                "persistent-state",
+                "warn",
+                "durable state is not loaded while the service is unavailable",
+            ),
+        ),
+    }
+}
+
+/// The user-scope Claude Code hooks: absent is a warning, and an owned
+/// installation must route every event to an executable that exists.
+pub(crate) fn claude_code_installation_check() -> Value {
+    claude_settings_path(false).map_or_else(
+        |error| doctor_check("claude-code-install", "fail", error),
+        |path| claude_code_installation_check_at(&path),
+    )
+}
+
+pub(crate) fn claude_code_installation_check_at(path: &Path) -> Value {
+    let inspect = || -> Result<Option<PathBuf>, String> {
+        let path = path.to_path_buf();
+        if read_mcp_ownership(&mcp_ownership_path(&path, "claude-hooks"))?.is_none() {
+            return Ok(None);
+        }
+        let settings = read_optional_json(&path, "Claude Code settings")?
+            .ok_or_else(|| format!("Claude Code settings at {} are missing", path.display()))?;
+        for event in CLAUDE_HOOK_EVENTS {
+            let routed = settings
+                .pointer(&format!("/hooks/{event}"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|group| is_acyclic_claude_hook_group(event, group))
+                .filter_map(|group| group.pointer("/hooks/0/command").and_then(Value::as_str))
+                .any(|command| Path::new(command).is_file());
+            if !routed {
+                return Err(format!(
+                    "Claude Code hooks at {} do not route {event} to an installed Acyclic executable",
+                    path.display()
+                ));
+            }
+        }
+        Ok(Some(path))
+    };
+    match inspect() {
+        Ok(Some(path)) => doctor_check("claude-code-install", "pass", path.display().to_string()),
+        Ok(None) => doctor_check(
+            "claude-code-install",
+            "warn",
+            "no owned per-user Claude Code hook installation",
+        ),
+        Err(error) => doctor_check("claude-code-install", "fail", error),
+    }
 }
