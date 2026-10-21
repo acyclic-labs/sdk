@@ -455,12 +455,34 @@ mod tests {
         );
     }
 
+    /// Whether the host filesystem can name a non-UTF-8 directory. APFS and
+    /// HFS+ store only valid UTF-8 names and refuse others with `EILSEQ`, so
+    /// no such checkout can exist there. Every other Unix host must create one.
+    #[cfg(unix)]
+    fn non_utf8_names(directory: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt as _;
+        let probe = directory.join(std::ffi::OsStr::from_bytes(b"probe\xff"));
+        match fs::create_dir(&probe) {
+            Ok(()) => {
+                fs::remove_dir(probe).unwrap();
+                true
+            }
+            #[cfg(target_os = "macos")]
+            // Darwin's EILSEQ.
+            Err(error) if error.raw_os_error() == Some(92) => false,
+            Err(error) => panic!("{}: {error}", probe.display()),
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn non_utf8_checkout_directories_publish_their_exact_rule() {
         use std::os::unix::ffi::OsStrExt as _;
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path();
+        if !non_utf8_names(root) {
+            return;
+        }
         git(root, &["init", "-q"]);
         let nested = root.join(std::ffi::OsStr::from_bytes(b"nested\xff *"));
         fs::create_dir(&nested).unwrap();
@@ -515,6 +537,9 @@ mod tests {
     fn linked_worktrees_with_non_utf8_names_publish_through_their_pointer_bytes() {
         use std::os::unix::ffi::OsStrExt as _;
         let temporary = tempfile::tempdir().unwrap();
+        if !non_utf8_names(temporary.path()) {
+            return;
+        }
         let root = temporary.path().join("repo");
         fs::create_dir(&root).unwrap();
         git(&root, &["init", "-q"]);
