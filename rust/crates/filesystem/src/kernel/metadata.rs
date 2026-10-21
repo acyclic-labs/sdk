@@ -77,6 +77,15 @@ impl FileMetadata {
         }
     }
 
+    /// Drops the stamps the host derives from other events rather than records as facts: reads advance the access time and every inode change, including to facts capture does not represent, advances the status-change time.
+    pub(crate) const fn without_derived_stamps(self) -> Self {
+        Self {
+            accessed_ns: MetadataField::Unavailable,
+            changed_ns: MetadataField::Unavailable,
+            ..self
+        }
+    }
+
     /// Records a content change made at `at_ns`, in signed Unix-epoch nanoseconds: every represented modification and status-change time takes that instant.
     pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
         let mut stamped = false;

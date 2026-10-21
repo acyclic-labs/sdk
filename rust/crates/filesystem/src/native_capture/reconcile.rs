@@ -268,7 +268,14 @@ impl CaptureBatch<'_> {
         } else {
             None
         };
-        let changed = if intent == CaptureIntent::MetadataOnly && exists_with_kind {
+        let changed = if intent == CaptureIntent::MetadataOnly
+            && exists_with_kind
+            && prior_metadata == Some(canonical_metadata)
+        {
+            capture_drop_path(path, self.meter)?;
+            capture_drop_host_path(host_path, self.meter)?;
+            false
+        } else if intent == CaptureIntent::MetadataOnly && exists_with_kind {
             ensure_current_host_node(self.source_root, &host_path, &metadata, self.meter)?;
             capture_reserve(&mut self.mutations, 1, self.meter)?;
             self.mutations.push(AuthoredMutation::SetMetadata {
@@ -375,6 +382,10 @@ impl CaptureBatch<'_> {
                     prior,
                     &mut canonical_metadata,
                 );
+            }
+            // A read advances the access time, and an inode change capture does not represent, such as macOS adding `com.apple.provenance`, advances the status-change time: those stamps alone never make a new version, so a rescan of unchanged content stages nothing.
+            if canonical_metadata.without_derived_stamps() == prior.without_derived_stamps() {
+                canonical_metadata = prior;
             }
         }
         Ok((canonical_metadata, prior_metadata))

@@ -97,6 +97,104 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     Ok(())
 }
 
+/// A rescan of unchanged content stages nothing when the host only advanced the
+/// stamps it derives from reads and unrepresented inode changes, as macOS FSEvents
+/// full rescans observe after a lazy mount reads its source; a recorded fact still
+/// makes a new version.
+#[tokio::test]
+async fn derived_stamps_alone_never_make_a_new_version() -> Result<(), Box<dyn std::error::Error>> {
+    let source = tempfile::tempdir()?;
+    let file = source.path().join("README.md");
+    // Larger than an inline record, so an unchanged body is reused rather than rewritten.
+    std::fs::write(&file, "# fixture\n".repeat(8))?;
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let mut initial = native_checkout(&work).await?;
+    let options = options(source.path(), 8)?;
+    let root = NamespacePath::new(Vec::new(), initial.volume_config().limits)?;
+    let rescan = |checkout: &crate::facade::MemoryCheckout| {
+        checkout.private_candidate(
+            &mut crate::kernel::KernelAccounting::native(&work, &cancellation),
+            &cancellation,
+        )
+    };
+    capture_subtrees_with_native_work(
+        &mut initial,
+        std::slice::from_ref(&root),
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        None,
+        &work,
+    )
+    .await?;
+    let readme = path("/README.md")?;
+    let (lookup, _custody) = initial
+        .lookup_batch_no_follow(std::slice::from_ref(&readme), &work, &cancellation)
+        .await?;
+    let record = lookup.entries[0]
+        .record
+        .ok_or("README.md was not captured")?;
+    let prior = initial
+        .read_metadata(record.file_id, &work, &cancellation)
+        .await?;
+
+    // Setting the access time advances it as a read does and, on Unix, advances the status-change time as an unrepresented named attribute does.
+    let captured = std::fs::metadata(&file)?;
+    let accessed = captured.accessed()? + std::time::Duration::from_secs(3_600);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_accessed(accessed))?;
+    // Negative control: the host stamps now differ from the recorded ones, so whole-record equality alone would stage the file again.
+    let accessed_ns = i64::try_from(accessed.duration_since(std::time::UNIX_EPOCH)?.as_nanos())?;
+    assert_ne!(prior.accessed_ns, MetadataField::Value(accessed_ns));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let changed = std::fs::metadata(&file)?;
+        assert_ne!(
+            prior.changed_ns,
+            MetadataField::Value(changed.ctime() * 1_000_000_000 + changed.ctime_nsec())
+        );
+    }
+    let mut unchanged = rescan(&initial)?;
+    let receipt = capture_subtrees_with_native_work(
+        &mut unchanged,
+        std::slice::from_ref(&root),
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        None,
+        &work,
+    )
+    .await?;
+    assert_eq!(receipt.value.changed_paths, 0);
+    assert_eq!(unchanged.root(), rescan(&initial)?.root());
+
+    // Positive control: a recorded stamp with the same content is still a change.
+    let modified = captured.modified()? + std::time::Duration::from_secs(7_200);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)?
+        .set_times(std::fs::FileTimes::new().set_modified(modified))?;
+    let mut touched = rescan(&initial)?;
+    let receipt = capture_subtrees_with_native_work(
+        &mut touched,
+        std::slice::from_ref(&root),
+        &options,
+        &CapturePolicy::default(),
+        &cancellation,
+        None,
+        &work,
+    )
+    .await?;
+    assert_eq!(receipt.value.changed_paths, 1);
+    assert_ne!(touched.root(), rescan(&initial)?.root());
+    Ok(())
+}
+
 #[cfg(unix)]
 mod unchanged_properties {
     use super::*;
