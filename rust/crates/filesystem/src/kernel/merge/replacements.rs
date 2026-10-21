@@ -89,58 +89,102 @@ async fn settle_record<S: AsyncObjectStore>(
     })
 }
 
-/// The name one side's changed directories rebound from `file` to a new
-/// single-link regular file, with that file's record.
-async fn find_replacement<S: AsyncObjectStore>(
+/// A name one side rebound from a base identity to a file it created.
+struct Replacement {
+    /// The base identity the name was bound to.
+    replaced: FileId,
+    directory: FileId,
+    name: LogicalName,
+    /// The created single-link regular file now bound to the name.
+    record: FileRecord,
+}
+
+/// Every name one side's changed directories rebound from a deferred
+/// identity to a single-link regular file that side created, sorted by the
+/// replaced identity. Each changed directory is diffed and charged once, no
+/// matter how many deferred files it holds.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+async fn replacement_index<S: AsyncObjectStore>(
     store: &S,
     changes: &[super::persistent_diff::ValueChange<FileId, FileRecord>],
-    file: FileId,
+    side: usize,
     limits: DecodeLimits,
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<Option<(FileId, Owned<LogicalName>, FileRecord)>, FsError> {
-    for change in changes {
-        accounting.charge(WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let (Some(before), Some(after)) = (
-            directory_entries(change.before),
-            directory_entries(change.after),
-        ) else {
-            continue;
-        };
-        if before == after {
-            continue;
-        }
-        if state.remaining_changes == 0 {
-            return Err(FsError::MergeChangeLimit);
-        }
-        let (diff, allocation) = diff_tree_entries_with_accounting(
-            store,
-            Some(before),
-            Some(after),
-            state.remaining_changes,
-            limits,
-            accounting,
-            cancellation,
-        )
-        .await?;
-        let bytes = diff.retained_allocation_bytes;
-        let diff = Owned::new(diff, allocation, bytes);
-        let found = (|| {
-            if diff.value.truncated {
+) -> Result<Owned<Vec<Replacement>>, FsError> {
+    let mut index: Owned<Vec<Replacement>> = Owned::allocate(0, accounting)?;
+    let built = async {
+        for change in changes {
+            accounting.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let (Some(before), Some(after)) = (
+                directory_entries(change.before),
+                directory_entries(change.after),
+            ) else {
+                continue;
+            };
+            if before == after {
+                continue;
+            }
+            if state.remaining_changes == 0 {
                 return Err(FsError::MergeChangeLimit);
             }
-            state.consume(diff.value.changes.len())?;
-            for entry in &diff.value.changes {
-                if let (Some(old), Some(new)) = (&entry.before, &entry.after)
-                    && old.file_id == file
-                    && new.file_id != file
-                    && new.kind == super::FileKind::Regular
-                {
-                    let (name, allocation) = super::persistent_io::clone_key::<TreeFormat>(
+            let (diff, allocation) = diff_tree_entries_with_accounting(
+                store,
+                Some(before),
+                Some(after),
+                state.remaining_changes,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            let bytes = diff.retained_allocation_bytes;
+            let diff = Owned::new(diff, allocation, bytes);
+            let found = (|| {
+                if diff.value.truncated {
+                    return Err(FsError::MergeChangeLimit);
+                }
+                state.consume(diff.value.changes.len())?;
+                for entry in &diff.value.changes {
+                    let (Some(old), Some(new)) = (&entry.before, &entry.after) else {
+                        continue;
+                    };
+                    if old.file_id == new.file_id || new.kind != super::FileKind::Regular {
+                        continue;
+                    }
+                    // Only identities deferred with this side as the deleter.
+                    let deferred = super::search::binary_search_with_accounting(
+                        &state.replacements.value,
+                        accounting,
+                        |(file, _)| file.cmp(&old.file_id),
+                    )?
+                    .ok()
+                    .and_then(|position| state.replacements.value.get(position))
+                    .is_some_and(|(_, values)| usize::from(values[1].is_some()) == side);
+                    if !deferred {
+                        continue;
+                    }
+                    // The new identity must be one this side created.
+                    let Some(record) = super::search::binary_search_with_accounting(
+                        changes,
+                        accounting,
+                        |change| change.key.cmp(&new.file_id),
+                    )?
+                    .ok()
+                    .and_then(|position| changes.get(position))
+                    .filter(|change| change.before.is_none())
+                    .and_then(|change| change.after)
+                    .filter(|record| single_regular(Some(*record))) else {
+                        continue;
+                    };
+                    let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
                         &entry.key,
                         limits.maximum_name_bytes,
                         accounting,
@@ -148,30 +192,68 @@ async fn find_replacement<S: AsyncObjectStore>(
                         0,
                     )?;
                     let bytes = TreeFormat::key_owned_bytes(&name);
-                    return Ok(Some((new.file_id, Owned::new(name, allocation, bytes))));
+                    if let Err(error) = index.ensure_for_push(usize::MAX, accounting) {
+                        Owned::new(name, allocation, bytes).retire(accounting)?;
+                        return Err(error);
+                    }
+                    index.allocation.absorb(&mut allocation)?;
+                    index.bytes = index.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                    index.value.push(Replacement {
+                        replaced: old.file_id,
+                        directory: change.key,
+                        name,
+                        record,
+                    });
                 }
-            }
-            Ok(None)
-        })();
-        diff.retire(accounting)?;
-        let Some((replacement, name)) = found? else {
-            continue;
-        };
-        let record = super::search::binary_search_with_accounting(changes, accounting, |change| {
-            change.key.cmp(&replacement)
+                Ok(())
+            })();
+            diff.retire(accounting)?;
+            found?;
+        }
+        index
+            .value
+            .sort_unstable_by_key(|replacement| replacement.replaced);
+        Ok(())
+    }
+    .await;
+    match built {
+        Ok(()) => Ok(index),
+        Err(error) => {
+            index.retire(accounting)?;
+            Err(error)
+        }
+    }
+}
+
+/// The replacement `index` records for `file`, with an owned copy of its name.
+fn find_replacement(
+    index: &[Replacement],
+    file: FileId,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<(FileId, Owned<LogicalName>, FileRecord)>, FsError> {
+    let Some(replacement) =
+        super::search::binary_search_with_accounting(index, accounting, |replacement| {
+            replacement.replaced.cmp(&file)
         })?
         .ok()
-        .and_then(|index| changes.get(index))
-        .filter(|change| change.before.is_none())
-        .and_then(|change| change.after)
-        .filter(|record| single_regular(Some(*record)));
-        let Some(record) = record else {
-            name.retire(accounting)?;
-            return Ok(None);
-        };
-        return Ok(Some((change.key, name, record)));
-    }
-    Ok(None)
+        .and_then(|position| index.get(position))
+    else {
+        return Ok(None);
+    };
+    let (name, allocation) = super::persistent_io::clone_key::<TreeFormat>(
+        &replacement.name,
+        limits.maximum_name_bytes,
+        accounting,
+        None,
+        0,
+    )?;
+    let bytes = TreeFormat::key_owned_bytes(&name);
+    Ok(Some((
+        replacement.directory,
+        Owned::new(name, allocation, bytes),
+        replacement.record,
+    )))
 }
 
 /// Whether the merged directory binds `name` to `file`.
@@ -307,22 +389,70 @@ async fn settle_replacements<S: AsyncObjectStore>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
+    if state.replacements.value.is_empty() {
+        return Ok(());
+    }
+    // One index per deleting side: 0 is ours, 1 is theirs.
+    let ours_index =
+        replacement_index(store, sides[0], 0, limits, state, accounting, cancellation).await?;
+    let theirs_index = match replacement_index(
+        store,
+        sides[1],
+        1,
+        limits,
+        state,
+        accounting,
+        cancellation,
+    )
+    .await
+    {
+        Ok(index) => index,
+        Err(error) => {
+            ours_index.retire(accounting)?;
+            return Err(error);
+        }
+    };
+    let indexes = [ours_index, theirs_index];
+    let settled = settle_indexed(
+        store,
+        &indexes,
+        resolutions,
+        maximum_conflicts,
+        limits,
+        state,
+        accounting,
+        cancellation,
+    )
+    .await;
+    for index in indexes {
+        index.retire(accounting)?;
+    }
+    settled
+}
+
+/// Settles every deferred delete/modify against the per-side replacement
+/// indexes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
+)]
+async fn settle_indexed<S: AsyncObjectStore>(
+    store: &S,
+    indexes: &[Owned<Vec<Replacement>>; 2],
+    resolutions: ResolutionView<'_>,
+    maximum_conflicts: u32,
+    limits: DecodeLimits,
+    state: &mut MergeState,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(), FsError> {
     let mut index = 0;
     while let Some(&(file, values)) = state.replacements.value.get(index) {
         index += 1;
         let ours = values[1];
         // The side that deleted the base identity: 0 is ours, 1 is theirs.
         let replaced = usize::from(ours.is_some());
-        let mut replacement = find_replacement(
-            store,
-            sides[replaced],
-            file,
-            limits,
-            state,
-            accounting,
-            cancellation,
-        )
-        .await?;
+        let mut replacement = find_replacement(&indexes[replaced].value, file, limits, accounting)?;
         if let Some((directory, name, record)) = &replacement
             && !merged_binding(
                 store,

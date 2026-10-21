@@ -383,3 +383,171 @@ async fn three_way_merge_pairs_a_replaced_file_with_the_identity_it_replaced() -
     }
     Ok(())
 }
+
+/// Checkout reconciliation: a tracking checkout's uncommitted work meets a
+/// head that changed the same file, one side having replaced the file under
+/// its name and the other having edited it. `rebase_head` classifies the
+/// checkout's exact dependencies before any candidate merge runs, and both
+/// orientations stop there: the checkout's own remove depends on the whole
+/// record the head edited, or its write depends on content of the identity
+/// the head deleted. This pins that classification reports the original
+/// identity and leaves the checkout untouched, so nothing reaches the merge
+/// and nothing is silently dropped.
+#[tokio::test]
+async fn checkout_rebase_classifies_a_replaced_file_against_the_identity_it_replaced() -> TestResult
+{
+    let cancel = CancellationToken::new();
+    for local_replaces in [false, true] {
+        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let original = create(
+            &mut seed,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        commit(&mut seed, &cancel).await?;
+        let mut local = open_checkout(&volume, writable_tracking(), &cancel).await?;
+        let mut remote = open_checkout(&volume, writable_pinned(), &cancel).await?;
+        let (replacing, editing) = if local_replaces {
+            (&mut local, &mut remote)
+        } else {
+            (&mut remote, &mut local)
+        };
+        replacing
+            .mutate(
+                vec![Mutation::Remove {
+                    path: path("doc.txt")?,
+                    expected_file_id: MetadataField::Value(original),
+                }],
+                B,
+                &cancel,
+            )
+            .await?;
+        create(
+            replacing,
+            "doc.txt",
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        editing
+            .change_content(
+                path("doc.txt")?,
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(b"ONE"),
+                },
+                ContentTimes::Preserve,
+                B,
+                &cancel,
+            )
+            .await?;
+        commit(&mut remote, &cancel).await?;
+        let before = checkout_state(&local);
+        let decision = local.rebase_head(8, B, &cancel).await?.value;
+        assert!(
+            matches!(&decision, RebaseDecision::Conflicted { conflicts, .. }
+            if conflicts.iter().any(|conflict| match conflict.region {
+                DependencyRegion::FileRecord(file_id) => local_replaces && file_id == original,
+                DependencyRegion::ContentRange { file_id, .. } => {
+                    !local_replaces && file_id == original
+                }
+                _ => false,
+            })),
+            "local_replaces={local_replaces}: {decision:?}"
+        );
+        assert_eq!(checkout_state(&local), before);
+    }
+    Ok(())
+}
+
+/// Pairing replacements costs each changed directory one diff, not one per
+/// replaced file: 64 files replaced in one directory and edited on the other
+/// side merge within a change limit far below 64 x 64.
+#[tokio::test]
+async fn replacement_pairing_charges_each_directory_once() -> TestResult {
+    const FILES: usize = 64;
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let mut originals = Vec::with_capacity(FILES);
+    for index in 0..FILES {
+        originals.push(
+            create(
+                &mut seed,
+                &format!("file-{index:02}"),
+                OwnedBytes::from_static(b"one two three"),
+                &cancel,
+            )
+            .await?,
+        );
+    }
+    commit(&mut seed, &cancel).await?;
+    let mut ours = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    let mut theirs = open_checkout(&volume, writable_pinned(), &cancel).await?;
+    for (index, original) in originals.iter().enumerate() {
+        let name = format!("file-{index:02}");
+        ours.mutate(
+            vec![Mutation::Remove {
+                path: path(&name)?,
+                expected_file_id: MetadataField::Value(*original),
+            }],
+            B,
+            &cancel,
+        )
+        .await?;
+        create(
+            &mut ours,
+            &name,
+            OwnedBytes::from_static(b"one two three"),
+            &cancel,
+        )
+        .await?;
+        theirs
+            .change_content(
+                path(&name)?,
+                ContentChange::Write {
+                    offset: 0,
+                    bytes: OwnedBytes::from_static(b"ONE"),
+                },
+                ContentTimes::Preserve,
+                B,
+                &cancel,
+            )
+            .await?;
+    }
+    commit(&mut theirs, &cancel).await?;
+    let limit = u32::try_from(FILES * 16)?;
+    let prepared = ours
+        .prepare_merge(theirs.generation_id(), limit, 8, B, &cancel)
+        .await?
+        .value;
+    assert!(
+        matches!(prepared, MergePreparation::Prepared { .. }),
+        "{prepared:?}"
+    );
+    commit(&mut ours, &cancel).await?;
+    let mut merged = volume
+        .checkout(
+            GenerationSelector::Exact(ours.generation_id()),
+            pinned(),
+            B,
+            &cancel,
+        )
+        .await?
+        .value;
+    for (index, original) in originals.iter().enumerate() {
+        let record = merged
+            .lookup_no_follow(&path(&format!("file-{index:02}"))?, B, &cancel)
+            .await?
+            .value
+            .record
+            .ok_or("merged file is missing")?;
+        assert_eq!(record.file_id, *original);
+        assert_eq!(
+            read(&mut merged, *original, 0, 13, &cancel).await?.as_ref(),
+            b"ONE two three"
+        );
+    }
+    Ok(())
+}

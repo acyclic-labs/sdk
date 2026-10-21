@@ -37,9 +37,30 @@ pub(super) struct ReplacedFile {
     pub(super) records: [FileRecord; 3],
 }
 
+/// The record `path` binds in `view`, if any.
+async fn bound_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    view: &Generation<A, O>,
+    path: &str,
+) -> Result<Option<WorkspaceStat>, WorkspaceError> {
+    match view
+        .stat(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+    {
+        Ok(receipt) => Ok(Some(receipt.value)),
+        Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => Ok(None),
+        Err(failure) => Err(failure.error),
+    }
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     /// Finds a conflicted file whose identity exactly one side replaced at
-    /// `path` with a single-link regular file.
+    /// `path` with a single-link regular file it created.
+    ///
+    /// This is the kernel's replacement rule seen through paths: the base and
+    /// the editing side bind `path` to `file_id`, and the deleting side binds
+    /// it to a file absent from the base. Only then does the kernel bind the
+    /// path back to `file_id`, so a resolution supplied for anything else
+    /// (a file moved onto the path, say) would be left unbound and dropped.
     pub(super) async fn replaced_file(
         &self,
         file_id: FileId,
@@ -57,18 +78,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 .workspace_conflict_record(volume, generation, file_id)
                 .await?;
         }
-        let (side, replaced) = match records {
-            [Some(_), None, Some(_)] => (&self.target_head, 1),
-            [Some(_), Some(_), None] => (&self.source_head, 2),
+        let (side, editing, replaced) = match records {
+            [Some(_), None, Some(_)] => (&self.target_head, &self.source_head, 1),
+            [Some(_), Some(_), None] => (&self.source_head, &self.target_head, 2),
             _ => return Ok(None),
         };
-        let cancellation = CancellationToken::new();
-        let replacement = match side.stat(path, WorkBudget::UNBOUNDED, &cancellation).await {
-            Ok(receipt) => receipt.value,
-            Err(failure) if matches!(failure.error, WorkspaceError::NotFound) => return Ok(None),
-            Err(failure) => return Err(failure.error),
+        // The common ancestor is readable through the target's volume.
+        let base = Generation {
+            workspace: self.target_head.workspace.clone(),
+            id: self.base.id,
+            publication_closure: None,
         };
-        if replacement.kind != FileKind::Regular || replacement.file_id == file_id {
+        for view in [&base, editing] {
+            if bound_record(view, path)
+                .await?
+                .is_none_or(|record| record.file_id != file_id)
+            {
+                return Ok(None);
+            }
+        }
+        let Some(replacement) = bound_record(side, path).await? else {
+            return Ok(None);
+        };
+        if replacement.kind != FileKind::Regular
+            || replacement.file_id == file_id
+            || fs
+                .workspace_conflict_record(volume, self.base.id, replacement.file_id)
+                .await?
+                .is_some()
+        {
             return Ok(None);
         }
         records[replaced] = fs

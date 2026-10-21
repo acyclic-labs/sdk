@@ -157,6 +157,28 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
 /// driver sees both texts, and the path keeps its original identity.
 #[tokio::test]
 async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(), Box<dyn Error>> {
+    replaced_file_join(JoinHistory::Merge).await
+}
+
+#[tokio::test]
+async fn rebase_joins_merge_a_replaced_file_with_the_identity_it_replaced()
+-> Result<(), Box<dyn Error>> {
+    replaced_file_join(JoinHistory::Rebase).await
+}
+
+#[tokio::test]
+async fn squash_joins_merge_a_replaced_file_with_the_identity_it_replaced()
+-> Result<(), Box<dyn Error>> {
+    replaced_file_join(JoinHistory::Squash).await
+}
+
+#[tokio::test]
+async fn cherry_pick_joins_merge_a_replaced_file_with_the_identity_it_replaced()
+-> Result<(), Box<dyn Error>> {
+    replaced_file_join(JoinHistory::CherryPick).await
+}
+
+async fn replaced_file_join(history: JoinHistory) -> Result<(), Box<dyn Error>> {
     let base = "one\ntwo\nthree\n";
     for (agent_replaces, agent_text, main_text, expected) in [
         (true, base, "ONE\ntwo\nthree\n", "ONE\ntwo\nthree\n"),
@@ -195,6 +217,7 @@ async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(
 
         let plan = agent
             .join_into(&main)
+            .history(history)
             .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value)
@@ -256,7 +279,7 @@ async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(
         };
         assert_eq!(
             variant, expected_variant,
-            "agent_replaces={agent_replaces} agent_text={agent_text:?}"
+            "{history:?} agent_replaces={agent_replaces} agent_text={agent_text:?}"
         );
         let merged = String::from_utf8(unbounded!(main, read("/shared", 1024))?.to_vec())?;
         assert_eq!(merged, expected);
@@ -264,5 +287,93 @@ async fn joins_merge_a_replaced_file_with_the_identity_it_replaced() -> Result<(
         assert_eq!(record.file_id, original);
         assert_eq!(record.link_count, 1);
     }
+    Ok(())
+}
+
+/// A file moved onto the path is not a replacement: the kernel pairs only a
+/// file the deleting side created, so the join must not offer the moved
+/// file's text as the deleted identity's resolution (the kernel would leave
+/// the path bound to the moved file and drop the merged text with the
+/// unlinked identity).
+#[tokio::test]
+async fn joins_keep_a_file_moved_onto_a_deleted_path_conflicted() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let main = unbounded!(fs, create_workspace("moved-main"))?;
+    main.write_text("/a", "a one\na two\n").await?;
+    main.write_text("/b", "b one\nb two\n").await?;
+    let agent = fork_workspace(
+        &main,
+        "moved-agent",
+        ForkOptions::from_generation(unbounded!(main, head())?, IdempotencyKey::new()),
+    )
+    .await?;
+    main.remove("/a").await?;
+    let mut moving = unbounded!(main, begin_transaction(IdempotencyKey::new()))?;
+    unbounded!(moving, rename("/b", "/a", true))?;
+    let TransactionCommit::Committed(_) = commit(&mut moving).await? else {
+        return Err("rename did not commit".into());
+    };
+    main.write_text("/a", "b one\nb TWO\n").await?;
+    agent.write_text("/a", "A ONE\na two\n").await?;
+
+    let plan = agent
+        .join_into(&main)
+        .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    let JoinOutcome::Conflicted {
+        conflicts,
+        truncated,
+    } = plan
+        .apply(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            BTreeMap::new(),
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await?
+    else {
+        return Err("a delete/modify beside a move must conflict".into());
+    };
+    let described = plan.describe_conflicts(conflicts, truncated).await?;
+    assert!(
+        described
+            .conflicts
+            .iter()
+            .all(|conflict| conflict.kind != crate::ConflictKind::Text),
+        "the moved file must not stand in for the deleted one: {:?}",
+        described
+            .conflicts
+            .iter()
+            .map(|conflict| conflict.kind)
+            .collect::<Vec<_>>()
+    );
+    let mut registry = crate::MergeDriverRegistry::new();
+    registry.register("text", Arc::new(crate::DefaultTextMergeDriver))?;
+    registry.set_default("text")?;
+    let mut cache = crate::MemoryMergeResolutionCache::default();
+    let outcome = plan
+        .apply_with_drivers(
+            ApplyOptions {
+                if_target: plan.target_head(),
+                idempotency_key: IdempotencyKey::new(),
+            },
+            &registry,
+            &mut cache,
+            false,
+            crate::PublicationPermit::Unrestricted,
+        )
+        .await;
+    assert!(
+        !matches!(outcome, Ok(JoinOutcome::Applied(_))),
+        "the agent's edit must not be published away"
+    );
+    assert_eq!(
+        String::from_utf8(unbounded!(main, read("/a", 64))?.to_vec())?,
+        "b one\nb TWO\n"
+    );
     Ok(())
 }
