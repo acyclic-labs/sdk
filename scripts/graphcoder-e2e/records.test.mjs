@@ -3,7 +3,7 @@ import test from "node:test";
 import { recordedRequests, requests } from "./assertions.mjs";
 
 test("only flushed acknowledged records survive interruption, with all case assertions retained", () => {
-  const record = { sequence: 1, case: "a", step: 0, path: "responses", status: 200 };
+  const record = { sequence: 1, case: "a", step: 0, path: "responses", status: 200, body: {} };
   const event = { event: "request", sequence: 1, case: "a", step: 0 };
   for (const tail of ["", "{", JSON.stringify({ ...record, sequence: 2 })]) {
     const parsed = recordedRequests(JSON.stringify(record) + "\n" + tail, [event]);
