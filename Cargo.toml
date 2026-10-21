@@ -17,6 +17,7 @@ members = [
   "rust/crates/filesystem-wasm",
   "rust/crates/grpc-observability",
   "rust/crates/harness",
+  "rust/crates/harness-core",
   "rust/crates/harness/src/bin/graphcoder",
   "rust/crates/harness-conformance",
   "rust/crates/harness-fuzz",

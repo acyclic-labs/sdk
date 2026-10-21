@@ -54,7 +54,8 @@ async fn prepare<P: StreamProvider>(volume: &TaskVolume<P>) -> SummaryCheckpoint
         .await
         .unwrap();
     let (cut, _, identity) = capture_selection(volume, task(), MAXIMUM).await.unwrap();
-    let mut next = crate::context::summary_source::tests::checkpoint(cut.cursor);
+    let mut next =
+        crate::context::summary_source::checkpoint_fixture::checkpoint(cut.cursor).unwrap();
     next.boundary.previous = identity;
     next
 }

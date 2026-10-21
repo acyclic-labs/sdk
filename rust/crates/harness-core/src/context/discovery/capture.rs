@@ -1,0 +1,278 @@
+use super::*;
+use crate::{executor::stock_boundary, wire::ErrorCode};
+
+/// Immutable discovery revision.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+pub struct DiscoveredContext {
+    /// Root-to-leaf instructions in declared root/filename order.
+    #[cfg_attr(feature = "wasm", tsify(type = "ProjectInstruction[]"))]
+    pub instructions: Vec<crate::model::ProjectInstruction>,
+    /// Skills in declared root and lexical directory order; duplicate names reject discovery.
+    pub skills: Vec<SkillMetadata>,
+}
+
+#[doc(hidden)]
+pub struct DiscoveryWork {
+    #[doc(hidden)]
+    pub entries: u32,
+    #[doc(hidden)]
+    pub directories: u32,
+    #[doc(hidden)]
+    pub limits: ContextDiscoveryLimits,
+}
+
+impl DiscoveryWork {
+    #[doc(hidden)]
+    pub async fn list(
+        &mut self,
+        reader: &dyn ContentResidencyVerifier,
+        root: &ContextRoot,
+        path: &str,
+        generation: Option<&GenerationRef>,
+    ) -> Result<(
+        GenerationRef,
+        Vec<crate::conversation::PrivateDirectoryEntry>,
+    )> {
+        self.directories = self
+            .directories
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("discovery work overflow".into()))?;
+        if self.directories > self.limits.directories {
+            return Err(Error::Invalid("discovery directory bound exceeded".into()));
+        }
+        let mut pinned = generation.cloned();
+        let mut entries = Vec::new();
+        let mut cursor = None;
+        loop {
+            let remaining = self
+                .limits
+                .entries
+                .checked_sub(self.entries)
+                .filter(|remaining| *remaining > 0)
+                .ok_or_else(|| Error::Invalid("discovery entry bound exceeded".into()))?;
+            let page = reader
+                .list_private_directory(
+                    &root.volume,
+                    &root.directory,
+                    path,
+                    pinned.as_ref(),
+                    cursor.as_deref(),
+                    remaining.min(128),
+                    None,
+                )?
+                .await?;
+            page.validate()?;
+            if page.generation.as_resource().provider() != root.volume.provider()
+                || pinned
+                    .as_ref()
+                    .is_some_and(|generation| generation != &page.generation)
+                || page.entries.len() > remaining.min(128) as usize
+                || page.entries.first().is_some_and(|entry| {
+                    cursor
+                        .as_ref()
+                        .is_some_and(|cursor: &String| entry.name.as_bytes() <= cursor.as_bytes())
+                })
+                || page.has_more && page.entries.is_empty()
+            {
+                return Err(Error::Storage(
+                    "discovery page violated pinned range".into(),
+                ));
+            }
+            pinned = Some(page.generation);
+            self.entries += u32::try_from(page.entries.len())
+                .map_err(|_| Error::Invalid("entry count overflow".into()))?;
+            cursor = page.entries.last().map(|entry| entry.name.clone());
+            entries.extend(page.entries);
+            if !page.has_more {
+                break;
+            }
+        }
+        Ok((
+            pinned.ok_or_else(|| Error::Storage("missing discovery generation".into()))?,
+            entries,
+        ))
+    }
+}
+
+#[doc(hidden)]
+pub fn child(directory: &str, name: &str) -> String {
+    if directory.is_empty() {
+        name.into()
+    } else {
+        format!("{directory}/{name}")
+    }
+}
+
+impl DiscoveredContext {
+    /// Checks a serialized snapshot without reading providers or granting authority.
+    pub fn validate(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let _sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
+        self.validate_skills(quota.work())
+    }
+
+    fn validate_skills(
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        for skill in &self.skills {
+            skill.validate(work)?;
+        }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let mut names = crate::core::reserve_copy_vector::<&str>(self.skills.len(), &mut quota)?;
+        names.extend(self.skills.iter().map(|skill| skill.name.as_str()));
+        names.sort_unstable();
+        if names.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(discovery_error(
+                quota.work(),
+                ErrorCode::Conflict,
+                "discovered skill names are repeated",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Projects this immutable snapshot into bounded model messages.
+    #[doc(hidden)]
+    pub fn messages(
+        &self,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ModelMessage>> {
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
+        let count = self
+            .instructions
+            .len()
+            .checked_add(usize::from(!self.skills.is_empty()))
+            .ok_or_else(|| {
+                stock_boundary(io, ErrorCode::Invalid, "discovered context count overflows")
+            })?;
+        if count > limits.context_messages {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Invalid,
+                "discovered context exceeds message bound",
+            ));
+        }
+        let skill_bytes = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            for file in &self.instructions {
+                limits.validate_file(file, work)?;
+            }
+            Ok::<_, Error>(())
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
+            self.validate_skills(quota.work())?;
+            sources.reservation(
+                limits
+                    .render_bytes
+                    .checked_sub(skill_bytes)
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            io,
+                            ErrorCode::Invalid,
+                            "skill metadata exceeds render bound",
+                        )
+                    })?,
+                io,
+            )?;
+            self.project_messages(limits, io, count, skill_bytes, &sources)
+        })
+    }
+
+    fn project_messages(
+        &self,
+        limits: crate::conversation::Limits,
+        io: Option<&crate::executor::PreparationIo>,
+        count: usize,
+        skill_bytes: u64,
+        sources: &crate::model::InstructionSources<'_>,
+    ) -> Result<Vec<ModelMessage>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io
+            && let Some(work) = io.original_native_work()
+        {
+            let mut messages = (
+                Vec::new(),
+                work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                    .map_err(Error::from)?,
+            );
+            let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
+            messages.1.absorb(&mut backing).map_err(Error::from)?;
+            for file in sources.iter(Some(io)) {
+                let file = file?;
+                messages
+                    .0
+                    .push(crate::model::project_instruction(file, Some(io))?);
+            }
+            if !self.skills.is_empty() {
+                let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
+                messages.1.absorb(&mut text.1).map_err(Error::from)?;
+                messages.0.push(ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(text.0),
+                });
+            }
+            io.absorb_native_custody(messages.1)?;
+            super::validate_source_messages(&messages.0, limits, Some(io))?;
+            return Ok(messages.0);
+        }
+        let _ = (io, skill_bytes, count);
+        let mut messages: Vec<_> = sources
+            .iter(io)
+            .map(|file| file.and_then(|file| crate::model::project_instruction(file, io)))
+            .collect::<Result<Vec<_>>>()?;
+        if !self.skills.is_empty() {
+            messages.push(ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(
+                    serde_json::to_string(&self.skills)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                ),
+            });
+        }
+        super::validate_source_messages(&messages, limits, io)?;
+        Ok(messages)
+    }
+
+    /// Composes this immutable revision through the existing source/stage path.
+    pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
+        self.validate(&mut None)?;
+        let revision = crate::executor::json::canonical_json_digest(&self, u64::MAX, &mut None)?;
+        let revision = blake3::Hash::from_bytes(revision).to_hex().to_string();
+        Ok(SourceStage::new(
+            "declared-context",
+            revision,
+            Arc::new(self),
+            placement,
+        ))
+    }
+}
+
+impl ContextSource for DiscoveredContext {
+    fn load<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        limits: crate::conversation::Limits,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>> {
+        crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move { self.messages(limits, io) },
+        )
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn supports_native(&self) -> bool {
+        true
+    }
+}

@@ -160,7 +160,7 @@ test("the workspace gate, docs and generation run as independent required matrix
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  assert.match(branch("gate"),/nextest --workspace --all-features --locked/);
- assert.match(branch("gate"),/cargo check --locked -p acyclic-harness --features filesystem --lib --tests/);
+ assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
  assert.match(branch("generation"),/cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo.toml --locked/);
@@ -282,7 +282,7 @@ test("four clippy workers retain every feature invocation and fail when any work
   assert.deepEqual([...new Set(parallel.calls.map(call => call.target))].sort(), ["target", "target-clippy-1", "target-clippy-2", "target-clippy-3"]);
   assert.ok(parallel.calls.every(call => call.command === "cargo" && call.jobs === "4"));
   assert.ok(parallel.calls.some(call => JSON.stringify(call.args) === JSON.stringify([
-    "clippy", "-p", "acyclic-harness", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
+    "clippy", "-p", "acyclic-harness", "-p", "acyclic-harness-core", "--features", "filesystem", "--all-targets", "--locked", "--", "-D", "warnings",
   ])));
   assert.equal(parallel.exitCode, 0);
   const failed = await execute(4, true);

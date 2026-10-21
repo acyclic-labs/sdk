@@ -74,7 +74,8 @@ fn capture_and_publish<const ATOMIC: bool, const FENCE: bool>(racing_capture: bo
                 "capture mixed selection and history generations"
             );
         }
-        let mut checkpoint = crate::context::summary_source::tests::checkpoint(initial_cut);
+        let mut checkpoint =
+            crate::context::summary_source::checkpoint_fixture::checkpoint(initial_cut).unwrap();
         checkpoint.boundary.captured_at = cut.cursor.position;
         checkpoint.boundary.previous = identity;
         if let Some(frozen) = selected.as_ref().and_then(|value| value.through.as_ref()) {

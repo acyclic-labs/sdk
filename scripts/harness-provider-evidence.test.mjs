@@ -114,7 +114,7 @@ test("Rust test inventory requires the attribute and every module segment", () =
 });
 
 test("Rust evidence requirements refer to current Harness runnable tests", () => {
-  const root = new URL("../rust/crates/harness/src/", import.meta.url);
+  const root = new URL("../rust/crates/harness-core/src/", import.meta.url);
   const modules = new Map();
   for (const [, , requirements] of harnessCaseMarkers) {
     for (const [runtime, name] of requirements) {

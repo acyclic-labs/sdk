@@ -1,13 +1,5 @@
 use super::*;
 
-impl CommandResolution {
-    pub(crate) fn from_request(bytes: &[u8]) -> Result<Self> {
-        serde_json::from_slice(bytes)
-            .or_else(|_| serde_json::from_slice(bytes).map(|request| Self::Submit { request }))
-            .map_err(codec)
-    }
-}
-
 impl<P: StreamProvider + ?Sized> CommandSession<P> {
     /// Consume one immutable command, never repeating an unacknowledged effect.
     pub async fn consume<F, Fut>(

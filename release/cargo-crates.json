@@ -16,6 +16,7 @@
   "acyclic-fs",
   "acyclic-markdown",
   "acyclic-harness-tui",
+  "acyclic-harness-core",
   "acyclic-harness",
   "acyclic-plugin"
 ]

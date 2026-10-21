@@ -1,5 +1,5 @@
 #![no_main]
-#[path = "../../src/native_settings/model_selection.rs"]
+#[path = "../../../harness-core/src/native_settings/model_selection.rs"]
 mod model_selection;
 
 libfuzzer_sys::fuzz_target!(|input: &[u8]| {

@@ -1,5 +1,7 @@
 //! Local bindings shared by native clients; presentation never owns a host.
-use crate::{OperationId, Result, local::LocalHarness, wire};
+#[cfg(feature = "tui")]
+use crate::wire;
+use crate::{OperationId, Result, local::LocalHarness};
 use std::sync::Arc;
 
 /// Opens the authorized task-file client; opening starts no task.

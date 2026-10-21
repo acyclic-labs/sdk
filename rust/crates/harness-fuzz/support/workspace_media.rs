@@ -1,5 +1,5 @@
 //! UTF-8 round-trip oracle for classification before the immutable file is pinned.
-#[path = "../../harness/src/filesystem/host/reads/media_type.rs"]
+#[path = "../../harness-core/src/filesystem/host/reads/media_type.rs"]
 mod media_type;
 use acyclic_harness::conversation::FileDescriptor;
 

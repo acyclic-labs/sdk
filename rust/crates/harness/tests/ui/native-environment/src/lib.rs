@@ -1,4 +1,4 @@
-#[path = "../../../../src/native_environment.rs"]
+#[path = "../../../../../harness-core/src/native_environment.rs"]
 pub mod real_seam;
 
 #[cfg(feature = "negative")]

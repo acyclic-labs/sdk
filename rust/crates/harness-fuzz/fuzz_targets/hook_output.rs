@@ -7,15 +7,15 @@ use serde_json::Value;
 
 // Include the production pure decoder and normalized types. No native runner,
 // model provider, process, or public testing API is needed by this target.
-#[path = "../../harness/src/hooks/spec.rs"]
+#[path = "../../harness-core/src/hooks/spec.rs"]
 mod spec;
 use spec::{HookEvent, HookFailure};
-#[path = "../../harness/src/hooks/output.rs"]
+#[path = "../../harness-core/src/hooks/output.rs"]
 mod output;
 use output::{HookDiagnostic, HookOutput};
-#[path = "../../harness/src/hooks/budget.rs"]
+#[path = "../../harness-core/src/hooks/budget.rs"]
 mod budget;
-#[path = "../../harness/src/hooks/plan.rs"]
+#[path = "../../harness-core/src/hooks/plan.rs"]
 mod plan;
 
 // This target is also compiled by ordinary Cargo qualification without cfg(test)
@@ -31,7 +31,7 @@ fn apply(
     ledger.apply(output, event, policy, result);
     ledger.finish(output);
 }
-#[path = "../../harness/src/hooks/input.rs"]
+#[path = "../../harness-core/src/hooks/input.rs"]
 mod input;
 use input::HookInput;
 

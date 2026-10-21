@@ -1,5 +1,5 @@
 #![no_main]
-#[path = "../../harness/src/store/effect_certificate.rs"]
+#[path = "../../harness-core/src/store/effect_certificate.rs"]
 mod codec;
 #[path = "../../harness/tests/support/effect_certificate.rs"]
 mod oracle;

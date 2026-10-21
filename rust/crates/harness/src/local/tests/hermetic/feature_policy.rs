@@ -225,11 +225,12 @@ fn runtime_files(
     read: impl Fn(&std::path::Path) -> Result<String, String>,
 ) -> Result<std::collections::BTreeMap<std::path::PathBuf, (String, Fixtures)>, String> {
     let root = std::path::Path::new(crate::build_metadata::MANIFEST_DIR);
+    let core = std::path::Path::new(acyclic_harness_core::build_metadata::MANIFEST_DIR);
     modules::sources(
         &[
             (root.join("src/local/mod.rs"), Fixtures::Local),
-            (root.join("src/native_settings.rs"), Fixtures::Settings),
-            (root.join("src/native_environment.rs"), Fixtures::None),
+            (core.join("src/native_settings.rs"), Fixtures::Settings),
+            (core.join("src/native_environment.rs"), Fixtures::None),
         ],
         read,
     )
@@ -261,7 +262,12 @@ fn planted_violations_in_every_runtime_unit_are_rejected() {
         let planted = format!("{source}\n#[cfg(feature = \"test-support\")]\nfn planted() {{}}\n");
         assert_eq!(policy(&planted, fixtures).violations, 1);
     }
-    let settings = include_str!("../../../native_settings.rs");
+    let settings = read_runtime(
+        &std::path::Path::new(acyclic_harness_core::build_metadata::MANIFEST_DIR)
+            .join("src/native_settings.rs"),
+    )
+    .expect("native settings source must be readable");
+    let settings = settings.as_str();
     for before in [
         "fn with_roots(",
         "fn configured_codex_home(",

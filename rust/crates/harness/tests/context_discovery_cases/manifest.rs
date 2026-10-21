@@ -111,7 +111,7 @@ async fn assert_request(
         .ok_or_else(|| Error::NotFound("model request".into()))?;
     assert_eq!(request.tools, manifest.tools);
     let conventions: Vec<String> =
-        serde_json::from_str(include_str!("../../src/context/instructions.json"))
+        serde_json::from_str(acyclic_harness::context::DEFAULT_CONVENTIONS_JSON)
             .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(manifest.conventions, conventions);
     assert!(conventions[1].contains("plans/<id>.md"));

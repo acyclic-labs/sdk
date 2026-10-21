@@ -2,9 +2,9 @@
 
 use acyclic_harness::OperationId;
 use libfuzzer_sys::fuzz_target;
-#[path = "../../src/distributed/origin_locator.rs"]
+#[path = "../../../harness-core/src/distributed/origin_locator.rs"]
 mod origin_locator;
-#[path = "../../src/executor/summary_identity.rs"]
+#[path = "../../../harness-core/src/executor/summary_identity.rs"]
 mod summary_identity;
 
 fuzz_target!(|input: &[u8]| {

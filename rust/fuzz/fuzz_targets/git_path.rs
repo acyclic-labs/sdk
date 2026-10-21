@@ -7,7 +7,7 @@ use std::path::{Component, Path};
 
 // Compile the production parser, with the production Error type, without
 // exporting a second public facade entry point just for verification.
-#[path = "../../crates/harness/src/tools/git/path.rs"]
+#[path = "../../crates/harness-core/src/tools/git/path.rs"]
 mod path;
 
 fuzz_target!(|bytes: &[u8]| {

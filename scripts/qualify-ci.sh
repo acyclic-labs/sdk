@@ -186,16 +186,16 @@ web_warning_closures() {
   local features
   for features in browser wasm browser,test-support wasm,test-support; do
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      cargo check --locked -p acyclic-harness --no-default-features \
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
   done
   RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-    cargo check --locked -p acyclic-harness --no-default-features \
+    cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
       --target wasm32-unknown-unknown --lib
 }
 
 harness_tests() {
-  cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
+  cargo test --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
   grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
   ! grep -Eq 'test result: ok\. 0 passed;' "$observability/harness-tests.log"
 }
@@ -206,17 +206,19 @@ case "$lane" in
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
       cargo check --locked -p acyclic-harness-fuzz --bins
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      cargo check --locked -p acyclic-harness --features model-checking --lib
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core --features model-checking --lib
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      cargo check --locked -p acyclic-harness --features filesystem-local,model-checking --lib
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem-local,model-checking --lib
     # Unit tests compile without optional native features, so a test seam
     # cannot cross a feature gate the all-features suites never close.
-    cargo check --locked -p acyclic-harness --features filesystem --lib --tests
+    cargo check --locked -p acyclic-harness -p acyclic-harness-core --features filesystem --lib --tests
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      harness_tests --features model-checking \
-        --test client-mailbox-model --test client_journal_model --test mcp-loom
+      harness_tests -p acyclic-harness --features model-checking \
+        --test client-mailbox-model --test client_journal_model
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
-      harness_tests --features model-checking \
+      harness_tests -p acyclic-harness-core --features model-checking --test mcp-loom
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings --cfg acyclic_harness_loom --cfg acyclic_loom" \
+      harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
     nextest --workspace --all-features --locked
@@ -417,7 +419,7 @@ case "$lane" in
   wasm-tests)
     # Compile target-specific test code without a browser or native dev-deps.
     for features in browser,test-support wasm,test-support; do
-      cargo check --locked -p acyclic-harness --no-default-features \
+      cargo check --locked -p acyclic-harness -p acyclic-harness-core --no-default-features \
         --features "$features" --target wasm32-unknown-unknown --lib --tests
     done
     ;;
@@ -432,7 +434,7 @@ case "$lane" in
     # compiles or omits, so lint each browser build as it ships.
     cargo clippy -p acyclic-fs-wasm --target wasm32-unknown-unknown \
       --all-targets --all-features --locked -- -D warnings
-    cargo clippy -p acyclic-harness --features wasm \
+    cargo clippy -p acyclic-harness -p acyclic-harness-core --features wasm \
       --target wasm32-unknown-unknown --locked -- -D warnings
     cargo clippy -p acyclic-machines-wasm -p acyclic-inference-wasm -p acyclic-objects-wasm \
       --target wasm32-unknown-unknown --all-targets --all-features --locked -- -D warnings
@@ -449,15 +451,15 @@ case "$lane" in
     for suite in filesystem::default_tools::tests:: memory_store::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-        harness_tests --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
+        harness_tests -p acyclic-harness-core --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"
     done
     CHROMEDRIVER="$(command -v chromedriver)" \
       RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests --features browser,test-support --target wasm32-unknown-unknown \
+      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main client_public_consumer::identical_public_harness_trace
-    harness_tests --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
+    harness_tests -p acyclic-harness --features filesystem,test-support --test main client_public_consumer::identical_public_harness_trace
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
+      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown --test client-views-parity
     RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
     CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER="node $PWD/scripts/run-node-wasm-tests.mjs" \
       cargo test -p acyclic-harness-providers --features browser,acyclic-harness/test-support \
@@ -466,7 +468,7 @@ case "$lane" in
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
       RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
-      harness_tests --features browser,test-support --target wasm32-unknown-unknown \
+      harness_tests -p acyclic-harness --features browser,test-support --target wasm32-unknown-unknown \
         --test main native_media_boundary::
     GECKODRIVER="$(command -v geckodriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked

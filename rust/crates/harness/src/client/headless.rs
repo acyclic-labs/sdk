@@ -60,3 +60,23 @@ impl HeadlessOutcome {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Preparation and history surface a fired cancellation as `Error::Cancelled`
+    // (`fired_cancellation_stays_cancelled_through_preparation_and_history`);
+    // headless clients must settle it as cancelled, never as a failure.
+    #[test]
+    fn cancellation_settles_as_cancelled_and_storage_failure_as_failed() {
+        assert_eq!(
+            HeadlessOutcome::from_error(&Error::Cancelled),
+            HeadlessOutcome::Cancelled
+        );
+        assert_eq!(
+            HeadlessOutcome::from_error(&Error::Storage("provider write failed".into())),
+            HeadlessOutcome::Failed
+        );
+    }
+}

@@ -14,7 +14,7 @@ const implementation = source.slice(source.indexOf("export function"), source.la
 const names = [...new Set(packagedTypeScriptBindings.flatMap(([, names]) => names)), "workers"];
 const sources = new Map(packagedTypeScriptBindings.map(([stem]) => [stem,
   stem === "validation/v1/options_pb" ? "rust/crates/contract-derive/proto/validation/v1/options.proto"
-    : stem === "protocol/v1/protocol_pb" ? "rust/crates/harness/proto/protocol/v1/protocol.proto"
+    : stem === "protocol/v1/protocol_pb" ? "rust/crates/harness-core/proto/protocol/v1/protocol.proto"
     : stem === "stream/v1/session_pb" ? "rust/crates/stream/proto/stream/v1/session.proto"
     : compatibilityArtifacts[stem.split("/")[0]].schemaDigest]));
 

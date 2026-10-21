@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 features=filesystem-local,native-execution,terminal,tui,grpc,test-support,search-http
-cargo test --locked -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
+cargo test --locked -p acyclic-harness-core --features "$features" --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py \
     scheduler::tests::indeterminate:: \
     filesystem::task_runtime::tests::worker::indeterminate_command_ \

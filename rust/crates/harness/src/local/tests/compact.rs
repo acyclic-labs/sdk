@@ -419,7 +419,7 @@ proptest::proptest! {
         use super::super::compact::checkpoints::advances;
         let cursor = Cursor {volume:[0;32],epoch:uuid::Uuid::nil(),schema:crate::task_volume::SCHEMA,
             query:[0;32],position:1,accepted:1,durable:1,commit:[0;32]};
-        let mut cp = crate::context::summary_source::tests::checkpoint(cursor);
+        let mut cp = crate::context::summary_source::checkpoint_fixture::checkpoint(cursor).unwrap();
         let key = FileKey::parse(".tasks/task/context/compaction-next/manifest.json").unwrap();
         let previous = FileKey::parse(".tasks/task/context/compaction-previous/manifest.json").unwrap();
         cp.boundary.captured_at = captured;

@@ -41,8 +41,9 @@ mod command_parse;
 #[path = "../src/client/commands/syntax.rs"]
 mod command_syntax;
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../src/context/discovery/frontmatter.rs"]
-mod frontmatter;
+mod frontmatter {
+    pub(crate) use acyclic_harness::context::{frontmatter_end, parse_frontmatter};
+}
 
 #[path = "support/client_files.rs"]
 mod client_files;

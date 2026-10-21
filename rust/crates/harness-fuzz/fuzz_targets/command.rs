@@ -3,11 +3,11 @@
 use acyclic_harness::{Error, Result};
 use libfuzzer_sys::fuzz_target;
 
-#[path = "../../harness/src/tools/agent_selection.rs"]
+#[path = "../../harness-core/src/tools/agent_selection.rs"]
 mod agent_selection;
-#[path = "../../harness/src/tools/command.rs"]
+#[path = "../../harness-core/src/tools/command.rs"]
 mod command;
-#[path = "../../harness/src/tools/fs_command.rs"]
+#[path = "../../harness-core/src/tools/fs_command.rs"]
 mod fs_command;
 use agent_selection::{AgentTarget, selection};
 use command::parse_command;

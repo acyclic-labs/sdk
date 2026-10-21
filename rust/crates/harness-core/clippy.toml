@@ -1,0 +1,51 @@
+# Thresholds for the lints enabled in [workspace.lints.clippy] (Cargo.toml).
+too-many-lines-threshold = 100
+cognitive-complexity-threshold = 30
+# Product and vendor names doc_markdown would otherwise want in backticks.
+# `..` keeps clippy's built-in list (GitHub, macOS, JavaScript, ...).
+doc-valid-idents = ["OpenAI", "ChatGPT", "MoonshotAI", ".."]
+# Tests may unwrap, expect and panic; the workspace denies them elsewhere.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+# The working directory belongs to the whole process: changing it moves every
+# other thread's relative paths and the directory each later child starts in.
+# Give a child its own directory with `Command::current_dir` instead.
+disallowed-methods = [
+    { path = "std::env::var", reason = "use the isolated native environment seam" },
+    { path = "std::env::var_os", reason = "use the isolated native environment seam" },
+    { path = "std::env::vars", reason = "use the isolated native environment seam" },
+    { path = "std::env::vars_os", reason = "use the isolated native environment seam" },
+    { path = "std::env::home_dir", reason = "use the isolated native environment seam" },
+    { path = "dirs::home_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::cache_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::config_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::config_local_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::data_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::data_local_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::executable_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::preference_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::runtime_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::state_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::audio_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::desktop_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::document_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::download_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::font_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::picture_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::public_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::template_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "dirs::video_dir", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "directories::BaseDirs::new", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "directories::ProjectDirs::from", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "directories::ProjectDirs::from_path", reason = "use the isolated native environment seam", allow-invalid = true },
+    { path = "directories::UserDirs::new", reason = "use the isolated native environment seam", allow-invalid = true },
+
+    { path = "std::env::set_current_dir", reason = "process-wide; use Command::current_dir for a child" },
+]
+
+# Resolve macro aliases through the compiler, just like environment methods.
+disallowed-macros = [
+    { path = "std::env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
+    { path = "std::option_env", reason = "compile-time environment discovery belongs in the Cargo metadata seam" },
+]

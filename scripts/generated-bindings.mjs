@@ -29,7 +29,7 @@ export const compatibilityArtifacts = {
     descriptorDigest: "compatibility/descriptors/auth-v1.bin",
   },
   harness: {
-    schemaDigest: "rust/crates/harness/proto/harness/v2/harness.proto",
+    schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
     conformanceDigest: "conformance/vectors/core.json",
   },
   filesystem: {
@@ -74,7 +74,7 @@ export const packagedSourceCopies = [
     "extension-record", "extension-state-migration", "extension-dependency", "extension-configuration", "extension-admission", "resource-revision", "fork-request", "fork-seed", "reference-grant", "execution-placement", "task-admission", "workflow-admission",
     "interaction-resolution", "resolution-receipt", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
-  ["rust/crates/harness/proto/protocol/v1/protocol.proto", "rust/crates/filesystem/proto/protocol/v1/protocol.proto"],
+  ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],

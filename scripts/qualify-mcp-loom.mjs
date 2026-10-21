@@ -7,6 +7,7 @@ export const gateQualifications = [
   { args: ["--all-features"] },
   { args: ["--coordinator-origins", "--all-features"] },
   { args: ["--summary-checkpoints", "--all-features"] },
+  { args: ["--hook-effects", "--all-features"] },
   { args: ["--hook-lifecycle", "--all-features"] },
   { args: ["--native-registry"] },
   { args: ["--e2e-progress"] }, { args: ["--native-progress"] },
@@ -39,13 +40,13 @@ function qualifyGate(run) {
 }
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "mcp-loom", [...features, "--features", "model-checking"], run, {
+  return qualifyLoom("acyclic-harness-core", "mcp-loom", [...features, "--features", "model-checking"], run, {
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });
 }
 
 export function qualifyCoordinatorOriginsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
+  return qualifyLoom("acyclic-harness-core", "acyclic_harness_core", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filter: "distributed::tests::model_checking::origin_publication_fences_competing_writers",
     env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
   });
@@ -59,10 +60,20 @@ export function qualifySummaryCheckpointsLoom(features = ["--features", "filesys
   });
 }
 
+// Hook dispatch claims live in acyclic-harness-core; the local checkout and
+// projection hook models live in the acyclic-harness facade.
+export function qualifyHookEffectsLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
+  return qualifyLoom("acyclic-harness-core", "acyclic_harness_core", [...features, "--features", "model-checking"], run, {
+    kind: "--lib", filters: [
+      "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
+    ], timeout: 9500,
+    env: { ...process.env, RUSTFLAGS: `${process.env.RUSTFLAGS ?? ""} --cfg acyclic_harness_loom --cfg acyclic_loom` }, targetCfg: [],
+  });
+}
+
 export function qualifyHookLifecycleLoom(features = ["--features", "filesystem-local,native-execution,terminal,mcp-http,test-support,grpc"], run = spawnSync) {
   return qualifyLoom("acyclic-harness", "acyclic_harness", [...features, "--features", "model-checking"], run, {
     kind: "--lib", filters: [
-      "hooks::effects::models::competing_dispatches_claim_once_with_negative_control",
       "local::checkout_tools::hooks::models::cancellation_keeps_hook_workers_inside_the_selected_workspace",
       "local::checkout_tools::hooks::models::cancelled_hook_retains_projection_claim_until_physical_cleanup",
       "local::checkout_tools::tests::cancelled_bash_retains_projection_until_physical_cleanup",
@@ -140,7 +151,7 @@ export function qualifyFsBindingLoom(features = [], run = spawnSync) {
 }
 
 export function qualifyMemoryAccountingLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "memory-accounting-model", [
+  return qualifyLoom("acyclic-harness-core", "memory-accounting-model", [
     "--features", "filesystem,acyclic-fs/model-checking",
     "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
   ], run, {
@@ -225,7 +236,7 @@ const fixedModels = {
   "--native-registry": qualifyNativeRegistryLoom,
 };
 const selectableModels = {
-  "--e2e-progress": qualifyE2eProgressLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
+  "--e2e-progress": qualifyE2eProgressLoom, "--hook-effects": qualifyHookEffectsLoom, "--hook-lifecycle": qualifyHookLifecycleLoom,
   "--coordinator-origins": qualifyCoordinatorOriginsLoom, "--summary-checkpoints": qualifySummaryCheckpointsLoom,
   "--fs-binding": qualifyFsBindingLoom,
 };

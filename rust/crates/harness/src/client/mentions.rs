@@ -6,20 +6,9 @@ use crate::{
     conversation::{ContentResidencyVerifier, FileRef},
     resources::GenerationRef,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Exact composer range and immutable file selected by an `@` mention.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FileMention {
-    /// Inclusive UTF-8 byte offset of `@`.
-    pub start: usize,
-    /// Exclusive UTF-8 byte offset, including closing quotes when present.
-    pub end: usize,
-    /// Owner-verified immutable content reference.
-    pub file: FileRef,
-}
+pub use crate::command_request::FileMention;
 
 /// Resolves whitespace-delimited `@path` and `@"path with spaces"` at one revision.
 /// Email addresses, escaped `\@` and embedded `@` are ordinary text. Paths are

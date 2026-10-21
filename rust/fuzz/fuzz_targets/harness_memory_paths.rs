@@ -1,7 +1,7 @@
 //! Fuzz ordered memory-path conflicts and JSON input round-trip stability.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-#[path = "../../crates/harness/src/memory_store/directory/conflicts.rs"]
+#[path = "../../crates/harness-core/src/memory_store/directory/conflicts.rs"]
 mod conflicts;
 fuzz_target!(|data: &[u8]| {
     if data.len() > 65_536 {

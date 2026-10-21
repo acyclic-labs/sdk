@@ -1,10 +1,10 @@
 //! Fuzz directory selection, generation visibility and serialized-page round trips.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-#[path = "../../harness/src/memory_store/directory/page.rs"]
+#[path = "../../harness-core/src/memory_store/directory/page.rs"]
 mod page;
 use page::{MemoryStoreEntry, MemoryStoreEntryKind, MemoryStorePage};
-#[path = "../../harness/src/memory_store/directory/page/reference.rs"]
+#[path = "../../harness-core/src/memory_store/directory/page/reference.rs"]
 mod reference;
 
 #[derive(serde::Serialize, serde::Deserialize)]

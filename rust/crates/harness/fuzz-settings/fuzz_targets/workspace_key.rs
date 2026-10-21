@@ -1,6 +1,6 @@
 #![no_main]
 
-#[path = "../../src/native_settings/workspace.rs"]
+#[path = "../../../harness-core/src/native_settings/workspace.rs"]
 mod workspace;
 
 use libfuzzer_sys::fuzz_target;

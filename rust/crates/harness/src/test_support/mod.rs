@@ -1,28 +1,13 @@
 //! Deterministic model scripts for harness consumers and scenario tests.
 
-#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) mod accounted;
-#[cfg(feature = "test-support")]
-pub(crate) mod admission_work;
+pub use acyclic_harness_core::test_support::*;
+
 mod client_views;
 pub use client_views::empty_client_views;
-#[cfg(all(test, not(target_arch = "wasm32")))]
-pub(crate) mod crash_cuts;
-mod scripted;
-mod search;
 #[cfg(feature = "test-support")]
-mod task_volume_work;
-pub use search::{ScriptedSearch, ScriptedSearchProvider};
-
-pub use scripted::{
-    ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
-};
+pub(crate) mod model_view_work;
 #[cfg(feature = "test-support")]
-pub use task_volume_work::measure as measure_task_volume_work;
-#[cfg(feature = "test-support")]
-pub(crate) use task_volume_work::{
-    Files as TaskVolumeFiles, examined as task_volume_item_examined,
-};
+pub use model_view_work::measure as measure_model_view_work;
 
 /// Local test composition with temporary state and settings, independent of the per-user store, HOME and CODEX_HOME.
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -51,13 +36,34 @@ pub fn local_task_stream(
     harness.task_stream()
 }
 
-#[cfg(feature = "test-support")]
-pub(crate) mod model_view_work;
-#[cfg(feature = "test-support")]
-pub use model_view_work::measure as measure_model_view_work;
-
-/// Reads child-fixture controls while refusing ambient user directory discovery.
-/// Available wherever this module is (unit tests on every target, or `test-support`).
-pub fn environment(name: &str) -> Option<std::ffi::OsString> {
-    crate::native_environment::variable_with_user_locations(name, false)
+#[cfg(all(
+    test,
+    feature = "filesystem-local",
+    any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http")
+))]
+mod tests {
+    // The local test composition must select the isolated settings snapshot,
+    // never the user's settings (see `native_settings` isolation properties).
+    #[test]
+    fn local_test_config_selects_isolated_settings() {
+        let workspace = std::path::PathBuf::from("workspace");
+        let config = super::local_harness_config(
+            workspace,
+            (
+                crate::model::Model::new(
+                    "test".into(),
+                    "settings".into(),
+                    "1".into(),
+                    serde_json::Value::Null,
+                )
+                .unwrap(),
+                std::sync::Arc::new(super::ScriptedModelProvider::new([])),
+            ),
+        )
+        .unwrap();
+        assert!(
+            config.settings.is_some(),
+            "test configuration must select settings"
+        );
+    }
 }
