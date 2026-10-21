@@ -22,8 +22,8 @@ case "$phase" in
     ;;
   fuzz-build)
     # Preserve build-slot's shared target directory across jobs and revisions.
-    env -u RUSTFLAGS cargo +nightly-2026-07-01 fuzz build goal_scenario \
-      --fuzz-dir rust/crates/harness-fuzz
+    env -u RUSTFLAGS cargo +nightly-2026-07-01 fuzz build goal_scenario --dev \
+      --target x86_64-unknown-linux-gnu --fuzz-dir rust/crates/harness-fuzz
     ;;
   fuzz-sweep)
     # Requiring the built artifact makes compilation impossible in this phase.
