@@ -1,0 +1,23 @@
+{
+  "id": "jsonl-other-session",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "jsonl",
+      "stdin": "{\"key\":{\"Session\":{\"session\":\"00000000-0000-0000-0000-000000000002\",\"file\":{\"Request\":\"00000000-0000-0000-0000-000000000002\"}}},\"channel\":null,\"bytes\":{\"text\":\"{\\\"kind\\\":\\\"prompt\\\",\\\"text\\\":\\\"foreign\\\",\\\"source\\\":null,\\\"mentions\\\":[]}\"}}\n",
+      "exit": 1,
+      "stderr_contains": [
+        "stdin request targets another session or execution owner"
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

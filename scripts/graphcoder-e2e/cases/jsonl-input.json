@@ -1,0 +1,27 @@
+{
+  "id": "jsonl-input",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "jsonl",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

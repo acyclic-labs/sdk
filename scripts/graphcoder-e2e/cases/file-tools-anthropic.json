@@ -1,0 +1,82 @@
+{
+  "id": "file-tools-anthropic",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "result.txt",
+              "text": "before edit\n",
+              "media_type": "text/plain",
+              "display_name": "result.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "file"
+        },
+        "tools": [
+          {
+            "id": "edit",
+            "name": "edit",
+            "arguments": {
+              "file": {
+                "$tool_result": "/file"
+              },
+              "old_text": "before",
+              "new_text": "after"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "file"
+        },
+        "tools": [
+          {
+            "id": "read",
+            "name": "read",
+            "arguments": {
+              "file": {
+                "$tool_result": "/file"
+              }
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "after edit"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 4,
+    "files": {
+      "result.txt": "after edit\n"
+    }
+  },
+  "adapter": "anthropic"
+}

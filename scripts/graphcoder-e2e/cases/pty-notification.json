@@ -1,0 +1,48 @@
+{
+  "id": "pty-notification",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "NOTIFICATION_E2E"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "notify when complete"
+        },
+        {
+          "when": {
+            "contains": [
+              "NOTIFICATION_E2E",
+              "\u00e2\u2014\u2039"
+            ],
+            "raw": [
+              "\u0007"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "id": "pty-kill-and-resume",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "RECOVERED_E2E"
+        ],
+        "hold": true
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "killed": true,
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "recover this conversation"
+        },
+        {
+          "when": {
+            "contains": [
+              "RECOVERED_E2E"
+            ]
+          },
+          "kill": true
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "RECOVERED_E2E"
+            ]
+          },
+          "send": "\u0003"
+        },
+        {
+          "when": {
+            "contains": [
+              "cancelled"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "recover this conversation"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "id": "text-chat",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "h\u00c3\u00a9 ",
+          "**streamed answer**",
+          "\n"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "h\u00c3\u00a9 **streamed answer**\n"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  },
+  "adapter": "chat"
+}

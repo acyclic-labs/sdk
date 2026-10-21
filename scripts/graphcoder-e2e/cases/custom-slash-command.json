@@ -1,0 +1,32 @@
+{
+  "id": "custom-slash-command",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      ".claude/commands/marker.md": "SLASH_E2E_MARKER $ARGUMENTS\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "/marker extra",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "SLASH_E2E_MARKER extra"
+    ]
+  }
+}

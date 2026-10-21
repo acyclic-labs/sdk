@@ -1,0 +1,88 @@
+{
+  "id": "pty-manual-compaction",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "remember MANUAL_E2E_FACT"
+        },
+        "text": [
+          "MANUAL_E2E_FIRST"
+        ]
+      },
+      {
+        "when": {
+          "contains": "Summarize this conversation"
+        },
+        "text": [
+          "COMPACTED_E2E_FACT"
+        ]
+      },
+      {
+        "when": {
+          "user": "after compact",
+          "contains": "COMPACTED_E2E_FACT"
+        },
+        "text": [
+          "MANUAL_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "remember MANUAL_E2E_FACT"
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_FIRST",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "prompt": "/compact preserve the fact"
+        },
+        {
+          "when": {
+            "contains": [
+              "COMPACTED_E2E_FACT",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "prompt": "after compact"
+        },
+        {
+          "when": {
+            "contains": [
+              "MANUAL_E2E_DONE",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 3,
+    "last_model_contains": [
+      "COMPACTED_E2E_FACT"
+    ],
+    "last_model_absent": [
+      "MANUAL_E2E_FIRST"
+    ]
+  }
+}

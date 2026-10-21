@@ -1,0 +1,62 @@
+{
+  "id": "web-search",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "search",
+            "name": "web_search",
+            "arguments": {
+              "query": "fixture query"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "path": "search"
+        },
+        "json": {
+          "results": [
+            {
+              "id": "https://example.invalid/e2e",
+              "url": "https://example.invalid/e2e",
+              "title": "SEARCH_E2E_RESULT",
+              "text": "scripted backend result"
+            }
+          ]
+        }
+      },
+      {
+        "when": {
+          "tool_result": "SEARCH_E2E_RESULT"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "search fixture query",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "tool_contains": [
+      "SEARCH_E2E_RESULT"
+    ],
+    "model_contains": [
+      "\"name\":\"web_search\""
+    ]
+  }
+}

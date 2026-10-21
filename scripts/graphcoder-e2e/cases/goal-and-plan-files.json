@@ -1,0 +1,87 @@
+{
+  "id": "goal-and-plan-files",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "goal",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/scratch/GOAL.md",
+              "text": "---\nstatus: active\n---\nGOAL_E2E\n",
+              "media_type": "text/plain",
+              "display_name": ".volumes/scratch/GOAL.md"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "plan",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/scratch/plans/release.md",
+              "text": "- [ ] PLAN_E2E\n",
+              "media_type": "text/plain",
+              "display_name": ".volumes/scratch/plans/release.md"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "first"
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "done_goal",
+            "name": "write",
+            "arguments": {
+              "path": ".volumes/scratch/GOAL.md",
+              "text": "---\nstatus: done\n---\nGOAL_E2E\n",
+              "media_type": "text/plain",
+              "display_name": ".volumes/scratch/GOAL.md"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "start goal",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 5,
+    "model_contains": [
+      "Keep the current goal",
+      "Keep each Markdown plan",
+      "Continue the active goal in .volumes/scratch/GOAL.md."
+    ],
+    "tool_contains": [
+      "GOAL.md",
+      "plans/release.md"
+    ]
+  }
+}

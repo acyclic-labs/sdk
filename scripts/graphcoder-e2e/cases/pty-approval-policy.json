@@ -1,0 +1,86 @@
+{
+  "id": "pty-approval-policy",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "approved.txt",
+              "text": "APPROVED_E2E\n",
+              "media_type": "text/plain",
+              "display_name": "approved.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "file"
+        },
+        "text": [
+          "APPROVAL_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "write approved file"
+        },
+        {
+          "when": {
+            "contains": [
+              "E2E approval policy"
+            ]
+          },
+          "send": "y\r"
+        },
+        {
+          "when": {
+            "contains": [
+              "APPROVAL_E2E_DONE",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "files": {
+      "approved.txt": "APPROVED_E2E\n"
+    },
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "PreToolUse"
+        },
+        {
+          "hook_event_name": "PostToolUse"
+        }
+      ]
+    }
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\" ask\"}]}]}}"
+  }
+}

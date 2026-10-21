@@ -1,0 +1,68 @@
+{
+  "id": "pty-scrolling",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "SCROLL_LINE_00\nSCROLL_LINE_01\nSCROLL_LINE_02\nSCROLL_LINE_03\nSCROLL_LINE_04\nSCROLL_LINE_05\nSCROLL_LINE_06\nSCROLL_LINE_07\nSCROLL_LINE_08\nSCROLL_LINE_09\nSCROLL_LINE_10\nSCROLL_LINE_11\nSCROLL_LINE_12\nSCROLL_LINE_13\nSCROLL_LINE_14\nSCROLL_LINE_15\nSCROLL_LINE_16\nSCROLL_LINE_17\nSCROLL_LINE_18\nSCROLL_LINE_19\nSCROLL_LINE_20\nSCROLL_LINE_21\nSCROLL_LINE_22\nSCROLL_LINE_23\nSCROLL_LINE_24\nSCROLL_LINE_25\nSCROLL_LINE_26\nSCROLL_LINE_27\nSCROLL_LINE_28\nSCROLL_LINE_29\nSCROLL_LINE_30\nSCROLL_LINE_31\nSCROLL_LINE_32\nSCROLL_LINE_33\nSCROLL_LINE_34\nSCROLL_LINE_35\nSCROLL_LINE_36\nSCROLL_LINE_37\nSCROLL_LINE_38\nSCROLL_LINE_39\nSCROLL_LINE_40\nSCROLL_LINE_41\nSCROLL_LINE_42\nSCROLL_LINE_43\nSCROLL_LINE_44\nSCROLL_LINE_45\nSCROLL_LINE_46\nSCROLL_LINE_47\nSCROLL_LINE_48\nSCROLL_LINE_49"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "long answer"
+        },
+        {
+          "when": {
+            "contains": [
+              "SCROLL_LINE_49",
+              "\u00e2\u2014\u2039"
+            ],
+            "absent": [
+              "SCROLL_LINE_00"
+            ]
+          },
+          "send": "\u001b[5~"
+        },
+        {
+          "when": {
+            "contains": [
+              "SCROLL_LINE_20"
+            ],
+            "absent": [
+              "SCROLL_LINE_49"
+            ]
+          },
+          "send": "\u001b[6~"
+        },
+        {
+          "when": {
+            "contains": [
+              "SCROLL_LINE_49",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

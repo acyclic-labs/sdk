@@ -1,0 +1,84 @@
+{
+  "id": "pty-quit-resume",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "remember QUIT_E2E_HISTORY"
+        },
+        "text": [
+          "QUIT_E2E_FIRST"
+        ]
+      },
+      {
+        "when": {
+          "user": "continue after quit",
+          "contains": "QUIT_E2E_HISTORY"
+        },
+        "text": [
+          "QUIT_E2E_DONE"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "remember QUIT_E2E_HISTORY"
+        },
+        {
+          "when": {
+            "contains": [
+              "QUIT_E2E_FIRST",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "prompt": "/quit "
+        }
+      ]
+    },
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "QUIT_E2E_FIRST",
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "continue after quit"
+        },
+        {
+          "when": {
+            "contains": [
+              "QUIT_E2E_DONE",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "last_model_contains": [
+      "QUIT_E2E_HISTORY",
+      "QUIT_E2E_FIRST"
+    ]
+  }
+}

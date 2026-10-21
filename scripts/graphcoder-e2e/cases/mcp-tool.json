@@ -1,0 +1,69 @@
+{
+  "id": "mcp-tool",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "mcp",
+            "name": "mcp__fixture__echo",
+            "arguments": {
+              "text": "hello"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "MCP_E2E_hello"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "jsonl": {
+      "mcp.jsonl": [
+        {
+          "method": "initialize"
+        },
+        {
+          "method": "notifications/initialized"
+        },
+        {
+          "method": "tools/list"
+        },
+        {
+          "method": "tools/call",
+          "params": {
+            "name": "echo",
+            "arguments": {
+              "text": "hello"
+            }
+          }
+        }
+      ]
+    },
+    "model_contains": [
+      "MCP_E2E_hello"
+    ]
+  },
+  "settings": {
+    ".claude.json": "{\"mcpServers\":{\"fixture\":{\"command\":\"node\",\"args\":[\"{{support}}/mcp.mjs\",\"{{workspace}}/mcp.jsonl\"]}}}"
+  }
+}

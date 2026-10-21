@@ -1,0 +1,53 @@
+{
+  "id": "pty-cancel-ctrl-c",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "**test answer**"
+        ],
+        "hold": true
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "hello"
+        },
+        {
+          "when": {
+            "contains": [
+              "test answer"
+            ],
+            "bold": "test answer"
+          },
+          "send": "\u0003"
+        },
+        {
+          "when": {
+            "contains": [
+              "cancelled"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

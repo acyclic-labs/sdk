@@ -1,0 +1,44 @@
+{
+  "id": "fs-status-git",
+  "workspace": {
+    "kind": "git",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "status",
+            "name": "fs",
+            "arguments": {
+              "command": "status"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "Status"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "tool_contains": [
+      "Status"
+    ]
+  }
+}

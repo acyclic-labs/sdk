@@ -1,0 +1,70 @@
+{
+  "id": "pty-conversation",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "first prompt"
+        },
+        "text": [
+          "FIRST_REPLY"
+        ]
+      },
+      {
+        "when": {
+          "user": "second prompt",
+          "contains": "FIRST_REPLY"
+        },
+        "text": [
+          "SECOND_REPLY"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "first prompt"
+        },
+        {
+          "when": {
+            "contains": [
+              "FIRST_REPLY",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "prompt": "second prompt"
+        },
+        {
+          "when": {
+            "contains": [
+              "SECOND_REPLY",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "model_contains": [
+      "FIRST_REPLY",
+      "first prompt",
+      "second prompt"
+    ]
+  }
+}

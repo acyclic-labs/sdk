@@ -1,0 +1,50 @@
+{
+  "id": "pty-slash",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      ".claude/commands/marker.md": "PTY_SLASH_MARKER $ARGUMENTS\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "SLASH_RENDERED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "/marker extra"
+        },
+        {
+          "when": {
+            "contains": [
+              "SLASH_RENDERED",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "PTY_SLASH_MARKER extra"
+    ]
+  }
+}

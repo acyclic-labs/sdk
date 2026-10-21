@@ -1,0 +1,217 @@
+{
+  "id": "child-conflict",
+  "workspace": {
+    "kind": "git",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "task": "CHILD_E2E_TASK"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-write",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "child\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK",
+          "tool_result": "file"
+        },
+        "text": [
+          "child finished"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "parent-write",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "parent\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archive",
+            "name": "archive",
+            "arguments": {
+              "agent": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archive-wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-final",
+            "name": "fs",
+            "arguments": {
+              "command": "merge agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "conflict"
+        },
+        "tools": [
+          {
+            "id": "resolved",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "resolved\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "resolved-add",
+            "name": "fs",
+            "arguments": {
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "continue",
+            "name": "fs",
+            "arguments": {
+              "command": "merge --continue"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "PARENT_E2E_TASK",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 13,
+    "files": {
+      "seed.txt": "resolved\n"
+    },
+    "tool_errors": [
+      "conflict"
+    ],
+    "tool_contains": [
+      "conflict"
+    ]
+  },
+  "ntfs": true
+}

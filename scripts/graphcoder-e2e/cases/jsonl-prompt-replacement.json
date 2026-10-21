@@ -1,0 +1,56 @@
+{
+  "id": "jsonl-prompt-replacement",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "original prompt"
+        },
+        "text": [
+          "ORIGINAL_E2E_ANSWER"
+        ]
+      },
+      {
+        "when": {
+          "user": "replacement prompt"
+        },
+        "text": [
+          "REPLACED_E2E_ANSWER"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "original prompt",
+      "answer": "ORIGINAL_E2E_ANSWER"
+    },
+    {
+      "mode": "jsonl",
+      "operation": "00000000-0000-0000-0000-000000000002",
+      "resolution": {
+        "kind": "submit",
+        "request": {
+          "kind": "replace",
+          "message": "00000000-0000-0000-0000-000000000001",
+          "text": "replacement prompt"
+        }
+      },
+      "answer": "REPLACED_E2E_ANSWER"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "last_model_absent": [
+      "ORIGINAL_E2E_ANSWER"
+    ],
+    "wire_contains": [
+      "replaces"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "id": "pty-markdown",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "text": [
+          "streaming ",
+          "**test answer**"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "hello"
+        },
+        {
+          "when": {
+            "contains": [
+              "test answer",
+              "\u00e2\u2014\u2039"
+            ],
+            "bold": "test answer",
+            "absent": [
+              "**test answer**"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

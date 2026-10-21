@@ -1,0 +1,30 @@
+{
+  "id": "provider-error",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "status": 400,
+        "json": {
+          "error": {
+            "message": "scripted refusal",
+            "type": "invalid_request_error"
+          }
+        }
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "exit": 1
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

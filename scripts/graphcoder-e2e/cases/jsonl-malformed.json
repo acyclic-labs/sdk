@@ -1,0 +1,23 @@
+{
+  "id": "jsonl-malformed",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "jsonl",
+      "stdin": "not JSON\n",
+      "exit": 1,
+      "stderr_contains": [
+        "expected ident"
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

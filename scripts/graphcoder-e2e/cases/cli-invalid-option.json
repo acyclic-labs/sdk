@@ -1,0 +1,23 @@
+{
+  "id": "cli-invalid-option",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": [
+        "--fixture",
+        "unused"
+      ],
+      "exit": 2
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

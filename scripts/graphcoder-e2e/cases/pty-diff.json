@@ -1,0 +1,71 @@
+{
+  "id": "pty-diff",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "change",
+            "name": "write",
+            "arguments": {
+              "path": "diff.txt",
+              "text": "DIFF_E2E_CONTENT\n",
+              "media_type": "text/plain",
+              "display_name": "diff.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "DONE_EDIT"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "edit a file"
+        },
+        {
+          "when": {
+            "contains": [
+              "DONE_EDIT",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "prompt": "/diff"
+        },
+        {
+          "when": {
+            "contains": [
+              "DIFF_E2E_CONTENT"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "files": {
+      "diff.txt": "DIFF_E2E_CONTENT\n"
+    }
+  }
+}

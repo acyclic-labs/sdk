@@ -1,0 +1,154 @@
+{
+  "id": "fs-branch-merge-plain",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "branch",
+            "name": "fs",
+            "arguments": {
+              "command": "branch topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "switch",
+            "name": "fs",
+            "arguments": {
+              "command": "switch topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "topic.txt",
+              "text": "TOPIC_E2E\n",
+              "media_type": "text/plain",
+              "display_name": "topic.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "add",
+            "name": "fs",
+            "arguments": {
+              "command": "add topic.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "commit",
+            "name": "fs",
+            "arguments": {
+              "command": "commit -m \"topic\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main",
+            "name": "fs",
+            "arguments": {
+              "command": "switch main"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "log",
+            "name": "fs",
+            "arguments": {
+              "command": "log"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "show",
+            "name": "fs",
+            "arguments": {
+              "command": "show HEAD"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 11,
+    "files": {
+      "topic.txt": "TOPIC_E2E\n"
+    }
+  },
+  "ntfs": true
+}

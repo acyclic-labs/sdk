@@ -1,0 +1,27 @@
+{
+  "id": "cli-help",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "args": [
+        "--help"
+      ],
+      "stdout_contains": [
+        "--prompt",
+        "--input-format",
+        "--workspace"
+      ],
+      "exit": 0
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

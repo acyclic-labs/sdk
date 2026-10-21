@@ -1,0 +1,32 @@
+{
+  "id": "file-mention",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "mention.txt": "MENTION_E2E_CONTENT\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "inspect @mention.txt",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "MENTION_E2E_CONTENT"
+    ]
+  }
+}

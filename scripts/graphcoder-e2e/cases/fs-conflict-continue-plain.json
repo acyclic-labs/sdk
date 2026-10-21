@@ -1,0 +1,224 @@
+{
+  "id": "fs-conflict-continue-plain",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "seed.txt": "base\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "branch",
+            "name": "fs",
+            "arguments": {
+              "command": "branch topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "topic",
+            "name": "fs",
+            "arguments": {
+              "command": "switch topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "topic-text",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "topic\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "topic-add",
+            "name": "fs",
+            "arguments": {
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "topic-commit",
+            "name": "fs",
+            "arguments": {
+              "command": "commit -m \"topic\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main",
+            "name": "fs",
+            "arguments": {
+              "command": "switch main"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main-text",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "main\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main-add",
+            "name": "fs",
+            "arguments": {
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "main-commit",
+            "name": "fs",
+            "arguments": {
+              "command": "commit -m \"main\""
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "conflict",
+            "name": "fs",
+            "arguments": {
+              "command": "merge topic"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "conflict"
+        },
+        "tools": [
+          {
+            "id": "resolve",
+            "name": "write",
+            "arguments": {
+              "path": "seed.txt",
+              "text": "resolved\n",
+              "media_type": "text/plain",
+              "display_name": "seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "resolve-add",
+            "name": "fs",
+            "arguments": {
+              "command": "add seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "continue",
+            "name": "fs",
+            "arguments": {
+              "command": "merge --continue"
+            }
+          }
+        ]
+      },
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "show",
+            "name": "fs",
+            "arguments": {
+              "command": "show HEAD:seed.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "resolved"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 15,
+    "files": {
+      "seed.txt": "resolved\n"
+    },
+    "model_contains": [
+      "conflict",
+      "resolved"
+    ],
+    "tool_errors": [
+      "conflict"
+    ],
+    "tool_contains": [
+      "conflict"
+    ]
+  },
+  "ntfs": true
+}

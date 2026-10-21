@@ -1,0 +1,53 @@
+{
+  "id": "pty-image-attach",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "pixel.png": {
+        "base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXk8AAAAASUVORK5CYII="
+      }
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "IMAGE_E2E_REPLY"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "describe @pixel.png"
+        },
+        {
+          "when": {
+            "contains": [
+              "IMAGE_E2E_REPLY",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "input_image",
+      "data:image/png;base64,"
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "id": "pty-help",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": []
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "/help "
+        },
+        {
+          "when": {
+            "contains": [
+              "/compact",
+              "Summarize the current context"
+            ]
+          },
+          "send": "\u001b"
+        },
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "absent": [
+              "Summarize the current context"
+            ],
+            "cursor": true
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 0
+  }
+}

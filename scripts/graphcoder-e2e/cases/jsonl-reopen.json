@@ -1,0 +1,32 @@
+{
+  "id": "jsonl-reopen",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    },
+    {
+      "mode": "jsonl",
+      "reopen": true,
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

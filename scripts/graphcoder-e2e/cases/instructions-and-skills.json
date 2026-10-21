@@ -1,0 +1,36 @@
+{
+  "id": "instructions-and-skills",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "AGENTS.md": "AGENTS_E2E_INSTRUCTION\n",
+      "CLAUDE.md": "CLAUDE_E2E_INSTRUCTION\n",
+      ".claude/skills/local-skill/SKILL.md": "---\nname: local-skill\ndescription: SKILL_E2E_DISCOVERY\n---\nSKILL_E2E_BODY\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "AGENTS_E2E_INSTRUCTION",
+      "CLAUDE_E2E_INSTRUCTION",
+      "SKILL_E2E_DISCOVERY"
+    ]
+  }
+}

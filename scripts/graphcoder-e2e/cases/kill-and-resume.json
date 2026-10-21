@@ -1,0 +1,45 @@
+{
+  "id": "kill-and-resume",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "path": "count",
+          "user": "resume marker"
+        },
+        "json": {
+          "input_tokens": 64
+        },
+        "hold": true
+      },
+      {
+        "when": {},
+        "text": [
+          "resumed"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "resume marker",
+      "kill_on": {
+        "path": "count",
+        "step": 0
+      }
+    },
+    {
+      "mode": "headless",
+      "text": "resume marker",
+      "answer": "resumed"
+    }
+  ],
+  "assert": {
+    "requests": 1
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "id": "hooks-all-events",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "tools": [
+          {
+            "id": "write",
+            "name": "write",
+            "arguments": {
+              "path": "hook.txt",
+              "text": "hooked\n",
+              "media_type": "text/plain",
+              "display_name": "hook.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "file"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "hello",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 2,
+    "files": {
+      "hook.txt": "hooked\n"
+    },
+    "jsonl": {
+      "hooks.jsonl": [
+        {
+          "hook_event_name": "SessionStart"
+        },
+        {
+          "hook_event_name": "UserPromptSubmit"
+        },
+        {
+          "hook_event_name": "PreToolUse"
+        },
+        {
+          "hook_event_name": "PostToolUse"
+        },
+        {
+          "hook_event_name": "Stop"
+        }
+      ]
+    },
+    "model_contains": [
+      "HOOK_E2E_CONTEXT"
+    ]
+  },
+  "settings": {
+    ".claude/settings.json": "{\"hooks\":{\"SessionStart\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\"\"}]}],\"UserPromptSubmit\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\"\"}]}],\"PreToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\"\"}]}],\"PostToolUse\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\"\"}]}],\"Stop\":[{\"matcher\":\"\",\"hooks\":[{\"type\":\"command\",\"command\":\"node \\\"{{support}}/hook.mjs\\\" \\\"{{workspace}}/hooks.jsonl\\\"\"}]}]}}"
+  }
+}

@@ -1,0 +1,174 @@
+{
+  "id": "child-fork-message-merge",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "task": "CHILD_E2E_TASK"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child_write",
+            "name": "write",
+            "arguments": {
+              "path": "child.txt",
+              "text": "CHILD_E2E_CONTENT\n",
+              "media_type": "text/plain",
+              "display_name": "child.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK",
+          "tool_result": "file"
+        },
+        "text": [
+          "CHILD_E2E_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "worker"
+        },
+        "tools": [
+          {
+            "id": "send",
+            "name": "send",
+            "arguments": {
+              "agent": "worker",
+              "message": "CHILD_E2E_MESSAGE"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK",
+          "tool_result": "queued"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ],
+              "mode": "all"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_MESSAGE"
+        },
+        "text": [
+          "CHILD_MESSAGE_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archive",
+            "name": "archive",
+            "arguments": {
+              "agent": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archived-wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "agent_diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "merge",
+            "name": "fs",
+            "arguments": {
+              "command": "merge agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "PARENT_E2E_TASK",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 11,
+    "files": {
+      "child.txt": "CHILD_E2E_CONTENT\n"
+    }
+  },
+  "ntfs": true
+}

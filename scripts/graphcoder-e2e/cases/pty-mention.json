@@ -1,0 +1,50 @@
+{
+  "id": "pty-mention",
+  "workspace": {
+    "kind": "plain",
+    "files": {
+      "mention.txt": "PTY_MENTION_CONTENT\n"
+    }
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {},
+        "text": [
+          "MENTION_RENDERED"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "pty",
+      "actions": [
+        {
+          "when": {
+            "contains": [
+              "GraphCoder"
+            ],
+            "cursor": true
+          },
+          "prompt": "inspect @mention.txt"
+        },
+        {
+          "when": {
+            "contains": [
+              "MENTION_RENDERED",
+              "\u00e2\u2014\u2039"
+            ]
+          },
+          "send": "\u0004"
+        }
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 1,
+    "model_contains": [
+      "PTY_MENTION_CONTENT"
+    ]
+  }
+}

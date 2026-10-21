@@ -1,0 +1,148 @@
+{
+  "id": "child-discard",
+  "workspace": {
+    "kind": "git",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "spawn",
+            "name": "spawn",
+            "arguments": {
+              "name": "worker",
+              "task": "CHILD_E2E_TASK"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-write",
+            "name": "write",
+            "arguments": {
+              "path": "child.txt",
+              "text": "child\n",
+              "media_type": "text/plain",
+              "display_name": "child.txt"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "CHILD_E2E_TASK",
+          "tool_result": "file"
+        },
+        "text": [
+          "child finished"
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archive",
+            "name": "archive",
+            "arguments": {
+              "agent": "worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "archive-wait",
+            "name": "wait",
+            "arguments": {
+              "agents": [
+                "worker"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-diff",
+            "name": "fs",
+            "arguments": {
+              "command": "diff agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "tools": [
+          {
+            "id": "child-final",
+            "name": "fs",
+            "arguments": {
+              "command": "discard agents/worker"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "user": "PARENT_E2E_TASK"
+        },
+        "text": [
+          "done"
+        ]
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "headless",
+      "text": "PARENT_E2E_TASK",
+      "answer": "done"
+    }
+  ],
+  "assert": {
+    "requests": 9,
+    "absent_files": [
+      "child.txt"
+    ]
+  },
+  "ntfs": true
+}
