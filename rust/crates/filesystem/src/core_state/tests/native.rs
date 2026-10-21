@@ -410,7 +410,8 @@ proptest::proptest! {
             "the fixed context path must be qualified once through each API");
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            for (native, prefix) in [false, true].into_iter().zip(prefixes) {
+            let moves = &moves;
+            let walks = [false, true].into_iter().zip(prefixes).map(|(native, prefix)| async move {
                 let directory = tempfile::tempdir().unwrap();
                 copy_tree(prefix.path(), directory.path());
                 let child = WorkspaceContextId::from_bytes([4; 16]);
@@ -419,8 +420,11 @@ proptest::proptest! {
                 selected.roots.clear();
                 // Every generated walk starts at the same state and revision as before.
                 selected.revision = 5;
-                context_parent_walk(directory.path(), native, selected, &moves).await;
-            }
+                context_parent_walk(directory.path(), native, selected, moves).await;
+            });
+            // Each API has its own store and work ledger. Drive both independent
+            // walks while native I/O is pending, retaining every move and assertion.
+            futures::future::join_all(walks).await;
         });
     }
 }
