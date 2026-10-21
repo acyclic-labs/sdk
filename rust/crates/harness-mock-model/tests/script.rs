@@ -5,6 +5,21 @@ use serde_json::json;
 
 proptest! {
     #[test]
+    fn adjacent_anthropic_results_and_user_text_retain_independent_latest_values(text in "[a-zA-Z0-9]{1,40}", files in prop::collection::vec("[a-z]{1,12}",2..6)) {
+        let step: Step = serde_json::from_value(json!({"tools":[{"id":"edit","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();
+        let mut parts: Vec<_> = files.iter().map(|file| json!({"type":"tool_result","tool_use_id":file,"content":json!({"file":file}).to_string()})).collect();
+        parts.insert(1,json!({"type":"text","text":text}));
+        let body = json!({"messages":[{"role":"user","content":"old"},{"role":"user","content":parts}]});
+        prop_assert_eq!(last_content(&body,false),text);
+        let result = last_content(&body,true);
+        prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&result).unwrap(),json!({"file":files.last().unwrap()}));
+        let bound = bind_result(&step,&body).unwrap();
+        prop_assert_eq!(&bound.tools[0].arguments["file"],&json!(files.last().unwrap()));
+        let mut engine = Engine::new(serde_json::from_value(json!({"cases":{"case":{"steps":[{"when":{"user":text,"tool_result":files.last().unwrap()},"text":["matched"]}]}}})).unwrap());
+        prop_assert!(engine.take("case","messages",&body).is_some());
+    }
+
+    #[test]
     fn script_roundtrip_and_namespaces_consume_exactly_once(text in "[^\\p{C}]{0,100}", count in 1usize..12) {
         let steps: Vec<_> = (0..count).map(|_| json!({"text":[text]})).collect();
         let bytes = serde_json::to_vec(&json!({"cases":{"a":{"steps":steps},"b":{"steps":steps}}})).unwrap();

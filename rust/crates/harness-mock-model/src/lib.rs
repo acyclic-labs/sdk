@@ -139,19 +139,27 @@ pub fn last_content(body: &Value, tool: bool) -> String {
             return content_text(&message["output"]);
         }
         if let Some(parts) = message["content"].as_array() {
-            let results: Vec<_> = parts
-                .iter()
-                .filter(|part| part["type"] == "tool_result")
-                .collect();
-            if !results.is_empty() {
-                if tool {
-                    return results
-                        .iter()
-                        .map(|part| content_text(&part["content"]))
-                        .collect::<Vec<_>>()
-                        .join("\n");
+            if tool {
+                if let Some(result) = parts
+                    .iter()
+                    .rev()
+                    .find(|part| part["type"] == "tool_result")
+                {
+                    return content_text(&result["content"]);
                 }
-                continue;
+            } else if message["role"] == "user" {
+                let text: Vec<_> = parts
+                    .iter()
+                    .filter(|part| part["type"] != "tool_result")
+                    .collect();
+                if text.is_empty() {
+                    continue;
+                }
+                return text
+                    .into_iter()
+                    .map(content_text)
+                    .collect::<Vec<_>>()
+                    .join("\n");
             }
         }
         if message["role"] == if tool { "tool" } else { "user" } {
