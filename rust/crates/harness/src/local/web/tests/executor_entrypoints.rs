@@ -1,4 +1,5 @@
 use super::*;
+use crate::durable_host::tests::fixture::{Fixture, FixtureMachine, test_registries};
 use crate::{runtime::ToolContext, tool::ToolInvocation, wire::ErrorCode};
 use acyclic_fs::NativeMaterializationWork;
 
@@ -9,22 +10,67 @@ fn fixture_error(error: impl std::fmt::Display) -> Error {
 #[tokio::test]
 async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reconcile_by_redispatch()
 -> Result<()> {
-    let directory = tempfile::tempdir().map_err(fixture_error)?;
-    let local = LocalHarness::open(
-        volume_config(directory.path(), volume(directory.path()).await?, model([]))?
-            .without_default_tools()
-            .web_tools(),
+    let fixture = Fixture::new(
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"object"}),
+        None,
+        &["tool:call:url_fetch"],
     )
     .await?;
-    let crate::Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id: task, .. }) =
-        local
-            .submit(crate::OperationId::new(), "inspect web entrypoints")
-            .await?
-    else {
+    let admission = fixture.admission(82, json!({}));
+    let scope = crate::runtime::RuntimeScope::new(admission.grants.clone(), admission.limits)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let metadata =
+        NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let metadata_io = crate::filesystem::PreparationIo::from_native_work(&metadata)?;
+    let (_, _, tasks, machines) = test_registries(
+        Arc::new(FixtureMachine {
+            identity: fixture.machine.clone(),
+            schema: fixture.schema.clone(),
+        }),
+        fixture.schema.clone(),
+        fixture.schema.clone(),
+        Some(&metadata_io),
+    )?;
+    let signed = fixture.issuer.issue(
+        "web-entrypoints",
+        scope.grants(),
+        Some(crate::AgentId::from_bytes([1; 16])),
+        None,
+        &mut None,
+    )?;
+    let runtime = crate::filesystem::FilesystemTaskRuntime::open(
+        fixture.stream.clone(),
+        fixture.files.clone(),
+        &fixture.storage,
+        None,
+        &fixture.issuer.verifier(&mut None)?,
+        &signed,
+        &scope,
+        &tasks,
+        &machines,
+        &crate::tool::ToolRegistry::default(),
+        crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 1,
+            model_steps: 1,
+        },
+        1,
+        scope.limits().file_bytes,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        None,
+        &[],
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        Some(&metadata_io),
+    )
+    .await?;
+    let crate::Admission::Accepted(task) = runtime.task_host().admit(admission).await? else {
         return Err(Error::Conflict("fixture admission rejected".into()));
     };
-    let crate::distributed::WorkPull::Claimed(lease) = local
-        .task_runtime()
+    let crate::distributed::WorkPull::Claimed(lease) = runtime
         .task_host()
         .pull_work(
             &crate::distributed::Worker {
@@ -39,14 +85,11 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
     else {
         return Err(Error::NotFound("fixture lease".into()));
     };
-    local
-        .task_runtime()
-        .task_host()
-        .start_task(&lease, &mut None)
-        .await?;
+    runtime.task_host().start_task(&lease, &mut None).await?;
     let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-    let executor = local
-        .tools()
+    let mut tools = crate::tool::ToolRegistry::default();
+    crate::search::web::WebExecutor::bind(&mut tools, None)?;
+    let executor = tools
         .get("url_fetch", None, None)?
         .ok_or_else(|| Error::NotFound("fixture fetch executor".into()))?
         .executor
@@ -82,8 +125,7 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
                     &cancellation,
                 )
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-                let task_context = local
-                    .task_runtime()
+                let task_context = runtime
                     .task_context_with_native_work(task, &fence, &work)
                     .await?;
                 let io = crate::executor::PreparationIo::from_native_work(&work)?;
@@ -120,12 +162,7 @@ async fn ordinary_and_native_executor_entrypoints_return_refusals_and_never_reco
                 result.value
             } else {
                 let context = ToolContext::new(
-                    Arc::new(
-                        local
-                            .task_runtime()
-                            .task_context(task, fence.clone())
-                            .await?,
-                    ),
+                    Arc::new(runtime.task_context(task, fence.clone()).await?),
                     invocation.operation_id,
                     &invocation.call_id,
                     None,
