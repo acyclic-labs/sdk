@@ -77,7 +77,7 @@ fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Resu
         FileProjectionPolicy::Native(policy) => {
             if !matches!(
                 policy.intent,
-                acyclic_harness::model::NativeMediaIntent::Image { .. }
+                acyclic_harness_core::model::NativeMediaIntent::Image { .. }
             ) || policy.configuration.is_some()
                 || !matches!(
                     file.descriptor().media_type(),
@@ -176,7 +176,7 @@ pub(crate) async fn resolve(
                 continue;
             }
             if matches!(policy, FileProjectionPolicy::Native(_)) {
-                if acyclic_harness::model::image_media_type(bytes.as_slice())
+                if acyclic_harness_core::model::image_media_type(bytes.as_slice())
                     != Some(file.descriptor().media_type())
                 {
                     return Err(invalid("model image bytes differ from their media type"));

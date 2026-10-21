@@ -1,5 +1,5 @@
 use crate::{Adapter, invalid};
-use acyclic_harness::{
+use acyclic_harness_core::{
     Result,
     model::{NativeMediaIntent, NativeMediaPolicy},
 };
