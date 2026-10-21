@@ -75,8 +75,8 @@ pub(crate) fn route_path<'a>(
         let view = scope
             .views
             .iter()
-            .filter(|view| mapped.starts_with(&view.view))
-            .max_by_key(|view| view.view.components().count())
+            .filter(|view| mapped.starts_with(view.view()))
+            .max_by_key(|view| view.view().components().count())
             .ok_or_else(|| {
                 format!(
                     "absolute path '{}' escapes the isolated agent workspace",
@@ -88,11 +88,11 @@ pub(crate) fn route_path<'a>(
         let view = scope
             .views
             .iter()
-            .find(|view| view.view == scope.selected)
+            .find(|view| view.view() == scope.selected)
             .ok_or_else(|| "the selected root has no view in this workspace".to_owned())?;
         (view, scope.selected.join(mapped))
     };
-    let view_root = view.view.canonicalize().map_err(display)?;
+    let view_root = view.view().canonicalize().map_err(display)?;
     let mut existing = candidate.as_path();
     while fs::symlink_metadata(existing).is_err() {
         existing = existing
@@ -178,7 +178,7 @@ pub(crate) fn map_root_references(text: &str, views: &[RootView]) -> String {
                 .find_map(|spelling| names(spelling).map(|end| (end, view)))
         }) {
             mapped.push_str(&text[copied..index]);
-            mapped.push_str(&view.view.to_string_lossy());
+            mapped.push_str(&view.view().to_string_lossy());
             copied = end;
             index = end;
         } else {
