@@ -193,3 +193,34 @@ pub fn canonical_json_digest<T: Serialize + ?Sized>(
         observer,
     )
 }
+
+/// Hash a serializer that already emits every object in canonical key order.
+pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
+    value: &T,
+    maximum_bytes: u64,
+    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+) -> Result<[u8; 32]> {
+    if work.is_none() {
+        return serialized_json_digest(value);
+    }
+    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        return Err(crate::store::guarded_boundary(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "canonical encoder allowance must be finite and positive",
+        ));
+    }
+    let observer = work.as_deref_mut().expect("observed borrowed digest");
+    let code = crate::store::operations::original_native_decode_mode(observer)
+        .then_some(crate::wire::ErrorCode::Invalid);
+    serialization::borrowed_digest_with_work(
+        value,
+        JsonBounds {
+            maximum_bytes,
+            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_depth: 256,
+        },
+        code,
+        observer,
+    )
+}

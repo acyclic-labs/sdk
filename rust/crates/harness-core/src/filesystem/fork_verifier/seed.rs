@@ -182,8 +182,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             crate::model::charge_items(Some(io), 1)?;
             if file.volume().provider() == &self.host.provider {
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::json::canonical_json_digest(
-                        file,
+                    file.identity_digest(
                         crate::store::default_projection_read_limits().maximum_bytes,
                         work,
                     )
@@ -291,8 +290,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::json::canonical_json_digest(
-                        file,
+                    file.identity_digest(
                         crate::store::default_projection_read_limits().maximum_bytes,
                         work,
                     )
@@ -302,8 +300,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             for file in summary.payloads.iter().chain(&summary.references) {
                 crate::model::charge_items(Some(io), 1)?;
                 let digest = crate::executor::with_history_io(Some(io), |work| {
-                    crate::executor::json::canonical_json_digest(
-                        file,
+                    file.identity_digest(
                         crate::store::default_projection_read_limits().maximum_bytes,
                         work,
                     )

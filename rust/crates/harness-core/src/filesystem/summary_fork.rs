@@ -58,8 +58,7 @@ pub(super) fn split_references<'a>(
         .chain(prepared.context().metadata.values())
     {
         let key = with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                file,
+            file.identity_digest(
                 io.map(PreparationIo::remaining)
                     .transpose()?
                     .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {
@@ -103,8 +102,7 @@ fn rewritten_context(
 ) -> Result<Context> {
     let replace = |file: &mut FileRef| -> Result<()> {
         let key = with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                file,
+            file.identity_digest(
                 io.map(PreparationIo::remaining)
                     .transpose()?
                     .map_or(acyclic_stream::MAX_RECORD_BYTES as u64, |budget| {

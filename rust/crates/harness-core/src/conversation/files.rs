@@ -1,4 +1,5 @@
 use super::*;
+mod canonical;
 
 /// Immutable byte descriptor checked before a file is admitted.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -171,6 +172,18 @@ pub struct FileRef {
 }
 
 impl FileRef {
+    pub(crate) fn identity_digest(
+        &self,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        crate::executor::json::borrowed_json_digest(
+            &canonical::Canonical(self),
+            maximum_bytes,
+            work,
+        )
+    }
+
     #[cfg(feature = "objects")]
     pub(crate) fn with_version(mut self, version: String) -> Result<Self> {
         validate_label(&version, &mut None)?;
@@ -248,8 +261,7 @@ impl FileRef {
         self.validate(work)?;
         content_label(
             acyclic_fs::access::FILE_READ_PREFIX,
-            crate::executor::json::canonical_json_digest(
-                self,
+            self.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )?,

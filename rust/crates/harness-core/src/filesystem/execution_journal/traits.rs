@@ -29,11 +29,8 @@ where
     ) -> Result<crate::executor::ExecutionClaim<'a>> {
         self.require_operation(operation, io)?;
         let namespace = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                &self.volume,
-                self.maximum_payload_bytes,
-                work,
-            )
+            self.volume
+                .identity_digest(self.maximum_payload_bytes, work)
         })?;
         crate::executor::execution_claim::claim(
             self.host.filesystem.operation_claims(),

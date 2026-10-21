@@ -305,8 +305,7 @@ impl CompositeForkVerifier {
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<()> {
         file.validate(owned.work())?;
-        let capability = crate::executor::json::canonical_json_digest(
-            file,
+        let capability = file.identity_digest(
             crate::store::default_projection_read_limits().maximum_bytes,
             owned.work(),
         )?;

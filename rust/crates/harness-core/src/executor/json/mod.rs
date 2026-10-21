@@ -6,6 +6,7 @@ use serde_json::Value;
 mod admission;
 mod arrays;
 mod identity;
+pub(crate) use identity::borrowed_json_digest;
 #[cfg(test)]
 mod item_budget_tests;
 mod records;

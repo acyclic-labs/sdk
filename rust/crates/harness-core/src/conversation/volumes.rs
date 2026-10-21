@@ -1,5 +1,6 @@
 use super::*;
 pub use acyclic_fs::access::VolumeOperation;
+pub(super) mod canonical;
 
 /// The three independently governed file namespaces.
 #[derive(
@@ -49,6 +50,31 @@ pub struct VolumeRef {
 }
 
 impl VolumeRef {
+    pub(crate) fn identity_digest(
+        &self,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        crate::executor::json::borrowed_json_digest(
+            &canonical::Canonical(self),
+            maximum_bytes,
+            work,
+        )
+    }
+
+    fn directory_digest(
+        &self,
+        prefix: &str,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<[u8; 32]> {
+        crate::executor::json::borrowed_json_digest(
+            &(canonical::Canonical(self), prefix),
+            maximum_bytes,
+            work,
+        )
+    }
+
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let owner = match &self.owner {
             VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.capacity() as u64,
@@ -151,8 +177,7 @@ impl VolumeRef {
     ) -> Result<String> {
         content_label(
             operation.capability_prefix(),
-            crate::executor::json::canonical_json_digest(
-                self,
+            self.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )?,
@@ -214,8 +239,8 @@ impl VolumeRef {
         }
         content_label(
             acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            crate::executor::json::canonical_json_digest(
-                &(self, prefix),
+            self.directory_digest(
+                prefix,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )?,
@@ -230,8 +255,7 @@ impl VolumeRef {
     ) -> Result<String> {
         content_label(
             "harness-",
-            crate::executor::json::canonical_json_digest(
-                self,
+            self.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
             )?,
@@ -332,7 +356,7 @@ impl ContentGrant {
         if contains_content_label(
             scope.capabilities(),
             VolumeOperation::Read.capability_prefix(),
-            crate::executor::json::canonical_json_digest(file.volume(), u64::MAX, &mut None)?,
+            file.volume().identity_digest(u64::MAX, &mut None)?,
         ) {
             return Ok(Self {
                 volume: file.volume.clone(),
@@ -344,7 +368,7 @@ impl ContentGrant {
         if contains_content_label(
             scope.capabilities(),
             acyclic_fs::access::FILE_READ_PREFIX,
-            crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?,
+            file.identity_digest(u64::MAX, &mut None)?,
         ) {
             let FileRef {
                 volume,
@@ -443,8 +467,7 @@ impl ContentGrant {
             volume.require_writer(scope.agent(), work)?;
         }
         volume.validate(work)?;
-        let digest = crate::executor::json::canonical_json_digest(
-            volume,
+        let digest = volume.identity_digest(
             maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes),
             work,
         )?;
@@ -482,16 +505,15 @@ impl ContentGrant {
             || !(contains_content_label(
                 scope.capabilities(),
                 acyclic_fs::access::DIRECTORY_READ_PREFIX,
-                crate::executor::json::canonical_json_digest(
-                    &(volume, prefix),
+                volume.directory_digest(
+                    prefix,
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work,
                 )?,
             ) || contains_content_label(
                 scope.capabilities(),
                 VolumeOperation::Read.capability_prefix(),
-                crate::executor::json::canonical_json_digest(
-                    volume,
+                volume.identity_digest(
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work,
                 )?,
@@ -530,7 +552,7 @@ impl ContentGrant {
         if !contains_content_label(
             scope.capabilities(),
             acyclic_fs::access::FILE_READ_PREFIX,
-            crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?,
+            file.identity_digest(u64::MAX, &mut None)?,
         ) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }

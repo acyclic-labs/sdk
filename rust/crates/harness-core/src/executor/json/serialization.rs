@@ -510,6 +510,34 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
     scope.retained = 0;
     Ok(bytes)
 }
+/// Hash borrowed ordered fields on the original observer without a Value tree.
+pub(crate) fn borrowed_digest_with_work<T: Serialize + ?Sized>(
+    value: &T,
+    bounds: JsonBounds,
+    code: Option<crate::wire::ErrorCode>,
+    observer: &mut dyn crate::store::HistoryIo,
+) -> Result<[u8; 32]> {
+    let observer = RefCell::new(observer);
+    let mut charge = |event| observer.borrow_mut().codec_charge(event);
+    let mut scope = scope(bounds, code, &mut charge);
+    let mut digest = blake3::Hasher::new();
+    write(
+        value,
+        &mut scope,
+        None,
+        Some(&mut |bytes: &[u8]| {
+            observer.borrow_mut().hashed_bytes(bytes.len() as u64)?;
+            digest.update(bytes);
+            Ok(())
+        }),
+        None,
+        bounds.maximum_bytes,
+        false,
+    )?;
+    scope.event(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
+    Ok(*digest.finalize().as_bytes())
+}
+
 /// Sorted-key encoding with funded buffers and Value storage.
 pub(crate) fn canonical_digest_with_work<T: Serialize + ?Sized>(
     value: &T,

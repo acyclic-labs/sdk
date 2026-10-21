@@ -129,8 +129,7 @@ impl SummaryForkCapture {
         for file in &self.references {
             work.checkpoint()?;
             self.selection.limits.validate_file(file, &mut None)?;
-            if !refs.insert(crate::executor::json::canonical_json_digest(
-                file,
+            if !refs.insert(file.identity_digest(
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work.work(),
             )?) {
