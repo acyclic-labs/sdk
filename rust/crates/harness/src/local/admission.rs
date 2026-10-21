@@ -39,7 +39,8 @@ pub(super) mod publication_phase {
 mod goal;
 #[cfg(all(test, acyclic_harness_loom))]
 mod model;
-#[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
+#[cfg(test)]
+#[cfg(all(feature = "native-execution", not(acyclic_harness_loom)))]
 mod poll_sweep;
 #[cfg(test)]
 pub(in crate::local) mod snapshot;

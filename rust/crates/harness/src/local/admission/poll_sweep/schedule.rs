@@ -126,9 +126,10 @@ pub(super) async fn drive<F: Future>(
     let mut deferred = std::collections::VecDeque::new();
     loop {
         let next = if physical { None } else { deferred.pop_front() };
-        let event = match next {
-            Some(event) => event,
-            None => tokio::select! {
+        let event = if let Some(event) = next {
+            event
+        } else {
+            tokio::select! {
                 // Poll the caller's ready continuation before acknowledging another
                 // queued barrier. Random branch priority changes the replay order
                 // when a blocked read and an owned completion are both ready.
@@ -145,10 +146,9 @@ pub(super) async fn drive<F: Future>(
                         deferred.push_back(event);
                         continue;
                     }
-                    physical = false;
                     event
                 }
-            },
+            }
         };
         hit += 1;
         let counts = counted(event.name);
@@ -229,7 +229,8 @@ struct Unblock(std::sync::mpsc::Sender<()>);
 
 impl Drop for Unblock {
     fn drop(&mut self) {
-        drop(self.0.send(()));
+        // The job may already have returned; then nothing waits for this signal.
+        let _ = self.0.send(());
     }
 }
 
@@ -270,10 +271,14 @@ fn physical_race(arrival: Arrival, cut: Option<usize>) -> Race {
                     break;
                 }
                 match name {
-                    "independent" => drop(independent_queued.send(())),
+                    // A job that already returned no longer listens.
+                    "independent" => {
+                        let _ = independent_queued.send(());
+                    }
                     "blocking:completed" => {
                         if let Some(queued) = completion_queued.take() {
-                            drop(queued.send(()));
+                            // A cut may have ended the independent owner already.
+                            let _ = queued.send(());
                         }
                     }
                     _ => {}
@@ -295,20 +300,25 @@ fn physical_race(arrival: Arrival, cut: Option<usize>) -> Race {
             // turn waits for the independent boundary.
             let independent = acyclic_native_runtime::testing::spawn(async move {
                 let _unblock = unblock;
-                drop(begin.send(()));
+                // A cut caller no longer awaits the start.
+                let _ = begin.send(());
                 let ran = running.await.is_ok();
                 if ran && matches!(arrival, Arrival::CompletionFirst) {
-                    drop(completion_seen.await);
+                    // A closed forwarder means no completion is coming; proceed.
+                    let _ = completion_seen.await;
                 }
                 raising.store(true, Ordering::SeqCst);
                 owner.point("independent").await;
                 finishing.store(true, Ordering::SeqCst);
             });
-            drop(begun.await);
+            // An owner dropped before starting cannot be awaited further.
+            let _ = begun.await;
             let job = acyclic_native_runtime::testing::spawn_blocking(move || {
-                drop(started.send(()));
+                // The independent owner may have ended already.
+                let _ = started.send(());
                 if matches!(arrival, Arrival::IndependentFirst) {
-                    drop(independent_seen.recv());
+                    // Disconnected (the owner ended without raising) also unblocks.
+                    let _ = independent_seen.recv();
                 }
             });
             let (job, independent) = futures::join!(job, independent);
