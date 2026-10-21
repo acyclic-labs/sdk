@@ -403,7 +403,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-fs",
- "acyclic-harness-core",
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
