@@ -210,6 +210,7 @@ pub(crate) fn read_executable(
     Ok(())
 }
 
+#[derive(Clone)]
 pub(crate) struct ExecutableDigests {
     pub(crate) service_identity: String,
     pub(crate) sha256: String,
@@ -226,23 +227,49 @@ pub(crate) async fn executable_digests_async() -> Result<ExecutableDigests, Stri
         .map_err(display)?
 }
 
+/// The digests of settled executable bytes, keyed by the file's fingerprint:
+/// a long-lived service answers every doctor request without rehashing an
+/// executable of tens of megabytes, and any rewrite or replacement of the
+/// file changes the fingerprint.
+static SETTLED_DIGESTS: std::sync::Mutex<Option<([u8; 32], ExecutableDigests)>> =
+    std::sync::Mutex::new(None);
+
 pub(crate) fn executable_digests_for(executable: &Path) -> Result<ExecutableDigests, String> {
+    let file = fs::File::open(executable).map_err(display)?;
+    let (fingerprint, changed) = executable_fingerprint(&file)?;
+    if let Some((_, digests)) = SETTLED_DIGESTS
+        .lock()
+        .map_err(display)?
+        .as_ref()
+        .filter(|(settled, _)| *settled == fingerprint)
+    {
+        return Ok(digests.clone());
+    }
     // Launchers and plugin caches can expose the same signed artifact at different paths. The
     // service belongs to the artifact, not to one of those aliases; including the path caused
     // identical clients to continuously drain and replace each other's service.
     let mut sha256 = Sha256::new();
     let mut blake3 = blake3::Hasher::new();
-    read_executable(&fs::File::open(executable).map_err(display)?, |chunk| {
+    read_executable(&file, |chunk| {
         sha256.update(chunk);
         blake3.update(chunk);
     })?;
     let sha256 = hex::encode(sha256.finalize());
     let blake3 = blake3.finalize().to_hex().to_string();
-    Ok(ExecutableDigests {
+    let digests = ExecutableDigests {
         service_identity: service_identity_from_digest(&blake3),
         sha256,
         blake3,
-    })
+    };
+    // As for the identity cache: only bytes that did not change while they
+    // were read, and whose last change is older than timestamp granularity.
+    let settled = std::time::SystemTime::now()
+        .duration_since(changed)
+        .is_ok_and(|age| age > SETTLED_EXECUTABLE_AGE);
+    if settled && executable_fingerprint(&file)?.0 == fingerprint {
+        *SETTLED_DIGESTS.lock().map_err(display)? = Some((fingerprint, digests.clone()));
+    }
+    Ok(digests)
 }
 
 pub(crate) fn blake3_file(path: &Path) -> Result<String, String> {

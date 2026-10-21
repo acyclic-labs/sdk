@@ -230,3 +230,26 @@ fn doctor_reports_a_service_that_cannot_start_as_a_failed_check() {
     assert_eq!(service["status"], "pass");
     assert_eq!(state["status"], "pass");
 }
+
+#[test]
+fn executable_digests_are_reused_only_for_the_same_settled_file() {
+    let executable = current_executable().unwrap();
+    let first = executable_digests_for(&executable).unwrap();
+    let again = executable_digests_for(&executable).unwrap();
+    assert_eq!(
+        (&first.sha256, &first.blake3),
+        (&again.sha256, &again.blake3)
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let other = directory.path().join("other-executable");
+    fs::write(&other, b"another artifact").unwrap();
+    let digests = executable_digests_for(&other).unwrap();
+    assert_eq!(
+        digests.blake3,
+        blake3::hash(b"another artifact").to_hex().to_string()
+    );
+    assert_eq!(
+        executable_digests_for(&executable).unwrap().blake3,
+        first.blake3
+    );
+}
