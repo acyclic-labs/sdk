@@ -11,7 +11,7 @@ description = "Provider-neutral web search behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-search"
 
 [features]
-test-support = ["acyclic-harness-core/test-support"]
+test-support = ["acyclic-harness-core/test-support", "acyclic-fs/test-support", "acyclic-stream/test-support"]
 filesystem = ["acyclic-harness-core/filesystem", "dep:hex"]
 search-http = ["acyclic-harness-core/search-http", "dep:reqwest", "dep:keyring", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio-rustls", "tokio/net", "tokio/io-util"]
 

@@ -368,6 +368,8 @@ case "$lane" in
       --target "$target" --lib native_capture::
     ;;
   policy)
+    node --test scripts/check-test-support.test.mjs
+    node scripts/check-test-support.mjs
     node scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
