@@ -226,6 +226,31 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_paths_in(checkout, paths, None, options, budget, cancellation).await
+}
+
+/// [`capture_paths`] from a held root. The held directory is the source and
+/// is never reopened by `options.source_root`; it must have
+/// `options.expected_root_identity`.
+pub async fn capture_held_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    root: &HeldRoot,
+    options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
+    capture_paths_in(checkout, paths, Some(root), options, budget, cancellation).await
+}
+
+async fn capture_paths_in<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    paths: &[NamespacePath],
+    held: Option<&HeldRoot>,
+    options: &CaptureOptions,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
     validate_path_count(paths, options)
         .map_err(|error| OperationFailure::new(error, native.receipt()))?;
@@ -237,7 +262,19 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|error| OperationFailure::new(error.into(), native.receipt()))?;
     let scope = CaptureWorkScope::new(&native)?;
     let result = async {
-        let source_root = open_source_root(options, &scope.native)?;
+        let source_root = match held {
+            None => open_source_root(options, &scope.native)?,
+            Some(held) => {
+                let root = held
+                    .root
+                    .try_clone(&mut scope.native.clone())
+                    .map_err(capture_demand_error)?;
+                if root.identity() != options.expected_root_identity {
+                    return Err(CaptureError::RootChanged);
+                }
+                root
+            }
+        };
         let mut unique = clone_capture_paths(paths, None, &scope.native)?;
         capture_sort_by(&mut unique, Ord::cmp, &scope.native)?;
         if capture_has_duplicate_paths(&unique, &scope.native)? {

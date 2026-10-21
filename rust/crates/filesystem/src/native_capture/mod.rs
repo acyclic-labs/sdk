@@ -110,8 +110,8 @@ mod windows_sparse_tests;
 pub(crate) use entry::capture_paths_batched;
 pub(crate) use entry::capture_subtrees_with_native_work;
 pub use entry::{
-    HeldRoot, SearchRoot, capture_baseline, capture_paths, capture_root_identity, capture_subtree,
-    file_identity, hold_root, hold_search_root,
+    HeldRoot, SearchRoot, capture_baseline, capture_held_paths, capture_paths,
+    capture_root_identity, capture_subtree, file_identity, hold_root, hold_search_root,
 };
 #[cfg(feature = "native-mount")]
 pub(crate) use model::MAX_NATIVE_EXACT_CAPTURE_PATHS;

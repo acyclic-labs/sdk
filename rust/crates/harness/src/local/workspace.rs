@@ -384,14 +384,7 @@ pub(super) async fn open(
     )?;
     if let Some(setup) = &setup {
         volumes::attach(filesystem, &store, setup, &mut mounts).await?;
-        Box::pin(volumes::parents::bind(
-            &view,
-            &path,
-            &mounts,
-            identity,
-            &cancellation,
-        ))
-        .await?;
+        Box::pin(volumes::parents::bind(&view, setup, &mounts, &cancellation)).await?;
     }
     let context_line = mounts.context_line();
     let mounts = Arc::new(mounts);
