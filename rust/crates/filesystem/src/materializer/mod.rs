@@ -38,6 +38,7 @@ native_modules! {
     pub(crate) allowance;
     pub allocation;
     pub(crate) views;
+    pub(crate) window;
     pub reservation;
     pub preparation;
     pub(crate) cleanup;

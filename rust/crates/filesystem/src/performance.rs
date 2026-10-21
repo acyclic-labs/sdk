@@ -209,6 +209,36 @@ impl WorkCounters {
         additive_counters!(intersect)
     }
 
+    /// Saturating sum of every additive counter; the peak allocation keeps `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub(crate) fn saturating_add_cumulative(&self, other: &Self) -> Self {
+        macro_rules! add {
+            ($($field:ident),* $(,)?) => {
+                Self {
+                    $($field: self.$field.saturating_add(other.$field),)*
+                    peak_allocation_bytes: self.peak_allocation_bytes,
+                }
+            };
+        }
+        additive_counters!(add)
+    }
+
+    /// Saturating difference of every additive counter; the peak allocation keeps `self`'s value.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub(crate) fn saturating_sub_cumulative(&self, other: &Self) -> Self {
+        macro_rules! sub {
+            ($($field:ident),* $(,)?) => {
+                Self {
+                    $($field: self.$field.saturating_sub(other.$field),)*
+                    peak_allocation_bytes: self.peak_allocation_bytes,
+                }
+            };
+        }
+        additive_counters!(sub)
+    }
+
     /// No work at all, as a constant: [`WorkCounters::default`] usable in `const` charges such as one page read.
     pub const UNCHARGED: Self = Self {
         authority_records_read: 0,

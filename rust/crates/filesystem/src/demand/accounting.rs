@@ -8,6 +8,9 @@ pub struct DemandWork {
     #[cfg(test)]
     pub(crate) write_probe: Option<super::WriteProbe>,
     pub(crate) work: WorkCounters,
+    /// Cumulative work charged inside invocation windows, which no other view counts.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) windowed: WorkCounters,
     pub(crate) budget: WorkBudget,
     initial_budget: WorkBudget,
     pub(crate) original_work: Option<WorkCounters>,
@@ -28,6 +31,8 @@ impl DemandWork {
             #[cfg(test)]
             write_probe: None,
             work: WorkCounters::UNCHARGED,
+            #[cfg(not(target_arch = "wasm32"))]
+            windowed: WorkCounters::UNCHARGED,
             budget,
             initial_budget: budget,
             original_work: None,

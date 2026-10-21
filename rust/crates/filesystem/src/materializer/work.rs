@@ -9,6 +9,7 @@ pub struct NativeMaterializationWork {
     pub(crate) resource: Option<Arc<NativeResourceAllowance>>,
     pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
     pub(crate) invocation: Option<Arc<NativeInvocationView>>,
+    pub(crate) window: Option<Arc<NativeWorkWindow>>,
     #[cfg(feature = "native-mount")]
     pub(crate) execution: Option<Arc<NativeSourceExecutionView>>,
     cancellation: crate::CancellationToken,
@@ -77,6 +78,7 @@ impl NativeMaterializationWork {
             recheck_items: false,
             capture_origin: None,
             invocation: None,
+            window: None,
             #[cfg(feature = "native-mount")]
             execution: None,
         })
@@ -90,6 +92,7 @@ impl NativeMaterializationWork {
             recheck_items: false,
             capture_origin: None,
             invocation: None,
+            window: None,
             #[cfg(feature = "native-mount")]
             execution: None,
             cancellation,
@@ -108,29 +111,31 @@ impl NativeMaterializationWork {
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
         self.state.with_original_leaf(|state| {
-            state.scope(
-                |work| &mut work.native_invocation,
-                self.invocation.as_ref().map(Arc::downgrade),
-                |state| {
-                    state.scope(
-                        |work| &mut work.native_resource,
-                        self.resource.as_ref().map(Arc::downgrade),
-                        |state| {
-                            state.scope(
-                                |work| &mut work.capture_custody,
-                                None,
-                                |state| {
-                                    state.scope(
-                                        |work| &mut work.recheck_items,
-                                        self.recheck_items,
-                                        operation,
-                                    )
-                                },
-                            )
-                        },
-                    )
-                },
-            )
+            state.within_window(self.window.as_deref(), |state| {
+                state.scope(
+                    |work| &mut work.native_invocation,
+                    self.invocation.as_ref().map(Arc::downgrade),
+                    |state| {
+                        state.scope(
+                            |work| &mut work.native_resource,
+                            self.resource.as_ref().map(Arc::downgrade),
+                            |state| {
+                                state.scope(
+                                    |work| &mut work.capture_custody,
+                                    None,
+                                    |state| {
+                                        state.scope(
+                                            |work| &mut work.recheck_items,
+                                            self.recheck_items,
+                                            operation,
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    },
+                )
+            })
         })
     }
     pub(crate) fn with_original_leaf<T>(
@@ -192,9 +197,12 @@ impl NativeMaterializationWork {
         {
             return invocation.clone();
         }
-        self.resource.as_ref().map_or_else(
+        if let Some(resource) = &self.resource {
+            return resource.clone();
+        }
+        self.window.as_ref().map_or_else(
             || self.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-            |resource| resource.clone(),
+            |window| window.clone(),
         )
     }
     /// Original typed runtime failure.
