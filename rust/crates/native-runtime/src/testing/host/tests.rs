@@ -460,6 +460,50 @@ proptest::proptest! {
     }
 }
 
+/// The order in which tasks make progress, without repeated pending polls.
+///
+/// A real device completion can wake its task once more or once less before
+/// the seeded schedule releases it, so how many times a task is polled while
+/// pending is timing; which task is polled, in what order, and when each is
+/// ready is the replayed schedule.
+fn progress(polls: Vec<(u64, &'static str)>) -> Vec<(u64, &'static str)> {
+    let mut progress: Vec<(u64, &'static str)> = Vec::with_capacity(polls.len());
+    for poll in polls {
+        if poll.1 != "pending" || progress.last() != Some(&poll) {
+            progress.push(poll);
+        }
+    }
+    progress
+}
+
+#[test]
+fn progress_ignores_repeated_pending_polls_but_not_order_or_readiness() {
+    let run = vec![
+        (0, "pending"),
+        (2, "pending"),
+        (2, "ready"),
+        (1, "pending"),
+        (1, "ready"),
+        (0, "ready"),
+    ];
+    let mut again = run.clone();
+    again.insert(1, (2, "pending"));
+    assert_eq!(progress(run.clone()), progress(again));
+    // Controls: a reordered, a missing and an extra readiness all still differ.
+    let mut reordered = run.clone();
+    reordered.swap(2, 4);
+    assert_ne!(progress(run.clone()), progress(reordered));
+    let mut missing = run.clone();
+    missing.remove(2);
+    assert_ne!(progress(run.clone()), progress(missing));
+    let mut repeated = run.clone();
+    repeated.insert(3, (2, "ready"));
+    assert_ne!(progress(run.clone()), progress(repeated));
+    // A pending poll of a different task between two of one task's polls stays.
+    let interleaved = vec![(2, "pending"), (1, "pending"), (2, "pending"), (2, "ready")];
+    assert_eq!(progress(interleaved.clone()), interleaved);
+}
+
 fn native_callback(
     seed: u64,
     erase_scope: bool,
@@ -508,7 +552,7 @@ fn native_callback(
         schedule.drained().await;
         bytes
     });
-    (bytes, schedule.trace(), schedule.polls())
+    (bytes, schedule.trace(), progress(schedule.polls()))
 }
 
 proptest::proptest! {
