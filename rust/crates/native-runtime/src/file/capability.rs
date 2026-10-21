@@ -4,8 +4,18 @@ use crate::*;
 pub struct NativeFile {
     pub(crate) file: Arc<NativeFilePayload>,
     pub(crate) health: Arc<FileHealth>,
+    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+    identity: FileIdentity,
     #[cfg(windows)]
     pub(crate) overlapped: bool,
+}
+
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+impl Drop for NativeFile {
+    fn drop(&mut self) {
+        // The last owner unregisters its health, so it is freed here.
+        release_file_health(self.identity, &self.health);
+    }
 }
 
 /// Accounting supplied when importing a native handle.
@@ -69,11 +79,17 @@ impl NativeFile {
             .map_or(Ok(()), |meter| {
                 meter.allocate(std::mem::size_of::<FileHealth>() as u64)
             })
-            .map(|()| Arc::new(FileHealth::default()));
+            .map(|()| ((), Arc::new(FileHealth::default())));
         match health {
-            Ok(health) => Ok(Self {
+            #[cfg_attr(
+                not(any(windows, target_os = "linux", target_vendor = "apple")),
+                expect(unused_variables, reason = "no registry identity")
+            )]
+            Ok((identity, health)) => Ok(Self {
                 file: payload,
                 health,
+                #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+                identity,
                 #[cfg(windows)]
                 overlapped: false,
             }),

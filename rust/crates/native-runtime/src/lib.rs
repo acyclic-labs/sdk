@@ -113,7 +113,9 @@ pub(crate) use workers::{
 mod health;
 use health::FileHealth;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-use health::{FILE_HEALTH, FileHealthRegistry, poison_file_health, shared_file_health};
+use health::{
+    FILE_HEALTH, FileHealthRegistry, poison_file_health, release_file_health, shared_file_health,
+};
 
 #[cfg(test)]
 mod tests;

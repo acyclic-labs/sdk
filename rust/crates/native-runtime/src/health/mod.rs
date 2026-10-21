@@ -12,5 +12,5 @@ pub(crate) struct FileHealth {
 mod registry;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use registry::{
-    FILE_HEALTH, FileHealthRegistry, poison_file_health, shared_file_health,
+    FILE_HEALTH, FileHealthRegistry, poison_file_health, release_file_health, shared_file_health,
 };

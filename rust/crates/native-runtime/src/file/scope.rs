@@ -84,7 +84,18 @@ pub(crate) fn with_file_admission<T>(
     file: &File,
     operation: impl FnOnce() -> io::Result<T>,
 ) -> io::Result<T> {
-    let health = shared_file_health(file, None)?;
+    let (identity, health) = shared_file_health(file, None)?;
+    let result = admitted(file, &health, operation);
+    release_file_health(identity, &health);
+    result
+}
+
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+fn admitted<T>(
+    file: &File,
+    health: &Arc<FileHealth>,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     let run = || {
         if health.uncertain.load(Ordering::Acquire) {
             return Err(io::Error::other(
@@ -94,11 +105,11 @@ pub(crate) fn with_file_admission<T>(
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
             .unwrap_or_else(|_| std::process::abort());
         if result.as_ref().err().is_some_and(is_uncertain_io_error) {
-            poison_borrowed_file_health(file, &health);
+            poison_borrowed_file_health(file, health);
         }
         result
     };
-    if in_file_scope(&health) {
+    if in_file_scope(health) {
         return run();
     }
     let (predecessor, completion) = {
@@ -108,7 +119,7 @@ pub(crate) fn with_file_admission<T>(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let predecessor = last.clone();
         let completion = Arc::new(OperationFence {
-            health: Some(Arc::downgrade(&health)),
+            health: Some(Arc::downgrade(health)),
             ..OperationFence::default()
         });
         *last = Some(Arc::clone(&completion));
@@ -117,7 +128,7 @@ pub(crate) fn with_file_admission<T>(
     if let Some(predecessor) = predecessor {
         predecessor.wait_until_complete();
     }
-    let result = with_file_scope(Some(&health), run);
+    let result = with_file_scope(Some(health), run);
     completion.complete();
     result
 }

@@ -110,3 +110,38 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
     assert_eq!(std::fs::metadata(&path)?.len(), 1);
     Ok(())
 }
+
+/// Whether the process registry still holds a row for `file`.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+fn registered(file: &File) -> io::Result<bool> {
+    let identity = file_identity(file)?;
+    let registry = FILE_HEALTH
+        .get()
+        .ok_or(io::ErrorKind::NotConnected)?
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    Ok(registry.find(identity, None)?.is_ok())
+}
+
+// The last owner of a healthy file unregisters it, so its health is freed by
+// the thread that admitted it. A row left behind would keep the allocation
+// until another thread's admission or sweep replaced it, and thread-local
+// allocation accounting would see the free land on that thread.
+#[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
+#[test]
+fn last_owner_unregisters_healthy_file_on_its_own_thread() -> io::Result<()> {
+    initialize_native_io_services()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
+    let mut byte = [0; 1];
+    read_at(&file, 0, &mut byte)?;
+    assert!(!registered(&file)?, "a borrowed admission left its row");
+    let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+    assert!(registered(&file)?);
+    // A borrowed admission while an owner is live shares and keeps that owner.
+    read_at(&file, 0, &mut byte)?;
+    assert!(registered(&file)?, "a borrowed admission released a live owner");
+    drop(native);
+    assert!(!registered(&file)?, "the last native owner left its row");
+    Ok(())
+}
