@@ -177,11 +177,10 @@ fn promotions_preserve_ancestor_and_alias_identities_for_generated_writes()
     // directory renames and publication; published aliases share all bytes.
     // Independent runners keep all 32 cases and their shrinking, without serial
     // native I/O. The runtime is shared by all runners.
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     std::thread::scope(|scope| {
         let runners = (0..32)
             .map(|_| {
-                let runtime = &runtime;
                 scope.spawn(move || {
                     let strategy = (
                         0usize..4,

@@ -217,12 +217,59 @@ async fn assert_bucket(
 ) {
     let children: Option<ContextChildren> = store.load_logged(parent).await.unwrap();
     let count: Option<ContextChildCount> = store.load_logged(parent).await.unwrap();
+    assert_bucket_values(children, count, expected);
+}
+
+fn assert_bucket_values(
+    children: Option<ContextChildren>,
+    count: Option<ContextChildCount>,
+    expected: BTreeSet<WorkspaceContextId>,
+) {
     if expected.is_empty() {
         assert!(children.is_none());
         assert!(count.is_none());
     } else {
         assert_eq!(children.unwrap().0, expected);
         assert_eq!(count.unwrap().0, expected.len() as u64);
+    }
+}
+
+async fn assert_parent_buckets(
+    store: &LocalCoreStateStore,
+    parents: [WorkspaceContextId; 3],
+    child: WorkspaceContextId,
+    sibling: WorkspaceContextId,
+    selected_parent: Option<WorkspaceContextId>,
+) {
+    // Check the same six records at one WAL cut, with one native I/O dispatch.
+    let buckets = store
+        .transaction(move |root| {
+            root.with_log(|log| {
+                parents
+                    .into_iter()
+                    .map(|parent| {
+                        Ok((
+                            log.get::<ContextChildren>(&root, parent, None, None)?
+                                .map(|(value, _)| value),
+                            log.get::<ContextChildCount>(&root, parent, None, None)?
+                                .map(|(value, _)| value),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, LocalCoreStateStoreError>>()
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(buckets.len(), parents.len());
+    for (parent, (children, count)) in parents.into_iter().zip(buckets) {
+        let mut expected = BTreeSet::new();
+        if parent == parents[1] {
+            expected.insert(sibling);
+        }
+        if Some(parent) == selected_parent {
+            expected.insert(child);
+        }
+        assert_bucket_values(children, count, expected);
     }
 }
 
@@ -254,29 +301,52 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
     assert_eq!(owned.0, paths.current);
 }
 
+static CONTEXT_PARENT_BOOTSTRAP_WRITES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn context_parent_bootstrap() -> &'static tempfile::TempDir {
+    static BOOTSTRAP: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    BOOTSTRAP.get_or_init(|| {
+        crate::initialize_test_native_io();
+        let directory = tempfile::tempdir().unwrap();
+        futures::executor::block_on(async {
+            let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
+            for (byte, parent) in [(1, None), (2, None), (3, None), (4, Some(1)), (5, Some(2))] {
+                let id = WorkspaceContextId::from_bytes([byte; 16]);
+                let parent = parent.map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
+                let mut state = context(id, parent, directory.path());
+                // The seed contains no native paths and can be copied to an independent store.
+                state.roots.clear();
+                assert!(
+                    WorkspaceContextStore::compare_and_swap(&store, id, 0, state)
+                        .await
+                        .unwrap()
+                );
+                CONTEXT_PARENT_BOOTSTRAP_WRITES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        directory
+    })
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]
     #[test]
         fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
+            let bootstrap = context_parent_bootstrap();
+            assert_eq!(CONTEXT_PARENT_BOOTSTRAP_WRITES.load(std::sync::atomic::Ordering::SeqCst), 5,
+                "the immutable context seed must be committed once for the entire property");
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 for native in [false, true] {
                     let directory = tempfile::tempdir().unwrap();
+                    copy_tree(bootstrap.path(), directory.path());
                     let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
                     let child = WorkspaceContextId::from_bytes([4; 16]);
                     let sibling = WorkspaceContextId::from_bytes([5; 16]);
                     let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
-                    for parent in parents {
-                        let mut root = context(parent, None, directory.path());
-                        root.roots.clear();
-                        assert!(WorkspaceContextStore::compare_and_swap(&store, parent, 0, root).await.unwrap());
-                    }
                     let mut selected = context(child, Some(parents[0]), directory.path());
                     selected.roots.clear();
-                    let mut other = context(sibling, Some(parents[1]), directory.path());
-                    other.roots.clear();
-                    assert!(WorkspaceContextStore::compare_and_swap(&store, child, 0, selected.clone()).await.unwrap());
-                    assert!(WorkspaceContextStore::compare_and_swap(&store, sibling, 0, other).await.unwrap());
                     let cancellation = crate::CancellationToken::new();
                     let original = NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
                     let work = original.native_volume_work(finite_budget()).unwrap();
@@ -291,22 +361,12 @@ proptest::proptest! {
                         } else {
                             assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.unwrap());
                         }
-                        for parent in parents {
-                            let mut expected = BTreeSet::new();
-                            if parent == parents[1] { expected.insert(sibling); }
-                            if Some(parent) == selected.parent_context_id { expected.insert(child); }
-                            assert_bucket(&store, parent, expected).await;
-                        }
+                        assert_parent_buckets(&store, parents, child, sibling, selected.parent_context_id).await;
                     }
                     drop(store);
                     let reopened = LocalCoreStateStore::new(directory.path());
                     assert_eq!(WorkspaceContextStore::load(&reopened, child).await.unwrap(), Some(selected.clone()));
-                    for parent in parents {
-                        let mut expected = BTreeSet::new();
-                        if parent == parents[1] { expected.insert(sibling); }
-                        if Some(parent) == selected.parent_context_id { expected.insert(child); }
-                        assert_bucket(&reopened, parent, expected).await;
-                    }
+                    assert_parent_buckets(&reopened, parents, child, sibling, selected.parent_context_id).await;
                     work.receipt().verify(finite_budget()).unwrap();
                 }
             });

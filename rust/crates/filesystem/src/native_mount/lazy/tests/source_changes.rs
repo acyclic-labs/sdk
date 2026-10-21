@@ -5,7 +5,7 @@ fn lookups_follow_changes_made_to_the_source_outside_the_view()
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"short")?;
     std::fs::create_dir(source.path().join("d"))?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "source-changes"))?;
     assert!(view.view_stamp().is_some(), "a local source is watched");
     let (a, d) = (mounted(&["a"]), mounted(&["d"]));
@@ -46,7 +46,7 @@ fn lookups_follow_changes_made_to_the_source_outside_the_view()
 fn a_source_that_lost_changes_is_read_again_in_full() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"short")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "lost-changes"))?;
     let a = mounted(&["a"]);
     assert!(view.lookup(&a)?.is_some());
@@ -76,7 +76,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("empty"))?;
     std::fs::write(source.path().join("a"), b"a")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "empty-pages"))?;
     let empty = view.read_directory(&mounted(&["empty"]), None, 64)?;
     assert!(empty.entries.is_empty());
@@ -103,7 +103,7 @@ fn an_empty_page_ends_its_listing() -> Result<(), Box<dyn std::error::Error>> {
 fn an_open_handle_reports_its_file_as_it_is_now() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("a"), b"short")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "handle-facts"))?;
     let a = mounted(&["a"]);
     let handle = view.open_file(&a)?;
@@ -130,7 +130,7 @@ fn an_open_handle_keeps_facts_when_its_parent_path_stops_resolving()
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("a"))?;
     std::fs::write(source.path().join("a/file"), b"short")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "handle-moved-parent"))?;
     let handle = view.open_file(&mounted(&["a", "file"]))?;
     let opened = handle.lookup()?.node;
@@ -163,7 +163,7 @@ fn a_dropped_watched_view_releases_its_stores_at_once() -> Result<(), Box<dyn st
     std::fs::write(source.path().join("a"), b"a")?;
     let state = tempfile::tempdir()?;
     let state_root = std::fs::canonicalize(state.path())?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     // A store released late fails the very next open; the rounds only
     // vary where the source change lands against the drop.
     for round in 0..24 {
@@ -197,7 +197,7 @@ fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::
     std::fs::write(source.join("linked"), b"short")?;
     std::fs::hard_link(source.join("linked"), outside.join("alias"))?;
     std::fs::write(source.join("single"), b"single")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(&source, "linked-outside"))?;
     let (linked_path, single) = (mounted(&["linked"]), mounted(&["single"]));
     let stamp = view.view_stamp().ok_or("a local source is watched")?;
@@ -227,7 +227,7 @@ fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error:
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("d"))?;
     std::fs::write(source.path().join("d/f"), b"source")?;
-    let runtime = tokio::runtime::Runtime::new()?;
+    let runtime = shared_runtime()?;
     let view = runtime.block_on(mounted_view(source.path(), "listing-promotion"))?;
     let (d, f) = (mounted(&["d"]), mounted(&["d", "f"]));
     view.promote_locked(&d, None)?;

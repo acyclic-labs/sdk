@@ -1,5 +1,25 @@
 use super::*;
 
+pub(super) fn shared_runtime() -> std::io::Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: std::sync::OnceLock<std::io::Result<tokio::runtime::Runtime>> =
+        std::sync::OnceLock::new();
+    static BUILDS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    // Filesystems, sources and work observers stay local to each test. Only the
+    // executor is shared, including the existing concurrent property runners.
+    let runtime = RUNTIME.get_or_init(|| {
+        BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        tokio::runtime::Runtime::new()
+    });
+    assert_eq!(
+        BUILDS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "lazy-view fixtures must build their executor once"
+    );
+    runtime
+        .as_ref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+}
+
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 impl ViewObserver for Recorded {
     fn view_changed(&self, position: ViewStamp, _origin: crate::native_mount::ViewOrigin) {
