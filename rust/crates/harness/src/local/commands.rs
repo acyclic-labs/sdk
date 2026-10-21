@@ -370,12 +370,18 @@ impl LocalHarness {
             CommandTool::Bash => "bash",
             CommandTool::Spawn => "spawn",
             CommandTool::WebSearch => "web_search",
-            CommandTool::UrlFetch => "web_search",
+            CommandTool::UrlFetch => "url_fetch",
         };
         let definition = self
             .tools()
             .get(name, None, None)?
-            .ok_or_else(|| Error::Invalid(format!("tool {name} is not installed")))?;
+            .ok_or_else(|| match tool {
+                CommandTool::WebSearch | CommandTool::UrlFetch => Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Unavailable,
+                    reason: "requested web capability is not configured",
+                },
+                _ => Error::Invalid(format!("tool {name} is not installed")),
+            })?;
         let command = self
             .stage_command(
                 operation,

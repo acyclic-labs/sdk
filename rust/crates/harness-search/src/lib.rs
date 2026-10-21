@@ -12,6 +12,16 @@
 //!
 //! Depend on `acyclic-harness`; it re-exports this crate as `search`.
 
+/// Credential-free, bounded HTTP source retrieval.
+pub mod url_fetch;
+#[cfg(all(
+    feature = "filesystem",
+    feature = "search-http",
+    not(target_arch = "wasm32")
+))]
+#[doc(hidden)]
+pub mod web;
+
 // The core's items keep their `crate::` paths here, as in the facade.
 use acyclic_harness_core::*;
 
@@ -23,7 +33,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub mod files;
 #[cfg(all(feature = "search-http", not(target_arch = "wasm32")))]
-mod http;
+pub(crate) mod http;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) mod native;
 #[cfg(any(test, feature = "test-support"))]
@@ -151,12 +161,9 @@ pub(crate) fn error(work: crate::NativeWork<'_>, reason: &'static str) -> Error 
 }
 
 pub(crate) fn rejection(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::ToolRejected {
-            code: crate::wire::ErrorCode::Invalid,
-            reason,
-        };
+    let _ = work;
+    Error::ToolRejected {
+        code: crate::wire::ErrorCode::Invalid,
+        reason,
     }
-    error(work, reason)
 }

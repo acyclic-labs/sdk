@@ -22,6 +22,8 @@
 pub use acyclic_harness_core::*;
 /// Provider-neutral web search, with credentials confined to the host.
 pub use acyclic_harness_search as search;
+/// Credential-free, bounded HTTP source retrieval.
+pub use acyclic_harness_search::url_fetch;
 
 /// Cargo-provided build metadata, isolated from ambient user environment discovery.
 #[doc(hidden)]

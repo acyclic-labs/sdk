@@ -35,11 +35,7 @@ impl SearchProvider for Response {
             let expected = oracle::expected(&self.bytes, self.exa);
             let ordinary = decode_search_http_response(&self.bytes, 5, self.exa, None);
             assert!(
-                oracle::agrees(
-                    &expected,
-                    ordinary.as_ref().map(|(response, _)| response),
-                    false,
-                ),
+                oracle::agrees(&expected, ordinary.as_ref().map(|(response, _)| response)),
                 "ordinary codec disagrees with independent oracle: {ordinary:?}"
             );
             if let Ok((_, custody)) = &ordinary {
@@ -48,11 +44,7 @@ impl SearchProvider for Response {
             drop(ordinary);
             let result = decode_search_http_response(&self.bytes, 5, self.exa, Some(&work));
             assert!(
-                oracle::agrees(
-                    &expected,
-                    result.as_ref().map(|(response, _)| response),
-                    true,
-                ),
+                oracle::agrees(&expected, result.as_ref().map(|(response, _)| response)),
                 "codec disagrees with independent oracle: {result:?}"
             );
             match result {

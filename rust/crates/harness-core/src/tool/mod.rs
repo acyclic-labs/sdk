@@ -35,7 +35,8 @@ mod codec;
 pub(crate) use codec::TOOL_SERDE_DIAGNOSTIC_LABEL_BYTES;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use codec::clone_value;
-pub(crate) use codec::decode;
+#[doc(hidden)]
+pub use codec::decode;
 #[doc(hidden)]
 pub use codec::value;
 

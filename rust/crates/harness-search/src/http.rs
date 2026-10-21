@@ -5,7 +5,7 @@ use reqwest::{Url, header::HeaderValue};
 use serde::Deserialize;
 use std::time::Duration;
 mod codec;
-mod transport;
+pub(crate) mod transport;
 
 const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
 

@@ -7,7 +7,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 // Meter the actual transport, before TLS/HTTP can buffer a complete chunk.
 // The failure slot is borrowed by this connection, without another shared store.
-pub(super) struct Socket<'a, I> {
+pub(crate) struct Socket<'a, I> {
     inner: I,
     work: NativeWork<'a>,
     failure: &'a mut Option<Error>,
@@ -16,7 +16,7 @@ pub(super) struct Socket<'a, I> {
 }
 
 impl<'a, I> Socket<'a, I> {
-    pub(super) fn new(
+    pub(crate) fn new(
         inner: I,
         work: NativeWork<'a>,
         failure: &'a mut Option<Error>,

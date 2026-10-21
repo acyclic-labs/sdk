@@ -13,7 +13,7 @@ name = "graphcoder"
 path = "../graphcoder.rs"
 
 [dependencies]
-acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui"] }
+acyclic-harness = { path = "../../..", features = ["filesystem-local", "native-execution", "terminal", "tui", "search-http"] }
 acyclic-harness-providers = { path = "../../../../harness-providers" }
 clap.workspace = true
 dirs.workspace = true

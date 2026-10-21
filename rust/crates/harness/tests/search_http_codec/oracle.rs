@@ -100,15 +100,16 @@ fn decode(bytes: &[u8], exa: bool) -> Option<SearchResponse> {
     Some(SearchResponse { results })
 }
 
-pub fn agrees(
-    expected: &Option<SearchResponse>,
-    actual: Result<&SearchResponse, &Error>,
-    native: bool,
-) -> bool {
+pub fn agrees(expected: &Option<SearchResponse>, actual: Result<&SearchResponse, &Error>) -> bool {
     match (expected, actual) {
         (Some(expected), Ok(actual)) => expected == actual,
-        (None, Err(Error::ToolRejected { .. })) => native,
-        (None, Err(Error::Invalid(_))) => !native,
+        (
+            None,
+            Err(Error::ToolRejected {
+                code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason,
+            }),
+        ) => !reason.is_empty(),
         _ => false,
     }
 }
@@ -142,18 +143,18 @@ fn oracle_detects_broken_decoding_and_bounds() {
                 code: acyclic_harness::wire::ErrorCode::Invalid,
                 reason: "broken decoder"
             }),
-            true,
         ));
         assert!(!agrees(
             &wanted,
             Err(&Error::Invalid("broken decoder".into())),
-            false,
         ));
         let mut broken = wanted.clone().unwrap();
         broken.results[0].snippet.push_str("wrong");
-        for native in [false, true] {
-            assert!(!agrees(&wanted, Ok(&broken), native));
-        }
+        assert!(!agrees(&wanted, Ok(&broken)));
+        assert!(!agrees(
+            &None,
+            Err(&Error::Invalid("fatal decoder error".into())),
+        ));
         let deep = format!(
             "{{\"results\":[],\"metadata\":{}0{}}}",
             "[".repeat(258),
@@ -176,9 +177,7 @@ fn oracle_detects_broken_decoding_and_bounds() {
             assert!(expected(bytes, exa).is_none());
             // A decoder bypassing either fixed bound accepts these documents.
             let broken = decode(bytes, exa).unwrap();
-            for native in [false, true] {
-                assert!(!agrees(&expected(bytes, exa), Ok(&broken), native));
-            }
+            assert!(!agrees(&expected(bytes, exa), Ok(&broken)));
         }
     }
 }

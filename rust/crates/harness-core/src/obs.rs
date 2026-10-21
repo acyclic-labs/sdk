@@ -91,21 +91,86 @@ pub(crate) fn traced_future<'a, T: 'a>(
 ) -> impl Future<Output = crate::Result<T>> + acyclic_stream::ProviderTask + 'a {
     #[cfg(not(target_arch = "wasm32"))]
     {
+        use futures::FutureExt as _;
+
         let context = span.clone();
-        context.scope(async move {
-            let result = future.await;
+        // Poll the underlying future in place. A forwarding async block retains
+        // its initial future and await state, duplicating large journal frames.
+        context.scope(future.map(move |result| {
             span.record("outcome", if result.is_ok() { "ok" } else { "err" });
             if let Err(error) = &result {
                 span.record("error.kind", error.kind());
             }
             result
-        })
+        }))
     }
     #[cfg(target_arch = "wasm32")]
     {
         let OperationSpan = span;
         future
     }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[test]
+fn traced_future_retains_one_payload_and_records_only_when_ready() {
+    use std::{
+        future::Future,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct Payload {
+        bytes: [u8; 8192],
+        ready: bool,
+    }
+
+    impl Future for Payload {
+        type Output = crate::Result<()>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            assert!(self.bytes.iter().all(|byte| *byte == 7));
+            if !self.ready {
+                self.ready = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            } else {
+                Poll::Ready(Err(crate::Error::Invalid("fixture refusal".into())))
+            }
+        }
+    }
+
+    let (seen, _guard) = capture::install();
+    let span = obs_span!(INFO, "acyclic.harness.test.payload");
+    let future = traced_future(
+        span,
+        Payload {
+            bytes: [7; 8192],
+            ready: false,
+        },
+    );
+    // This is an ownership bound, independent of the particular payload size:
+    // the tracing adapter must not retain a second copy of its child future.
+    assert!(std::mem::size_of_val(&future) < 2 * std::mem::size_of::<Payload>());
+    futures::pin_mut!(future);
+    let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+    assert!(future.as_mut().poll(&mut cx).is_pending());
+    assert!(!capture::has(
+        &seen,
+        "acyclic.harness.test.payload",
+        "outcome",
+        "err"
+    ));
+    assert!(matches!(
+        future.as_mut().poll(&mut cx),
+        Poll::Ready(Err(crate::Error::Invalid(reason))) if reason == "fixture refusal"
+    ));
+    assert!(capture::has(
+        &seen,
+        "acyclic.harness.test.payload",
+        "outcome",
+        "err"
+    ));
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

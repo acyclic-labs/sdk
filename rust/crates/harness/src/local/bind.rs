@@ -35,6 +35,8 @@ impl LocalHarness {
             })
             .transpose()?;
         let (verifier, signed) = authority;
+        #[cfg(feature = "search-http")]
+        config.validate_web_binding(runtime.tool_registry(), verifier, signed)?;
         let LocalProject::Volume { volume, .. } = &config.project else {
             return Err(Error::Invalid(
                 "existing runtime requires its bound volume".into(),

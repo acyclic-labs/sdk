@@ -72,8 +72,11 @@ pub async fn check(bytes: &[u8]) {
             }
             (Err(error), None) => assert!(
                 matches!(
-                    (&error, native),
-                    (Error::ToolRejected { .. }, true) | (Error::Invalid(_), false)
+                    &error,
+                    Error::ToolRejected {
+                        code: acyclic_harness::wire::ErrorCode::Invalid,
+                        reason,
+                    } if !reason.is_empty()
                 ),
                 "nonterminal admission failure: {error:?}"
             ),

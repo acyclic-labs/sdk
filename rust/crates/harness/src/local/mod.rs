@@ -48,6 +48,8 @@ mod settings;
 #[cfg(test)]
 mod tests;
 mod turn;
+#[cfg(feature = "search-http")]
+pub mod web;
 #[cfg(feature = "native-execution")]
 mod workspace;
 pub use config::LocalHarnessConfig;
@@ -130,6 +132,10 @@ impl LocalHarness {
             }
             for tool in config.tools {
                 tools.register((tool, None), &mut None, None)?;
+            }
+            #[cfg(feature = "search-http")]
+            if config.web_tools {
+                web::WebExecutor::bind(&mut tools, config.search_provider)?;
             }
             #[cfg(any(feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
             let settings_configuration =

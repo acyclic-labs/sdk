@@ -39,7 +39,7 @@ fn decode<T: Record>(bytes: &[u8], work: NativeWork<'_>) -> Result<(T, NativeCus
         &mut |_| Ok(()),
     )
     .map(|value| (value, None))
-    .map_err(|_| error(work, "invalid search response"))
+    .map_err(|_| crate::search::rejection(work, "invalid search response"))
 }
 
 fn finish(

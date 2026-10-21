@@ -5,7 +5,32 @@ use hyper_util::rt::TokioIo;
 use reqwest::{Url, header::HeaderValue};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
-mod socket;
+pub(crate) mod socket;
+
+pub(crate) const HTTP_BUFFER_BYTES: usize = 32_768;
+
+/// Funds the bounded HTTP parser buffer and request/header copies before connecting.
+pub(crate) fn request_scratch(endpoint: &Url, work: NativeWork<'_>) -> Result<NativeCustody> {
+    let copies = endpoint
+        .as_str()
+        .len()
+        .checked_mul(4)
+        .ok_or_else(|| super::super::error(work, "HTTP request ownership overflow"))?;
+    let bytes = copies
+        .checked_add(HTTP_BUFFER_BYTES + 1024)
+        .ok_or_else(|| super::super::error(work, "HTTP request ownership overflow"))?;
+    let held = crate::tool::edit::allocation(work, bytes)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 8,
+            bytes_copied: copies as u64,
+            items_examined: endpoint.as_str().len() as u64,
+            ..Default::default()
+        })?;
+    }
+    Ok(held)
+}
 
 pub(super) fn tls(endpoint: &Url) -> Result<Option<Arc<rustls::ClientConfig>>> {
     use rustls_platform_verifier::BuilderVerifierExt as _;
@@ -37,6 +62,7 @@ pub(super) async fn send(
     let port = endpoint
         .port_or_known_default()
         .ok_or_else(|| super::super::error(work, "invalid search port"))?;
+    let _request_held = request_scratch(endpoint, work)?;
     let socket = tokio::net::TcpStream::connect((host.trim_matches(['[', ']']), port))
         .await
         .map_err(|_| transport_error(work, "cannot connect search provider"))?;
@@ -79,7 +105,7 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
     work: NativeWork<'_>,
 ) -> Result<(Vec<u8>, NativeCustody)> {
     let (mut sender, connection) = hyper::client::conn::http1::Builder::new()
-        .max_buf_size(32_768)
+        .max_buf_size(HTTP_BUFFER_BYTES)
         .handshake(TokioIo::new(socket))
         .await
         .map_err(|_| transport_error(work, "cannot initialize search connection"))?;
@@ -89,17 +115,10 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             .await
             .map_err(|_| transport_error(work, "search HTTP request failed"))?;
         if !response.status().is_success() {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() {
-                return Err(super::super::rejection(
-                    work,
-                    "search HTTP request rejected",
-                ));
-            }
-            return Err(crate::Error::Invalid(format!(
-                "search HTTP status {}",
-                response.status().as_u16()
-            )));
+            return Err(super::super::rejection(
+                work,
+                "search HTTP request rejected",
+            ));
         }
         if response
             .headers()

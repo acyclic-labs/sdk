@@ -95,10 +95,13 @@ async fn response_matrix_rejects_status_errors_malformed_payloads_and_oversized_
             if let Err(error) = result {
                 assert!(!error.to_string().contains("test-only-placeholder"));
                 if status != 200 {
-                    assert_eq!(
-                        error.to_string(),
-                        format!("invalid request: search HTTP status {status}")
-                    );
+                    assert!(matches!(
+                        error,
+                        Error::ToolRejected {
+                            code: crate::wire::ErrorCode::Invalid,
+                            ..
+                        }
+                    ));
                 }
             }
             server.await.map_err(|e| Error::Storage(e.to_string()))??;

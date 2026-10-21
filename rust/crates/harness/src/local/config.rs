@@ -26,6 +26,10 @@ pub struct LocalHarnessConfig {
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     pub(super) default_tools: bool,
+    #[cfg(feature = "search-http")]
+    pub(super) search_provider: Option<Arc<dyn crate::search::SearchProvider>>,
+    #[cfg(feature = "search-http")]
+    pub(super) web_tools: bool,
     pub(super) limits: Limits,
     pub(super) run_limits: TaskRunLimits,
     pub(super) session_limits: SessionLimits,
@@ -62,6 +66,10 @@ impl LocalHarnessConfig {
             context_manifest: None,
             tools: Vec::new(),
             default_tools: true,
+            #[cfg(feature = "search-http")]
+            search_provider: None,
+            #[cfg(feature = "search-http")]
+            web_tools: false,
             limits: Limits::default(),
             run_limits: TaskRunLimits::default(),
             session_limits: SessionLimits {
@@ -150,6 +158,64 @@ impl LocalHarnessConfig {
         self.tools.extend(tools);
         self
     }
+    /// Enables credential-free HTTP retrieval. Search requires a configured provider.
+    #[cfg(feature = "search-http")]
+    #[must_use]
+    pub fn web_tools(mut self) -> Self {
+        self.web_tools = true;
+        self
+    }
+
+    /// Binds a host-owned search provider without serializing its credentials.
+    #[cfg(feature = "search-http")]
+    #[must_use]
+    pub fn search_provider(mut self, provider: Arc<dyn crate::search::SearchProvider>) -> Self {
+        self.search_provider = Some(provider);
+        self.web_tools = true;
+        self
+    }
+
+    /// Prebinds web tools before opening an embedded runtime and issuing its grants.
+    #[cfg(feature = "search-http")]
+    pub fn bind_web_tools(&self, registry: &mut ToolRegistry) -> Result<()> {
+        if self.web_tools {
+            super::web::WebExecutor::bind(registry, self.search_provider.clone())?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "search-http")]
+    pub(super) fn validate_web_binding(
+        &self,
+        registry: &ToolRegistry,
+        verifier: &AuthorityVerifier,
+        signed: &Scope,
+    ) -> Result<()> {
+        if !self.web_tools {
+            return Ok(());
+        }
+        verifier.verify(signed, &mut None)?;
+        for definition in crate::search::web::definitions(self.search_provider.is_some())? {
+            if !signed
+                .capabilities()
+                .contains(&format!("tool:call:{}", definition.name))
+            {
+                return Err(Error::Unauthorized(
+                    "requested web tools require prebound signed call grants".into(),
+                ));
+            }
+            if registry
+                .get(&definition.name, None, None)?
+                .is_none_or(|tool| tool.definition != definition)
+            {
+                return Err(Error::Unsupported(
+                    "prebind requested web tools before opening the task runtime".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Selects content, projection and model-loop bounds.
     #[must_use]
     pub fn limits(mut self, limits: Limits) -> Self {
