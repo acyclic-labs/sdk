@@ -102,11 +102,13 @@ async fn project_servers_require_explicit_settings_trust() -> Result<()> {
 }
 
 #[cfg(feature = "mcp-http")]
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn configured_http_server_initializes_pages_installs_and_calls_selected_tools() -> Result<()>
 {
     use crate::native_settings::SettingsConfig;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let _clock = crate::test_support::hold_io_clock();
+    let started = tokio::time::Instant::now();
     const CATALOG_BYTES: u32 = 1024;
     const QUERY_BYTES: usize = 2048;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -309,5 +311,6 @@ async fn configured_http_server_initializes_pages_installs_and_calls_selected_to
             "tools/call"
         ]
     );
+    assert_eq!(tokio::time::Instant::now(), started);
     Ok(())
 }

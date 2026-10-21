@@ -34,16 +34,8 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[path = "../support/workspace.rs"]
 mod workspace;
+use acyclic_harness::test_support::hold_io_clock;
 use workspace::workspace;
-
-fn hold_io_clock() -> tokio::sync::oneshot::Sender<()> {
-    let (release, wait) = tokio::sync::oneshot::channel::<()>();
-    // Real disk/network readiness must not auto-advance paused protocol deadlines.
-    drop(tokio::task::spawn_blocking(move || {
-        let _ = wait.blocking_recv();
-    }));
-    release
-}
 
 async fn no_more_requests(
     listener: tokio::net::TcpListener,

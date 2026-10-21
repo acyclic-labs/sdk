@@ -395,12 +395,24 @@ async fn startup_deadlines_and_required_failures_are_bounded_without_retries() -
             )]),
         };
         let calls = AtomicUsize::new(0);
-        let result = config
-            .install_with(ToolRegistry::default(), McpClientLimits::default(), |_| {
+        let installation =
+            config.install_with(ToolRegistry::default(), McpClientLimits::default(), |_| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 Box::pin(std::future::pending())
-            })
-            .await;
+            });
+        let mut installation = std::pin::pin!(installation);
+        assert!(futures::poll!(installation.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_micros(500)).await;
+        assert!(
+            futures::poll!(installation.as_mut()).is_pending(),
+            "a hung server must retain its configured startup allowance"
+        );
+        tokio::time::advance(Duration::from_millis(2)).await;
+        let std::task::Poll::Ready(result) = futures::poll!(installation.as_mut()) else {
+            return Err(Error::Invalid(
+                "a hung server survived its startup deadline".into(),
+            ));
+        };
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         match result {
             Ok(installed) => {
