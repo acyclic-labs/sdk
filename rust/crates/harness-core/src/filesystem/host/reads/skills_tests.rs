@@ -103,7 +103,23 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         4096,
         Some(&io_a),
     );
-    let second = host.read_private_path(
+    tokio::pin!(first);
+    tokio::select! {
+        result = &mut first => panic!("first load completed before its pinned-transaction pause: {result:?}"),
+        _ = at_a => {},
+    }
+    // An already-running reader and a replacement registration must still
+    // share the journal owner and retained source directory.
+    let replacement = NativeSkills::new(
+        home.path().join("replacement"),
+        volume.clone(),
+        volume.clone(),
+        None,
+        Vec::new(),
+    )?;
+    let rebound = host.clone().with_native_skills(replacement)?;
+    let registered = rebound.skill_sources(&volume)?.unwrap();
+    let second = rebound.read_private_path(
         &volume,
         &grant,
         &skills[1].source.path,
@@ -111,16 +127,12 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         4096,
         Some(&io_b),
     );
-    tokio::pin!(first, second);
-    tokio::select! {
-        result = &mut first => panic!("first load completed before its pinned-transaction pause: {result:?}"),
-        _ = at_a => {},
-    }
+    tokio::pin!(second);
     // Poll the other task while the first is paused after pinning HEAD. With
     // serialization it waits for the owner. For the pre-fix negative control,
     // let it pin the same HEAD before allowing either publication to commit.
     assert!(futures::poll!(&mut second).is_pending());
-    if sources.materializer.enter().now_or_never().is_some() {
+    if registered.materializer.enter().now_or_never().is_some() {
         tokio::select! {
             result = &mut second => panic!("second load completed before its pause: {result:?}"),
             _ = at_b => {},

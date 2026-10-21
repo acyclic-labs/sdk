@@ -179,6 +179,7 @@ pub async fn discover_skills(
     discover_skills_at(reader, skills, name, work, None).await
 }
 
+/// Discovers bounded metadata against one immutable checkout generation.
 pub async fn discover_skills_at(
     reader: &dyn ContentResidencyVerifier,
     skills: &[ContextRoot],

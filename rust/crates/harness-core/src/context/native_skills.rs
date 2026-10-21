@@ -3,8 +3,7 @@
 use crate::context::ContextDiscoveryLimits;
 use crate::context::{ContextRoot, PinnedContextPath, SkillMetadata, parse_skill_metadata};
 use crate::conversation::VolumeRef;
-use crate::filesystem::PreparationIo;
-use crate::{Error, OperationId, Result};
+use crate::{Error, Result};
 use acyclic_fs::{
     demand::{
         DemandError, DemandSource, SourceNode, SourceNodeKind, SourceReference,
