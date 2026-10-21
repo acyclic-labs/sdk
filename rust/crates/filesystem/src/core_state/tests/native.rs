@@ -329,46 +329,108 @@ fn context_parent_bootstrap() -> &'static tempfile::TempDir {
     })
 }
 
+async fn context_parent_walk(
+    directory: &Path,
+    native: bool,
+    mut selected: WorkspaceContext,
+    moves: &[u8],
+) {
+    let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
+    let child = WorkspaceContextId::from_bytes([4; 16]);
+    let sibling = WorkspaceContextId::from_bytes([5; 16]);
+    let store = LocalCoreStateStore::open_owned(directory).unwrap();
+    let cancellation = crate::CancellationToken::new();
+    let original = NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
+    let work = original.native_volume_work(finite_budget()).unwrap();
+    for destination in moves {
+        let previous = selected.revision;
+        selected.revision += 1;
+        selected.parent_context_id = parents.get(*destination as usize).copied();
+        if native {
+            let packet = (
+                selected.clone(),
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap(),
+            );
+            assert!(
+                store
+                    .compare_context(child, previous, packet, &work, &cancellation)
+                    .await
+                    .unwrap()
+            );
+        } else {
+            assert!(
+                WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone())
+                    .await
+                    .unwrap()
+            );
+        }
+        assert_parent_buckets(&store, parents, child, sibling, selected.parent_context_id).await;
+    }
+    drop(store);
+    let reopened = LocalCoreStateStore::new(directory);
+    assert_eq!(
+        WorkspaceContextStore::load(&reopened, child).await.unwrap(),
+        Some(selected.clone())
+    );
+    assert_parent_buckets(
+        &reopened,
+        parents,
+        child,
+        sibling,
+        selected.parent_context_id,
+    )
+    .await;
+    work.receipt().verify(finite_budget()).unwrap();
+}
+
+static CONTEXT_PARENT_PREFIX_WRITES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn context_parent_prefixes() -> &'static [tempfile::TempDir; 2] {
+    static PREFIXES: std::sync::OnceLock<[tempfile::TempDir; 2]> = std::sync::OnceLock::new();
+    PREFIXES.get_or_init(|| {
+        [false, true].map(|native| {
+            let directory = tempfile::tempdir().unwrap();
+            copy_tree(context_parent_bootstrap().path(), directory.path());
+            let child = WorkspaceContextId::from_bytes([4; 16]);
+            let parent = WorkspaceContextId::from_bytes([1; 16]);
+            let mut selected = context(child, Some(parent), directory.path());
+            selected.roots.clear();
+            // Qualify the fixed path once through each API, including its cold reopen.
+            futures::executor::block_on(context_parent_walk(
+                directory.path(),
+                native,
+                selected,
+                &[1, 3, 2, 0],
+            ));
+            CONTEXT_PARENT_PREFIX_WRITES.fetch_add(4, std::sync::atomic::Ordering::SeqCst);
+            directory
+        })
+    })
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]
     #[test]
-        fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
-            let bootstrap = context_parent_bootstrap();
-            assert_eq!(CONTEXT_PARENT_BOOTSTRAP_WRITES.load(std::sync::atomic::Ordering::SeqCst), 5,
-                "the immutable context seed must be committed once for the entire property");
-            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            runtime.block_on(async {
-                for native in [false, true] {
-                    let directory = tempfile::tempdir().unwrap();
-                    copy_tree(bootstrap.path(), directory.path());
-                    let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
-                    let child = WorkspaceContextId::from_bytes([4; 16]);
-                    let sibling = WorkspaceContextId::from_bytes([5; 16]);
-                    let store = LocalCoreStateStore::open_owned(directory.path()).unwrap();
-                    let mut selected = context(child, Some(parents[0]), directory.path());
-                    selected.roots.clear();
-                    let cancellation = crate::CancellationToken::new();
-                    let original = NativeMaterializationWork::new(finite_budget(), &cancellation).unwrap();
-                    let work = original.native_volume_work(finite_budget()).unwrap();
-                    for destination in [1_u8, 3, 2, 0].iter().chain(moves.iter()) {
-                        let previous = selected.revision;
-                        selected.revision += 1;
-                        selected.parent_context_id = parents.get(*destination as usize).copied();
-                        if native {
-                            let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap());
-                            assert!(store.compare_context(child, previous, packet, &work, &cancellation,
-                            ).await.unwrap());
-                        } else {
-                            assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.unwrap());
-                        }
-                        assert_parent_buckets(&store, parents, child, sibling, selected.parent_context_id).await;
-                    }
-                    drop(store);
-                    let reopened = LocalCoreStateStore::new(directory.path());
-                    assert_eq!(WorkspaceContextStore::load(&reopened, child).await.unwrap(), Some(selected.clone()));
-                    assert_parent_buckets(&reopened, parents, child, sibling, selected.parent_context_id).await;
-                    work.receipt().verify(finite_budget()).unwrap();
-                }
-            });
-        }
+    fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
+        let prefixes = context_parent_prefixes();
+        assert_eq!(CONTEXT_PARENT_BOOTSTRAP_WRITES.load(std::sync::atomic::Ordering::SeqCst), 5,
+            "the immutable context seed must be committed once for the entire property");
+        assert_eq!(CONTEXT_PARENT_PREFIX_WRITES.load(std::sync::atomic::Ordering::SeqCst), 8,
+            "the fixed context path must be qualified once through each API");
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            for (native, prefix) in [false, true].into_iter().zip(prefixes) {
+                let directory = tempfile::tempdir().unwrap();
+                copy_tree(prefix.path(), directory.path());
+                let child = WorkspaceContextId::from_bytes([4; 16]);
+                let parent = WorkspaceContextId::from_bytes([1; 16]);
+                let mut selected = context(child, Some(parent), directory.path());
+                selected.roots.clear();
+                // Every generated walk starts at the same state and revision as before.
+                selected.revision = 5;
+                context_parent_walk(directory.path(), native, selected, &moves).await;
+            }
+        });
+    }
 }
