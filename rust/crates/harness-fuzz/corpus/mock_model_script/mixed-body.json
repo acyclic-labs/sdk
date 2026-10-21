@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":"old"},{"role":"user","content":[{"type":"tool_result","tool_use_id":"a","content":"{\"file\":\"a\"}"},{"type":"text","text":"current"},{"type":"tool_result","tool_use_id":"b","content":"{\"file\":\"b\"}"}]}]}

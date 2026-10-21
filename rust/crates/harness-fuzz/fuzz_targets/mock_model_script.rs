@@ -1,7 +1,20 @@
 #![no_main]
-use harness_mock_model::{Engine, Script, bind_result, events};
+use harness_mock_model::{Engine, Script, Step, bind_result, events, last_content};
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
+    if let Ok(body) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        let _ = last_content(&body, false);
+        let result = last_content(&body, true);
+        let step: Step = serde_json::from_value(serde_json::json!({"tools":[{"id":"one","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();
+        let bound = bind_result(&step, &body);
+        let file = serde_json::from_str::<serde_json::Value>(&result)
+            .ok()
+            .and_then(|value| value.get("file").cloned());
+        assert_eq!(bound.is_ok(), file.is_some());
+        if let (Ok(bound), Some(file)) = (bound, file) {
+            assert_eq!(bound.tools[0].arguments["file"], file);
+        }
+    }
     let Ok(script) = serde_json::from_slice::<Script>(bytes) else {
         return;
     };
