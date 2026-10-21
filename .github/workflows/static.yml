@@ -34,6 +34,8 @@ jobs:
         run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
       - name: Verify the local cloud fixture's guards and verdict
         run: node --test scripts/local-cloud.test.mjs
+      - name: Verify live host acceptance links the login it names
+        run: node --test plugin/tests/hosts/login-link.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
   aarch64:

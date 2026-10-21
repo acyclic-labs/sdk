@@ -376,6 +376,7 @@ case "$lane" in
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
+    node --test plugin/tests/hosts/login-link.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
