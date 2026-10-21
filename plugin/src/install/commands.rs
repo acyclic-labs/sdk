@@ -153,6 +153,9 @@ pub(crate) async fn drain_service(
     Err("Acyclic service did not drain; durable state and executable were preserved".to_owned())
 }
 
+/// What is running now, from one probe of the endpoint: a running service
+/// always has a listening (or busy) instance, so no answer means none runs.
+/// Retrying would only wait out a service that is not being started.
 pub(crate) async fn service_status(data: &Path) -> Result<Value, String> {
     let marker_identity = ServiceMarker::read(data).map(|marker| marker.instance_id);
     let ping = ControlRequest {
@@ -163,7 +166,7 @@ pub(crate) async fn service_status(data: &Path) -> Result<Value, String> {
         name: String::new(),
         arguments: Value::Null,
     };
-    let reachable_identity = match send_control_request(data, &ping).await {
+    let reachable_identity = match send_control_request_once(data, &ping).await {
         Ok(response) => Some(
             response
                 .get("instanceId")
