@@ -371,13 +371,15 @@ where
                 rebase,
                 tracked_paths,
             } => {
-                self.join(
+                // The join is the deepest facade action; its state lives on
+                // the heap so it never sizes every other command's future.
+                Box::pin(self.join(
                     operation_id,
                     *target_tree,
                     *source_workspace,
                     *rebase,
                     tracked_paths,
-                )
+                ))
                 .await
             }
             GitFilesystemAction::ApplyCommit {

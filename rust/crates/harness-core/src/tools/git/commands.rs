@@ -1,13 +1,28 @@
 use super::*;
 
 /// Whether a command needs an exact working tree.
+///
+/// A join is one: an unresolved host file reads as absent, so a branch that
+/// changed it would replace whatever the host holds now, unseen. Exact, the
+/// target binds the host file under the same source-derived identity the
+/// branch did, and the join compares the two against their pinned base.
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
-    matches!(
-        argv.first().map(String::as_str),
-        Some(
-            "commit" | "status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore"
-        )
-    )
+    match argv {
+        [command, branch] if command == "merge" || command == "rebase" => !branch.starts_with('-'),
+        _ => matches!(
+            argv.first().map(String::as_str),
+            Some(
+                "commit"
+                    | "status"
+                    | "diff"
+                    | "blame"
+                    | "grep"
+                    | "clean"
+                    | "archive"
+                    | "check-ignore"
+            )
+        ),
+    }
 }
 
 /// Whether a command resolves an outstanding transition.

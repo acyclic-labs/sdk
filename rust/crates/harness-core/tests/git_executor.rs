@@ -1217,3 +1217,78 @@ async fn agent_merge_takes_an_unmaterialized_host_file_base_from_the_fork_cut() 
     }
     Ok(())
 }
+
+/// The fork cut leaves an unobserved host file live, so the host as it is at
+/// merge time is not the content the child started from. Here the child
+/// edits the file, and then the parent edits the host file in place. Reading
+/// today's host as the base would make the parent look unchanged, and an
+/// unresolved parent file would read as absent; either way the child's
+/// version would silently replace the parent's edit. Only the child's pinned
+/// observation could supply the base, and it no longer matches the host, so
+/// the merge must stop on the conflict with the parent's edit intact, whether
+/// or not the parent materialized the file first.
+#[tokio::test]
+async fn agent_merge_never_takes_a_base_from_a_host_file_edited_after_the_child_read_it()
+-> Result<()> {
+    for materialized in [true, false] {
+        let (_temp, root, fs, store, main) = fixture().await?;
+        std::fs::write(
+            root.join("calc.txt"),
+            b"one
+two
+three
+",
+        )?;
+        write_text(
+            &main,
+            "/parent.txt",
+            b"BASE
+",
+        )
+        .await?;
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace())
+            .await?;
+        let repo = main.workspace().id();
+        let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+        let child = child.ok_or("missing child view")?;
+        write_text(
+            &child,
+            "/calc.txt",
+            b"one
+two
+THREE
+",
+        )
+        .await?;
+        run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+        // The parent edits the host file itself, never through its view.
+        std::fs::write(
+            root.join("calc.txt"),
+            b"PARENT ONE
+two
+three
+",
+        )?;
+        if materialized {
+            run(&fs, &store, &main, repo, &["status"]).await?;
+        }
+        let merged = run(&fs, &store, &main, repo, &["merge", "agents/kid"]).await;
+        assert!(
+            matches!(&merged, Err(error) if error.to_string().contains("conflict")),
+            "materialized={materialized}: the child's version replaced an unrecoverable base: {:?}",
+            merged.map(|(output, _)| output)
+        );
+        let stop = CancellationToken::new();
+        let mut work = WorkBudget::UNBOUNDED.accounting(&stop);
+        assert_eq!(
+            main.read("/calc.txt", 64, &mut work).await?.bytes.as_ref(),
+            b"PARENT ONE
+two
+three
+",
+            "materialized={materialized}"
+        );
+    }
+    Ok(())
+}

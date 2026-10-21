@@ -267,9 +267,12 @@ where
     /// identity. When both sides of a fork materialize a file the cut never
     /// bound, the cut's authored generation reads them as two additions of one
     /// identity, so an edit on one side conflicts with the unchanged copy on
-    /// the other. Their true base is the cut's content. Only those identities
-    /// are materialized: a file one side never materialized is unresolved
-    /// there, not deleted, and must keep its absent base. The cut of either
+    /// the other. Their true base is the content the forked side observed,
+    /// readable only while the source still holds that version; once the
+    /// host changed, nothing pins it and the conflict stands. Only those
+    /// identities are materialized: a file one side never materialized is
+    /// unresolved there, not deleted, and must keep its absent base. The cut
+    /// of either
     /// side's fork counts, so a parent merging its child and a child merging
     /// its parent agree.
     async fn exact_base(
@@ -326,28 +329,11 @@ where
                 .open_related(self.workspace(cut.workspace_id).await?, &mut accounting)
                 .await
                 .map_err(Error::from)?;
-            // One scratch fork per cut and path set, so its batch keys are
-            // never reused for different promotions.
-            let mut hash = blake3::Hasher::new();
-            hash.update(b"acyclic.git.join-exact-base/v1\0");
-            hash.update(&cut.id.into_bytes());
-            for path in &paths {
-                hash.update(&(path.len() as u64).to_le_bytes());
-                hash.update(path.as_bytes());
-            }
-            let hash = hash.finalize();
-            let mut key = [0; 16];
-            key.copy_from_slice(&hash.as_bytes()[..16]);
+            // The forked side's own observations pin the base; without them
+            // the live source would stand in for content it no longer has.
             return owner
-                .exactify_cut(
-                    cut,
-                    &format!("git-base-{}", hex::encode(&hash.as_bytes()[..12])),
-                    IdempotencyKey::from_bytes(key),
-                    &paths,
-                    &mut accounting,
-                )
+                .exactify_cut(cut, &paths, &lazy, &mut accounting)
                 .await
-                .map(Some)
                 .map_err(Error::from);
         }
         Ok(None)
