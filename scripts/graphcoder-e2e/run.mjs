@@ -16,7 +16,7 @@ import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { Processes, Events } from "./process.mjs";
 import { pty } from "./pty.mjs";
-import { requests, subset } from "./assertions.mjs";
+import { requests, subset, recordedRequests } from "./assertions.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -177,7 +177,7 @@ try {
 }
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
-const allRecords = readFileSync(join(output, "requests.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
 results = results.map(result => verify(result, allRecords));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, limit_seconds: 10, results, output, roots };

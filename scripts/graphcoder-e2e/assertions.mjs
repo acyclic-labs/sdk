@@ -1,5 +1,22 @@
 import assert from "node:assert/strict";
 
+// A request notification is the mock's commit boundary: append and flush precede
+// it, and the HTTP reply follows it. Killing the server can leave an unpublished
+// tail, but cannot truncate an acknowledged record. Case assertions still require
+// every expected generation and step, so interrupted conversations fail normally.
+export function recordedRequests(text, events) {
+  const acknowledged = events.filter(event => event.event === "request");
+  const lines = text.split("\n");
+  assert.ok(lines.length > acknowledged.length, "acknowledged request lacks a complete JSONL record");
+  return acknowledged.map((event, index) => {
+    const record = JSON.parse(lines[index]);
+    assert.equal(record.sequence, event.sequence, "request notification sequence");
+    assert.equal(record.case, event.case, "request notification namespace");
+    assert.equal(record.step, event.step, "request notification step");
+    return record;
+  });
+}
+
 export function subset(actual, expected) {
   if (Array.isArray(expected)) return Array.isArray(actual) && expected.length === actual.length && expected.every((value, index) => subset(actual[index], value));
   if (expected && typeof expected === "object") return actual !== null && typeof actual === "object" && Object.entries(expected).every(([key, value]) => Object.hasOwn(actual, key) && subset(actual[key], value));
