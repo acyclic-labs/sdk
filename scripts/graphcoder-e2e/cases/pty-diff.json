@@ -65,23 +65,16 @@
     {
       "actions": [
         {
-          "prompt": "/diff ",
           "when": {
+            "cursor": true,
             "contains": [
               "GraphCoder",
-              "DONE_EDIT"
-            ],
-            "cursor": true
-          }
-        },
-        {
-          "send": "\u0004",
-          "when": {
-            "contains": [
+              "DONE_EDIT",
               "diff.txt (added) +1 -0",
               "+DIFF_E2E_CONTENT"
             ]
-          }
+          },
+          "send": "\u0004"
         }
       ],
       "resume": true,

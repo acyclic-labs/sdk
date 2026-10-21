@@ -3,7 +3,7 @@
   "workspace": {
     "kind": "plain",
     "files": {
-      "diff.txt": "DIFF_E2E_BEFORE\n"
+      "d.txt": "DIFF_E2E_BEFORE\n"
     }
   },
   "model": {
@@ -15,10 +15,10 @@
             "id": "change",
             "name": "write",
             "arguments": {
-              "path": "diff.txt",
+              "path": "d.txt",
               "text": "DIFF_E2E_CONTENT\n",
               "media_type": "text/plain",
-              "display_name": "diff.txt"
+              "display_name": "d.txt"
             }
           }
         ]
@@ -56,7 +56,7 @@
         {
           "when": {
             "contains": [
-              "diff.txt (modified) +1 -1",
+              "d.txt (modified) +1 -1",
               "-DIFF_E2E_BEFORE",
               "+DIFF_E2E_CONTENT"
             ]
@@ -69,7 +69,7 @@
   "assert": {
     "requests": 2,
     "files": {
-      "diff.txt": "DIFF_E2E_CONTENT\n"
+      "d.txt": "DIFF_E2E_CONTENT\n"
     }
   }
 }
