@@ -449,7 +449,8 @@ async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolve
 /// Names below the checkout's `.volumes/`; an absent or empty directory is not
 /// visible to `git status`, while a mount registry or projection is.
 /// Volume entries left in the checkout, other than the checkout's own
-/// incarnation record, which persists by design and must hold only its token.
+/// incarnation record, which persists by design and must hold only its token
+/// and the rule that keeps that token out of Git.
 fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
     let incarnation = Path::new(crate::local::workspace::volumes::INCARNATION_PATH);
     let owned = incarnation
@@ -472,7 +473,7 @@ fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
             residue.push(name);
             continue;
         }
-        let record = std::fs::read_dir(workspace.join(incarnation))
+        let mut record = std::fs::read_dir(workspace.join(incarnation))
             .map_err(super::super::storage)?
             .map(|entry| {
                 Ok(entry
@@ -482,7 +483,8 @@ fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
                     .into_owned())
             })
             .collect::<Result<Vec<_>>>()?;
-        if record != ["token"] {
+        record.sort();
+        if record != [".gitignore", "token"] {
             residue.push(format!("{name}/{}", record.join(",")));
         }
     }

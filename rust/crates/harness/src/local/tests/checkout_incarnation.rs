@@ -492,3 +492,50 @@ async fn incarnation_controls_never_enter_initial_or_watched_capture() -> Result
     );
     harness.close().await
 }
+
+fn git_output(root: &std::path::Path, arguments: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(arguments)
+        .current_dir(root)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("HOME", root)
+        .output()
+        .expect("git runs");
+    assert!(output.status.success(), "{output:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The checkout's own .gitignore files outrank info/exclude, so a negation
+/// there re-includes a token that only info/exclude ignores. The incarnation
+/// directory's own .gitignore outranks them all.
+#[tokio::test]
+async fn checkout_gitignore_negations_cannot_reveal_the_incarnation_token() -> Result<()> {
+    let workspace = tempfile::tempdir().map_err(super::super::storage)?;
+    let root = workspace.path();
+    git_output(root, &["init", "-q"]);
+    std::fs::write(
+        root.join(".gitignore"),
+        "!.volumes/\n!/.volumes/.incarnation/\n!/.volumes/.incarnation/**\n",
+    )
+    .map_err(super::super::storage)?;
+    let checkout = Checkout::capture(root)?;
+    let status = || git_output(root, &["status", "--porcelain", "--untracked-files=all"]);
+    assert!(!status().contains(".incarnation"), "{}", status());
+    git_output(root, &["add", "-A"]);
+    assert!(!git_output(root, &["ls-files", "--cached"]).contains(".incarnation"));
+    git_output(root, &["reset", "-q"]);
+
+    // Negative control: without the directory's own rule, info/exclude
+    // alone is overridden and the token is visible.
+    let ignore = root.join(".volumes/.incarnation/.gitignore");
+    std::fs::remove_file(&ignore).map_err(super::super::storage)?;
+    assert!(status().contains(".incarnation/token"), "{}", status());
+
+    // Reopening restores the rule; a rule altered in place is refused.
+    drop(checkout);
+    Checkout::capture(root)?;
+    assert!(!status().contains(".incarnation"), "{}", status());
+    std::fs::write(&ignore, "x\n").map_err(super::super::storage)?;
+    assert!(matches!(Checkout::capture(root), Err(Error::Invalid(_))));
+    Ok(())
+}

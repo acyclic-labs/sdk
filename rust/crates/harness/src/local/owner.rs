@@ -177,6 +177,10 @@ impl Checkout {
     }
 }
 
+/// Ignores every entry of the incarnation directory, itself included.
+#[cfg(feature = "native-execution")]
+const INCARNATION_IGNORE: &[u8; 2] = b"*\n";
+
 /// The checkout's incarnation token: 128 random bits published once in the
 /// held root, exclusively and atomically. A checkout cloned again, even at a
 /// recycled object id, has no token and publishes a new one.
@@ -188,17 +192,30 @@ fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
     if let Some(exclusion) = exclusion {
         exclusion.publish()?;
     }
-    super::workspace::volumes::held_directories(
+    let incarnation = super::workspace::volumes::held_directories(
         root,
         Path::new(super::workspace::volumes::INCARNATION_PATH),
-    )?
-    .read_or_publish(Path::new("token"), || {
-        let mut candidate = [0; 16];
-        crate::identity::fill_random(&mut candidate)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        Ok(candidate)
-    })
-    .map_err(storage)
+    )?;
+    // Git applies a directory's own .gitignore over every outer rule for the
+    // entries in it, so no negation in the checkout's .gitignore files, which
+    // outrank info/exclude, can bring the token back. Published before the
+    // token, so a token is never visible to Git without it.
+    let ignored = incarnation
+        .read_or_publish(Path::new(".gitignore"), || Ok(*INCARNATION_IGNORE))
+        .map_err(storage)?;
+    if &ignored != INCARNATION_IGNORE {
+        return Err(Error::Invalid(
+            "checkout incarnation .gitignore no longer ignores its token".into(),
+        ));
+    }
+    incarnation
+        .read_or_publish(Path::new("token"), || {
+            let mut candidate = [0; 16];
+            crate::identity::fill_random(&mut candidate)
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            Ok(candidate)
+        })
+        .map_err(storage)
 }
 
 /// The token locates state across capability changes. Physical root evidence is
