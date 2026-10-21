@@ -10,7 +10,7 @@ proptest! {
         let mut parts: Vec<_> = files.iter().map(|file| json!({"type":"tool_result","tool_use_id":file,"content":json!({"file":file}).to_string()})).collect();
         parts.insert(1,json!({"type":"text","text":text}));
         let body = json!({"messages":[{"role":"user","content":"old"},{"role":"user","content":parts}]});
-        prop_assert_eq!(last_content(&body,false),text);
+        prop_assert_eq!(last_content(&body,false),text.as_str());
         let result = last_content(&body,true);
         prop_assert_eq!(serde_json::from_str::<serde_json::Value>(&result).unwrap(),json!({"file":files.last().unwrap()}));
         let bound = bind_result(&step,&body).unwrap();
