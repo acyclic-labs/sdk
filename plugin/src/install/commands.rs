@@ -14,9 +14,7 @@ pub(crate) fn install_command(arguments: &[String]) -> Result<(), String> {
             ("opencode", "opencode"),
             ("pi", "pi"),
         ] {
-            if executable_on_path(binary)
-                || cfg!(windows) && binary == "pi" && executable_on_path("pi.cmd")
-            {
+            if executable_on_path(binary) {
                 install_host(target, false)?;
                 installed += 1;
             }

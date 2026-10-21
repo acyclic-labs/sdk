@@ -138,7 +138,7 @@ pub(crate) fn install_codex_plugin() -> Result<(), String> {
 
 pub(crate) fn run_codex(arguments: &[&str]) -> Result<(), String> {
     let status = acyclic_native_runtime::process_status(
-        std::process::Command::new("codex").args(arguments),
+        host_command("codex")?.args(arguments),
         std::time::Duration::from_secs(120),
     )
     .map_err(|error| format!("cannot run Codex plugin manager: {error}"))?;

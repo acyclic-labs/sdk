@@ -52,11 +52,37 @@ pub(crate) fn write_codex_ownership(
     .map_err(display)
 }
 
+pub(crate) fn codex_home() -> Result<PathBuf, String> {
+    match env::var_os("CODEX_HOME") {
+        Some(home) => Ok(PathBuf::from(home)),
+        None => Ok(home_directory()?.join(".codex")),
+    }
+}
+
 pub(crate) fn codex_config_path() -> Result<PathBuf, String> {
-    Ok(env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .unwrap_or(home_directory()?.join(".codex"))
-        .join("config.toml"))
+    Ok(codex_home()?.join("config.toml"))
+}
+
+/// Codex runs an installed plugin, hooks and executable included, from its
+/// own copy of the marketplace's plugin directory.
+pub(crate) fn codex_plugin_cache_root(codex_home: &Path) -> PathBuf {
+    codex_home
+        .join("plugins")
+        .join("cache")
+        .join("acyclic")
+        .join("acyclic")
+        .join(env!("CARGO_PKG_VERSION"))
+}
+
+/// Whether `running_root` is the owned marketplace's plugin or Codex's copy
+/// of it, the two places an installed Acyclic executable runs from.
+pub(crate) fn runs_owned_codex_plugin(
+    ownership: &CodexPluginOwnership,
+    running_root: &Path,
+    codex_home: &Path,
+) -> bool {
+    same_existing_path(running_root, &ownership.marketplace_root)
+        || same_existing_path(running_root, &codex_plugin_cache_root(codex_home))
 }
 
 pub(crate) fn codex_plugin_configuration_matches(

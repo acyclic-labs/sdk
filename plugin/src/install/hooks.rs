@@ -151,10 +151,8 @@ pub(crate) fn uninstall_host(host: &str) -> Result<(), String> {
         return Ok(());
     }
     if host == "claude-code" {
-        let user = home_directory()?.join(".claude/settings.json");
-        let project = env::current_dir()
-            .map_err(display)?
-            .join(".claude/settings.json");
+        let user = claude_settings_path(false)?;
+        let project = claude_settings_path(true)?;
         let same_settings = same_existing_path(&user, &project);
         remove_claude_hooks(false)?;
         if !same_settings {
@@ -219,13 +217,7 @@ pub(crate) fn remove_copilot_hooks_at(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn install_claude_hooks(executable: &Path, project: bool) -> Result<PathBuf, String> {
-    let path = if project {
-        env::current_dir()
-            .map_err(display)?
-            .join(".claude/settings.json")
-    } else {
-        home_directory()?.join(".claude/settings.json")
-    };
+    let path = claude_settings_path(project)?;
     install_owned_json_normalized(
         &path,
         "claude-hooks",
@@ -370,14 +362,36 @@ pub(crate) fn claude_hook_timeout(event: &str) -> u64 {
 }
 
 pub(crate) fn remove_claude_hooks(project: bool) -> Result<(), String> {
-    let path = if project {
-        env::current_dir()
+    remove_owned_json(
+        &claude_settings_path(project)?,
+        "claude-hooks",
+        "Claude Code hooks",
+    )
+}
+
+/// The settings file Claude Code reads for the selected scope. User settings
+/// live in `CLAUDE_CONFIG_DIR` when it is set, exactly where Claude Code
+/// itself looks, and in `~/.claude` otherwise.
+pub(crate) fn claude_settings_path(project: bool) -> Result<PathBuf, String> {
+    if project {
+        return Ok(env::current_dir()
             .map_err(display)?
-            .join(".claude/settings.json")
-    } else {
-        home_directory()?.join(".claude/settings.json")
-    };
-    remove_owned_json(&path, "claude-hooks", "Claude Code hooks")
+            .join(".claude/settings.json"));
+    }
+    match env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(directory) if !directory.is_empty() => {
+            Ok(claude_user_settings(Some(Path::new(&directory)), Path::new("")))
+        }
+        _ => Ok(claude_user_settings(None, &home_directory()?)),
+    }
+}
+
+/// Claude Code's user settings file for an optional `CLAUDE_CONFIG_DIR`.
+pub(crate) fn claude_user_settings(config_directory: Option<&Path>, home: &Path) -> PathBuf {
+    config_directory.map_or_else(
+        || home.join(".claude").join("settings.json"),
+        |directory| directory.join("settings.json"),
+    )
 }
 
 pub(crate) fn install_copilot_hooks(executable: &Path) -> Result<PathBuf, String> {

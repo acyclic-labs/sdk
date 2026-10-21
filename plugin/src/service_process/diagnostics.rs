@@ -124,7 +124,7 @@ pub(crate) fn valid_platform_receipt(receipt: &Value, executable_blake3: &str) -
 
 pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
     let output = acyclic_native_runtime::process_output(
-        std::process::Command::new("codex").args(arguments),
+        host_command("codex")?.args(arguments),
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
     )
@@ -237,16 +237,15 @@ pub(crate) fn doctor_report(
                 marketplace.display().to_string(),
             ));
             let ownership = read_codex_ownership(&codex_ownership_path()).ok().flatten();
+            // A service Codex started runs from Codex's copy of the plugin,
+            // so the installation is judged by the owned marketplace.
             let configured_owned = ownership.as_ref().is_some_and(|ownership| {
                 ownership.version == 1
-                    && ownership
-                        .marketplace_root
-                        .canonicalize()
-                        .ok()
-                        .zip(root.canonicalize().ok())
-                        .is_some_and(|(configured, packaged)| configured == packaged)
+                    && codex_home().is_ok_and(|codex_home| {
+                        runs_owned_codex_plugin(ownership, root, &codex_home)
+                    })
                     && plan_codex_config(ownership).is_ok()
-                    && codex_plugin_configuration_matches(ownership, root)
+                    && codex_plugin_configuration_matches(ownership, &ownership.marketplace_root)
             });
             checks.push(doctor_check(
                 "codex-install",

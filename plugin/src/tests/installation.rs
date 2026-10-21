@@ -90,3 +90,63 @@ fn shared_hooks_restore_foreign_entries_and_preserve_edits() {
         assert_eq!(read_optional_json(&path, "hooks").unwrap(), Some(prior));
     }
 }
+
+#[test]
+fn claude_user_settings_follow_the_configuration_directory_claude_reads() {
+    let home = Path::new("home");
+    assert_eq!(
+        claude_user_settings(None, home),
+        home.join(".claude").join("settings.json")
+    );
+    let configured = Path::new("configured");
+    assert_eq!(
+        claude_user_settings(Some(configured), home),
+        configured.join("settings.json")
+    );
+}
+
+#[test]
+fn host_commands_resolve_package_manager_launchers_through_pathext() {
+    let fixture = Fixture::new();
+    let first = fixture.data.join("first");
+    let second = fixture.data.join("second");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    fs::write(second.join("codex.cmd"), "").unwrap();
+    fs::write(second.join("codex"), "").unwrap();
+    let directories = || [first.clone(), second.clone()];
+    assert_eq!(
+        executable_in(directories(), "codex", Some(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))),
+        Some(second.join("codex.cmd"))
+    );
+    assert_eq!(executable_in(directories(), "codex", None), Some(second.join("codex")));
+    fs::write(first.join("codex.exe"), "").unwrap();
+    assert_eq!(
+        executable_in(directories(), "codex", Some(std::ffi::OsStr::new(".EXE;.CMD"))),
+        Some(first.join("codex.exe"))
+    );
+    assert_eq!(executable_in(directories(), "claude", Some(std::ffi::OsStr::new(".EXE"))), None);
+}
+
+#[test]
+fn codex_installations_run_from_the_marketplace_or_codexs_plugin_copy() {
+    let fixture = Fixture::new();
+    let marketplace = fixture.data.join("package").join("plugin");
+    let codex_home = fixture.data.join("codex");
+    let copy = codex_plugin_cache_root(&codex_home);
+    let foreign = fixture.data.join("other").join("plugin");
+    for root in [&marketplace, &copy, &foreign] {
+        fs::create_dir_all(root).unwrap();
+    }
+    let ownership = CodexPluginOwnership {
+        version: 1,
+        marketplace_root: marketplace.clone(),
+        added_marketplace: true,
+        plugin_was_installed: false,
+        config_path: None,
+        prior_default_permissions: None,
+    };
+    assert!(runs_owned_codex_plugin(&ownership, &marketplace, &codex_home));
+    assert!(runs_owned_codex_plugin(&ownership, &copy, &codex_home));
+    assert!(!runs_owned_codex_plugin(&ownership, &foreign, &codex_home));
+}

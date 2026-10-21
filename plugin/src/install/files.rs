@@ -77,12 +77,55 @@ pub(crate) fn write_text_with_backup(path: &Path, value: &str) -> Result<(), Str
 }
 
 pub(crate) fn executable_on_path(name: &str) -> bool {
-    env::var_os("PATH").is_some_and(|paths| {
-        env::split_paths(&paths).any(|directory| {
-            directory.join(name).is_file()
-                || cfg!(windows) && directory.join(format!("{name}.exe")).is_file()
+    find_executable(name).is_some()
+}
+
+/// The command a shell would run for `name`: the first `PATH` directory
+/// holding it, trying each `PATHEXT` extension on Windows. Package managers
+/// install host CLIs there as `.cmd` launchers (npm's `codex.cmd`), which a
+/// bare `Command::new(name)` never finds because it only appends `.exe`.
+pub(crate) fn find_executable(name: &str) -> Option<PathBuf> {
+    let paths = env::var_os("PATH")?;
+    let extensions = env::var_os("PATHEXT");
+    executable_in(
+        env::split_paths(&paths),
+        name,
+        cfg!(windows).then(|| extensions.as_deref().unwrap_or(std::ffi::OsStr::new(".COM;.EXE;.BAT;.CMD"))),
+    )
+}
+
+pub(crate) fn executable_in(
+    directories: impl IntoIterator<Item = PathBuf>,
+    name: &str,
+    extensions: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let extensions: Vec<String> = extensions.map_or_else(Vec::new, |extensions| {
+        extensions
+            .to_string_lossy()
+            .split(';')
+            .filter(|extension| extension.starts_with('.'))
+            // Windows matches names without regard to case; package managers
+            // write their launchers in lower case.
+            .map(str::to_ascii_lowercase)
+            .collect()
+    });
+    directories.into_iter().find_map(|directory| {
+        if extensions.is_empty() {
+            let candidate = directory.join(name);
+            return candidate.is_file().then_some(candidate);
+        }
+        extensions.iter().find_map(|extension| {
+            let candidate = directory.join(format!("{name}{extension}"));
+            candidate.is_file().then_some(candidate)
         })
     })
+}
+
+/// A command for the host CLI `name` as installed on `PATH`.
+pub(crate) fn host_command(name: &str) -> Result<std::process::Command, String> {
+    find_executable(name)
+        .map(std::process::Command::new)
+        .ok_or_else(|| format!("cannot find the `{name}` command on PATH"))
 }
 
 pub(crate) fn home_directory() -> Result<PathBuf, String> {
