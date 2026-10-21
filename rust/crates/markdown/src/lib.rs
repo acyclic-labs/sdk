@@ -346,7 +346,16 @@ impl Markdown {
         let base = self.offset;
         let prefix = context_prefix(&self.context);
         let source = format!("{prefix}{}", self.source.get(base..).unwrap_or_default());
-        let events = self.parse_frontier(&source);
+        let (events, calls) = self.parse_frontier(&source);
+        let reusable = calls.as_ref().is_some_and(|calls| {
+            calls.iter().map(|(_, cost)| cost).sum::<usize>()
+                < self
+                    .source
+                    .len()
+                    .max(100_000)
+                    .saturating_sub(self.reference_cost)
+        });
+        let mut attempts = calls.as_deref().unwrap_or_default().iter().peekable();
         self.seal_leading_definitions(base, &source, &events);
         let following_blocks = self.following_blocks(&source, &events);
         let mut out = self.state.checkpoint();
@@ -428,7 +437,20 @@ impl Markdown {
                         events.get(begin..=index).unwrap_or_default(),
                     )
                 {
-                    self.render_cache(&mut cache, &mut out, &mut cost);
+                    if reusable {
+                        let (used, interval) = references::expansion(std::iter::from_fn(|| {
+                            attempts
+                                .peek()
+                                .is_some_and(|(end, _)| *end <= range.end)
+                                .then(|| attempts.next())
+                                .flatten()
+                        }));
+                        cache.cost = used;
+                        cache.budget = interval;
+                        cost = cost.saturating_add(used);
+                    } else {
+                        self.render_cache(&mut cache, &mut out, &mut cost);
+                    }
                     caches.push((range.end, cache));
                 }
                 if stack.is_empty() {
@@ -561,6 +583,8 @@ impl Markdown {
             if !definition_candidate(source.get(range.start..).unwrap_or_default()))
             && leaves.next().is_none();
         self.plain = tail.len() >= 8
+            // A following line can still complete a pending definition title.
+            && self.references.pending.is_empty()
             // An unfinished block marker (for example `1.` on a new line)
             // can still become a list when a space arrives.
             && tail.rsplit('\n').next().is_some_and(|row| !row.trim_start_matches([' ', '\t']).starts_with('<') && row.chars().any(char::is_alphabetic))

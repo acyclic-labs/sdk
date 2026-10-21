@@ -282,6 +282,7 @@ impl Markdown {
     ) {
         let content = source.trim_start_matches([' ', '\t']);
         if possible_definition(content)
+            || !self.references.pending.is_empty()
             || !self.context.is_empty()
             || self.offset != base
             || !paragraph(source, events)

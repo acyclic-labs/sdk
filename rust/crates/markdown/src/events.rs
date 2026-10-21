@@ -4,62 +4,55 @@ use std::ops::Range;
 type OwnedEvents = Vec<(Event<'static>, Range<usize>)>;
 type Charges = Vec<(usize, usize)>;
 
-pub(crate) fn parse(
-    source: &str,
-    references: &crate::References,
-) -> Vec<(Event<'static>, Range<usize>)> {
-    parse_with(source, references, crate::options())
-}
-
-pub(crate) fn parse_with(
-    source: &str,
-    references: &crate::References,
-    options: pulldown_cmark::Options,
-) -> Vec<(Event<'static>, Range<usize>)> {
+fn frontier(source: &str, references: &crate::References) -> (OwnedEvents, Option<Charges>) {
     #[cfg(test)]
     crate::references::PARSED_BYTES.with(|work| work.set(work.get() + source.len()));
+    let mut calls = Vec::new();
     let mut callback = |link: BrokenLink<'_>| {
         references
             .get(&crate::normalize(&link.reference))
-            .map(|(destination, title, _)| (destination.as_ref().into(), title.as_ref().into()))
-    };
-    let events: Vec<_> =
-        Parser::new_with_broken_link_callback(source, options, Some(&mut callback))
-            .into_offset_iter()
-            .map(|(mut event, range)| {
-                if let Event::Start(
-                    Tag::Link {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    }
-                    | Tag::Image {
-                        id,
-                        dest_url,
-                        title,
-                        ..
-                    },
-                ) = &mut event
-                    && !id.is_empty()
-                    && references.get(&crate::normalize(id)).is_some()
-                {
-                    *dest_url = "".into();
-                    *title = "".into();
-                }
-                #[cfg(test)]
-                crate::work::event(&event);
-                (event.into_static(), range)
+            .map(|(destination, title, _)| {
+                calls.push((link.span.end, destination.len() + title.len()));
+                (destination.as_ref().into(), title.as_ref().into())
             })
-            .collect();
-    if events
-        .iter()
-        .any(|(event, _)| matches!(event, Event::Start(Tag::Item)))
-    {
-        paragraphs(source, &events)
-    } else {
-        events
-    }
+    };
+    let parser =
+        Parser::new_with_broken_link_callback(source, crate::options(), Some(&mut callback));
+    let local_definitions = parser.reference_definitions().iter().next().is_some();
+    let events: Vec<_> = parser
+        .into_offset_iter()
+        .map(|(mut event, range)| {
+            if let Event::Start(
+                Tag::Link {
+                    id,
+                    dest_url,
+                    title,
+                    ..
+                }
+                | Tag::Image {
+                    id,
+                    dest_url,
+                    title,
+                    ..
+                },
+            ) = &mut event
+                && !id.is_empty()
+                && references.get(&crate::normalize(id)).is_some()
+            {
+                *dest_url = "".into();
+                *title = "".into();
+            }
+            #[cfg(test)]
+            crate::work::event(&event);
+            (event.into_static(), range)
+        })
+        .collect();
+    let events = paragraphs(source, &events);
+    // Local definitions bypass the callback; a saturated parser budget may
+    // suppress later attempts. Those frontiers still use scoped leaf rendering.
+    let reusable = !local_definitions
+        && calls.iter().map(|(_, cost)| cost).sum::<usize>() < source.len().max(100_000);
+    (events, reusable.then_some(calls))
 }
 
 // Normalized leaf templates contain no definitions. Charge reference expansion
@@ -170,12 +163,12 @@ fn inline(event: &Event<'_>) -> bool {
 }
 
 impl crate::Markdown {
-    pub(super) fn parse_frontier(&mut self, source: &str) -> OwnedEvents {
+    pub(super) fn parse_frontier(&mut self, source: &str) -> (OwnedEvents, Option<Charges>) {
         #[cfg(test)]
         {
             crate::work::copy(source.len());
             self.parsed_bytes += source.len();
         }
-        parse(source, &self.references)
+        frontier(source, &self.references)
     }
 }
