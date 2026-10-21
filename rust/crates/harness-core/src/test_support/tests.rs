@@ -44,6 +44,66 @@ fn request() -> Result<(PreparedModelRequest, ModelDispatch)> {
     Ok((request, dispatch))
 }
 
+#[test]
+fn selected_request_snapshots_do_not_copy_the_recorded_prefix() -> Result<()> {
+    use acyclic_test_support::{AllocationInfo, measure};
+
+    fn recorded(count: usize) -> Result<ScriptedModelProvider> {
+        let provider = ScriptedModelProvider::new(
+            (0..count).map(|_| ScriptedTurn::Text("answer".into())),
+        );
+        for index in 0..count {
+            let (prepared, mut dispatch) = request()?;
+            let mut value = prepared.request().clone();
+            value.messages[1].content = ModelContent::Text(format!("prompt-{index}"));
+            let prepared = PreparedModelRequest::prepare(value, Limits::default(), None)?;
+            dispatch.operation_id = OperationId::from_bytes((index as u128).to_le_bytes());
+            dispatch.request_digest = prepared.request_digest();
+            provider.next(prepared, dispatch)?;
+        }
+        Ok(provider)
+    }
+
+    let small = recorded(1)?;
+    let mut selected = None;
+    let expected = measure(|| selected = small.request(0));
+    assert_eq!(selected.take(), small.requests().pop());
+    for count in [1, 17, 33] {
+        // Independent recordings: the old whole-history snapshot remains the
+        // output/dispatch oracle and the redundant-copy negative control.
+        let baseline = recorded(count)?;
+        let candidate = recorded(count)?;
+        assert_eq!(baseline.dispatches(), candidate.dispatches());
+        let original = baseline.requests();
+        let mut actual_count = 0;
+        assert_eq!(
+            measure(|| actual_count = candidate.request_count()),
+            AllocationInfo::default()
+        );
+        assert_eq!(actual_count, original.len());
+        for (index, request) in original.iter().enumerate() {
+            assert_eq!(candidate.request(index).as_ref(), Some(request));
+        }
+        assert_eq!(candidate.last_request().as_ref(), original.last());
+        assert_eq!(candidate.request(count), None);
+        let actual = measure(|| selected = candidate.request(0));
+        assert_eq!(actual, expected);
+        assert_eq!(selected.take().as_ref(), original.first());
+        let mut previous_count = 0;
+        let copied = measure(|| previous_count = baseline.requests().len());
+        assert_eq!(previous_count, count);
+        assert_ne!(copied, AllocationInfo::default());
+        assert!(copied.count_total > actual.count_total);
+        assert!(copied.bytes_total > actual.bytes_total);
+        eprintln!("request prefix={count}: selected={actual:?}, whole-history={copied:?}");
+    }
+    let empty = recorded(0)?;
+    assert_eq!(empty.request_count(), 0);
+    assert_eq!(empty.request(0), None);
+    assert_eq!(empty.last_request(), None);
+    Ok(())
+}
+
 #[tokio::test]
 async fn text_replay_records_exact_request_and_exhausts() -> Result<()> {
     let provider = ScriptedModelProvider::new([ScriptedTurn::Text("answer".into())]);

@@ -150,7 +150,7 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
         b"child"
     );
-    assert_eq!(first.requests().len(), 5);
+    assert_eq!(first.request_count(), 5);
     drop(harness);
 
     let resumed = commands(&[
@@ -171,7 +171,7 @@ async fn reopen_selects_the_persisted_branch_before_capture_and_can_checkout_mai
         std::fs::read(directory.path().join("note.txt")).map_err(super::super::storage)?,
         b"main"
     );
-    assert_eq!(resumed.requests().len(), 5);
+    assert_eq!(resumed.request_count(), 5);
     Ok(())
 }
 
@@ -328,7 +328,7 @@ async fn echo_reuses_the_lazy_checkout_without_reading_untouched_files() -> Resu
         after, before,
         "read-only shell commands authored the lazy source tree"
     );
-    assert_eq!(provider.requests().len(), 4);
+    assert_eq!(provider.request_count(), 4);
     assert!(
         !directory.path().join(".git").exists(),
         "watch fencing changed the checkout"

@@ -196,6 +196,21 @@ impl ScriptedModelProvider {
             .collect()
     }
 
+    /// Counts recorded requests without copying their messages and tool schemas.
+    pub fn request_count(&self) -> usize {
+        self.lock().requests.len()
+    }
+
+    /// Snapshots one complete request without copying the rest of its history.
+    pub fn request(&self, index: usize) -> Option<ModelRequest> {
+        self.lock().requests.get(index).map(|r| r.request().clone())
+    }
+
+    /// Snapshots the last complete request without copying earlier requests.
+    pub fn last_request(&self) -> Option<ModelRequest> {
+        self.lock().requests.last().map(|r| r.request().clone())
+    }
+
     /// Snapshots dispatch identities in the same order as the recorded requests.
     pub fn dispatches(&self) -> Vec<ModelDispatch> {
         self.lock().dispatches.clone()

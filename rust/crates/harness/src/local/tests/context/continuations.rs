@@ -45,7 +45,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     };
     let harness = LocalHarness::open(config()?).await?;
     assert_eq!(harness.signed.agent(), bootstrap.agent);
-    assert!(provider.requests().is_empty());
+    assert!(provider.request_count() == 0);
     let first = OperationId::new();
     let parent = admitted(
         harness
@@ -97,7 +97,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     )?;
     harness.resume(task).await?;
     assert_eq!(
-        guidance(&provider.requests()[index]),
+        guidance(&provider.request(index).unwrap()),
         expected,
         "case {bits}"
     );
@@ -113,7 +113,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
         task
     );
     harness.resume(task).await?;
-    assert_eq!(provider.requests().len(), index + 1);
+    assert_eq!(provider.request_count(), index + 1);
     // Negative control executes the old checkpoint-manifest staging path through
     // the same stock executor. Its model request must fail the same detector.
     let broken = OperationId::new();
@@ -130,7 +130,7 @@ async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Resul
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
     assert_ne!(
-        guidance(provider.requests().last().unwrap()),
+        guidance(&provider.last_request().unwrap()),
         expected,
         "old route escaped case {bits}"
     );
@@ -167,12 +167,12 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
     )?;
     harness.resume(child).await?;
     let request =
-        serde_json::to_string(&provider.requests()[1]).map_err(super::super::super::storage)?;
+        serde_json::to_string(&provider.request(1).unwrap()).map_err(super::super::super::storage)?;
     assert!(
         request.contains(summary),
         "child did not receive the summary"
     );
-    assert_eq!(guidance(&provider.requests()[1]), (false, false));
+    assert_eq!(guidance(&provider.request(1).unwrap()), (false, false));
     // Negative control: the former route selected from the summary-prefixed
     // prompt through the same stock executor.
     let broken = OperationId::new();
@@ -182,6 +182,6 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
     let (receive, model) = harness.stage_turn(broken, &prompt).await?;
     harness.admit_turn(broken, None, receive, model).await?;
     harness.resume(broken_task).await?;
-    assert_eq!(guidance(&provider.requests()[2]), (true, true));
+    assert_eq!(guidance(&provider.request(2).unwrap()), (true, true));
     Ok(())
 }

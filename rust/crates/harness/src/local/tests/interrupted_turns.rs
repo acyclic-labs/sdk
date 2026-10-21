@@ -164,7 +164,7 @@ async fn next_prompt_settles_a_killed_tool_turn_without_running_it_again() -> Re
         ))
     ));
     assert_eq!(killed.executed.load(Ordering::SeqCst), 1, "tool ran again");
-    assert_eq!(killed.provider.requests().len(), 2, "model reissued");
+    assert_eq!(killed.provider.request_count(), 2, "model reissued");
     Ok(())
 }
 
@@ -209,7 +209,7 @@ async fn a_driven_turn_is_never_superseded_until_its_driver_is_gone() -> Result<
     );
     assert_eq!(harness.resume(next).await?.text, "after");
     assert_eq!(executed.load(Ordering::SeqCst), 1);
-    assert_eq!(provider.requests().len(), 2);
+    assert_eq!(provider.request_count(), 2);
     Ok(())
 }
 
@@ -269,7 +269,7 @@ async fn an_indeterminate_resume_releases_its_reservation_to_the_next_prompt() -
         1,
         "uncertain effect ran again"
     );
-    assert_eq!(provider.requests().len(), 2, "model reissued");
+    assert_eq!(provider.request_count(), 2, "model reissued");
     Ok(())
 }
 
@@ -556,7 +556,7 @@ async fn resume_killed_tool(unsettled: bool, uncertain: bool) -> Result<()> {
     // The settled head admits the next prompt without superseding anything.
     let next = admitted(reopened.submit(OperationId::new(), "next").await?);
     assert_eq!(reopened.resume(next).await?.text, "after");
-    assert_eq!(killed.provider.requests().len(), 2);
+    assert_eq!(killed.provider.request_count(), 2);
     Ok(())
 }
 
