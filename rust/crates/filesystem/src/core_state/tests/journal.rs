@@ -296,3 +296,76 @@ fn ordinary_record_flush_failures_are_reported() {
         Err(LocalCoreStateStoreError::Io(_))
     ));
 }
+
+#[test]
+fn checkpoint_records_coalesce_tokens_on_ordinary_and_native_paths() {
+    let directory = tempfile::tempdir().unwrap();
+    let id = WorkspaceContextId::from_bytes([0x4a; 16]);
+    let values = [
+        None,
+        Some(RecordValue::Context(workspace_context(
+            directory.path(),
+            id,
+            1,
+            WorkspaceContextState::Active,
+        ))),
+        Some(RecordValue::Children(ContextChildren([id].into()))),
+        Some(RecordValue::ChildCount(ContextChildCount(1))),
+        Some(RecordValue::ChildIndex(ContextChildIndex(1))),
+        Some(RecordValue::Lineage(crash_lineage())),
+        Some(RecordValue::LazyWorkspace(lazy_state(workspace(), 1))),
+    ];
+    let cxl = crate::CancellationToken::new();
+    let work =
+        crate::materializer::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
+            .unwrap();
+    for native in [false, true] {
+        for value in &values {
+            let mut expected = Vec::new();
+            RecordValue::write_bare(value.as_ref(), &mut expected).unwrap();
+            assert!(expected.len() < 8192);
+            let before = work.receipt();
+            let mut writer = CountWrites::default();
+            RecordValue::write_checkpoint(value.as_ref(), &mut writer, native.then_some(&work))
+                .unwrap();
+            assert_eq!(writer.bytes, expected);
+            assert_eq!(
+                writer.writes, 1,
+                "checkpoint JSON tokens escaped buffering: native={native}"
+            );
+            if native {
+                assert_eq!(
+                    work.receipt().bytes_encoded - before.bytes_encoded,
+                    expected.len() as u64
+                );
+                assert!(work.receipt().bytes_copied - before.bytes_copied >= expected.len() as u64);
+            }
+        }
+    }
+}
+
+#[test]
+fn checkpoint_record_buffer_failures_are_reported_before_the_barrier() {
+    struct Fail;
+    impl Write for Fail {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("checkpoint backend write failed"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let cxl = crate::CancellationToken::new();
+    let work =
+        crate::materializer::NativeMaterializationWork::new(super::native::finite_budget(), &cxl)
+            .unwrap();
+    for native in [false, true] {
+        let error =
+            RecordValue::write_checkpoint(None, &mut Fail, native.then_some(&work)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("checkpoint backend write failed")
+        );
+    }
+}

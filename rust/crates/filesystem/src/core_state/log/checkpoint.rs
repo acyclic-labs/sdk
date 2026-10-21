@@ -87,7 +87,7 @@ impl CoreLog {
             let mut writer = MaterializationWriter {
                 file,
                 work,
-                encoded: true,
+                encoded: false,
             };
             let residents = self.residents();
             let value = if let Some(index) = residents.position(*key, work)? {
@@ -100,7 +100,7 @@ impl CoreLog {
             } else {
                 None
             };
-            RecordValue::write_bare(value, &mut writer)?;
+            RecordValue::write_checkpoint(value, &mut writer, work)?;
             crash_point("record written", self.flushed);
             if let Some(work) = work {
                 work.charge(crate::WorkCounters {

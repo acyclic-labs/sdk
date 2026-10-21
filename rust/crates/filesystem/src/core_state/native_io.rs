@@ -69,6 +69,27 @@ pub(super) fn reserve_slots<T>(
 }
 
 impl RecordValue {
+    /// Encode one complete bare checkpoint record before the file barrier.
+    pub(super) fn write_checkpoint(
+        value: Option<&Self>,
+        writer: &mut impl Write,
+        work: Option<&crate::materializer::NativeMaterializationWork>,
+    ) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(work) = work {
+            let mut encoded = LogBuffer {
+                bytes: Vec::new(),
+                allocation: Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
+            };
+            Self::write_bare(value, &mut encoded)?;
+            writer.write_all(&encoded.bytes)?;
+        } else {
+            let mut buffered = std::io::BufWriter::with_capacity(8192, writer);
+            Self::write_bare(value, &mut buffered)?;
+            buffered.flush()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn write_bare<W: Write>(
         value: Option<&Self>,
         writer: W,
