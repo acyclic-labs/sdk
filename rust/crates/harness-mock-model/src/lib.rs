@@ -3,7 +3,7 @@
 //! Decision: a standalone test-support crate, independent of Harness internals, shared
 //! by the GraphCoder and plugin e2e lanes. Build before timing the suite:
 //!
-//! ```
+//! ```sh
 //! cargo build -p harness-mock-model
 //! harness-mock-model --script script.json --record requests.jsonl
 //! ```
@@ -18,9 +18,9 @@
 //! ```json
 //! {"cases":{"example":{"input_tokens":64,"steps":[
 //!   {"when":{"user":"hello"},"text":["Hello ","**world**"],"tools":[
-//!     {"id":"write_1","name":"write","arguments":{"path":"hello.txt","text":"file contents"}}
+//!     {"id":"write_1","name":"write","arguments":{"path":"hello.txt","text":"file contents","media_type":"text/plain","display_name":"hello.txt"}}
 //!   ]},
-//!   {"when":{"tool_result":"file contents"},"text":["done"]}
+//!   {"when":{"tool_result":"file"},"text":["done"]}
 //! ]}}}
 //! ```
 //!
