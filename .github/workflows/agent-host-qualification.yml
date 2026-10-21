@@ -171,6 +171,7 @@ jobs:
           if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
           export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix"
           cd plugin/tests/hosts
+          bun run test:native-service-readiness
           bun run test:pi-context
           bun run test:pi-context-mail
           bun run test:pi-bootstrap
