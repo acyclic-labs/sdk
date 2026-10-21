@@ -5,7 +5,8 @@ struct JournalFrame {
 }
 
 /// Reads the frame at the file's cursor, `remaining` bytes before its end,
-fn read_frame(file: &mut File, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
+fn read_frame(file: &File, remaining: u64) -> Result<Option<JournalFrame>, LocalStreamError> {
+    let mut file = file;
     let mut length_bytes = [0_u8; 4];
     if remaining < 4 {
         return Ok(None);

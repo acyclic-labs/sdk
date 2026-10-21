@@ -20,7 +20,7 @@ impl LogTail {
 
 /// Recovers an append-only log whose frame at `invalid_start` is invalid.
 pub fn recover_log_tail(
-    file: &mut File,
+    file: &File,
     invalid_start: u64,
     maximum_frame_bytes: usize,
     durability: Durability,
@@ -37,6 +37,7 @@ pub fn recover_log_tail(
     operation.in_scope(|| {
         use std::io::{Read as _, Seek as _, SeekFrom};
 
+        let mut file = file;
         let tail = (|| {
             let end = file.metadata()?.len();
             operation.record("bytes", end.saturating_sub(invalid_start));

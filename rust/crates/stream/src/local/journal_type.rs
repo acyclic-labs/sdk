@@ -1,14 +1,14 @@
 struct Journal {
     /// Held locked for as long as the provider is open.
     lock: File,
-    file: File,
+    /// Shared with flushes that run without holding the journal, so the
+    /// journal costs one descriptor.
+    file: Arc<File>,
     /// Which snapshot the journal follows: the one naming this epoch.
     epoch: u64,
     operations: u64,
     bytes: u64,
     limits: LocalStreamLimits,
-    /// A second handle on `file`, synchronized without holding the journal,
-    sync: Arc<File>,
     /// How many frames were ever written, across every epoch: the sequence of
     appended: u64,
     /// The latest frame written by a mutation that waits for the device.

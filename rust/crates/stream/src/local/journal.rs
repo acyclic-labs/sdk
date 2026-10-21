@@ -20,16 +20,17 @@ impl Journal {
             None => 0,
         };
         let path = root.join(JOURNAL_FILE);
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)?;
+        let file = Arc::new(
+            OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(&path)?,
+        );
         let mut journal = Self {
             _ownership_anchor: None,
             lock,
-            sync: Arc::new(file.try_clone()?),
             file,
             epoch,
             operations: 0,
@@ -51,8 +52,7 @@ impl Journal {
         let found = if length < header_bytes {
             None
         } else {
-            journal
-                .file
+            (&*journal.file)
                 .read_exact(&mut header)
                 .map_err(|_| LocalStreamError::Corrupt)?;
             Some(decode_header(&header, limits))
@@ -62,9 +62,9 @@ impl Journal {
             // than a valid header never acknowledged one: its creation or
             // restart was torn, and it starts again.
             None => {
-                journal.file.seek(SeekFrom::Start(0))?;
+                (&*journal.file).seek(SeekFrom::Start(0))?;
                 let mut partial = Vec::new();
-                journal.file.read_to_end(&mut partial)?;
+                (&*journal.file).read_to_end(&mut partial)?;
                 if !encode_header(limits, epoch)?.starts_with(&partial) {
                     return Err(LocalStreamError::Corrupt);
                 }
@@ -93,7 +93,7 @@ impl Journal {
         }
         if let Some(frame_start) = journal.torn_tail {
             match acyclic_native_runtime::recover_log_tail(
-                &mut journal.file,
+                &journal.file,
                 frame_start,
                 maximum_frame_bytes(),
                 native_durability(limits.durability),
@@ -123,7 +123,7 @@ impl Journal {
         let total_length = length;
         while valid_length < total_length {
             let frame_start = valid_length;
-            let Some(frame) = read_frame(&mut self.file, total_length - frame_start)? else {
+            let Some(frame) = read_frame(&self.file, total_length - frame_start)? else {
                 // Repair is deferred until semantic replay has accepted every prefix frame.
                 self.torn_tail = Some(frame_start);
                 break;
@@ -154,7 +154,7 @@ impl Journal {
         if valid_length > limits.journal_bytes {
             return Err(LocalStreamError::InvalidLimits);
         }
-        self.file.seek(SeekFrom::End(0))?;
+        (&*self.file).seek(SeekFrom::End(0))?;
         span.record("frames", operations);
         span.record("bytes", valid_length);
         self.operations = operations;
@@ -169,9 +169,9 @@ impl Journal {
         work: Option<&Arc<crate::memory::Work>>,
     ) -> Result<(), LocalStreamError> {
         acyclic_native_runtime::truncate_file(&self.file, 0)?;
-        self.file.seek(SeekFrom::Start(0))?;
+        (&*self.file).seek(SeekFrom::Start(0))?;
         acyclic_native_runtime::write_file_all(
-            &mut self.file,
+            &mut &*self.file,
             &encode_header(self.limits, epoch)?,
         )?;
         match work {
@@ -247,7 +247,7 @@ impl Journal {
         frame: &mut PreparedFrame,
         required: bool,
     ) -> Result<(), LocalStreamError> {
-        frame.write(&mut self.file)?;
+        frame.write(&mut &*self.file)?;
         tracing::trace!(
             bytes = frame.encoded.len() as u64,
             required,

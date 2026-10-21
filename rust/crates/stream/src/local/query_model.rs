@@ -24,8 +24,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     file.write_all(&header)?;
     let journal = Journal {
         lock: file.try_clone()?,
-        sync: Arc::new(file.try_clone()?),
-        file,
+        file: Arc::new(file),
         epoch: 0,
         operations: 0,
         bytes: header.len() as u64,
