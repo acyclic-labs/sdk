@@ -149,6 +149,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
             json!({"Archive": {"tree": tree(1)}}),
             json!({"ApplyPatch": {"patch": [1, 2]}}),
             json!({"CheckIgnore": {"paths": ["path"], "tree": tree(1)}}),
+            json!({"ShowFile": {"tree": tree(1), "path": "path"}}),
         ],
         GitFilesystemAction::variant_name,
     );

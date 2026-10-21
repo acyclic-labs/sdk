@@ -1227,3 +1227,94 @@ async fn discard_keeps_every_record_a_discarded_branch_produced() {
         }
     }
 }
+
+/// Runs `git show OBJECT` and settles any prepared read so the next command
+/// is not blocked behind it; returns the action or output it produced.
+async fn shown(
+    repository: &GitCompatRepository<MemoryGitCompatStore>,
+    object: &str,
+) -> Result<GitCommandOutput, GitCompatError<MemoryGitCompatStoreError>> {
+    let output = repository
+        .execute(
+            GitCommand::Show {
+                object: Some(object.to_owned()),
+            },
+            tree(2),
+        )
+        .await?;
+    let GitCommandOutput::Prepared { transition, action } = output else {
+        return Ok(output);
+    };
+    repository
+        .complete_transition_result(
+            transition,
+            &GitFilesystemResult::Data {
+                kind: "file".to_owned(),
+                value: serde_json::Value::Null,
+            },
+        )
+        .await?;
+    Ok(GitCommandOutput::Action(action))
+}
+
+#[tokio::test]
+async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let executor = TestExecutor::returning(GitFilesystemResult::Captured {
+        tree: tree(9),
+        tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
+        proof: None,
+    });
+    let GitCommandOutput::Committed(commit) = repository
+        .run(
+            GitCommand::Commit {
+                message: "initial".to_owned(),
+                author: "agent".to_owned(),
+                authored_at_seconds: 10,
+            },
+            tree(1),
+            &executor,
+        )
+        .await
+        .expect("commit")
+    else {
+        panic!("expected commit");
+    };
+    let file = GitCommandOutput::Action(GitFilesystemAction::ShowFile {
+        tree: commit.tree,
+        path: "tracked.txt".to_owned(),
+    });
+    // The committed tree, not the live one, answers REV:PATH.
+    assert_eq!(
+        shown(&repository, "HEAD:tracked.txt")
+            .await
+            .expect("show file"),
+        file
+    );
+    let short = commit.id.to_hex()[..12].to_owned();
+    assert_eq!(
+        shown(&repository, &format!("{short}:tracked.txt"))
+            .await
+            .expect("show by id"),
+        file
+    );
+    // A bare revision still shows the commit itself.
+    assert_eq!(
+        shown(&repository, "HEAD").await.expect("show commit"),
+        GitCommandOutput::Commits(vec![commit])
+    );
+    // Negative controls: an untracked path, an unknown revision and the index
+    // form never fall back to another tree.
+    assert!(matches!(
+        shown(&repository, "HEAD:untracked.txt").await,
+        Err(GitCompatError::UnknownObject(object)) if object == "HEAD:untracked.txt"
+    ));
+    assert!(matches!(
+        shown(&repository, "missing:tracked.txt").await,
+        Err(GitCompatError::UnknownObject(object)) if object == "missing"
+    ));
+    assert!(matches!(
+        shown(&repository, ":tracked.txt").await,
+        Err(GitCompatError::InvalidCommand(_))
+    ));
+}

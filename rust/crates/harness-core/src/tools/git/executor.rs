@@ -1,5 +1,8 @@
 use super::*;
 
+/// Largest committed file `git show REV:PATH` returns, matching blame and grep.
+const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
+
 impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
 where
     F: Fn() -> Fut + Send + Sync,
@@ -612,6 +615,32 @@ where
                 Ok(GitFilesystemResult::Data {
                     kind: "check-ignore".to_owned(),
                     value: json!({ "paths": ignored }),
+                })
+            }
+            GitFilesystemAction::ShowFile { tree, path } => {
+                let bytes = self
+                    .generation(*tree)
+                    .await?
+                    .read(
+                        &format!("/{path}"),
+                        SHOWN_FILE_BYTES,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+                    .map_err(Error::from)?;
+                let value = match std::str::from_utf8(&bytes) {
+                    Ok(text) => json!({ "path": path, "text": text }),
+                    Err(_) => json!({
+                        "path": path,
+                        "base64": base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes),
+                    }),
+                };
+                Ok(GitFilesystemResult::Data {
+                    kind: "file".to_owned(),
+                    value,
                 })
             }
             unsupported => Err(Self::error(format!(

@@ -66,6 +66,11 @@ pub(super) fn execute_command<E: std::error::Error + 'static>(
             GitCommandOutput::Commits(walk_commits(state, current.head, maximum))
         }
         GitCommand::Show { object } => {
+            if let Some((revision, path)) =
+                object.as_deref().and_then(|object| object.split_once(':'))
+            {
+                return show_file(state, revision, path).map(GitCommandOutput::Action);
+            }
             let id = resolve_object::<E>(state, object.as_deref())?;
             GitCommandOutput::Commits(vec![
                 state
@@ -474,4 +479,28 @@ pub(super) fn expand_pathspecs(paths: &[String], tracked_paths: &BTreeSet<String
         }
     }
     expanded.into_iter().collect()
+}
+
+/// Resolves `git show REV:PATH` to the exact tree of the named commit. Only a
+/// path that commit tracks names a file in it; the index form `:PATH` is not
+/// a commit and is rejected.
+fn show_file<E: std::error::Error + 'static>(
+    state: &GitCompatState,
+    revision: &str,
+    path: &str,
+) -> Result<GitFilesystemAction, GitCompatError<E>> {
+    if revision.is_empty() {
+        return Err(GitCompatError::InvalidCommand(
+            "show :PATH names the index; name a commit, as in HEAD:PATH".to_owned(),
+        ));
+    }
+    let id = resolve_object::<E>(state, Some(revision))?;
+    let commit = state.commits.get(&id).ok_or(GitCompatError::InvalidState)?;
+    if !commit.tracked_paths.contains(path) {
+        return Err(GitCompatError::UnknownObject(format!("{revision}:{path}")));
+    }
+    Ok(GitFilesystemAction::ShowFile {
+        tree: commit.tree,
+        path: path.to_owned(),
+    })
 }

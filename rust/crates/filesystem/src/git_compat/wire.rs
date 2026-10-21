@@ -276,6 +276,10 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
         "CheckIgnore",
         r#"{ readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } }"#,
     ),
+    (
+        "ShowFile",
+        r#"{ readonly ShowFile: { readonly tree: GitTreeRef; readonly path: string } }"#,
+    ),
 ];
 
 /// Natural TypeScript projections for executor result variants.
@@ -386,6 +390,7 @@ git_compat_enum_contract! {
         "Archive" => GitFilesystemAction::Archive { .. },
         "ApplyPatch" => GitFilesystemAction::ApplyPatch { .. },
         "CheckIgnore" => GitFilesystemAction::CheckIgnore { .. },
+        "ShowFile" => GitFilesystemAction::ShowFile { .. },
     ];
     []
 }

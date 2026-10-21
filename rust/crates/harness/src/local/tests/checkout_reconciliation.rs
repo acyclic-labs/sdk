@@ -335,3 +335,97 @@ async fn projected_merge_conflicts_are_visible_and_resolvable_in_the_same_stock_
     );
     Ok(())
 }
+
+// The GraphCoder `fs-conflict-continue-plain` scenario: a seeded checkout
+// edited only through the write tool, merged with a conflict, resolved and
+// continued. `show HEAD:seed.txt` must then read the resolution from HEAD.
+#[tokio::test]
+async fn written_conflicts_continue_to_a_head_that_holds_the_resolution() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(super::super::storage)?;
+    let state = tempfile::tempdir().map_err(super::super::storage)?;
+    std::fs::write(directory.path().join("seed.txt"), "base\n").map_err(super::super::storage)?;
+    let write = |index: usize, text: &str| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(crate::model::ToolCall::new(
+                format!("checkout-{index}"),
+                "write".into(),
+                json!({"path":"seed.txt","text":text,"media_type":"text/plain","display_name":"seed.txt"}),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: json!({}),
+            }),
+        ])
+    };
+    let fs = |index: usize, command: &str| super::checked_commands::call(index, "fs", command);
+    let provider = scripted([
+        fs(0, "branch topic"),
+        fs(1, "switch topic"),
+        write(2, "topic\n"),
+        fs(3, "add seed.txt"),
+        fs(4, "commit -m \"topic\""),
+        fs(5, "switch main"),
+        write(6, "main\n"),
+        fs(7, "add seed.txt"),
+        fs(8, "commit -m \"main\""),
+        fs(9, "merge topic"),
+        write(10, "resolved\n"),
+        fs(11, "add seed.txt"),
+        fs(12, "merge --continue"),
+        fs(13, "show HEAD:seed.txt"),
+        ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = LocalHarness::open(
+        super::checkout_config(directory.path(), (model()?, provider.clone()))?
+            .state_directory(state.path())
+            .compaction(crate::context::CompactionPolicy::Disabled),
+    )
+    .await?;
+    let Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) = harness
+        .submit(OperationId::new(), "conflict and continue")
+        .await?
+    else {
+        panic!("durable admission")
+    };
+    let commands = harness.commands()?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        harness.advance(task_id, &super::checked_commands::Checked(&commands)),
+    )
+    .await
+    .map_err(|_| Error::Conflict("the scenario stalled".into()))??;
+    assert_eq!(harness.resume(task_id).await?.text, "done");
+    let requests = provider.requests();
+    let results: std::collections::BTreeMap<_, _> = requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .flat_map(|message| message.content.parts())
+        .filter_map(|part| match part {
+            crate::model::ModelContentPart::ToolResult {
+                call_id, content, ..
+            } => Some((call_id.clone(), serde_json::to_string(content).unwrap())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        results["checkout-9"].contains("conflict"),
+        "{}",
+        results["checkout-9"]
+    );
+    assert!(
+        !results["checkout-12"].contains("\"error\""),
+        "{}",
+        results["checkout-12"]
+    );
+    assert!(
+        results["checkout-13"].contains("resolved"),
+        "{}",
+        results["checkout-13"]
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("seed.txt")).map_err(super::super::storage)?,
+        b"resolved\n"
+    );
+    Ok(())
+}

@@ -130,4 +130,11 @@ pub enum GitFilesystemAction {
         /// Exact live tree containing `.gitignore` files.
         tree: GitTreeRef,
     },
+    /// Read one file a commit tracks (`git show REV:PATH`).
+    ShowFile {
+        /// Exact compatibility tree of the named commit.
+        tree: GitTreeRef,
+        /// Portable path the commit tracks.
+        path: String,
+    },
 }
