@@ -107,6 +107,7 @@ mod simulation {
     struct Observed {
         source: (bool, [u8; 16], Option<u64>),
         trace: Vec<String>,
+        boundaries: Vec<&'static str>,
         polls: Vec<(u64, &'static str)>,
         stdout: Vec<u8>,
     }
@@ -128,7 +129,10 @@ mod simulation {
                     use std::os::unix::process::ExitStatusExt;
                     assert!(unix_millis().is_some(), "provider escaped its clock scope");
                     assert_eq!(request.command.get_program(), "/bin/sh");
-                    assert_eq!(request.command.get_args().collect::<Vec<_>>(), ["-c", "printf dst"]);
+                    assert_eq!(
+                        request.command.get_args().collect::<Vec<_>>(),
+                        ["-c", "printf dst"]
+                    );
                     assert_eq!(request.timeout, Duration::from_millis(1000));
                     assert_eq!(request.maximum, 3);
                     assert!(request.input.is_none());
@@ -192,15 +196,19 @@ mod simulation {
                 },
                 Vec::new(),
             );
-            type Capture<'a> = Pin<
-                Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>,
-            >;
+            type Capture<'a> =
+                Pin<Box<dyn Future<Output = Result<(Option<NativeProcessResult>, Vec<u8>)>> + 'a>>;
             let operation: Capture<'_> = Box::pin(operation);
             let mut operation = Box::pin(schedule.scope(operation));
+            let mut phases = Vec::new();
             let (output, custody) = loop {
                 tokio::select! {
                     biased;
-                    boundary = boundaries.recv() => boundary.expect("lost process boundary").release(),
+                    boundary = boundaries.recv() => {
+                        let boundary = boundary.expect("lost process boundary");
+                        phases.push(boundary.name);
+                        boundary.release();
+                    },
                     output = &mut operation => break output?,
                 }
             };
@@ -209,11 +217,15 @@ mod simulation {
             assert!(output.success, "{:?}", output.stop);
             assert_eq!(output.exit_code, Some(0));
             assert!(output.stderr.is_empty());
-            assert_eq!(output.stdout, if simulated_process { b"sim" } else { b"dst" });
+            assert_eq!(
+                output.stdout,
+                if simulated_process { b"sim" } else { b"dst" }
+            );
             assert_eq!(custody, output.stdout, "observer lost worker custody");
             Ok(Observed {
                 source: *source.get().expect("ownership was never checked"),
                 trace: schedule.trace(),
+                boundaries: phases,
                 polls: schedule.polls(),
                 stdout: output.stdout,
             })
@@ -226,9 +238,10 @@ mod simulation {
             // Capture uses the native IO service rather than occupying a
             // Tokio publication worker. Require its complete original custody
             // path, including physical completion, in the seeded trace.
-            && ["native:dispatch", "native:submitted", "native:completed"]
+            && observed.trace.iter().any(|event| event == "native:dispatch")
+            && ["native:submitted", "native:completed"]
                 .iter()
-                .all(|phase| observed.trace.iter().any(|event| event == phase))
+                .all(|phase| observed.boundaries.contains(phase))
             && !observed.trace.iter().any(|event| event == "blocking:dispatch")
     }
 
