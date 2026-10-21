@@ -29,8 +29,11 @@ struct TraceMeter {
 }
 impl TraceMeter {
     fn new() -> Self {
+        Self::with_capacity(1 << 16)
+    }
+    fn with_capacity(calls: usize) -> Self {
         let meter = Self {
-            calls: Mutex::new(Vec::with_capacity(1 << 16)),
+            calls: Mutex::new(Vec::with_capacity(calls)),
             deny_allocations: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
         };
@@ -172,20 +175,13 @@ fn previous_admit(
             }
             registry.entries.remove(index);
         }
-        if registry.entries.len() >= registry.capacity_limit {
+        if registry.entries.len() >= registry.sweep_at {
             registry.sweep_idle(meter)?;
-        }
-        if registry.entries.len() >= registry.capacity_limit {
-            return Err(io::Error::other("native file admission capacity exhausted"));
+            registry.sweep_at = registry.entries.len().saturating_mul(2).max(FIRST_SWEEP);
         }
         if registry.entries.len() == registry.entries.capacity() {
             let old = registry.entries.capacity() * row;
-            let next = registry
-                .entries
-                .capacity()
-                .saturating_mul(2)
-                .max(1)
-                .min(registry.capacity_limit);
+            let next = registry.entries.capacity().saturating_mul(2).max(1);
             let bytes = next * row;
             if let Some(meter) = meter {
                 meter.admit_examination(0, (registry.entries.len() * row) as u64)?;
@@ -281,7 +277,7 @@ fn run(
     let initialize = || Run {
         registry: FileHealthRegistry {
             entries: Vec::new(),
-            capacity_limit: limit,
+            sweep_at: limit,
         },
         meter: TraceMeter::new(),
         owners: Vec::with_capacity(steps.len() + 1),
@@ -516,4 +512,47 @@ proptest! {
             .all(|call| matches!(call, Call::Examine(1, 0) | Call::Examine(0, _)))),
             "{:?} vs {:?}", previous_trace, current_trace);
     }
+}
+
+/// Admits `files` identities, keeping every `kept`th owner open, and returns
+/// the registry, the kept owners and the charges.
+fn admit_files(files: u64, kept: u64) -> (FileHealthRegistry, Vec<Arc<FileHealth>>, Vec<Call>) {
+    let mut registry = FileHealthRegistry::new();
+    let meter = TraceMeter::with_capacity(1 << 19);
+    let mut owners = Vec::new();
+    for n in 0..files {
+        let owner = registry
+            .admit(id(n), Some(&meter))
+            .unwrap_or_else(|error| panic!("admission {n} failed: {error}"));
+        if n % kept == 0 {
+            owners.push(owner);
+        }
+    }
+    (registry, owners, meter.take())
+}
+
+#[test]
+fn open_files_bound_the_registry_without_a_limit_of_its_own() {
+    // More open files than any fixed table size: every one is admitted.
+    let (registry, owners, _) = admit_files(10_000, 1);
+    assert_eq!(owners.len(), 10_000);
+    assert_eq!(registry.entries.len(), 10_000);
+    // Rows of closed files are swept, so the table tracks the open ones.
+    let (registry, owners, charges) = admit_files(20_000, 4);
+    assert_eq!(owners.len(), 5_000);
+    assert!(
+        registry.entries.len() <= 2 * owners.len() + FIRST_SWEEP,
+        "{} rows for {} open files",
+        registry.entries.len(),
+        owners.len()
+    );
+    // Sweeps are amortized: each examines at most twice the rows admitted since the last.
+    let swept: u64 = charges
+        .iter()
+        .map(|call| match call {
+            Call::Examine(items, _) if *items > 1 => *items,
+            _ => 0,
+        })
+        .sum();
+    assert!(swept <= 4 * 20_000, "{swept} rows examined by sweeps");
 }

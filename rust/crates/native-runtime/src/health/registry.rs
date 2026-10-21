@@ -18,6 +18,10 @@ impl Entry {
             Self::Poisoned(health) => Some(Arc::clone(health)),
         }
     }
+    /// Whether this is the empty owner a sweep leaves on an expired row.
+    fn swept(&self) -> bool {
+        matches!(self, Self::Healthy(health) if Weak::ptr_eq(health, &Weak::new()))
+    }
     fn live(&self) -> bool {
         match self {
             Self::Healthy(health) => health.strong_count() != 0,
@@ -25,46 +29,22 @@ impl Entry {
         }
     }
 }
+/// Rows sorted by identity. A row's owner holds the file open (a poisoned
+/// row anchors it), so live rows are bounded by the process's descriptors
+/// and the registry needs no limit of its own. Expired rows are swept once
+/// the table reaches twice its size after the previous sweep, so sweeping
+/// stays amortized constant work per admission.
 pub(crate) struct FileHealthRegistry {
     entries: Vec<(FileIdentity, Entry)>,
-    capacity_limit: usize,
+    sweep_at: usize,
 }
+/// Rows admitted before the first sweep.
+const FIRST_SWEEP: usize = 64;
 impl FileHealthRegistry {
-    #[allow(
-        unsafe_code,
-        reason = "the process resource-limit query initializes an rlimit output"
-    )]
-    pub(crate) fn new() -> Self {
-        #[cfg(windows)]
-        let capacity_limit = 4096;
-        #[cfg(target_os = "linux")]
-        let capacity_limit = {
-            let mut limit = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            // SAFETY: limit is an initialized writable rlimit.
-            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-                128
-            } else {
-                usize::try_from(limit.rlim_cur)
-                    .unwrap_or(usize::MAX)
-                    .saturating_div(4)
-                    .clamp(1, 4096)
-            }
-        };
-        #[cfg(target_vendor = "apple")]
-        let capacity_limit = usize::try_from(
-            rustix::process::getrlimit(rustix::process::Resource::Nofile)
-                .current
-                .unwrap_or(u64::MAX),
-        )
-        .unwrap_or(usize::MAX)
-        .saturating_div(4)
-        .clamp(1, 4096);
+    pub(crate) const fn new() -> Self {
         Self {
             entries: Vec::new(),
-            capacity_limit,
+            sweep_at: FIRST_SWEEP,
         }
     }
     fn find(
@@ -94,18 +74,19 @@ impl FileHealthRegistry {
     }
     fn sweep_idle(&mut self, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
         let (mut removed, mut shifted) = (0, 0);
-        // Snapshot liveness once so concurrent owner drops cannot change admitted compaction.
-        let mut live = [0_u64; 64];
-        for (index, (_, entry)) in self.entries.iter().enumerate() {
+        // Liveness is decided once per row: an expired row becomes the empty
+        // owner, which no concurrent drop can change, so the compaction is
+        // exactly the admitted one.
+        for (_, entry) in &mut self.entries {
             if let Some(meter) = meter {
                 meter.examine(1, 0)?;
             }
             if entry.live() {
-                *live.get_mut(index / 64).ok_or(io::ErrorKind::InvalidData)? |= 1 << (index % 64);
                 if removed != 0 {
                     shifted += 1;
                 }
             } else {
+                *entry = Entry::Healthy(Weak::new());
                 removed += 1;
             }
         }
@@ -115,16 +96,7 @@ impl FileHealthRegistry {
                 (shifted * std::mem::size_of::<(FileIdentity, Entry)>()) as u64,
             )?;
         }
-        let mut index = 0;
-        self.entries.retain(|_| {
-            let keep = live
-                .get(index / 64)
-                .unwrap_or_else(|| std::process::abort())
-                & (1 << (index % 64))
-                != 0;
-            index += 1;
-            keep
-        });
+        self.entries.retain(|(_, entry)| !entry.swept());
         Ok(())
     }
 }
@@ -186,24 +158,17 @@ impl FileHealthRegistry {
             }
             Err(index) => index,
         };
-        if self.entries.len() >= self.capacity_limit {
+        if self.entries.len() >= self.sweep_at {
             let before = self.entries.len();
             self.sweep_idle(meter)?;
+            self.sweep_at = self.entries.len().saturating_mul(2).max(FIRST_SWEEP);
             if self.entries.len() != before {
                 index = self.find(identity, meter)?.unwrap_or_else(|index| index);
             }
         }
-        if self.entries.len() >= self.capacity_limit {
-            return Err(io::Error::other("native file admission capacity exhausted"));
-        }
         if self.entries.len() == self.entries.capacity() {
             let old = self.entries.capacity() * row;
-            let next = self
-                .entries
-                .capacity()
-                .saturating_mul(2)
-                .max(1)
-                .min(self.capacity_limit);
+            let next = self.entries.capacity().saturating_mul(2).max(1);
             let bytes = next * row;
             if let Some(meter) = meter {
                 meter.admit_examination(0, (self.entries.len() * row) as u64)?;
