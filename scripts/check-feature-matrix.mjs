@@ -29,6 +29,7 @@ async function main() {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
   const workers = Number(args.find(arg => /^\d+$/u.test(arg)) ?? 1);
+  if (!Number.isSafeInteger(workers) || workers < 1) throw new Error("WORKERS must be a positive integer");
   // Every publishable local crate, in publication order (the publish check
   // already proves the order lists each exactly once).
   const sets = [...metadata().values()].flatMap(featureSets);
@@ -37,6 +38,7 @@ async function main() {
     return;
   }
   const failures = [];
+  let passed = 0;
   async function worker(index) {
     const env = index === 0 ? process.env
       : { ...process.env, CARGO_TARGET_DIR: `${process.env.CARGO_TARGET_DIR ?? join(root, "target")}-features-${index}` };
@@ -46,7 +48,8 @@ async function main() {
       child.stdout.on("data", chunk => (output += chunk));
       child.stderr.on("data", chunk => (output += chunk));
       const status = await new Promise((done, reject) => child.on("error", reject).on("close", done));
-      if (status !== 0) {
+      if (status === 0) passed += 1;
+      else {
         failures.push(`cargo ${set.join(" ")}`);
         process.stderr.write(`FAILED cargo ${set.join(" ")}\n${output}\n`);
       }
@@ -55,9 +58,10 @@ async function main() {
   const started = Date.now();
   const total = sets.length;
   await Promise.all(Array.from({ length: workers }, (_, index) => worker(index)));
-  console.log(`feature matrix: ${total - failures.length}/${total} sets ok in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  // Count the sets that ran and passed, so a set that never ran is a failure.
+  console.log(`feature matrix: ${passed}/${total} sets ok in ${((Date.now() - started) / 1000).toFixed(1)}s`);
   for (const failure of failures) console.log(`FAILED ${failure}`);
-  process.exitCode = failures.length ? 1 : 0;
+  process.exitCode = passed === total ? 0 : 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
