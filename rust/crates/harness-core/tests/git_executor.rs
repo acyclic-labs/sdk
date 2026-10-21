@@ -1067,3 +1067,100 @@ async fn merge_continue_reexamines_a_resolution_whose_conflicted_identity_is_gon
     assert!(merge.tracked_paths.contains("notes.txt"));
     Ok(())
 }
+
+/// A merge cut at every effect boundary, then resumed by the next command,
+/// commits the same merge: in particular a resumed transition whose join
+/// already published still tracks the child's new file, although the
+/// re-planned join sees no changes against the advanced target.
+#[tokio::test]
+async fn merges_cut_at_every_step_resume_tracking_what_the_join_published() -> Result<()> {
+    let mut cut = 0;
+    loop {
+        cut += 1;
+        let (_temp, _root, fs, store, main) = fixture().await?;
+        write_text(&main, "/base.txt", b"base\n").await?;
+        acyclic_fs::WorkspaceGraph::new(store.clone())
+            .register_root(main.workspace())
+            .await?;
+        let repo = main.workspace().id();
+        run(&fs, &store, &main, repo, &["commit", "-m", "base"]).await?;
+        let (_, child) = run(&fs, &store, &main, repo, &["checkout", "-b", "agents/kid"]).await?;
+        let child = child.ok_or("missing child view")?;
+        write_text(&child, "/newkid.txt", b"kid\n").await?;
+        run(&fs, &store, &child, repo, &["checkout", "main"]).await?;
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let interrupted = git::run_with_guard(
+            git::Workspace {
+                filesystem: &fs,
+                store: &store,
+                view: (&main).into(),
+                root: std::path::Path::new("."),
+                repository: repo,
+                lease: None,
+                checkout: None,
+                reserved: &[],
+                author: "test",
+                authored_at_seconds: 1,
+            },
+            &["merge".to_owned(), "agents/kid".to_owned()],
+            || {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                std::future::ready(if call == cut {
+                    Err(Error::Unauthorized("cut".into()))
+                } else {
+                    Ok(())
+                })
+            },
+        )
+        .await;
+        let completed = interrupted.is_ok();
+
+        // The next command first recovers any pending transition.
+        let argv = ["log".to_owned()];
+        let mut log = None;
+        for _ in 0..2 {
+            let output = git::run(
+                git::Workspace {
+                    filesystem: &fs,
+                    store: &store,
+                    view: (&main).into(),
+                    root: std::path::Path::new("."),
+                    repository: repo,
+                    lease: None,
+                    checkout: None,
+                    reserved: &[],
+                    author: "test",
+                    authored_at_seconds: 1,
+                },
+                &argv,
+            )
+            .await?;
+            if let Some(GitCommandOutput::Commits(commits)) = output.command {
+                log = Some(commits);
+                break;
+            }
+        }
+        let mut log = log.ok_or("log never answered")?;
+        if log.len() == 1 {
+            // Cut before the transition was recorded: nothing to resume, so
+            // the merge is simply run again.
+            run(&fs, &store, &main, repo, &["merge", "agents/kid"]).await?;
+            let GitCommandOutput::Commits(commits) =
+                run(&fs, &store, &main, repo, &["log"]).await?.0
+            else {
+                return Err("expected the merged log".into());
+            };
+            log = commits;
+        }
+        assert_eq!(
+            log.first().ok_or("empty log")?.tracked_paths,
+            std::collections::BTreeSet::from(["base.txt".to_owned(), "newkid.txt".to_owned()]),
+            "cut at effect {cut}"
+        );
+        if completed {
+            assert!(cut > 1, "the merge has effect boundaries to cut");
+            return Ok(());
+        }
+    }
+}

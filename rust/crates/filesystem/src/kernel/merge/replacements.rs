@@ -117,6 +117,16 @@ async fn replacement_index<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<Owned<Vec<Replacement>>, FsError> {
     let mut index: Owned<Vec<Replacement>> = Owned::allocate(0, accounting)?;
+    // A side that deleted no deferred identity cannot hold a replacement;
+    // its changed directories are neither read nor charged.
+    if !state
+        .replacements
+        .value
+        .iter()
+        .any(|(_, values)| usize::from(values[1].is_some()) == side)
+    {
+        return Ok(index);
+    }
     let built = async {
         for change in changes {
             accounting.charge(WorkCounters {

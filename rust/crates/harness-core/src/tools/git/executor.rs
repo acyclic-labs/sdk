@@ -366,13 +366,19 @@ where
                 self.restore_paths(operation_id, *tree, paths).await
             }
             GitFilesystemAction::Join {
+                target_tree,
                 source_workspace,
                 rebase,
                 tracked_paths,
-                ..
             } => {
-                self.join(operation_id, *source_workspace, *rebase, tracked_paths)
-                    .await
+                self.join(
+                    operation_id,
+                    *target_tree,
+                    *source_workspace,
+                    *rebase,
+                    tracked_paths,
+                )
+                .await
             }
             GitFilesystemAction::ApplyCommit {
                 base,

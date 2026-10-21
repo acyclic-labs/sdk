@@ -9,6 +9,7 @@ where
     pub(super) async fn join(
         &self,
         operation: OperationId,
+        target_tree: GitTreeRef,
         source: acyclic_fs::WorkspaceId,
         rebase: bool,
         tracked: &BTreeSet<String>,
@@ -177,10 +178,16 @@ where
                 "Git join has unresolved conflicts. Edit the conflicted paths, then run `fs merge --continue`, or `fs merge --abort`",
             ));
         }
-        let before = self
+        // Tracking is a function of the recorded transition, not of this
+        // attempt: the target as the transition found it and the generation
+        // this operation published under its key. A resumed transition whose
+        // join already published re-plans against the advanced target and
+        // may see no changes, but it still tracks what the join published.
+        let before = self.generation(target_tree).await?;
+        let joined = self
             .current
-            .generation(
-                plan.target_head(),
+            .operation_generation(
+                IdempotencyKey::from_bytes(operation.into_bytes()),
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -192,7 +199,7 @@ where
         // the two branches' previously committed paths.
         let tracked_paths = acyclic_fs::git_tracked_paths_after(
             &before,
-            &generation,
+            joined.as_ref().unwrap_or(&generation),
             &generation,
             &self.repository,
             tracked,
