@@ -53,6 +53,28 @@ fn provisional_list_continuation_is_invalidated() {
     partition(text, &vec![true; text.len()]);
 }
 
+#[test]
+fn empty_sibling_marker_preserves_list_indentation() {
+    let text = "retained archive\n\n *  a\n*\n€ a*";
+    partition(
+        text,
+        &[
+            true, false, false, true, true, false, false, true, false, true, false, true, true,
+            true, false, false, true, false, false, false, false, false, true, false, true, true,
+            false, false, false, false,
+        ],
+    );
+    let prefix = "retained archive\n\n".len();
+    for mask in 0..1usize << (text.len() - prefix - 1) {
+        let mut cuts = vec![false; text.len()];
+        cuts[prefix - 1] = true;
+        for bit in 0..text.len() - prefix - 1 {
+            cuts[prefix + bit] = mask & (1 << bit) != 0;
+        }
+        partition(text, &cuts);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]

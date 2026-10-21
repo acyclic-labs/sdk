@@ -297,6 +297,11 @@ fn row_prefix(source: &str) -> String {
 // Until content follows an empty marker it can still interrupt this paragraph.
 fn block_pending(row: &str) -> bool {
     let row = row.trim_start_matches([' ', '\t']);
+    // A one- or two-byte fence run is still paragraph text. Keep its line
+    // boundary until another byte decides whether it interrupts the paragraph.
+    if row.bytes().all(|byte| byte == b'~') || row.bytes().all(|byte| byte == b'`') {
+        return true;
+    }
     if row
         .bytes()
         .all(|byte| matches!(byte, b' ' | b'\t' | b'-' | b'_' | b'*'))

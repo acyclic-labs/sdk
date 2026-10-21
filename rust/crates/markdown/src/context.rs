@@ -37,7 +37,21 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
     let line = source
         .get(line_start(source, position)..)
         .unwrap_or_default();
+    // Item ranges include indentation before the marker. It is part of the
+    // container prefix, not the marker's padding; retaining only that padding
+    // would turn the synthetic item into a paragraph at the next checkpoint.
     let before = position - line_start(source, position);
+    let before = before
+        + line
+            .get(before..)
+            .unwrap_or_default()
+            .bytes()
+            // With a partially consumed tab, the parser subtracts indentation
+            // columns from a byte offset; an item range can include its quote.
+            .take_while(|byte| {
+                matches!(byte, b' ' | b'\t') || (matches!(tag, Tag::Item) && *byte == b'>')
+            })
+            .count();
     let parent: String = line
         .get(..before)
         .unwrap_or_default()
@@ -60,25 +74,34 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             ),
         };
     }
-    let length = match tag {
+    let marker = match tag {
         Tag::Item => {
-            let marker = line.get(before..).unwrap_or_default();
-            let end = marker.find([' ', '\t', '\n']).unwrap_or(marker.len());
-            let padding = marker
-                .get(end..)
+            let row = line
+                .get(before..)
                 .unwrap_or_default()
-                .bytes()
-                .take_while(|byte| matches!(byte, b' ' | b'\t'))
-                .count();
-            before
-                + end
-                + if (1..=4).contains(&padding) {
-                    padding
-                } else {
-                    usize::from(padding > 0)
-                }
+                .split('\n')
+                .next()
+                .unwrap_or_default();
+            let end = row.find([' ', '\t']).unwrap_or(row.len());
+            let rest = row.get(end..).unwrap_or_default();
+            let column = columns(line.get(..before + end).unwrap_or_default(), 0);
+            let whitespace = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+            let padding = columns(rest.get(..whitespace).unwrap_or_default(), column) - column;
+            // Empty items always use one column, even with trailing whitespace.
+            // Nonempty items use one to four columns; excess starts code content.
+            // Expand tabs at their original column before replacing the marker.
+            let padding = if whitespace == rest.len() || !(1..=4).contains(&padding) {
+                1
+            } else {
+                padding
+            };
+            format!(
+                "{}{}",
+                row.get(..end).unwrap_or_default(),
+                " ".repeat(padding)
+            )
         }
-        Tag::BlockQuote(_) => before + 1,
+        Tag::BlockQuote(_) => ">".to_owned(),
         _ => {
             return Container {
                 end: tag.to_end(),
@@ -87,13 +110,6 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
             };
         }
     };
-    let mut marker = line.get(before..length).unwrap_or_default().to_owned();
-    // An empty item may end immediately after its marker. Its synthetic
-    // content still needs the implicit one-column padding: `*x` / `1.x`
-    // would reopen a paragraph rather than the checkpoint's list item.
-    if matches!(tag, Tag::Item) && !marker.ends_with([' ', '\t']) {
-        marker.push(' ');
-    }
     let opening = format!(
         "{parent}{marker}{}\n",
         if matches!(tag, Tag::Item) { "x" } else { "" }
@@ -114,6 +130,14 @@ pub(super) fn container(source: &str, position: usize, tag: &Tag<'_>) -> Contain
         opening,
         continuation,
     }
+}
+
+fn columns(source: &str, start: usize) -> usize {
+    #[cfg(test)]
+    work::scan(source.len());
+    source.bytes().fold(start, |column, byte| {
+        column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+    })
 }
 
 fn html_opening(source: &str) -> &'static str {
@@ -173,16 +197,24 @@ pub(super) fn html_closed(source: &str, range: &Range<usize>, parents: &[Contain
 }
 
 pub(super) fn context_prefix(context: &[Container]) -> String {
-    let mut prefix: String = context
-        .iter()
-        .map(|container| container.opening.as_str())
-        .collect();
+    let mut prefix = String::new();
+    for container in context {
+        prefix.push_str(&container.opening);
+        if container.end == TagEnd::Item {
+            // The placeholder paragraph must end before opening a child: an
+            // ordered child starting at zero (or >1) cannot interrupt it. Use
+            // the container's blank prefix to keep enclosing quotes open too.
+            prefix.push_str(&container.continuation);
+        }
+    }
     if let Some(container) = context
         .iter()
         .rev()
         .find(|container| !container.continuation.is_empty())
     {
-        prefix.push_str(&container.continuation);
+        if container.end != TagEnd::Item {
+            prefix.push_str(&container.continuation);
+        }
     }
     prefix
 }

@@ -1,5 +1,138 @@
 use super::*;
 
+fn check_all_partitions(source: &str) {
+    let archive = "retained archive\n\n";
+    let ends: Vec<_> = source
+        .char_indices()
+        .map(|(index, c)| index + c.len_utf8())
+        .collect();
+    let expected: Vec<_> = ends
+        .iter()
+        .map(|end| full_parse(&format!("{archive}{}", &source[..*end])))
+        .collect();
+    for mask in 0..1usize << ends.len().saturating_sub(1) {
+        let mut markdown = Markdown::default();
+        markdown.push(archive);
+        let mut rows = markdown.lines().to_vec();
+        let mut start = 0;
+        for (bit, &end) in ends.iter().enumerate() {
+            if bit + 1 != ends.len() && mask & (1 << bit) == 0 {
+                continue;
+            }
+            let changed = markdown.push(&source[start..end]);
+            start = end;
+            rows.truncate(changed);
+            rows.extend_from_slice(&markdown.lines()[changed..]);
+            assert_eq!(
+                rows, expected[bit],
+                "source {source:?}, mask {mask:b}, end {end}"
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_sibling_marker_preserves_list_indentation() {
+    check_all_partitions(" *  a\n*\n€ a*");
+    check_all_partitions(">\t* a\n> *\n>\n\na");
+    check_all_partitions("- 0.\n     a\n\na");
+}
+
+#[test]
+fn short_block_grammar_preserves_every_partition() {
+    let lines = [
+        "a", "*", "-", "+", "1.", "1)", " *", "* ", "*\t", ">", "> a", "> *", "=", "---", "```",
+        "~~~",
+    ];
+    for first in lines {
+        for second in lines {
+            check_all_partitions(&format!("{first}\n{second}\na"));
+        }
+    }
+}
+
+#[test]
+fn partial_fence_interrupts_the_previous_paragraph() {
+    check_all_partitions("a\n~~~\na");
+    check_all_partitions("a\n```\na");
+}
+
+#[test]
+fn completed_indented_lists_and_fences_have_linear_work() {
+    for block in [
+        " *  a\n*\n€ a*\n\n",
+        "  * \ta\n  a\n\n",
+        "a\n~~~\na\n~~~\n\n",
+        "> 1. a\n> 1.\n\na\n\n",
+        ">\t* a\n> *\n>\n\na\n\n",
+        "- 0.\n     a\n\na\n\n",
+    ] {
+        let measure = |count| {
+            let source = block.repeat(count);
+            let mut markdown = Markdown::default();
+            let before = work::current();
+            for character in source.chars() {
+                markdown.push(&character.to_string());
+            }
+            let used =
+                work::current() - before + markdown.boundary_work + markdown.visible_work.get();
+            assert_eq!(markdown.lines(), full_parse(&source));
+            used
+        };
+        let small = measure(128);
+        let large = measure(256);
+        assert!(
+            large <= 2 * small + 1024,
+            "{block:?}: work {small} -> {large}"
+        );
+    }
+}
+
+#[test]
+fn list_marker_variants_preserve_every_partition() {
+    let markers = ["*", "-", "+", "0.", "1.", "9.", "0)", "1)", "9)"];
+    for first in markers {
+        for second in markers {
+            check_all_partitions(&format!(" {first} a\n{second}\na"));
+        }
+    }
+}
+
+#[test]
+fn list_indentation_and_padding_preserve_every_cut() {
+    for marker in [
+        "*",
+        "-",
+        "+",
+        "0.",
+        "1.",
+        "9.",
+        "0)",
+        "1)",
+        "9)",
+        "123456789.",
+        "123456789)",
+    ] {
+        for indent in ["", " ", "  ", "   "] {
+            for padding in ["", " ", "  ", "    ", "     ", "\t", " \t", "\t "] {
+                for content in ["a", ""] {
+                    for next in ["  a", "   a", "    a", "     a", "\ta", "*"] {
+                        check_rewrites(&[&format!(
+                            "{indent}{marker}{padding}{content}\n{next}\n\na"
+                        )]);
+                        check_rewrites(&[&format!(
+                            "> {indent}{marker}{padding}{content}\n> {next}\n>\n\na"
+                        )]);
+                        check_rewrites(&[&format!(
+                            "- {indent}{marker}{padding}{content}\n  {next}\n\na"
+                        )]);
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn check_rewrites(sources: &[&str]) {
     for source in sources {
         let source = format!("retained archive\n\n{source}");
@@ -38,6 +171,9 @@ fn quote_checkpoints_preserve_later_line_rewrites() {
         "> *\n>   €\n>\n\na",
         "- > quote\n  >\n\na",
         "para\n> quote\n\na",
+        ">\t* a\n> *\n>\n\na",
+        ">\t*\ta\n>\t*\n>\n\na",
+        "-\t* a\n\t*\n\na",
     ]);
 }
 
