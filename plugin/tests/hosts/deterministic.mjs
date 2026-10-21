@@ -56,11 +56,25 @@ const root = mkdtempSync(join(tmpdir(), "acyclic-hosts-"));
 
 /** A complete per-user profile: Windows resolves known folders from USERPROFILE. */
 function profile(home) {
-  for (const directory of ["config", "state", "data", "claude", join("AppData", "Local"), join("AppData", "Roaming")]) {
+  for (const directory of ["config", "state", "data", "claude", join("AppData", "Local"), join("AppData", "Roaming"), join(".config", "git")]) {
     mkdirSync(join(home, directory), { recursive: true });
   }
+  // Claude Code snapshots a Git Bash login shell. Git for Windows' profile
+  // starts a process per prompt helper, alias probe, locale query and path
+  // conversion, each costly on Windows. A hermetic profile skips them: an
+  // empty user prompt script replaces Git's (which runs git and sources its
+  // completion), a dumb terminal skips the winpty alias probes, a set locale
+  // skips `locale`, and forward-slash temp paths skip `cygpath`.
+  writeFileSync(join(home, ".config", "git", "git-prompt.sh"), "");
+  const forwardSlashes = path => path?.replaceAll("\\", "/");
   const env = {
     ...process.env,
+    ...(windows ? {
+      TERM: "dumb",
+      LANG: process.env.LANG || "C.UTF-8",
+      TMP: forwardSlashes(process.env.TMP),
+      TEMP: forwardSlashes(process.env.TEMP),
+    } : {}),
     HOME: home,
     USERPROFILE: home,
     XDG_CONFIG_HOME: join(home, "config"),
