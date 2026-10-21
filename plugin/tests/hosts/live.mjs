@@ -2,14 +2,14 @@
 // Live host acceptance: the real host binary, a real model login, and the
 // Acyclic plugin packaged and installed the way a user installs it, into an
 // isolated fixture home. Credentials are never read: the host's own login
-// file is hard-linked into the fixture home and the link is removed again.
+// file is linked into the fixture home and the link is removed again.
 //
 //   node live.mjs --host codex|claude-code --binary <acyclic executable> [--keep]
 //
 // Prints one JSON verdict line; evidence stays in the fixture directory.
 import { spawn, spawnSync } from "node:child_process";
 import {
-  cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
@@ -140,7 +140,10 @@ function hostCommand() {
 }
 
 mkdirSync(dirname(login.link), { recursive: true });
-linkSync(login.source, login.link);
+// A symbolic link reaches the login across filesystems (the fixture root is
+// often on a tmpfs /tmp); Windows reserves symbolic links for privileged
+// accounts, so there the login is hard-linked within its volume.
+(windows ? linkSync : symlinkSync)(login.source, login.link);
 let verdict;
 try {
   started = Date.now();
