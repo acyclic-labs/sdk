@@ -101,6 +101,10 @@ async fn assert_paired_work(turns: usize, full_collect: bool) -> Result<()> {
     // retain its cumulative count instead of admitting that prefix a second time.
     // Candidate and full-collect control still own independent native stores.
     let prefixes = conversation(2 * turns, full_collect).await?;
+    assert_linear_work(turns, full_collect, &prefixes);
+    Ok(())
+}
+fn assert_linear_work(turns: usize, full_collect: bool, prefixes: &[u64]) {
     let small = prefixes[turns - 1];
     let large = prefixes[2 * turns - 1];
     println!("N={turns}, full_collect={full_collect}: {small}/{large} observe_admission calls");
@@ -109,7 +113,6 @@ async fn assert_paired_work(turns: usize, full_collect: bool) -> Result<()> {
         "nonlinear admission reads: {turns}={small}, {}={large}",
         2 * turns
     );
-    Ok(())
 }
 async fn paired(turns: usize) -> Result<()> {
     assert_paired_work(turns, false).await?;
@@ -118,6 +121,10 @@ async fn paired(turns: usize) -> Result<()> {
     ))
     .await
     .expect_err("full-collect negative control did not panic at the linear assertion");
+    check_negative(failure);
+    Ok(())
+}
+fn check_negative(failure: Box<dyn std::any::Any + Send>) {
     let message = failure
         .downcast_ref::<String>()
         .map(String::as_str)
@@ -127,17 +134,31 @@ async fn paired(turns: usize) -> Result<()> {
         message.contains("nonlinear admission reads"),
         "unexpected negative control: {message}"
     );
-    Ok(())
 }
+const MAX_TURNS: usize = 8;
+
 #[tokio::test]
 async fn whole_conversation_admission_work_grows_linearly_and_detects_full_collect() -> Result<()> {
-    paired(8).await
+    paired(MAX_TURNS).await
 }
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(4))]
     #[test]
-    fn linear_admission_work_shrinks_across_conversation_lengths(turns in 2usize..9) {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(paired(turns)).unwrap();
+    fn linear_admission_work_shrinks_across_conversation_lengths(turns in 2usize..=MAX_TURNS) {
+        // Every generated N selects the identical causal prefix of these runs.
+        // Measure each turn and exercise every consumer as before, retaining only
+        // immutable counts after both independent native stores have been dropped.
+        static PREFIXES: std::sync::OnceLock<(Vec<u64>, Vec<u64>)> = std::sync::OnceLock::new();
+        let (positive, negative) = PREFIXES.get_or_init(|| {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+                .block_on(async {
+                    Ok::<_, Error>((conversation(2 * MAX_TURNS, false).await?,
+                        conversation(2 * MAX_TURNS, true).await?))
+                }).unwrap()
+        });
+        assert_linear_work(turns, false, positive);
+        check_negative(std::panic::catch_unwind(|| assert_linear_work(turns, true, negative))
+            .expect_err("full-collect negative control did not panic at the linear assertion"));
     }
 }
 #[tokio::test]
