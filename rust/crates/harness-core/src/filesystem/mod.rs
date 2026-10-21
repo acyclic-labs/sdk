@@ -548,7 +548,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Keep the authenticated immutable handle from the read. A
             // retaining caller can pin it without opening the workspace
             // and authenticating this same generation a second time.
-            #[cfg(all(test, not(target_arch = "wasm32")))]
+            #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
             acyclic_test_support::differential::record(("read", maximum_bytes));
             let owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
             let opened = self.open(&workspace, Some(&owned)).await?;
@@ -602,7 +602,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let path = rendered.0;
                 let opened = (self).open(&workspace, Some(io)).await?;
                 let pinned = self.generation(&opened, &generation, Some(io)).await?;
-                #[cfg(all(test, not(target_arch = "wasm32")))]
+                #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
                 acyclic_test_support::differential::record(("read", maximum_bytes));
                 let bytes = pinned
                     .read(&path, maximum_bytes, original, io.cancellation())
@@ -646,7 +646,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(io) => {
                     let opened = (self).open(&workspace, Some(io)).await?;
                     let pinned = self.generation(&opened, &generation, Some(io)).await?;
-                    #[cfg(all(test, not(target_arch = "wasm32")))]
+                    #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
                     acyclic_test_support::differential::record(("read", maximum_bytes));
                     let bytes = io.receive(
                         pinned

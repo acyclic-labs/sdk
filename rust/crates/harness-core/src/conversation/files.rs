@@ -84,7 +84,11 @@ impl FileDescriptor {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
-        #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+        #[cfg(all(
+            any(test, feature = "test-support"),
+            feature = "filesystem",
+            not(target_arch = "wasm32")
+        ))]
         acyclic_test_support::differential::record(("verify", bytes.len() as u64));
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
