@@ -30,11 +30,33 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
     std::fs::create_dir(&directory)?;
     let state = temporary.path().join("state");
     let (host, volume, workspace, reader) = local_workspace::seed(&directory, &case.seed).await?;
+    let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
+    let provider = Arc::new(ScriptedModelProvider::new([]));
+    let home = temporary.path().join("home");
+    for (path, text) in &case.home {
+        let path = home.join(path);
+        std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;
+        match text {
+            Value::String(text) => std::fs::write(path, text)?,
+            value => std::fs::write(path, serde_json::to_vec(value)?)?,
+        }
+    }
+    let config = local_harness_config(&directory, (model, provider.clone()))?
+        .settings(SettingsConfig::new(&directory, &home).codex_home(home.join(".codex")))
+        .state_directory(&state)
+        .volume(volume.clone())
+        .compaction(CompactionPolicy::Disabled)
+        .goal_continuations(None);
+    let harness = LocalHarness::open(config).await?;
+    if !state.join("owner.json").is_file() {
+        return Err("harness did not use the fixture-owned state directory".into());
+    }
+    // Initialization binds configured auxiliary directories. Select the command's
+    // diff cut and pinned files from that initialized workspace, before dispatch.
     let source = reader.file_query(&volume, BOUNDARY_BUDGET)?;
     let mut observation = source.observe_files(Query::Plans, None, 16, 65_536).await?;
     let initial = observation.snapshot.take().ok_or("missing diff snapshot")?;
     let base = host.resolve(&workspace, None).await?.generation;
-    let model = Model::new("scripted".into(), "local".into(), "1".into(), Value::Null)?;
     let mut references = std::collections::BTreeMap::new();
     let paths = case
         .turns
@@ -87,26 +109,7 @@ pub(super) async fn run(case: LocalCase) -> TestResult {
                 .is_none_or(|result| result["content"]["kind"] != "error")
         })
     });
-    let provider = Arc::new(ScriptedModelProvider::new(turns));
-    let home = temporary.path().join("home");
-    for (path, text) in &case.home {
-        let path = home.join(path);
-        std::fs::create_dir_all(path.parent().ok_or("home file has no parent")?)?;
-        match text {
-            Value::String(text) => std::fs::write(path, text)?,
-            value => std::fs::write(path, serde_json::to_vec(value)?)?,
-        }
-    }
-    let config = local_harness_config(&directory, (model, provider.clone()))?
-        .settings(SettingsConfig::new(&directory, &home).codex_home(home.join(".codex")))
-        .state_directory(&state)
-        .volume(volume.clone())
-        .compaction(CompactionPolicy::Disabled)
-        .goal_continuations(None);
-    let harness = LocalHarness::open(config).await?;
-    if !state.join("owner.json").is_file() {
-        return Err("harness did not use the fixture-owned state directory".into());
-    }
+    provider.extend(turns);
     let stream = local_task_stream(&harness);
     let (operation, task_id, status) =
         crate::local_admission::submit(&harness, &case.prompt, reader.as_ref()).await?;

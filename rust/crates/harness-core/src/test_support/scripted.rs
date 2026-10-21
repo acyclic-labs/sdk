@@ -206,6 +206,11 @@ impl ScriptedModelProvider {
         self.lock().turns.len()
     }
 
+    /// Appends responses after fixture initialization has selected its immutable files.
+    pub fn extend(&self, turns: impl IntoIterator<Item = ScriptedTurn>) {
+        self.lock().turns.extend(turns);
+    }
+
     /// Snapshots interrupted dispatches submitted for reconciliation.
     pub fn reconciliations(&self) -> Vec<ModelDispatch> {
         self.lock().reconciliations.clone()

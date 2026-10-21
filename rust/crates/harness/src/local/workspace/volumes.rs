@@ -4,6 +4,7 @@ use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
 mod exclude;
+pub(super) mod parents;
 #[cfg(all(test, feature = "native-execution", not(acyclic_harness_loom)))]
 mod publication_tests;
 #[cfg(all(test, target_os = "linux", not(acyclic_harness_loom)))]
