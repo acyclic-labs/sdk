@@ -194,7 +194,7 @@ fn incarnation_token(root: &acyclic_fs::HeldRoot) -> Result<[u8; 16]> {
     )?
     .read_or_publish(Path::new("token"), || {
         let mut candidate = [0; 16];
-        getrandom::fill(&mut candidate)
+        crate::identity::fill_random(&mut candidate)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         Ok(candidate)
     })

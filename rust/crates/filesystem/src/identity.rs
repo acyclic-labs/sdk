@@ -1,5 +1,8 @@
 //! Fresh filesystem UUIDs share the active simulation's entropy source.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "native-watch", windows)))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, feature = "native-watch", windows)
+))]
 pub(crate) fn fresh_uuid() -> uuid::Uuid {
     #[cfg(feature = "test-support")]
     {

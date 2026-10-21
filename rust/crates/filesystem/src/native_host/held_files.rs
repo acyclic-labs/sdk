@@ -153,7 +153,8 @@ impl HostRoot {
                 Err(error) => return Err(error),
             }
             let candidate = candidate()?;
-            let temporary = PathBuf::from(format!(".{}.next", uuid::Uuid::new_v4().simple()));
+            let temporary =
+                PathBuf::from(format!(".{}.next", crate::identity::fresh_uuid().simple()));
             match publish_record(&self.directory, &temporary, leaf, &candidate, work) {
                 // Another publisher won; its record is the one.
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::AlreadyExists) => {}
