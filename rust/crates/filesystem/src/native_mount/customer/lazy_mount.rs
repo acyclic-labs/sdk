@@ -365,6 +365,13 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
+        self.prepare_unmount_cleanup()?;
+        self.retire(&crate::CancellationToken::new()).map(drop)
+    }
+
+    /// Prepares namespace cleanup while every route's publication owner is live.
+    /// Publish all routes before calling this; retire only after every preparation succeeds.
+    pub fn prepare_unmount_cleanup(&self) -> Result<(), MountLifecycleError> {
         #[cfg(windows)]
         {
             let mut owner = self
@@ -375,7 +382,7 @@ where
                 session.prepare_projection_cleanup()?;
             }
         }
-        self.retire(&crate::CancellationToken::new()).map(drop)
+        Ok(())
     }
 
     /// Retires physical work on birth-time credit and preserves uncaptured data.
