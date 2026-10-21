@@ -5,11 +5,13 @@ use proptest::prelude::*;
 #[tokio::test]
 async fn completed_continuation_requests_retain_every_intervening_prompt_and_answer() -> Result<()>
 {
+    let bootstrap = Arc::new(super::super::bootstrap::Bootstrap::new().await?);
     // Independent native fixtures share the crash-cut worker pool. Each runner
     // retains the full default shrinking budget and one generated sequence.
-    for result in futures::future::try_join_all(
-        (0..16).map(|case| WORKERS.spawn_blocking(move || sequence_case(case % 2 == 0))),
-    )
+    for result in futures::future::try_join_all((0..16).map(|case| {
+        let bootstrap = Arc::clone(&bootstrap);
+        WORKERS.spawn_blocking(move || sequence_case(case % 2 == 0, &bootstrap))
+    }))
     .await
     .map_err(super::super::super::storage)?
     {
@@ -18,7 +20,7 @@ async fn completed_continuation_requests_retain_every_intervening_prompt_and_ans
     Ok(())
 }
 
-fn sequence_case(frozen: bool) -> Result<()> {
+fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<()> {
     let cases = proptest::test_runner::Config {
         cases: 1,
         max_shrink_iters: 1024,
@@ -29,8 +31,7 @@ fn sequence_case(frozen: bool) -> Result<()> {
             &("[A-Z]{1,12}", prop::collection::vec("[a-z]{1,12}", 3..6)),
             |(fact, prompts)| {
                 WORKERS.block_on(async {
-                    let directory = tempfile::tempdir()?;
-                    let project = volume(directory.path()).await?;
+                    let directory = bootstrap.restore()?;
                     let summary = ScriptedTurn::Text(format!("SUMMARY_ONLY_{fact}"));
                     let answer = ScriptedTurn::Text(format!("DISCARDED_{fact}"));
                     let mut turns = if frozen {
@@ -49,11 +50,10 @@ fn sequence_case(frozen: bool) -> Result<()> {
                     let provider = scripted(turns);
                     // Conversation retention needs no host tools or OS mounts.
                     // Keep the real admission/executor path, with only the model.
-                    let config = || {
-                        volume_config(directory.path(), project.clone(), provider.clone())
-                            .map(|config| config.without_default_tools())
-                    };
+                    let config = || bootstrap.config(directory.path(), provider.clone());
                     let mut local = LocalHarness::open(config()?).await?;
+                    prop_assert_eq!(local.signed.agent(), bootstrap.agent);
+                    prop_assert!(provider.requests().is_empty());
                     let mut parent = admitted(local.submit(OperationId::new(), "original").await?);
                     if !frozen {
                         local.resume(parent).await?;

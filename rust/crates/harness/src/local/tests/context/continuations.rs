@@ -25,25 +25,27 @@ fn prompt(goal: bool, plans: bool) -> &'static str {
 #[tokio::test]
 async fn new_conversation_admissions_refresh_guidance_but_retries_keep_their_selection()
 -> Result<()> {
-    futures::future::try_join_all((0..16).map(case)).await?;
+    let bootstrap = super::super::bootstrap::Bootstrap::new().await?;
+    futures::future::try_join_all((0..16).map(|bits| case(bits, &bootstrap))).await?;
     Ok(())
 }
 
-async fn case(bits: u8) -> Result<()> {
+async fn case(bits: u8, bootstrap: &super::super::bootstrap::Bootstrap) -> Result<()> {
     let requested = (bits & 1 != 0, bits & 2 != 0);
     let present = (bits & 4 != 0, bits & 8 != 0);
     let expected = (requested.0 || present.0, requested.1 || present.1);
-    let directory = tempfile::tempdir().map_err(super::super::super::storage)?;
-    let project = volume(directory.path()).await?;
+    let directory = bootstrap.restore()?;
     let provider = scripted((0..4).map(|_| ScriptedTurn::Text("answer".into())));
     let config = || {
         Ok::<_, Error>(
-            volume_config(directory.path(), project.clone(), provider.clone())?
-                .without_default_tools()
+            bootstrap
+                .config(directory.path(), provider.clone())?
                 .goal_continuations(None),
         )
     };
     let harness = LocalHarness::open(config()?).await?;
+    assert_eq!(harness.signed.agent(), bootstrap.agent);
+    assert!(provider.requests().is_empty());
     let first = OperationId::new();
     let parent = admitted(
         harness

@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Debug, PartialEq)]
-pub(super) struct Snapshot(Vec<(PathBuf, Option<Vec<u8>>, std::fs::Permissions)>);
+pub(in crate::local) struct Snapshot(Vec<(PathBuf, Option<Vec<u8>>, std::fs::Permissions)>);
 
 impl Snapshot {
     pub fn capture(root: &Path) -> Result<Self> {
