@@ -47,7 +47,8 @@
     "requests": 1,
     "model_contains": [
       "input_image",
-      "data:image/png;base64,"
+      "data:image/png;base64,",
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXk8AAAAASUVORK5CYII="
     ]
   }
 }

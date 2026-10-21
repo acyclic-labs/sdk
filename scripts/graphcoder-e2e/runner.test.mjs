@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
+import { once } from "node:events";
 import { Events, Processes } from "./process.mjs";
 import { requests, subset, toolResults } from "./assertions.mjs";
 import { matches } from "./pty.mjs";
@@ -72,4 +73,20 @@ test("real children are killed and reaped on scope cleanup", { timeout: 5000 }, 
   await processes.close();
   assert.equal(processes.children.size, 0);
   assert.throws(() => processes.start(process.execPath, []), /scope is closed/);
+});
+
+test("real process captures preserve UTF-8 at every byte boundary", { timeout: 5000 }, async () => {
+  const processes = new Processes();
+  const child = processes.start(process.execPath, ["-e", "require('node:readline').createInterface({input:process.stdin}).on('line',line=>process.stdout.write(Buffer.from(line,'hex')))"]);
+  const text = "hé λ 🙂", bytes = Buffer.from(text);
+  try {
+    for (let cut = 0; cut <= bytes.length; cut++) for (const fragment of [bytes.subarray(0, cut), bytes.subarray(cut)]) {
+      if (!fragment.length) continue;
+      const received = once(child.child.stdout, "data");
+      child.child.stdin.write(fragment.toString("hex") + "\n");
+      await received;
+    }
+    child.child.stdin.end();
+    assert.equal((await child.closed).stdout, text.repeat(bytes.length + 1));
+  } finally { await processes.close(); }
 });

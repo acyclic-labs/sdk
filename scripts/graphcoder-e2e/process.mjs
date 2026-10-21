@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { StringDecoder } from "node:string_decoder";
 
 // Event-driven subprocesses: no polling or readiness delays. Every child is
 // owned by the suite and is reaped even when another case fails.
@@ -13,12 +14,14 @@ export class Processes {
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     this.children.set(child, scopeKillSignal);
     let stdout = "", stderr = "";
-    child.stdout.on("data", bytes => { stdout += bytes; });
-    child.stderr.on("data", bytes => { stderr += bytes; });
+    const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
+    child.stdout.on("data", bytes => { stdout += outputDecoder.write(bytes); });
+    child.stderr.on("data", bytes => { stderr += errorDecoder.write(bytes); });
     const closed = new Promise((resolve, reject) => {
       child.on("error", reject);
       child.on("close", (code, signal) => {
         this.children.delete(child);
+        stdout += outputDecoder.end(); stderr += errorDecoder.end();
         resolve({ code, signal, stdout, stderr });
       });
     });

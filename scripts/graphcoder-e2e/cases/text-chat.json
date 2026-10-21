@@ -8,7 +8,7 @@
     "steps": [
       {
         "text": [
-          "h\u00c3\u00a9 ",
+          "h\u00e9 \u03bb \ud83d\ude42 ",
           "**streamed answer**",
           "\n"
         ]
@@ -19,7 +19,7 @@
     {
       "mode": "headless",
       "text": "hello",
-      "answer": "h\u00c3\u00a9 **streamed answer**\n"
+      "answer": "h\u00e9 \u03bb \ud83d\ude42 **streamed answer**\n"
     }
   ],
   "assert": {
