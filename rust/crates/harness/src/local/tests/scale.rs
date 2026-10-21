@@ -1,13 +1,16 @@
 //! Many concurrent agents in one process: per-agent cost and latency.
 //!
 //! Each root agent is a turn on its own local harness whose stateless
-//! provider writes, reads and edits one file through the stock volume tools,
+//! provider writes, reads and rewrites one file through the stock volume tools,
 //! optionally spawns and waits for children, and then answers. The CI-sized
 //! case asserts per-agent ceilings; `scripts/harness-scale.sh` ramps N.
 use super::*;
 use crate::{
     context::ModelTokenCount,
-    model::{ModelContent, ModelContentPart, ModelDispatch, ModelRole, PreparedModelRequest},
+    model::{
+        ModelContent, ModelContentPart, ModelDispatch, ModelRole, PreparedModelRequest,
+        ToolResultContent,
+    },
 };
 use futures::TryStreamExt as _;
 use std::{
@@ -119,6 +122,13 @@ impl ScaleProvider {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        // A failed tool call ends the agent: the workload must really run.
+        if let Some(ToolResultContent::Error { message }) = results.last() {
+            return Err(Error::Invalid(format!(
+                "scale agent {agent} step {} tool failed: {message}",
+                results.len()
+            )));
+        }
         let file = results
             .last()
             .and_then(|content| find_file(&serde_json::to_value(content).ok()?));
@@ -154,23 +164,24 @@ impl ScaleProvider {
         if agent.contains('c') {
             return Ok(done());
         }
-        // A root writes, reads and edits its file, then spawns its children
-        // one per step and waits for all of them.
+        // A root writes, reads and rewrites its file, then spawns its children
+        // one per step and waits for all of them. The rewrite goes by path:
+        // `edit` pins the written file's generation, and the checkout capture
+        // that precedes it commits the write's own materialization first, so
+        // an edit of a just-written checkout file fails with a generation
+        // conflict on every run (Q:/lanes/scale-10e5.md item 9).
         let children = self.children;
-        Ok(match results.len() {
-            0 => call(
+        let write = |text: &str| {
+            call(
                 "write",
-                json!({"path": format!("agents/{agent}.txt"), "text": format!("alpha {agent}
-"),
+                json!({"path": format!("agents/{agent}.txt"), "text": format!("{text} {agent}\n"),
                     "media_type": "text/plain", "display_name": "notes.txt"}),
-            ),
+            )
+        };
+        Ok(match results.len() {
+            0 => write("alpha"),
             1 => call("read", json!({"file": file()?})),
-            2 => call(
-                "edit",
-                json!({"file": find_file(&serde_json::to_value(results[0]).map_err(storage)?)
-                    .ok_or_else(|| Error::Invalid("no written file".into()))?,
-                    "old_text": "alpha", "new_text": "beta"}),
-            ),
+            2 => write("beta"),
             step if step < 3 + children => {
                 let child = step - 3;
                 call(
