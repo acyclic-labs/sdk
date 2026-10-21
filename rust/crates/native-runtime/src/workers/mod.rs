@@ -40,7 +40,9 @@ impl NativeWorkers {
     /// The global pools are fixed-size and shared by every test in the
     /// process. Two such fixtures each hold part of the pool while waiting for
     /// the rest (a circular wait), and while one holds it every other test's
-    /// host job queues behind it. So this panics unless the process runs only
+    /// host job queues behind it; a seeded driver whose job meets the full
+    /// pool also yields at physical startup, adding a poll to its replayed
+    /// trace. So this panics unless the process runs only
     /// the calling test (see [`crate::tests::passed_in_exclusive_process`]).
     pub(crate) fn exclusive_threads(&self) -> usize {
         assert!(

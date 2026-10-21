@@ -49,10 +49,14 @@ fn abandoned_replay_releases_parked_native_and_blocking_workers() {
                     drop(answer);
                 }
             }
+            // The abandoned host resumes its worker on the original wake
+            // itself, before the worker's result is awaited.
+            assert!(
+                lock(&host.state).phase != Phase::Parked,
+                "the original wake left the abandoned worker parked"
+            );
             assert_eq!(
-                completion
-                    .recv_timeout(std::time::Duration::from_secs(1))
-                    .unwrap(),
+                completion.recv().unwrap(),
                 wake != 2,
                 "original channel result changed after abandonment"
             );
