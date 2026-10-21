@@ -7,6 +7,13 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+[[bin]]
+name = "native_image"
+path = "fuzz_targets/native_image.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]
 
 [dependencies]
@@ -47,3 +54,8 @@ path = "fuzz_targets/catalog.rs"
 test = false
 doc = false
 bench = false
+
+# Match the workspace debug profile while preserving assertions and ASAN.
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"

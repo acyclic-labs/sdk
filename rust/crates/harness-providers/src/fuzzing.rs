@@ -7,36 +7,15 @@ use acyclic_harness_core::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+mod projections;
 mod tool_arguments;
 mod turn_text;
+pub use projections::{assert_alloy_invariants, assert_image_invariants};
 pub use tool_arguments::assert_tool_arguments;
 use turn_text::text_matches;
 
 fn parse(adapter: Adapter, input: &[u8], width: usize) -> Result<Vec<ModelEvent>, String> {
     parse_at(adapter, input, width, [1; 16])
-}
-
-/// Accepted alloy manifests preserve policy and deterministic selection through JSON.
-pub fn assert_alloy_invariants(input: &[u8]) {
-    if let Ok(spec) = serde_json::from_slice::<crate::AlloySpec>(input) {
-        let encoded = serde_json::to_vec(&spec).unwrap();
-        let replay: crate::AlloySpec = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(spec, replay);
-        assert_eq!(spec.validate().is_ok(), replay.validate().is_ok());
-        if spec.validate().is_ok() {
-            for ordinal in [0, 1, u64::MAX] {
-                for role in ["", "worker", "reviewer"] {
-                    let turn = crate::AlloyTurn {
-                        operation_id: OperationId::from_bytes([1; 16]),
-                        ordinal,
-                        role,
-                    };
-                    assert!(spec.index(turn) < spec.models.len());
-                    assert_eq!(spec.index(turn), replay.index(turn));
-                }
-            }
-        }
-    }
 }
 
 fn parse_at(

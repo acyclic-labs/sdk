@@ -2,6 +2,7 @@ pub(crate) mod arguments;
 mod call;
 pub(crate) mod gemini;
 mod gemini_results;
+pub(crate) mod image;
 mod json_string;
 pub(crate) mod native_reasoning;
 mod sequence;
@@ -310,6 +311,26 @@ fn project_message<'a>(
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
             ModelContentPart::File { file, policy } => {
+                if let acyclic_harness::model::FileProjectionPolicy::Native(policy) = policy {
+                    if role != "user" {
+                        return Err(invalid("native images require a user message"));
+                    }
+                    let image = image::part(
+                        adapter,
+                        file.descriptor().media_type(),
+                        policy,
+                        files.image()?,
+                    )?;
+                    if adapter == Adapter::Chat {
+                        ordered.extend(
+                            texts
+                                .drain(..)
+                                .map(|text| Item::Json(json!({"type":"text","text":text}))),
+                        );
+                    }
+                    ordered.push(Item::Json(image));
+                    continue;
+                }
                 project_text(
                     adapter,
                     role,
@@ -426,6 +447,11 @@ fn project_message<'a>(
     match adapter {
         Adapter::Chat => {
             let mut output = Vec::new();
+            if !ordered.is_empty() {
+                output.push(Message::Item(Item::Json(
+                    json!({"role":role,"content":ordered}),
+                )));
+            }
             if !texts.is_empty() || !calls.is_empty() || !chat_reasoning.is_empty() {
                 output.push(Message::Chat(wire::Chat {
                     role,
@@ -494,7 +520,8 @@ fn project_text(
         return;
     }
     match adapter {
-        Adapter::Chat => texts.push(text),
+        Adapter::Chat if ordered.is_empty() => texts.push(text),
+        Adapter::Chat => ordered.push(Item::Json(json!({"type":"text","text":text}))),
         Adapter::Responses => ordered.push(Item::Json(json!({
             "type":"message", "role":if role == "tool" { "user" } else { role },
             "content":[{"type":if role=="assistant" {"output_text"} else {"input_text"},"text":text}],

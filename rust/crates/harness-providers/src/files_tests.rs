@@ -7,6 +7,8 @@ use acyclic_harness_core::{
 };
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[path = "native_image_tests.rs"]
+mod native_image_tests;
 #[path = "reference_tests.rs"]
 mod reference_tests;
 
@@ -56,7 +58,7 @@ proptest! {
                 model: provider.model().clone(), messages, tools, max_output_tokens: Some(64),
             }, Limits::default(), None).unwrap();
             let extra = crate::files::extra_bytes(&request.request().messages.last().unwrap().content, u64::MAX).unwrap();
-            let mut resolved = crate::files::FileText(vec![text.clone()].into_iter());
+            let mut resolved = crate::files::FileText(vec![text.clone().into()].into_iter());
             let after = crate::projection::body_with_files(&provider, request.request(), &mut resolved).unwrap();
             prop_assert_eq!(extra, text.len() * 6);
             assert_expansion(&text, extra);
@@ -284,7 +286,7 @@ async fn invalid_file_policies_lengths_utf8_and_digests_fail_before_http() -> Re
             FileProjectionPolicy::BoundedFull,
         ),
         (
-            file(b"ok", "image/png")?,
+            file(b"ok", "application/zip")?,
             FileProjectionPolicy::Native(Box::new(
                 acyclic_harness_core::model::NativeMediaPolicy {
                     intent: acyclic_harness_core::model::NativeMediaIntent::Image {
@@ -386,7 +388,7 @@ async fn tool_result_file_parts_preserve_order_and_custom_headers_reach_the_tran
             },
         ],
     };
-    let mut files = crate::files::FileText(vec!["body".into()].into_iter());
+    let mut files = crate::files::FileText(vec![String::from("body").into()].into_iter());
     let result = crate::projection::body_with_files(
         &provider,
         &ModelRequest {

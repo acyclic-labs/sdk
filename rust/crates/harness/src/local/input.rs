@@ -630,7 +630,7 @@ async fn copy_checkout_file(
             ),
             &destination.value,
             chunk.bytes.as_ref(),
-            "text/plain",
+            crate::model::image_media_type(chunk.bytes.as_ref()).unwrap_or("text/plain"),
             source_display_name(path)?,
             None,
         )?

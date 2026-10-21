@@ -185,7 +185,8 @@ pub struct NativeMediaPolicy {
     /// Positive finite byte ceiling.
     #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_bytes: u64,
-    /// Positive finite provider work ceiling.
+    /// Positive finite provider work ceiling, measured by the adapter.
+    /// Built-in byte-preserving image adapters charge source bytes before I/O.
     #[cfg_attr(feature = "wasm", tsify(type = "number"))]
     pub maximum_work: u64,
     /// Registered immutable adapter options.

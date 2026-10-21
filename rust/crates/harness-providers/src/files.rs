@@ -4,6 +4,7 @@ use acyclic_harness_core::{
     conversation::{ContentResidencyVerifier, FileRef, Limits, verified_content_bytes},
     model::{FileProjectionPolicy, ModelContent, ModelRequest},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -22,7 +23,18 @@ impl Default for Files {
 }
 
 #[derive(Default)]
-pub(crate) struct FileText(pub(crate) std::vec::IntoIter<String>);
+pub(crate) struct FileText(pub(crate) std::vec::IntoIter<ResolvedFile>);
+
+pub(crate) enum ResolvedFile {
+    Text(String),
+    Image(String),
+}
+
+impl From<String> for ResolvedFile {
+    fn from(text: String) -> Self {
+        Self::Text(text)
+    }
+}
 
 impl FileText {
     pub(crate) fn project(
@@ -33,35 +45,70 @@ impl FileText {
         match policy {
             FileProjectionPolicy::Reference => reference(file),
             FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
-                self.0
-                    .next()
-                    .ok_or_else(|| invalid("missing resolved model file"))
+                match self.0.next() {
+                    Some(ResolvedFile::Text(text)) => Ok(text),
+                    _ => Err(invalid("missing resolved model text file")),
+                }
             }
             FileProjectionPolicy::Native(_) => Err(Error::Unsupported(
                 "native model media is unsupported by this adapter".into(),
             )),
         }
     }
+
+    pub(crate) fn image(&mut self) -> Result<String> {
+        match self.0.next() {
+            Some(ResolvedFile::Image(data)) => Ok(data),
+            _ => Err(invalid("missing resolved model image")),
+        }
+    }
 }
 
 fn validate(file: &FileRef, policy: &FileProjectionPolicy, maximum: u64) -> Result<()> {
     match policy {
-        FileProjectionPolicy::Reference => Ok(()),
+        FileProjectionPolicy::Reference => (),
         FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_) => {
             if !file.descriptor().media_type().starts_with("text/") {
                 return Err(Error::Unsupported(
                     "bounded model files must be text".into(),
                 ));
             }
-            if projected_bytes(file, policy)? > maximum {
-                return Err(invalid("model file exceeds projection byte limit"));
-            }
-            Ok(())
         }
-        FileProjectionPolicy::Native(_) => Err(Error::Unsupported(
-            "native model media is unsupported by this adapter".into(),
-        )),
+        FileProjectionPolicy::Native(policy) => {
+            if !matches!(
+                policy.intent,
+                acyclic_harness::model::NativeMediaIntent::Image { .. }
+            ) || policy.configuration.is_some()
+                || !matches!(
+                    file.descriptor().media_type(),
+                    "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+                )
+            {
+                return Err(Error::Unsupported(
+                    "unsupported native model image policy".into(),
+                ));
+            }
+        }
     }
+    if !matches!(policy, FileProjectionPolicy::Reference) {
+        let bytes = projected_bytes(file, policy)?;
+        let mut byte_limit = maximum;
+        if let FileProjectionPolicy::Native(native) = policy {
+            byte_limit = byte_limit.min(native.maximum_bytes);
+            let mut work = native.maximum_work;
+            charge(&mut work, bytes, "work")?;
+        }
+        charge(&mut byte_limit, bytes, "byte")?;
+    }
+    Ok(())
+}
+
+// Every projection, including native media, pays through the same pre-I/O
+// subtraction. Work is admitted source bytes (framed bytes for instructions).
+fn charge(remaining: &mut u64, bytes: u64, kind: &str) -> Result<()> {
+    *remaining = remaining.checked_sub(bytes)
+        .ok_or_else(|| invalid(&format!("model files exceed projection {kind} limit")))?;
+    Ok(())
 }
 
 fn projected_bytes(file: &FileRef, policy: &FileProjectionPolicy) -> Result<u64> {
@@ -76,10 +123,7 @@ pub(crate) fn extra_bytes(content: &ModelContent, maximum: u64) -> Result<usize>
     let mut extra = 0usize;
     for (file, policy) in content.file_parts() {
         validate(file, policy, maximum)?;
-        if matches!(
-            policy,
-            FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_)
-        ) {
+        if !matches!(policy, FileProjectionPolicy::Reference) {
             // Planning never performs I/O. Six bytes covers JSON escaping of
             // every source byte, including control characters.
             let bytes = usize::try_from(projected_bytes(file, policy)?)
@@ -105,9 +149,7 @@ pub(crate) async fn resolve(
         for (file, policy) in message.content.file_parts() {
             validate(file, policy, files.maximum_bytes)?;
             if !matches!(policy, FileProjectionPolicy::Reference) {
-                remaining = remaining
-                    .checked_sub(projected_bytes(file, policy)?)
-                    .ok_or_else(|| invalid("model files exceed aggregate projection byte limit"))?;
+                charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
             }
         }
     }
@@ -115,15 +157,10 @@ pub(crate) async fn resolve(
     let mut text = Vec::new();
     for message in &request.messages {
         for (file, policy) in message.content.file_parts() {
-            if !matches!(
-                policy,
-                FileProjectionPolicy::BoundedFull | FileProjectionPolicy::ProjectInstructions(_)
-            ) {
+            if matches!(policy, FileProjectionPolicy::Reference) {
                 continue;
             }
-            remaining = remaining
-                .checked_sub(projected_bytes(file, policy)?)
-                .ok_or_else(|| invalid("model files exceed aggregate projection byte limit"))?;
+            charge(&mut remaining, projected_bytes(file, policy)?, "aggregate byte")?;
             let reader = files.reader.as_ref().ok_or_else(|| {
                 Error::Unsupported("model file byte resolution is unavailable".into())
             })?;
@@ -135,7 +172,17 @@ pub(crate) async fn resolve(
                     acyclic_harness_core::model::InstructionSource::with_identity(file, source)
                         .render(&bytes, io)?;
                 drop(hold);
-                text.push(value);
+                text.push(ResolvedFile::Text(value));
+                continue;
+            }
+            if matches!(policy, FileProjectionPolicy::Native(_)) {
+                if acyclic_harness::model::image_media_type(bytes.as_slice())
+                    != Some(file.descriptor().media_type())
+                {
+                    return Err(invalid("model image bytes differ from their media type"));
+                }
+                text.push(ResolvedFile::Image(STANDARD.encode(bytes.as_slice())));
+                drop(hold);
                 continue;
             }
             let bytes = bytes
@@ -144,7 +191,7 @@ pub(crate) async fn resolve(
             let value =
                 String::from_utf8(bytes).map_err(|_| invalid("model text file is not UTF-8"))?;
             drop(hold);
-            text.push(value);
+            text.push(ResolvedFile::Text(value));
         }
     }
     Ok(FileText(text.into_iter()))
