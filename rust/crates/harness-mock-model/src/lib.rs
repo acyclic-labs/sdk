@@ -50,7 +50,21 @@
 //! Tool argument leaves `{"$tool_result":"/file"}` copy a JSON pointer from the
 //! last actual tool result. Missing pointers fail. Use this for write → edit → read
 //! with runtime-generated file references; no fabricated authority enters GraphCoder.
+//!
+//! Responses function calls accept `namespace`, e.g.
+//! `{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{}}`.
+//! Freeform calls use `custom_tools`, e.g.
+//! `{"id":"patch","name":"apply_patch","input":"*** Begin Patch\n..."}`.
+//! These Responses-only features fail on other adapters rather than being dropped.
+//! Completion usage includes exact input, output and total tokens; overflow fails.
+//! JSON leaves `{"$request":"/input/0/output"}` copy request values. String
+//! templates `{{request:/pointer}}` and `{{tool_result:/pointer}}` work in text,
+//! arguments, freeform input and JSON replies; strings insert raw text, other
+//! values compact JSON. Pointers follow RFC 6901. Missing/malformed templates
+//! fail with HTTP 500; copied data is never evaluated as another template.
+mod bindings;
 mod wire;
+pub use bindings::bind_result;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -105,6 +119,8 @@ pub struct Step {
     pub text: Vec<String>,
     /// Function calls, encoded in the selected provider's native format.
     pub tools: Vec<Tool>,
+    /// Responses freeform calls, emitted after function calls.
+    pub custom_tools: Vec<CustomTool>,
     /// An explicit HTTP status; absent means 200.
     pub status: Option<u16>,
     /// Return ordinary JSON instead of SSE (search/MCP/error fixtures).
@@ -121,8 +137,26 @@ pub struct Tool {
     pub id: String,
     /// The actual advertised tool name.
     pub name: String,
+    /// Responses function namespace, for example `collaboration`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     /// JSON arguments, encoded as a string on APIs requiring it.
     pub arguments: Value,
+}
+
+/// A Responses freeform call, whose input is not JSON encoded.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomTool {
+    /// Stable call identity.
+    pub id: String,
+    /// Advertised freeform tool name, for example `apply_patch`.
+    pub name: String,
+    /// Exact freeform input; request templates are supported.
+    pub input: String,
+    /// Optional Responses tool namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
 }
 
 /// Last user/tool content, consistently across the three supported APIs.
@@ -135,7 +169,10 @@ pub fn last_content(body: &Value, tool: bool) -> String {
         return String::new();
     };
     for message in messages.iter().rev() {
-        if tool && message["type"] == "function_call_output" {
+        if tool
+            && (message["type"] == "function_call_output"
+                || message["type"] == "custom_tool_call_output")
+        {
             return content_text(&message["output"]);
         }
         if let Some(parts) = message["content"].as_array() {
@@ -255,41 +292,4 @@ pub fn events(path: &str, step: &Step) -> Option<Vec<String>> {
 /// The HTTP host uses this for both fixed and byte-counted namespaces.
 pub fn events_with_usage(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
     wire::events(path, step, input_tokens)
-}
-
-/// Resolve a `{"$tool_result":"/json/pointer"}` argument leaf from the last
-/// real tool result. This lets scripts use runtime-generated immutable file
-/// references without manufacturing or bypassing the application's authority.
-pub fn bind_result(step: &Step, body: &Value) -> Result<Step, String> {
-    fn bind(value: &mut Value, result: &Value) -> Result<(), String> {
-        match value {
-            Value::Object(fields) if fields.len() == 1 && fields.contains_key("$tool_result") => {
-                let pointer = fields["$tool_result"]
-                    .as_str()
-                    .ok_or("tool result pointer must be a string")?;
-                *value = result
-                    .pointer(pointer)
-                    .ok_or_else(|| format!("missing tool result pointer {pointer}"))?
-                    .clone();
-            }
-            Value::Object(fields) => {
-                for child in fields.values_mut() {
-                    bind(child, result)?;
-                }
-            }
-            Value::Array(items) => {
-                for child in items {
-                    bind(child, result)?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    let result = serde_json::from_str(&last_content(body, true)).unwrap_or(Value::Null);
-    let mut step = step.clone();
-    for tool in &mut step.tools {
-        bind(&mut tool.arguments, &result)?;
-    }
-    Ok(step)
 }

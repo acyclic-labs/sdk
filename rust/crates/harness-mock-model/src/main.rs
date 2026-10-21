@@ -57,18 +57,20 @@ fn answer(
     let tokens = host.engine.input_tokens(namespace, &body).unwrap_or(0);
     let (step, reply) = if let Some((index, step)) = host.engine.take(namespace, endpoint, &body) {
         let status = step.status.unwrap_or(200);
-        let reply = if let Some(json) = &step.json {
+        let bound = bind_result(step, &body);
+        let reply = if let Err(error) = &bound {
+            response(500, "json", Body::from(json!({"error":error}).to_string()))
+        } else if let Some(json) = bound.as_ref().ok().and_then(|step| step.json.as_ref()) {
             let body = if step.hold {
                 Body::from_stream(stream::pending::<Result<Bytes, Infallible>>())
             } else {
                 Body::from(json.to_string())
             };
             response(status, "json", body)
-        } else if let Err(error) = bind_result(step, &body) {
-            response(500, "json", Body::from(json!({"error":error}).to_string()))
-        } else if let Some(events) = bind_result(step, &body)
+        } else if let Some(events) = bound
+            .as_ref()
             .ok()
-            .and_then(|bound| events_with_usage(endpoint, &bound, tokens))
+            .and_then(|bound| events_with_usage(endpoint, bound, tokens))
         {
             let chunks = stream::iter(
                 events

@@ -26,6 +26,15 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         ]}));
     }
     cases.insert("errors".into(), json!({"steps":[{"tools":[{"id":"missing","name":"read","arguments":{"file":{"$tool_result":"/file"}}}]}]}));
+    cases.insert("codex".into(),json!({"steps":[
+        {"tools":[{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{"message":{"$request":"/metadata/prompt"}}}]},
+        {"when":{"tool_result":"child-id"},"custom_tools":[{"id":"patch","name":"apply_patch","input":"*** Begin Patch\n*** Add File: {{tool_result:/mount}}/child.txt\n+{{tool_result:/id}}\n*** End Patch"}]},
+        {"when":{"tool_result":"applied"},"json":{"echo":{"$request":"/input/0/output"}}}
+    ]}));
+    cases.insert(
+        "bad-template".into(),
+        json!({"steps":[{"text":["{{request:/absent}}"]}]}),
+    );
     cases.insert(
         "mixed".into(),
         json!({"steps":[{
@@ -134,6 +143,67 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         run("chat", "chat/completions"),
         run("anthropic", "messages")
     );
+    let url = format!("{root}/codex/v1/responses");
+    let spawn = client
+        .post(&url)
+        .json(&json!({"metadata":{"prompt":"child task"}}))
+        .send()
+        .await
+        .unwrap();
+    assert!(spawn.status().is_success());
+    let frames = |wire: String| -> Vec<Value> {
+        wire.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let spawn = frames(spawn.text().await.unwrap());
+    let item = &spawn
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"];
+    assert_eq!(item["namespace"], "collaboration");
+    assert_eq!(item["name"], "spawn_agent");
+    assert_eq!(
+        serde_json::from_str::<Value>(item["arguments"].as_str().unwrap()).unwrap(),
+        json!({"message":"child task"})
+    );
+    let usage = &spawn.last().unwrap()["response"]["usage"];
+    assert_eq!(
+        usage,
+        &json!({"input_tokens":64,"output_tokens":2,"total_tokens":66})
+    );
+    let patch = client.post(&url).json(&json!({"input":[{"type":"function_call_output","call_id":"spawn","output":"{\"id\":\"child-id\",\"mount\":\"/real/mount\"}"}]})).send().await.unwrap();
+    assert!(patch.status().is_success());
+    let patch = frames(patch.text().await.unwrap());
+    let expected = "*** Begin Patch\n*** Add File: /real/mount/child.txt\n+child-id\n*** End Patch";
+    let item = &patch
+        .iter()
+        .find(|event| event["type"] == "response.output_item.done")
+        .unwrap()["item"];
+    assert_eq!(item["type"], "custom_tool_call");
+    assert_eq!(item["call_id"], "patch");
+    assert_eq!(item["input"], expected);
+    assert!(patch.iter().any(
+        |event| event["type"] == "response.custom_tool_call_input.delta"
+            && event["delta"] == expected
+    ));
+    let echoed = client.post(&url).json(&json!({"input":[{"type":"custom_tool_call_output","call_id":"patch","output":"applied"}]})).send().await.unwrap();
+    assert!(echoed.status().is_success());
+    assert_eq!(
+        echoed.json::<Value>().await.unwrap(),
+        json!({"echo":"applied"})
+    );
+    assert_eq!(
+        client
+            .post(format!("{root}/bad-template/v1/responses"))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        500
+    );
     let mixed = client
         .post(format!("{root}/mixed/v1/messages"))
         .json(&json!({"messages":[
@@ -180,7 +250,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
             .status(),
         500
     );
-    for _ in 0..19 {
+    for _ in 0..23 {
         assert!(
             lines
                 .next()
@@ -194,7 +264,7 @@ async fn real_server_records_all_protocols_and_isolates_parallel_cases() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    assert_eq!(records.len(), 19);
+    assert_eq!(records.len(), 23);
     for (index, record) in records.iter().enumerate() {
         assert_eq!(record["sequence"], index + 1);
     }

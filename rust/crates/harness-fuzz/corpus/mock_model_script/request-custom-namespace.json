@@ -1,0 +1,1 @@
+{"cases":{"codex":{"steps":[{"tools":[{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{"message":{"$request":"/metadata/prompt"}}}],"custom_tools":[{"id":"patch","name":"apply_patch","input":"*** Begin Patch\n{{request:/metadata/path}}\n*** End Patch"}],"text":["{{request:/metadata/path}}"],"json":{"$request":"/metadata"}}]}}}

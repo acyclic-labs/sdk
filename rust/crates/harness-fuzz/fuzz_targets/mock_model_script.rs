@@ -3,6 +3,15 @@ use harness_mock_model::{Engine, Script, Step, bind_result, events, last_content
 
 libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
     if let Ok(body) = serde_json::from_slice::<serde_json::Value>(bytes) {
+        let template: Step = serde_json::from_value(serde_json::json!({"json":{"$request":""},"text":["{{request:}}"],"custom_tools":[{"id":"patch","name":"apply_patch","input":"{{request:}}"}]})).unwrap();
+        let bound = bind_result(&template, &body).unwrap();
+        assert_eq!(bound.json.as_ref(), Some(&body));
+        let expected = body
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| body.to_string());
+        assert_eq!(bound.text, [expected.clone()]);
+        assert_eq!(bound.custom_tools[0].input, expected);
         let _ = last_content(&body, false);
         let result = last_content(&body, true);
         let step: Step = serde_json::from_value(serde_json::json!({"tools":[{"id":"one","name":"edit","arguments":{"file":{"$tool_result":"/file"}}}]})).unwrap();
@@ -24,7 +33,7 @@ libfuzzer_sys::fuzz_target!(|bytes: &[u8]| {
         for step in &case.steps {
             let _ = bind_result(step, &serde_json::json!({"input":[]}));
             for path in ["responses", "chat/completions", "messages"] {
-                for event in events(path, step).unwrap() {
+                for event in events(path, step).into_iter().flatten() {
                     for data in event.lines().filter_map(|line| line.strip_prefix("data: ")) {
                         if data != "[DONE]" {
                             serde_json::from_str::<serde_json::Value>(data).unwrap();

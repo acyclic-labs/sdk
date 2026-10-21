@@ -3,15 +3,85 @@ use harness_mock_model::{Engine, Script, Step, bind_result, events, last_content
 use proptest::prelude::*;
 use serde_json::json;
 
+fn json_value() -> impl Strategy<Value = serde_json::Value> {
+    prop_oneof![
+        Just(json!(null)),
+        any::<bool>().prop_map(|v| json!(v)),
+        any::<i64>().prop_map(|v| json!(v)),
+        ".{0,40}".prop_map(|v| json!(v))
+    ]
+    .prop_recursive(3, 32, 6, |inner| {
+        prop_oneof![
+            prop::collection::vec(inner.clone(), 0..6).prop_map(|v| json!(v)),
+            prop::collection::btree_map("[a-z]{0,8}", inner, 0..6).prop_map(|v| json!(v))
+        ]
+    })
+}
+
 proptest! {
     #[test]
-    fn every_adapter_retains_exact_counted_usage(tokens in 0_u64..u64::MAX) {
+    fn request_templates_preserve_types_and_freeform_bytes(value in json_value(), text in ".{0,128}") {
+        let step: Step = serde_json::from_value(json!({
+            "text":["echo {{request:/mount~1path}}"],
+            "tools":[{"id":"spawn","namespace":"collaboration","name":"spawn_agent","arguments":{"value":{"$request":"/value"}}}],
+            "custom_tools":[{"id":"patch","name":"apply_patch","input":"{{request:/mount~1path}}"}],
+            "json":{"echo":{"$request":"/value"}}
+        })).unwrap();
+        let body = json!({"value":value,"mount/path":text});
+        let bound = bind_result(&step,&body).unwrap();
+        prop_assert_eq!(&bound.tools[0].arguments["value"],&value);
+        prop_assert_eq!(bound.json.as_ref().unwrap(),&json!({"echo":value}));
+        prop_assert_eq!(&bound.text[0],&format!("echo {text}"));
+        prop_assert_eq!(&bound.custom_tools[0].input,&text);
+        let roundtrip: Step = serde_json::from_slice(&serde_json::to_vec(&step).unwrap()).unwrap();
+        prop_assert_eq!(roundtrip,step);
+        let wire = events("responses",&bound).unwrap().concat();
+        let frames: Vec<serde_json::Value> = wire.lines().filter_map(|line|line.strip_prefix("data: ")).map(|line|serde_json::from_str(line).unwrap()).collect();
+        let done: Vec<_> = frames.iter().filter(|event|event["type"]=="response.output_item.done").collect();
+        prop_assert_eq!(&done[0]["item"]["namespace"],&json!("collaboration"));
+        prop_assert_eq!(&done[0]["item"]["arguments"],&json!(bound.tools[0].arguments.to_string()));
+        prop_assert_eq!(&done[1]["item"]["type"],&json!("custom_tool_call"));
+        prop_assert_eq!(&done[1]["item"]["input"],&json!(text));
+        prop_assert!(frames.iter().any(|event|event["type"]=="response.custom_tool_call_input.delta" && event["delta"]==json!(text)));
+        for path in ["messages","chat/completions"] { prop_assert!(harness_mock_model::events(path,&bound).is_none()); }
+    }
+}
+
+#[test]
+fn templates_reject_missing_invalid_and_unterminated_pointers_without_reexpanding_data() {
+    for value in [
+        json!({"$request":"/missing"}),
+        json!({"$request":7}),
+        json!("{{request:/missing}}"),
+        json!("{{request:/id"),
+    ] {
+        let step: Step = serde_json::from_value(json!({"json":value})).unwrap();
+        assert!(bind_result(&step, &json!({"id":"child"})).is_err());
+    }
+    let step: Step = serde_json::from_value(json!({"text":["{{request:/id}}"]})).unwrap();
+    assert_eq!(
+        bind_result(&step, &json!({"id":"{{request:/missing}}"}))
+            .unwrap()
+            .text,
+        ["{{request:/missing}}"]
+    );
+    for tokens in [u64::MAX - 1, u64::MAX] {
+        assert!(
+            harness_mock_model::events_with_usage("responses", &Step::default(), tokens).is_none()
+        );
+    }
+}
+
+proptest! {
+    #[test]
+    fn every_adapter_retains_exact_counted_usage(tokens in 0_u64..u64::MAX-1) {
         let step: Step = serde_json::from_value(json!({"text":["done"]})).unwrap();
         for path in ["responses", "chat/completions", "messages"] {
             let wire = harness_mock_model::events_with_usage(path, &step, tokens).unwrap().concat();
             let events: Vec<serde_json::Value> = wire.lines().filter_map(|line| line.strip_prefix("data: ")).filter_map(|line| serde_json::from_str(line).ok()).collect();
             let usage = events.iter().find_map(|event| event.pointer("/response/usage").or_else(|| event.pointer("/message/usage")).or_else(|| event.get("usage"))).unwrap();
             prop_assert_eq!(usage.get("input_tokens").or_else(|| usage.get("prompt_tokens")).unwrap(), &json!(tokens));
+            prop_assert_eq!(&usage["total_tokens"], &json!(tokens+2));
         }
     }
 

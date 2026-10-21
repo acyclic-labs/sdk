@@ -11,21 +11,56 @@ fn sse(value: Value) -> String {
 
 pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<String>> {
     let mut output = Vec::new();
-    let usage = json!({"input_tokens":input_tokens,"output_tokens":2});
+    let total_tokens = input_tokens.checked_add(2)?;
+    let usage = json!({"input_tokens":input_tokens,"output_tokens":2,"total_tokens":total_tokens});
+    if path != "responses"
+        && (!step.custom_tools.is_empty() || step.tools.iter().any(|tool| tool.namespace.is_some()))
+    {
+        return None;
+    }
     match path {
         "responses" => {
             output.push(sse(json!({"type":"response.created","response":{"id":"mock-response","status":"in_progress"}})));
             for text in &step.text {
                 output.push(sse(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})));
             }
+            let mut items = Vec::new();
             for (index, tool) in step.tools.iter().enumerate() {
                 let arguments = tool.arguments.to_string();
-                output.push(sse(json!({"type":"response.output_item.added","output_index":index+1,"item":{"type":"function_call","id":format!("fc_{}",tool.id),"call_id":tool.id,"name":tool.name,"arguments":""}})));
+                let mut item = json!({"type":"function_call","id":format!("fc_{}",tool.id),"call_id":tool.id,"name":tool.name,"arguments":""});
+                if let Some(namespace) = &tool.namespace {
+                    item["namespace"] = json!(namespace);
+                }
+                output.push(sse(
+                    json!({"type":"response.output_item.added","output_index":index+1,"item":item}),
+                ));
                 output.push(sse(json!({"type":"response.function_call_arguments.delta","output_index":index+1,"delta":arguments})));
                 output.push(sse(json!({"type":"response.function_call_arguments.done","output_index":index+1,"arguments":arguments})));
+                item["arguments"] = json!(arguments);
+                output.push(sse(
+                    json!({"type":"response.output_item.done","output_index":index+1,"item":item}),
+                ));
+                items.push(item);
+            }
+            for (index, tool) in step.custom_tools.iter().enumerate() {
+                let index = step.tools.len() + index + 1;
+                let mut item = json!({"type":"custom_tool_call","id":format!("ctc_{}",tool.id),"call_id":tool.id,"name":tool.name,"input":""});
+                if let Some(namespace) = &tool.namespace {
+                    item["namespace"] = json!(namespace);
+                }
+                output.push(sse(
+                    json!({"type":"response.output_item.added","output_index":index,"item":item}),
+                ));
+                output.push(sse(json!({"type":"response.custom_tool_call_input.delta","output_index":index,"item_id":item["id"],"delta":tool.input})));
+                output.push(sse(json!({"type":"response.custom_tool_call_input.done","output_index":index,"item_id":item["id"],"input":tool.input})));
+                item["input"] = json!(tool.input);
+                output.push(sse(
+                    json!({"type":"response.output_item.done","output_index":index,"item":item}),
+                ));
+                items.push(item);
             }
             if !step.hold {
-                output.push(sse(json!({"type":"response.completed","response":{"id":"mock-response","status":"completed","usage":usage}})));
+                output.push(sse(json!({"type":"response.completed","response":{"id":"mock-response","status":"completed","usage":usage,"output":items}})));
             }
         }
         "chat/completions" => {
@@ -41,7 +76,7 @@ pub(crate) fn events(path: &str, step: &Step, input_tokens: u64) -> Option<Vec<S
                 } else {
                     "tool_calls"
                 };
-                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2}})));
+                output.push(sse(json!({"choices":[{"index":0,"delta":{},"finish_reason":reason}],"usage":{"prompt_tokens":input_tokens,"completion_tokens":2,"total_tokens":total_tokens}})));
                 output.push("data: [DONE]\n\n".into());
             }
         }
