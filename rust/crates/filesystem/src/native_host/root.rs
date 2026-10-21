@@ -259,6 +259,25 @@ impl HostRoot {
             }
         })
     }
+    /// Opens a held-root output with the access needed by FlushFileBuffers.
+    #[cfg(all(windows, any(test, feature = "native-mount")))]
+    pub(crate) fn open_file_for_sync<W: NativeHostWork>(
+        &self,
+        path: &[u16],
+        work: &mut W,
+    ) -> Result<cap_std::fs::File, W::Error> {
+        with_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
+            open_windows_at(
+                parent,
+                leaf,
+                fs::FILE_GENERIC_READ | fs::FILE_GENERIC_WRITE,
+                nt::FILE_OPEN,
+                nt::FILE_NON_DIRECTORY_FILE,
+                work,
+            )
+            .map(cap_std::fs::File::from_std)
+        })
+    }
     #[cfg(all(windows, any(test, feature = "native-mount")))]
     pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,

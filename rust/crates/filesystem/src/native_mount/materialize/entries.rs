@@ -201,7 +201,9 @@ where
                             Some(meter),
                         )
                         .map_err(|error| receipt.runtime_error(error))?;
-                    control.await.map_err(|error| receipt.runtime_error(error))?;
+                    control
+                        .await
+                        .map_err(|error| receipt.runtime_error(error))?;
                     generation_action(before_effect, NativeMaterializationActionPhase::Completed)
                         .await?;
                 }
@@ -242,11 +244,7 @@ where
                 #[cfg(windows)]
                 let file = host_root
                     .0
-                    .open_file(
-                        &host_path.0,
-                        windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-                        &mut work,
-                    )
+                    .open_file_for_sync(&host_path.0, &mut work)
                     .map_err(MaterializeError::from)?
                     .into_std();
                 let meter = receipt.custody.work().runtime_meter();
