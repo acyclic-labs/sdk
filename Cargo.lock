@@ -368,8 +368,8 @@ dependencies = [
  "sha2 0.11.0",
  "shuttle",
  "sse-stream",
- "tempfile",
  "syn 3.0.6",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-rustls",
@@ -412,6 +412,7 @@ dependencies = [
  "bytes",
  "diffy",
  "futures",
+ "harness-mock-model",
  "libfuzzer-sys",
  "proptest",
  "prost",
@@ -2896,6 +2897,23 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "harness-mock-model"
+version = "0.0.0"
+dependencies = [
+ "axum",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "proptest",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

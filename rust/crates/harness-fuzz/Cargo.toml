@@ -35,6 +35,7 @@ native-execution = []
 notifications = ["runtime", "acyclic-harness/test-support", "acyclic-harness/filesystem-local", "acyclic-harness/mcp-http"]
 
 [dependencies]
+harness-mock-model = { path = "../harness-mock-model" }
 blake3.workspace = true
 acyclic-harness = { path = "../harness", features = ["terminal", "tui", "filesystem-local", "native-execution", "grpc", "test-support", "search-http"], optional = true }
 diffy = { workspace = true, optional = true }
@@ -54,6 +55,13 @@ uuid = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["test-util"], optional = true }
 tokio-util = { workspace = true, features = ["codec"], optional = true }
 which = { version = "=8.0.6", optional = true }
+
+[[bin]]
+name = "mock_model_script"
+path = "fuzz_targets/mock_model_script.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "search_http_codec"

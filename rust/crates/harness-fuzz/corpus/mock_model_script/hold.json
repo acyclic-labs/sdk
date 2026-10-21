@@ -1,0 +1,1 @@
+{"cases":{"cancel":{"steps":[{"text":["partial"],"hold":true}]},"error":{"steps":[{"status":400,"json":{"error":"scripted failure"}}]}}}

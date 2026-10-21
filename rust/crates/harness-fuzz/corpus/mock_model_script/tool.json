@@ -1,0 +1,1 @@
+{"cases":{"tool":{"steps":[{"when":{"user":"hello"},"tools":[{"id":"one","name":"read","arguments":{"path":"hello.txt"}}]},{"when":{"tool_result":"result"},"text":["done"]}]}}}
