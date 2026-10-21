@@ -56,6 +56,7 @@ windows-sys = { version = "0.61.2", features = [
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 async-trait.workspace = true
 axum.workspace = true
 bytes.workspace = true

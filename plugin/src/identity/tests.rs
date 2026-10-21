@@ -466,6 +466,7 @@ async fn bearer_refuses_sidecar_paths_before_contacting_global() {
 
 #[tokio::test]
 async fn device_login_pending_slowdown_then_approval() {
+    let _clock = poll_clock::Clock::start();
     let fields = vec![
         ("grant_type", DEVICE_GRANT),
         ("device_code", "device-secret"),
@@ -1468,3 +1469,6 @@ async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
     assert_eq!(agent.registration().expect("registration").tier, "agent");
     fake.done();
 }
+
+// Advances only production device-poll timers that actually become pending.
+pub(super) mod poll_clock;

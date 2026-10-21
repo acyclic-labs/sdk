@@ -640,6 +640,7 @@ mod tests {
 
     #[tokio::test]
     async fn slowdown_survives_cancelled_completion_and_retry() {
+        let _clock = crate::identity::tests::poll_clock::Clock::start();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let count = std::sync::Arc::new(AtomicUsize::new(0));
         let second_poll = std::sync::Arc::new(tokio::sync::Notify::new());

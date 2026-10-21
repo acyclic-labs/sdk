@@ -661,10 +661,13 @@ impl Identity {
             {
                 return Err(Error::new("expired_token", "device approval expired"));
             }
+            let delay = tokio::time::sleep(sleep);
+            #[cfg(test)]
+            let delay = tests::poll_clock::observe(delay, sleep);
             tokio::select! {
                 biased;
                 () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
-                () = tokio::time::sleep(sleep) => {}
+                () = delay => {}
             }
             // Once dispatched, a successful exchange must reach the credential store.
             let result = self
