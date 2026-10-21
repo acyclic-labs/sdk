@@ -23,7 +23,7 @@ export function matches(screen, raw, condition) {
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
     && (condition.raw ?? []).every(text => raw.includes(text))
-    && (!condition.cursor || raw.includes("\x1b[?25h"));
+    && (!condition.cursor || raw.lastIndexOf("\x1b[?25h") > raw.lastIndexOf("\x1b[?25l"));
 }
 
 export async function pty(processes, binary, fixture, input, capture) {
@@ -74,11 +74,12 @@ export async function pty(processes, binary, fixture, input, capture) {
   const result = await running.closed;
   unsubscribe();
   await new Promise(resolve => screen.write("", resolve));
-  capture({ ...result, raw, snapshots, visible: screenText(screen), actions: index });
+  const visible = screenText(screen);
+  capture({ ...result, raw, snapshots, visible, actions: index });
   screen.dispose();
   if (failure) throw failure;
   assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${raw}`);
-  if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + screenText(screen));
+  if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
   else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
   return result;
 }

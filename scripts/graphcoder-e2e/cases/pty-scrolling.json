@@ -31,7 +31,7 @@
           "when": {
             "contains": [
               "SCROLL_LINE_49",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ],
             "absent": [
               "SCROLL_LINE_00"
@@ -54,7 +54,7 @@
           "when": {
             "contains": [
               "SCROLL_LINE_49",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

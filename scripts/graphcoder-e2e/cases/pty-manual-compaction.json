@@ -50,7 +50,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "prompt": "/compact preserve the fact"
@@ -59,7 +59,7 @@
           "when": {
             "contains": [
               "COMPACTED_E2E_FACT",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "prompt": "after compact"
@@ -68,7 +68,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

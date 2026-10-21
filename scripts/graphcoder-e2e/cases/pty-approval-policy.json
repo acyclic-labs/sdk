@@ -56,7 +56,7 @@
           "when": {
             "contains": [
               "APPROVAL_E2E_DONE",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

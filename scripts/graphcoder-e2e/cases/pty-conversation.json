@@ -42,7 +42,7 @@
           "when": {
             "contains": [
               "FIRST_REPLY",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "prompt": "second prompt"
@@ -51,7 +51,7 @@
           "when": {
             "contains": [
               "SECOND_REPLY",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

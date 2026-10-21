@@ -46,7 +46,7 @@
           "when": {
             "contains": [
               "DONE_EDIT",
-              "\u00e2\u2014\u2039"
+              "\u25cb"
             ]
           },
           "prompt": "/diff"

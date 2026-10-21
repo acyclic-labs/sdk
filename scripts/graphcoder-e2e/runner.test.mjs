@@ -55,6 +55,10 @@ test("screen conditions require rendered styles and reject literal markdown", as
   await write("\r\x1b[2K\x1b[1manswer\x1b[0m");
   assert.ok(matches(screen, "\x07", { contains: ["answer"], bold: "answer", absent: ["**answer**"], raw: ["\x07"] }));
   assert.ok(!matches(screen, "", { contains: ["answer"], raw: ["\x07"] }));
+  await write("\r\x1b[2K\u25cb GraphCoder");
+  assert.ok(matches(screen, "\x1b[?25l\x1b[?25h", { contains: ["\u25cb GraphCoder"], cursor: true }));
+  assert.ok(!matches(screen, "\x1b[?25h\x1b[?25l", { contains: ["\u25cb GraphCoder"], cursor: true }));
+  assert.ok(!matches(screen, "\x1b[?25h", { contains: ["\u00e2\u2014\u2039"] }));
   screen.dispose();
 });
 

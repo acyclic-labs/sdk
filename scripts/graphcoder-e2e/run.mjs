@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Data cases drive the shipping executable through argv, HTTP and real PTYs.
 // Build graphcoder and harness-mock-model ahead of time, then run:
-//   node scripts/graphcoder-e2e/run.mjs GRAPHСODER MOCK_MODEL [case-id...]
+//   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
 // Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
 // On Windows, compile prepare-conpty.ps1 with Windows PowerShell and set
 // E2E_CONPTY_ASSEMBLY to its DLL. E2E_WORKSPACE_ROOT=Q:/wt selects ReFS;
