@@ -528,7 +528,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .transpose()?;
             (hold, path)
         };
-        #[cfg(all(test, not(target_arch = "wasm32")))]
+        #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
         acyclic_test_support::differential::record(("read", maximum_bytes));
         let bytes = read_generation(generation, &path, maximum_bytes, io).await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;

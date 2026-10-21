@@ -61,6 +61,13 @@ fn seed_711_interleaves_the_actual_manifest_and_rejects_the_grouped_control() ->
 }
 
 fn expected(scenario: Scenario) -> Result<BTreeMap<String, usize>> {
+    // Text/EffectAndContinuation/Compaction verify 14/36/27 retained files.
+    // Reopening each already authenticated generation cost eight ready authority
+    // reads. Reuse removes only those reads; content and descriptor checks remain.
+    // Counts include HEAD-write verification now traced on main. Independent
+    // old/new scenario traces derive the ready pins:
+    // Text 2098 - 14*8 = 1986; Effect 5587 - 36*8 = 5299;
+    // Compaction 3805 - 27*8 = 3589. Every other boundary count is unchanged.
     let bytes: &[u8] = match scenario {
         Scenario::Text => include_bytes!("coverage/text.json"),
         Scenario::EffectAndContinuation => include_bytes!("coverage/effect_goal.json"),
