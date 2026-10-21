@@ -30,8 +30,11 @@ if (process.platform === "win32") {
   mkdirSync(ntfs, { recursive: true });
   roots.push(mkdtempSync(join(ntfs, "graphcoder-e2e-ntfs-")));
 }
-const cases = readdirSync(join(directory, "cases")).filter(name => name.endsWith(".json"))
-  .map(name => JSON.parse(readFileSync(join(directory, "cases", name), "utf8")))
+const scripts = readdirSync(join(directory, "cases")).filter(name => name.endsWith(".json"))
+  .map(name => JSON.parse(readFileSync(join(directory, "cases", name), "utf8")));
+const identities = new Set(scripts.map(test => test.id));
+for (const id of selected) assert.ok(identities.has(id), `unknown case ${id}`);
+const cases = scripts
   .filter(test => !selected.length || selected.includes(test.id))
   .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
 assert.ok(cases.length, "no matching cases");

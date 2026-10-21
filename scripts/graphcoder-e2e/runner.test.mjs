@@ -2,10 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PassThrough } from "node:stream";
 import { once } from "node:events";
+import { fileURLToPath } from "node:url";
 import { Events, Processes } from "./process.mjs";
 import { requests, subset, toolResults } from "./assertions.mjs";
 import { matches } from "./pty.mjs";
 import { Terminal } from "../graphcoder-pty/screen.mjs";
+
+test("case selection rejects misspellings before starting either executable", async () => {
+  const processes = new Processes();
+  try {
+    const child = processes.start(process.execPath, [fileURLToPath(new URL("./run.mjs", import.meta.url)), "missing-binary", "missing-mock", "text-responses", "misspelled-case"]);
+    const result = await child.closed;
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /unknown case misspelled-case/);
+    assert.doesNotMatch(result.stderr, /ENOENT/);
+  } finally { await processes.close(); }
+});
 
 test("request assertions reject omitted, duplicated, unmatched and fabricated results", () => {
   const fixture = { model: { steps: [{}, {}] }, assert: { requests: 2, tool_contains: ["REAL_RESULT"] } };
