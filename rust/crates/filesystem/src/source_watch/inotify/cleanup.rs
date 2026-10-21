@@ -262,6 +262,10 @@ impl Shared {
         reading.cursor = 0;
         reading.alias_cursor = 0;
         reading.blocked = true;
+        // Withdrawn above, so the router delivers nothing more: release the
+        // routed records this watch will never read with the rest of its
+        // retained bytes.
+        *self.inbox.lock().unwrap_or_else(PoisonError::into_inner) = hub::Inbox::default();
         result = result.and(self.ownership.retire(retired_bytes));
         self.retained_variable_bytes.store(0, Ordering::Release);
         result

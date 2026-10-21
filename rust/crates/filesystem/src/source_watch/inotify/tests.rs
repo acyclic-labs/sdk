@@ -905,9 +905,15 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
 
     // Paused watches keep routed records in their inboxes for inspection;
     // records other tests' activity routed earlier stay out of the comparison.
-    let paused = watches
+    let mut paused = watches
         .iter()
-        .map(NativeSourceWatch::paused)
+        .map(|watch| {
+            watch
+                .shared
+                .reading
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+        })
         .collect::<Vec<_>>();
     let pending = || {
         watches
@@ -930,6 +936,10 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
     for (index, (after, before)) in pending().into_iter().zip(before).enumerate() {
         assert_eq!(after != before, index == 5, "watch {index}");
     }
+    // Watch 5 stops with its routed records still unread: stopping releases
+    // them with the rest of its retained bytes. Negative control: without
+    // the inbox reset in `clear_measured` they outlive the watch.
+    paused.get_mut(5).ok_or("watch 5 exists")?.blocked = true;
     drop(paused);
 
     for watch in &watches {
@@ -938,7 +948,46 @@ fn watches_share_the_queue_and_route_ancestor_records_by_name()
             &CancellationToken::new(),
         ))?;
         assert!(watch.shared.physically_cleared());
+        assert_eq!(
+            watch
+                .shared
+                .inbox
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pending(),
+            (0, false)
+        );
     }
     assert_eq!(hub.interests(parent), (0, 0));
+    Ok(())
+}
+
+/// A watch never receives records queued before it registered. A directory
+/// other watches already share holds the record of this watch's root being
+/// created; routed to the new watch's ancestor interest, it would report the
+/// root rebound and leave the watch inexact. Negative control: registering
+/// without first routing the queued records (`Hub::add` skipping
+/// `drain_locked`) fails the exactness assertion below.
+#[test]
+fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn std::error::Error>>
+{
+    let parent = tempfile::tempdir()?;
+    std::fs::create_dir(parent.path().join("a"))?;
+    // Registers `parent` for the child name `a`, so the kernel queues every
+    // later creation in `parent` on the shared descriptor.
+    let first = watcher(&parent.path().join("a"))?;
+    let second = {
+        // Keep the router from routing the creation of `b` before `b`'s watch
+        // registers `parent` for the name `b`.
+        let _paused = hub::ROUTER_PAUSED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::fs::create_dir(parent.path().join("b"))?;
+        watcher(&parent.path().join("b"))?
+    };
+    second.fence()?;
+    assert!(second.shared.delivery.is_exact());
+    first.fence()?;
+    assert!(first.shared.delivery.is_exact());
     Ok(())
 }

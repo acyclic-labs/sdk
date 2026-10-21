@@ -14,7 +14,9 @@
 //! watch: a watch registers an ancestor only for the one child name on the way
 //! to its root, so many watches below one shared directory do not each receive
 //! that directory's records. Registration and withdrawal are keyed by the
-//! watch's own descriptors, so neither scans the other watches.
+//! watch's own descriptors, so neither scans the other watches. A registration
+//! first routes the records already queued, so a watch never receives records
+//! that predate it, as with an instance of its own.
 //!
 //! The kernel allocates watch descriptors cyclically, so a descriptor removed
 //! here is not reissued while its trailing `IN_IGNORED` record can still be
@@ -73,12 +75,20 @@ pub(super) struct Inbox {
     scheduled: bool,
 }
 
-static HUB: OnceLock<Result<Hub, i32>> = OnceLock::new();
+static HUB: OnceLock<Hub> = OnceLock::new();
+
+/// Held by a test to keep the router from reading, so records stay queued.
+#[cfg(test)]
+pub(super) static ROUTER_PAUSED: Mutex<()> = Mutex::new(());
 
 pub(super) fn hub() -> Result<&'static Hub, DemandError> {
-    HUB.get_or_init(Hub::open)
-        .as_ref()
-        .map_err(|error| io::Error::from_raw_os_error(*error).into())
+    if let Some(hub) = HUB.get() {
+        return Ok(hub);
+    }
+    // A failed open (a descriptor or memory limit) is retried by the next
+    // watch; a racing opener's instance closes when its value drops.
+    let opened = Hub::open().map_err(io::Error::from_raw_os_error)?;
+    Ok(HUB.get_or_init(|| opened))
 }
 
 fn record_length(raw: &[u8]) -> Option<usize> {
@@ -115,24 +125,23 @@ impl Hub {
         })
     }
 
+    /// Starts the router and the service pool once. A failed spawn is
+    /// retried by the next watch without duplicating threads already running.
     fn start_threads(&'static self) -> io::Result<()> {
-        static STARTED: OnceLock<Result<(), i32>> = OnceLock::new();
-        STARTED
-            .get_or_init(|| {
-                let spawn = |name: &str, body: fn(&'static Hub)| {
-                    std::thread::Builder::new()
-                        .name(name.into())
-                        .spawn(move || body(self))
-                        .map(drop)
-                        .map_err(|error| error.raw_os_error().unwrap_or(libc::EAGAIN))
-                };
-                spawn("acyclic-watch", Self::route_forever)?;
-                for _ in 0..SERVICE_THREADS {
-                    spawn("acyclic-watch-service", Self::serve_forever)?;
-                }
-                Ok(())
-            })
-            .map_err(io::Error::from_raw_os_error)
+        static STARTED: Mutex<usize> = Mutex::new(0);
+        let mut started = STARTED.lock().unwrap_or_else(PoisonError::into_inner);
+        while *started <= SERVICE_THREADS {
+            let (name, body): (&str, fn(&'static Self)) = if *started == 0 {
+                ("acyclic-watch", Self::route_forever)
+            } else {
+                ("acyclic-watch-service", Self::serve_forever)
+            };
+            std::thread::Builder::new()
+                .name(name.into())
+                .spawn(move || body(self))?;
+            *started += 1;
+        }
+        Ok(())
     }
 
     /// Subscribes a new watch to queue overflow records.
@@ -188,7 +197,28 @@ impl Hub {
         mask: u32,
         interest: Interest<'_>,
     ) -> io::Result<i32> {
-        let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut ready = Vec::new();
+        let added = {
+            let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
+            // Records already queued predate this registration: a directory
+            // other watches share may hold records about this watch's names
+            // from before it existed. Route them to the earlier interests
+            // first, as a fresh instance would never have queued them.
+            self.drain_locked(&mut routes, &mut ready)
+                .and_then(|()| self.add_locked(&mut routes, watch, path, mask, interest))
+        };
+        self.schedule_ready(ready);
+        added
+    }
+
+    fn add_locked(
+        &self,
+        routes: &mut Routes,
+        watch: &Shared,
+        path: &std::ffi::CStr,
+        mask: u32,
+        interest: Interest<'_>,
+    ) -> io::Result<i32> {
         // SAFETY: a NUL-terminated path that outlives the call.
         let descriptor = unsafe {
             libc::inotify_add_watch(
@@ -292,13 +322,56 @@ impl Hub {
         result
     }
 
-    /// Routes every record the kernel has queued, then schedules the watches
-    /// that received records once the routing lock is released.
+    /// Bytes the kernel has queued.
+    fn queued(&self) -> io::Result<usize> {
+        let mut queued: libc::c_int = 0;
+        // SAFETY: FIONREAD writes one int, the queued byte count.
+        if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), libc::FIONREAD, &raw mut queued) } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        usize::try_from(queued).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
+    }
+
+    /// Routes every record the kernel queued before this call, so a fence
+    /// observes them in its inbox. Records arriving meanwhile are left to the
+    /// router: the work is bounded by the queue at entry, however busy.
     pub(super) fn drain(&self) -> io::Result<()> {
+        let queued = self.queued()?;
+        // The queue is FIFO and the router reads under the routing lock: once
+        // this call has read `queued` bytes or found the queue empty, every
+        // record queued at entry was routed by this call or before its batch.
+        let mut consumed = 0_usize;
+        loop {
+            let read = self.drain_batch()?;
+            consumed = consumed.saturating_add(read);
+            if read == 0 || consumed >= queued {
+                return Ok(());
+            }
+        }
+    }
+
+    /// `drain` under one hold of the routing lock.
+    fn drain_locked(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<()> {
+        let queued = self.queued()?;
+        let mut consumed = 0_usize;
+        loop {
+            let read = self.route_batch(routes, ready)?;
+            consumed = consumed.saturating_add(read);
+            if read == 0 || consumed >= queued {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Reads and routes one buffer of records, then schedules the watches
+    /// that received them once the routing lock is released. Returns the
+    /// bytes read; zero when the queue is empty.
+    fn drain_batch(&self) -> io::Result<usize> {
         let mut ready = Vec::new();
         let result = {
             let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
-            self.drain_locked(&mut routes, &mut ready)
+            self.route_batch(&mut routes, &mut ready)
         };
         self.schedule_ready(ready);
         result
@@ -315,8 +388,8 @@ impl Hub {
         }
     }
 
-    fn drain_locked(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<()> {
-        loop {
+    fn route_batch(&self, routes: &mut Routes, ready: &mut Ready) -> io::Result<usize> {
+        let filled = loop {
             let length = routes.buffer.len();
             // SAFETY: the routing lock owns this buffer for the read.
             let read = unsafe {
@@ -326,19 +399,18 @@ impl Hub {
                     length,
                 )
             };
-            if read < 0 {
-                let error = io::Error::last_os_error();
-                match error.kind() {
-                    io::ErrorKind::WouldBlock => return Ok(()),
-                    io::ErrorKind::Interrupted => continue,
-                    _ => return Err(error),
-                }
+            if read >= 0 {
+                break usize::try_from(read)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
             }
-            let filled =
-                usize::try_from(read).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            if filled == 0 {
-                return Ok(());
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::WouldBlock => return Ok(0),
+                io::ErrorKind::Interrupted => {}
+                _ => return Err(error),
             }
+        };
+        {
             let Routes {
                 buffer,
                 descriptors,
@@ -400,6 +472,7 @@ impl Hub {
                 }
             }
         }
+        Ok(filled)
     }
 
     pub(super) fn schedule(&self, watch: Arc<Shared>) {
@@ -426,7 +499,13 @@ impl Hub {
                 self.fail_all();
                 return;
             }
-            if self.drain().is_err() {
+            #[cfg(test)]
+            let paused = ROUTER_PAUSED.lock().unwrap_or_else(PoisonError::into_inner);
+            // One buffer per wakeup: delivery is scheduled between batches.
+            let routed = self.drain_batch();
+            #[cfg(test)]
+            drop(paused);
+            if routed.is_err() {
                 self.fail_all();
                 return;
             }
