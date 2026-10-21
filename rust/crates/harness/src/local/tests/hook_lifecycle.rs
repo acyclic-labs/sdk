@@ -448,9 +448,32 @@ async fn aggregate_capture_limits_retain_a_typed_outcome_instead_of_an_unresolve
 
 /// Names below the checkout's `.volumes/`; an absent or empty directory is not
 /// visible to `git status`, while a mount registry or projection is.
+/// Volume entries left in the checkout, other than the checkout's own
+/// incarnation record, which persists by design and must hold only its token.
 fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
-    match std::fs::read_dir(workspace.join(".volumes")) {
-        Ok(entries) => entries
+    let incarnation = Path::new(crate::local::workspace::volumes::INCARNATION_PATH);
+    let owned = incarnation
+        .file_name()
+        .expect("incarnation leaf")
+        .to_string_lossy();
+    let mut residue = Vec::new();
+    let entries = match std::fs::read_dir(workspace.join(".volumes")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(residue),
+        Err(error) => return Err(super::super::storage(error)),
+    };
+    for entry in entries {
+        let name = entry
+            .map_err(super::super::storage)?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if name != owned {
+            residue.push(name);
+            continue;
+        }
+        let record = std::fs::read_dir(workspace.join(incarnation))
+            .map_err(super::super::storage)?
             .map(|entry| {
                 Ok(entry
                     .map_err(super::super::storage)?
@@ -458,10 +481,12 @@ fn volume_residue(workspace: &Path) -> Result<Vec<String>> {
                     .to_string_lossy()
                     .into_owned())
             })
-            .collect(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(super::super::storage(error)),
+            .collect::<Result<Vec<_>>>()?;
+        if record != ["token"] {
+            residue.push(format!("{name}/{}", record.join(",")));
+        }
     }
+    Ok(residue)
 }
 
 async fn open_checkout(
