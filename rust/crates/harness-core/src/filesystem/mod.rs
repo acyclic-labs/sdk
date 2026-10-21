@@ -175,6 +175,26 @@ mod project_verifier;
 pub use project_verifier::FilesystemProjectMergeVerifier;
 mod parent;
 pub use parent::{InheritedContextCapture, ParentMergePlan, ParentProjectController};
+/// Pins a generation that a published file version names, under the one
+/// label every unmeasured publication uses, so the version stays readable.
+#[doc(hidden)]
+pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    generation: &Generation<A, O>,
+) -> Result<()> {
+    generation
+        .retain_if_unpublished(
+            format!(
+                "harness-generation-{}",
+                hex::encode(generation.id().digest().into_bytes())
+            ),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|failure| map_error(failure.error))
+}
+
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     async fn content_for_operation_impl(
         &self,
@@ -432,17 +452,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         {
             match io {
                 Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
-                None => {
-                    generation
-                        .retain_if_unpublished(
-                            format!("harness-generation-{version}"),
-                            acyclic_fs::WorkBudget::UNBOUNDED,
-                            &acyclic_fs::CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| map_error(failure.error))?;
-                }
+                None => retain_published_generation(&generation).await?,
             }
         }
         let reference = {

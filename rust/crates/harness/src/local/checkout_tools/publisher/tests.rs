@@ -456,3 +456,99 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_written_file_ref_is_immediately_editable() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let (written, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "result.txt",
+            b"before edit
+",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    // Before the fix the returned version named the staged generation, and
+    // capturing the write's own host metadata made that generation stale.
+    let (edited, _) = publisher
+        .stage_at(
+            OperationId::new(),
+            &written,
+            b"after edit
+",
+            None,
+        )?
+        .await?;
+    assert_eq!(edited.path(), "result.txt");
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"after edit
+"
+    );
+    // The edit's own reference is just as current.
+    publisher
+        .stage_at(
+            OperationId::new(),
+            &edited,
+            b"third
+",
+            None,
+        )?
+        .await?;
+    assert_eq!(
+        std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
+        b"third
+"
+    );
+    Ok(())
+}
+
+// Negative control: rebinding never hides a foreign change. A user edit made
+// after the write still makes the returned reference stale.
+#[tokio::test]
+async fn a_foreign_change_after_a_write_still_conflicts() -> Result<()> {
+    let (directory, _state, _harness, publisher) = fixture().await?;
+    let (written, _) = publisher
+        .stage_once(
+            OperationId::new(),
+            "result.txt",
+            b"agent bytes
+",
+            "text/plain",
+            "result.txt",
+            None,
+        )?
+        .await?;
+    let path = directory.path().join("result.txt");
+    std::fs::write(
+        &path,
+        b"user bytes
+",
+    )
+    .map_err(storage)?;
+    let conflict = match publisher.stage_at(
+        OperationId::new(),
+        &written,
+        b"overwrite
+",
+        None,
+    ) {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    let conflict = conflict.ok_or_else(|| Error::Invalid("stale reference was accepted".into()))?;
+    assert_eq!(
+        conflict.code(),
+        crate::wire::ErrorCode::Conflict,
+        "{conflict}"
+    );
+    assert_eq!(
+        std::fs::read(&path).map_err(storage)?,
+        b"user bytes
+"
+    );
+    Ok(())
+}

@@ -130,11 +130,110 @@ impl CheckoutPublisher {
                 native.advance_to_head().await?;
             } else if mount.view.source.is_none() {
                 self.materialize(view, operation, &file).await?;
+                // The physical write carries host metadata (mode, owner,
+                // times) that the staged generation cannot predict. Capture
+                // it now, under the same lock, so the agent's own write is
+                // not observed later as a foreign change to its file.
+                // A replay must not capture again: later foreign changes would
+                // reuse this operation's capture identity for other content.
+                // One operation may publish several paths, so the capture's
+                // identity names the path too.
+                if original.is_none() {
+                    let captured = OperationId::from_bytes(publication_operation(operation, &relative).into_bytes());
+                    self.tools.capture((&self.tools.workspace, view), watcher, captured, 1, PublicationPermit::Unrestricted, None).await?;
+                }
+                return self.observed(view, file).await;
             }
             Ok(file)
         })
         .await
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
+    }
+
+    /// Rebinds a published file to the generation that captured its own
+    /// physical write: the child of the staged generation on the head's
+    /// first-parent chain, when the file's bytes there are exactly the
+    /// published ones. A first attempt finds it at the head; a replay finds
+    /// the same generation below later commits, so both return one reference.
+    /// Any other change to the file leaves the staged reference, so an edit
+    /// through it still conflicts with that change.
+    async fn observed(&self, view: &workspace::View, file: FileRef) -> Result<FileRef> {
+        /// Bounds the replay walk; a staged generation buried deeper keeps its
+        /// own reference, which is always valid.
+        const DEPTH: usize = 64;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::WorkBudget::UNBOUNDED;
+        let workspace = view.workspace();
+        let staged = self.files.file_generation(&file, None)?;
+        let staged = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(
+            staged.as_resource().key().try_into().map_err(storage)?,
+        ));
+        let mut current = workspace
+            .head(budget, &cancellation)
+            .await
+            .map_err(storage)?
+            .value;
+        let mut capture = None;
+        for _ in 0..DEPTH {
+            if current.id() == staged {
+                break;
+            }
+            let parents = current
+                .parents(budget, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+            if parents == [staged] {
+                capture = Some(current);
+                break;
+            }
+            let Some(parent) = parents.first() else {
+                break;
+            };
+            current = workspace
+                .generation(*parent, budget, &cancellation)
+                .await
+                .map_err(storage)?
+                .value;
+        }
+        let Some(capture) = capture else {
+            return Ok(file);
+        };
+        let descriptor = file.descriptor();
+        let bytes = match capture
+            .read(
+                &format!("/{}", file.path()),
+                descriptor.byte_length().saturating_add(1),
+                budget,
+                &cancellation,
+            )
+            .await
+        {
+            Ok(read) => read.value,
+            Err(failure) => match failure.error {
+                acyclic_fs::WorkspaceError::NotFound
+                | acyclic_fs::WorkspaceError::NotRegularFile
+                | acyclic_fs::WorkspaceError::IsDirectory
+                | acyclic_fs::WorkspaceError::ReadLimitExceeded => return Ok(file),
+                error => return Err(storage(error)),
+            },
+        };
+        let bytes: &[u8] = bytes.as_ref();
+        if bytes.len() as u64 != descriptor.byte_length()
+            || <sha2::Sha256 as sha2::Digest>::digest(bytes).as_slice() != descriptor.sha256()
+        {
+            return Ok(file);
+        }
+        // Retain it as publication retains the staged generation.
+        crate::filesystem::retain_published_generation(&capture).await?;
+        FileRef::new(
+            file.volume().clone(),
+            file.path().to_owned(),
+            hex::encode(capture.id().digest().into_bytes()),
+            descriptor.clone(),
+            file.display_name().to_owned(),
+            &mut None,
+        )
     }
 
     async fn materialize(
