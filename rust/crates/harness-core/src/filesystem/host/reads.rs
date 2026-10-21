@@ -385,6 +385,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let staged: Option<FileRef> = match metadata {
             Ok(metadata) => Some(io.decode_json(&metadata)?),
             Err(Error::NotFound(_)) => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(Error::NativeWorkspace { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound) =>
+            {
+                None
+            }
             Err(error) => return Err(error),
         };
         let _staged_hold = staged
