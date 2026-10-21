@@ -2257,6 +2257,45 @@ impl NativeWatch {
         Ok(())
     }
 
+    #[cfg(windows)]
+    fn windows_registration_is_current<W: crate::demand::SourceDemandReadWork>(
+        &self,
+        observed: &WindowsDirectoryWatch,
+        work: &mut W,
+    ) -> Result<bool, crate::demand::DemandError> {
+        use crate::demand::DemandError;
+        let mut held = self
+            .held_root
+            .root
+            .as_ref()
+            .ok_or(DemandError::from(NativeWatchError::SourceUnavailable))?
+            .open_dir_held(&[], work)?;
+        let mut current = None;
+        for component in observed.path.0.split(|unit| matches!(*unit, 47 | 92)) {
+            work.started_io(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            match crate::native_host::open_windows_directory(&held, component, false, work) {
+                Ok((next, identity)) => {
+                    held = next;
+                    current = Some(identity);
+                }
+                Err(DemandError::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    return Ok(false);
+                }
+                Err(DemandError::InvalidRequest) => return Ok(false),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(current == Some(observed.identity))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "This state transition keeps admission, effects and resource retirement in one frame."
@@ -2323,7 +2362,15 @@ impl NativeWatch {
                                 && registered
                                     .next()
                                     .is_none_or(|unit| matches!(*unit, 47 | 92));
-                            if !matches {
+                            // A queued rename/removal may predate a demand that
+                            // already bound this path to its replacement directory.
+                            // Retire only registrations whose held identity no
+                            // longer matches the path beneath the held root.
+                            if !matches
+                                || self
+                                    .windows_registration_is_current(observed, work)
+                                    .map_err(demand_watch_error)?
+                            {
                                 at += 1;
                                 continue;
                             }
@@ -4058,6 +4105,46 @@ mod demand_admission_tests {
             windows_budget(),
             &CancellationToken::new(),
         )?;
+        observed(
+            &watch,
+            &namespace("/old")?,
+            windows_budget(),
+            &CancellationToken::new(),
+        )?;
+        {
+            let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            let cancellation = CancellationToken::new();
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            // Deliver the actual rename after both destination and replacement
+            // registrations were admitted. Replayed departure halves must not
+            // erase either newly authenticated current binding.
+            for change in [
+                WatchChange::Renamed {
+                    from: namespace("/a")?,
+                    to: namespace("/old")?,
+                },
+                WatchChange::Removed(namespace("/a")?),
+            ] {
+                held.forget_removed_directories_with_work(&[change], &mut work, None)?;
+                assert_eq!(
+                    held.windows_directories.len(),
+                    2,
+                    "queued event erased a current binding"
+                );
+            }
+            std::fs::remove_file(root.path().join("old/f"))?;
+            std::fs::remove_dir(root.path().join("old"))?;
+            held.forget_removed_directories_with_work(
+                &[WatchChange::Removed(namespace("/old")?)],
+                &mut work,
+                None,
+            )?;
+            assert_eq!(
+                held.windows_directories.len(),
+                1,
+                "removed binding was not retired"
+            );
+        }
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
         let deadline = Instant::now() + Duration::from_secs(5);
