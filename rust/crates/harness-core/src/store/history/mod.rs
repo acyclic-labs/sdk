@@ -282,13 +282,10 @@ pub trait HistoryIo: Send {
         verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
-    #[cfg(feature = "filesystem")]
     /// Remaining.
     fn remaining(&self) -> Result<acyclic_fs::WorkBudget>;
-    #[cfg(feature = "filesystem")]
     /// Cancellation.
     fn cancellation(&self) -> &acyclic_fs::CancellationToken;
-    #[cfg(feature = "filesystem")]
     /// Receive work.
     fn receive_work(&mut self, work: acyclic_fs::WorkCounters) -> Result<()>;
 }

@@ -45,7 +45,6 @@ uuid.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", features = ["test-support", "filesystem-local"] }
-acyclic-harness-search = { version = "=0.2.0", path = ".", features = ["test-support"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] }
 hex.workspace = true
 loom = "0.7.2"
