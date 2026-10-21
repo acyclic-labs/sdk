@@ -141,7 +141,7 @@ impl TaskGroup {
         #[cfg(not(target_arch = "wasm32"))]
         let handle = TaskHandle {
             id,
-            join: tokio::spawn(task),
+            join: spawn(task),
         };
         #[cfg(target_arch = "wasm32")]
         let handle = {

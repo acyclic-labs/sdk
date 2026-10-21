@@ -21,6 +21,7 @@ pub(super) struct CacheEpochs {
 
 pub(super) struct DarwinMountContext {
     pub(super) source: Arc<dyn MountFilesystem>,
+    pub(super) clock: super::super::clock::Clock,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
     pub(super) handler_budget: crate::WorkBudget,
     pub(super) handler_cancellation: crate::CancellationToken,
@@ -75,8 +76,17 @@ impl ViewObserver for DarwinMountContext {
     }
 }
 
-pub(super) fn uptime(work: &Work) -> Result<Duration, NativeMountError> {
+pub(super) fn uptime(
+    clock: &super::super::clock::Clock,
+    work: &Work,
+) -> Result<Duration, NativeMountError> {
     work.charge(READ_WORK)?;
+    #[cfg(feature = "test-support")]
+    if let Some(elapsed) = clock.elapsed() {
+        return Ok(elapsed);
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = clock;
     let mut now = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
@@ -124,6 +134,7 @@ impl DarwinMountContext {
         };
         Ok(Self {
             source,
+            clock: super::super::clock::Clock::capture(),
             writable,
             mount_uid: metadata.st_uid,
             mount_gid: metadata.st_gid,
@@ -231,7 +242,7 @@ impl DarwinMountContext {
             return Ok(false);
         }
         self.callbacks.drain(work)?;
-        let arrived_by = uptime(work)? + REPLY_DELIVERY_SLACK;
+        let arrived_by = uptime(&self.clock, work)? + REPLY_DELIVERY_SLACK;
         work.charge(READ_WORK)?;
         // SAFETY: the transport reports its fixed client-cache timeout.
         let expired = Duration::from_secs(
@@ -239,7 +250,7 @@ impl DarwinMountContext {
                 + u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() }),
         );
         loop {
-            let now = uptime(work)?;
+            let now = uptime(&self.clock, work)?;
             if now >= expired {
                 break;
             }

@@ -39,6 +39,8 @@ fn capacity(fault: Fault) {
             sender,
             admission: Arc::new(Mutex::new(admission)),
             threads: 1,
+            #[cfg(feature = "test-support")]
+            host_pool: crate::testing::HostPool::new(1),
         };
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(
@@ -319,6 +321,8 @@ fn waiter_charge(cancel: bool, broken: bool) {
             sender,
             admission: Arc::new(Mutex::new(admission)),
             threads: 1,
+            #[cfg(feature = "test-support")]
+            host_pool: crate::testing::HostPool::new(1),
         };
         let mut filler = run_blocking_io(|| (), None).unwrap();
         assert!(

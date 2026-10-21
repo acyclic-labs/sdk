@@ -3,6 +3,7 @@ use super::*;
 impl Projector {
     pub(super) fn new() -> Self {
         Self {
+            clock: super::super::clock::Clock::capture(),
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
             paths: KeyedLocks::default(),
@@ -597,8 +598,8 @@ impl Projector {
                 continue;
             }
             let deadline =
-                *deadline.get_or_insert_with(|| std::time::Instant::now() + HELD_SETTLE_LIMIT);
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
+            let remaining = deadline.saturating_duration_since(self.clock.instant());
             if remaining.is_zero() {
                 let held = state.pending.keys().next().cloned();
                 return Err(NativeMountError::Driver(format!(

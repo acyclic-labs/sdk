@@ -6,7 +6,7 @@ use crate::{
     resources::GenerationRef,
 };
 
-use tokio::spawn;
+use acyclic_native_runtime::spawn;
 
 use crate::goal::request_head as record;
 use record::Turn;

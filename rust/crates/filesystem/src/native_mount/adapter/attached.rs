@@ -82,6 +82,7 @@ where
                 change,
                 work,
                 &self.cancellation,
+                &self.runtime.clock,
                 self.native_callback_guard.clone(),
             )
         })
@@ -283,7 +284,7 @@ where
                 .await?;
             let changes =
                 sparse::sparse_changes(offset, &range.0, mount_node(record).logical_bytes, work)?;
-            let times = ContentTimes::Stamp(content_change_time()?);
+            let times = ContentTimes::Stamp(content_change_time(&self.runtime.clock)?);
             for change in changes {
                 candidate
                     .checkout

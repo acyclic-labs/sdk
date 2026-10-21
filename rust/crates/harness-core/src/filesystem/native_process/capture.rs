@@ -28,16 +28,37 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
     capture_checked(invocation, observer, check).await
 }
 
-// Both production owner checks and the regression enter the same timer path.
+// Both production checks and the runtime-construction regression enter the
+// same bounded control path. Seeded host callbacks yield at original Pending.
 fn check_on_runtime(
     runtime: &tokio::runtime::Handle,
     control_timeout: Duration,
     check: impl std::future::Future<Output = Result<()>>,
 ) -> std::io::Result<()> {
-    runtime
-        .block_on(async { tokio::time::timeout(control_timeout, check).await })
-        .map_err(control_error)?
-        .map_err(control_error)
+    wait_control(runtime, || async {
+        tokio::time::timeout(control_timeout, check).await
+    })
+    .map_err(control_error)?
+    .map_err(control_error)
+}
+
+// The same bounded ownership future runs on the worker in both cases. A
+// simulation worker yields its permit at Pending so the owner can make progress.
+#[doc(hidden)]
+pub fn wait_control<F: std::future::Future>(
+    runtime: &tokio::runtime::Handle,
+    construct: impl FnOnce() -> F,
+) -> F::Output {
+    // Timers and IO resources require the runtime during construction too.
+    // Keep this entry confined to the explicit asynchronous control check.
+    let _entered = runtime.enter();
+    let future = construct();
+    #[cfg(feature = "test-support")]
+    {
+        acyclic_native_runtime::testing::blocking_on(future)
+    }
+    #[cfg(not(feature = "test-support"))]
+    runtime.block_on(future)
 }
 
 #[doc(hidden)]
@@ -81,9 +102,8 @@ pub async fn capture_with_custody<T: Send + 'static>(
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
     custody: T,
 ) -> Result<(Option<NativeProcessResult>, T)> {
-    // Capture observers may await durable publications that use Tokio's
-    // blocking executor. Keep the capture owner on the existing native host
-    // service so those publications can run even with one Tokio blocking slot.
+    // Native capture callbacks may await durable publication on Tokio's
+    // blocking pool, so retain main's independent native host service.
     let (output, custody) = acyclic_native_runtime::run_blocking_io(
         move || {
             with_custody(custody, |custody| {
@@ -105,7 +125,6 @@ pub async fn capture_with_custody<T: Send + 'static>(
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped());
                 check()?;
-                let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
                 let mut next_check = std::time::Instant::now();
                 let poll = || {
                     if std::time::Instant::now() >= next_check {
@@ -142,30 +161,45 @@ pub async fn capture_with_custody<T: Send + 'static>(
                             .as_deref()
                             .map(acyclic_native_runtime::CaptureInput::Literal)
                     });
+                let mut observe = |chunk: acyclic_native_runtime::ProcessOutput<'_>| {
+                    observer(custody, chunk)?;
+                    let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
+                        return Ok(Default::default());
+                    };
+                    let Some(exchange) = exchange.as_mut() else {
+                        return Ok(Default::default());
+                    };
+                    if exchange.is_complete() {
+                        return Ok(Default::default());
+                    }
+                    let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                    })?;
+                    Ok(acyclic_native_runtime::ProcessInput {
+                        bytes,
+                        complete: exchange.is_complete(),
+                    })
+                };
+                #[cfg(feature = "test-support")]
+                if let Some(output) = acyclic_native_runtime::testing::capture_process(
+                    acyclic_native_runtime::testing::ProcessCapture {
+                        command: &command,
+                        timeout,
+                        maximum: maximum_output,
+                        input,
+                    },
+                    &mut || check(),
+                    &mut observe,
+                ) {
+                    return Ok(output);
+                }
+                let mut process = acyclic_native_runtime::ProcessTree::spawn(&mut command)?;
                 let output = process.wait_with_output(
                     timeout,
                     maximum_output,
                     input,
                     poll,
-                    |chunk| {
-                        observer(custody, chunk)?;
-                        let acyclic_native_runtime::ProcessOutput::Stdout(chunk) = chunk else {
-                            return Ok(Default::default());
-                        };
-                        let Some(exchange) = exchange.as_mut() else {
-                            return Ok(Default::default());
-                        };
-                        if exchange.is_complete() {
-                            return Ok(Default::default());
-                        }
-                        let (bytes, _hold) = exchange.push(chunk, None).map_err(|error| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-                        })?;
-                        Ok(acyclic_native_runtime::ProcessInput {
-                            bytes,
-                            complete: exchange.is_complete(),
-                        })
-                    },
+                    observe,
                     None,
                     None,
                 );

@@ -255,11 +255,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let deadline = ticket
                 .deadline_unix_ms
                 .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .as_millis();
-            if now < u128::from(deadline) {
+            // The shared wall-clock seam; a seeded simulation supplies its time.
+            let now = acyclic_stream::UnixMillisClock::now_unix_millis(
+                &acyclic_stream::SystemUnixMillisClock,
+            );
+            if now < deadline {
                 return Err(Error::Conflict(
                     "interaction deadline has not elapsed".into(),
                 ));

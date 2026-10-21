@@ -9,6 +9,7 @@ impl<A, O> DetachedMountState<A, O> {
         &mut self,
         change: ContentChange<std::convert::Infallible>,
         ledger: &Arc<ViewLedger>,
+        clock: &super::clock::Clock,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>
     where
@@ -17,7 +18,7 @@ impl<A, O> DetachedMountState<A, O> {
     {
         let mut metadata = self.metadata;
         let stamped = metadata
-            .stamp_content_change(content_change_time()?)
+            .stamp_content_change(content_change_time(clock)?)
             .then_some(metadata);
         self.file
             .change_content(change, stamped, work, work.cancellation())
@@ -163,7 +164,9 @@ where
                 Some(&self.cancellation),
             )
             .await?;
-            state.change_content(change, &self.ledger, work).await
+            state
+                .change_content(change, &self.ledger, &self.runtime.clock, work)
+                .await
         })
     }
 }
@@ -352,7 +355,9 @@ where
             let changes =
                 sparse::sparse_changes(offset, &range.0, state.file.logical_bytes(), work)?;
             for change in changes {
-                state.change_content(change, &self.ledger, work).await?;
+                state
+                    .change_content(change, &self.ledger, &self.runtime.clock, work)
+                    .await?;
             }
             Ok(())
         })

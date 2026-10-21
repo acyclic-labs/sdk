@@ -6,6 +6,8 @@ use crate::native_host::HostListedEntry;
 use crate::native_host::NativeHostWork;
 use crate::native_host::{HostRoot, HostStat, HostStatReader};
 use crate::source_watch::CallbackWork;
+#[cfg(feature = "test-support")]
+use acyclic_native_runtime::testing::spawn_blocking;
 use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::ffi::OsStringExt;
@@ -13,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Semaphore;
+#[cfg(not(feature = "test-support"))]
+use tokio::task::spawn_blocking;
 
 const MAXIMUM_NATIVE_REQUESTS: usize = 64;
 

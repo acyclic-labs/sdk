@@ -90,9 +90,10 @@ struct ProbeDirectory(std::path::PathBuf);
 #[cfg(windows)]
 impl ProbeDirectory {
     fn create(root: &Path) -> Result<Self, std::io::Error> {
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::time::UNIX_EPOCH;
 
-        let nonce = SystemTime::now()
+        let nonce = crate::native_mount::clock::Clock::capture()
+            .now()
             .duration_since(UNIX_EPOCH)
             .map_err(std::io::Error::other)?
             .as_nanos();

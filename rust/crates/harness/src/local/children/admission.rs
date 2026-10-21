@@ -10,6 +10,7 @@ use crate::{
     task_volume::{ChildFile, ChildRequest, FileKey, FileValue, Query, TaskFiles},
 };
 use acyclic_fs::facade::FsWork as _;
+use acyclic_native_runtime::spawn_blocking;
 use acyclic_stream::StreamProvider;
 
 impl LocalHarness {
@@ -422,7 +423,7 @@ impl LocalHarness {
             },
             async {
                 let filesystem = workspace.filesystem.clone();
-                tokio::task::spawn_blocking(move || filesystem.flush_deferred_authority())
+                spawn_blocking(move || filesystem.flush_deferred_authority())
                     .await
                     .map_err(storage)?
                     .map_err(storage)

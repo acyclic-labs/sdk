@@ -109,21 +109,32 @@ pub fn publish_new(
                 meter.check()?;
                 meter.admit_write(0)?;
             }
-            #[cfg(unix)]
-            // SAFETY: both owned NUL-terminated paths remain live through link.
-            let failed =
-                unsafe { libc::link(from_path.0.as_ptr().cast(), to_path.0.as_ptr().cast()) } != 0;
-            #[cfg(windows)]
-            // SAFETY: both owned NUL-terminated paths remain live through CreateHardLinkW.
-            let failed = unsafe {
-                windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
-                    to_path.0.as_ptr(),
-                    from_path.0.as_ptr(),
-                    std::ptr::null(),
-                )
-            } == 0;
-            if failed {
-                let error = io::Error::last_os_error();
+            let publish = || {
+                #[cfg(unix)]
+                // SAFETY: both owned NUL-terminated paths remain live through link.
+                let failed =
+                    unsafe { libc::link(from_path.0.as_ptr().cast(), to_path.0.as_ptr().cast()) }
+                        != 0;
+                #[cfg(windows)]
+                // SAFETY: both owned NUL-terminated paths remain live through CreateHardLinkW.
+                let failed = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::CreateHardLinkW(
+                        to_path.0.as_ptr(),
+                        from_path.0.as_ptr(),
+                        std::ptr::null(),
+                    )
+                } == 0;
+                if failed {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            };
+            #[cfg(feature = "test-support")]
+            let result = testing::durable_operation("namespace:publish_new", publish);
+            #[cfg(not(feature = "test-support"))]
+            let result = publish();
+            if let Err(error) = result {
                 if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
@@ -138,6 +149,11 @@ pub fn publish_new(
             meter.check()?;
             meter.admit_write(0)?;
         }
+        #[cfg(feature = "test-support")]
+        return testing::durable_operation("namespace:publish_new", || {
+            std::fs::hard_link(from, to)
+        });
+        #[cfg(not(feature = "test-support"))]
         std::fs::hard_link(from, to)
     }
 }
@@ -164,58 +180,69 @@ pub fn durable_rename(
                 #[cfg(windows)]
                 meter.admit_durability()?;
             }
-            #[cfg(target_os = "linux")]
-            // SAFETY: both owned paths remain live through the atomic rename syscall.
-            let failed = unsafe {
-                libc::syscall(
-                    libc::SYS_renameat2,
-                    libc::AT_FDCWD,
-                    from_path.0.as_ptr(),
-                    libc::AT_FDCWD,
-                    to_path.0.as_ptr(),
-                    if mode == RenameMode::NoReplace {
-                        libc::RENAME_NOREPLACE
-                    } else {
-                        0
-                    },
-                )
-            } != 0;
-            #[cfg(target_os = "macos")]
-            // SAFETY: both owned paths remain live through renamex_np.
-            let failed = unsafe {
-                libc::renamex_np(
-                    from_path.0.as_ptr().cast(),
-                    to_path.0.as_ptr().cast(),
-                    if mode == RenameMode::NoReplace {
-                        libc::RENAME_EXCL
-                    } else {
-                        0
-                    },
-                )
-            } != 0;
-            #[cfg(windows)]
-            // SAFETY: both owned paths remain live through MoveFileExW.
-            let failed = unsafe {
-                use windows_sys::Win32::Storage::FileSystem::{
-                    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-                };
-                MoveFileExW(
-                    from_path.0.as_ptr(),
-                    to_path.0.as_ptr(),
-                    MOVEFILE_WRITE_THROUGH
-                        | if mode == RenameMode::Replace {
-                            MOVEFILE_REPLACE_EXISTING
+            let rename = || {
+                #[cfg(target_os = "linux")]
+                // SAFETY: both owned paths remain live through the atomic rename syscall.
+                let failed = unsafe {
+                    libc::syscall(
+                        libc::SYS_renameat2,
+                        libc::AT_FDCWD,
+                        from_path.0.as_ptr(),
+                        libc::AT_FDCWD,
+                        to_path.0.as_ptr(),
+                        if mode == RenameMode::NoReplace {
+                            libc::RENAME_NOREPLACE
                         } else {
                             0
                         },
-                )
-            } == 0;
-            if !failed {
-                break;
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
+                    )
+                } != 0;
+                #[cfg(target_os = "macos")]
+                // SAFETY: both owned paths remain live through renamex_np.
+                let failed = unsafe {
+                    libc::renamex_np(
+                        from_path.0.as_ptr().cast(),
+                        to_path.0.as_ptr().cast(),
+                        if mode == RenameMode::NoReplace {
+                            libc::RENAME_EXCL
+                        } else {
+                            0
+                        },
+                    )
+                } != 0;
+                #[cfg(windows)]
+                // SAFETY: both owned paths remain live through MoveFileExW.
+                let failed = unsafe {
+                    use windows_sys::Win32::Storage::FileSystem::{
+                        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+                    };
+                    MoveFileExW(
+                        from_path.0.as_ptr(),
+                        to_path.0.as_ptr(),
+                        MOVEFILE_WRITE_THROUGH
+                            | if mode == RenameMode::Replace {
+                                MOVEFILE_REPLACE_EXISTING
+                            } else {
+                                0
+                            },
+                    )
+                } == 0;
+                if failed {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            };
+            #[cfg(feature = "test-support")]
+            let result = testing::durable_operation("namespace:rename", rename);
+            #[cfg(not(feature = "test-support"))]
+            let result = rename();
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => {
+                    result?;
+                    break;
+                }
             }
         }
         #[cfg(unix)]

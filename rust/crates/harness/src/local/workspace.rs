@@ -130,7 +130,7 @@ impl LocalWorkspace {
         }
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
-        let root = self.mount_directory.join(uuid::Uuid::new_v4().to_string());
+        let root = self.mount_directory.join(crate::identity::fresh_uuid().to_string());
         std::fs::create_dir_all(&root).map_err(storage)?;
         let mut mounts = mounts::owner(
             &root,

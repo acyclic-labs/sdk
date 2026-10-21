@@ -57,6 +57,8 @@ use transaction::*;
 mod stage;
 use stage::*;
 mod metadata;
+#[cfg(all(test, feature = "test-support"))]
+mod metadata_input_tests;
 #[cfg(all(test, any(target_os = "linux", windows), feature = "memory"))]
 mod rescan_probe_tests;
 #[cfg(all(test, target_os = "linux", feature = "memory"))]

@@ -52,7 +52,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_create(
             || {
                 context.source.create_file(
                     &path,
-                    create_metadata(mode, u32::from(libc::S_IFREG), uid, gid),
+                    create_metadata(&context.clock, mode, u32::from(libc::S_IFREG), uid, gid),
                     None,
                     work,
                 )

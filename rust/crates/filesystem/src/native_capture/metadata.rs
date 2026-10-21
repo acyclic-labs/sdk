@@ -4,8 +4,8 @@ pub(super) fn ensure_same_host_node(
     expected: &HostStat,
     observed: &HostStat,
 ) -> Result<(), CaptureError> {
-    let mut expected_metadata = capture_metadata(expected);
-    let mut observed_metadata = capture_metadata(observed);
+    let mut expected_metadata = physical_metadata(expected);
+    let mut observed_metadata = physical_metadata(observed);
     // Reading the file can legitimately update its access time.
     expected_metadata.accessed_ns = MetadataField::Unavailable;
     observed_metadata.accessed_ns = MetadataField::Unavailable;
@@ -125,6 +125,42 @@ pub(super) fn host_device_identity(_: &HostStat) -> Result<(u32, u32), CaptureEr
 }
 
 pub(super) fn capture_metadata(metadata: &HostStat) -> FileMetadata {
+    let result = physical_metadata(metadata);
+    #[cfg(feature = "test-support")]
+    {
+        use acyclic_native_runtime::testing::{NativeMetadataInput, NativeTimes};
+        let value = |field| match field {
+            MetadataField::Value(value) => Some(value),
+            _ => None,
+        };
+        let identity = metadata.identity();
+        let input = NativeMetadataInput {
+            device: identity.device,
+            object: identity.object,
+            directory: metadata.is_dir(),
+            times: NativeTimes {
+                created_ns: value(result.created_ns),
+                modified_ns: value(result.modified_ns),
+                accessed_ns: value(result.accessed_ns),
+                changed_ns: value(result.changed_ns),
+            },
+        };
+        if let Some(times) = acyclic_native_runtime::testing::capture_native_times(input) {
+            let field =
+                |value: Option<i64>| value.map_or(MetadataField::Unavailable, MetadataField::Value);
+            return FileMetadata {
+                created_ns: field(times.created_ns),
+                modified_ns: field(times.modified_ns),
+                accessed_ns: field(times.accessed_ns),
+                changed_ns: field(times.changed_ns),
+                ..result
+            };
+        }
+    }
+    result
+}
+
+fn physical_metadata(metadata: &HostStat) -> FileMetadata {
     let created = metadata.birth_time();
     #[cfg(all(test, any(target_os = "linux", windows)))]
     let created = if crate::native_host::stat_probe::legacy_birth_time() {

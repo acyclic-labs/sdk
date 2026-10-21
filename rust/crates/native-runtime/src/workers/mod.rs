@@ -17,6 +17,8 @@ pub(crate) struct NativeWorkers {
     /// Worker threads draining `sender`; tests use it to occupy every worker.
     #[cfg(test)]
     pub(crate) threads: usize,
+    #[cfg(feature = "test-support")]
+    pub(crate) host_pool: Arc<crate::testing::HostPool>,
 }
 
 // Receive lock -> channel lock. Both are released before queue admission, and
@@ -75,14 +77,22 @@ pub(crate) fn start_workers(
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
     let receiver = Arc::new(QueueMutex::new(receiver));
     let admission = Arc::new(QueueMutex::new(AdmissionState::new()));
+    #[cfg(feature = "test-support")]
+    let host_pool = crate::testing::HostPool::new(worker_count);
     for worker_index in 0..worker_count {
         let receiver = Arc::clone(&receiver);
         let admission = Arc::clone(&admission);
+        #[cfg(feature = "test-support")]
+        let host_pool = host_pool.clone();
         std::thread::Builder::new()
             .name(format!("{name}-{worker_index}"))
             .spawn(move || {
                 while let Some(job) = receive_job(&receiver, &admission) {
+                    #[cfg(feature = "test-support")]
+                    let occupant = job.may_wait_for_driver().then(|| host_pool.unscoped());
                     let waker = job.run();
+                    #[cfg(feature = "test-support")]
+                    drop(occupant);
                     if let Some(waker) = waker {
                         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             waker.wake();
@@ -96,5 +106,7 @@ pub(crate) fn start_workers(
         admission,
         #[cfg(test)]
         threads: worker_count,
+        #[cfg(feature = "test-support")]
+        host_pool,
     })
 }

@@ -4,7 +4,7 @@ use super::*;
 pub struct TaskHandle<T> {
     pub(super) id: OperationId,
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) join: tokio::task::JoinHandle<Outcome<T>>,
+    pub(super) join: OwnedTask<Outcome<T>>,
     #[cfg(target_arch = "wasm32")]
     pub(super) outcome: oneshot::Receiver<Outcome<T>>,
     #[cfg(target_arch = "wasm32")]
@@ -56,7 +56,7 @@ impl<T> TaskHandle<T> {
         #[cfg(not(target_arch = "wasm32"))]
         let outcome = match self.join.await {
             Ok(outcome) => outcome,
-            Err(error) if error.is_cancelled() => Outcome::Cancelled,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Outcome::Cancelled,
             Err(error) => Outcome::Failed {
                 message: error.to_string(),
             },

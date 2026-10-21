@@ -22,7 +22,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
@@ -49,6 +49,8 @@ mod attribute_ops;
 mod file_ops;
 mod namespace_ops;
 mod paths;
+#[cfg(feature = "test-support")]
+pub(super) use paths::update_time;
 use paths::*;
 
 #[cfg(test)]

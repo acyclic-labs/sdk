@@ -637,3 +637,7 @@ mod batch_original;
 #[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
 #[path = "transaction_batch_index_properties.rs"]
 mod batch_index_properties;
+
+#[cfg(all(test, feature = "memory", not(target_arch = "wasm32")))]
+#[path = "transaction_batch_rebase.rs"]
+mod batch_rebase;

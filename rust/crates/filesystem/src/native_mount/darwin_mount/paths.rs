@@ -134,7 +134,8 @@ pub(super) fn copy_variable_result(
     c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW))
 }
 
-pub(super) fn update_time(
+pub(in crate::native_mount) fn update_time(
+    clock: &super::super::clock::Clock,
     field: &mut MetadataField<i64>,
     seconds: i64,
     nanoseconds: i64,
@@ -143,7 +144,7 @@ pub(super) fn update_time(
         return Ok(());
     }
     if nanoseconds == libc::UTIME_NOW {
-        *field = MetadataField::Value(system_time_ns(SystemTime::now())?);
+        *field = MetadataField::Value(system_time_ns(clock.now())?);
         return Ok(());
     }
     if !(0..1_000_000_000).contains(&nanoseconds) {

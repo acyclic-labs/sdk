@@ -26,7 +26,11 @@ impl AttributeChanges {
             && self.flags.is_none()
     }
 
-    pub(super) fn applied_to(&self, mut metadata: FileMetadata) -> Result<FileMetadata, i32> {
+    pub(super) fn applied_to(
+        &self,
+        clock: &super::super::clock::Clock,
+        mut metadata: FileMetadata,
+    ) -> Result<FileMetadata, i32> {
         if let Some(mode) = self.mode {
             metadata.posix_mode = MetadataField::Value(mode);
         }
@@ -37,10 +41,10 @@ impl AttributeChanges {
             metadata.posix_gid = MetadataField::Value(gid);
         }
         if let Some(atime) = self.atime {
-            metadata.accessed_ns = MetadataField::Value(time_or_now_ns(atime)?);
+            metadata.accessed_ns = MetadataField::Value(time_or_now_ns(clock, atime)?);
         }
         if let Some(mtime) = self.mtime {
-            metadata.modified_ns = MetadataField::Value(time_or_now_ns(mtime)?);
+            metadata.modified_ns = MetadataField::Value(time_or_now_ns(clock, mtime)?);
         }
         if let Some(changed) = self.changed {
             metadata.changed_ns = MetadataField::Value(system_time_ns(changed)?);
@@ -80,9 +84,12 @@ pub(super) fn metadata_time(field: MetadataField<i64>) -> SystemTime {
     }
 }
 
-pub(super) fn time_or_now_ns(value: TimeOrNow) -> Result<i64, i32> {
+pub(in crate::native_mount) fn time_or_now_ns(
+    clock: &super::super::clock::Clock,
+    value: TimeOrNow,
+) -> Result<i64, i32> {
     system_time_ns(match value {
         TimeOrNow::SpecificTime(value) => value,
-        TimeOrNow::Now => SystemTime::now(),
+        TimeOrNow::Now => clock.now(),
     })
 }

@@ -74,7 +74,7 @@ impl CoreLog {
                     backend_write_operations: 1,
                     ..Default::default()
                 })?;
-                file.set_len(0)?;
+                acyclic_native_runtime::truncate_file(&file, 0)?;
                 file
             } else {
                 std::fs::create_dir_all(paths.directory())?;
@@ -108,7 +108,7 @@ impl CoreLog {
                     ..Default::default()
                 })?;
             }
-            writer.file.sync_all()?;
+            acyclic_native_runtime::flush_file_all(&writer.file)?;
             crash_point("record flushed", self.flushed);
             paths.sync()?;
         }
@@ -121,7 +121,7 @@ impl CoreLog {
                 })
             })
             .transpose()?;
-        let truncated = self.file.set_len(0);
+        let truncated = acyclic_native_runtime::truncate_file(&self.file, 0);
         let truncate_recorded = reset
             .as_mut()
             .map(|reset| {
@@ -149,7 +149,7 @@ impl CoreLog {
         self.length = 0;
         self.flushed = 0;
         crash_point("log truncated", self.flushed);
-        self.epoch = Uuid::now_v7();
+        self.epoch = crate::identity::fresh_time_uuid();
         self.sequence = 0;
         self.dirty.clear();
         truncate_recorded?;

@@ -95,6 +95,8 @@ mod budget;
 use budget::*;
 
 mod attributes;
+#[cfg(feature = "test-support")]
+pub(super) use attributes::time_or_now_ns;
 use attributes::*;
 
 mod handles;

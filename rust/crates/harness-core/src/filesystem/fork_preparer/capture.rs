@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let won = if prior.is_some() {
             false
         } else {
-            let attempt = Uuid::new_v4();
+            let attempt = crate::identity::fresh_uuid();
             let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
                 crate::executor::preparation_format(
                     format_args!(

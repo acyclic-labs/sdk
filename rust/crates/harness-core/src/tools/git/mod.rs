@@ -36,10 +36,8 @@ fn json_error(source: serde_json::Error) -> Error {
     }
 }
 fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|time| u64::try_from(time.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
+    // The shared wall-clock seam; a seeded simulation supplies its time.
+    acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock)
 }
 mod helpers;
 mod join;

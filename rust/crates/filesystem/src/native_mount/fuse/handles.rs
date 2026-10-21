@@ -453,7 +453,13 @@ impl FuseProjection {
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
             } else {
-                let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
+                let metadata = create_metadata(
+                    &self.core.clock,
+                    mode,
+                    S_IFREG,
+                    request.uid(),
+                    request.gid(),
+                );
                 let created = self.source_write(work, || {
                     Ok(source.create_file(path, metadata, proof, work)?)
                 })?;

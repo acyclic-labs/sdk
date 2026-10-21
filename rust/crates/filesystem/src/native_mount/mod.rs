@@ -27,6 +27,14 @@ macro_rules! callback_span {
     };
 }
 
+mod clock;
+#[cfg(all(
+    feature = "test-support",
+    any(target_os = "linux", target_os = "macos")
+))]
+#[doc(hidden)]
+pub use clock::capture_mount_clock_callbacks;
+
 mod adapter;
 #[cfg(windows)]
 mod cached_binding;
@@ -133,8 +141,8 @@ const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 
 /// Metadata for a node created through a POSIX mount by `uid`/`gid` now.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
-    let now = system_time_ns(SystemTime::now()).unwrap_or(i64::MAX);
+fn create_metadata(clock: &clock::Clock, mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
+    let now = system_time_ns(clock.now()).unwrap_or(i64::MAX);
     FileMetadata {
         posix_mode: MetadataField::Value((mode & 0o7777) | kind),
         posix_uid: MetadataField::Value(uid),

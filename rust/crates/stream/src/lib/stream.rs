@@ -150,6 +150,19 @@ impl<P: StreamProvider> Replay<P> {
     }
 }
 
+/// Every fresh Stream identity crosses this seam; replays draw seeded bytes.
 fn new_idempotency_key() -> IdempotencyKey {
-    IdempotencyKey(Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()))
+    IdempotencyKey(new_identity_bytes().into())
+}
+
+/// Transport callers keep this allocation instead of copying a domain wrapper.
+fn new_identity_bytes() -> bytes::Bytes {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    {
+        let mut bytes = [0; 16];
+        if acyclic_native_runtime::testing::fill_seeded(&mut bytes) {
+            return bytes::Bytes::copy_from_slice(&bytes);
+        }
+    }
+    bytes::Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes())
 }

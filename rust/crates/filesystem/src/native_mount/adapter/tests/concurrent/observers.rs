@@ -36,6 +36,7 @@ fn observer_can_write_the_file_that_triggered_it() -> Result<(), Box<dyn std::er
                         },
                         &work,
                         self.source.cancellation(),
+                        &self.source.runtime.clock,
                         None,
                     )
                 })

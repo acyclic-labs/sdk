@@ -29,6 +29,14 @@ use wire::ErrorCode::{
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) mod persistence;
 
+fn fill_entropy(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
+    #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+    if acyclic_native_runtime::testing::fill_seeded(bytes) {
+        return Ok(());
+    }
+    getrandom::fill(bytes)
+}
+
 // Publish a key only after the entropy source fills the complete candidate.
 fn fresh_cursor_key(
     fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
@@ -142,7 +150,7 @@ impl MemoryObjects {
         if options.maximum_entries == 0 {
             return Err(InvalidArgument.into());
         }
-        let token_key = fresh_cursor_key(getrandom::fill)?;
+        let token_key = fresh_cursor_key(fill_entropy)?;
         Ok(Self {
             state: StateArc::default(),
             options,
@@ -172,7 +180,7 @@ impl MemoryObjects {
 
     fn cursor(&self, query: &wire::ListObjectsRequest, key: &str) -> Result<String, Error> {
         let payload = key.as_bytes();
-        let token_key = self.cursor_key_with(getrandom::fill)?;
+        let token_key = self.cursor_key_with(fill_entropy)?;
         let mut hash = blake3::Hasher::new_keyed(&token_key);
         let mut bound = query.clone();
         bound.continuation_token.clear();
@@ -224,6 +232,14 @@ fn timestamp() -> Result<prost_types::Timestamp, Error> {
     #[cfg(all(test, feature = "local"))]
     if let Some(timestamp) = persistence::work::timestamp() {
         return Ok(timestamp);
+    }
+    #[cfg(feature = "test-support")]
+    if let Some(millis) = acyclic_native_runtime::testing::unix_millis() {
+        return Ok(prost_types::Timestamp {
+            seconds: i64::try_from(millis / 1000).map_err(|_| Error::from(Unavailable))?,
+            nanos: i32::try_from((millis % 1000) * 1_000_000)
+                .map_err(|_| Error::from(Unavailable))?,
+        });
     }
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)

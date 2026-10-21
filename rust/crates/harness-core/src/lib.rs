@@ -72,6 +72,8 @@ pub mod goal;
 pub mod grpc;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub mod hooks;
+#[doc(hidden)]
+pub mod identity;
 pub mod interaction;
 mod json_literal;
 pub mod live;

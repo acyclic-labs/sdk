@@ -21,6 +21,7 @@ fn context(schedule: &Schedule) -> Context {
         schedule: schedule.clone(),
         owned: false,
         detail: Arc::new(Mutex::new(Arc::from(""))),
+        host: None,
     }
 }
 

@@ -6,7 +6,7 @@ use super::{
     ObjectsNativeRequest, ObjectsPutReceipt,
 };
 #[cfg(feature = "test-support")]
-use acyclic_native_runtime::testing::spawn;
+use acyclic_native_runtime::testing::{TaskHandle as ReadTask, spawn};
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
@@ -15,11 +15,13 @@ use std::sync::Arc;
 #[cfg(not(feature = "test-support"))]
 use tokio::spawn;
 use tokio::sync::RwLock;
+#[cfg(not(feature = "test-support"))]
+use tokio::task::JoinHandle as ReadTask;
 
 fn spawn_native_read<F>(
     future: F,
     meter: &Arc<dyn NativeReadMeter>,
-) -> Result<tokio::task::JoinHandle<F::Output>, NativeObjectsError>
+) -> Result<ReadTask<F::Output>, NativeObjectsError>
 where
     F: Future + Send + 'static,
     F::Output: Send + 'static,

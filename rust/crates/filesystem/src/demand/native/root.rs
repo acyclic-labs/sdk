@@ -86,7 +86,7 @@ impl NativeDemandSource {
             let released = context.release(claimed_input);
             let result = result.and_then(|value| released.map(|()| value));
             let result = match result {
-                Ok((path, ownership)) => tokio::task::spawn_blocking(crate::obs::in_context(
+                Ok((path, ownership)) => spawn_blocking(crate::obs::in_context(
                     crate::obs::caller_context(),
                     move || {
                         let result = (|| {
@@ -96,7 +96,7 @@ impl NativeDemandSource {
                                 &mut context,
                             )?;
                             let reference = reference.unwrap_or_else(|| SourceReference {
-                                identity: *uuid::Uuid::new_v4().as_bytes(),
+                                identity: *crate::identity::fresh_uuid().as_bytes(),
                                 epoch: 0,
                             });
                             context.check()?;

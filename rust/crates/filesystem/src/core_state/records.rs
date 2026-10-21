@@ -52,7 +52,7 @@ impl RecordPaths<'_> {
     #[cfg(not(windows))]
     fn rename(&self, from: &Path, to: &Path) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
-            return std::fs::rename(from, to).map_err(Into::into);
+            return acyclic_native_runtime::rename_file(from, to).map_err(Into::into);
         };
         let work = allocation.work();
         let parent = materialization_parent(from, work)?;
@@ -83,7 +83,7 @@ impl RecordPaths<'_> {
     pub(super) fn copy(&self, from: &Path, to: &Path) -> Result<(), LocalCoreStateStoreError> {
         let Some(allocation) = &self.allocation else {
             std::fs::copy(from, to)?;
-            OpenOptions::new().write(true).open(to)?.sync_all()?;
+            acyclic_native_runtime::flush_file_all(&OpenOptions::new().write(true).open(to)?)?;
             return Ok(());
         };
         let work = allocation.work();
@@ -429,7 +429,7 @@ pub(super) fn write_journaled<T: Serialize>(
     }
     match work {
         Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
-        None => temporary.file.sync_all()?,
+        None => acyclic_native_runtime::flush_file_all(&temporary.file)?,
     }
     drop(temporary);
 

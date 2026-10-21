@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget, kernel::NamespacePath};
+use acyclic_native_runtime::spawn;
 
 pub(super) const SCRATCH_PATH: &str = ".volumes/scratch";
 
@@ -243,7 +244,7 @@ pub(in crate::local) async fn native_scope<T>(
 async fn leave_all(entered: Vec<Claim>) -> Result<()> {
     // Publication is an accepted operation. Losing its caller after verification
     // must not release the execution guard before physical retirement finishes.
-    tokio::spawn(async move {
+    spawn(async move {
         let mut retired = Ok(());
         for claim in entered.into_iter().rev() {
             keep_first(

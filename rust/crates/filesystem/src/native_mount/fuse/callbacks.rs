@@ -160,7 +160,13 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let span = callback_span!(TRACE, mkdir, ino = parent.0);
-        let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
+        let metadata = create_metadata(
+            &self.core.clock,
+            mode & !umask,
+            S_IFDIR,
+            request.uid(),
+            request.gid(),
+        );
         respond!(
             self.core,
             reply,
@@ -191,7 +197,13 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let span = callback_span!(TRACE, mknod, ino = parent.0);
-        let metadata = create_metadata(mode & !umask, mode & S_IFMT, request.uid(), request.gid());
+        let metadata = create_metadata(
+            &self.core.clock,
+            mode & !umask,
+            mode & S_IFMT,
+            request.uid(),
+            request.gid(),
+        );
         respond!(
             self.core,
             reply,
@@ -236,7 +248,13 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let span = callback_span!(TRACE, symlink, ino = parent.0);
-        let metadata = create_metadata(0o777, S_IFLNK, request.uid(), request.gid());
+        let metadata = create_metadata(
+            &self.core.clock,
+            0o777,
+            S_IFLNK,
+            request.uid(),
+            request.gid(),
+        );
         respond!(
             self.core,
             reply,

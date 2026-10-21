@@ -95,6 +95,8 @@ pub(crate) fn authority_records_path(
 }
 mod accounting;
 #[cfg(all(test, not(target_arch = "wasm32")))]
+mod append_retry_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod head_record_tests;
 #[cfg(test)]
 mod tests;

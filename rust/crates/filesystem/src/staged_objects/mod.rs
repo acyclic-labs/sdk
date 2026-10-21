@@ -126,6 +126,6 @@ fn create_spill(directory: &Path) -> std::io::Result<std::fs::File> {
         .custom_flags(FILE_FLAG_DELETE_ON_CLOSE.0)
         .open(directory.join(format!(
             ".acyclic-staging-{}",
-            uuid::Uuid::new_v4().simple()
+            crate::identity::fresh_uuid().simple()
         )))
 }

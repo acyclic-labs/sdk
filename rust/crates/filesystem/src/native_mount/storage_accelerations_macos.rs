@@ -10,13 +10,14 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 struct ProbeDirectory(PathBuf);
 
 impl ProbeDirectory {
     fn create(root: &Path) -> Result<Self, NativeStorageAccelerationError> {
-        let nonce = SystemTime::now()
+        let nonce = crate::native_mount::clock::Clock::capture()
+            .now()
             .duration_since(UNIX_EPOCH)
             .map_err(std::io::Error::other)?
             .as_nanos();

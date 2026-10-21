@@ -49,8 +49,10 @@ pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use file::write_all_batch_owned;
 pub use file::{
-    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, OwnedRead, OwnedWrite, read_at,
-    read_batch_async, set_len, sync_data, sync_file, sync_parent, write_all_at,
+    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, OwnedRead, OwnedWrite,
+    flush_file_all, flush_file_data, read_at, read_batch_async, rename_file, set_len, sync_data,
+    sync_file, sync_parent, truncate_file, write_all_at, write_file, write_file_all,
+    write_file_with,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
@@ -79,6 +81,7 @@ pub use meter::{
     ReadAllocation, ReadAllocationReservation,
 };
 mod blocking;
+mod task;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub use blocking::{InlineBlocking, run_blocking_io};
@@ -86,6 +89,7 @@ pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
 };
+pub use task::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 mod completion;
 pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]

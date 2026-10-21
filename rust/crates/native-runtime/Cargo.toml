@@ -12,11 +12,13 @@ keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
 
 [features]
-test-support = ["dep:tokio"]
+test-support = ["dep:blake3", "tokio/macros", "tokio/time", "tokio/test-util"]
 
 [dependencies]
 bytes.workspace = true
-tokio = { workspace = true, optional = true, features = ["rt", "sync", "macros"] }
+blake3 = { workspace = true, optional = true }
+# The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 compio-buf = { version = "=0.8.3", features = ["bytes"] }

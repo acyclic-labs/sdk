@@ -134,7 +134,7 @@ impl CoreLog {
             file,
             length,
             flushed: 0,
-            epoch: Uuid::now_v7(),
+            epoch: crate::identity::fresh_time_uuid(),
             sequence: 0,
             residents: replay_residents,
             dirty: Vec::new(),

@@ -1,5 +1,7 @@
 //! Live admission, cancellation and result observation.
 use crate::{Admission, NativeWork, OperationId, Outcome};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_native_runtime::{AbortHandle, TaskHandle as OwnedTask, spawn};
 use acyclic_stream::BoxProviderStream as BoxStream;
 #[cfg(target_arch = "wasm32")]
 use futures::future::AbortHandle;
@@ -10,8 +12,6 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 use tokio::sync::{Semaphore, oneshot};
-#[cfg(not(target_arch = "wasm32"))]
-use tokio::task::AbortHandle;
 mod group;
 pub use group::TaskGroup;
 mod handle;

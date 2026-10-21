@@ -125,7 +125,7 @@ impl NativeFile {
         self.control_async(
             move |file, meter| match meter {
                 Some(meter) => set_len(file, size, meter),
-                None => file.set_len(size),
+                None => truncate_file(file, size),
             },
             meter,
         )

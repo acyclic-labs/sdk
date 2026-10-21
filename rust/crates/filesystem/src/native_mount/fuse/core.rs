@@ -145,6 +145,7 @@ fn verify_guard(
 
 pub(super) struct ProjectionCore {
     pub(super) source: Arc<dyn MountFilesystem>,
+    pub(super) clock: super::super::clock::Clock,
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
     pub(super) names: RwLock<()>,
     pub(super) invalidation: RankedCondvar,
@@ -231,6 +232,7 @@ impl ProjectionCore {
         )?;
         Ok(Arc::new(Self {
             source,
+            clock: super::super::clock::Clock::capture(),
             state: RankedMutex::new(state),
             names: RwLock::new(()),
             invalidation: RankedCondvar::new(),

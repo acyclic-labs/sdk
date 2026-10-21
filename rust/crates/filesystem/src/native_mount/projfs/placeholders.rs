@@ -296,7 +296,7 @@ pub(super) fn write_ordinary(
     let temporary = if direct {
         name.to_owned()
     } else {
-        format!(".acyclic-{}", uuid::Uuid::new_v4().simple()).into()
+        format!(".acyclic-{}", crate::identity::fresh_uuid().simple()).into()
     };
     let from = if direct {
         &directory

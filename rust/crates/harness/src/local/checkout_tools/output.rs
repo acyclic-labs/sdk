@@ -118,7 +118,7 @@ impl Output {
             .checked_add(1)
             .ok_or_else(|| std::io::Error::other("tool output sequence overflow"))?;
         let runtime = self.runtime.clone();
-        runtime.block_on(async {
+        crate::filesystem::native_process::capture::wait_control(&runtime, || async {
             tokio::time::timeout(
                 std::time::Duration::from_millis(u64::from(CONTROL_TIMEOUT_MS)),
                 self.publish(file, bytes.to_vec().into()),

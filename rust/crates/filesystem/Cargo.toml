@@ -153,6 +153,7 @@ windows = { version = "0.62.2", features = [
 
 [features]
 session = ["distributed", "acyclic-stream/grpc"]
+test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 fuzzing = []
 model-checking = ["dep:loom"]
 default = ["local", "memory", "native-watch", "native-mount"]

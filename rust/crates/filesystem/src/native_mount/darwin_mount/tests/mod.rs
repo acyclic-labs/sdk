@@ -265,9 +265,9 @@ fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -
     // SAFETY: the bridge reports a constant.
     let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
     let barrier = || -> Result<_, NativeMountError> {
-        let began = uptime(&work)?;
+        let began = uptime(&context.clock, &work)?;
         context.revalidate(&work)?;
-        Ok((began, uptime(&work)?))
+        Ok((began, uptime(&context.clock, &work)?))
     };
     let (began, ended) = barrier()?;
     assert!(ended - began < REPLY_DELIVERY_SLACK);
@@ -467,7 +467,13 @@ fn content_changes_stamp_modification_and_status_times() -> TestResult {
     let created = FileMetadata {
         modified_ns: MetadataField::Value(1),
         changed_ns: MetadataField::Value(1),
-        ..create_metadata(0o644, u32::from(libc::S_IFREG), 0, 0)
+        ..create_metadata(
+            &crate::native_mount::clock::Clock::capture(),
+            0o644,
+            u32::from(libc::S_IFREG),
+            0,
+            0,
+        )
     };
     context.mutate(|| source.create_file(&path, created, None, &work), &work)?;
     let times = || -> Result<_, Box<dyn std::error::Error>> {

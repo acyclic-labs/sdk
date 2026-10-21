@@ -34,7 +34,6 @@ use acyclic_stream::{MemoryStream, StreamProvider};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
-use uuid::Uuid;
 
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 type MemoryJournal<P> = FilesystemExecutionJournal<P, MemoryAuthorityBackend, MemoryObjectBackend>;
@@ -60,7 +59,7 @@ async fn new_memory_content(
     }
     let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host: Arc<MemoryHost> = FilesystemHost::new(filesystem, &provider, None)?;
-    let key = Uuid::new_v4().to_string();
+    let key = crate::identity::fresh_uuid().to_string();
     #[cfg(test)]
     let key = MEMORY_VOLUME_KEY.get().map_or(key, str::to_owned);
     let volume = VolumeRef::new(

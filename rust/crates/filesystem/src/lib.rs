@@ -105,6 +105,7 @@ mod heap_future;
 pub mod hosted;
 #[doc(hidden)]
 pub mod hosted_contract;
+mod identity;
 pub mod kernel;
 pub mod lazy_workspace;
 pub mod lineage;

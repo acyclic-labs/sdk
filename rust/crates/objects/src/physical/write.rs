@@ -77,7 +77,7 @@ pub(crate) fn write_publication(
         }
         meter.check()?;
     } else {
-        file.write_all(bytes)?;
+        acyclic_native_runtime::write_file_all(file, bytes)?;
     }
     Ok(())
 }
@@ -246,9 +246,9 @@ pub(super) fn write_segment_inner<B: AsRef<[u8]>>(
                 )?;
             }
         } else {
-            file.write_all(&metadata)?;
+            acyclic_native_runtime::write_file_all(&mut file, &metadata)?;
             for (_, body) in bodies {
-                file.write_all(body.as_ref())?;
+                acyclic_native_runtime::write_file_all(&mut file, body.as_ref())?;
             }
         }
         sync_publication(&file, durability, publication)

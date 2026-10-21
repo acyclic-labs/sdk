@@ -6,7 +6,7 @@ use crate::{LocalDurability, LocalObjectsGarbageCollection};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, Write},
+    io::{Read, Seek},
     path::{Path, PathBuf},
     sync::{
         Arc, RwLock,

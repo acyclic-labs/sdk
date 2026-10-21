@@ -14,7 +14,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
             || {
                 context.source.create_directory(
                     &path,
-                    create_metadata(mode, u32::from(libc::S_IFDIR), uid, gid),
+                    create_metadata(&context.clock, mode, u32::from(libc::S_IFDIR), uid, gid),
                     work,
                 )
             },
@@ -104,7 +104,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
                 context.source.create_symbolic_link(
                     &destination,
                     target,
-                    create_metadata(0o777, u32::from(libc::S_IFLNK), uid, gid),
+                    create_metadata(&context.clock, 0o777, u32::from(libc::S_IFLNK), uid, gid),
                     work,
                 )
             },
@@ -172,7 +172,13 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
                     &path,
                     kind,
                     device,
-                    create_metadata(mode, mode & u32::from(libc::S_IFMT), uid, gid),
+                    create_metadata(
+                        &context.clock,
+                        mode,
+                        mode & u32::from(libc::S_IFMT),
+                        uid,
+                        gid,
+                    ),
                     work,
                 )
             },
@@ -246,12 +252,14 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
             handle,
             |metadata| {
                 update_time(
+                    &context.clock,
                     &mut metadata.accessed_ns,
                     times.accessed_seconds,
                     times.accessed_nanoseconds,
                 )
                 .map_err(driver_errno)?;
                 update_time(
+                    &context.clock,
                     &mut metadata.modified_ns,
                     times.modified_seconds,
                     times.modified_nanoseconds,

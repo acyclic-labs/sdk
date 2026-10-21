@@ -72,6 +72,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
     health: Option<Arc<FileHealth>>,
     pool: &'static LazyLock<io::Result<NativeWorkers>>,
 ) -> io::Result<NativeCompletion<T>> {
+    #[cfg(feature = "test-support")]
+    let operation = crate::testing::inherit_host(operation);
     let allocation_meter = allocation_meter.or(meter.as_ref());
     if let Some(meter) = &meter {
         meter.check()?;
@@ -128,6 +130,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
         .transpose()?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
+            #[cfg(feature = "test-support")]
+            scope: None,
             operation: Box::new(operation),
             meter,
             terminal: Arc::clone(&state) as Arc<dyn TaskTerminal>,

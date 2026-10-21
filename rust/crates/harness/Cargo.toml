@@ -14,6 +14,11 @@ readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
 [[test]]
+name = "dst"
+path = "tests/dst/main.rs"
+required-features = ["filesystem-local", "native-execution", "test-support"]
+
+[[test]]
 name = "main"
 path = "tests/main.rs"
 
@@ -40,7 +45,7 @@ required-features = ["filesystem"]
 
 [features]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]
-test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support"]
+test-support = ["dep:tempfile", "acyclic-stream/test-support", "acyclic-native-runtime/test-support", "acyclic-objects/test-support", "acyclic-harness-core/test-support", "acyclic-fs/test-support"]
 model-checking = ["dep:loom", "dep:same-file", "dep:tempfile", "acyclic-fs/model-checking", "acyclic-harness-core/model-checking"]
 browser = ["wasm", "filesystem", "acyclic-fs/browser", "acyclic-harness-core/browser"]
 # Native presentation only; this does not select providers or grant authority.

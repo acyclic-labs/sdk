@@ -43,7 +43,7 @@ impl NativeDemandSource {
                 }
             });
             let worker_stop = stop.0.clone();
-            let mut worker = tokio::task::spawn_blocking(crate::obs::in_context(crate::obs::caller_context(), move || {
+            let worker = spawn_blocking(crate::obs::in_context(crate::obs::caller_context(), move || {
                 let _permit = permit;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     worker_stop.check().map_err(|_| DemandError::Cancelled)?;
@@ -56,6 +56,7 @@ impl NativeDemandSource {
                 let released = context.release(allocation);
                 (result.and_then(|value| released.map(|()| value)), context)
             }));
+            tokio::pin!(worker);
             let answer = tokio::select! {
                 answer = &mut worker => answer,
                 () = cancellation.cancelled() => { stop.0.cancel(); worker.await }

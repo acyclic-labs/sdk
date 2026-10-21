@@ -25,7 +25,7 @@ impl AuthorityId {
     /// Creates a fresh time-ordered authority identity.
     #[must_use]
     pub fn new() -> Self {
-        Self(Uuid::now_v7())
+        Self(crate::identity::fresh_time_uuid())
     }
 
     /// Constructs an identity from its canonical 16 bytes.
@@ -56,7 +56,7 @@ impl OperationId {
     /// Creates a fresh time-ordered operation identity.
     #[must_use]
     pub fn new() -> Self {
-        Self(Uuid::now_v7())
+        Self(crate::identity::fresh_time_uuid())
     }
 
     /// Constructs an identity from its canonical 16 bytes.
@@ -191,7 +191,7 @@ macro_rules! uuid_identity {
             /// Creates a fresh time-ordered identity.
             #[must_use]
             pub fn new() -> Self {
-                Self(Uuid::now_v7())
+                Self(crate::identity::fresh_time_uuid())
             }
 
             /// Constructs an identity from its canonical 16 bytes.

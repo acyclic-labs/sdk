@@ -620,6 +620,7 @@ where
                 change,
                 work,
                 &self.cancellation,
+                &self.runtime.clock,
                 self.native_callback_guard.clone(),
             )
         })

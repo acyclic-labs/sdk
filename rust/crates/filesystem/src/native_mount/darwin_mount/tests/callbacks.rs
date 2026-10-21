@@ -64,7 +64,13 @@ fn authored_guard_denies_before_mutation_and_reports_revocation_after_it() -> Te
                         || {
                             context.source.create_file(
                                 &path,
-                                create_metadata(0o644, u32::from(libc::S_IFREG), 0, 0),
+                                create_metadata(
+                                    &crate::native_mount::clock::Clock::capture(),
+                                    0o644,
+                                    u32::from(libc::S_IFREG),
+                                    0,
+                                    0,
+                                ),
                                 None,
                                 work,
                             )

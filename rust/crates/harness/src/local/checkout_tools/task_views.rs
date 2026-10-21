@@ -185,7 +185,7 @@ impl CheckoutTools {
         let path = self
             .workspace
             .mount_directory
-            .join(uuid::Uuid::new_v4().to_string());
+            .join(crate::identity::fresh_uuid().to_string());
         std::fs::create_dir(&path).map_err(storage)?;
         let mut workspace = LocalWorkspace {
             #[cfg(all(test, not(acyclic_harness_loom)))]
@@ -285,7 +285,7 @@ impl CheckoutTools {
         let path = self
             .workspace
             .mount_directory
-            .join(uuid::Uuid::new_v4().to_string());
+            .join(crate::identity::fresh_uuid().to_string());
         std::fs::create_dir(&path).map_err(storage)?;
         let mounted = Arc::new(
             view.mount(

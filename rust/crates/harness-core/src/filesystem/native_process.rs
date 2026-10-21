@@ -16,6 +16,7 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_native_runtime::spawn;
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -379,7 +380,7 @@ where
         let request = self.request.clone();
         let schema = (self.plan.result_schema.clone(), self.result_schema.clone());
         let observer = self.observer.clone();
-        tokio::spawn(async move {
+        spawn(async move {
             let (status, diagnostic) = execute(
                 &owner, &view, &authority, &request, &dispatch, &schema, observer,
             )

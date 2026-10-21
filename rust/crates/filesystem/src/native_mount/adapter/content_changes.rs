@@ -5,6 +5,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         change: ContentChange<F>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
+        clock: &super::clock::Clock,
         guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     ) -> Result<(), MountSourceError> {
         let cancellation = work.cancellation();
@@ -54,7 +55,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .change_content(
                 file,
                 change,
-                ContentTimes::Stamp(content_change_time()?),
+                ContentTimes::Stamp(content_change_time(clock)?),
                 work,
                 cancellation,
             )

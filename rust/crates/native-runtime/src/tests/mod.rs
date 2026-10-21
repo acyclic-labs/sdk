@@ -151,6 +151,9 @@ pub(super) struct ReadBudgetMeter {
     used_bytes: AtomicU64,
     used_allocations: AtomicU64,
     examined_items: AtomicU64,
+    encoded: AtomicU64,
+    copied: AtomicU64,
+    hashed: AtomicU64,
     pub(super) item_limit: Option<u64>,
     read: AtomicU64,
     pub(super) memory: AtomicU64,
@@ -280,6 +283,27 @@ impl NativeReadMeter for ReadBudgetMeter {
     }
     fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
         io::Error::new(io::ErrorKind::OutOfMemory, error)
+    }
+    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
+        self.check()?;
+        for (counter, bytes) in [
+            (&self.encoded, encoded),
+            (&self.copied, copied),
+            (&self.hashed, hashed),
+        ] {
+            self.preflight(counter, bytes, u64::MAX)?;
+        }
+        Ok(())
+    }
+    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
+        for (counter, bytes) in [
+            (&self.encoded, encoded),
+            (&self.copied, copied),
+            (&self.hashed, hashed),
+        ] {
+            Self::charge(counter, bytes, u64::MAX)?;
+        }
+        Ok(())
     }
     fn allocate_refcount_header(&self) -> io::Result<()> {
         self.allocate(0)

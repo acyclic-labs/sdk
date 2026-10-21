@@ -303,6 +303,10 @@ pub struct SystemUnixMillisClock;
 
 impl UnixMillisClock for SystemUnixMillisClock {
     fn now_unix_millis(&self) -> u64 {
+        #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+        if let Some(millis) = acyclic_native_runtime::testing::unix_millis() {
+            return millis;
+        }
         #[cfg(target_arch = "wasm32")]
         {
             let now = js_sys::Date::now().max(0.0).floor();

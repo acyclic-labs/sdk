@@ -439,7 +439,7 @@ async fn append_later_summary_parent_messages(
                     causal_parent: None,
                     action: Action::AppendConversationMessage {
                         message: Box::new(ConversationMessage {
-                            id: Uuid::new_v4(),
+                            id: uuid::Uuid::new_v4(),
                             sequence,
                             kind: MessageKind::System,
                             content: content.clone(),

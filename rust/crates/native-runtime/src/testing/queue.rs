@@ -27,6 +27,8 @@ fn saturated_queue(bypass: bool) -> io::Result<()> {
         sender,
         admission: Arc::new(Mutex::new(AdmissionState::new())),
         threads: 1,
+        #[cfg(feature = "test-support")]
+        host_pool: crate::testing::HostPool::new(1),
     };
     let filler = run_blocking_io(|| (), None)?
         .pending
@@ -135,7 +137,8 @@ async fn scoped_completion_uses_the_real_host_worker() -> io::Result<()> {
 }
 
 #[test]
-fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Result<()> {
+fn blocking_replay_io_preserves_native_workers_and_gates_without_a_private_pool() -> io::Result<()>
+{
     let threads = Arc::new(AtomicUsize::new(0));
     let observed = threads.clone();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -153,9 +156,11 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         let (schedule, mut events) = Schedule::new();
         let mut controlled = Box::pin(schedule.scope(async {
             spawn_blocking(|| {
+                let recovered = tokio::sync::RwLock::new(7);
                 (
                     std::thread::current().id(),
                     std::thread::current().name().map(String::from),
+                    *recovered.blocking_read(),
                 )
             })
             .await
@@ -165,8 +170,9 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
         loop {
             tokio::select! {
                 actual = &mut controlled => {
-                    assert_ne!(actual.0, driver, "blocking work ran on the runtime driver");
+                    assert_ne!(actual.0, driver, "blocking recovery ran on the async driver");
                     assert!(actual.1.unwrap().starts_with("acyclic-host-io-"));
+                    assert_eq!(actual.2, 7);
                     break;
                 },
                 boundary = events.recv() => {
@@ -191,5 +197,59 @@ fn inline_replay_io_preserves_gates_without_a_tokio_blocking_pool() -> io::Resul
     // thread-count assertion must reject it, not just compare modeled counts.
     runtime.block_on(async { tokio::task::spawn_blocking(|| ()).await.unwrap() });
     assert!(std::panic::catch_unwind(check).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn unscheduled_blocking_work_retains_tokio_and_native_dependencies() -> io::Result<()> {
+    // Unscheduled production work belongs to Tokio so a paused clock tracks
+    // the blocking owner. It may still submit and wait for native I/O; only
+    // scoped simulation work must leave the runtime context (tested below).
+    let (runtime, result) = spawn_blocking(|| {
+        (
+            tokio::runtime::Handle::try_current().is_ok(),
+            blocking_on(run_blocking_io(|| 42, None).unwrap()).unwrap(),
+        )
+    })
+    .await?;
+    assert!(runtime, "ordinary blocking work lost its Tokio runtime");
+    assert_eq!(result, 42);
+    Ok(())
+}
+
+#[tokio::test]
+async fn scoped_blocking_work_keeps_clock_without_runtime_entry() -> io::Result<()> {
+    for seeded in [false, true] {
+        let (schedule, mut boundaries) = if seeded {
+            Schedule::seeded(17)
+        } else {
+            Schedule::new()
+        };
+        let driver = async {
+            while let Some(boundary) = boundaries.recv().await {
+                boundary.release();
+            }
+        };
+        let work = schedule.scope(async {
+            spawn_blocking(move || {
+                assert!(
+                    tokio::runtime::Handle::try_current().is_err(),
+                    "scoped native work inherited a Tokio runtime"
+                );
+                assert_eq!(*tokio::sync::RwLock::new(42).blocking_read(), 42);
+                assert_eq!(unix_millis().is_some(), seeded);
+                assert_eq!(CapturedClock::capture().is_some(), seeded);
+                assert!(
+                    tokio::runtime::Handle::try_current().is_err(),
+                    "clock read leaked its runtime entry"
+                );
+            })
+            .await
+        });
+        tokio::select! {
+            result = work => result?,
+            () = driver => panic!("boundary driver ended before work"),
+        }
+    }
     Ok(())
 }

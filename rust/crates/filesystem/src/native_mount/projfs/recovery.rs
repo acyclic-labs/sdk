@@ -57,7 +57,7 @@ pub(in crate::native_mount) fn quarantine_crashed_destination(
         .ok_or(NativeMountError::InvalidDestination)?;
     let preserved = parent.join(format!(
         ".acyclic-residue-{}",
-        uuid::Uuid::new_v4().simple()
+        crate::identity::fresh_uuid().simple()
     ));
     if preserved
         .try_exists()

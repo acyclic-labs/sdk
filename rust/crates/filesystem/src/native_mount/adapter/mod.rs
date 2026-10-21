@@ -82,8 +82,9 @@ pub struct CheckoutMountSource<A, O> {
     _source_allocation: Option<crate::NativeAllocation>,
 }
 
-fn content_change_time() -> Result<i64, MountSourceError> {
-    std::time::SystemTime::now()
+pub(super) fn content_change_time(clock: &super::clock::Clock) -> Result<i64, MountSourceError> {
+    clock
+        .now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .and_then(|since| i64::try_from(since.as_nanos()).ok())

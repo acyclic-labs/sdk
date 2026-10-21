@@ -139,6 +139,7 @@ async fn write(
             },
             work,
             source.cancellation(),
+            &source.runtime.clock,
             None,
         )
         .await

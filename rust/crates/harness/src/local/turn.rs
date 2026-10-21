@@ -572,7 +572,7 @@ impl LocalHarness {
         Fut: Future<Output = Result<bool>> + Send,
     {
         let worker = crate::distributed::Worker {
-            id: format!("local-{}", uuid::Uuid::new_v4()),
+            id: format!("local-{}", crate::identity::fresh_uuid()),
             available: Default::default(),
             labels: Default::default(),
         };

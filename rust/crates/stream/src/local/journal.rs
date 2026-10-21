@@ -8,11 +8,13 @@ impl Journal {
         let lock = lock_root(root, limits)?;
         let epoch = match read_snapshot(root, limits)? {
             Some(snapshot) => {
-                recovered
-                    .blocking_send(Recovered::State {
+                blocking_send(
+                    recovered,
+                    Recovered::State {
                         encoded: snapshot.state,
-                    })
-                    .map_err(|_| LocalStreamError::Executor)?;
+                    },
+                )
+                .map_err(|_| LocalStreamError::Executor)?;
                 snapshot.epoch
             }
             None => 0,
@@ -137,12 +139,14 @@ impl Journal {
             if operations > limits.journal_operations {
                 return Err(LocalStreamError::Corrupt);
             }
-            recovered
-                .blocking_send(Recovered::Command {
+            blocking_send(
+                recovered,
+                Recovered::Command {
                     committed_at_millis: u64::from_le_bytes(*committed_at_millis),
                     command,
-                })
-                .map_err(|_| LocalStreamError::Executor)?;
+                },
+            )
+            .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
                 .checked_add(frame_bytes(&frame.length))
                 .ok_or(LocalStreamError::Corrupt)?;
@@ -164,9 +168,12 @@ impl Journal {
         epoch: u64,
         work: Option<&Arc<crate::memory::Work>>,
     ) -> Result<(), LocalStreamError> {
-        self.file.set_len(0)?;
+        acyclic_native_runtime::truncate_file(&self.file, 0)?;
         self.file.seek(SeekFrom::Start(0))?;
-        self.file.write_all(&encode_header(self.limits, epoch)?)?;
+        acyclic_native_runtime::write_file_all(
+            &mut self.file,
+            &encode_header(self.limits, epoch)?,
+        )?;
         match work {
             Some(work) => work.sync(|| sync_file(&self.file, self.limits.durability))?,
             None => sync_file(&self.file, self.limits.durability)?,
@@ -200,13 +207,16 @@ impl Journal {
         let snapshot = self.root.join(SNAPSHOT_FILE);
         {
             let mut file = File::create(&temporary)?;
-            file.write_all(&encode_snapshot(self.limits, epoch, state)?)?;
+            acyclic_native_runtime::write_file_all(
+                &mut file,
+                &encode_snapshot(self.limits, epoch, state)?,
+            )?;
             match work {
                 Some(work) => work.sync(|| sync_file(&file, self.limits.durability))?,
                 None => sync_file(&file, self.limits.durability)?,
             }
         }
-        std::fs::rename(&temporary, &snapshot)?;
+        acyclic_native_runtime::rename_file(&temporary, &snapshot)?;
         match work {
             Some(work) => work.sync(|| {
                 acyclic_native_runtime::sync_parent(

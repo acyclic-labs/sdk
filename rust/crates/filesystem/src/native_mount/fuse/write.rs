@@ -66,7 +66,7 @@ impl FuseProjection {
         let resolved = if changes.is_empty() {
             current
         } else {
-            let metadata = changes.applied_to(current.lookup.metadata)?;
+            let metadata = changes.applied_to(&self.core.clock, current.lookup.metadata)?;
             let stamp = source.view_stamp_with_meter(work)?;
             match (&open_file, current.through) {
                 (Some(open_file), _) => {
