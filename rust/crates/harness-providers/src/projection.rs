@@ -311,7 +311,7 @@ fn project_message<'a>(
                 project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
             }
             ModelContentPart::File { file, policy } => {
-                if let acyclic_harness::model::FileProjectionPolicy::Native(policy) = policy {
+                if let acyclic_harness_core::model::FileProjectionPolicy::Native(policy) = policy {
                     if role != "user" {
                         return Err(invalid("native images require a user message"));
                     }
