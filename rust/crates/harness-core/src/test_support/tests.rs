@@ -49,9 +49,8 @@ fn selected_request_snapshots_do_not_copy_the_recorded_prefix() -> Result<()> {
     use acyclic_test_support::{AllocationInfo, measure};
 
     fn recorded(count: usize) -> Result<ScriptedModelProvider> {
-        let provider = ScriptedModelProvider::new(
-            (0..count).map(|_| ScriptedTurn::Text("answer".into())),
-        );
+        let provider =
+            ScriptedModelProvider::new((0..count).map(|_| ScriptedTurn::Text("answer".into())));
         for index in 0..count {
             let (prepared, mut dispatch) = request()?;
             let mut value = prepared.request().clone();

@@ -166,8 +166,8 @@ async fn child_guidance_ignores_compacted_summary_markers() -> Result<()> {
             .await?,
     )?;
     harness.resume(child).await?;
-    let request =
-        serde_json::to_string(&provider.request(1).unwrap()).map_err(super::super::super::storage)?;
+    let request = serde_json::to_string(&provider.request(1).unwrap())
+        .map_err(super::super::super::storage)?;
     assert!(
         request.contains(summary),
         "child did not receive the summary"

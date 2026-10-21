@@ -168,7 +168,8 @@ fn sequence_case(frozen: bool, bootstrap: &super::super::bootstrap::Bootstrap) -
                     local.admit_turn(operation, None, receive, model).await?;
                     local.resume(task).await?;
                     let text = serde_json::to_string(&provider.last_request().unwrap())?;
-                    let positive = serde_json::to_string(&provider.request(prompts.len() + 1).unwrap())?;
+                    let positive =
+                        serde_json::to_string(&provider.request(prompts.len() + 1).unwrap())?;
                     prop_assert!(detector(&positive, prompts.len() - 1));
                     prop_assert!(
                         !detector(&text, prompts.len() - 1),
@@ -280,11 +281,14 @@ async fn active_child_inherits_only_checkpoint_references_and_the_pinned_model()
     local.disconnect_unfinished().await?;
     let local = LocalHarness::open(config()?).await?;
     assert_eq!(local.resume(child).await?.text, "child answer");
-    let request =
-        serde_json::to_string(&provider.request(2).unwrap()).map_err(super::super::super::storage)?;
+    let request = serde_json::to_string(&provider.request(2).unwrap())
+        .map_err(super::super::super::storage)?;
     assert!(request.contains("CHECKPOINT_ONLY_A"));
     assert!(!request.contains("CHECKPOINT_ONLY_B"));
-    assert_eq!(provider.request(2).unwrap().model.name, checkpoint.boundary.model);
+    assert_eq!(
+        provider.request(2).unwrap().model.name,
+        checkpoint.boundary.model
+    );
     // The parent is still the unfinished HEAD after its child settles.
     local.disconnect_unfinished().await?;
     Ok(())
