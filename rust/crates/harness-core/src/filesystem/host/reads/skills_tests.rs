@@ -6,8 +6,21 @@ use crate::{
 };
 use futures::FutureExt as _;
 
-#[tokio::test]
-async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
+type MemoryFs = Fs<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+type Host = FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
+
+struct Fixture {
+    home: tempfile::TempDir,
+    retained: tempfile::TempDir,
+    filesystem: MemoryFs,
+    host: Arc<Host>,
+    volume: VolumeRef,
+    grant: ContentGrant,
+    sources: Arc<NativeSkills>,
+    skills: Vec<crate::context::SkillMetadata>,
+}
+
+async fn fixture() -> Result<Fixture> {
     acyclic_native_runtime::initialize_native_io_services()
         .map_err(|error| Error::Storage(error.to_string()))?;
     acyclic_fs::watch::initialize_native_watch_services()
@@ -37,7 +50,8 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+    let filesystem = Fs::memory();
+    let mut host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     host.create_volume(&volume).await?;
     let issuer = AuthorityIssuer::new(
         "skill-race",
@@ -71,6 +85,82 @@ async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Resul
     let skills = sources.user_catalog().await?;
     assert_eq!(skills.len(), 2);
     host = host.with_native_skills(sources.clone())?;
+    Ok(Fixture {
+        home,
+        retained,
+        filesystem,
+        host,
+        volume,
+        grant,
+        sources,
+        skills,
+    })
+}
+
+impl Fixture {
+    async fn read(&self, host: &Host) -> Result<acyclic_stream::OwnedBytes> {
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = PreparationIo::from_native_work(&work)?;
+        let source = &self.skills[0].source;
+        host.read_private_path(
+            &self.volume,
+            &self.grant,
+            &source.path,
+            Some(&source.generation),
+            4096,
+            Some(&io),
+        )
+        .await
+        .map(|(_, bytes)| bytes)
+    }
+}
+
+#[tokio::test]
+async fn committed_skill_body_recovers_its_receipt_without_the_host_source() -> Result<()> {
+    let fixture = fixture().await?;
+    let original = fixture.read(&fixture.host).await?;
+    let source = &fixture.skills[0].source;
+    assert!(fixture.sources.materialized(&source.generation)?.is_some());
+    // Recreate the crash window between the durable commit and local receipt.
+    let receipt = fixture.retained.path().join("sources").join(format!(
+        "{}.body.json",
+        hex::encode(source.generation.as_resource().key())
+    ));
+    std::fs::remove_file(receipt).map_err(|error| Error::Storage(error.to_string()))?;
+    std::fs::remove_file(fixture.home.path().join("first/SKILL.md"))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let sources = NativeSkills::new(
+        fixture.retained.path().join("sources"),
+        fixture.volume.clone(),
+        fixture.volume.clone(),
+        None,
+        Vec::new(),
+    )?;
+    let reopened =
+        FilesystemHost::new(fixture.filesystem.clone(), fixture.volume.provider(), None)?
+            .with_native_skills(sources.clone())?;
+    assert_eq!(fixture.read(&reopened).await?, original);
+    assert!(sources.materialized(&source.generation)?.is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
+    let Fixture {
+        home: _home,
+        retained,
+        filesystem: _filesystem,
+        mut host,
+        volume,
+        grant,
+        sources,
+        skills,
+    } = fixture().await?;
 
     let (entered_a, at_a) = tokio::sync::oneshot::channel();
     let (entered_b, at_b) = tokio::sync::oneshot::channel();

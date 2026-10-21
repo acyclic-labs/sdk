@@ -299,20 +299,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 ))
                 .await;
             }
-            let bytes = sources
-                .read(volume, source_generation, path, maximum_bytes, io)?
-                .await?
-                .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
             let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
             let key = IdempotencyKey::new(&format!(
                 "skill-body-{}",
                 hex::encode(source_generation.as_resource().key())
             ))?;
-            let (directory, _) = path
-                .rsplit_once('/')
-                .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
-            let generation = self
-                .apply_generation(
+            // The commit is authoritative if a crash or a failed receipt write
+            // separated publication from the local cache. Never reopen the
+            // host source when its original bytes are already committed.
+            let committed = crate::conversation::BoundedContentFuture::new(io, || {
+                self.operation_generation(&workspace, &key, io)
+            })?
+            .await?;
+            let generation = if let Some(committed) = committed {
+                committed
+            } else {
+                let bytes = sources
+                    .read(volume, source_generation, path, maximum_bytes, io)?
+                    .await?
+                    .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
+                let (directory, _) = path
+                    .rsplit_once('/')
+                    .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
+                self.apply_generation(
                     &workspace,
                     None,
                     &[
@@ -328,7 +337,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     io,
                     None,
                 )?
-                .await?;
+                .await?
+            };
             let generation = self.generation_ref_id(generation.id(), io)?;
             sources.retain_materialized(source_generation, &generation)?;
             drop(materializing);
