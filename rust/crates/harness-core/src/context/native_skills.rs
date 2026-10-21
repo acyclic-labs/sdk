@@ -36,13 +36,18 @@ struct Source {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 enum RetainedSource {
-    Native(Source),
-    Shadow {
-        volume: VolumeRef,
-        cut: acyclic_fs::LazySnapshotRef,
-        file_id: acyclic_fs::FileId,
-    },
+    Native(Box<Source>),
+    Shadow(Box<ShadowSource>),
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ShadowSource {
+    volume: VolumeRef,
+    cut: acyclic_fs::LazySnapshotRef,
+    file_id: acyclic_fs::FileId,
+}
+
+type UserCatalog = Option<(Vec<SkillMetadata>, Bounds)>;
 
 type Catalog = Option<(acyclic_fs::LazySnapshotId, Vec<SkillMetadata>)>;
 
@@ -61,7 +66,7 @@ pub struct NativeSkills {
     pub(crate) materializer: super::skill_materializer::SkillMaterializer,
     user_roots: Vec<PathBuf>,
     cache: crate::sync::owned::Arc<crate::sync::owned::Mutex<Catalog>>,
-    users: crate::sync::owned::Arc<crate::sync::owned::Mutex<Option<(Vec<SkillMetadata>, Bounds)>>>,
+    users: crate::sync::owned::Arc<crate::sync::owned::Mutex<UserCatalog>>,
 }
 
 impl NativeSkills {
@@ -173,7 +178,7 @@ impl NativeSkills {
             path: path.into(),
             node,
         };
-        self.retain_record(&RetainedSource::Native(record))
+        self.retain_record(&RetainedSource::Native(Box::new(record)))
     }
 
     fn retain_record(&self, record: &RetainedSource) -> Result<PinnedContextPath> {
@@ -253,63 +258,78 @@ impl NativeSkills {
             return Err(Error::Conflict("retained skill source changed".into()));
         }
         let retained: RetainedSource = serde_json::from_slice(&bytes).map_err(storage)?;
-        if let RetainedSource::Shadow {
-            volume: owner,
-            cut,
-            file_id,
-        } = &retained
-        {
-            if owner != volume {
-                return Err(Error::Unauthorized(
-                    "skill source belongs to another journal".into(),
-                ));
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let owned;
+        let work = if let Some(io) = io {
+            io.original_native_work().ok_or_else(|| {
+                Error::Unsupported("native skill reads require original native work".into())
+            })?
+        } else {
+            owned = native_work(&cancellation)?;
+            &owned
+        };
+        match retained {
+            RetainedSource::Shadow(record) => {
+                self.read_shadow(volume, &record, maximum, work).await
             }
-            let workspace = self
-                .workspace
-                .as_ref()
-                .ok_or_else(|| Error::Conflict("skill checkout is absent".into()))?;
-            let cancellation = acyclic_fs::CancellationToken::new();
-            let owned;
-            let work = if let Some(io) = io {
-                io.original_native_work().ok_or_else(|| {
-                    Error::Unsupported("native skill reads require original native work".into())
-                })?
-            } else {
-                owned = native_work(&cancellation)?;
-                &owned
-            };
-            let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
-                work,
-                cancellation: work.cancellation(),
-            };
-            let related;
-            let view = if cut.workspace_id == workspace.view.workspace().id() {
-                workspace.view.as_ref()
-            } else {
-                let selected = acyclic_fs::WorkspaceResolver::resolve(
-                    &(
-                        workspace.filesystem.clone(),
-                        acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
-                    ),
-                    cut.workspace_id,
-                )
-                .await
-                .map_err(storage)?;
-                related = workspace
-                    .view
-                    .open_related(selected, &mut accounting)
-                    .await?;
-                &related
-            };
-            return Ok(Some(
-                view.read_file_at_snapshot(*cut, *file_id, maximum, &mut accounting)
-                    .await?
-                    .bytes,
+            RetainedSource::Native(record) => {
+                Self::read_native(volume, &record, maximum, work).await
+            }
+        }
+    }
+
+    async fn read_shadow(
+        &self,
+        volume: &VolumeRef,
+        record: &ShadowSource,
+        maximum: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
+        if &record.volume != volume {
+            return Err(Error::Unauthorized(
+                "skill source belongs to another journal".into(),
             ));
         }
-        let RetainedSource::Native(record) = retained else {
-            return Err(Error::Invalid("skill source is not native".into()));
+        let workspace = self
+            .workspace
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("skill checkout is absent".into()))?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: work.cancellation(),
         };
+        let related;
+        let view = if record.cut.workspace_id == workspace.view.workspace().id() {
+            workspace.view.as_ref()
+        } else {
+            let selected = acyclic_fs::WorkspaceResolver::resolve(
+                &(
+                    workspace.filesystem.clone(),
+                    acyclic_fs::WorkspaceGraph::new(workspace.store.clone()),
+                ),
+                record.cut.workspace_id,
+            )
+            .await
+            .map_err(storage)?;
+            related = workspace
+                .view
+                .open_related(selected, &mut accounting)
+                .await?;
+            &related
+        };
+        Ok(Some(
+            view.read_file_at_snapshot(record.cut, record.file_id, maximum, &mut accounting)
+                .await?
+                .bytes,
+        ))
+    }
+
+    async fn read_native(
+        volume: &VolumeRef,
+        record: &Source,
+        maximum: u64,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if record.volume != *volume {
             return Err(Error::Unauthorized(
                 "skill source belongs to another journal".into(),
@@ -322,16 +342,6 @@ impl NativeSkills {
         if length > maximum {
             return Err(Error::Invalid("skill body exceeds byte bound".into()));
         }
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let owned;
-        let work = if let Some(io) = io {
-            io.original_native_work().ok_or_else(|| {
-                Error::Unsupported("native skill reads require original native work".into())
-            })?
-        } else {
-            owned = native_work(&cancellation)?;
-            &owned
-        };
         let cancellation = work.cancellation();
         let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
         let source = NativeDemandSource::open(
@@ -399,6 +409,13 @@ impl NativeSkills {
         )
         .await
         .map_err(storage)?;
+        let scan = ProjectCatalog {
+            sources: self,
+            root,
+            view,
+            cut,
+            native,
+        };
         let mut bounds = crate::sync::owned::lock_owned(self.users.clone())
             .await
             .as_ref()
@@ -435,61 +452,12 @@ impl NativeSkills {
                         .name
                         .unicode_text(&work, &cancellation)
                         .map_err(storage)?;
-                    let relative = format!("{directory}/{name}/SKILL.md");
-                    let path = format!("/{relative}");
-                    let (lookup, _, allocation) =
-                        view.lookup_at_snapshot(cut, &path, &mut accounting).await?;
-                    let Some(lookup) = lookup else {
-                        drop(allocation);
-                        continue;
-                    };
-                    let stat = lookup.stat();
-                    if stat.kind != SourceNodeKind::RegularFile {
-                        return Err(Error::Invalid("skill entry is not a file".into()));
+                    if let Some(skill) = scan
+                        .skill(directory, &name, &bounds, &mut accounting)
+                        .await?
+                    {
+                        skills.push(skill);
                     }
-                    let length = stat
-                        .logical_bytes
-                        .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-                    let pinned = match &lookup {
-                        acyclic_fs::LazyLookup::Source { node, .. } => {
-                            self.retain(&native, root, &path, *node)?
-                        }
-                        acyclic_fs::LazyLookup::Shadow { record, .. } => {
-                            self.retain_record(&RetainedSource::Shadow {
-                                volume: self.journal.clone(),
-                                cut,
-                                file_id: record.file_id,
-                            })?
-                        }
-                        acyclic_fs::LazyLookup::Authored { .. } => PinnedContextPath {
-                            root: ContextRoot {
-                                volume: self.project.clone(),
-                                directory: directory.into(),
-                            },
-                            generation: crate::resources::GenerationRef::new(
-                                self.project.provider(),
-                                &cut.authored_generation.digest().into_bytes(),
-                                None,
-                                None,
-                            )?
-                            .0,
-                            path: relative,
-                        },
-                    };
-                    view.retire_lookup((lookup, allocation), &mut accounting)?;
-                    let (prefix, _) = view
-                        .read_at_snapshot(
-                            cut,
-                            &path,
-                            Some(acyclic_fs::ByteRange {
-                                offset: 0,
-                                length: length.min(u64::from(bounds.limits.header_bytes)),
-                            }),
-                            u64::from(bounds.limits.header_bytes),
-                            &mut accounting,
-                        )
-                        .await?;
-                    skills.push(parse_skill_metadata(prefix.bytes.as_ref(), pinned)?);
                 }
                 cursor = page.next;
                 if cursor.is_none() {
@@ -566,43 +534,12 @@ impl NativeSkills {
                         .name
                         .unicode_text(&work, &cancellation)
                         .map_err(storage)?;
-                    let path = format!("/{name}/SKILL.md");
-                    let (parsed, _allocation) = NamespacePath::parse_in_profile(
-                        &path,
-                        config.profile,
-                        config.limits,
-                        &mut accounting,
-                        &cancellation,
-                    )?;
-                    let Some(node) = source
-                        .lookup(reference, &parsed, &work, &cancellation)
-                        .await
-                        .map_err(storage)?
-                    else {
-                        continue;
-                    };
-                    if node.kind != SourceNodeKind::RegularFile {
-                        return Err(Error::Invalid("skill entry is not a file".into()));
+                    if let Some(skill) = self
+                        .user_skill(&source, root, &name, &work, bounds.limits.header_bytes)
+                        .await?
+                    {
+                        skills.push(skill);
                     }
-                    let length = node
-                        .logical_bytes
-                        .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-                    let prefix = source
-                        .read_range(
-                            reference,
-                            &parsed,
-                            node.version,
-                            0,
-                            length.min(u64::from(bounds.limits.header_bytes)),
-                            &work,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(storage)?;
-                    skills.push(parse_skill_metadata(
-                        prefix.bytes.as_ref(),
-                        self.retain(&source, root, &path, node)?,
-                    )?);
                 }
                 if let Some(publication) = page.publication.as_mut() {
                     publication.accept(&mut accounting).map_err(storage)?;
@@ -616,6 +553,58 @@ impl NativeSkills {
         validate(&skills)?;
         *cached = Some((skills.clone(), bounds));
         Ok(skills)
+    }
+
+    async fn user_skill(
+        &self,
+        source: &NativeDemandSource,
+        root: &Path,
+        name: &str,
+        work: &acyclic_fs::NativeMaterializationWork,
+        header_bytes: u32,
+    ) -> Result<Option<SkillMetadata>> {
+        let reference = source.reference();
+        let cancellation = work.cancellation();
+        let config = acyclic_fs::VolumeConfig::native(acyclic_fs::Lifecycle::Durable);
+        let mut accounting =
+            acyclic_fs::kernel::KernelAccounting::NativeOriginal { work, cancellation };
+        let path = format!("/{name}/SKILL.md");
+        let (parsed, _allocation) = NamespacePath::parse_in_profile(
+            &path,
+            config.profile,
+            config.limits,
+            &mut accounting,
+            cancellation,
+        )?;
+        let Some(node) = source
+            .lookup(reference, &parsed, work, cancellation)
+            .await
+            .map_err(storage)?
+        else {
+            return Ok(None);
+        };
+        if node.kind != SourceNodeKind::RegularFile {
+            return Err(Error::Invalid("skill entry is not a file".into()));
+        }
+        let length = node
+            .logical_bytes
+            .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
+        let prefix = source
+            .read_range(
+                reference,
+                &parsed,
+                node.version,
+                0,
+                length.min(u64::from(header_bytes)),
+                work,
+                cancellation,
+            )
+            .await
+            .map_err(storage)?;
+        Ok(Some(parse_skill_metadata(
+            prefix.bytes.as_ref(),
+            self.retain(source, root, &path, node)?,
+        )?))
     }
 
     pub async fn user_discovery(
@@ -635,6 +624,83 @@ impl NativeSkills {
                 limits: bounds.limits,
             },
         ))
+    }
+}
+
+struct ProjectCatalog<'a> {
+    sources: &'a NativeSkills,
+    root: &'a Path,
+    view: &'a View,
+    cut: acyclic_fs::LazySnapshotRef,
+    native: NativeDemandSource,
+}
+impl ProjectCatalog<'_> {
+    async fn skill(
+        &self,
+        directory: &str,
+        name: &str,
+        bounds: &Bounds,
+        accounting: &mut acyclic_fs::kernel::KernelAccounting<'_>,
+    ) -> Result<Option<SkillMetadata>> {
+        let relative = format!("{directory}/{name}/SKILL.md");
+        let path = format!("/{relative}");
+        let (lookup, _, allocation) = self
+            .view
+            .lookup_at_snapshot(self.cut, &path, accounting)
+            .await?;
+        let Some(lookup) = lookup else {
+            drop(allocation);
+            return Ok(None);
+        };
+        let stat = lookup.stat();
+        if stat.kind != SourceNodeKind::RegularFile {
+            return Err(Error::Invalid("skill entry is not a file".into()));
+        }
+        let length = stat
+            .logical_bytes
+            .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
+        let pinned = match &lookup {
+            acyclic_fs::LazyLookup::Source { node, .. } => {
+                self.sources.retain(&self.native, self.root, &path, *node)?
+            }
+            acyclic_fs::LazyLookup::Shadow { record, .. } => {
+                self.sources
+                    .retain_record(&RetainedSource::Shadow(Box::new(ShadowSource {
+                        volume: self.sources.journal.clone(),
+                        cut: self.cut,
+                        file_id: record.file_id,
+                    })))?
+            }
+            acyclic_fs::LazyLookup::Authored { .. } => PinnedContextPath {
+                root: ContextRoot {
+                    volume: self.sources.project.clone(),
+                    directory: directory.into(),
+                },
+                generation: crate::resources::GenerationRef::new(
+                    self.sources.project.provider(),
+                    &self.cut.authored_generation.digest().into_bytes(),
+                    None,
+                    None,
+                )?
+                .0,
+                path: relative,
+            },
+        };
+        self.view.retire_lookup((lookup, allocation), accounting)?;
+        let (prefix, _) = self
+            .view
+            .read_at_snapshot(
+                self.cut,
+                &path,
+                Some(acyclic_fs::ByteRange {
+                    offset: 0,
+                    length: length.min(u64::from(bounds.limits.header_bytes)),
+                }),
+                u64::from(bounds.limits.header_bytes),
+                accounting,
+            )
+            .await?;
+        Ok(Some(parse_skill_metadata(prefix.bytes.as_ref(), pinned)?))
     }
 }
 

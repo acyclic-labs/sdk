@@ -43,20 +43,11 @@ impl LocalHarness {
             ));
         };
         #[cfg(feature = "native-execution")]
-        let skill_directory = checkout_state
-            .as_ref()
-            .map(|directory| directory.join("skill-sources"))
-            .unwrap_or_else(|| config.project.root().join("skill-sources"));
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::verify(
-                verifier,
-                signed,
-                volume,
-                operation,
-                config.limits.file_bytes,
-                &mut None,
-            )?;
-        }
+        let skill_directory = checkout_state.as_ref().map_or_else(
+            || config.project.root().join("skill-sources"),
+            |directory| directory.join("skill-sources"),
+        );
+        verify_bound_volume(volume, verifier, signed, config.limits.file_bytes)?;
         #[cfg(feature = "hooks")]
         let settings =
             settings::configuration(&config.project, config.settings.take(), config.hermetic)?;
@@ -70,21 +61,86 @@ impl LocalHarness {
         )
         .await?;
         let (filesystem, stream) = storage;
-        let task_files = Arc::new(
-            crate::task_volume::TaskFiles::open(
-                stream,
-                volume,
-                verifier,
-                signed,
-                config.limits.file_bytes,
-            )
-            .await?,
-        );
-        let erased_files = Arc::new(task_files.reopen_erased().await?);
-        let mut runtime = runtime.with_task_files(erased_files.clone())?;
-        runtime.bind_task_files(Some(task_files.clone()));
+        let (runtime, task_files) = bind_task_files(
+            runtime,
+            stream,
+            volume,
+            verifier,
+            signed,
+            config.limits.file_bytes,
+        )
+        .await?;
         #[cfg(feature = "native-execution")]
-        let workspace = if let Some((checkout, directory)) = checkout.zip(checkout_state) {
+        let workspace =
+            bound_workspace(checkout, checkout_state, &filesystem, volume, state_owner).await?;
+        #[cfg(not(feature = "native-execution"))]
+        {
+            let _ = filesystem;
+            if checkout.is_some() {
+                return Err(Error::Unsupported(
+                    "checkout commands require native-execution".into(),
+                ));
+            }
+        }
+        #[cfg(feature = "native-execution")]
+        let runtime = checkout_runtime(
+            runtime,
+            workspace.as_ref(),
+            volume,
+            config.clock.clone(),
+            &task_files,
+        )
+        .await?;
+        #[cfg(feature = "native-execution")]
+        let files = open::retain_skills(
+            files,
+            skill_directory,
+            volume,
+            volume,
+            workspace.as_ref(),
+            settings.skill_roots().to_vec(),
+        )?;
+        let volume = volume.clone();
+        Ok(BoundComposition {
+            config,
+            runtime,
+            files,
+            task_files,
+            volume,
+            verifier: verifier.clone(),
+            signed: signed.clone(),
+            compaction,
+            #[cfg(feature = "hooks")]
+            settings,
+            #[cfg(feature = "native-execution")]
+            workspace,
+            #[cfg(feature = "native-execution")]
+            checkout_context: checkout.is_some(),
+        }
+        .finish())
+    }
+
+    /// The same task runtime used by request-file consumers and SDK queries.
+    pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
+        &self.runtime
+    }
+}
+
+#[cfg(feature = "native-execution")]
+fn storage_error(error: impl std::fmt::Display) -> Error {
+    Error::Storage(error.to_string())
+}
+
+#[cfg(feature = "native-execution")]
+async fn bound_workspace(
+    checkout: Option<&Path>,
+    directory: Option<PathBuf>,
+    filesystem: &acyclic_fs::LocalFs,
+    volume: &VolumeRef,
+    state_owner: Option<acyclic_native_runtime::OwnershipAnchor>,
+) -> Result<Option<Arc<workspace::LocalWorkspace>>> {
+    Ok(
+        if let Some((checkout, directory)) = checkout.zip(directory) {
             let identity = acyclic_fs::capture_root_identity(checkout).map_err(storage_error)?;
             let digest = blake3::derive_key(
                 "acyclic.local.bound-checkout/v1",
@@ -95,7 +151,7 @@ impl LocalHarness {
             );
             Some(Arc::new(
                 workspace::open(
-                    &filesystem,
+                    filesystem,
                     volume,
                     volume,
                     checkout,
@@ -111,55 +167,55 @@ impl LocalHarness {
             ))
         } else {
             None
-        };
-        #[cfg(not(feature = "native-execution"))]
-        {
-            let _ = filesystem;
-            if checkout.is_some() {
-                return Err(Error::Unsupported(
-                    "checkout commands require native-execution".into(),
-                ));
-            }
-        }
-        #[cfg(feature = "native-execution")]
-        let runtime = if let Some(workspace) = &workspace {
-            runtime.with_workspace_tools(Arc::new(
-                checkout_tools::CheckoutTools::new(
-                    Arc::clone(workspace),
-                    volume,
-                    config.clock,
-                    Arc::clone(&task_files),
-                )
-                .await?,
-            ))?
-        } else {
-            runtime
-        };
-        #[cfg(feature = "native-execution")]
-        let files = files.with_native_skills(crate::context::native_skills::NativeSkills::new(
-            skill_directory,
-            volume.clone(),
-            volume.clone(),
-            workspace.as_ref().map(|workspace| {
-                (
-                    workspace.view(),
-                    workspace.filesystem.clone(),
-                    workspace.store.clone(),
-                )
-            }),
-            settings.skill_roots().to_vec(),
-        )?)?;
+        },
+    )
+}
+
+struct BoundComposition {
+    config: LocalHarnessConfig,
+    runtime: LocalTaskRuntime,
+    files: Arc<LocalFilesystem>,
+    task_files: Arc<crate::task_volume::TaskFiles<LocalStream>>,
+    volume: VolumeRef,
+    verifier: AuthorityVerifier,
+    signed: Scope,
+    compaction: crate::context::CompactionPolicy,
+    #[cfg(feature = "hooks")]
+    settings: Arc<crate::native_settings::SettingsConfig>,
+    #[cfg(feature = "native-execution")]
+    workspace: Option<Arc<workspace::LocalWorkspace>>,
+    #[cfg(feature = "native-execution")]
+    checkout_context: bool,
+}
+impl BoundComposition {
+    fn finish(self) -> LocalHarness {
+        let Self {
+            config,
+            runtime,
+            files,
+            task_files,
+            volume,
+            verifier,
+            signed,
+            compaction,
+            #[cfg(feature = "hooks")]
+            settings,
+            #[cfg(feature = "native-execution")]
+            workspace,
+            #[cfg(feature = "native-execution")]
+            checkout_context,
+        } = self;
         let (model, provider) = config.model;
-        let local = Self {
+        LocalHarness {
             files,
             runtime: Arc::new(runtime),
             task_files,
             project: volume.clone(),
             scratch: volume.clone(),
-            journal: volume.clone(),
-            verifier: verifier.clone(),
+            journal: volume,
+            verifier,
             issuer: None,
-            signed: signed.clone(),
+            signed,
             model,
             provider,
             context_manifest: config.context_manifest,
@@ -179,18 +235,62 @@ impl LocalHarness {
             #[cfg(feature = "native-execution")]
             workspace,
             #[cfg(feature = "native-execution")]
-            checkout_context: checkout.is_some(),
-        };
-        Ok(local)
-    }
-
-    /// The same task runtime used by request-file consumers and SDK queries.
-    pub fn task_runtime(&self) -> &Arc<LocalTaskRuntime> {
-        &self.runtime
+            checkout_context,
+        }
     }
 }
 
+fn verify_bound_volume(
+    volume: &VolumeRef,
+    verifier: &AuthorityVerifier,
+    signed: &Scope,
+    maximum: u64,
+) -> Result<()> {
+    for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+        ContentGrant::verify(verifier, signed, volume, operation, maximum, &mut None)?;
+    }
+    Ok(())
+}
+
+async fn bind_task_files(
+    runtime: LocalTaskRuntime,
+    stream: Arc<LocalStream>,
+    volume: &VolumeRef,
+    verifier: &AuthorityVerifier,
+    signed: &Scope,
+    maximum: u64,
+) -> Result<(
+    LocalTaskRuntime,
+    Arc<crate::task_volume::TaskFiles<LocalStream>>,
+)> {
+    let task_files = Arc::new(
+        crate::task_volume::TaskFiles::open(stream, volume, verifier, signed, maximum).await?,
+    );
+    let erased_files = Arc::new(task_files.reopen_erased().await?);
+    let mut runtime = runtime.with_task_files(erased_files.clone())?;
+    runtime.bind_task_files(Some(task_files.clone()));
+    Ok((runtime, task_files))
+}
+
 #[cfg(feature = "native-execution")]
-fn storage_error(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
+async fn checkout_runtime(
+    runtime: LocalTaskRuntime,
+    workspace: Option<&Arc<workspace::LocalWorkspace>>,
+    volume: &VolumeRef,
+    clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    task_files: &Arc<crate::task_volume::TaskFiles<LocalStream>>,
+) -> Result<LocalTaskRuntime> {
+    Ok(if let Some(workspace) = workspace {
+        runtime.with_workspace_tools(Arc::new(
+            checkout_tools::CheckoutTools::new(
+                Arc::clone(workspace),
+                volume,
+                clock,
+                Arc::clone(task_files),
+            )
+            .await?,
+        ))?
+    } else {
+        runtime
+    })
 }

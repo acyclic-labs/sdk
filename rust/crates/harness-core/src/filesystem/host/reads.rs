@@ -260,88 +260,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             not(target_arch = "wasm32")
         ))]
         if let Some(sources) = self.skill_sources(volume)?
-            && let Some(generation) = expected_generation
-            && sources.matches(volume, generation, path)
-        {
-            if let Some(retained) = sources.materialized(generation)? {
-                return Box::pin(self.read_private_path_indexed(
-                    volume,
-                    grant,
-                    path,
-                    Some(&retained),
-                    maximum_bytes,
-                    io,
-                ))
-                .await;
-            }
-        }
-        #[cfg(all(
-            feature = "filesystem-local",
-            feature = "native-execution",
-            not(target_arch = "wasm32")
-        ))]
-        if let Some(sources) = self.skill_sources(volume)?
             && let Some(source_generation) = expected_generation
             && sources.matches(volume, source_generation, path)
         {
-            // Keep the cache recheck, pinned transaction and retained receipt
-            // under the same journal owner. Disjoint first loads never race HEAD.
-            let materializing = sources.materializer.enter().await;
-            if let Some(retained) = sources.materialized(source_generation)? {
-                drop(materializing);
-                return Box::pin(self.read_private_path_indexed(
-                    volume,
-                    grant,
-                    path,
-                    Some(&retained),
-                    maximum_bytes,
-                    io,
-                ))
-                .await;
-            }
-            let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
-            let key = IdempotencyKey::new(&format!(
-                "skill-body-{}",
-                hex::encode(source_generation.as_resource().key())
-            ))?;
-            // The commit is authoritative if a crash or a failed receipt write
-            // separated publication from the local cache. Never reopen the
-            // host source when its original bytes are already committed.
-            let committed = crate::conversation::BoundedContentFuture::new(io, || {
-                self.operation_generation(&workspace, &key, io)
-            })?
-            .await?;
-            let generation = if let Some(committed) = committed {
-                committed
+            let generation = if let Some(retained) = sources.materialized(source_generation)? {
+                retained
             } else {
-                let bytes = sources
-                    .read(volume, source_generation, path, maximum_bytes, io)?
+                self.materialize_skill(&sources, volume, path, source_generation, maximum_bytes, io)
                     .await?
-                    .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
-                let (directory, _) = path
-                    .rsplit_once('/')
-                    .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
-                self.apply_generation(
-                    &workspace,
-                    None,
-                    &[
-                        WorkspaceMutation::CreateDirectory {
-                            path: format!("/{directory}"),
-                        },
-                        WorkspaceMutation::PutFile {
-                            path: format!("/{path}"),
-                            bytes,
-                        },
-                    ],
-                    key,
-                    io,
-                    None,
-                )?
-                .await?
             };
-            let generation = self.generation_ref_id(generation.id(), io)?;
-            sources.retain_materialized(source_generation, &generation)?;
-            drop(materializing);
             return Box::pin(self.read_private_path_indexed(
                 volume,
                 grant,
@@ -352,6 +279,90 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             ))
             .await;
         }
+        self.read_private_generation(volume, grant, path, expected_generation, maximum_bytes, io)
+            .await
+    }
+
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
+    async fn materialize_skill(
+        &self,
+        sources: &crate::context::native_skills::NativeSkills,
+        volume: &VolumeRef,
+        path: &str,
+        source_generation: &GenerationRef,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<GenerationRef> {
+        // Keep the cache recheck, pinned transaction and retained receipt
+        // under the same journal owner. Disjoint first loads never race HEAD.
+        let materializing = sources.materializer.enter().await;
+        if let Some(retained) = sources.materialized(source_generation)? {
+            drop(materializing);
+            return Ok(retained);
+        }
+        let workspace = workspace_ref(self.provider.clone(), &volume.storage_name(&mut None)?)?;
+        let key = IdempotencyKey::new(format!(
+            "skill-body-{}",
+            hex::encode(source_generation.as_resource().key())
+        ))?;
+        // The commit is authoritative if a crash or a failed receipt write
+        // separated publication from the local cache. Never reopen the
+        // host source when its original bytes are already committed.
+        let committed = crate::conversation::BoundedContentFuture::new(io, || {
+            self.operation_generation(&workspace, &key, io)
+        })?
+        .await?;
+        let generation = if let Some(committed) = committed {
+            committed
+        } else {
+            let bytes = sources
+                .read(volume, source_generation, path, maximum_bytes, io)?
+                .await?
+                .ok_or_else(|| Error::NotFound("retained skill source is absent".into()))?;
+            let (directory, _) = path
+                .rsplit_once('/')
+                .ok_or_else(|| Error::Invalid("skill source has no directory".into()))?;
+            self.apply_generation(
+                &workspace,
+                None,
+                &[
+                    WorkspaceMutation::CreateDirectory {
+                        path: format!("/{directory}"),
+                    },
+                    WorkspaceMutation::PutFile {
+                        path: format!("/{path}"),
+                        bytes,
+                    },
+                ],
+                key,
+                io,
+                None,
+            )?
+            .await?
+        };
+        let generation = self.generation_ref_id(generation.id(), io)?;
+        sources.retain_materialized(source_generation, &generation)?;
+        drop(materializing);
+        Ok(generation)
+    }
+
+    async fn read_private_generation(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        maximum_bytes: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(
+        FileRef,
+        acyclic_stream::OwnedBytes,
+        Option<crate::OperationId>,
+    )> {
         let name = path.rsplit('/').next().unwrap_or(path);
         crate::executor::with_history_io(io, |work| {
             crate::conversation::validate_content_path(path, work)
@@ -407,33 +418,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .as_ref()
             .map(|file| io.guard_owned(file.logical_owned_bytes()?))
             .transpose()?;
-        let (descriptor, display_name) = if let Some(staged) = &staged {
-            if staged.volume() != volume || staged.path() != path {
-                return Err(stock_boundary(
-                    Some(io),
-                    crate::wire::ErrorCode::Storage,
-                    "private file metadata does not match the file",
-                ));
-            }
-            crate::executor::with_history_io(Some(io), |work| {
-                staged.descriptor().verify(&bytes, work)
-            })?;
-            (
-                FileDescriptor::new(
-                    *staged.descriptor().sha256(),
-                    staged.descriptor().byte_length(),
-                    stock_string_copy(staged.descriptor().media_type(), Some(io))?,
-                )?,
-                stock_string_copy(staged.display_name(), Some(io))?,
-            )
-        } else {
-            (
-                crate::executor::with_history_io(Some(io), |work| {
-                    FileDescriptor::from_bytes(&bytes, media_type::classify(&bytes), work)
-                })?,
-                stock_string_copy(name, Some(io))?,
-            )
-        };
+        let (descriptor, display_name) =
+            private_descriptor(staged.as_ref(), volume, path, name, &bytes, io)?;
         let version = fork_preparer_io::hex_key(&generation.id().digest().into_bytes(), Some(io))?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
             FileRef::new(
@@ -626,4 +612,39 @@ pub(crate) fn file_publication(
     uuid::Uuid::parse_str(reference.version())
         .map(|id| crate::OperationId::from_bytes(*id.as_bytes()))
         .map_err(|_| Error::Storage("file metadata has no publication operation".into()))
+}
+
+fn private_descriptor(
+    staged: Option<&FileRef>,
+    volume: &VolumeRef,
+    path: &str,
+    name: &str,
+    bytes: &acyclic_stream::OwnedBytes,
+    io: &PreparationIo,
+) -> Result<(FileDescriptor, String)> {
+    Ok(if let Some(staged) = staged {
+        if staged.volume() != volume || staged.path() != path {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Storage,
+                "private file metadata does not match the file",
+            ));
+        }
+        crate::executor::with_history_io(Some(io), |work| staged.descriptor().verify(bytes, work))?;
+        (
+            FileDescriptor::new(
+                *staged.descriptor().sha256(),
+                staged.descriptor().byte_length(),
+                stock_string_copy(staged.descriptor().media_type(), Some(io))?,
+            )?,
+            stock_string_copy(staged.display_name(), Some(io))?,
+        )
+    } else {
+        (
+            crate::executor::with_history_io(Some(io), |work| {
+                FileDescriptor::from_bytes(bytes, media_type::classify(bytes), work)
+            })?,
+            stock_string_copy(name, Some(io))?,
+        )
+    })
 }

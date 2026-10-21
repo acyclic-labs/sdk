@@ -243,7 +243,11 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     )
     .await?;
     harness.run("first inventory").await?;
-    assert_eq!(catalog(&model, 0)?[0].description, "Greet formally");
+    let first = catalog(&model, 0)?;
+    let [skill] = first.as_slice() else {
+        return Err("expected one skill".into());
+    };
+    assert_eq!(skill.description, "Greet formally");
     host.apply(
         &workspace,
         None,
@@ -257,7 +261,11 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     )
     .await?;
     harness.run("second inventory").await?;
-    assert_eq!(catalog(&model, 1)?[0].description, "Updated generation");
+    let second = catalog(&model, 1)?;
+    let [skill] = second.as_slice() else {
+        return Err("expected one updated skill".into());
+    };
+    assert_eq!(skill.description, "Updated generation");
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
     Ok(())
 }

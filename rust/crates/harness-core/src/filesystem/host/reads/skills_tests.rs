@@ -29,12 +29,12 @@ async fn fixture() -> Result<Fixture> {
     let retained = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     for name in ["first", "second"] {
         let directory = home.path().join(name);
-        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::create_dir_all(&directory).map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::write(
             directory.join("SKILL.md"),
             format!("---\nname: {name}\ndescription: {name}\n---\n{name} body\n"),
         )
-        .unwrap();
+        .map_err(|error| Error::Storage(error.to_string()))?;
     }
     let provider = ProviderRef::new(
         "skill-race".into(),
