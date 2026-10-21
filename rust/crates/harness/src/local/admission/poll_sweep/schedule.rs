@@ -215,7 +215,7 @@ pub(super) fn check_cut<T>(exit: &Exit<T>, cut: usize, hit: usize) -> Result<(),
 }
 
 /// Which boundary reaches the driver first while the blocking job runs.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Arrival {
     /// The independent boundary is queued before the job may finish.
     IndependentFirst,
@@ -223,10 +223,34 @@ enum Arrival {
     CompletionFirst,
 }
 
-/// Records the schedule of one blocking job racing an independent owner.
-/// Boundaries reach the driver through a forwarder that reports what it has
-/// queued, so each arrival order is forced by a handshake, not by timing.
-fn physical_race(arrival: Arrival) -> Vec<&'static str> {
+/// Signals the blocking job when dropped, so a job waiting for the independent boundary also
+/// ends when the independent owner finishes without raising it.
+struct Unblock(std::sync::mpsc::Sender<()>);
+
+impl Drop for Unblock {
+    fn drop(&mut self) {
+        drop(self.0.send(()));
+    }
+}
+
+/// One driven race: its exit, boundaries hit and counted, the named points, and whether the
+/// independent owner raised its boundary and then ran to its end.
+struct Race {
+    cancelled: bool,
+    hit: usize,
+    ordinal: usize,
+    points: Vec<&'static str>,
+    raised: bool,
+    finished: bool,
+}
+
+/// Drives one blocking job racing an independent owned task, cancelling at the `cut`-th
+/// boundary. Boundaries reach the driver through a forwarder that reports what it has queued,
+/// so each arrival order is forced by a handshake, not by timing. The independent boundary is
+/// raised by an owned task that outlives a cut, so a deferred boundary the driver fails to
+/// release panics that owner instead of vanishing with the cancelled caller.
+fn physical_race(arrival: Arrival, cut: Option<usize>) -> Race {
+    use std::sync::atomic::{AtomicBool, Ordering};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -236,6 +260,7 @@ fn physical_race(arrival: Arrival) -> Vec<&'static str> {
         schedule.start();
         let (forward, mut forwarded) = tokio::sync::mpsc::unbounded_channel();
         let (independent_queued, independent_seen) = std::sync::mpsc::channel();
+        let unblock = Unblock(independent_queued.clone());
         let (completion_queued, completion_seen) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let mut completion_queued = Some(completion_queued);
@@ -255,35 +280,107 @@ fn physical_race(arrival: Arrival) -> Vec<&'static str> {
                 }
             }
         });
+        let (raised, finished) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
         let (started, running) = tokio::sync::oneshot::channel();
-        let raced = async {
-            // Submitted inside the driven scope, so the job owns its barriers.
+        let owner = schedule.clone();
+        let (raising, finishing) = (raised.clone(), finished.clone());
+        let (begin, begun) = tokio::sync::oneshot::channel();
+        let raced = async move {
+            // Both are submitted inside the driven scope, so each owns its barriers and outlives
+            // a cut of the caller. The independent owner is submitted and running before the job
+            // is: a submission queued behind the job's would wait for its completion, which in
+            // turn waits for the independent boundary.
+            let independent = acyclic_native_runtime::testing::spawn(async move {
+                let _unblock = unblock;
+                drop(begin.send(()));
+                let ran = running.await.is_ok();
+                if ran && matches!(arrival, Arrival::CompletionFirst) {
+                    drop(completion_seen.await);
+                }
+                raising.store(true, Ordering::SeqCst);
+                owner.point("independent").await;
+                finishing.store(true, Ordering::SeqCst);
+            });
+            drop(begun.await);
             let job = acyclic_native_runtime::testing::spawn_blocking(move || {
-                started.send(()).unwrap();
+                drop(started.send(()));
                 if matches!(arrival, Arrival::IndependentFirst) {
-                    independent_seen.recv().unwrap();
+                    drop(independent_seen.recv());
                 }
             });
-            let independent = async {
-                running.await.unwrap();
-                if matches!(arrival, Arrival::CompletionFirst) {
-                    completion_seen.await.unwrap();
-                }
-                schedule.point("independent").await;
-            };
-            futures::join!(job, independent).0.unwrap();
+            let (job, independent) = futures::join!(job, independent);
+            job.unwrap();
+            independent.unwrap();
         };
-        let (exit, _, _) = drive(raced, None, |_| true, &schedule, &mut forwarded).await;
-        assert!(matches!(exit, Exit::Completed(())));
-        schedule.points()
+        let (exit, hit, ordinal) = drive(raced, cut, |_| true, &schedule, &mut forwarded).await;
+        Race {
+            cancelled: matches!(exit, Exit::Cancelled),
+            hit,
+            ordinal,
+            points: schedule.points(),
+            raised: raised.load(Ordering::SeqCst),
+            finished: finished.load(Ordering::SeqCst),
+        }
     })
+}
+
+/// The race's named points, without the independent task's own submission boundaries.
+fn named(points: &[&'static str]) -> Vec<&'static str> {
+    points
+        .iter()
+        .copied()
+        .filter(|name| {
+            matches!(
+                *name,
+                "blocking:submitted" | "blocking:completed" | "independent"
+            )
+        })
+        .collect()
 }
 
 #[test]
 fn physical_completion_precedes_boundaries_raised_while_it_runs() {
     let expected = ["blocking:submitted", "blocking:completed", "independent"];
-    // The independent boundary is queued first, then the completion.
-    assert_eq!(physical_race(Arrival::IndependentFirst), expected);
-    // The completion is queued first, then the independent boundary.
-    assert_eq!(physical_race(Arrival::CompletionFirst), expected);
+    for arrival in [Arrival::IndependentFirst, Arrival::CompletionFirst] {
+        let race = physical_race(arrival, None);
+        assert!(!race.cancelled, "{arrival:?}");
+        assert!(race.raised && race.finished, "{arrival:?}");
+        assert_eq!(named(&race.points), expected, "{arrival:?}");
+    }
+}
+
+/// Every cut point of every arrival order, including a cut at the physical completion while
+/// the independent boundary is deferred behind it: the drive cancels exactly there, drains
+/// all owned work, and releases every deferred boundary, so each owner that raised one ends.
+#[test]
+fn every_cut_releases_deferred_boundaries_and_drains_owned_work() {
+    let mut deferred_cut = false;
+    for arrival in [Arrival::IndependentFirst, Arrival::CompletionFirst] {
+        let boundaries = physical_race(arrival, None).hit;
+        for cut in 1..=boundaries {
+            let race = physical_race(arrival, Some(cut));
+            assert!(race.cancelled, "{arrival:?} cut {cut}: {:?}", race.points);
+            assert_eq!(
+                (race.hit, race.ordinal),
+                (cut, cut),
+                "{arrival:?} cut {cut}"
+            );
+            assert_eq!(
+                race.raised, race.finished,
+                "{arrival:?} cut {cut}: {:?}",
+                race.points
+            );
+            let at = race.points[cut - 1];
+            deferred_cut |= matches!(arrival, Arrival::IndependentFirst)
+                && at == "blocking:completed"
+                && race.raised;
+        }
+    }
+    assert!(
+        deferred_cut,
+        "no cut fell on a completion with a deferred boundary"
+    );
 }
