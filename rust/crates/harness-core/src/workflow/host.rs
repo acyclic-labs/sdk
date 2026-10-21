@@ -445,14 +445,27 @@ impl DurableWorkflowHost {
             let record = page.0.pop().ok_or_else(|| {
                 stock_boundary(Some(io), Storage, "workflow retry record is unavailable")
             })?;
-            let retained = page
-                .1
-                .as_ref()
-                .map_or(0, acyclic_fs::NativeAllocation::bytes);
-            if let Some(custody) = page.1.take() {
+            let WorkflowRecord {
+                transition,
+                prior,
+                input,
+                idempotency_key,
+                ..
+            } = record;
+            let retained = transition.retained_owned_bytes()?;
+            drop((prior, input, idempotency_key, page.0));
+            if let Some(mut custody) = page.1.take() {
+                let discarded = custody.bytes().checked_sub(retained).ok_or_else(|| {
+                    stock_boundary(
+                        Some(io),
+                        Storage,
+                        "workflow page custody is smaller than its transition",
+                    )
+                })?;
+                custody.release(discarded)?;
                 io.absorb_native_custody(custody)?;
             }
-            return Ok((record.transition, 0, retained));
+            return Ok((transition, 0, retained));
         }
         let before = workflow_owned_bytes(io)?;
         let transition = record.transition.copy(io)?;

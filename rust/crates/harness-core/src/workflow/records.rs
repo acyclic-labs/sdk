@@ -267,3 +267,25 @@ pub(crate) fn validate_workflow_next(
     }
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl MachineTransition {
+    pub(crate) fn retained_owned_bytes(&self) -> Result<u64> {
+        use crate::core::{owned_sum, owned_vector};
+        use crate::executor::json::json_value_retained_owned_bytes;
+        owned_sum([
+            json_value_retained_owned_bytes(&self.state)?,
+            owned_vector(&self.commands, |command| {
+                owned_sum([
+                    command.kind.capacity() as u64,
+                    command.payload.logical_owned_bytes()?,
+                ])
+            })?,
+            match &self.status {
+                MachineStatus::Suspended => 0,
+                MachineStatus::Completed { value } => json_value_retained_owned_bytes(value)?,
+                MachineStatus::Failed { message } => message.capacity() as u64,
+            },
+        ])
+    }
+}

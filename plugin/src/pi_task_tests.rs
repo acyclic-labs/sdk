@@ -653,6 +653,29 @@ async fn native_reply_survives_concurrent_settlement_and_reopen() {
         .await
         .unwrap();
     assert_eq!(retried.0.state, checkpoint.state);
+    assert!(
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+            < 2 * 128 * 1024,
+        "retry retained the discarded input body and page: {}",
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+    );
+    assert!(
+        retried
+            .1
+            .as_ref()
+            .expect("native retry retains custody")
+            .bytes()
+            >= 128 * 1024,
+        "retry released the live transition body"
+    );
     assert_eq!(recovered.checkpoint(), &checkpoint);
     drop(retried);
     let journal = runtime
