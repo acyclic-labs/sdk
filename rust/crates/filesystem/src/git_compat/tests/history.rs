@@ -807,14 +807,11 @@ async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
             .execute(GitCommand::Diff { cached: true }, tree(2))
             .await
             .expect("diff"),
-        GitCommandOutput::Prepared {
-            action: GitFilesystemAction::Diff {
-                from: Some(from),
-                to,
-                tracked_paths,
-            },
-            ..
-        } if from == tree(1)
+        GitCommandOutput::Action(GitFilesystemAction::Diff {
+            from: Some(from),
+            to,
+            tracked_paths,
+        }) if from == tree(1)
             && to == tree(2)
             && tracked_paths.is_empty()
     ));
@@ -1228,33 +1225,19 @@ async fn discard_keeps_every_record_a_discarded_branch_produced() {
     }
 }
 
-/// Runs `git show OBJECT` and settles any prepared read so the next command
-/// is not blocked behind it; returns the action or output it produced.
+/// Runs `git show OBJECT` without executing any action it emits.
 async fn shown(
     repository: &GitCompatRepository<MemoryGitCompatStore>,
     object: &str,
 ) -> Result<GitCommandOutput, GitCompatError<MemoryGitCompatStoreError>> {
-    let output = repository
+    repository
         .execute(
             GitCommand::Show {
                 object: Some(object.to_owned()),
             },
             tree(2),
         )
-        .await?;
-    let GitCommandOutput::Prepared { transition, action } = output else {
-        return Ok(output);
-    };
-    repository
-        .complete_transition_result(
-            transition,
-            &GitFilesystemResult::Data {
-                kind: "file".to_owned(),
-                value: serde_json::Value::Null,
-            },
-        )
-        .await?;
-    Ok(GitCommandOutput::Action(action))
+        .await
 }
 
 #[tokio::test]
@@ -1317,4 +1300,79 @@ async fn show_rev_path_reads_a_tracked_file_from_the_commit_tree() {
         shown(&repository, ":tracked.txt").await,
         Err(GitCompatError::InvalidCommand(_))
     ));
+}
+
+// A read that fails (an oversized file, an executor error) leaves nothing
+// pending: the next command runs. Negative control: when reads were recorded
+// as transitions, the failed read stayed pending and status was refused with
+// TransitionPending, as was every later command.
+#[tokio::test]
+async fn a_failed_read_leaves_no_pending_transition() {
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    let executor = TestExecutor::returning(GitFilesystemResult::Captured {
+        tree: tree(9),
+        tracked_paths: BTreeSet::from(["large.bin".to_owned()]),
+        proof: None,
+    });
+    repository
+        .run(
+            GitCommand::Commit {
+                message: "initial".to_owned(),
+                author: "agent".to_owned(),
+                authored_at_seconds: 10,
+            },
+            tree(1),
+            &executor,
+        )
+        .await
+        .expect("commit");
+    for command in [
+        GitCommand::Show {
+            object: Some("HEAD:large.bin".to_owned()),
+        },
+        GitCommand::Diff { cached: false },
+        GitCommand::Grep {
+            pattern: "needle".to_owned(),
+            path: None,
+        },
+    ] {
+        assert!(matches!(
+            repository
+                .run(command, tree(1), &TestExecutor::failing())
+                .await,
+            Err(GitCompatRunError::Executor(TestExecutorError))
+        ));
+        assert!(
+            repository
+                .pending_transition()
+                .await
+                .expect("pending")
+                .is_none()
+        );
+        assert!(matches!(
+            repository
+                .run(GitCommand::Status, tree(1), &executor)
+                .await
+                .expect("status after a failed read"),
+            GitCommandOutput::Status(_)
+        ));
+    }
+    // A mutation still records its transition for exact resume.
+    assert!(matches!(
+        repository
+            .run(
+                GitCommand::Clean { dry_run: false },
+                tree(1),
+                &TestExecutor::failing()
+            )
+            .await,
+        Err(GitCompatRunError::Executor(TestExecutorError))
+    ));
+    assert!(
+        repository
+            .pending_transition()
+            .await
+            .expect("pending")
+            .is_some()
+    );
 }

@@ -47,6 +47,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             GitCommandOutput::Prepared { transition, action } => {
                 self.finish(transition, &action, executor).await
             }
+            GitCommandOutput::Action(action) if action.is_read_only() => self
+                .perform(action.read_operation(), &action, executor)
+                .await
+                .map(GitCommandOutput::Filesystem),
             output => Ok(output),
         }
     }
@@ -72,6 +76,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<Option<GitCommandOutput>, GitCompatRunError<S::Error, E::Error>> {
         match self.pending_transition().await? {
             Some(pending) if inspected_join(&pending) => Ok(None),
+            // Earlier versions persisted reads as transitions; one whose read
+            // failed must not wedge every later command. Nothing to replay.
+            Some(pending) if pending.action.is_read_only() => {
+                self.abort_transition(pending.id).await?;
+                Ok(None)
+            }
             Some(pending) => self
                 .finish(pending.id, &pending.action, executor)
                 .await
@@ -212,17 +222,15 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
             if let Some(pending) = &before.pending {
                 if state != before
-                    || matches!(
-                        &output,
-                        GitCommandOutput::Action(_) | GitCommandOutput::Prepared { .. }
-                    )
+                    || matches!(&output, GitCommandOutput::Prepared { .. })
+                    || matches!(&output, GitCommandOutput::Action(action) if !action.is_read_only())
                 {
                     return Err(GitCompatError::TransitionPending(pending.id));
                 }
                 return Ok(output);
             }
             let output = match output {
-                GitCommandOutput::Action(action) => {
+                GitCommandOutput::Action(action) if !action.is_read_only() => {
                     prepare_transition(&mut state, action, GitPendingMutation::NoOp)
                 }
                 output => output,

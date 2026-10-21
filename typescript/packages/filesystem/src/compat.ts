@@ -23,6 +23,7 @@ import type {
   GitCompatCommand,
   GitCompatOutput,
   GitCompatRepository,
+  GitFilesystemAction,
   GitFilesystemExecutor,
   GitFilesystemResult,
   GitPendingTransition,
@@ -521,9 +522,22 @@ export async function finishGitCompatOutput(
     return completed === "NoOp" ? { Filesystem: result } : completed;
   }
   if (typeof output === "object" && "Action" in output) {
-    throw new Error("Git compatibility returned an action without a durable transition");
+    // Read-only actions carry no durable transition: nothing to resume.
+    if (!isReadOnlyGitAction(output.Action)) {
+      throw new Error("Git compatibility returned an action without a durable transition");
+    }
+    return { Filesystem: await executor.execute(crypto.getRandomValues(new Uint8Array(16)), output.Action) };
   }
   return output;
+}
+
+/** Mirrors Rust `GitFilesystemAction::is_read_only`. */
+function isReadOnlyGitAction(action: GitFilesystemAction): boolean {
+  const record = action as unknown as Record<string, { readonly dry_run?: boolean }>;
+  const kind = Object.keys(record)[0];
+  return kind === "Diff" || kind === "Blame" || kind === "Grep" || kind === "Archive"
+    || kind === "CheckIgnore" || kind === "ShowFile"
+    || (kind === "Clean" && record.Clean?.dry_run === true);
 }
 
 function tagged(value: unknown, variants: ReadonlySet<string>, label: string): string {

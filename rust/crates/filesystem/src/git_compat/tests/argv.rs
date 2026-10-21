@@ -29,10 +29,10 @@ async fn argv_covers_local_history_and_rejects_transport() {
                 10,
             )
             .await,
-        Ok(GitCommandOutput::Prepared {
-            action: GitFilesystemAction::Clean { dry_run: true, .. },
+        Ok(GitCommandOutput::Action(GitFilesystemAction::Clean {
+            dry_run: true,
             ..
-        })
+        }))
     ));
     assert!(matches!(
         repository

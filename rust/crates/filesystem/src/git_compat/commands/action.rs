@@ -138,3 +138,33 @@ pub enum GitFilesystemAction {
         path: String,
     },
 }
+
+impl GitFilesystemAction {
+    /// Whether the action only inspects trees. Read-only actions never
+    /// persist a pending transition: they have nothing to resume, so a failed
+    /// read (an oversized file, say) leaves the repository exactly as it was.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        matches!(
+            self,
+            Self::Diff { .. }
+                | Self::Blame { .. }
+                | Self::Grep { .. }
+                | Self::Archive { .. }
+                | Self::CheckIgnore { .. }
+                | Self::ShowFile { .. }
+                | Self::Clean { dry_run: true, .. }
+        )
+    }
+
+    /// Operation identity for a read-only action: derived from the action, so
+    /// it is deterministic and never names a durable transition.
+    pub(crate) fn read_operation(&self) -> OperationId {
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"git-compat-read");
+        hash.update(&serde_json::to_vec(self).unwrap_or_default());
+        let mut identity = [0; 16];
+        identity.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+        OperationId::from_bytes(identity)
+    }
+}

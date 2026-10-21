@@ -266,6 +266,20 @@ describe("Git compatibility durable execution", () => {
     expect(output).toEqual({ Filesystem: result });
   });
 
+  test("executes a read-only action without a durable transition", async () => {
+    const action = { ShowFile: { tree: exactTree, path: "seed.txt" } } as unknown as GitFilesystemAction;
+    const result: GitFilesystemResult = { Data: { kind: "file", value: { text: "resolved" } } };
+    const output = await finishGitCompatOutput(
+      { async completeTransitionResult() { throw new Error("a read has no transition"); } },
+      { Action: action },
+      { async execute(_operationId, actual) {
+        expect(actual).toEqual(action);
+        return result;
+      } },
+    );
+    expect(output).toEqual({ Filesystem: result });
+  });
+
   test("rejects a non-durable action", async () => {
     const output: GitCompatOutput = { Action: { ApplyPatch: { patch: Uint8Array.from([1]) } } };
     await expect(finishGitCompatOutput(
