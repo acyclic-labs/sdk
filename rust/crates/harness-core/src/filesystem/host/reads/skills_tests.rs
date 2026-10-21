@@ -8,6 +8,10 @@ use futures::FutureExt as _;
 
 #[tokio::test]
 async fn concurrent_first_skill_bodies_share_one_journal_materializer() -> Result<()> {
+    acyclic_native_runtime::initialize_native_io_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    acyclic_fs::watch::initialize_native_watch_services()
+        .map_err(|error| Error::Storage(error.to_string()))?;
     let home = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let retained = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     for name in ["first", "second"] {
