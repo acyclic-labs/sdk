@@ -39,15 +39,15 @@ use acyclic_objects::GrpcObjects;
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 let ca_pem = std::fs::read("trusted-ca.pem")?;
 let client = GrpcObjects::connect(
-    "https://objects.example", "account-token", Some(&ca_pem),
+    "https://objects.example", "account-token", Some(&ca_pem), None,
 ).await?;
 # let _ = client;
 # Ok(())
 # }
 ```
 
-For endpoints requiring mutual TLS, use
-`GrpcObjects::connect_with_identity(endpoint, token, ca, certificate_pem, private_key_pem)`.
+For endpoints requiring mutual TLS, pass the client identity as the last argument:
+`GrpcObjects::connect(endpoint, token, ca, Some((certificate_pem, private_key_pem)))`.
 The certificate argument is a PEM client chain; the key is its PEM private key.
 Both must be nonempty and at most 64 KiB. This preserves server verification,
 bearer authentication, message bounds and deadlines. The server still owns client
