@@ -43,7 +43,8 @@ const processes = new Processes();
 const contexts = new Map();
 let server, events, port;
 const started = performance.now();
-const timeout = setTimeout(() => { processes.close(); }, 10000);
+// Reserve one second of the ten-second suite budget for process reaping and artifacts.
+const timeout = setTimeout(() => { processes.close(); }, 9000);
 const json = (path, value) => writeFileSync(path, JSON.stringify(value, null, 2) + "\n");
 function seed(root, files = {}) {
   for (const [path, value] of Object.entries(files)) {
