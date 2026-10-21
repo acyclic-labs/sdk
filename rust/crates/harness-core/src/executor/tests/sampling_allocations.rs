@@ -37,9 +37,12 @@ fn request(parent: OperationId, id: &str) -> McpCallbackRequest {
 }
 
 #[tokio::test]
-async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -> Result<()> {
+async fn tool_free_sampling_allocations_are_independent_of_catalog_size() -> Result<()> {
     let mut observations = [Vec::new(), Vec::new()];
-    for count in [10, 10_000] {
+    // Both catalogs retain two revisions and alternate hidden/selected names.
+    // Exact allocation equality detects copying even one extra schema; 64
+    // selected names already make the deliberate full-copy control distinct.
+    for count in [10, 128] {
         let model = Arc::new(ScriptedModelProvider::new([
             ScriptedTurn::Text("answer".into()),
             ScriptedTurn::Text("answer".into()),
@@ -106,6 +109,6 @@ async fn tool_free_sampling_allocations_are_identical_for_10_and_10000_tools() -
         !independent(&observations[1]),
         "detector missed deliberately copied schemas: {observations:?}"
     );
-    eprintln!("tool-free sampling (allocations, bytes), 10 versus 10000 tools: {observations:?}");
+    eprintln!("tool-free sampling (allocations, bytes), 10 versus 128 tools: {observations:?}");
     Ok(())
 }
