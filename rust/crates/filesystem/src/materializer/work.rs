@@ -283,6 +283,41 @@ impl NativeMaterializationWork {
             bytes,
         })
     }
+    /// Checks `copy` against every scope's limits, then claims `bytes` of
+    /// storage, in one original-leaf pass, so copy limits anywhere in the
+    /// chain are reported before any storage limit. Nothing is recorded for
+    /// the copy: the caller charges it atomically once the storage exists.
+    pub(crate) fn admit_and_claim(
+        &self,
+        cancellation: &crate::CancellationToken,
+        bytes: u64,
+        operations: u64,
+        copy: WorkCounters,
+    ) -> Result<NativeAllocation, crate::FsError> {
+        self.state(|state| -> Result<(), crate::FsError> {
+            // Existing ledger failures on every scope (an earlier overrun),
+            // then caller cancellation, then the proposed copy's limits.
+            let native = native_materialization_work_error;
+            state.admit(WorkCounters::UNCHARGED).map_err(native)?;
+            cancellation.check()?;
+            state.admit_reconciled(copy).map_err(native)?;
+            state
+                .claim_reconciled(bytes, operations, WorkCounters::UNCHARGED)
+                .map_err(native)?;
+            Ok(())
+        })?;
+        Ok(NativeAllocation {
+            meter: self.allocation_work(),
+            bytes,
+        })
+    }
+    /// Each resource scope's own (work, pending) counters, innermost first.
+    #[cfg(test)]
+    pub(crate) fn resource_chain(&self) -> Vec<(WorkCounters, WorkCounters)> {
+        self.resource
+            .as_ref()
+            .map_or_else(Vec::new, |resource| resource.local_chain())
+    }
     pub(crate) fn claim_root_metadata(
         &self,
         bytes: u64,

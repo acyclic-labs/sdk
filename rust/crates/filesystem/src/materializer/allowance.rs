@@ -3,6 +3,31 @@ use crate::sync::{Mutex, MutexGuard};
 use crate::{DemandError, WorkBudget, WorkCounters, WorkError};
 use std::sync::{Arc, Weak};
 
+#[cfg(all(test, not(acyclic_fs_loom)))]
+std::thread_local! {
+    static RESOURCE_LOCKS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+/// Counts this thread's resource-allowance mutex acquisitions in `operation`.
+#[cfg(all(test, not(acyclic_fs_loom)))]
+pub(crate) fn count_resource_locks<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let previous = RESOURCE_LOCKS.with(|count| count.replace(Some(0)));
+    let result = operation();
+    let count = RESOURCE_LOCKS.with(|count| count.replace(previous));
+    (result, count.unwrap_or(0))
+}
+
+#[cfg(all(test, acyclic_fs_loom))]
+loom::thread_local! {
+    static OMIT_CHILD_DEBIT: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+/// Negative control: completed work skips the scope it was recorded on.
+#[cfg(all(test, acyclic_fs_loom))]
+pub(crate) fn omit_child_debit(omit: bool) {
+    OMIT_CHILD_DEBIT.with(|flag| flag.set(omit));
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeResourceAllowance {
     pub(super) budget: WorkBudget,
@@ -91,6 +116,8 @@ impl NativeResourceAllowance {
             })
     }
     fn lock(&self) -> MutexGuard<'_, NativeResourceState> {
+        #[cfg(all(test, not(acyclic_fs_loom)))]
+        RESOURCE_LOCKS.with(|count| count.set(count.get().map(|count| count + 1)));
         self.state.lock().unwrap_or_else(|error| {
             let mut state = error.into_inner();
             state.poisoned = true;
@@ -181,6 +208,13 @@ impl NativeResourceAllowance {
             None,
             &|scope, state| {
                 scope.check(state, delta, bytes)?;
+                #[cfg(all(test, acyclic_fs_loom))]
+                if delta.bytes_copied != 0
+                    && std::ptr::eq(scope, self)
+                    && OMIT_CHILD_DEBIT.with(std::cell::Cell::get)
+                {
+                    return Ok(());
+                }
                 state.completed(delta, bytes)
             },
             operation,
@@ -265,9 +299,22 @@ impl NativeResourceAllowance {
     }
     pub(crate) fn completed(&self, delta: WorkCounters, bytes: u64) -> Result<(), DemandError> {
         self.visit(None, &|scope, state| {
+            #[cfg(all(test, acyclic_fs_loom))]
+            if std::ptr::eq(scope, self) && OMIT_CHILD_DEBIT.with(std::cell::Cell::get) {
+                return Ok(Ok(()));
+            }
             state.completed(delta, bytes)?;
             Ok(state.verify(scope.budget))
         })
+    }
+    #[cfg(test)]
+    pub(crate) fn local_chain(&self) -> Vec<(WorkCounters, WorkCounters)> {
+        let state = *self.lock();
+        let mut chain = vec![(state.work, state.pending)];
+        if let Some(parent) = &self.parent {
+            chain.extend(parent.local_chain());
+        }
+        chain
     }
     pub(crate) fn retire(&self, bytes: u64) -> Result<(), DemandError> {
         self.visit(None, &|_, state| {

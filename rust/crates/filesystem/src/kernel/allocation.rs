@@ -327,6 +327,20 @@ pub enum KernelOwnedAllocation {
 }
 
 impl KernelOwnedAllocation {
+    /// Fails exactly when `absorb` would, without changing either side.
+    pub(crate) fn check_absorb(&self, other: &Self) -> Result<(), crate::FsError> {
+        match (self, other) {
+            (Self::Standalone, Self::Standalone) => Ok(()),
+            #[cfg(not(target_arch = "wasm32"))]
+            (Self::NativeOriginal(owned), Self::NativeOriginal(other)) => {
+                owned.absorbed_bytes(other).map(|_| ()).map_err(Into::into)
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => Err(AllocationError::ReleaseInvariant
+                .into_work_or(crate::FsError::PendingMutationAllocationFailed)),
+        }
+    }
+
     pub(crate) fn absorb(&mut self, other: &mut Self) -> Result<(), crate::FsError> {
         match (self, other) {
             (Self::Standalone, Self::Standalone) => Ok(()),

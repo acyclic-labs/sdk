@@ -49,16 +49,23 @@ impl NativeAllocation {
     }
     /// Combines capacity with identical accounting attribution.
     pub fn absorb(&mut self, other: &mut Self) -> Result<(), NativeTreeMaterializationError> {
+        self.bytes = self.absorbed_bytes(other)?;
+        other.bytes = 0;
+        Ok(())
+    }
+    /// The combined capacity `absorb` would hold; it fails exactly when
+    /// `absorb` would, without changing either allocation.
+    pub(crate) fn absorbed_bytes(
+        &self,
+        other: &Self,
+    ) -> Result<u64, NativeTreeMaterializationError> {
         if !self.meter.shares_allocation_context(&other.meter) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let bytes = self
+        Ok(self
             .bytes
             .checked_add(other.bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.bytes = bytes;
-        other.bytes = 0;
-        Ok(())
+            .ok_or(crate::WorkError::Overflow)?)
     }
     /// Splits admitted capacity.
     pub fn split_off(&mut self, bytes: u64) -> Result<Self, NativeTreeMaterializationError> {
