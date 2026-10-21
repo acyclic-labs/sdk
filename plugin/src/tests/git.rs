@@ -57,26 +57,7 @@ async fn write_child_bytes(control: &ControlPlane, name: &str, bytes: &'static [
     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt as _;
-            // ProjFS does not report its provider process's own file I/O.
-            // Write through a real host process, including non-UTF-8 bodies.
-            let staging = tempfile::tempdir()?;
-            let source = staging.path().join("host-write.bin");
-            fs::write(&source, bytes)?;
-            let output = std::process::Command::new("cmd.exe")
-                .args(["/d", "/c", "copy", "/b", "/y"])
-                .arg(&source)
-                .arg(&path)
-                .creation_flags(0x0800_0000)
-                .output()?;
-            if !output.status.success() {
-                return Err(std::io::Error::other(format!(
-                    "host write failed: {}: {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr)
-                )));
-            }
-            Ok(())
+            write_host_file(&path, bytes)
         }
         #[cfg(not(windows))]
         fs::write(path, bytes)
@@ -84,6 +65,44 @@ async fn write_child_bytes(control: &ControlPlane, name: &str, bytes: &'static [
     .await
     .unwrap()
     .unwrap();
+}
+
+#[cfg(windows)]
+fn write_host_file(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt as _;
+    // ProjFS does not report its provider process's own file I/O.
+    // Expansion inside quotes preserves literal shell characters in both paths.
+    let staging = tempfile::tempdir()?;
+    let source = staging.path().join("host-write.bin");
+    fs::write(&source, bytes)?;
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/d", "/v:off", "/c"])
+        .raw_arg(r#"copy /b /y "%ACYCLIC_COPY_SOURCE%" "%ACYCLIC_COPY_DESTINATION%""#)
+        .env("ACYCLIC_COPY_SOURCE", &source)
+        .env("ACYCLIC_COPY_DESTINATION", path)
+        .creation_flags(0x0800_0000)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "host write failed: {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn external_host_write_preserves_shell_characters_and_binary_bytes() {
+    let directory = tempfile::Builder::new()
+        .prefix("host-write-&%PATH%!^()")
+        .tempdir()
+        .unwrap();
+    let path = directory.path().join("result & %PATH%!^().bin");
+    let bytes = b"\xff\0\r\n&%PATH%!^()";
+    write_host_file(&path, bytes).unwrap();
+    assert_eq!(fs::read(path).unwrap(), bytes);
 }
 
 async fn write_child_text(control: &ControlPlane, text: &'static str) {
