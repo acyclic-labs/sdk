@@ -21,7 +21,7 @@ fn schedule<const SERIALIZE: bool>() {
             let owner = owner.clone();
             let head = head.clone();
             loom::thread::spawn(move || {
-                let _guard = SERIALIZE.then(|| futures::executor::block_on(owner.enter()));
+                let _guard = SERIALIZE.then(|| loom::future::block_on(Box::pin(owner.enter())));
                 let pinned = head.load(Ordering::SeqCst);
                 loom::thread::yield_now();
                 assert!(
