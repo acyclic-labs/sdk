@@ -27,6 +27,9 @@ pub struct GitCompatState {
     /// Workspaces of discarded branches that recorded commits or stashes
     /// still held here. Workspace ownership outlives the branch name, so
     /// discarding a branch never orphans the history it already produced.
+    /// Records written before discard existed hold no retired workspace, so
+    /// an absent field reads as the empty set; no other value is possible.
+    #[serde(default)]
     pub retired_workspaces: BTreeSet<WorkspaceId>,
     /// Explicit commit records.
     pub commits: BTreeMap<GitCommitId, GitCommit>,

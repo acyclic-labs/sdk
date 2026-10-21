@@ -7,10 +7,29 @@ fn current_state_round_trips_and_obsolete_versions_are_rejected() {
     let mut decoded: GitCompatState =
         serde_json::from_slice(&encoded).expect("decode current state");
     assert!(validate_git_state(&decoded).is_ok());
-    for version in [0, 1, 3, u32::MAX] {
+    for version in [0, 2, 9, u32::MAX] {
         decoded.version = version;
         assert!(validate_git_state(&decoded).is_err());
     }
+}
+
+#[test]
+fn records_saved_before_discard_existed_reopen_unchanged() {
+    // A repository persisted before branches could be discarded has no
+    // retired workspaces; it must reopen with its history intact.
+    let mut state = GitCompatState::new("main", WorkspaceId::from_bytes([1; 16]));
+    state.revision = 7;
+    let mut saved = serde_json::to_value(&state).expect("encode state");
+    saved
+        .as_object_mut()
+        .expect("state object")
+        .remove("retired_workspaces")
+        .expect("current records carry retired workspaces");
+    let reopened: GitCompatState =
+        serde_json::from_value(saved).expect("pre-discard record decodes");
+    assert!(reopened.retired_workspaces.is_empty());
+    assert_eq!(reopened, state);
+    assert!(validate_git_state(&reopened).is_ok());
 }
 
 #[tokio::test]
